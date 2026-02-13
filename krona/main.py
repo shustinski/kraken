@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from logic_analyzer.bootstrap import parse_to_dict, run_gui
+from logic_analyzer.bootstrap import logic_functions_to_dict, parse_to_dict, run_gui
 
 
 def main() -> None:
@@ -24,7 +24,21 @@ def main() -> None:
         "--json-out",
         help="Write parsed top-level netlist JSON to this file",
     )
+    parser.add_argument(
+        "--logic",
+        action="store_true",
+        help="Extract logic function(s) from the selected EDF and print/export JSON",
+    )
     args = parser.parse_args()
+
+    if args.logic:
+        output = logic_functions_to_dict(args.edf_path)
+        json_text = json.dumps(output, indent=2 if args.pretty or not args.json_out else None)
+        if args.json_out:
+            Path(args.json_out).write_text(json_text, encoding="utf-8")
+        else:
+            print(json_text)
+        return
 
     if args.json_out or args.pretty:
         output = parse_to_dict(args.edf_path)

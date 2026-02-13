@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
+from logic_analyzer.application.ports import DiagnosticItem
 from logic_analyzer.domain.netlist import Connection, Instance, Net, Point, TopLevelNetlist, Wire
 
 
@@ -74,6 +75,34 @@ class EdifTextParser:
         return classes
 
     @staticmethod
+    def direct_children(where: str) -> list[str]:
+        """
+        Return all direct child S-expressions of `where` preserving source order.
+        """
+        children: list[str] = []
+        stripped = where.lstrip()
+        if not stripped.startswith("("):
+            return children
+        base_offset = len(where) - len(stripped)
+        depth = 0
+        idx = 0
+        while idx < len(stripped):
+            char = stripped[idx]
+            if char == "(":
+                depth += 1
+                if depth == 2:
+                    absolute_idx = base_offset + idx
+                    block, end = EdifTextParser._extract_balanced(where, absolute_idx)
+                    children.append(block)
+                    idx = end - base_offset
+                    depth = 1
+                    continue
+            elif char == ")":
+                depth -= 1
+            idx += 1
+        return children
+
+    @staticmethod
     def _parse_rename_expr(expr: str) -> str | None:
         match = re.match(r'^\(rename\s+[^\s)]+\s+"([^"]+)"\)$', expr.strip(), re.DOTALL)
         return match.group(1) if match else None
@@ -97,6 +126,34 @@ class EdifTextParser:
         return block[pos:end]
 
     @classmethod
+    def parse_name_variants(cls, block: str, keyword: str) -> list[str]:
+        """
+        Returns all usable names for a header:
+        - plain token: [token]
+        - rename form: [display_name, internal_name]
+        """
+        prefix = f"({keyword}"
+        start = block.find(prefix)
+        if start == -1:
+            return []
+        pos = start + len(prefix)
+        while pos < len(block) and block[pos].isspace():
+            pos += 1
+        if pos < len(block) and block[pos] == "(":
+            expr, _ = cls._extract_balanced(block, pos)
+            rename_match = re.match(r'^\(rename\s+([^\s)]+)\s+"([^"]+)"\)$', expr.strip(), re.DOTALL)
+            if rename_match:
+                internal_name = rename_match.group(1)
+                display_name = rename_match.group(2)
+                return [display_name, internal_name]
+            fallback_name = cls._parse_rename_expr(expr)
+            return [fallback_name] if fallback_name else [expr.strip()]
+        end = pos
+        while end < len(block) and not block[end].isspace() and block[end] != ")":
+            end += 1
+        return [block[pos:end]]
+
+    @classmethod
     def first_direct_or_none(cls, block: str, what: str) -> str | None:
         blocks = cls.find_direct_classes(block, what)
         return blocks[0] if blocks else None
@@ -109,7 +166,7 @@ class EdifTextParser:
     @classmethod
     def parse_points(cls, block: str) -> list[Point]:
         points: list[Point] = []
-        for x_str, y_str in re.findall(r"\(pt\s+(-?\d+)\s+(-?\d+)\s*\)", block):
+        for x_str, y_str in re.findall(r"\(\s*pt\s+(-?\d+)\s+(-?\d+)\s*\)", block):
             points.append(Point(x=int(x_str), y=int(y_str)))
         return points
 
@@ -187,13 +244,16 @@ class EdifTextParser:
 
     def build_view_index(self) -> dict[tuple[str, str, str], str]:
         index: dict[tuple[str, str, str], str] = {}
-        for lib_block in self.find_direct_classes(self.file_text, "(library "):
-            lib_name = self.parse_header_name(lib_block, "library")
-            for cell_block in self.find_direct_classes(lib_block, "(cell "):
-                cell_name = self.parse_header_name(cell_block, "cell")
-                for view_block in self.find_direct_classes(cell_block, "(view "):
-                    view_name = self.parse_header_name(view_block, "view")
-                    index[(lib_name, cell_name, view_name)] = view_block
+        for lib_block in self.find_direct_classes(self.file_text, "(library"):
+            lib_names = self.parse_name_variants(lib_block, "library")
+            for cell_block in self.find_direct_classes(lib_block, "(cell"):
+                cell_names = self.parse_name_variants(cell_block, "cell")
+                for view_block in self.find_direct_classes(cell_block, "(view"):
+                    view_names = self.parse_name_variants(view_block, "view")
+                    for lib_name in lib_names:
+                        for cell_name in cell_names:
+                            for view_name in view_names:
+                                index[(lib_name, cell_name, view_name)] = view_block
         return index
 
     def get_top_page_block(self) -> str:
@@ -252,3 +312,67 @@ class EdifTextParser:
             instances=instances,
             nets=nets,
         )
+
+    def collect_diagnostics(self) -> list[DiagnosticItem]:
+        diagnostics: list[DiagnosticItem] = []
+
+        def add(severity: str, message: str) -> None:
+            diagnostics.append(DiagnosticItem(severity=severity, message=message))
+
+        netlist = self.parse_top_level_netlist()
+        top_page = self.get_top_page_block()
+        view_index = self.build_view_index()
+
+        net_name_counts: dict[str, int] = {}
+        for net in netlist.nets:
+            net_name_counts[net.name] = net_name_counts.get(net.name, 0) + 1
+        duplicate_names = sorted([name for name, count in net_name_counts.items() if count > 1])
+        for name in duplicate_names:
+            add("warning", f"Duplicate net name detected: {name}")
+
+        for net in netlist.nets:
+            if not net.connections:
+                add("warning", f"Net '{net.name}' has no joined connections.")
+            if not net.wires:
+                add("warning", f"Net '{net.name}' has no wire geometry.")
+            for wire in net.wires:
+                if len(wire.points) < 2:
+                    add("warning", f"Net '{net.name}' contains a degenerate wire path (<2 points).")
+                    break
+
+        port_impl_blocks = self.find_direct_classes(top_page, "(portImplementation")
+        input_port_count = 0
+        output_port_count = 0
+        for port_impl in port_impl_blocks:
+            name_block = self.first_direct_or_none(port_impl, "(name ")
+            if name_block:
+                port_name = self.parse_header_name(name_block, "name")
+            else:
+                port_name = self.parse_header_name(port_impl, "portImplementation")
+            upper_name = port_name.upper()
+            if re.fullmatch(r"IN\d+", upper_name) or re.fullmatch(r"INSIN\d+", upper_name):
+                input_port_count += 1
+            if re.fullmatch(r"OUT\d+", upper_name):
+                output_port_count += 1
+            if not self.first_any_or_none(port_impl, "(connectLocation"):
+                add("warning", f"Port '{port_name}' has no connectLocation block.")
+        if input_port_count == 0:
+            add("error", "No input ports detected at top level.")
+        if output_port_count == 0:
+            add("error", "No output ports detected at top level.")
+
+        for instance in netlist.instances:
+            if not instance.view or not instance.cell or not instance.library:
+                add("warning", f"Instance '{instance.name}' is missing view/cell/library reference.")
+                continue
+            if (instance.library, instance.cell, instance.view) not in view_index:
+                add(
+                    "error",
+                    f"Instance '{instance.name}' references unresolved symbol "
+                    f"({instance.library}/{instance.cell}/{instance.view}).",
+                )
+
+        if not diagnostics:
+            add("info", "No parser diagnostics.")
+        unique = {(item.severity, item.message): item for item in diagnostics}
+        return sorted(unique.values(), key=lambda item: (item.severity, item.message))

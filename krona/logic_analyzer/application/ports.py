@@ -7,6 +7,12 @@ from typing import Protocol
 from logic_analyzer.domain.netlist import TopLevelNetlist
 
 
+@dataclass(frozen=True)
+class DiagnosticItem:
+    severity: str
+    message: str
+
+
 class NetlistRepository(Protocol):
     def read_top_level_netlist(self, path: Path) -> TopLevelNetlist:
         ...
@@ -20,6 +26,9 @@ class NetlistRepository(Protocol):
     def read_file_text(self, path: Path) -> str:
         ...
 
+    def read_diagnostics(self, path: Path) -> list[DiagnosticItem]:
+        ...
+
 
 @dataclass(frozen=True)
 class SceneData:
@@ -27,3 +36,4 @@ class SceneData:
     view_index: dict[tuple[str, str, str], str]
     top_page_block: str
     source_text: str
+    diagnostics: list[DiagnosticItem]

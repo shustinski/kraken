@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from logic_analyzer.application.ports import DiagnosticItem
 from logic_analyzer.domain.netlist import TopLevelNetlist
 from logic_analyzer.infrastructure.edif_parser import EdifTextParser
 
@@ -29,3 +30,6 @@ class EdifRepository:
 
     def read_file_text(self, path: Path) -> str:
         return self._parser_for(path).file_text
+
+    def read_diagnostics(self, path: Path) -> list[DiagnosticItem]:
+        return self._parser_for(path).collect_diagnostics()

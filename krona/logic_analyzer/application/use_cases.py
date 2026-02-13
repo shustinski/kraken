@@ -26,4 +26,5 @@ class LoadSceneData:
             view_index=self._repository.read_view_index(source_path),
             top_page_block=self._repository.read_top_page_block(source_path),
             source_text=self._repository.read_file_text(source_path),
+            diagnostics=self._repository.read_diagnostics(source_path),
         )

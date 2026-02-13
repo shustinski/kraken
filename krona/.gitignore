@@ -43,3 +43,5 @@ desktop.ini
 
 # Local generated outputs
 test.json
+# Local UI preferences
+.logic_analyzer_ui.json

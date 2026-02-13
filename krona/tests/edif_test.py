@@ -76,7 +76,7 @@ def test_find_net_name():
     assert real_result == expected_result
 
 def test_extract_top_level_netlist():
-    edif_path = Path("model/test_edifs/e1_model.EDF")
+    edif_path = Path("test_edifs/e1_model.EDF")
     parser = EdifParser(edif_path)
     netlist = parser.extract_top_level_netlist()
 
@@ -87,6 +87,7 @@ def test_extract_top_level_netlist():
     assert len(netlist.instances) > 0
     assert len(netlist.nets) > 0
     assert any(net.name == "N0020100" for net in netlist.nets)
+    assert any(instance.x is not None and instance.y is not None for instance in netlist.instances)
 
 def main():
     test_find_classes()

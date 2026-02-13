@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from edif_viewer import parse_to_dict, run_gui
+from logic_analyzer.bootstrap import parse_to_dict, run_gui
 
 
 def main() -> None:

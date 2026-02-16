@@ -1,0 +1,408 @@
+/* modern_light.qss – pure‑Qt QSS, no variables, no unsupported syntax */
+
+/* --------------------------------------------------------------
+   0️⃣  Palette – edit only these hex values if you want a different
+   -------------------------------------------------------------- */
+#bg-canvas      { background: #ffffff; }   /* main window background      */
+#bg-elevated    { background: #fafafa; }   /* panels, dock widgets, dialogs*/
+#bg-hover       { background: #f5f5f5; }   /* hover for cards/buttons    */
+#border         { color: #e0e0e0; }        /* thin separator / shadow    */
+#text-primary   { color: #212121; }       /* normal text                */
+#text-secondary { color: #616161; }       /* disabled / secondary text  */
+#accent         { background: #3b78ff; color: #ffffff; }  /* primary accent   */
+#accent-dark    { background: #2a5bd9; }  /* pressed/focus accent       */
+#accent-light   { background: #7ea6ff; }  /* hover accent               */
+
+/* --------------------------------------------------------------
+   1️⃣  Global defaults
+   -------------------------------------------------------------- */
+* {
+    outline: none;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 10pt;
+}
+QWidget {
+    background-color: #ffffff;
+    color: #212121;
+}
+
+/* --------------------------------------------------------------
+   2️⃣  QMainWindow & central widget
+   -------------------------------------------------------------- */
+QMainWindow {
+    background-color: #ffffff;
+    border: none;
+}
+QMainWindow::centralwidget {
+    background-color: #ffffff;
+    border-radius: 8px;
+    border: 1px solid rgba(0,0,0,0.08);   /* light “elevation” */
+    margin: 8px;
+}
+
+/* --------------------------------------------------------------
+   3️⃣  Dock widgets – card look
+   -------------------------------------------------------------- */
+QDockWidget {
+    background-color: #fafafa;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+    margin: 8px;
+}
+QDockWidget::title {
+    background-color: #fafafa;
+    text-align: left;
+    padding: 6px 12px;
+    font-weight: 600;
+    color: #212121;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+/* --------------------------------------------------------------
+   4️⃣  Menus & menu bar
+   -------------------------------------------------------------- */
+QMenuBar {
+    background-color: #ffffff;
+    padding: 4px 8px;
+}
+QMenuBar::item {
+    padding: 6px 12px;
+    margin: 0 2px;
+    border-radius: 6px;
+}
+QMenuBar::item:selected {
+    background-color: #7ea6ff;   /* accent‑light */
+    color: #ffffff;
+}
+QMenuBar::item:pressed {
+    background-color: #2a5bd9;   /* accent‑dark */
+}
+
+/* Drop‑down menus */
+QMenu {
+    background-color: #fafafa;
+    border: 1px solid #e0e0e0;
+    margin-top: 2px;
+    border-radius: 8px;
+}
+QMenu::item {
+    padding: 6px 20px;
+    border-radius: 6px;
+}
+QMenu::item:selected {
+    background-color: #7ea6ff;
+    color: #ffffff;
+}
+QMenu::separator {
+    height: 1px;
+    margin: 4px 0;
+    background: #e0e0e0;
+}
+
+/* --------------------------------------------------------------
+   5️⃣  Toolbar
+   -------------------------------------------------------------- */
+QToolBar {
+    background-color: #fafafa;
+    spacing: 6px;
+    padding: 4px;
+    border-bottom: 1px solid #e0e0e0;
+}
+QToolButton {
+    background: transparent;
+    border: none;
+    padding: 8px;
+    margin: 0 2px;
+    border-radius: 6px;
+}
+QToolButton:hover {
+    background-color: #f5f5f5;
+}
+QToolButton:pressed {
+    background-color: #2a5bd9;
+}
+
+/* --------------------------------------------------------------
+   6️⃣  QPushButton – filled primary button
+   -------------------------------------------------------------- */
+QPushButton {
+    background-color: #3b78ff;
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+    min-height: 32px;
+    font-weight: 500;
+}
+QPushButton:hover {
+    background-color: #7ea6ff;
+}
+QPushButton:pressed {
+    background-color: #2a5bd9;
+}
+QPushButton:disabled {
+    background-color: #e0e0e0;
+    color: #616161;
+}
+
+/* --------------------------------------------------------------
+   7️⃣  LineEdit & TextEdit – card look
+   -------------------------------------------------------------- */
+QLineEdit,
+QPlainTextEdit,
+QTextEdit,
+ClickableLabel {
+    background-color: #fafafa;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 6px 10px;
+    selection-background-color: #3b78ff;
+    selection-color: #ffffff;
+}
+QLineEdit:focus,
+QPlainTextEdit:focus,
+QTextEdit:focus {
+    border-color: #3b78ff;
+}
+
+/* --------------------------------------------------------------
+   8️⃣  ComboBox – modern drop‑down
+   -------------------------------------------------------------- */
+QComboBox {
+    background-color: #fafafa;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-height: 32px;
+}
+QComboBox:hover,
+QComboBox:focus {
+    border-color: #3b78ff;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 24px;
+    border-left: 1px solid #e0e0e0;
+}
+QComboBox::down-arrow {
+    /* Replace with your own arrow icon or use a Unicode character */
+    image: url(:/icons/arrow_down_black.svg);
+    width: 10px;
+    height: 10px;
+}
+QComboBox QAbstractItemView {
+    background-color: #fafafa;
+    border: 1px solid #e0e0e0;
+    selection-background-color: #3b78ff;
+    selection-color: #ffffff;
+}
+
+/* --------------------------------------------------------------
+   9️⃣  CheckBox / RadioButton – flat style
+   -------------------------------------------------------------- */
+QCheckBox, QRadioButton {
+    spacing: 8px;
+    color: #212121;
+}
+QCheckBox::indicator,
+QRadioButton::indicator {
+    width: 18px;
+    height: 18px;
+}
+QCheckBox::indicator:unchecked,
+QRadioButton::indicator:unchecked {
+    border: 2px solid #e0e0e0;
+    background: #ffffff;
+    border-radius: 4px;      /* square for checkbox */
+}
+QRadioButton::indicator:unchecked { border-radius: 9px; }
+QCheckBox::indicator:checked,
+QRadioButton::indicator:checked {
+    background-color: #3b78ff;
+    border: 2px solid #2a5bd9;
+    image: url(:/icons/check_white.svg);   /* provide a white check icon */
+}
+QRadioButton::indicator:checked { border-radius: 9px; }
+
+/* --------------------------------------------------------------
+   🔟  TabWidget – card tabs
+   -------------------------------------------------------------- */
+QTabWidget::pane {
+    border: none;
+    background: #ffffff;
+    margin-top: -2px;
+}
+QTabBar::tab {
+    background: #fafafa;
+    color: #212121;
+    padding: 8px 16px;
+    margin-right: 2px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+}
+QTabBar::tab:selected {
+    background: #ffffff;
+    border-bottom: 2px solid #3b78ff;
+}
+QTabBar::tab:hover { background: #f5f5f5; }
+
+/* --------------------------------------------------------------
+   1️⃣1️⃣  StatusBar
+   -------------------------------------------------------------- */
+QStatusBar {
+    background: #fafafa;
+    border-top: 1px solid #e0e0e0;
+    padding: 4px 8px;
+    color: #212121;
+}
+
+/* --------------------------------------------------------------
+   1️⃣2️⃣  ProgressBar
+   -------------------------------------------------------------- */
+QProgressBar {
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    background-color: #fafafa;
+    text-align: center;
+    color: #212121;
+    height: 12px;
+}
+QProgressBar::chunk {
+    background-color: #3b78ff;
+    border-radius: 6px;
+}
+
+/* --------------------------------------------------------------
+   1️⃣3️⃣  Slider
+   -------------------------------------------------------------- */
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #e0e0e0;
+    border-radius: 2px;
+    margin: 0 8px;
+}
+QSlider::handle:horizontal {
+    background: #3b78ff;
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+}
+QSlider::groove:vertical {
+    width: 4px;
+    background: #e0e0e0;
+    border-radius: 2px;
+    margin: 8px 0;
+}
+QSlider::handle:vertical {
+    background: #3b78ff;
+    width: 16px;
+    height: 16px;
+    margin: 0 -6px;
+    border-radius: 8px;
+}
+
+/* --------------------------------------------------------------
+   1️⃣4️⃣  ScrollBar – thin thumb
+   -------------------------------------------------------------- */
+QScrollBar:horizontal, QScrollBar:vertical {
+    background: transparent;
+    width: 12px;
+    margin: 0;
+}
+QScrollBar::handle {
+    background: #e0e0e0;
+    border-radius: 6px;
+    min-height: 20px;
+    min-width: 20px;
+}
+QScrollBar::handle:hover { background: #3b78ff; }
+QScrollBar::add-line, QScrollBar::sub-line,
+QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+
+/* --------------------------------------------------------------
+   1️⃣5️⃣  Views (Tree, List, Table)
+   -------------------------------------------------------------- */
+QTreeView, QListView, QTableView {
+    background-color: #ffffff;
+    alternate-background-color: #fafafa;
+    border: none;
+    color: #212121;
+    selection-background-color: #3b78ff;
+    selection-color: #ffffff;
+}
+QHeaderView::section {
+    background-color: #fafafa;
+    padding: 6px 12px;
+    border: none;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+/* --------------------------------------------------------------
+   1️⃣6️⃣  SpinBox / DoubleSpinBox
+   -------------------------------------------------------------- */
+QSpinBox,
+QDoubleSpinBox {
+    background-color: #fafafa;          /* card‑like background      */
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 4px 8px;                   /* left/right space for text */
+    min-height: 32px;
+}
+
+/* -----------------------------------------------------------------
+   Position the two buttons on the right side of the spin box.
+   ----------------------------------------------------------------- */
+QSpinBox::up-button,
+QDoubleSpinBox::up-button,
+QSpinBox::down-button,
+QDoubleSpinBox::down-button {
+    /* place the button group on the right edge */
+    background: #f5f5f5;                      /* default button colour */
+    border-left: 1px solid #e0e0e0;           /* thin separator */
+}
+
+/* -----------------------------------------------------------------
+   Separate the two buttons (Qt automatically splits the height)
+   ----------------------------------------------------------------- */
+QSpinBox::down-button,
+QDoubleSpinBox::down-button {
+    /* move the down‑button to the lower half of the same area */
+    subcontrol-position: bottom right;
+}
+
+/* -----------------------------------------------------------------
+   Arrow icons – you can use an image or a Unicode character.
+   ----------------------------------------------------------------- */
+QSpinBox::up-arrow,
+QSpinBox::up-arrow   { content: "▲"; font-size: 8pt; }
+
+QSpinBox::down-arrow,
+QSpinBox::down-arrow { content: "▼"; font-size: 8pt; }
+
+/* -----------------------------------------------------------------
+   Hover / pressed states – make the buttons feel “interactive”
+   ----------------------------------------------------------------- */
+QSpinBox::up-button:hover,
+QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover,
+QDoubleSpinBox::down-button:hover {
+    background: #7ea6ff;      /* accent‑light */
+}
+QSpinBox::up-button:pressed,
+QDoubleSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed,
+QDoubleSpinBox::down-button:pressed {
+    background: #2a5bd9;      /* accent‑dark */
+}
+
+/* --------------------------------------------------------------
+   1️⃣7️⃣  Dialogs – card look
+   -------------------------------------------------------------- */
+QDialog {
+    background-color: #ffffff;
+    border-radius: 12px;
+    border: 1px solid #e0e0e0;
+    padding: 12px;
+}

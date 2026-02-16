@@ -1,0 +1,14 @@
+.idea/
+__pycache__/
+build/
+dist/
+*.zip
+*.cif
+*.jpg
+*.png
+*.json
+.test_runtime/
+.tmp/
+build_tmp/
+dist/
+dist_tmp/

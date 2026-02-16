@@ -1,0 +1,322 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NeuralImage Web UI</title>
+    <link rel="stylesheet" href="{% static 'webui/dashboard.css' %}">
+</head>
+<body>
+<div class="app-shell" id="app-shell">
+    <header class="topbar">
+        <div class="title-wrap">
+            <h1>NeuralImage</h1>
+            <p>Веб-интерфейс обучения и распознавания</p>
+        </div>
+        <div class="control-wrap">
+            <div class="status-chip">Статус: <span id="run-status">{{ status }}</span></div>
+            <button type="button" id="toggle-settings" class="ghost-btn">Настройки</button>
+        </div>
+    </header>
+
+    {% if messages %}
+        <section class="alerts">
+            {% for message in messages %}
+                <div class="alert {{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+        </section>
+    {% endif %}
+
+    <div class="content-grid">
+        <main class="main-col">
+            <form method="post" action="{% url 'webui:start_processing' %}" id="start-form" class="panel">
+                {% csrf_token %}
+
+                <section class="section">
+                    <h2>Режим работы</h2>
+                    <div class="radio-grid" id="work-mode-radios">
+                        {% with current_mode=main_form.work_mode.value %}
+                            {% for value, label in main_form.fields.work_mode.choices %}
+                                <label class="radio-card">
+                                    <input type="radio" name="work_mode_radio" value="{{ value }}" {% if current_mode == value %}checked{% endif %}>
+                                    <span>{{ label }}</span>
+                                </label>
+                            {% endfor %}
+                        {% endwith %}
+                    </div>
+                    <div class="hidden-field">{{ main_form.work_mode }}</div>
+                    {% if main_form.work_mode.errors %}<div class="field-error">{{ main_form.work_mode.errors|striptags }}</div>{% endif %}
+                </section>
+
+                <section class="section">
+                    <h2>Пути и входные данные</h2>
+                    <div class="field" data-role="source">
+                        <label>{{ main_form.source_folder.label }}</label>
+                        {{ main_form.source_folder }}
+                        {% if main_form.source_folder.errors %}<div class="field-error">{{ main_form.source_folder.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field" data-role="result">
+                        <label>{{ main_form.result_folder.label }}</label>
+                        {{ main_form.result_folder }}
+                        {% if main_form.result_folder.errors %}<div class="field-error">{{ main_form.result_folder.errors|striptags }}</div>{% endif %}
+                    </div>
+
+                    <div class="subsection" data-role="sample-group">
+                        <div class="field" data-role="sample">
+                            <label>{{ main_form.sample_folder.label }}</label>
+                            {{ main_form.sample_folder }}
+                            {% if main_form.sample_folder.errors %}<div class="field-error">{{ main_form.sample_folder.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field" data-role="label">
+                            <label>{{ main_form.label_folder.label }}</label>
+                            {{ main_form.label_folder }}
+                            {% if main_form.label_folder.errors %}<div class="field-error">{{ main_form.label_folder.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+
+                    <div class="field" data-role="model-path">
+                        <label>{{ main_form.model_path.label }}</label>
+                        {{ main_form.model_path }}
+                        {% if main_form.model_path.errors %}<div class="field-error">{{ main_form.model_path.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field compact" data-role="epochs">
+                        <label>{{ main_form.epochs.label }}</label>
+                        {{ main_form.epochs }}
+                        {% if main_form.epochs.errors %}<div class="field-error">{{ main_form.epochs.errors|striptags }}</div>{% endif %}
+                    </div>
+                </section>
+
+                {% if main_form.non_field_errors or settings_form.non_field_errors %}
+                    <div class="errors">
+                        {{ main_form.non_field_errors }}
+                        {{ settings_form.non_field_errors }}
+                    </div>
+                {% endif %}
+
+                <div class="actions-row">
+                    <button type="submit" class="btn-start" id="start-btn">Запустить</button>
+                </div>
+                <div class="autosave-hint">Настройки автоматически сохраняются в браузере.</div>
+            </form>
+
+            <form method="post" action="{% url 'webui:stop_processing' %}" id="stop-form" class="panel stop-panel">
+                {% csrf_token %}
+                <button type="submit" class="btn-stop" id="stop-btn">Остановить</button>
+            </form>
+
+            <section class="panel metrics-panel">
+                <h2>Метрики</h2>
+                <div class="metrics-grid">
+                    <article class="metric-card">
+                        <h3>Качество валидации</h3>
+                        <div class="metric-values">
+                            <p>IoU: <strong id="val-iou-value">—</strong></p>
+                            <p>Dice: <strong id="val-dice-value">—</strong></p>
+                            <p>F1: <strong id="val-f1-value">—</strong></p>
+                        </div>
+                    </article>
+                    <article class="metric-card">
+                        <h3>Производительность</h3>
+                        <div class="metric-values">
+                            <p>Data wait: <strong id="perf-data-wait">—</strong></p>
+                            <p>Forward: <strong id="perf-forward">—</strong></p>
+                            <p>Backward: <strong id="perf-backward">—</strong></p>
+                            <p>Optimizer: <strong id="perf-optimizer">—</strong></p>
+                            <p>Total: <strong id="perf-total">—</strong></p>
+                        </div>
+                    </article>
+                    <article class="metric-card">
+                        <h3>Train Loss vs Epoch</h3>
+                        <svg id="chart-train-epoch" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+                    </article>
+                    <article class="metric-card">
+                        <h3>Val Loss vs Epoch</h3>
+                        <svg id="chart-val-epoch" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+                    </article>
+                    <article class="metric-card">
+                        <h3>Train Loss vs Batch</h3>
+                        <svg id="chart-train-batch" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+                    </article>
+                </div>
+            </section>
+
+            <section class="panel logs-panel">
+                <h2>Логи</h2>
+                <div id="logs-container" class="log-list"></div>
+            </section>
+        </main>
+
+        <aside class="side-col" id="settings-pane" aria-hidden="false">
+            <div class="panel settings-panel">
+                <h2>Параметры обучения</h2>
+
+                <section class="section">
+                    <h3>Базовые</h3>
+                    <div class="field compact">
+                        <label>{{ settings_form.model.label }}</label>
+                        {{ settings_form.model }}
+                        <datalist id="model-list">
+                            {% for model_value, model_title in model_choices %}
+                                <option value="{{ model_value }}">{{ model_title }}</option>
+                            {% endfor %}
+                        </datalist>
+                        {% if settings_form.model.errors %}<div class="field-error">{{ settings_form.model.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="inline-2">
+                        <div class="field compact">
+                            <label>{{ settings_form.sample_x.label }}</label>
+                            {{ settings_form.sample_x }}
+                            {% if settings_form.sample_x.errors %}<div class="field-error">{{ settings_form.sample_x.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.sample_y.label }}</label>
+                            {{ settings_form.sample_y }}
+                            {% if settings_form.sample_y.errors %}<div class="field-error">{{ settings_form.sample_y.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="field compact">
+                        <label>{{ settings_form.step.label }}</label>
+                        {{ settings_form.step }}
+                        {% if settings_form.step.errors %}<div class="field-error">{{ settings_form.step.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field compact">
+                        <label>{{ settings_form.color_mode.label }}</label>
+                        {{ settings_form.color_mode }}
+                        {% if settings_form.color_mode.errors %}<div class="field-error">{{ settings_form.color_mode.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <label class="check-row">{{ settings_form.horizontal_rotation }} {{ settings_form.horizontal_rotation.label }}</label>
+                    <label class="check-row">{{ settings_form.vertical_rotation }} {{ settings_form.vertical_rotation.label }}</label>
+                </section>
+
+                <section class="section">
+                    <h3>Валидация и датасет</h3>
+                    <label class="check-row">{{ settings_form.shuffle }} {{ settings_form.shuffle.label }}</label>
+                    <label class="check-row">{{ settings_form.use_validation }} {{ settings_form.use_validation.label }}</label>
+                    <div class="field compact" data-role="validation-percent">
+                        <label>{{ settings_form.validation_percent.label }}</label>
+                        {{ settings_form.validation_percent }}
+                        {% if settings_form.validation_percent.errors %}<div class="field-error">{{ settings_form.validation_percent.errors|striptags }}</div>{% endif %}
+                    </div>
+
+                    <div class="radio-col" id="cut-mode-radios">
+                        {% with current_cut=settings_form.sample_cut_mode.value %}
+                            <label class="radio-card">
+                                <input type="radio" name="sample_cut_mode_radio" value="disk" {% if current_cut == 'disk' %}checked{% endif %}>
+                                <span>Нарезка в файл</span>
+                            </label>
+                            <label class="radio-card">
+                                <input type="radio" name="sample_cut_mode_radio" value="online" {% if current_cut == 'online' %}checked{% endif %}>
+                                <span>Нарезка на лету</span>
+                            </label>
+                        {% endwith %}
+                    </div>
+                    <div class="hidden-field">{{ settings_form.sample_cut_mode }}</div>
+                    {% if settings_form.sample_cut_mode.errors %}<div class="field-error">{{ settings_form.sample_cut_mode.errors|striptags }}</div>{% endif %}
+                </section>
+
+                <section class="section">
+                    <h3>Оптимизатор</h3>
+                    <div class="preset-row">
+                        <button type="button" class="preset-btn" data-optimizer="adam" data-lr="0.001" data-wd="0.0">Adam</button>
+                        <button type="button" class="preset-btn" data-optimizer="adamw" data-lr="0.0005" data-wd="0.01">AdamW</button>
+                        <button type="button" class="preset-btn" data-optimizer="adamw_muon" data-lr="0.0003" data-wd="0.02">AdamW + Muon</button>
+                    </div>
+
+                    <div class="field compact">
+                        <label>{{ settings_form.optimizer_name.label }}</label>
+                        {{ settings_form.optimizer_name }}
+                        {% if settings_form.optimizer_name.errors %}<div class="field-error">{{ settings_form.optimizer_name.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field compact">
+                        <label>{{ settings_form.mixed_precision.label }}</label>
+                        {{ settings_form.mixed_precision }}
+                        {% if settings_form.mixed_precision.errors %}<div class="field-error">{{ settings_form.mixed_precision.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="inline-2">
+                        <div class="field compact">
+                            <label>{{ settings_form.learning_rate.label }}</label>
+                            {{ settings_form.learning_rate }}
+                            {% if settings_form.learning_rate.errors %}<div class="field-error">{{ settings_form.learning_rate.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.weight_decay.label }}</label>
+                            {{ settings_form.weight_decay }}
+                            {% if settings_form.weight_decay.errors %}<div class="field-error">{{ settings_form.weight_decay.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="inline-2">
+                        <div class="field compact">
+                            <label>{{ settings_form.batch_size.label }}</label>
+                            {{ settings_form.batch_size }}
+                            {% if settings_form.batch_size.errors %}<div class="field-error">{{ settings_form.batch_size.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.overlap.label }}</label>
+                            {{ settings_form.overlap }}
+                            {% if settings_form.overlap.errors %}<div class="field-error">{{ settings_form.overlap.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <label class="check-row">{{ settings_form.use_multi_gpu }} {{ settings_form.use_multi_gpu.label }}</label>
+                </section>
+                <section class="section">
+                    <h3>Training Strategy</h3>
+                    <label class="check-row">{{ settings_form.warmup_enabled }} {{ settings_form.warmup_enabled.label }}</label>
+                    <div class="inline-2">
+                        <div class="field compact">
+                            <label>{{ settings_form.warmup_epochs.label }}</label>
+                            {{ settings_form.warmup_epochs }}
+                            {% if settings_form.warmup_epochs.errors %}<div class="field-error">{{ settings_form.warmup_epochs.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.warmup_start_factor.label }}</label>
+                            {{ settings_form.warmup_start_factor }}
+                            {% if settings_form.warmup_start_factor.errors %}<div class="field-error">{{ settings_form.warmup_start_factor.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <label class="check-row">{{ settings_form.early_stopping_enabled }} {{ settings_form.early_stopping_enabled.label }}</label>
+                    <div class="inline-2">
+                        <div class="field compact">
+                            <label>{{ settings_form.early_stopping_patience.label }}</label>
+                            {{ settings_form.early_stopping_patience }}
+                            {% if settings_form.early_stopping_patience.errors %}<div class="field-error">{{ settings_form.early_stopping_patience.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.early_stopping_min_delta.label }}</label>
+                            {{ settings_form.early_stopping_min_delta }}
+                            {% if settings_form.early_stopping_min_delta.errors %}<div class="field-error">{{ settings_form.early_stopping_min_delta.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <label class="check-row">{{ settings_form.early_stopping_restore_best_weights }} {{ settings_form.early_stopping_restore_best_weights.label }}</label>
+                    <label class="check-row">{{ settings_form.show_batch_preview }} {{ settings_form.show_batch_preview.label }}</label>
+                </section>
+
+                <section class="section">
+                    <h3>Предобработка</h3>
+                    <label class="check-row">{{ settings_form.additional_processing }} {{ settings_form.additional_processing.label }}</label>
+                    <div class="field compact" data-role="edge-cut">
+                        <label>{{ settings_form.edge_cut_size.label }}</label>
+                        {{ settings_form.edge_cut_size }}
+                        {% if settings_form.edge_cut_size.errors %}<div class="field-error">{{ settings_form.edge_cut_size.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="inline-2" data-role="target-size">
+                        <div class="field compact">
+                            <label>{{ settings_form.target_x.label }}</label>
+                            {{ settings_form.target_x }}
+                            {% if settings_form.target_x.errors %}<div class="field-error">{{ settings_form.target_x.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.target_y.label }}</label>
+                            {{ settings_form.target_y }}
+                            {% if settings_form.target_y.errors %}<div class="field-error">{{ settings_form.target_y.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </aside>
+    </div>
+</div>
+
+<script src="{% static 'webui/dashboard.js' %}"></script>
+</body>
+</html>

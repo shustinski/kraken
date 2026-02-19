@@ -1,6 +1,7 @@
 ﻿# presenter/main_presenter.py
 import multiprocessing as mp
 import gc
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
@@ -14,7 +15,14 @@ from model.NeuralNetwork import get_registered_models
 from model.general_neural_handler import GeneralNeuralHandler
 from view import MainView, SettingsPanel
 from view.window_dataclasses import MainWindowState, SettingsState
-from lib.data_interfaces import CutSettings, SampleCutMode, WorkMode, TrainingParameters, RecognitionParameters
+from lib.data_interfaces import (
+    CutSettings,
+    SampleCutMode,
+    WorkMode,
+    TrainingParameters,
+    RecognitionParameters,
+    normalize_work_mode,
+)
 
 from lib.images import SampleWorker
 from presenter.state_store import (
@@ -131,6 +139,7 @@ class MainPresenter(QObject):
         v.sample_size_changed.connect(self._set_max_shift)
         v.optimizer_settings_changed.connect(self._update_settings_window_state)
         v.validation_settings_changed.connect(self._update_settings_window_state)
+        v.reset_defaults_requested.connect(self._reset_settings_to_defaults)
 
     # ------------------------------------------------------------------ #
     #   Инициализация UI
@@ -145,6 +154,7 @@ class MainPresenter(QObject):
         self._apply_settings_to_panel()
         self.view.set_batch_preview_enabled(self.settings_state.show_batch_preview)
         self.settings_panel.set_model(self.settings_state.model)
+        self._restore_work_mode_ui()
 
         self.settings_panel.connect_internal_signals()
         self.view.connect_internal_signals()
@@ -185,6 +195,21 @@ class MainPresenter(QObject):
                                                  model_path=model_path,
                                                  epochs=epochs)
 
+    def _restore_work_mode_ui(self):
+        mode = normalize_work_mode(getattr(self.main_window_state, 'work_mode', ''))
+        v = self.view
+        mode_to_button = {
+            WorkMode.train_and_recognition.value: v.rb_train_and_recognition,
+            WorkMode.train_only.value: v.rb_train_only,
+            WorkMode.further_training.value: v.rb_further_train_model,
+            WorkMode.recognition_only.value: v.rb_recognition,
+        }
+        if mode not in mode_to_button:
+            mode = WorkMode.train_and_recognition.value
+            self.main_window_state.work_mode = mode
+        mode_to_button[mode].setChecked(True)
+        self._on_sample_type_changed(mode)
+
     def _apply_settings_to_panel(self) -> None:
         """
         Populate the widgets in ``self.settings_panel`` with the values stored in
@@ -221,6 +246,13 @@ class MainPresenter(QObject):
         # 3.1 Check-box (bool)
         s.horizontal_rotation.setChecked(state.horizontal_rotation)
         s.vertical_rotation.setChecked(state.vertical_rotation)
+        s.additional_augmentation_check_box.setChecked(state.additional_augmentation)
+        s.augmentation_brightness_spinbox.setValue(state.augmentation_brightness_strength)
+        s.augmentation_contrast_spinbox.setValue(state.augmentation_contrast_strength)
+        s.augmentation_noise_probability_spinbox.setValue(state.augmentation_noise_probability)
+        s.augmentation_noise_sigma_spinbox.setValue(state.augmentation_noise_sigma)
+        if hasattr(s, '_sync_augmentation_controls'):
+            s._sync_augmentation_controls(state.additional_augmentation)
 
         # 3.2  Spin boxes (int/float)
         s.shift_spinbox.setValue(state.step)
@@ -243,8 +275,14 @@ class MainPresenter(QObject):
         # 3.6 Размер батча / overlap
         s.batch_spinbox.setValue(state.batch_size)
         s.overlap_spinbox.setValue(state.overlap)
+        s.log_update_frequency_spinbox.setValue(state.log_update_frequency)
         s.optimizer_type.setCurrentText(state.optimizer_name)
         s.mixed_precision_type.setCurrentText(state.mixed_precision)
+        s.loss_function_type.setCurrentText(state.loss_function)
+        s.dice_loss_weight_spinbox.setValue(state.dice_loss_weight)
+        s.iou_loss_weight_spinbox.setValue(state.iou_loss_weight)
+        if hasattr(s, '_sync_loss_controls'):
+            s._sync_loss_controls(s.loss_function_type.currentIndex())
         s.learning_rate_spinbox.setValue(state.learning_rate)
         s.weight_decay_spinbox.setValue(state.weight_decay)
         s.early_stopping_check_box.setChecked(state.early_stopping_enabled)
@@ -254,12 +292,25 @@ class MainPresenter(QObject):
         s.warmup_check_box.setChecked(state.warmup_enabled)
         s.warmup_epochs_spinbox.setValue(state.warmup_epochs)
         s.warmup_start_factor_spinbox.setValue(state.warmup_start_factor)
+        s.hard_mining_check_box.setChecked(state.hard_mining_enabled)
+        s.hard_mining_strength_spinbox.setValue(state.hard_mining_strength)
+        s.hard_mining_ema_alpha_spinbox.setValue(state.hard_mining_ema_alpha)
+        s.skip_uniform_labels_check_box.setChecked(state.skip_uniform_labels)
         s.multi_gpu_check_box.setChecked(state.use_multi_gpu)
-        if hasattr(self, 'view') and hasattr(self.view, 'set_batch_preview_enabled'):
-            self.view.set_batch_preview_enabled(state.show_batch_preview)
+        s.torch_compile_check_box.setChecked(state.torch_compile_enabled)
+        view = self.__dict__.get('view')
+        if view is not None and hasattr(view, 'set_batch_preview_enabled'):
+            view.set_batch_preview_enabled(state.show_batch_preview)
 
-        # 3.7  Additional processing flag
-        s.enable_additional_processing.setChecked(state.additional_processing)
+        # 3.7  Additional processing flags
+        s.enable_crop_processing.setChecked(state.crop_enabled)
+        s.enable_resize_processing.setChecked(state.resize_enabled)
+        if hasattr(s, '_sync_preprocess_controls'):
+            s._sync_preprocess_controls()
+        if hasattr(s, 'sync_business_logic_controls'):
+            main_state = self.__dict__.get('main_window_state')
+            work_mode = getattr(main_state, 'work_mode', '')
+            s.sync_business_logic_controls(work_mode)
 
         # 3.8 Размер обрезки по краям
         s.cut_corner_spinbox.setValue(state.edge_cut_size)
@@ -275,7 +326,7 @@ class MainPresenter(QObject):
         elif v.rb_train_only.isChecked():
             return WorkMode.train_only.value
         elif v.rb_further_train_model.isChecked():
-            return WorkMode.futher_training.value
+            return WorkMode.further_training.value
         elif v.rb_recognition.isChecked():
             return WorkMode.recognition_only.value
         else:
@@ -286,6 +337,11 @@ class MainPresenter(QObject):
 
         h = s.horizontal_rotation.isChecked()
         v = s.vertical_rotation.isChecked()
+        additional_augmentation = s.additional_augmentation_check_box.isChecked()
+        augmentation_brightness_strength = s.augmentation_brightness_spinbox.value()
+        augmentation_contrast_strength = s.augmentation_contrast_spinbox.value()
+        augmentation_noise_probability = s.augmentation_noise_probability_spinbox.value()
+        augmentation_noise_sigma = s.augmentation_noise_sigma_spinbox.value()
         step = s.shift_spinbox.value()
         sample_size = (s.sample_x_size.value(), s.sample_y_size.value())
         model = s.nn_model_type.currentText()
@@ -295,8 +351,12 @@ class MainPresenter(QObject):
         cut_mode = self._update_cut_mode()
         batch_size = s.batch_spinbox.value()
         overlap = s.overlap_spinbox.value()
+        log_update_frequency = s.log_update_frequency_spinbox.value()
         optimizer_name = s.optimizer_type.currentText()
         mixed_precision = s.mixed_precision_type.currentText()
+        loss_function = s.loss_function_type.currentText()
+        dice_loss_weight = s.dice_loss_weight_spinbox.value()
+        iou_loss_weight = s.iou_loss_weight_spinbox.value()
         learning_rate = s.learning_rate_spinbox.value()
         weight_decay = s.weight_decay_spinbox.value()
         early_stopping_enabled = s.early_stopping_check_box.isChecked()
@@ -306,20 +366,35 @@ class MainPresenter(QObject):
         warmup_enabled = s.warmup_check_box.isChecked()
         warmup_epochs = s.warmup_epochs_spinbox.value()
         warmup_start_factor = s.warmup_start_factor_spinbox.value()
+        hard_mining_enabled = s.hard_mining_check_box.isChecked()
+        hard_mining_strength = s.hard_mining_strength_spinbox.value()
+        hard_mining_ema_alpha = s.hard_mining_ema_alpha_spinbox.value()
+        skip_uniform_labels = s.skip_uniform_labels_check_box.isChecked()
         use_multi_gpu = s.multi_gpu_check_box.isChecked()
+        torch_compile_enabled = s.torch_compile_check_box.isChecked()
         show_batch_preview = self.view.is_batch_preview_enabled()
-        additional_processing = s.enable_additional_processing.isChecked()
+        crop_enabled = s.enable_crop_processing.isChecked()
+        resize_enabled = s.enable_resize_processing.isChecked()
         edge_cut_size = s.cut_corner_spinbox.value()
         target_size = (s.target_x_size.value(), s.target_y_size.value())
 
-        state = SettingsState(step=step, vertical_rotation=v, horizontal_rotation=h, sample_size=sample_size,
+        state = SettingsState(step=step, vertical_rotation=v, horizontal_rotation=h,
+                              additional_augmentation=additional_augmentation,
+                              augmentation_brightness_strength=augmentation_brightness_strength,
+                              augmentation_contrast_strength=augmentation_contrast_strength,
+                              augmentation_noise_probability=augmentation_noise_probability,
+                              augmentation_noise_sigma=augmentation_noise_sigma,
+                              sample_size=sample_size,
                               model=model, color_mode=color_mode, use_validation=validation,
                               validation_percent=validation_percent,
                               sample_cut_mode=cut_mode, batch_size=batch_size, overlap=overlap,
-                              additional_processing=additional_processing, edge_cut_size=edge_cut_size,
+                              crop_enabled=crop_enabled, resize_enabled=resize_enabled, edge_cut_size=edge_cut_size,
                               target_size=target_size,
                               optimizer_name=optimizer_name,
                               mixed_precision=mixed_precision,
+                              loss_function=loss_function,
+                              dice_loss_weight=dice_loss_weight,
+                              iou_loss_weight=iou_loss_weight,
                               learning_rate=learning_rate,
                               weight_decay=weight_decay,
                               early_stopping_enabled=early_stopping_enabled,
@@ -329,7 +404,13 @@ class MainPresenter(QObject):
                               warmup_enabled=warmup_enabled,
                               warmup_epochs=warmup_epochs,
                               warmup_start_factor=warmup_start_factor,
+                              hard_mining_enabled=hard_mining_enabled,
+                              hard_mining_strength=hard_mining_strength,
+                              hard_mining_ema_alpha=hard_mining_ema_alpha,
+                              log_update_frequency=log_update_frequency,
+                              skip_uniform_labels=skip_uniform_labels,
                               use_multi_gpu=use_multi_gpu,
+                              torch_compile_enabled=torch_compile_enabled,
                               show_batch_preview=show_batch_preview)
 
         self.settings_state = state
@@ -379,6 +460,14 @@ class MainPresenter(QObject):
         self.settings_state = state
         save_settings_state(state)
 
+    def _reset_settings_to_defaults(self):
+        self.settings_state = SettingsState()
+        self._apply_settings_to_panel()
+        self._update_settings_window_state()
+        self._set_max_shift()
+        self._calculate_expected_samples()
+        self._validate_start_button()
+
     def _choose_source_folder(self):
         path = _tk_filedialog('folder')
         if path:
@@ -417,7 +506,7 @@ class MainPresenter(QObject):
             self._validate_start_button()
 
     def _on_sample_type_changed(self, typ: str):
-        """typ = ''train_and_recognition'', 'recognintion_only', futher_training."""
+        """typ = ''train_and_recognition'', 'recognition_only', further_training."""
         v = self.view
 
         v.lbl_source.setEnabled(True)
@@ -435,6 +524,8 @@ class MainPresenter(QObject):
                 v.lbl_result.setEnabled(False)
                 v.model_path.setEnabled(False)
         self.main_window_state.work_mode = typ
+        if hasattr(self.settings_panel, 'sync_business_logic_controls'):
+            self.settings_panel.sync_business_logic_controls(typ)
         self._validate_start_button()
 
     def _on_start_requested(self):
@@ -525,6 +616,11 @@ class MainPresenter(QObject):
         self._start_task(next_task)
 
     def _start_task(self, task: QueuedTask):
+        os.environ['NEURALIMAGE_TORCH_COMPILE'] = '1' if task.settings_state.torch_compile_enabled else '0'
+        self.message_bus.publish(
+            'logging',
+            f'torch.compile {"enabled" if task.settings_state.torch_compile_enabled else "disabled"} by UI setting.',
+        )
         work_mode, training_settings, recognition_parameters = build_workflow_parameters(
             task.main_window_state, task.settings_state
         )
@@ -593,7 +689,8 @@ class MainPresenter(QObject):
                            vertical_rotation=s.vertical_rotation,
                            horizontal_rotation=s.horizontal_rotation,
                            color_mode=s.color_mode,
-                           model=s.model
+                           model=s.model,
+                           additional_augmentation=s.additional_augmentation,
                            )
 
     def _set_sample_number(self):

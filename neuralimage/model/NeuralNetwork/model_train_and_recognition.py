@@ -1,25 +1,20 @@
-﻿import os
+import os
 import datetime
 import time
 import socket
 import sys
+import importlib.util
 from dataclasses import dataclass
-from time import sleep
 from pathlib import Path
-from queue import Empty
-import os
 
 from collections.abc import Callable, Sized
 from contextlib import nullcontext
-from multiprocessing.synchronize import Event as MpEvent
 from typing import Any, ContextManager, Protocol, cast
 
 import multiprocessing as mp
 import threading
 
 import numpy as np
-from PIL import Image
-
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -41,12 +36,28 @@ from lib.data_interfaces import (
 )
 from lib.file_func import filter_images
 from lib.func import get_input_channels
-from lib.image_processing import cut_image, sew_image
-from lib.images import save_color
 from lib.message_bus import AbstractMessageBus
+from model.NeuralNetwork.model_io import load_model_artifact, save_model_artifact
+from model.NeuralNetwork.recognition_pipeline import (
+    RecognitionWorkload,
+    WorkerCounts,
+    cut_image_prepare as _cut_image_prepare,
+    create_batches as _create_batches,
+    cut_image_process as _cut_image_process,
+    get_array_from_image as _get_array_from_image,
+    gpu_predict as _gpu_predict,
+    imgpredict as _imgpredict,
+    imgsew as _imgsew,
+    run_multiprocessing_recognition,
+    run_single_thread_recognition,
+    sew as _sew,
+    sew_from_queue as _sew_from_queue,
+)
 
 CHECKPOINT_SUFFIX = '.ckpt'
 STOP_TOKEN = '__STOP__'
+# Global profiler switch (set in code, not via env var).
+TRAINING_PROFILER_ENABLED = False
 
 
 class _NoOpQueue:
@@ -61,6 +72,134 @@ def _ddp_worker_entry(rank: int, trainer: 'TrainerProcess', world_size: int, mas
 class _SupportsSetEpoch(Protocol):
     def set_epoch(self) -> None:
         ...
+
+
+class _SupportsLossAwareSampling(Protocol):
+    strength: float
+    ema_alpha: float
+
+    def update_batch_losses(self, sample_indices: torch.Tensor, sample_losses: torch.Tensor) -> None:
+        ...
+
+
+@dataclass(frozen=True)
+class _TrainLoopStrides:
+    metric: int
+    progress: int
+    log: int
+    preview: int
+
+
+@dataclass
+class _EpochStats:
+    train_loss: float = 0.0
+    train_samples_count: int = 0
+    skipped_uniform_count: int = 0
+    data_wait_ms: float = 0.0
+    forward_ms: float = 0.0
+    backward_ms: float = 0.0
+    optimizer_ms: float = 0.0
+    total_ms: float = 0.0
+
+    def add_batch(
+        self,
+        *,
+        batch_samples: int,
+        batch_loss: float,
+        data_wait_ms: float,
+        forward_ms: float,
+        backward_ms: float,
+        optimizer_ms: float,
+        total_ms: float,
+    ) -> None:
+        self.train_loss += batch_loss * batch_samples
+        self.train_samples_count += int(batch_samples)
+        self.data_wait_ms += data_wait_ms
+        self.forward_ms += forward_ms
+        self.backward_ms += backward_ms
+        self.optimizer_ms += optimizer_ms
+        self.total_ms += total_ms
+
+
+@dataclass
+class _EarlyStoppingState:
+    best_loss: float | None = None
+    bad_epochs: int = 0
+    best_epoch: int = 0
+    best_model_state: dict[str, torch.Tensor] | None = None
+
+
+@dataclass(frozen=True)
+class _EarlyStoppingConfig:
+    enabled: bool
+    patience: int
+    min_delta: float
+
+
+@dataclass(frozen=True)
+class _RunContext:
+    bce_criterion: nn.Module
+    optimizer: Any
+    scaler: Any
+    autocast_ctx: Callable[[], ContextManager[Any]]
+    scheduler: Any
+    train_size: int
+    train_sampler: Any
+    supports_loss_aware_sampling: bool
+    strides: _TrainLoopStrides
+
+
+@dataclass(frozen=True)
+class _TrainingProfilerConfig:
+    enabled: bool
+    max_batches: int
+    record_shapes: bool
+    profile_memory: bool
+    with_stack: bool
+    row_limit: int
+    output_dir_name: str
+
+
+@dataclass
+class _ActiveTrainProfiler:
+    profiler: Any
+    steps_left: int
+    trace_path: Path
+    summary_sort_key: str
+    row_limit: int
+    is_closed: bool = False
+
+
+@dataclass
+class _PreparedTrainBatch:
+    data: Any
+    target: Any
+    sample_indices: Any
+    image: torch.Tensor
+    label: torch.Tensor
+    batch_start: float
+    data_wait_ms: float
+
+
+@dataclass
+class _TrainStepResult:
+    outputs: torch.Tensor
+    per_sample_loss: torch.Tensor
+    batch_loss: float
+    batch_samples: int
+    forward_ms: float
+    backward_ms: float
+    optimizer_ms: float
+
+
+@dataclass(frozen=True)
+class _TrainingRuntimeState:
+    is_main_process: bool
+    run_context: _RunContext
+    start_epoch: int
+    early_stopping_state: _EarlyStoppingState
+    early_stopping_config: _EarlyStoppingConfig
+    active_profiler: _ActiveTrainProfiler | None
 
 
 def _release_torch_memory() -> None:
@@ -106,17 +245,58 @@ def _collect_memory_metrics() -> dict[str, float] | None:
     return payload
 
 
+def _is_module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
+_TORCH_COMPILE_MODES = {'default', 'reduce-overhead', 'max-autotune'}
+_MAX_AUTOTUNE_MIN_SMS = 68
+
+
+def _resolve_torch_compile_mode(
+    target_device_type: str,
+    device: torch.device | None = None,
+) -> tuple[str, str]:
+    raw_mode = str(os.getenv('NEURALIMAGE_TORCH_COMPILE_MODE', '')).strip().lower()
+    if raw_mode in _TORCH_COMPILE_MODES:
+        return raw_mode, 'env'
+
+    if target_device_type != 'cuda' or not torch.cuda.is_available():
+        return 'default', 'device'
+
+    try:
+        if device is not None and device.type == 'cuda' and device.index is not None:
+            props = torch.cuda.get_device_properties(device.index)
+        else:
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        sm_count = int(getattr(props, 'multi_processor_count', 0))
+    except Exception:
+        return 'default', 'fallback'
+
+    if sm_count < _MAX_AUTOTUNE_MIN_SMS:
+        return 'reduce-overhead', f'sm={sm_count}'
+    return 'max-autotune', f'sm={sm_count}'
+
+
 class ModelTrainer(threading.Thread):
     def __init__(self,train_dataloader:DataLoader, val_dataloader:DataLoader | None,
                  model:nn.Module, save_path:Path,epochs:int, message_bus:AbstractMessageBus,
                  callback:Callable[..., None]|None = None,
                  optimizer_params: OptimizerParameters | None = None,
                  mixed_precision: MixedPrecisionMode = MixedPrecisionMode.bf16,
+                 loss_function: str = 'bce',
+                 dice_loss_weight: float = 0.5,
+                 iou_loss_weight: float = 0.5,
                  early_stopping_params: EarlyStoppingParameters | None = None,
                  warmup_params: WarmupParameters | None = None,
+                 skip_uniform_labels: bool = False,
                  resume_from_checkpoint: bool = False,
                  use_multi_gpu: bool = True,
-                 show_batch_preview: bool = True):
+                 show_batch_preview: bool = True,
+                 log_update_frequency: int = 0):
         super().__init__()
         self._train_dataloader = train_dataloader
         self._val_dataloader = val_dataloader
@@ -127,84 +307,127 @@ class ModelTrainer(threading.Thread):
         self.callback = callback
         self._optimizer_params = optimizer_params or OptimizerParameters()
         self._mixed_precision = mixed_precision
+        self._loss_function = str(loss_function or 'bce').strip().lower()
+        self._dice_loss_weight = float(dice_loss_weight)
+        self._iou_loss_weight = float(iou_loss_weight)
         self._early_stopping_params = early_stopping_params or EarlyStoppingParameters()
         self._warmup_params = warmup_params or WarmupParameters()
+        self._skip_uniform_labels = bool(skip_uniform_labels)
         self._resume_from_checkpoint = resume_from_checkpoint
         self._use_multi_gpu = use_multi_gpu
         self._show_batch_preview = show_batch_preview
+        self._log_update_frequency = max(0, int(log_update_frequency))
         self._stop_event = threading.Event()
         self.message_queue = mp.Queue()
         self.succeeded = False
         self.error_message: str | None = None
 
 
-    def run(self):
-        training_process = None
-        try:
-            if self._train_dataloader is None or self._model is None:
-                self.error_message = 'Ошибка: отсутствуют данные обучения или модель для запуска процесса.'
+    def _validate_training_inputs(self) -> bool:
+        if self._train_dataloader is not None and self._model is not None:
+            return True
+        self.error_message = 'Error: training data or model is missing for process startup.'
+        self._bus.publish('error', self.error_message)
+        return False
+
+    def _create_training_process(self) -> 'TrainerProcess':
+        train_dataloader = cast(DataLoader, self._train_dataloader)
+        val_dataloader = cast(DataLoader | None, self._val_dataloader)
+        model = cast(nn.Module, self._model)
+        return TrainerProcess(
+            train_dataloader,
+            val_dataloader,
+            model,
+            self._save_path,
+            self._epochs,
+            self.message_queue,
+            optimizer_params=self._optimizer_params,
+            mixed_precision=self._mixed_precision,
+            loss_function=self._loss_function,
+            dice_loss_weight=self._dice_loss_weight,
+            iou_loss_weight=self._iou_loss_weight,
+            early_stopping_params=self._early_stopping_params,
+            warmup_params=self._warmup_params,
+            skip_uniform_labels=self._skip_uniform_labels,
+            resume_from_checkpoint=self._resume_from_checkpoint,
+            use_multi_gpu=self._use_multi_gpu,
+            show_batch_preview=self._show_batch_preview,
+            log_update_frequency=self._log_update_frequency,
+        )
+
+    @staticmethod
+    def _elapsed_suffix(since: float) -> str:
+        elapsed_seconds = int(max(0.0, time.perf_counter() - since))
+        elapsed_hours, remainder = divmod(elapsed_seconds, 3600)
+        elapsed_minutes, elapsed_secs = divmod(remainder, 60)
+        return f' Прошло: {elapsed_hours:02d}:{elapsed_minutes:02d}:{elapsed_secs:02d}'
+
+    def _publish_training_message(
+        self,
+        message: Any,
+        *,
+        append_elapsed_suffix: bool,
+        last_message_at: float,
+    ) -> float:
+        topic, payload = message[0], message[1]
+        now = time.perf_counter()
+        if append_elapsed_suffix and isinstance(payload, str) and topic != 'error':
+            payload = payload + self._elapsed_suffix(last_message_at)
+        if topic == 'error' and isinstance(payload, str):
+            self.error_message = payload
+        self._bus.publish(topic, payload)
+        return now
+
+    def _drain_training_queue(self, *, append_elapsed_suffix: bool, last_message_at: float) -> float:
+        while not self.message_queue.empty():
+            queued_message = self.message_queue.get()
+            last_message_at = self._publish_training_message(
+                queued_message,
+                append_elapsed_suffix=append_elapsed_suffix,
+                last_message_at=last_message_at,
+            )
+        return last_message_at
+
+    def _finalize_training_result(self, training_process: Any) -> bool:
+        if self._stop_event.is_set():
+            self.succeeded = False
+            return False
+        exit_code = training_process.exitcode if training_process is not None else 1
+        if exit_code not in (0, None):
+            if self.error_message is None:
+                self.error_message = f'Training error: process exited with code {exit_code}.'
                 self._bus.publish('error', self.error_message)
+            self.succeeded = False
+            return False
+        self.succeeded = True
+        if self.callback is not None:
+            self.callback()
+        print('Model saved successfully!')
+        return True
+
+    def run(self):
+        training_process: Any = None
+        try:
+            if not self._validate_training_inputs():
                 return
 
-            train_dataloader = cast(DataLoader, self._train_dataloader)
-            val_dataloader = cast(DataLoader | None, self._val_dataloader)
-            model = cast(nn.Module, self._model)
-
-            training_process = TrainerProcess(train_dataloader, val_dataloader, model,
-                                              self._save_path, self._epochs, self.message_queue,
-                                              optimizer_params=self._optimizer_params,
-                                              mixed_precision=self._mixed_precision,
-                                              early_stopping_params=self._early_stopping_params,
-                                              warmup_params=self._warmup_params,
-                                              resume_from_checkpoint=self._resume_from_checkpoint,
-                                              use_multi_gpu=self._use_multi_gpu,
-                                              show_batch_preview=self._show_batch_preview)
+            training_process = self._create_training_process()
             training_process.start()
-            current_time = time.perf_counter()
+
+            last_message_at = time.perf_counter()
             while training_process.is_alive():
                 if self._stop_event.is_set():
                     training_process.kill()
                     break
-                if not self.message_queue.empty():
-                    new_message = self.message_queue.get()
-                    elapsed_seconds = int(time.perf_counter() - current_time)
-                    elapsed_hours, remainder = divmod(elapsed_seconds, 3600)
-                    elapsed_minutes, elapsed_secs = divmod(remainder, 60)
-                    elapsed_suffix = f' Время с прошлого сообщения: {elapsed_hours:02d}:{elapsed_minutes:02d}:{elapsed_secs:02d}'
-                    payload = new_message[1]
-                    if isinstance(payload, str) and new_message[0] != 'error':
-                        payload = payload + elapsed_suffix
-                    if new_message[0] == 'error' and isinstance(payload, str):
-                        self.error_message = payload
-                    self._bus.publish(new_message[0], payload)
+                last_message_at = self._drain_training_queue(
+                    append_elapsed_suffix=True,
+                    last_message_at=last_message_at,
+                )
                 time.sleep(1)
 
             training_process.join()
-
-            while not self.message_queue.empty():
-                queued_message = self.message_queue.get()
-                topic = queued_message[0]
-                payload = queued_message[1]
-                if topic == 'error' and isinstance(payload, str):
-                    self.error_message = payload
-                self._bus.publish(topic, payload)
-
-            if self._stop_event.is_set():
-                self.succeeded = False
-                return
-
-            exit_code = training_process.exitcode if training_process is not None else 1
-            if exit_code not in (0, None):
-                if self.error_message is None:
-                    self.error_message = f'Ошибка обучения: процесс завершился с кодом {exit_code}.'
-                    self._bus.publish('error', self.error_message)
-                self.succeeded = False
-                return
-
-            self.succeeded = True
-            if self.callback is not None:
-                self.callback()
-            print("Model saved successfully!")
+            self._drain_training_queue(append_elapsed_suffix=False, last_message_at=last_message_at)
+            self._finalize_training_result(training_process)
         finally:
             if training_process is not None and training_process.is_alive():
                 training_process.kill()
@@ -228,11 +451,16 @@ class TrainerProcess(mp.Process):
                  callback:Callable[...,None]|None = None,
                  optimizer_params: OptimizerParameters | None = None,
                  mixed_precision: MixedPrecisionMode = MixedPrecisionMode.bf16,
+                 loss_function: str = 'bce',
+                 dice_loss_weight: float = 0.5,
+                 iou_loss_weight: float = 0.5,
                  early_stopping_params: EarlyStoppingParameters | None = None,
                  warmup_params: WarmupParameters | None = None,
+                 skip_uniform_labels: bool = False,
                  resume_from_checkpoint: bool = False,
                  use_multi_gpu: bool = True,
-                 show_batch_preview: bool = True):
+                 show_batch_preview: bool = True,
+                 log_update_frequency: int = 0):
         super().__init__()
         self._train_dataloader = train_dataloader
         self._val_dataloader = val_dataloader
@@ -243,11 +471,17 @@ class TrainerProcess(mp.Process):
         self.callback = callback
         self._optimizer_params = optimizer_params or OptimizerParameters()
         self._mixed_precision = mixed_precision
+        self._loss_function = str(loss_function or 'bce').strip().lower()
+        self._dice_loss_weight = float(dice_loss_weight)
+        self._iou_loss_weight = float(iou_loss_weight)
         self._early_stopping_params = early_stopping_params or EarlyStoppingParameters()
         self._warmup_params = warmup_params or WarmupParameters()
+        self._skip_uniform_labels = bool(skip_uniform_labels)
         self._resume_from_checkpoint = resume_from_checkpoint
         self._use_multi_gpu = use_multi_gpu
         self._show_batch_preview = show_batch_preview
+        self._log_update_frequency = max(0, int(log_update_frequency))
+        self._training_profiler_config = self._resolve_training_profiler_config()
 
     @property
     def _base_model(self) -> nn.Module:
@@ -255,6 +489,23 @@ class TrainerProcess(mp.Process):
         if isinstance(self._model, (DDP, nn.DataParallel)):
             return self._model.module
         return self._model
+
+    def _resolve_model_artifact_metadata(self) -> tuple[str, int]:
+        base_model = self._base_model
+        model_name = str(getattr(base_model, '_neuralimage_model_name', base_model.__class__.__name__))
+        input_channels = getattr(base_model, '_neuralimage_input_channels', None)
+        if input_channels is None:
+            input_channels = get_input_channels(base_model)
+        return model_name, int(input_channels)
+
+    def _save_model_artifact(self) -> None:
+        model_name, input_channels = self._resolve_model_artifact_metadata()
+        save_model_artifact(
+            self._base_model,
+            self._save_path,
+            model_name=model_name,
+            input_channels=input_channels,
+        )
 
     @staticmethod
     def _find_free_port() -> int:
@@ -306,7 +557,21 @@ class TrainerProcess(mp.Process):
             return False
         if not torch.cuda.is_available():
             return False
-        return torch.cuda.device_count() > 1
+        if torch.cuda.device_count() <= 1:
+            return False
+        if os.name == 'nt':
+            # On Windows, DDP+gloo can hang during rendezvous on some setups.
+            return False
+        return True
+
+    def _should_use_data_parallel(self) -> bool:
+        if not self._use_multi_gpu:
+            return False
+        if not torch.cuda.is_available():
+            return False
+        if torch.cuda.device_count() <= 1:
+            return False
+        return os.name == 'nt'
 
     def _run_ddp(self, world_size: int) -> None:
         master_port = self._find_free_port()
@@ -324,7 +589,13 @@ class TrainerProcess(mp.Process):
         backend = 'nccl'
         if os.name == 'nt' or not dist.is_nccl_available():
             backend = 'gloo'
-        dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+        dist.init_process_group(
+            backend=backend,
+            rank=rank,
+            world_size=world_size,
+            init_method=f'tcp://127.0.0.1:{master_port}',
+            timeout=datetime.timedelta(seconds=120),
+        )
         try:
             torch.cuda.set_device(rank)
             device = torch.device(f'cuda:{rank}')
@@ -354,7 +625,7 @@ class TrainerProcess(mp.Process):
                 )
 
             self._model.to(device)
-            self._try_compile_model(is_main_process=(rank == 0))
+            self._try_compile_model(is_main_process=(rank == 0), device=device)
             self._model = DDP(self._model, device_ids=[rank], output_device=rank)
             self._run_impl(device=device, rank=rank, world_size=world_size, distributed=True)
         finally:
@@ -402,7 +673,7 @@ class TrainerProcess(mp.Process):
             return 0, {}
 
         try:
-            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
             model_state = checkpoint.get('model_state_dict')
             optimizer_state = checkpoint.get('optimizer_state_dict')
             scaler_state = checkpoint.get('scaler_state_dict')
@@ -455,10 +726,55 @@ class TrainerProcess(mp.Process):
             return start_epoch + int(self._epochs)
         return int(self._epochs)
 
+    def _resolved_loss_function(self) -> str:
+        if self._loss_function in ('bce', 'dice', 'bce_dice', 'iou', 'bce_iou'):
+            return self._loss_function
+        return 'bce'
+
+    def _resolved_dice_weight(self) -> float:
+        return float(min(max(self._dice_loss_weight, 0.0), 1.0))
+
+    def _resolved_iou_weight(self) -> float:
+        return float(min(max(self._iou_loss_weight, 0.0), 1.0))
+
+    def _compute_per_sample_loss(
+        self,
+        outputs: torch.Tensor,
+        label: torch.Tensor,
+        bce_criterion: nn.Module,
+    ) -> torch.Tensor:
+        loss_mode = self._resolved_loss_function()
+        bce_per_sample = cast(torch.Tensor, bce_criterion(outputs, label)).view(outputs.shape[0], -1).mean(dim=1)
+        if loss_mode == 'bce':
+            return bce_per_sample
+
+        probs = torch.sigmoid(outputs)
+        probs_flat = probs.view(probs.shape[0], -1)
+        label_flat = label.view(label.shape[0], -1)
+        eps = 1e-6
+        intersection = (probs_flat * label_flat).sum(dim=1)
+        denom = probs_flat.sum(dim=1) + label_flat.sum(dim=1)
+        dice = (2.0 * intersection + eps) / (denom + eps)
+        dice_per_sample = 1.0 - dice
+        union = probs_flat.sum(dim=1) + label_flat.sum(dim=1) - intersection
+        iou = (intersection + eps) / (union + eps)
+        iou_per_sample = 1.0 - iou
+        if loss_mode == 'dice':
+            return dice_per_sample
+        if loss_mode == 'iou':
+            return iou_per_sample
+
+        if loss_mode == 'bce_dice':
+            dice_weight = self._resolved_dice_weight()
+            return ((1.0 - dice_weight) * bce_per_sample) + (dice_weight * dice_per_sample)
+
+        iou_weight = self._resolved_iou_weight()
+        return ((1.0 - iou_weight) * bce_per_sample) + (iou_weight * iou_per_sample)
+
     def _run_validation_epoch(
         self,
         device: torch.device,
-        criterion: nn.Module,
+        bce_criterion: nn.Module,
         autocast_ctx: Callable[[], ContextManager[Any]],
     ) -> dict[str, float] | None:
         if self._val_dataloader is None:
@@ -480,7 +796,8 @@ class TrainerProcess(mp.Process):
                 label = target.to(device, non_blocking=True)
                 with autocast_ctx():
                     outputs = self._model(image)
-                    loss = criterion(outputs, label)
+                    per_sample_loss = self._compute_per_sample_loss(outputs, label, bce_criterion)
+                    loss = per_sample_loss.mean()
 
                 val_loss += loss.item() * image.size(0)
                 probs = torch.sigmoid(outputs)
@@ -636,7 +953,7 @@ class TrainerProcess(mp.Process):
         if muon_cls is None:
             self._bus.put([
                 'logging',
-                'Оптимизатор Muon недоступен. Используется AdamW.',
+                'Muon optimizer is unavailable. Using AdamW.',
             ])
             return self._create_adamw_optimizer(params)
 
@@ -663,23 +980,51 @@ class TrainerProcess(mp.Process):
             arr = np.zeros_like(arr)
         return np.clip(arr, 0, 255).astype(np.uint8)
 
-    def _try_compile_model(self, is_main_process: bool = True) -> None:
+    def _try_compile_model(self, is_main_process: bool = True, device: torch.device | None = None) -> None:
         if bool(getattr(sys, 'frozen', False)):
             if is_main_process:
                 self._bus.put(['logging', 'torch.compile отключен в сборке PyInstaller.'])
+            return
+        if isinstance(self._model, nn.DataParallel):
+            if is_main_process:
+                self._bus.put(['logging', 'torch.compile skipped: nn.DataParallel model wrapper is active.'])
+            return
+        if not self._env_bool('NEURALIMAGE_TORCH_COMPILE', True):
+            if is_main_process:
+                self._bus.put(['logging', 'torch.compile disabled by NEURALIMAGE_TORCH_COMPILE=0.'])
             return
         compile_fn = getattr(torch, 'compile', None)
         if compile_fn is None:
             if is_main_process:
                 self._bus.put(['logging', 'torch.compile недоступен в этой версии PyTorch.'])
             return
-        try:
-            self._model = compile_fn(self._model, mode='max-autotune', dynamic=False)
+        target_device_type = device.type if device is not None else ('cuda' if torch.cuda.is_available() else 'cpu')
+        if target_device_type == 'cuda' and not _is_module_available('triton'):
             if is_main_process:
-                self._bus.put(['logging', 'Включен torch.compile (mode=max-autotune).'])
+                self._bus.put(['logging', 'torch.compile disabled: Triton is not installed for CUDA backend.'])
+            return
+        try:
+            compile_mode, mode_reason = _resolve_torch_compile_mode(target_device_type, device)
+            self._model = compile_fn(self._model, mode=compile_mode, dynamic=False)
+            if is_main_process:
+                self._bus.put(['logging', f'torch.compile enabled (mode={compile_mode}, reason={mode_reason}).'])
         except Exception as error:
             if is_main_process:
                 self._bus.put(['logging', f'torch.compile отключен (fallback): {error}'])
+
+    @staticmethod
+    def _create_grad_scaler(device_type: str, enabled: bool) -> Any:
+        amp_module = getattr(torch, 'amp', None)
+        grad_scaler_cls = getattr(amp_module, 'GradScaler', None) if amp_module is not None else None
+        if grad_scaler_cls is not None:
+            try:
+                return grad_scaler_cls(device_type, enabled=enabled)
+            except TypeError:
+                try:
+                    return grad_scaler_cls(enabled=enabled)
+                except TypeError:
+                    pass
+        return torch.cuda.amp.GradScaler(enabled=enabled)
 
     def run(self):
         try:
@@ -687,107 +1032,336 @@ class TrainerProcess(mp.Process):
                 self._run_ddp(world_size=torch.cuda.device_count())
                 return
 
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            if self._should_use_data_parallel():
+                gpu_count = int(torch.cuda.device_count())
+                self._bus.put([
+                    'logging',
+                    f'Windows fallback: using nn.DataParallel on {gpu_count} GPU instead of DDP.',
+                ])
+                self._model = nn.DataParallel(self._model)
+                device = torch.device('cuda:0')
+            else:
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self._model.to(device)
             self._run_impl(device=device, rank=0, world_size=1, distributed=False)
         except Exception as error:
             self._bus.put(['error', f'Критическая ошибка обучения: {error}'])
             raise
 
-    def _run_impl(self, device: torch.device, rank: int, world_size: int, distributed: bool):
-        is_main_process = (rank == 0)
+    @staticmethod
+    def _build_train_loop_strides(train_size: int, log_update_frequency: int = 0) -> _TrainLoopStrides:
+        if log_update_frequency > 0:
+            metric_stride = int(log_update_frequency)
+            preview_stride = 2*int(log_update_frequency)
+            log_stride = int(log_update_frequency)
+        else:
+             metric_stride = 10
+             preview_stride = 20
+             log_stride = 10
+        return _TrainLoopStrides(
+            metric=metric_stride,
+            progress=metric_stride,
+            log=log_stride,
+            preview=preview_stride,
+        )
+
+    @staticmethod
+    def _env_bool(name: str, default: bool) -> bool:
+        value = str(os.getenv(name, '1' if default else '0')).strip().lower()
+        return value in {'1', 'true', 'yes', 'on'}
+
+    @staticmethod
+    def _env_int(name: str, default: int, minimum: int = 0) -> int:
+        raw = os.getenv(name)
+        if raw is None:
+            return max(minimum, int(default))
+        try:
+            return max(minimum, int(raw))
+        except Exception:
+            return max(minimum, int(default))
+
+    def _resolve_training_profiler_config(self) -> _TrainingProfilerConfig:
+        enabled = bool(TRAINING_PROFILER_ENABLED)
+        max_batches = self._env_int('NEURALIMAGE_TRAIN_PROFILE_STEPS', 40, minimum=1)
+        row_limit = self._env_int('NEURALIMAGE_TRAIN_PROFILE_ROW_LIMIT', 15, minimum=5)
+        output_dir_name = str(os.getenv('NEURALIMAGE_TRAIN_PROFILE_DIR', 'profiles')).strip() or 'profiles'
+        return _TrainingProfilerConfig(
+            enabled=enabled,
+            max_batches=max_batches,
+            record_shapes=self._env_bool('NEURALIMAGE_TRAIN_PROFILE_RECORD_SHAPES', True),
+            profile_memory=self._env_bool('NEURALIMAGE_TRAIN_PROFILE_MEMORY', True),
+            with_stack=self._env_bool('NEURALIMAGE_TRAIN_PROFILE_WITH_STACK', False),
+            row_limit=row_limit,
+            output_dir_name=output_dir_name,
+        )
+
+    def _start_training_profiler(
+        self,
+        *,
+        device: torch.device,
+        train_size: int,
+        is_main_process: bool,
+        distributed: bool,
+    ) -> _ActiveTrainProfiler | None:
+        cfg = self._training_profiler_config
+        if not cfg.enabled or not is_main_process:
+            return None
+        if distributed:
+            self._bus.put(['logging', 'Профилирование отключено в режиме DDP (distributed).'])
+            return None
+        if train_size <= 0:
+            return None
+        if not hasattr(torch, 'profiler'):
+            self._bus.put(['logging', 'torch.profiler недоступен, профилирование пропущено.'])
+            return None
+
+        steps = max(1, min(cfg.max_batches, int(train_size)))
+        warmup_steps = 1 if steps > 1 else 0
+        active_steps = max(1, steps - warmup_steps)
+        wait_steps = 0
+        profile_dir = self._save_path.parent / cfg.output_dir_name
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        trace_path = profile_dir / f'train_profile_{timestamp}.json'
+
+        activities: list[Any] = [torch.profiler.ProfilerActivity.CPU]
+        if device.type == 'cuda':
+            activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+        def _on_trace_ready(prof: Any) -> None:
+            try:
+                prof.export_chrome_trace(str(trace_path))
+            except Exception as export_error:
+                self._bus.put(['logging', f'Не удалось сохранить trace профайлера: {export_error}'])
+
+        profiler = torch.profiler.profile(
+            activities=activities,
+            schedule=torch.profiler.schedule(wait=wait_steps, warmup=warmup_steps, active=active_steps, repeat=1),
+            on_trace_ready=_on_trace_ready,
+            record_shapes=cfg.record_shapes,
+            profile_memory=cfg.profile_memory,
+            with_stack=cfg.with_stack,
+        )
+        profiler.__enter__()
+        sort_key = 'self_cuda_time_total' if device.type == 'cuda' else 'self_cpu_time_total'
+        self._bus.put([
+            'logging',
+            (
+                f'Профилирование обучения включено: шагов={steps}, warmup={warmup_steps}, active={active_steps}, '
+                f'trace={trace_path.name}'
+            ),
+        ])
+        return _ActiveTrainProfiler(
+            profiler=profiler,
+            steps_left=steps,
+            trace_path=trace_path,
+            summary_sort_key=sort_key,
+            row_limit=cfg.row_limit,
+        )
+
+    def _step_training_profiler(self, active_profiler: _ActiveTrainProfiler | None) -> None:
+        if active_profiler is None or active_profiler.is_closed:
+            return
+        if active_profiler.steps_left <= 0:
+            self._stop_training_profiler(active_profiler)
+            return
+        try:
+            active_profiler.profiler.step()
+        finally:
+            active_profiler.steps_left -= 1
+            if active_profiler.steps_left <= 0:
+                self._stop_training_profiler(active_profiler)
+
+    def _stop_training_profiler(self, active_profiler: _ActiveTrainProfiler | None) -> None:
+        if active_profiler is None or active_profiler.is_closed:
+            return
+        try:
+            summary = active_profiler.profiler.key_averages().table(
+                sort_by=active_profiler.summary_sort_key,
+                row_limit=active_profiler.row_limit,
+            )
+            self._bus.put(['logging', f'Сводка профайлера (top {active_profiler.row_limit}):\n{summary}'])
+            self._bus.put(['logging', f'Профиль сохранен: {active_profiler.trace_path}'])
+        except Exception as profile_error:
+            self._bus.put(['logging', f'Не удалось получить сводку профайлера: {profile_error}'])
+        finally:
+            try:
+                active_profiler.profiler.__exit__(None, None, None)
+            finally:
+                active_profiler.is_closed = True
+
+    def _prepare_training_device(self, device: torch.device, *, is_main_process: bool, distributed: bool) -> None:
         if device.type == 'cuda':
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
         if not distributed:
-            self._try_compile_model(is_main_process=is_main_process)
+            self._try_compile_model(is_main_process=is_main_process, device=device)
 
-        criterion = nn.BCEWithLogitsLoss()
-        optimizer = self._create_optimizer()
+    def _resolve_train_loader_context(self) -> tuple[int, Any, bool, _TrainLoopStrides]:
+        train_size = self._safe_loader_len(self._train_dataloader)
+        train_sampler = getattr(self._train_dataloader, 'sampler', None) if self._train_dataloader is not None else None
+        supports_loss_aware_sampling = hasattr(train_sampler, 'update_batch_losses')
+        strides = self._build_train_loop_strides(train_size, self._log_update_frequency)
+        return train_size, train_sampler, supports_loss_aware_sampling, strides
 
-        # criterion = nn.BCEWithLogitsLoss()
-        # optimizer = torch.optim.AdamW(self._model.parameters(), lr=1e-3, weight_decay=1e-4)
-        # #
-        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
-        #                                                        T_max=self._epochs,
-        #                                                        eta_min=1e-4)
-
-        if is_main_process:
-            self._bus.put(['logging', f'Обнаружено устройство для обучения: {device}'])
-        train_size = len(self._train_dataloader) if self._train_dataloader is not None else 0
-        # Keep metric traffic bounded, otherwise IPC/UI overhead can dominate on fast GPUs.
-        train_metric_stride = max(1, (train_size + 39) // 40)
-        train_progress_stride = max(1, (train_size + 39) // 40)
-        train_log_stride = max(25, train_metric_stride)
-        preview_stride = max(100, train_metric_stride)
-        self._bus.put([
-            'metrics',
-            {'type': 'train_epoch_progress', 'current': 0, 'total': int(self._epochs)},
-        ])
-        self._bus.put([
-            'metrics',
-            {'type': 'train_batch_progress', 'current': 0, 'total': int(train_size)},
-        ])
+    def _publish_training_start_metrics(self, train_size: int) -> None:
+        self._bus.put(['metrics', {'type': 'train_epoch_progress', 'current': 0, 'total': int(self._epochs)}])
+        self._bus.put(['metrics', {'type': 'train_batch_progress', 'current': 0, 'total': int(train_size)}])
         memory_payload = _collect_memory_metrics()
         if memory_payload is not None:
             self._bus.put(['metrics', {'type': 'system_memory', **memory_payload}])
 
-        self._bus.put(['logging', 'Подготовка данных и запуск цикла обучения'])
+    def _log_training_start(self, *, is_main_process: bool, device: torch.device) -> None:
+        if is_main_process:
+            self._bus.put(['logging', f'Training device detected: {device}'])
+        self._bus.put(['logging', 'Preparing data and starting the training loop'])
+
+    def _log_mixed_precision_mode(
+        self,
+        *,
+        resolved_mode: MixedPrecisionMode,
+        device: torch.device,
+    ) -> None:
+        if resolved_mode != self._mixed_precision:
+            self._bus.put([
+                'logging',
+                (
+                    f'Mixed precision mode "{self._mixed_precision.value}" is unavailable on {device.type}. '
+                    f'Using mode "{resolved_mode.value}".'
+                ),
+            ])
+            return
+        self._bus.put(['logging', f'Mixed precision mode: {resolved_mode.value}.'])
+
+    def _log_loss_configuration(self) -> None:
+        resolved_loss_mode = self._resolved_loss_function()
+        if resolved_loss_mode != self._loss_function:
+            self._bus.put(['logging', f'Unknown loss "{self._loss_function}". Using "bce".'])
+        if resolved_loss_mode == 'bce_dice':
+            self._bus.put(['logging', f'Loss function: bce_dice (dice_weight={self._resolved_dice_weight():.2f}).'])
+            return
+        if resolved_loss_mode == 'bce_iou':
+            self._bus.put(['logging', f'Loss function: bce_iou (iou_weight={self._resolved_iou_weight():.2f}).'])
+            return
+        self._bus.put(['logging', f'Loss function: {resolved_loss_mode}.'])
+
+    def _log_sampling_configuration(self, *, train_sampler: Any, supports_loss_aware_sampling: bool) -> None:
+        if self._skip_uniform_labels:
+            self._bus.put(['logging', 'Skipping uniform 0/1 labels is enabled for training batches.'])
+        if not supports_loss_aware_sampling:
+            return
+        self._bus.put([
+            'logging',
+            (
+                f'Loss-aware sampling is enabled: '
+                f'strength={float(getattr(train_sampler, "strength", 0.0)):.2f}, '
+                f'ema_alpha={float(getattr(train_sampler, "ema_alpha", 0.0)):.2f}.'
+            ),
+        ])
+
+    @staticmethod
+    def _build_autocast_context(
+        *,
+        device_type: str,
+        autocast_dtype: torch.dtype | None,
+    ) -> Callable[[], ContextManager[Any]]:
+        if autocast_dtype is None:
+            return lambda: nullcontext()
+        return lambda: torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=True)
+
+    def _log_warmup_configuration(self, scheduler: Any) -> None:
+        if scheduler is None:
+            return
+        self._bus.put([
+            'logging',
+            (
+                f'Warmup enabled: epochs={int(self._warmup_params.epochs)}, '
+                f'start_factor={float(self._warmup_params.start_factor):.4f}.'
+            ),
+        ])
+
+    def _create_run_context(self, device: torch.device, is_main_process: bool, distributed: bool) -> _RunContext:
+        self._prepare_training_device(device, is_main_process=is_main_process, distributed=distributed)
+
+        bce_criterion = nn.BCEWithLogitsLoss(reduction='none')
+        optimizer = self._create_optimizer()
+        train_size, train_sampler, supports_loss_aware_sampling, strides = self._resolve_train_loader_context()
+        self._publish_training_start_metrics(train_size)
+        self._log_training_start(is_main_process=is_main_process, device=device)
+
         resolved_mp_mode, autocast_dtype, scaler_enabled = self._resolve_mixed_precision(device)
-        if resolved_mp_mode != self._mixed_precision:
-            self._bus.put([
-                'logging',
-                f'Режим mixed precision "{self._mixed_precision.value}" недоступен на {device.type}. Используется режим "{resolved_mp_mode.value}".',
-            ])
-        else:
-            self._bus.put(['logging', f'Режим mixed precision: {resolved_mp_mode.value}.'])
-
-        scaler = torch.cuda.amp.GradScaler(enabled=scaler_enabled)
-        autocast_ctx: Callable[[], ContextManager[Any]] = (
-            (lambda: torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=True))
-            if autocast_dtype is not None
-            else (lambda: nullcontext())
+        self._log_mixed_precision_mode(resolved_mode=resolved_mp_mode, device=device)
+        self._log_loss_configuration()
+        self._log_sampling_configuration(
+            train_sampler=train_sampler,
+            supports_loss_aware_sampling=supports_loss_aware_sampling,
         )
-        scheduler = self._create_warmup_scheduler(optimizer, train_size)
-        if scheduler is not None:
-            self._bus.put([
-                'logging',
-                f'Warmup включен: эпох={int(self._warmup_params.epochs)}, start_factor={float(self._warmup_params.start_factor):.4f}.',
-            ])
 
-        start_epoch, checkpoint = self._load_checkpoint_if_available(optimizer, scaler, scheduler)
-        early_stopping_best_loss = checkpoint.get('early_stopping_best_loss')
-        if early_stopping_best_loss is not None:
-            early_stopping_best_loss = float(early_stopping_best_loss)
-        else:
-            early_stopping_best_loss = None
-        early_stopping_bad_epochs = int(checkpoint.get('early_stopping_bad_epochs', 0))
-        early_stopping_best_epoch = int(checkpoint.get('early_stopping_best_epoch', 0))
-        early_stopping_best_model_state = checkpoint.get('early_stopping_best_model_state')
+        scaler = self._create_grad_scaler(device_type=device.type, enabled=scaler_enabled)
+        autocast_ctx = self._build_autocast_context(device_type=device.type, autocast_dtype=autocast_dtype)
+        scheduler = self._create_warmup_scheduler(optimizer, train_size)
+        self._log_warmup_configuration(scheduler)
+
+        return _RunContext(
+            bce_criterion=bce_criterion,
+            optimizer=optimizer,
+            scaler=scaler,
+            autocast_ctx=autocast_ctx,
+            scheduler=scheduler,
+            train_size=train_size,
+            train_sampler=train_sampler,
+            supports_loss_aware_sampling=supports_loss_aware_sampling,
+            strides=strides,
+        )
+
+    def _restore_training_state(self, run_context: _RunContext) -> tuple[int, _EarlyStoppingState, _EarlyStoppingConfig]:
+        start_epoch, checkpoint = self._load_checkpoint_if_available(
+            run_context.optimizer,
+            run_context.scaler,
+            run_context.scheduler,
+        )
+        early_stopping_state = _EarlyStoppingState(
+            best_loss=(
+                float(checkpoint['early_stopping_best_loss'])
+                if checkpoint.get('early_stopping_best_loss') is not None
+                else None
+            ),
+            bad_epochs=int(checkpoint.get('early_stopping_bad_epochs', 0)),
+            best_epoch=int(checkpoint.get('early_stopping_best_epoch', 0)),
+            best_model_state=checkpoint.get('early_stopping_best_model_state'),
+        )
 
         has_validation = bool(self._val_dataloader is not None)
         if has_validation and self._val_dataloader is not None:
             has_validation = len(cast(Sized, self._val_dataloader.dataset)) > 0
-        early_stopping_enabled = bool(self._early_stopping_params.enabled and has_validation)
-        early_stopping_patience = max(0, int(self._early_stopping_params.patience))
-        early_stopping_min_delta = max(0.0, float(self._early_stopping_params.min_delta))
+        early_stopping_config = _EarlyStoppingConfig(
+            enabled=bool(self._early_stopping_params.enabled and has_validation),
+            patience=max(0, int(self._early_stopping_params.patience)),
+            min_delta=max(0.0, float(self._early_stopping_params.min_delta)),
+        )
         if self._early_stopping_params.enabled and not has_validation:
             self._bus.put([
                 'logging',
                 'Early stopping включен, но валидационный датасет отсутствует. Early stopping отключен.',
             ])
-        elif early_stopping_enabled:
+        elif early_stopping_config.enabled:
             self._bus.put([
                 'logging',
-                f'Early stopping включен: patience={early_stopping_patience}, min_delta={early_stopping_min_delta:.6f}.',
+                (
+                    f'Early stopping включен: patience={early_stopping_config.patience}, '
+                    f'min_delta={early_stopping_config.min_delta:.6f}.'
+                ),
             ])
 
         target_epochs = self._resolve_target_epochs(start_epoch)
         if target_epochs != self._epochs:
             self._bus.put([
                 'logging',
-                f'Режим дообучения: продолжение с эпохи {start_epoch}. Будет добавлено {self._epochs} эпох (до {target_epochs}).',
+                (
+                    f'Режим дообучения: продолжение с эпохи {start_epoch}. '
+                    f'Будет добавлено {self._epochs} эпох (до {target_epochs}).'
+                ),
             ])
             self._epochs = target_epochs
             self._bus.put([
@@ -795,265 +1369,722 @@ class TrainerProcess(mp.Process):
                 {'type': 'train_epoch_progress', 'current': int(start_epoch), 'total': int(self._epochs)},
             ])
 
-        if start_epoch >= self._epochs:
-            self._bus.put(['logging', 'Все эпохи из контрольной точки уже выполнены. Дополнительное обучение не требуется.'])
-        for epoch in range(start_epoch, self._epochs):
-            self._model.train()  # Set model to training mode
-            if distributed:
-                sampler = getattr(self._train_dataloader, 'sampler', None)
-                if isinstance(sampler, DistributedSampler):
-                    sampler.set_epoch(epoch)
-            self._bus.put(['logging', f'Начало эпохи [{epoch + 1}/{self._epochs}]'])
-            current_lr = float(optimizer.param_groups[0]['lr'])
-            self._bus.put(['logging', f'Текущий learning rate: {current_lr:.8f}'])
-            self._bus.put([
-                'metrics',
-                {'type': 'train_epoch_progress', 'current': int(epoch + 1), 'total': int(self._epochs)},
-            ])
-            self._bus.put([
-                'metrics',
-                {'type': 'train_batch_progress', 'current': 0, 'total': int(train_size)},
-            ])
-            memory_payload = _collect_memory_metrics()
-            if memory_payload is not None:
-                self._bus.put(['metrics', {'type': 'system_memory', **memory_payload, 'epoch': int(epoch + 1)}])
-            self._bus.put(['logging'," "])
-            train_loss = 0
-            train_samples_count = 0
-            epoch_data_wait_ms = 0.0
-            epoch_forward_ms = 0.0
-            epoch_backward_ms = 0.0
-            epoch_optimizer_ms = 0.0
-            epoch_total_ms = 0.0
-            prev_batch_end = time.perf_counter()
-            train_dataset = self._train_dataloader.dataset
-            if hasattr(train_dataset, 'set_epoch'):
-                cast(_SupportsSetEpoch, train_dataset).set_epoch()
-            for i, (data,target) in enumerate(self._train_dataloader):
-                batch_start = time.perf_counter()
-                data_wait_ms = (batch_start - prev_batch_end) * 1000.0
-                image, label = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
+        return start_epoch, early_stopping_state, early_stopping_config
 
-                optimizer.zero_grad(set_to_none=True)
-                # Forward pass
-                forward_start = time.perf_counter()
-                with autocast_ctx():
-                    outputs = self._model(image)
-                    loss = criterion(outputs, label)  # Compare output with first channel
-                forward_ms = (time.perf_counter() - forward_start) * 1000.0
+    def _publish_epoch_start(self, epoch: int, run_context: _RunContext, distributed: bool) -> None:
+        self._model.train()
+        if distributed:
+            sampler = getattr(self._train_dataloader, 'sampler', None)
+            if isinstance(sampler, DistributedSampler):
+                sampler.set_epoch(epoch)
+        self._bus.put(['logging', f'Начало эпохи [{epoch + 1}/{self._epochs}]'])
+        current_lr = float(run_context.optimizer.param_groups[0]['lr'])
+        self._bus.put(['logging', f'Текущий learning rate: {current_lr:.8f}'])
+        self._bus.put([
+            'metrics',
+            {'type': 'train_epoch_progress', 'current': int(epoch + 1), 'total': int(self._epochs)},
+        ])
+        self._bus.put([
+            'metrics',
+            {'type': 'train_batch_progress', 'current': 0, 'total': int(run_context.train_size)},
+        ])
+        memory_payload = _collect_memory_metrics()
+        if memory_payload is not None:
+            self._bus.put(['metrics', {'type': 'system_memory', **memory_payload, 'epoch': int(epoch + 1)}])
+        self._bus.put(['logging', ' '])
 
-                if self._show_batch_preview and (i % preview_stride == 0 or i == train_size - 1):
-                    preview_image = self._tensor_to_preview_array(data[0])
-                    preview_label = self._tensor_to_preview_array(target[0])
-                    preview_outputs = self._tensor_to_preview_array(torch.sigmoid(outputs[0].detach()))
-                    self._bus.put([
-                        'metrics',
-                        {
-                            'type': 'train_batch_preview',
-                            'epoch': int(epoch + 1),
-                            'batch_index': int(i + 1),
-                            'image': preview_image,
-                            'label': preview_label,
-                            'outputs': preview_outputs,
-                        },
-                    ])
+    @staticmethod
+    def _split_batch(batch: Any) -> tuple[Any, Any, Any]:
+        if isinstance(batch, (list, tuple)) and len(batch) == 3:
+            data, target, sample_indices = batch
+            return data, target, sample_indices
+        data, target = batch
+        return data, target, None
 
-                # Backward pass
-                backward_start = time.perf_counter()
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm(self._model.parameters(), 1.0)
-                backward_ms = (time.perf_counter() - backward_start) * 1000.0
-                optimizer_start = time.perf_counter()
-                scaler.step(optimizer)
-                scaler.update()
-                if scheduler is not None:
-                    scheduler.step()
-                optimizer_ms = (time.perf_counter() - optimizer_start) * 1000.0
-                batch_total_ms = (time.perf_counter() - batch_start) * 1000.0
-                prev_batch_end = time.perf_counter()
+    def _filter_uniform_batch_samples(
+        self,
+        image: torch.Tensor,
+        label: torch.Tensor,
+        sample_indices: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, Any, int, bool]:
+        if not self._skip_uniform_labels:
+            return image, label, sample_indices, 0, True
+        label_flat = label.view(label.shape[0], -1)
+        eps = 1e-6
+        is_all_zero = (label_flat <= eps).all(dim=1)
+        is_all_one = (label_flat >= (1.0 - eps)).all(dim=1)
+        valid_mask = ~(is_all_zero | is_all_one)
+        skipped_here = int((~valid_mask).sum().item())
+        if not bool(valid_mask.any()):
+            return image, label, sample_indices, skipped_here, False
 
-                epoch_data_wait_ms += data_wait_ms
-                epoch_forward_ms += forward_ms
-                epoch_backward_ms += backward_ms
-                epoch_optimizer_ms += optimizer_ms
-                epoch_total_ms += batch_total_ms
+        image = image[valid_mask]
+        label = label[valid_mask]
+        if sample_indices is None:
+            return image, label, None, skipped_here, True
+        if torch.is_tensor(sample_indices):
+            sample_indices = sample_indices[valid_mask.detach().to(device=sample_indices.device)]
+        else:
+            sample_indices_tensor = torch.as_tensor(sample_indices)
+            sample_indices = sample_indices_tensor[valid_mask.detach().to(device='cpu')]
+        return image, label, sample_indices, skipped_here, True
 
+    def _publish_batch_preview(
+        self,
+        *,
+        epoch: int,
+        batch_index: int,
+        train_size: int,
+        data: Any,
+        target: Any,
+        outputs: torch.Tensor,
+        preview_stride: int,
+    ) -> None:
+        if not self._show_batch_preview:
+            return
+        if not ((batch_index % preview_stride == 0) or (batch_index == train_size - 1)):
+            return
+        preview_image = self._tensor_to_preview_array(data[0])
+        preview_label = self._tensor_to_preview_array(target[0])
+        preview_outputs = self._tensor_to_preview_array(torch.sigmoid(outputs[0].detach()))
+        self._bus.put([
+            'metrics',
+            {
+                'type': 'train_batch_preview',
+                'epoch': int(epoch + 1),
+                'batch_index': int(batch_index + 1),
+                'image': preview_image,
+                'label': preview_label,
+                'outputs': preview_outputs,
+            },
+        ])
 
-                loss_coeff = loss.item()
-                train_loss += loss_coeff * image.size(0)
-                train_samples_count += int(image.size(0))
-                if (i % train_metric_stride == 0) or (i == train_size - 1):
-                    self._bus.put([
-                        'metrics',
-                        {
-                            'type': 'train_batch',
-                            'epoch': epoch + 1,
-                            'batch_index': i + 1,
-                            'loss': float(loss_coeff),
-                        },
-                    ])
-                    self._bus.put([
-                        'metrics',
-                        {
-                            'type': 'train_perf',
-                            'epoch': epoch + 1,
-                            'batch_index': i + 1,
-                            'data_wait_ms': float(data_wait_ms),
-                            'forward_ms': float(forward_ms),
-                            'backward_ms': float(backward_ms),
-                            'optimizer_ms': float(optimizer_ms),
-                            'total_ms': float(batch_total_ms),
-                        },
-                    ])
-                if (i % train_progress_stride == 0) or (i == train_size - 1):
-                    self._bus.put([
-                        'metrics',
-                        {'type': 'train_batch_progress', 'current': int(i + 1), 'total': int(train_size)},
-                    ])
-
-                if (i % train_log_stride == 0) or (i == train_size - 1):
-                    loss = loss.item()
-                    self._bus.put(['training', f'Эпоха [{epoch + 1}/{self._epochs}] '
-                                               f'Потеря: {loss:>7f} '
-                                               f'Пакет: [{i:>5d}/{train_size:>5d}] '
-                                               f'| шаг: {batch_total_ms:.1f} мс'])
-
-            if distributed:
-                reduce_tensor = torch.tensor([train_loss, float(train_samples_count)], dtype=torch.float64, device=device)
-                dist.all_reduce(reduce_tensor, op=dist.ReduceOp.SUM)
-                global_train_loss = float(reduce_tensor[0].item())
-                global_train_samples = max(1.0, float(reduce_tensor[1].item()))
-            else:
-                global_train_loss = float(train_loss)
-                global_train_samples = float(max(1, train_samples_count))
-
-            if is_main_process and global_train_samples > 0:
-                avg_train_loss = global_train_loss / global_train_samples
-                self._bus.put([
-                    'metrics',
-                    {'type': 'train_epoch', 'epoch': epoch + 1, 'loss': float(avg_train_loss)},
-                ])
-                self._bus.put(['logging', f'Средняя потеря на обучающей выборке: {avg_train_loss}'])
-                avg_denom = max(1, train_size)
-                self._bus.put([
-                    'metrics',
-                    {
-                        'type': 'train_perf_epoch',
-                        'epoch': epoch + 1,
-                        'data_wait_ms': float(epoch_data_wait_ms / avg_denom),
-                        'forward_ms': float(epoch_forward_ms / avg_denom),
-                        'backward_ms': float(epoch_backward_ms / avg_denom),
-                        'optimizer_ms': float(epoch_optimizer_ms / avg_denom),
-                        'total_ms': float(epoch_total_ms / avg_denom),
-                    },
-                ])
-
-
-            validation_result = None
-            if is_main_process:
-                validation_result = self._run_validation_epoch(device, criterion, autocast_ctx)
-            if validation_result is not None:
-                avg_val_loss = validation_result['loss']
-                val_accuracy = validation_result['accuracy']
-                val_iou = validation_result['iou']
-                val_dice = validation_result['dice']
-                val_f1 = validation_result['f1']
-                self._bus.put([
-                    'logging',
-                    (
-                        f'Эпоха [{epoch + 1}/{self._epochs}] '
-                        f'Валидационная потеря: {avg_val_loss:.6f} | '
-                        f'Валидационная точность: {val_accuracy:.4%} | '
-                        f'IoU: {val_iou:.4%} | Dice: {val_dice:.4%} | F1: {val_f1:.4%}'
-                    ),
-                ])
-                self._bus.put([
-                    'metrics',
-                    {
-                        'type': 'val_epoch',
-                        'epoch': epoch + 1,
-                        'loss': float(avg_val_loss),
-                        'accuracy': float(val_accuracy),
-                        'iou': float(val_iou),
-                        'dice': float(val_dice),
-                        'f1': float(val_f1),
-                    },
-                ])
-                if early_stopping_enabled:
-                    improved = (
-                        early_stopping_best_loss is None
-                        or (early_stopping_best_loss - avg_val_loss) > early_stopping_min_delta
-                    )
-                    if improved:
-                        early_stopping_best_loss = float(avg_val_loss)
-                        early_stopping_bad_epochs = 0
-                        early_stopping_best_epoch = int(epoch + 1)
-                        if self._early_stopping_params.restore_best_weights:
-                            early_stopping_best_model_state = {
-                                key: value.detach().cpu().clone()
-                                for key, value in self._base_model.state_dict().items()
-                            }
-                        self._bus.put([
-                            'logging',
-                            f'Early stopping: новый лучший результат на эпохе {epoch + 1} (val_loss={avg_val_loss:.6f}).',
-                        ])
-                    else:
-                        early_stopping_bad_epochs += 1
-                        self._bus.put([
-                            'logging',
-                            f'Early stopping: без улучшения {early_stopping_bad_epochs}/{early_stopping_patience}.',
-                        ])
-
-            if is_main_process:
-                torch.save(self._base_model, self._save_path)
-                self._save_checkpoint(
-                    epoch + 1,
-                    optimizer,
-                    scaler,
-                    scheduler,
-                    early_stopping_best_loss=early_stopping_best_loss,
-                    early_stopping_bad_epochs=early_stopping_bad_epochs,
-                    early_stopping_best_epoch=early_stopping_best_epoch,
-                    early_stopping_best_model_state=early_stopping_best_model_state,
-                )
-
-            should_stop = bool(
-                early_stopping_enabled
-                and early_stopping_bad_epochs > 0
-                and early_stopping_bad_epochs >= early_stopping_patience
+    def _update_loss_aware_sampling(
+        self,
+        *,
+        run_context: _RunContext,
+        sample_indices: Any,
+        per_sample_loss: torch.Tensor,
+    ) -> None:
+        if not run_context.supports_loss_aware_sampling or sample_indices is None:
+            return
+        if torch.is_tensor(sample_indices):
+            sample_idx_tensor = sample_indices.detach().to(device='cpu', dtype=torch.long).flatten()
+        else:
+            sample_idx_tensor = torch.as_tensor(sample_indices, dtype=torch.long).flatten()
+        sample_loss_tensor = per_sample_loss.detach().to(device='cpu', dtype=torch.float32).flatten()
+        if sample_idx_tensor.numel() == sample_loss_tensor.numel():
+            cast(_SupportsLossAwareSampling, run_context.train_sampler).update_batch_losses(
+                sample_idx_tensor,
+                sample_loss_tensor,
             )
-            if distributed:
-                stop_tensor = torch.tensor([1 if (should_stop and is_main_process) else 0], device=device, dtype=torch.int32)
-                dist.broadcast(stop_tensor, src=0)
-                should_stop = bool(int(stop_tensor.item()))
 
-            if should_stop:
-                if is_main_process:
-                    self._bus.put([
-                        'logging',
-                        f'Early stopping сработал на эпохе {epoch + 1}. Лучший val_loss достигнут на эпохе {early_stopping_best_epoch}.',
-                    ])
-                    if self._early_stopping_params.restore_best_weights and early_stopping_best_model_state:
-                        self._base_model.load_state_dict(early_stopping_best_model_state)
-                        self._bus.put(['logging', 'Восстановлены лучшие веса модели по валидации.'])
-                break
+    def _prepare_train_batch(
+        self,
+        *,
+        batch: Any,
+        device: torch.device,
+        prev_batch_end: float,
+    ) -> tuple[_PreparedTrainBatch | None, int]:
+        batch_start = time.perf_counter()
+        data_wait_ms = (batch_start - prev_batch_end) * 1000.0
+        data, target, sample_indices = self._split_batch(batch)
+        image = data.to(device, non_blocking=True)
+        label = target.to(device, non_blocking=True)
+        image, label, sample_indices, skipped_here, has_valid_samples = self._filter_uniform_batch_samples(
+            image,
+            label,
+            sample_indices,
+        )
+        if not has_valid_samples:
+            return None, skipped_here
+        return (
+            _PreparedTrainBatch(
+                data=data,
+                target=target,
+                sample_indices=sample_indices,
+                image=image,
+                label=label,
+                batch_start=batch_start,
+                data_wait_ms=data_wait_ms,
+            ),
+            skipped_here,
+        )
 
-            if is_main_process:
-                memory_payload = _collect_memory_metrics()
-                if memory_payload is not None:
-                    self._bus.put(['metrics', {'type': 'system_memory', **memory_payload, 'epoch': int(epoch + 1)}])
+    def _run_train_step(
+        self,
+        *,
+        run_context: _RunContext,
+        batch: _PreparedTrainBatch,
+    ) -> _TrainStepResult:
+        run_context.optimizer.zero_grad(set_to_none=True)
 
-            if distributed:
-                dist.barrier()
+        forward_start = time.perf_counter()
+        with run_context.autocast_ctx():
+            outputs = self._model(batch.image)
+            per_sample_loss = self._compute_per_sample_loss(outputs, batch.label, run_context.bce_criterion)
+            loss = per_sample_loss.mean()
+        forward_ms = (time.perf_counter() - forward_start) * 1000.0
 
+        backward_start = time.perf_counter()
+        run_context.scaler.scale(loss).backward()
+        run_context.scaler.unscale_(run_context.optimizer)
+        torch.nn.utils.clip_grad_norm_(self._model.parameters(), 1.0)
+        backward_ms = (time.perf_counter() - backward_start) * 1000.0
+
+        optimizer_start = time.perf_counter()
+        run_context.scaler.step(run_context.optimizer)
+        run_context.scaler.update()
+        if run_context.scheduler is not None:
+            run_context.scheduler.step()
+        optimizer_ms = (time.perf_counter() - optimizer_start) * 1000.0
+
+        return _TrainStepResult(
+            outputs=outputs,
+            per_sample_loss=per_sample_loss,
+            batch_loss=float(loss.item()),
+            batch_samples=int(batch.image.size(0)),
+            forward_ms=forward_ms,
+            backward_ms=backward_ms,
+            optimizer_ms=optimizer_ms,
+        )
+
+    def _publish_train_batch_runtime(
+        self,
+        *,
+        epoch: int,
+        batch_index: int,
+        run_context: _RunContext,
+        batch: _PreparedTrainBatch,
+        step_result: _TrainStepResult,
+        batch_total_ms: float,
+    ) -> None:
+        self._publish_batch_preview(
+            epoch=epoch,
+            batch_index=batch_index,
+            train_size=run_context.train_size,
+            data=batch.data,
+            target=batch.target,
+            outputs=step_result.outputs,
+            preview_stride=run_context.strides.preview,
+        )
+
+        if (batch_index % run_context.strides.metric == 0) or (batch_index == run_context.train_size - 1):
+            self._bus.put([
+                'metrics',
+                {
+                    'type': 'train_batch',
+                    'epoch': epoch + 1,
+                    'batch_index': batch_index + 1,
+                    'loss': step_result.batch_loss,
+                },
+            ])
+            self._bus.put([
+                'metrics',
+                {
+                    'type': 'train_perf',
+                    'epoch': epoch + 1,
+                    'batch_index': batch_index + 1,
+                    'data_wait_ms': float(batch.data_wait_ms),
+                    'forward_ms': float(step_result.forward_ms),
+                    'backward_ms': float(step_result.backward_ms),
+                    'optimizer_ms': float(step_result.optimizer_ms),
+                    'total_ms': float(batch_total_ms),
+                },
+            ])
+
+        if (batch_index % run_context.strides.progress == 0) or (batch_index == run_context.train_size - 1):
+            self._bus.put([
+                'metrics',
+                {
+                    'type': 'train_batch_progress',
+                    'current': int(batch_index + 1),
+                    'total': int(run_context.train_size),
+                },
+            ])
+
+        if (batch_index % run_context.strides.log == 0) or (batch_index == run_context.train_size - 1):
+            self._bus.put([
+                'training',
+                (
+                    f'Epoch [{epoch + 1}/{self._epochs}] '
+                    f'Loss: {step_result.batch_loss:>7f} '
+                    f'Batch: [{batch_index:>5d}/{run_context.train_size:>5d}] '
+                    f'| step: {batch_total_ms:.1f} ms'
+                ),
+            ])
+
+    def _run_train_epoch(
+        self,
+        epoch: int,
+        device: torch.device,
+        run_context: _RunContext,
+        active_profiler: _ActiveTrainProfiler | None = None,
+    ) -> _EpochStats:
+        epoch_stats = _EpochStats()
+        prev_batch_end = time.perf_counter()
+
+        train_dataset = self._train_dataloader.dataset
+        if hasattr(train_dataset, 'set_epoch'):
+            cast(_SupportsSetEpoch, train_dataset).set_epoch()
+
+        for batch_index, batch in enumerate(self._train_dataloader):
+            prepared_batch, skipped_here = self._prepare_train_batch(
+                batch=batch,
+                device=device,
+                prev_batch_end=prev_batch_end,
+            )
+            if skipped_here > 0:
+                epoch_stats.skipped_uniform_count += skipped_here
+
+            if prepared_batch is None:
+                self._step_training_profiler(active_profiler)
+                prev_batch_end = time.perf_counter()
+                continue
+
+            step_result = self._run_train_step(run_context=run_context, batch=prepared_batch)
+            batch_total_ms = (time.perf_counter() - prepared_batch.batch_start) * 1000.0
+
+            epoch_stats.add_batch(
+                batch_samples=step_result.batch_samples,
+                batch_loss=step_result.batch_loss,
+                data_wait_ms=prepared_batch.data_wait_ms,
+                forward_ms=step_result.forward_ms,
+                backward_ms=step_result.backward_ms,
+                optimizer_ms=step_result.optimizer_ms,
+                total_ms=batch_total_ms,
+            )
+            self._update_loss_aware_sampling(
+                run_context=run_context,
+                sample_indices=prepared_batch.sample_indices,
+                per_sample_loss=step_result.per_sample_loss,
+            )
+            self._publish_train_batch_runtime(
+                epoch=epoch,
+                batch_index=batch_index,
+                run_context=run_context,
+                batch=prepared_batch,
+                step_result=step_result,
+                batch_total_ms=batch_total_ms,
+            )
+            self._step_training_profiler(active_profiler)
+            prev_batch_end = time.perf_counter()
+
+        return epoch_stats
+
+    @staticmethod
+    def _reduce_epoch_train_stats(
+        epoch_stats: _EpochStats,
+        *,
+        distributed: bool,
+        device: torch.device,
+    ) -> tuple[float, float]:
+        if distributed:
+            reduce_tensor = torch.tensor(
+                [epoch_stats.train_loss, float(epoch_stats.train_samples_count)],
+                dtype=torch.float64,
+                device=device,
+            )
+            dist.all_reduce(reduce_tensor, op=dist.ReduceOp.SUM)
+            return float(reduce_tensor[0].item()), max(1.0, float(reduce_tensor[1].item()))
+        return float(epoch_stats.train_loss), float(max(1, epoch_stats.train_samples_count))
+
+    def _publish_epoch_train_metrics(
+        self,
+        *,
+        epoch: int,
+        run_context: _RunContext,
+        epoch_stats: _EpochStats,
+        global_train_loss: float,
+        global_train_samples: float,
+    ) -> None:
+        if global_train_samples <= 0:
+            return
+        avg_train_loss = global_train_loss / global_train_samples
+        self._bus.put(['metrics', {'type': 'train_epoch', 'epoch': epoch + 1, 'loss': float(avg_train_loss)}])
+        self._bus.put(['logging', f'Средняя потеря на обучающей выборке: {avg_train_loss}'])
+        avg_denom = max(1, run_context.train_size)
+        self._bus.put([
+            'metrics',
+            {
+                'type': 'train_perf_epoch',
+                'epoch': epoch + 1,
+                'data_wait_ms': float(epoch_stats.data_wait_ms / avg_denom),
+                'forward_ms': float(epoch_stats.forward_ms / avg_denom),
+                'backward_ms': float(epoch_stats.backward_ms / avg_denom),
+                'optimizer_ms': float(epoch_stats.optimizer_ms / avg_denom),
+                'total_ms': float(epoch_stats.total_ms / avg_denom),
+            },
+        ])
+        if self._skip_uniform_labels and epoch_stats.skipped_uniform_count > 0:
+            self._bus.put([
+                'logging',
+                f'Пропущено сэмплов из-за uniform label (0/1): {epoch_stats.skipped_uniform_count}',
+            ])
+
+    def _publish_epoch_load_breakdown(
+        self,
+        *,
+        epoch: int,
+        epoch_stats: _EpochStats,
+        train_stage_ms: float,
+        validation_ms: float,
+        checkpoint_ms: float,
+    ) -> None:
+        total_epoch_ms = max(1e-6, float(train_stage_ms + validation_ms + checkpoint_ms))
+        parts: list[tuple[str, float]] = [
+            ('data_wait', float(epoch_stats.data_wait_ms)),
+            ('forward', float(epoch_stats.forward_ms)),
+            ('backward', float(epoch_stats.backward_ms)),
+            ('optimizer', float(epoch_stats.optimizer_ms)),
+            ('validation', float(validation_ms)),
+            ('checkpoint', float(checkpoint_ms)),
+        ]
+        dominant_name, dominant_ms = max(parts, key=lambda x: x[1])
+        breakdown = ' | '.join(
+            f'{name}: {ms/1000.0:.2f}s ({(ms / total_epoch_ms) * 100.0:.1f}%)'
+            for name, ms in parts
+        )
+        self._bus.put([
+            'logging',
+            (
+                f'Профилирование по времени, эпоха {epoch + 1}: {breakdown}. '
+                f'Наибольшая нагрузка: {dominant_name} ({dominant_ms/1000.0:.2f}s).'
+            ),
+        ])
+        self._bus.put([
+            'metrics',
+            {
+                'type': 'epoch_time_breakdown',
+                'epoch': int(epoch + 1),
+                'train_total_ms': float(train_stage_ms),
+                'data_wait_ms': float(epoch_stats.data_wait_ms),
+                'forward_ms': float(epoch_stats.forward_ms),
+                'backward_ms': float(epoch_stats.backward_ms),
+                'optimizer_ms': float(epoch_stats.optimizer_ms),
+                'validation_ms': float(validation_ms),
+                'checkpoint_ms': float(checkpoint_ms),
+                'dominant_stage': dominant_name,
+            },
+        ])
+
+    def _run_validation_if_main_process(
+        self,
+        *,
+        is_main_process: bool,
+        device: torch.device,
+        run_context: _RunContext,
+    ) -> dict[str, float] | None:
+        if not is_main_process:
+            return None
+        return self._run_validation_epoch(
+            device,
+            run_context.bce_criterion,
+            run_context.autocast_ctx,
+        )
+
+    def _publish_validation_metrics(self, *, epoch: int, validation_result: dict[str, float]) -> None:
+        avg_val_loss = validation_result['loss']
+        val_accuracy = validation_result['accuracy']
+        val_iou = validation_result['iou']
+        val_dice = validation_result['dice']
+        val_f1 = validation_result['f1']
+
+        self._bus.put([
+            'logging',
+            (
+                f'Epoch [{epoch + 1}/{self._epochs}] '
+                f'Validation loss: {avg_val_loss:.6f} | '
+                f'Validation accuracy: {val_accuracy:.4%} | '
+                f'IoU: {val_iou:.4%} | Dice: {val_dice:.4%} | F1: {val_f1:.4%}'
+            ),
+        ])
+        self._bus.put([
+            'metrics',
+            {
+                'type': 'val_epoch',
+                'epoch': epoch + 1,
+                'loss': float(avg_val_loss),
+                'accuracy': float(val_accuracy),
+                'iou': float(val_iou),
+                'dice': float(val_dice),
+                'f1': float(val_f1),
+            },
+        ])
+
+    def _update_early_stopping_from_validation(
+        self,
+        *,
+        epoch: int,
+        validation_result: dict[str, float],
+        early_stopping_state: _EarlyStoppingState,
+        early_stopping_config: _EarlyStoppingConfig,
+    ) -> None:
+        if not early_stopping_config.enabled:
+            return
+
+        avg_val_loss = float(validation_result['loss'])
+        improved = (
+            early_stopping_state.best_loss is None
+            or (early_stopping_state.best_loss - avg_val_loss) > early_stopping_config.min_delta
+        )
+        if improved:
+            early_stopping_state.best_loss = avg_val_loss
+            early_stopping_state.bad_epochs = 0
+            early_stopping_state.best_epoch = int(epoch + 1)
+            if self._early_stopping_params.restore_best_weights:
+                early_stopping_state.best_model_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in self._base_model.state_dict().items()
+                }
+            self._bus.put([
+                'logging',
+                f'Early stopping: new best result at epoch {epoch + 1} (val_loss={avg_val_loss:.6f}).',
+            ])
+            return
+
+        early_stopping_state.bad_epochs += 1
+        self._bus.put([
+            'logging',
+            f'Early stopping: no improvement {early_stopping_state.bad_epochs}/{early_stopping_config.patience}.',
+        ])
+
+    def _handle_validation(
+        self,
+        *,
+        epoch: int,
+        device: torch.device,
+        run_context: _RunContext,
+        early_stopping_state: _EarlyStoppingState,
+        early_stopping_config: _EarlyStoppingConfig,
+        is_main_process: bool,
+    ) -> None:
+        validation_result = self._run_validation_if_main_process(
+            is_main_process=is_main_process,
+            device=device,
+            run_context=run_context,
+        )
+        if validation_result is None:
+            return
+
+        self._publish_validation_metrics(epoch=epoch, validation_result=validation_result)
+        self._update_early_stopping_from_validation(
+            epoch=epoch,
+            validation_result=validation_result,
+            early_stopping_state=early_stopping_state,
+            early_stopping_config=early_stopping_config,
+        )
+
+    def _save_epoch_artifacts(
+        self,
+        *,
+        epoch: int,
+        run_context: _RunContext,
+        early_stopping_state: _EarlyStoppingState,
+        is_main_process: bool,
+    ) -> None:
+        if not is_main_process:
+            return
+        self._save_model_artifact()
+        self._save_checkpoint(
+            epoch + 1,
+            run_context.optimizer,
+            run_context.scaler,
+            run_context.scheduler,
+            early_stopping_best_loss=early_stopping_state.best_loss,
+            early_stopping_bad_epochs=early_stopping_state.bad_epochs,
+            early_stopping_best_epoch=early_stopping_state.best_epoch,
+            early_stopping_best_model_state=early_stopping_state.best_model_state,
+        )
+
+    @staticmethod
+    def _sync_early_stopping_signal(
+        should_stop: bool,
+        *,
+        is_main_process: bool,
+        distributed: bool,
+        device: torch.device,
+    ) -> bool:
+        if not distributed:
+            return bool(should_stop)
+        stop_tensor = torch.tensor([1 if (should_stop and is_main_process) else 0], device=device, dtype=torch.int32)
+        dist.broadcast(stop_tensor, src=0)
+        return bool(int(stop_tensor.item()))
+
+    def _initialize_training_runtime(
+        self,
+        *,
+        device: torch.device,
+        rank: int,
+        distributed: bool,
+    ) -> _TrainingRuntimeState:
+        is_main_process = (rank == 0)
+        run_context = self._create_run_context(device, is_main_process, distributed)
+        start_epoch, early_stopping_state, early_stopping_config = self._restore_training_state(run_context)
+        active_profiler = self._start_training_profiler(
+            device=device,
+            train_size=run_context.train_size,
+            is_main_process=is_main_process,
+            distributed=distributed,
+        )
+        return _TrainingRuntimeState(
+            is_main_process=is_main_process,
+            run_context=run_context,
+            start_epoch=start_epoch,
+            early_stopping_state=early_stopping_state,
+            early_stopping_config=early_stopping_config,
+            active_profiler=active_profiler,
+        )
+
+    def _run_single_training_epoch(
+        self,
+        *,
+        epoch: int,
+        device: torch.device,
+        distributed: bool,
+        runtime_state: _TrainingRuntimeState,
+    ) -> None:
+        run_context = runtime_state.run_context
+        self._publish_epoch_start(epoch, run_context, distributed)
+
+        train_stage_start = time.perf_counter()
+        epoch_stats = self._run_train_epoch(
+            epoch,
+            device,
+            run_context,
+            active_profiler=runtime_state.active_profiler,
+        )
+        train_stage_ms = (time.perf_counter() - train_stage_start) * 1000.0
+
+        global_train_loss, global_train_samples = self._reduce_epoch_train_stats(
+            epoch_stats,
+            distributed=distributed,
+            device=device,
+        )
+        if runtime_state.is_main_process:
+            self._publish_epoch_train_metrics(
+                epoch=epoch,
+                run_context=run_context,
+                epoch_stats=epoch_stats,
+                global_train_loss=global_train_loss,
+                global_train_samples=global_train_samples,
+            )
+
+        validation_start = time.perf_counter()
+        self._handle_validation(
+            epoch=epoch,
+            device=device,
+            run_context=run_context,
+            early_stopping_state=runtime_state.early_stopping_state,
+            early_stopping_config=runtime_state.early_stopping_config,
+            is_main_process=runtime_state.is_main_process,
+        )
+        validation_ms = (time.perf_counter() - validation_start) * 1000.0
+
+        checkpoint_start = time.perf_counter()
+        self._save_epoch_artifacts(
+            epoch=epoch,
+            run_context=run_context,
+            early_stopping_state=runtime_state.early_stopping_state,
+            is_main_process=runtime_state.is_main_process,
+        )
+        checkpoint_ms = (time.perf_counter() - checkpoint_start) * 1000.0
+
+        if runtime_state.is_main_process:
+            self._publish_epoch_load_breakdown(
+                epoch=epoch,
+                epoch_stats=epoch_stats,
+                train_stage_ms=train_stage_ms,
+                validation_ms=validation_ms,
+                checkpoint_ms=checkpoint_ms,
+            )
+
+        return None
+
+    def _should_stop_after_epoch(
+        self,
+        *,
+        epoch: int,
+        device: torch.device,
+        distributed: bool,
+        runtime_state: _TrainingRuntimeState,
+    ) -> bool:
+        should_stop = bool(
+            runtime_state.early_stopping_config.enabled
+            and runtime_state.early_stopping_state.bad_epochs > 0
+            and runtime_state.early_stopping_state.bad_epochs >= runtime_state.early_stopping_config.patience
+        )
+        should_stop = self._sync_early_stopping_signal(
+            should_stop,
+            is_main_process=runtime_state.is_main_process,
+            distributed=distributed,
+            device=device,
+        )
+        if not should_stop:
+            return False
+
+        if runtime_state.is_main_process:
+            self._bus.put([
+                'logging',
+                (
+                    f'Early stopping triggered at epoch {epoch + 1}. '
+                    f'Best val_loss reached at epoch {runtime_state.early_stopping_state.best_epoch}.'
+                ),
+            ])
+            if self._early_stopping_params.restore_best_weights and runtime_state.early_stopping_state.best_model_state:
+                self._base_model.load_state_dict(runtime_state.early_stopping_state.best_model_state)
+                self._bus.put(['logging', 'Best validation weights restored.'])
+        return True
+
+    def _publish_epoch_end_memory(self, *, epoch: int, is_main_process: bool) -> None:
+        if not is_main_process:
+            return
+        memory_payload = _collect_memory_metrics()
+        if memory_payload is not None:
+            self._bus.put(['metrics', {'type': 'system_memory', **memory_payload, 'epoch': int(epoch + 1)}])
+
+    def _finalize_training_success(self, *, is_main_process: bool) -> None:
         if is_main_process:
-            torch.save(self._base_model, self._save_path)
+            self._save_model_artifact()
         if self.callback is not None and is_main_process:
             self.callback()
         if is_main_process:
-            print("Model saved successfully!")
+            print('Model saved successfully!')
 
+    def _run_impl(self, device: torch.device, rank: int, world_size: int, distributed: bool):
+        del world_size
+        runtime_state = self._initialize_training_runtime(
+            device=device,
+            rank=rank,
+            distributed=distributed,
+        )
+
+        if runtime_state.start_epoch >= self._epochs:
+            self._bus.put(['logging', 'All epochs from checkpoint are already completed. Additional training is not required.'])
+
+        try:
+            for epoch in range(runtime_state.start_epoch, self._epochs):
+                self._run_single_training_epoch(
+                    epoch=epoch,
+                    device=device,
+                    distributed=distributed,
+                    runtime_state=runtime_state,
+                )
+                if self._should_stop_after_epoch(
+                    epoch=epoch,
+                    device=device,
+                    distributed=distributed,
+                    runtime_state=runtime_state,
+                ):
+                    break
+
+                self._publish_epoch_end_memory(epoch=epoch, is_main_process=runtime_state.is_main_process)
+                if distributed:
+                    dist.barrier()
+        finally:
+            self._stop_training_profiler(runtime_state.active_profiler)
+
+        self._finalize_training_success(is_main_process=runtime_state.is_main_process)
 
 @dataclass(frozen=True)
 class RecognitionRuntimePlan:
@@ -1080,7 +2111,7 @@ class NeuralRecognizer(threading.Thread):
         names = [img_file.name for img_file in img_files]
         result_folder = self._parameters.result_folder
         result_folder.mkdir(parents=True, exist_ok=True)
-        self._bus.publish('logging', f'Изображений в очереди на распознавание: {len(names)}')
+        self._bus.publish('logging', f'Images queued for recognition: {len(names)}')
         self.colors = 1
         self.model:nn.Module|None = None
         self._thread_stop_event = threading.Event()
@@ -1145,348 +2176,300 @@ class NeuralRecognizer(threading.Thread):
     def prepare_model(self):
         loaded_model: str | Path | nn.Module = self._parameters.model
         if isinstance(loaded_model, (str, Path)):
-            loaded_model = torch.load(loaded_model, weights_only=False)
+            loaded_model = load_model_artifact(loaded_model, map_location='cpu')
         if not isinstance(loaded_model, nn.Module):
             raise TypeError('Recognition model must be a torch.nn.Module or a model path.')
         if not bool(getattr(sys, 'frozen', False)):
+            compile_enabled = str(os.getenv('NEURALIMAGE_TORCH_COMPILE', '1')).strip().lower() in {'1', 'true', 'yes', 'on'}
             compile_fn = getattr(torch, 'compile', None)
-            if compile_fn is not None:
+            target_device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+            can_compile = (
+                compile_enabled
+                and compile_fn is not None
+                and (target_device_type != 'cuda' or _is_module_available('triton'))
+            )
+            if can_compile:
                 try:
-                    loaded_model = compile_fn(loaded_model, mode='max-autotune', dynamic=False)
-                    self._bus.publish('logging', 'Распознавание: включен torch.compile (mode=max-autotune).')
+                    compile_mode, mode_reason = _resolve_torch_compile_mode(target_device_type)
+                    loaded_model = compile_fn(loaded_model, mode=compile_mode, dynamic=False)
+                    self._bus.publish(
+                        'logging',
+                        f'Распознавание: torch.compile enabled (mode={compile_mode}, reason={mode_reason}).',
+                    )
                 except Exception as error:
                     self._bus.publish('logging', f'Распознавание: torch.compile отключен (fallback): {error}')
+            elif not compile_enabled:
+                self._bus.publish('logging', 'Распознавание: torch.compile отключен переменной NEURALIMAGE_TORCH_COMPILE=0.')
+            elif compile_fn is None:
+                self._bus.publish('logging', 'Распознавание: torch.compile недоступен в этой версии PyTorch.')
+            else:
+                self._bus.publish('logging', 'Распознавание: torch.compile отключен, Triton не установлен для CUDA backend.')
         self.model = loaded_model
         self.colors = get_input_channels(loaded_model)
 
     def run_multiprocessing(self, runtime_plan: RecognitionRuntimePlan | None = None):
         if runtime_plan is None:
             runtime_plan = self._build_runtime_plan(multithreading=True)
-        cut_queue = mp.Queue()
-        predict_queue = mp.Queue(maxsize=max(4, len(self.devices_list) * 4))
-        sew_queue = mp.Queue(maxsize=max(4, len(self.devices_list) * 4))
-        sewed_queue = mp.Queue()
-
-        for image in self._parameters.source_files:
-            cut_queue.put(image)
-
-        result_folder = self._parameters.result_folder
-        batch_size = self._parameters.batch_size
-        overlap = self._parameters.overlap
-        len_frames = len(self._parameters.source_files)
-
-        predict_workers_count = runtime_plan.predict_workers
-        cut_workers_count = runtime_plan.cut_workers
-        sew_workers_count = runtime_plan.sew_workers
-
-        for _ in range(cut_workers_count):
-            cut_queue.put(STOP_TOKEN)
-
-        shape = (self.colors, self._parameters.part_size[0], self._parameters.part_size[1])
-        self._bus.publish(
-            'metrics',
-            {'type': 'recognition_progress', 'current': 0, 'total': int(len_frames)},
+        workload = RecognitionWorkload(
+            source_files=list(self._parameters.source_files),
+            result_folder=self._parameters.result_folder,
+            part_size=self._parameters.part_size,
+            overlap=self._parameters.overlap,
+            batch_size=self._parameters.batch_size,
+            colors=self.colors,
+            devices=list(self.devices_list),
+            model_source=cast(str | Path, self._parameters.model),
         )
-        self._bus.publish(
-            'logging',
-            f'План рабочих процессов: нарезка={cut_workers_count}, предсказание={predict_workers_count}, сборка={sew_workers_count}',
+        run_multiprocessing_recognition(
+            workload=workload,
+            worker_counts=WorkerCounts(
+                cut=runtime_plan.cut_workers,
+                predict=runtime_plan.predict_workers,
+                sew=runtime_plan.sew_workers,
+            ),
+            stop_event=self.stop_event,
+            publish=self._bus.publish,
+            stop_token=STOP_TOKEN,
         )
-
-        cut_processes: list[mp.Process] = []
-        predict_processes: list[mp.Process] = []
-        all_processes: list[mp.Process] = []
-
-        self._bus.publish('logging', 'Запуск процессов нарезки изображений')
-        for _ in range(cut_workers_count):
-            process = mp.Process(
-                target=cut_image_process,
-                args=(cut_queue, predict_queue, shape, overlap, self.stop_event),
-            )
-            process.start()
-            cut_processes.append(process)
-            all_processes.append(process)
-
-        self._bus.publish('logging', 'Запуск процессов предсказания')
-        model_source = cast(str | Path, self._parameters.model)
-        for worker_idx in range(predict_workers_count):
-            device = self.devices_list[min(worker_idx, len(self.devices_list) - 1)]
-            process = mp.Process(
-                target=imgpredict,
-                args=(predict_queue, sew_queue, model_source, device, batch_size, self.stop_event),
-            )
-            process.start()
-            predict_processes.append(process)
-            all_processes.append(process)
-
-        self._bus.publish('logging', 'Запуск процессов сборки изображений')
-        for _ in range(sew_workers_count):
-            process = mp.Process(
-                target=imgsew,
-                args=(result_folder, sew_queue, sewed_queue, self.stop_event),
-            )
-            process.start()
-            all_processes.append(process)
-
-        current_time = time.perf_counter()
-        now = datetime.datetime.now()
-        sewed_in_general = 0
-        predict_stopped = False
-        sew_stopped = False
-
-        try:
-            while sewed_in_general < len_frames:
-                if self.stop_event.is_set():
-                    break
-
-                if not predict_stopped and all(not proc.is_alive() for proc in cut_processes):
-                    for _ in range(predict_workers_count):
-                        predict_queue.put(STOP_TOKEN)
-                    predict_stopped = True
-
-                if predict_stopped and (not sew_stopped) and all(not proc.is_alive() for proc in predict_processes):
-                    for _ in range(sew_workers_count):
-                        sew_queue.put(STOP_TOKEN)
-                    sew_stopped = True
-
-                try:
-                    sewed_queue.get(timeout=0.2)
-                    now_new = datetime.datetime.now() - now
-                    now_new = now_new - datetime.timedelta(microseconds=now_new.microseconds)
-                    sewed_in_general += 1
-                    time_for_frame = round(time.perf_counter() - current_time, 3)
-                    self._bus.publish(
-                        'logging',
-                        f'Кадр: {sewed_in_general}/{len_frames}. Время на кадр: {time_for_frame} сек. Прошло: {now_new}',
-                    )
-                    self._bus.publish(
-                        'metrics',
-                        {'type': 'recognition_progress', 'current': int(sewed_in_general), 'total': int(len_frames)},
-                    )
-                    current_time = time.perf_counter()
-                except Empty:
-                    pass
-
-                failed_process = next((proc for proc in all_processes if proc.exitcode not in (None, 0)), None)
-                if failed_process is not None:
-                    self._bus.publish(
-                        'logging',
-                        f'Завершение дочернего процесса с ошибкой. pid={failed_process.pid}, код={failed_process.exitcode}.',
-                    )
-                    self.stop_event.set()
-                    break
-        finally:
-            if not predict_stopped:
-                for _ in range(predict_workers_count):
-                    predict_queue.put(STOP_TOKEN)
-            if not sew_stopped:
-                for _ in range(sew_workers_count):
-                    sew_queue.put(STOP_TOKEN)
-
-            for process in all_processes:
-                process.join(timeout=5)
-            for process in all_processes:
-                if process.is_alive():
-                    process.terminate()
-                    process.join(timeout=5)
 
     def run_one_thread(self):
         model = self.model
         if model is None:
             raise RuntimeError('Model is not prepared before recognition start.')
         if not self.devices_list:
-            self.devices_list = [torch.device("cpu")]
+            self.devices_list = [torch.device('cpu')]
         device = self.devices_list[0]
-
-        model.eval()
-        model.to(device)
-
-        self._bus.publish('logging', 'Запуск распознавания в однопоточном режиме')
-        self._bus.publish(
-            'metrics',
-            {'type': 'recognition_progress', 'current': 0, 'total': int(len(self._parameters.source_files))},
+        run_single_thread_recognition(
+            source_files=list(self._parameters.source_files),
+            result_folder=self._parameters.result_folder,
+            part_size=self._parameters.part_size,
+            overlap=self._parameters.overlap,
+            batch_size=self._parameters.batch_size,
+            colors=self.colors,
+            model=model,
+            device=device,
+            stop_event=self._thread_stop_event,
+            publish=self._bus.publish,
+            collect_memory_metrics=_collect_memory_metrics,
         )
-        memory_payload = _collect_memory_metrics()
-        if memory_payload is not None:
-            self._bus.publish('metrics', {'type': 'system_memory', **memory_payload})
-
-        current_time = time.perf_counter()
-        now = datetime.datetime.now()
-        shape = (self.colors,self._parameters.part_size[0], self._parameters.part_size[1])
-
-        for i,img in enumerate(self._parameters.source_files):
-            if self._thread_stop_event.is_set():
-                break
-            cutted_image = cut_image_prepare(img, shape, self._parameters.overlap)
-            predicted_image = gpu_predict(cutted_image, model, device, self._parameters.batch_size)
-            sew(self._parameters.result_folder, predicted_image)
-
-            now_new = datetime.datetime.now()
-            now_new = now_new - now
-            now_new = now_new - datetime.timedelta(microseconds=now_new.microseconds)
-            time_for_frame = round(time.perf_counter() - current_time, 3)
-            self._bus.publish(
-                'logging',
-                f'Кадр: {i + 1}/{len(self._parameters.source_files)}. Время на кадр: {time_for_frame} сек. Прошло: {now_new}',
-            )
-            self._bus.publish(
-                'metrics',
-                {
-                    'type': 'recognition_progress',
-                    'current': int(i + 1),
-                    'total': int(len(self._parameters.source_files)),
-                },
-            )
-            memory_payload = _collect_memory_metrics()
-            if memory_payload is not None:
-                self._bus.publish('metrics', {'type': 'system_memory', **memory_payload})
-            current_time = time.perf_counter()
 
     def stop(self):
         self._thread_stop_event.set()
         self.stop_event.set()
 
 
+class _QueueMessageBus:
+    def __init__(self, queue: mp.Queue):
+        self._queue = queue
+
+    def publish(self, topic: str, payload: Any) -> None:
+        self._queue.put([topic, payload])
+
+
+class RecognizerProcess(mp.Process):
+    def __init__(
+        self,
+        recognition_parameters: RecognitionParameters,
+        message_bus: mp.Queue,
+        stop_event: Any,
+        multithreading: bool = False,
+    ):
+        super().__init__()
+        self._recognition_parameters = recognition_parameters
+        self._bus = message_bus
+        self._stop_event = stop_event
+        self._multithreading = bool(multithreading)
+
+    def _start_stop_watcher(self, recognizer: NeuralRecognizer) -> threading.Thread:
+        def _watch_stop_signal() -> None:
+            self._stop_event.wait()
+            recognizer.stop()
+
+        watcher = threading.Thread(target=_watch_stop_signal, daemon=True)
+        watcher.start()
+        return watcher
+
+    def run(self):
+        recognizer = NeuralRecognizer(
+            self._recognition_parameters,
+            message_bus=cast(AbstractMessageBus, _QueueMessageBus(self._bus)),
+            callback=None,
+        )
+        self._start_stop_watcher(recognizer)
+        try:
+            recognizer.run(multithreading=self._multithreading)
+        except Exception as error:
+            self._bus.put(['error', f'Recognition error: {error}'])
+            raise
+        finally:
+            recognizer.stop()
+
+
+class ModelRecognizer(threading.Thread):
+    def __init__(
+        self,
+        recognition_parameters: RecognitionParameters,
+        message_bus: AbstractMessageBus,
+        callback: Callable[..., None] | None = None,
+        multithreading: bool = False,
+    ):
+        super().__init__()
+        self._parameters = recognition_parameters
+        self._bus = message_bus
+        self.callback = callback
+        self._multithreading = bool(multithreading)
+        self._stop_event = threading.Event()
+        self._process_stop_event = mp.Event()
+        self.message_queue = mp.Queue()
+        self.succeeded = False
+        self.error_message: str | None = None
+
+    @staticmethod
+    def _elapsed_suffix(since: float) -> str:
+        elapsed_seconds = int(max(0.0, time.perf_counter() - since))
+        elapsed_hours, remainder = divmod(elapsed_seconds, 3600)
+        elapsed_minutes, elapsed_secs = divmod(remainder, 60)
+        return f' Прошло: {elapsed_hours:02d}:{elapsed_minutes:02d}:{elapsed_secs:02d}'
+
+    def _publish_recognition_message(
+        self,
+        message: Any,
+        *,
+        append_elapsed_suffix: bool,
+        last_message_at: float,
+    ) -> float:
+        topic, payload = message[0], message[1]
+        now = time.perf_counter()
+        if append_elapsed_suffix and isinstance(payload, str) and topic != 'error':
+            payload = payload + self._elapsed_suffix(last_message_at)
+        if topic == 'error' and isinstance(payload, str):
+            self.error_message = payload
+        self._bus.publish(topic, payload)
+        return now
+
+    def _drain_recognition_queue(self, *, append_elapsed_suffix: bool, last_message_at: float) -> float:
+        while not self.message_queue.empty():
+            queued_message = self.message_queue.get()
+            last_message_at = self._publish_recognition_message(
+                queued_message,
+                append_elapsed_suffix=append_elapsed_suffix,
+                last_message_at=last_message_at,
+            )
+        return last_message_at
+
+    def _finalize_recognition_result(self, recognition_process: Any) -> bool:
+        if self._stop_event.is_set():
+            self.succeeded = False
+            return False
+        exit_code = recognition_process.exitcode if recognition_process is not None else 1
+        if exit_code not in (0, None):
+            if self.error_message is None:
+                self.error_message = f'Recognition error: process exited with code {exit_code}.'
+                self._bus.publish('error', self.error_message)
+            self.succeeded = False
+            return False
+        self.succeeded = True
+        return True
+
+    def run(self):
+        recognition_process: Any = None
+        try:
+            recognition_process = RecognizerProcess(
+                self._parameters,
+                self.message_queue,
+                self._process_stop_event,
+                multithreading=self._multithreading,
+            )
+            recognition_process.start()
+            last_message_at = time.perf_counter()
+            while recognition_process.is_alive():
+                if self._stop_event.is_set():
+                    self._process_stop_event.set()
+                    recognition_process.join(timeout=5)
+                    if recognition_process.is_alive():
+                        recognition_process.kill()
+                    break
+                last_message_at = self._drain_recognition_queue(
+                    append_elapsed_suffix=True,
+                    last_message_at=last_message_at,
+                )
+                time.sleep(1)
+
+            recognition_process.join()
+            self._drain_recognition_queue(append_elapsed_suffix=False, last_message_at=last_message_at)
+            self._finalize_recognition_result(recognition_process)
+        finally:
+            if recognition_process is not None and recognition_process.is_alive():
+                recognition_process.kill()
+                recognition_process.join(timeout=5)
+            try:
+                self.message_queue.close()
+            except Exception:
+                pass
+            _release_torch_memory()
+            if self.callback is not None:
+                self.callback()
+
+    def stop(self):
+        self._stop_event.set()
+        self._process_stop_event.set()
+
+
 class NeuralRecognitioner(NeuralRecognizer):
     """Backward-compatible alias for the legacy misspelled class name."""
 
 def cut_image_process(cut_queue, cutted_queue, size, overlap, stop_event):
-    while not stop_event.is_set():
-        try:
-            img_path = cut_queue.get(timeout=0.2)
-        except Empty:
-            continue
-        if img_path == STOP_TOKEN:
-            break
-        images_output_parameters = cut_image_prepare(img_path, size, overlap)
-        cutted_queue.put(images_output_parameters)
+    return _cut_image_process(
+        cut_queue,
+        cutted_queue,
+        size,
+        overlap,
+        stop_event,
+        stop_token=STOP_TOKEN,
+    )
 
 
-def cut_image_prepare(img_path:Path, segment_size:tuple[int,int,int], overlap:int):
-    img_dict = {'baseim_size': None, 'segment_size': None, 'overlap': None,
-                'cutted_image': None, 'name': img_path.name}
+def cut_image_prepare(img_path: Path, segment_size: tuple[int, int, int], overlap: int):
+    return _cut_image_prepare(img_path, segment_size, overlap)
 
-    Image.MAX_IMAGE_PIXELS = None
-
-    channels = segment_size[0]
-    with Image.open(img_path) as startimg:
-        if not (startimg.mode == 'L') and channels == 1:  # if rgb image predicts as grayscale
-            startimg = startimg.convert("L")
-        img_dict['baseim_size'] = startimg.size
-        # convert image to numpy array
-        work_image = np.array(startimg).astype('float32')
-    img_dict['segment_size'] = segment_size
-    img_dict['overlap'] = overlap
-
-    # shape[0] - height, shape[1] - width
-    if channels == 1:
-        work_image = np.reshape(work_image, (channels, work_image.shape[0], work_image.shape[1]))
-    else:
-        work_image = work_image.transpose(2, 0, 1)
-
-    img_dict['cutted_image'] = cut_image(work_image, segment_size, overlap)
-
-    return img_dict
 
 def get_array_from_image(path, channels):
-    Image.MAX_IMAGE_PIXELS = None
-    with Image.open(path) as startimg:
-        work_image = np.array(startimg).astype('float32')
-    # shape[0] - height, shape[1] - width
-    work_image = work_image.transpose(2, 0, 1)
-    return work_image
+    return _get_array_from_image(path, channels)
 
 
-def imgpredict(prediction_queue, predicted_queue, model_path, gpu, batch_size, stop_event: MpEvent):
-    model = torch.load(model_path, weights_only=False)
-    model.eval()
-    model.to(gpu)
-    if gpu.type == 'cuda':
-        torch.backends.cudnn.benchmark = True
-
-    while not stop_event.is_set():
-        try:
-            item = prediction_queue.get(timeout=0.2)
-        except Empty:
-            continue
-        if item == STOP_TOKEN:
-            break
-        item = gpu_predict(item, model, gpu, batch_size)
-        item.pop('cutted_image', None)
-        predicted_queue.put(item)
+def imgpredict(prediction_queue, predicted_queue, model_path, gpu, batch_size, stop_event):
+    return _imgpredict(
+        prediction_queue,
+        predicted_queue,
+        model_path,
+        gpu,
+        batch_size,
+        stop_event,
+        stop_token=STOP_TOKEN,
+    )
 
 
 def gpu_predict(img, model, device, batch_size):
-    predicted_image = np.empty_like(img['cutted_image'])
-    parts_in_image = len(img['cutted_image'])
-
-    tensor_data = torch.from_numpy(img['cutted_image']).float()
-    batches = create_batches(tensor_data, batch_size)
-    use_amp = (device.type == 'cuda')
-    with torch.inference_mode():
-        for i, batch in enumerate(batches):
-            batch = batch.to(device, non_blocking=use_amp)
-            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
-                outputs = model(batch)
-                outputs = torch.sigmoid(outputs)
-            numpy_predictions = outputs.detach().cpu().numpy()
-            if batch_size * (i + 1) < parts_in_image:
-                predicted_image[batch_size * i: batch_size * (i + 1)] = numpy_predictions
-            else:
-                predicted_image[batch_size * i:] = numpy_predictions
-
-    img['predicted_image'] = predicted_image
-
-
-    return img
+    return _gpu_predict(img, model, device, batch_size)
 
 
 def create_batches(tensor_data, batch_size):
-    """Split tensor_data into batches of size batch_size."""
-    n_samples = len(tensor_data)
-    for i in range(0, n_samples, batch_size):
-        yield tensor_data[i:i + batch_size]
+    return _create_batches(tensor_data, batch_size)
 
 
-def imgsew(outputDir, sew_queue, sewed_queue, stop_event: MpEvent):
-    while not stop_event.is_set():
-        try:
-            item = sew_queue.get(timeout=0.2)
-        except Empty:
-            continue
-        if item == STOP_TOKEN:
-            break
-        sew(outputDir, item)
-        sewed_queue.put(item['name'])
+def imgsew(outputDir, sew_queue, sewed_queue, stop_event):
+    return _imgsew(
+        outputDir,
+        sew_queue,
+        sewed_queue,
+        stop_event,
+        stop_token=STOP_TOKEN,
+    )
 
 
 def sew_from_queue(output_dir, sew_queue, sewed_queue):
-    item = sew_queue.get()
-    sew(output_dir, item)
-    sewed_queue.put(item['name'])
+    return _sew_from_queue(output_dir, sew_queue, sewed_queue)
 
 
 def sew(save_dir, item):
-    name =  '.'.join(item['name'].split('.')[:-1]) + '.jpg'
-    full_name = os.path.join(save_dir, name)
-    big_result = cast(
-        Image.Image,
-        sew_image(
-            base_image=item['baseim_size'],
-            predictions=item['predicted_image'],
-            overlap=item['overlap'],
-        ),
-    )
-    # big_result = big_result.resize(item['baseim_size'])
-    # big_result = img_crop_border(crop_border * 2, big_result)
-    big_result.save(full_name)
-
-
-
-if __name__ == '__main__':
-    result_tesnor = get_array_from_image('D:/NN/PCB/nn_test/samples/img_0000.jpg', 3)
-    for i,channel in enumerate('RGB'):
-        resimg = Image.fromarray(result_tesnor[i].astype('uint8'), mode='L')
-        save_color(resimg, channel, f'D:/NN/PCB/nn_test/samples/img_0000_{channel}.jpg')
-
-
-
+    return _sew(save_dir, item)

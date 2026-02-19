@@ -8,6 +8,7 @@ from PIL import Image
 
 from lib import backend
 from lib.data_interfaces import SampleGenerationSettings
+from lib.file_func import filter_images
 from lib.message_bus import AbstractMessageBus
 
 
@@ -71,11 +72,9 @@ class CutImageThread(threading.Thread):
 
     def run(self):
         self.bus.publish('logging', f'Начинаю производить нарезку кадров из {self.source}')
-        for file in self.source.iterdir():
+        for file in sorted(filter_images(self.source)):
             if self._stop_event.is_set():
                 break
-            if not file.is_file() or file.suffix.lower() != '.jpg':
-                continue
 
             self.bus.publish('logging', f'Обрабатывается файл {file.stem}')
             backend.frame_cut(

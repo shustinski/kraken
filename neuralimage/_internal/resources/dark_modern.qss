@@ -98,6 +98,10 @@ QLabel {
     color: #d5dfeb;
 }
 
+QLabel:disabled {
+    color: #6f7f91;
+}
+
 ClickableLabel,
 QLineEdit,
 QPlainTextEdit,
@@ -231,6 +235,14 @@ QDoubleSpinBox:focus {
     background-color: #111923;
 }
 
+QComboBox:disabled,
+QSpinBox:disabled,
+QDoubleSpinBox:disabled {
+    background-color: #0d1218;
+    color: #8596aa;
+    border-color: #223040;
+}
+
 QComboBox::drop-down,
 QSpinBox::up-button,
 QSpinBox::down-button,
@@ -241,6 +253,15 @@ QDoubleSpinBox::down-button {
     width: 20px;
     border-top-right-radius: 8px;
     border-bottom-right-radius: 8px;
+}
+
+QComboBox::drop-down:disabled,
+QSpinBox::up-button:disabled,
+QSpinBox::down-button:disabled,
+QDoubleSpinBox::up-button:disabled,
+QDoubleSpinBox::down-button:disabled {
+    background-color: #111923;
+    border-left: 1px solid #223040;
 }
 
 QComboBox::down-arrow {
@@ -276,6 +297,11 @@ QRadioButton {
     background: transparent;
 }
 
+QCheckBox:disabled,
+QRadioButton:disabled {
+    color: #6f7f91;
+}
+
 QCheckBox::indicator,
 QRadioButton::indicator {
     width: 16px;
@@ -300,6 +326,18 @@ QCheckBox::indicator:checked,
 QRadioButton::indicator:checked {
     background-color: #1f6feb;
     border: 1px solid #4d95ff;
+}
+
+QCheckBox::indicator:disabled,
+QRadioButton::indicator:disabled {
+    background-color: #0d1218;
+    border: 1px solid #2a3a4d;
+}
+
+QCheckBox::indicator:checked:disabled,
+QRadioButton::indicator:checked:disabled {
+    background-color: #2b3d55;
+    border: 1px solid #3b5677;
 }
 
 QCheckBox::indicator:checked {

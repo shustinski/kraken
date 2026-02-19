@@ -16,7 +16,7 @@ def qapp():
     return app
 
 
-def test_main_view_metrics_are_collected_and_capped(qapp):
+def test_main_view_metrics_are_collected_without_capping(qapp):
     view = MainView(QWidget())
     view.connect_internal_signals()
 
@@ -52,7 +52,7 @@ def test_main_view_metrics_are_collected_and_capped(qapp):
 
     assert len(view.metrics_panel._train_epoch_points) == 1
     assert len(view.metrics_panel._val_epoch_points) == 1
-    assert len(view._batch_points_by_epoch[1]) == 200
+    assert len(view._batch_points_by_epoch[1]) == 250
     assert view.epoch_progress_bar.value() == 20
     assert view.batch_progress_bar.value() == 25
     assert view.recognition_progress_bar.value() == 25
@@ -60,6 +60,30 @@ def test_main_view_metrics_are_collected_and_capped(qapp):
     assert "total: 30.0" in view.performance_label.text()
     assert view.preview_image_label.pixmap() is not None
     assert view.preview_label_label.pixmap() is not None
+
+
+def test_main_view_batch_points_are_sparsified_after_1000(qapp):
+    view = MainView(QWidget())
+    view.connect_internal_signals()
+
+    captured: dict[str, object] = {}
+
+    def _capture(epoch: int, points):
+        captured["epoch"] = epoch
+        captured["points"] = list(points)
+
+    view.metrics_panel.set_batch_points = _capture
+
+    for i in range(1001):
+        view.metrics_message.emit(
+            {'type': 'train_batch', 'epoch': 1, 'batch_index': i + 1, 'loss': 1.0 - i / 5000.0}
+        )
+
+    assert len(view._batch_points_by_epoch[1]) == 1001
+    assert captured["epoch"] == 1
+    points = captured["points"]
+    assert isinstance(points, list)
+    assert len(points) == 501
 
 
 def test_metrics_panel_can_be_restored_from_view_menu(qapp):

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Iterable, List, Tuple, Union
 
-SUPPORTED_IMAGES = ('.jpg', '.bmp')
+SUPPORTED_IMAGES = ('.jpg', '.bmp', '.png')
 
 def filter_images(folder: Union[str, Path]) -> List[Path]:
    return filter_files(folder, SUPPORTED_IMAGES)

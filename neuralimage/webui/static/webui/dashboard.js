@@ -29,7 +29,11 @@
     const cutModeRadios = document.querySelectorAll('input[name="sample_cut_mode_radio"]');
 
     const useValidationInput = document.querySelector('[name="settings-use_validation"]');
-    const additionalProcessingInput = document.querySelector('[name="settings-additional_processing"]');
+    const cropEnabledInput = document.querySelector('[name="settings-crop_enabled"]');
+    const resizeEnabledInput = document.querySelector('[name="settings-resize_enabled"]');
+    const additionalAugmentationInput = document.querySelector('[name="settings-additional_augmentation"]');
+    const hardMiningEnabledInput = document.querySelector('[name="settings-hard_mining_enabled"]');
+    const lossFunctionInput = document.querySelector('[name="settings-loss_function"]');
 
     const optimizerInput = document.querySelector('[name="settings-optimizer_name"]');
     const learningRateInput = document.querySelector('[name="settings-learning_rate"]');
@@ -48,8 +52,18 @@
     const validationPercentField = document.querySelector('[data-role="validation-percent"]');
     const edgeCutField = document.querySelector('[data-role="edge-cut"]');
     const targetSizeField = document.querySelector('[data-role="target-size"]');
+    const extraAugmentationFields = document.querySelector('[data-role="extra-aug-fields"]');
+    const hardMiningField = document.querySelector('[data-role="hard-mining-fields"]');
+    const diceLossWeightField = document.querySelector('[data-role="dice-loss-weight"]');
+    const iouLossWeightField = document.querySelector('[data-role="iou-loss-weight"]');
 
     let afterId = 0;
+
+    function normalizeWorkModeValue(raw) {
+        if (raw === 'recognintion_only') return 'recognition_only';
+        if (raw === 'futher_training') return 'further_training';
+        return raw;
+    }
 
     function getPersistedControls() {
         return document.querySelectorAll('input[name], select[name], textarea[name]');
@@ -87,7 +101,10 @@
 
         getPersistedControls().forEach((el) => {
             if (!(el.name in data)) return;
-            const value = data[el.name];
+            let value = data[el.name];
+            if (el.name === 'main-work_mode' || el.name === 'work_mode_radio') {
+                value = normalizeWorkModeValue(value);
+            }
             if (el.type === 'radio') {
                 el.checked = String(el.value) === String(value);
                 return;
@@ -145,7 +162,9 @@
 
     function applyModeRules() {
         syncWorkModeSelectFromRadios();
-        const mode = workModeSelect ? workModeSelect.value : 'train_and_recognition';
+        let mode = workModeSelect ? workModeSelect.value : 'train_and_recognition';
+        if (mode === 'recognintion_only') mode = 'recognition_only';
+        if (mode === 'futher_training') mode = 'further_training';
 
         setFieldEnabled(modeFields.source, true);
         setFieldEnabled(modeFields.result, true);
@@ -158,7 +177,7 @@
             setFieldEnabled(modeFields.modelPath, false);
             return;
         }
-        if (mode === 'recognintion_only') {
+        if (mode === 'recognition_only') {
             setFieldEnabled(modeFields.sampleGroup, false);
             setFieldEnabled(modeFields.sample, false);
             setFieldEnabled(modeFields.label, false);
@@ -173,9 +192,12 @@
 
     function applyDependentRules() {
         setFieldEnabled(validationPercentField, !!(useValidationInput && useValidationInput.checked));
-        const enabled = !!(additionalProcessingInput && additionalProcessingInput.checked);
-        setFieldEnabled(edgeCutField, enabled);
-        setFieldEnabled(targetSizeField, enabled);
+        setFieldEnabled(edgeCutField, !!(cropEnabledInput && cropEnabledInput.checked));
+        setFieldEnabled(targetSizeField, !!(resizeEnabledInput && resizeEnabledInput.checked));
+        setFieldEnabled(extraAugmentationFields, !!(additionalAugmentationInput && additionalAugmentationInput.checked));
+        setFieldEnabled(hardMiningField, !!(hardMiningEnabledInput && hardMiningEnabledInput.checked));
+        setFieldEnabled(diceLossWeightField, !!(lossFunctionInput && lossFunctionInput.value === 'bce_dice'));
+        setFieldEnabled(iouLossWeightField, !!(lossFunctionInput && lossFunctionInput.value === 'bce_iou'));
     }
 
     function markActivePreset() {
@@ -338,7 +360,11 @@
     if (weightDecayInput) weightDecayInput.addEventListener('input', markActivePreset);
 
     if (useValidationInput) useValidationInput.addEventListener('change', applyDependentRules);
-    if (additionalProcessingInput) additionalProcessingInput.addEventListener('change', applyDependentRules);
+    if (cropEnabledInput) cropEnabledInput.addEventListener('change', applyDependentRules);
+    if (resizeEnabledInput) resizeEnabledInput.addEventListener('change', applyDependentRules);
+    if (additionalAugmentationInput) additionalAugmentationInput.addEventListener('change', applyDependentRules);
+    if (hardMiningEnabledInput) hardMiningEnabledInput.addEventListener('change', applyDependentRules);
+    if (lossFunctionInput) lossFunctionInput.addEventListener('change', applyDependentRules);
 
     restoreFormState();
     syncWorkModeRadiosFromSelect();

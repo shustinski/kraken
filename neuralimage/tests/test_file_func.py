@@ -22,5 +22,5 @@ def test_filter_images_uses_supported_extensions():
 
     result = filter_images(tmp_path)
 
-    assert sorted(p.name for p in result) == ['a.jpg', 'b.bmp']
+    assert sorted(p.name for p in result) == ['a.jpg', 'b.bmp', 'c.png']
 

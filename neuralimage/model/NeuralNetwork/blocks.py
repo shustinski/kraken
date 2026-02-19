@@ -20,10 +20,12 @@ class DSConv(nn.Module):
 
 class ResDSBlock(nn.Module):
     """Two DSConv with residual (when shape matches)."""
-    def __init__(self, in_ch, out_ch, gn_groups=8):
+    def __init__(self, in_ch, out_ch, gn_groups=8, dropout: float = 0.0):
         super().__init__()
         self.conv1 = DSConv(in_ch, out_ch, gn_groups=gn_groups)
         self.conv2 = DSConv(out_ch, out_ch, gn_groups=gn_groups)
+        self.use_dropout = dropout > 0.0
+        self.dropout = nn.Dropout2d(p=dropout) if self.use_dropout else nn.Identity()
         self.skip = None
         if in_ch != out_ch:
             self.skip = nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False)
@@ -32,6 +34,7 @@ class ResDSBlock(nn.Module):
         identity = x
         x = self.conv1(x)
         x = self.conv2(x)
+        x = self.dropout(x)
         if self.skip is not None:
             identity = self.skip(identity)
         return x + identity
@@ -39,10 +42,10 @@ class ResDSBlock(nn.Module):
 
 class Down(nn.Module):
     """Downsample by stride-2 depthwise-separable conv."""
-    def __init__(self, in_ch, out_ch, gn_groups=8):
+    def __init__(self, in_ch, out_ch, gn_groups=8, dropout: float = 0.0):
         super().__init__()
         self.down = DSConv(in_ch, out_ch, s=2, gn_groups=gn_groups)   # stride=2
-        self.block = ResDSBlock(out_ch, out_ch, gn_groups=gn_groups)
+        self.block = ResDSBlock(out_ch, out_ch, gn_groups=gn_groups, dropout=dropout)
 
     def forward(self, x):
         x = self.down(x)
@@ -51,9 +54,9 @@ class Down(nn.Module):
 
 class Up(nn.Module):
     """Upsample + concat skip + refine."""
-    def __init__(self, in_ch, skip_ch, out_ch, gn_groups=8):
+    def __init__(self, in_ch, skip_ch, out_ch, gn_groups=8, dropout: float = 0.0):
         super().__init__()
-        self.refine = ResDSBlock(in_ch + skip_ch, out_ch, gn_groups=gn_groups)
+        self.refine = ResDSBlock(in_ch + skip_ch, out_ch, gn_groups=gn_groups, dropout=dropout)
 
     def forward(self, x, skip):
         x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)

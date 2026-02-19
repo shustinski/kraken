@@ -2,12 +2,14 @@ from pathlib import Path
 
 from lib.data_interfaces import (
     WorkMode,
+    parse_work_mode,
     SampleCutMode,
     OptimizerName,
     MixedPrecisionMode,
     OptimizerParameters,
     EarlyStoppingParameters,
     WarmupParameters,
+    HardMiningParameters,
     SamplePrepareSettings,
     SampleGenerationSettings,
     TrainingParameters,
@@ -18,10 +20,7 @@ from view.window_dataclasses import MainWindowState, SettingsState
 
 
 def resolve_work_mode(value: str) -> WorkMode | None:
-    for mode in WorkMode:
-        if mode.value == value:
-            return mode
-    return None
+    return parse_work_mode(value)
 
 
 def build_workflow_parameters(
@@ -36,12 +35,12 @@ def build_workflow_parameters(
         else Path(main_window.model_path)
     )
 
-    prep = SamplePrepareSettings()
-    if settings.additional_processing:
-        prep = SamplePrepareSettings(
-            edge_cut=(settings.edge_cut_size, settings.edge_cut_size),
-            target_size=settings.target_size,
-        )
+    prep = SamplePrepareSettings(
+        enable_crop=settings.crop_enabled,
+        enable_resize=settings.resize_enabled,
+        edge_cut=(settings.edge_cut_size, settings.edge_cut_size),
+        target_size=settings.target_size,
+    )
 
     generation = SampleGenerationSettings(
         step=settings.step,
@@ -49,6 +48,11 @@ def build_workflow_parameters(
         vertical_rotation=settings.vertical_rotation,
         horizontal_rotation=settings.horizontal_rotation,
         channels=channels,
+        additional_augmentation=settings.additional_augmentation,
+        augmentation_brightness_strength=settings.augmentation_brightness_strength,
+        augmentation_contrast_strength=settings.augmentation_contrast_strength,
+        augmentation_noise_probability=settings.augmentation_noise_probability,
+        augmentation_noise_sigma=settings.augmentation_noise_sigma,
     )
 
     try:
@@ -78,6 +82,9 @@ def build_workflow_parameters(
             weight_decay=settings.weight_decay,
         ),
         mixed_precision=mixed_precision,
+        loss_function=settings.loss_function,
+        dice_loss_weight=settings.dice_loss_weight,
+        iou_loss_weight=settings.iou_loss_weight,
         early_stopping=EarlyStoppingParameters(
             enabled=settings.early_stopping_enabled,
             patience=settings.early_stopping_patience,
@@ -89,8 +96,15 @@ def build_workflow_parameters(
             epochs=settings.warmup_epochs,
             start_factor=settings.warmup_start_factor,
         ),
+        hard_mining=HardMiningParameters(
+            enabled=settings.hard_mining_enabled,
+            strength=settings.hard_mining_strength,
+            ema_alpha=settings.hard_mining_ema_alpha,
+        ),
+        skip_uniform_labels=settings.skip_uniform_labels,
         use_multi_gpu=settings.use_multi_gpu,
         show_batch_preview=settings.show_batch_preview,
+        log_update_frequency=settings.log_update_frequency,
     )
 
     recognition = RecognitionParameters(

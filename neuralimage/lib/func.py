@@ -7,7 +7,7 @@ except ModuleNotFoundError:  # allows using non-ML helpers without torch install
     nn = None
 
 
-IMAGE_EXTENSIONS = ('.jpg', '.bmp')
+IMAGE_EXTENSIONS = ('.jpg', '.bmp', '.png')
 VECTOR_EXTENSIONS = ('.cif',)
 
 

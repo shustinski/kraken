@@ -697,7 +697,14 @@ class EfficientUNet(nn.Module):
     num_classes=1 -> binary logits (use BCEWithLogitsLoss + sigmoid at inference)
     num_classes>1 -> multi-class logits (use CrossEntropyLoss + softmax at inference)
     """
-    def __init__(self, in_ch=1):
+    def __init__(
+        self,
+        in_ch=1,
+        dropout_stem: float = 0.0,
+        dropout_down: float = 0.08,
+        dropout_bottleneck: float = 0.15,
+        dropout_up: float = 0.03,
+    ):
         super().__init__()
         gn_groups = 8
         base_ch = 32
@@ -707,16 +714,16 @@ class EfficientUNet(nn.Module):
         c4 = base_ch * 8
         c5 = base_ch * 16
 
-        self.stem = ResDSBlock(in_ch, c1, gn_groups=gn_groups)
-        self.down1 = Down(c1, c2, gn_groups=gn_groups)
-        self.down2 = Down(c2, c3, gn_groups=gn_groups)
-        self.down3 = Down(c3, c4, gn_groups=gn_groups)
-        self.down4 = Down(c4, c5, gn_groups=gn_groups)
+        self.stem = ResDSBlock(in_ch, c1, gn_groups=gn_groups, dropout=dropout_stem)
+        self.down1 = Down(c1, c2, gn_groups=gn_groups, dropout=dropout_down)
+        self.down2 = Down(c2, c3, gn_groups=gn_groups, dropout=dropout_down)
+        self.down3 = Down(c3, c4, gn_groups=gn_groups, dropout=dropout_down)
+        self.down4 = Down(c4, c5, gn_groups=gn_groups, dropout=dropout_bottleneck)
 
-        self.up4 = Up(c5, c4, c4, gn_groups=gn_groups)
-        self.up3 = Up(c4, c3, c3, gn_groups=gn_groups)
-        self.up2 = Up(c3, c2, c2, gn_groups=gn_groups)
-        self.up1 = Up(c2, c1, c1, gn_groups=gn_groups)
+        self.up4 = Up(c5, c4, c4, gn_groups=gn_groups, dropout=dropout_up)
+        self.up3 = Up(c4, c3, c3, gn_groups=gn_groups, dropout=dropout_up)
+        self.up2 = Up(c3, c2, c2, gn_groups=gn_groups, dropout=dropout_up)
+        self.up1 = Up(c2, c1, c1, gn_groups=gn_groups, dropout=dropout_up)
 
         self.head = nn.Conv2d(c1, 1, kernel_size=1)
 
@@ -732,6 +739,57 @@ class EfficientUNet(nn.Module):
         x = self.up2(x, s2)
         x = self.up1(x, s1)
         return self.head(x)
+    
+@register_model('EfficientUNetMax')
+class EfficientUNetMax(nn.Module):
+    """
+    Lightweight U-Net-like model.
+    num_classes=1 -> binary logits (use BCEWithLogitsLoss + sigmoid at inference)
+    num_classes>1 -> multi-class logits (use CrossEntropyLoss + softmax at inference)
+    """
+    def __init__(
+        self,
+        in_ch=1,
+        dropout_stem: float = 0.0,
+        dropout_down: float = 0.08,
+        dropout_bottleneck: float = 0.15,
+        dropout_up: float = 0.03,
+    ):
+        super().__init__()
+        gn_groups = 8
+        base_ch = 64
+        c1 = base_ch
+        c2 = base_ch * 2
+        c3 = base_ch * 4
+        c4 = base_ch * 8
+        c5 = base_ch * 16
+
+        self.stem = ResDSBlock(in_ch, c1, gn_groups=gn_groups, dropout=dropout_stem)
+        self.down1 = Down(c1, c2, gn_groups=gn_groups, dropout=dropout_down)
+        self.down2 = Down(c2, c3, gn_groups=gn_groups, dropout=dropout_down)
+        self.down3 = Down(c3, c4, gn_groups=gn_groups, dropout=dropout_down)
+        self.down4 = Down(c4, c5, gn_groups=gn_groups, dropout=dropout_bottleneck)
+
+        self.up4 = Up(c5, c4, c4, gn_groups=gn_groups, dropout=dropout_up)
+        self.up3 = Up(c4, c3, c3, gn_groups=gn_groups, dropout=dropout_up)
+        self.up2 = Up(c3, c2, c2, gn_groups=gn_groups, dropout=dropout_up)
+        self.up1 = Up(c2, c1, c1, gn_groups=gn_groups, dropout=dropout_up)
+
+        self.head = nn.Conv2d(c1, 1, kernel_size=1)
+
+    def forward(self, x):
+        s1 = self.stem(x)      # 1x
+        s2 = self.down1(s1)    # 1/2
+        s3 = self.down2(s2)    # 1/4
+        s4 = self.down3(s3)    # 1/8
+        b  = self.down4(s4)    # 1/16 (bottleneck)
+
+        x = self.up4(b, s4)
+        x = self.up3(x, s3)
+        x = self.up2(x, s2)
+        x = self.up1(x, s1)
+        return self.head(x)
+
 
 
 

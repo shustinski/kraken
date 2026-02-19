@@ -7,6 +7,7 @@ from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
 from lib.ui_texts import get_ui_section
+from lib.version import APP_NAME, APP_VERSION, get_app_title
 from .forms import MainWindowForm, SettingsForm, defaults_from_main_state, defaults_from_settings_state
 from .services.training_session import get_session_service
 
@@ -58,6 +59,9 @@ def dashboard(request: HttpRequest):
             'settings_form': settings_form,
             'model_choices': _load_model_choices(),
             'status': status,
+            'app_name': APP_NAME,
+            'app_version': APP_VERSION,
+            'app_title': get_app_title(),
         },
     )
 
@@ -76,6 +80,9 @@ def start_processing(request: HttpRequest):
                 'settings_form': settings_form,
                 'model_choices': model_choices,
                 'status': get_session_service().snapshot().get('status', 'idle'),
+                'app_name': APP_NAME,
+                'app_version': APP_VERSION,
+                'app_title': get_app_title(),
             },
             status=400,
         )

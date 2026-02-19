@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_all
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 _spec_file = globals().get('__file__')
@@ -10,40 +10,23 @@ project_root = Path(_spec_file).resolve().parent if _spec_file else Path.cwd()
 # Build-time flag: set to True to bundle optional Django WebUI assets/deps.
 include_webui = False
 
-# --- Torch collection (critical for c10.dll / torch\lib DLLs) ---
-torch_datas, torch_binaries, torch_hiddenimports = collect_all('torch')
-
 datas = [
-    ('_internal/icon.png', '_internal'),
-    ('_internal/icon.ico', '_internal'),
-    ('_internal/settings_icon.png', '_internal'),
-    ('_internal/resources/dark_modern.qss', '_internal/resources'),
-    ('_internal/resources/style.qss', '_internal/resources'),
-    ('_internal/resources/new_style.qss', '_internal/resources'),
-    ('_internal/resources/icons/check_light.svg', '_internal/resources/icons'),
-    ('_internal/resources/icons/chevron_down_light.svg', '_internal/resources/icons'),
-    ('_internal/resources/icons/chevron_up_light.svg', '_internal/resources/icons'),
+    # NOTE:
+    # In PyInstaller >=6 onedir layout, all app files are already placed under
+    # dist/<app>/_internal. Destination paths below must NOT include "_internal",
+    # otherwise resources end up nested as _internal/_internal/... and runtime
+    # file lookups like "_internal/resources/dark_modern.qss" fail.
+    ('_internal/icon.png', '.'),
+    ('_internal/icon.ico', '.'),
+    ('_internal/settings_icon.png', '.'),
+    ('_internal/resources/dark_modern.qss', 'resources'),
+    ('_internal/resources/style.qss', 'resources'),
+    ('_internal/resources/new_style.qss', 'resources'),
+    ('_internal/resources/icons/check_light.svg', 'resources/icons'),
+    ('_internal/resources/icons/chevron_down_light.svg', 'resources/icons'),
+    ('_internal/resources/icons/chevron_up_light.svg', 'resources/icons'),
     ('resources/ui_texts_ru.json', 'resources'),
 ]
-
-
-cuda_datas = []
-cuda_bins = []
-cuda_hidden = []
-
-for pkg in [
-    'nvidia.cublas',
-    'nvidia.cudnn',
-    'nvidia.cuda_runtime',
-    'nvidia.nvrtc',
-]:
-    try:
-        d, b, h = collect_all(pkg)
-        cuda_datas += d
-        cuda_bins += b
-        cuda_hidden += h
-    except Exception:
-        pass
 
 if include_webui:
     # WebUI assets for optional --web mode.
@@ -57,19 +40,9 @@ if include_webui:
         'webui_project.settings',
     ]
 
+base_excludes = []
 
-base_excludes = [
-    # Compile stack is intentionally disabled for frozen app to keep build stable/fast.
-    'torch._dynamo',
-    'torch._inductor',
-    'triton',
-    # Not used by this desktop build.
-    'tensorflow',
-    'pytest',
-    'torchaudio',
-    'OpenGL',
-    'tensorboard',
-]
+
 if not include_webui:
     # Optional web mode is disabled in this build.
     base_excludes += [
@@ -81,14 +54,14 @@ if not include_webui:
 a = Analysis(
     ['main.py'],
     pathex=[str(project_root)],
-    binaries=torch_binaries + cuda_bins,          # <-- torch DLLs / pyds
-    datas=datas + torch_datas + cuda_datas,
-    hiddenimports=hiddenimports + torch_hiddenimports + cuda_hidden,
+    binaries=[],          # <-- torch DLLs / pyds
+    datas=datas ,
+    hiddenimports=hiddenimports,
     # Disable local hook overrides (e.g., hooks/hook-torch.py) to use
     # PyInstaller's built-in torch hook behavior.
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[str(project_root / 'rth_torch_dllpaths.py')],  # <-- IMPORTANT
+    runtime_hooks=['hooks/rth_set_workdir.py'],  # ensure relative resource paths resolve from exe dir
     excludes=base_excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

@@ -2,6 +2,8 @@ from pathlib import Path
 
 from lib.data_interfaces import (
     WorkMode,
+    normalize_work_mode,
+    parse_work_mode,
     SampleCutMode,
     OptimizerName,
     OptimizerParameters,
@@ -14,7 +16,15 @@ from lib.data_interfaces import (
 
 def test_work_mode_values():
     assert WorkMode.train_only.value == 'train_only'
-    assert WorkMode.recognition_only.value == 'recognintion_only'
+    assert WorkMode.recognition_only.value == 'recognition_only'
+    assert WorkMode.further_training.value == 'further_training'
+
+
+def test_work_mode_legacy_aliases_are_normalized():
+    assert normalize_work_mode('recognintion_only') == WorkMode.recognition_only.value
+    assert normalize_work_mode('futher_training') == WorkMode.further_training.value
+    assert parse_work_mode('recognintion_only') == WorkMode.recognition_only
+    assert parse_work_mode('futher_training') == WorkMode.further_training
 
 
 def test_dataclass_instantiation():

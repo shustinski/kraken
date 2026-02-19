@@ -1,4 +1,5 @@
 import os
+import importlib
 from pathlib import Path
 
 import PIL.Image
@@ -8,6 +9,23 @@ import random
 
 from lib.data_interfaces import CutSettings, SampleGenerationSettings, SamplePrepareSettings
 from lib.file_func import filter_files
+
+def _load_sample_fast_cutter_getitem():
+    try:
+        module = importlib.import_module('lib.sample_fast_cutter_pyx')
+        getitem_fn = getattr(module, 'sample_fast_cutter_getitem', None)
+        module_file = str(getattr(module, '__file__', '')).lower()
+        is_accelerated = module_file.endswith('.pyd') or module_file.endswith('.so')
+        return getitem_fn, is_accelerated
+    except Exception:
+        return None, False
+
+
+_sample_fast_cutter_getitem, _sample_fast_cutter_accelerated = _load_sample_fast_cutter_getitem()
+
+
+def is_sample_fast_cutter_accelerated() -> bool:
+    return bool(_sample_fast_cutter_accelerated and _sample_fast_cutter_getitem is not None)
 
 
 class SampleWorker:
@@ -114,6 +132,8 @@ class SampleWorker:
             horizontal_frames = 2 * frames_in_frame
 
         frames_in_frame += horizontal_frames + vertical_frames
+        if getattr(self._params, 'additional_augmentation', False):
+            frames_in_frame *= 2
 
         return frames_in_frame
 
@@ -158,6 +178,8 @@ class SampleCalculator:
             horizontal_frames = 2 * frames_in_frame
 
         frames_in_frame += horizontal_frames + vertical_frames
+        if self._params.additional_augmentation:
+            frames_in_frame *= 2
 
         return frames_in_frame
 
@@ -179,25 +201,25 @@ class ImagePreparator:
         return self._lazy_size()
 
     def _lazy_size(self):
-        if self._params.target_size is not None:
+        if self._params.enable_resize and self._params.target_size is not None:
             return self._params.target_size
         with Image.open(self._path) as img:
-            self._image = img
-        if self._params.edge_cut is None:
-            return self._image.size
-        return self._size_after_crop()
+            size = img.size
+        if not self._params.enable_crop or self._params.edge_cut is None:
+            return size
+        return self._size_after_crop(size)
 
-    def _size_after_crop(self):
-        return tuple(np.subtract(self._image.size,self._params.edge_cut))
+    def _size_after_crop(self, image_size: tuple[int, int]):
+        return tuple(np.subtract(image_size, self._params.edge_cut))
 
     def _prepare(self):
         with Image.open(self._path) as img:
             img.load()
-        self._image = img
+            self._image = img.copy()
         self._size = img.size
-        if self._params.edge_cut is not None:
+        if self._params.enable_crop and self._params.edge_cut is not None:
            self._crop()
-        if self._params.target_size is not None:
+        if self._params.enable_resize and self._params.target_size is not None:
             self._resize()
 
     def _crop(self):
@@ -225,14 +247,35 @@ class SampleFastCutter:
         self._shuffle = shuffle
         self.image_matrix = matrix[0]
         self.label_matrix = matrix[1]
-        self.base_size = (self.image_matrix.shape[1],self.image_matrix.shape[2])
+        # image_matrix shape: (C, H, W)
+        self.base_size = (self.image_matrix.shape[1], self.image_matrix.shape[2])
+        self._base_h = self.image_matrix.shape[1]
+        self._base_w = self.image_matrix.shape[2]
+        self._step = int(parameters.step)
+        self._sample_x = int(parameters.segment_size[0])
+        self._sample_y = int(parameters.segment_size[1])
+        self._vertical_rotation = bool(parameters.vertical_rotation)
+        self._horizontal_rotation = bool(parameters.horizontal_rotation)
+        self._additional_augmentation = bool(getattr(parameters, 'additional_augmentation', False))
+        self._augmentation_brightness_strength = max(
+            0.0, float(getattr(parameters, 'augmentation_brightness_strength', 0.1))
+        )
+        self._augmentation_contrast_strength = max(
+            0.0, float(getattr(parameters, 'augmentation_contrast_strength', 0.1))
+        )
+        self._augmentation_noise_probability = float(getattr(parameters, 'augmentation_noise_probability', 0.5))
+        self._augmentation_noise_probability = min(1.0, max(0.0, self._augmentation_noise_probability))
+        self._augmentation_noise_sigma = max(0.0, float(getattr(parameters, 'augmentation_noise_sigma', 0.01)))
 
         self.sample = SampleCalculator(self.base_size,parameters)
         parts = len(self.sample)
+        self._width_steps, self._height_steps = self.sample.size
         parts_list = list(range(parts))
         if shuffle:
             random.shuffle(parts_list)
         self._parts_list = parts_list
+        # Cython accelerator does not account for additional augmentation indexing.
+        self._use_accelerator = is_sample_fast_cutter_accelerated() and not self._additional_augmentation
 
     @classmethod
     def from_image(cls, sample_pair:tuple[PIL.Image.Image,PIL.Image.Image], parameters: SampleGenerationSettings, shuffle=False):
@@ -241,37 +284,101 @@ class SampleFastCutter:
         return cls((image_matrix,label_matrix),parameters, shuffle)
 
     def __getitem__(self, item):
+        if self._use_accelerator and _sample_fast_cutter_getitem is not None:
+            try:
+                image, label = _sample_fast_cutter_getitem(
+                    self._parts_list,
+                    item,
+                    self._vertical_rotation,
+                    self._horizontal_rotation,
+                    self._width_steps,
+                    self._step,
+                    self._sample_x,
+                    self._sample_y,
+                    self._base_w,
+                    self._base_h,
+                    self.image_matrix,
+                    self.label_matrix,
+                )
+                if self._additional_augmentation:
+                    image = self._apply_additional_augmentation(image)
+                return image, label
+            except Exception:
+                # Disable accelerator for this instance after first failure.
+                self._use_accelerator = False
+
         loc = self._parts_list[item]
-        location, rotation_index = self._define_location_based_on_index(loc)
-        width_steps, height_steps = self.sample.size
-        sample_x, sample_y = self._params.segment_size
+        augmentation_variant = 0
+        if self._additional_augmentation:
+            loc, augmentation_variant = divmod(loc, 2)
 
-        row = location//width_steps
-        col = location - width_steps*row
-
-        left = col * self._params.step
-        right = left + sample_x
-        top = row * self._params.step
-        bottom = top + sample_y
-
-        if right >= self.base_size[0] and bottom >= self.base_size[1]:
-            image = self.image_matrix[:, -sample_y:, -sample_x:].copy()
-            label = self.label_matrix[:, -sample_y:, -sample_x:].copy()
-        elif right > self.base_size[0]:
-            image = self.image_matrix[:, top:bottom, -sample_x:].copy()
-            label = self.label_matrix[:, top:bottom, -sample_x:].copy()
-        elif bottom > self.base_size[1]:
-            image = self.image_matrix[:, -sample_y:, left:right].copy()
-            label = self.label_matrix[:, -sample_y:, left:right].copy()
+        if self._vertical_rotation and self._horizontal_rotation:
+            location = loc // 4
+            rotation_index = loc % 4
+        elif self._horizontal_rotation:
+            location = loc // 3
+            rotation_index = 2 - (loc % 3)
+        elif self._vertical_rotation:
+            location = loc // 2
+            rotation_index = 2 * (loc % 2)
         else:
+            location = loc
+            rotation_index = 0
+
+        row, col = divmod(location, self._width_steps)
+        left = col * self._step
+        top = row * self._step
+        right = left + self._sample_x
+        bottom = top + self._sample_y
+
+        # Fast path: no border correction needed.
+        if right <= self._base_w and bottom <= self._base_h:
             image = self.image_matrix[:, top:bottom, left:right].copy()
             label = self.label_matrix[:, top:bottom, left:right].copy()
+        elif right > self._base_w and bottom > self._base_h:
+            image = self.image_matrix[:, -self._sample_y:, -self._sample_x:].copy()
+            label = self.label_matrix[:, -self._sample_y:, -self._sample_x:].copy()
+        elif right > self._base_w:
+            image = self.image_matrix[:, top:bottom, -self._sample_x:].copy()
+            label = self.label_matrix[:, top:bottom, -self._sample_x:].copy()
+        else:
+            image = self.image_matrix[:, -self._sample_y:, left:right].copy()
+            label = self.label_matrix[:, -self._sample_y:, left:right].copy()
 
         if rotation_index != 0:
-            image[0] = np.rot90(image[0], k=rotation_index)
-            label[0] = np.rot90(label[0], k=rotation_index)
+            if rotation_index == 1:
+                image[0] = np.flipud(image[0].T)
+                label[0] = np.flipud(label[0].T)
+            elif rotation_index == 2:
+                image[0] = image[0, ::-1, ::-1]
+                label[0] = label[0, ::-1, ::-1]
+            else:
+                image[0] = np.fliplr(image[0].T)
+                label[0] = np.fliplr(label[0].T)
+
+        if self._additional_augmentation and augmentation_variant == 1:
+            image = self._apply_additional_augmentation(image)
 
         return image,label
+
+    def _apply_additional_augmentation(self, image: np.ndarray) -> np.ndarray:
+        # Lightweight photometric augmentation; labels remain unchanged.
+        img = image.copy()
+        brightness = random.uniform(
+            1.0 - self._augmentation_brightness_strength,
+            1.0 + self._augmentation_brightness_strength,
+        )
+        contrast = random.uniform(
+            1.0 - self._augmentation_contrast_strength,
+            1.0 + self._augmentation_contrast_strength,
+        )
+        img *= brightness
+        mean = img.mean(axis=(1, 2), keepdims=True)
+        img = (img - mean) * contrast + mean
+        if random.random() < self._augmentation_noise_probability and self._augmentation_noise_sigma > 0.0:
+            img += np.random.normal(0.0, self._augmentation_noise_sigma, size=img.shape).astype(np.float32)
+        np.clip(img, 0.0, 1.0, out=img)
+        return img.astype(np.float32, copy=False)
 
     @staticmethod
     def get_matrix_from_image(img, channels):

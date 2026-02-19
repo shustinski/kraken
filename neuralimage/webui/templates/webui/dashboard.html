@@ -4,14 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NeuralImage Web UI</title>
+    <title>{{ app_title }} Web UI</title>
     <link rel="stylesheet" href="{% static 'webui/dashboard.css' %}">
 </head>
 <body>
 <div class="app-shell" id="app-shell">
     <header class="topbar">
         <div class="title-wrap">
-            <h1>NeuralImage</h1>
+            <h1>{{ app_name }} <small>v{{ app_version }}</small></h1>
             <p>Веб-интерфейс обучения и распознавания</p>
         </div>
         <div class="control-wrap">
@@ -187,6 +187,29 @@
                     </div>
                     <label class="check-row">{{ settings_form.horizontal_rotation }} {{ settings_form.horizontal_rotation.label }}</label>
                     <label class="check-row">{{ settings_form.vertical_rotation }} {{ settings_form.vertical_rotation.label }}</label>
+                    <label class="check-row">{{ settings_form.additional_augmentation }} {{ settings_form.additional_augmentation.label }}</label>
+                    <div class="inline-2" data-role="extra-aug-fields">
+                        <div class="field compact">
+                            <label>{{ settings_form.augmentation_brightness_strength.label }}</label>
+                            {{ settings_form.augmentation_brightness_strength }}
+                            {% if settings_form.augmentation_brightness_strength.errors %}<div class="field-error">{{ settings_form.augmentation_brightness_strength.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.augmentation_contrast_strength.label }}</label>
+                            {{ settings_form.augmentation_contrast_strength }}
+                            {% if settings_form.augmentation_contrast_strength.errors %}<div class="field-error">{{ settings_form.augmentation_contrast_strength.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.augmentation_noise_probability.label }}</label>
+                            {{ settings_form.augmentation_noise_probability }}
+                            {% if settings_form.augmentation_noise_probability.errors %}<div class="field-error">{{ settings_form.augmentation_noise_probability.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.augmentation_noise_sigma.label }}</label>
+                            {{ settings_form.augmentation_noise_sigma }}
+                            {% if settings_form.augmentation_noise_sigma.errors %}<div class="field-error">{{ settings_form.augmentation_noise_sigma.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
                 </section>
 
                 <section class="section">
@@ -235,6 +258,23 @@
                     </div>
                     <div class="inline-2">
                         <div class="field compact">
+                            <label>{{ settings_form.loss_function.label }}</label>
+                            {{ settings_form.loss_function }}
+                            {% if settings_form.loss_function.errors %}<div class="field-error">{{ settings_form.loss_function.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact" data-role="dice-loss-weight">
+                            <label>{{ settings_form.dice_loss_weight.label }}</label>
+                            {{ settings_form.dice_loss_weight }}
+                            {% if settings_form.dice_loss_weight.errors %}<div class="field-error">{{ settings_form.dice_loss_weight.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact" data-role="iou-loss-weight">
+                            <label>{{ settings_form.iou_loss_weight.label }}</label>
+                            {{ settings_form.iou_loss_weight }}
+                            {% if settings_form.iou_loss_weight.errors %}<div class="field-error">{{ settings_form.iou_loss_weight.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="inline-2">
+                        <div class="field compact">
                             <label>{{ settings_form.learning_rate.label }}</label>
                             {{ settings_form.learning_rate }}
                             {% if settings_form.learning_rate.errors %}<div class="field-error">{{ settings_form.learning_rate.errors|striptags }}</div>{% endif %}
@@ -257,6 +297,12 @@
                             {% if settings_form.overlap.errors %}<div class="field-error">{{ settings_form.overlap.errors|striptags }}</div>{% endif %}
                         </div>
                     </div>
+                    <div class="field compact">
+                        <label>{{ settings_form.log_update_frequency.label }}</label>
+                        {{ settings_form.log_update_frequency }}
+                        {% if settings_form.log_update_frequency.errors %}<div class="field-error">{{ settings_form.log_update_frequency.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <label class="check-row">{{ settings_form.torch_compile_enabled }} {{ settings_form.torch_compile_enabled.label }}</label>
                     <label class="check-row">{{ settings_form.use_multi_gpu }} {{ settings_form.use_multi_gpu.label }}</label>
                 </section>
                 <section class="section">
@@ -274,6 +320,20 @@
                             {% if settings_form.warmup_start_factor.errors %}<div class="field-error">{{ settings_form.warmup_start_factor.errors|striptags }}</div>{% endif %}
                         </div>
                     </div>
+                    <label class="check-row">{{ settings_form.hard_mining_enabled }} {{ settings_form.hard_mining_enabled.label }}</label>
+                    <div class="inline-2" data-role="hard-mining-fields">
+                        <div class="field compact">
+                            <label>{{ settings_form.hard_mining_strength.label }}</label>
+                            {{ settings_form.hard_mining_strength }}
+                            {% if settings_form.hard_mining_strength.errors %}<div class="field-error">{{ settings_form.hard_mining_strength.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.hard_mining_ema_alpha.label }}</label>
+                            {{ settings_form.hard_mining_ema_alpha }}
+                            {% if settings_form.hard_mining_ema_alpha.errors %}<div class="field-error">{{ settings_form.hard_mining_ema_alpha.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <label class="check-row">{{ settings_form.skip_uniform_labels }} {{ settings_form.skip_uniform_labels.label }}</label>
                     <label class="check-row">{{ settings_form.early_stopping_enabled }} {{ settings_form.early_stopping_enabled.label }}</label>
                     <div class="inline-2">
                         <div class="field compact">
@@ -293,7 +353,8 @@
 
                 <section class="section">
                     <h3>Предобработка</h3>
-                    <label class="check-row">{{ settings_form.additional_processing }} {{ settings_form.additional_processing.label }}</label>
+                    <label class="check-row">{{ settings_form.crop_enabled }} {{ settings_form.crop_enabled.label }}</label>
+                    <label class="check-row">{{ settings_form.resize_enabled }} {{ settings_form.resize_enabled.label }}</label>
                     <div class="field compact" data-role="edge-cut">
                         <label>{{ settings_form.edge_cut_size.label }}</label>
                         {{ settings_form.edge_cut_size }}

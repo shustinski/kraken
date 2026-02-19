@@ -88,8 +88,6 @@ class TrainingSessionService:
                 batch_index = float(payload.get('batch_index', 0.0))
                 points = self._batch_by_epoch.setdefault(epoch, [])
                 points.append({'batch_index': batch_index, 'loss': loss})
-                if len(points) > 200:
-                    points[:] = points[-200:]
                 return
             if metric_type == 'train_perf':
                 self._train_perf = {
@@ -207,12 +205,18 @@ class TrainingSessionService:
                     'train_epoch': list(self._train_epoch),
                     'val_epoch': list(self._val_epoch),
                     'batch_epoch': latest_epoch,
-                    'train_batch': list(batch_points),
+                    'train_batch': self._sparsify_batch_points(batch_points),
                     'system_memory': dict(self._system_memory),
                     'validation_quality': dict(self._validation_quality),
                     'train_perf': dict(self._train_perf),
                 },
             }
+
+    @staticmethod
+    def _sparsify_batch_points(points: list[dict[str, float]]) -> list[dict[str, float]]:
+        if len(points) > 1000:
+            return list(points[::2])
+        return list(points)
 
     def load_initial_states(self) -> tuple[MainWindowState, SettingsState]:
         return self._presenter.load_initial_states()

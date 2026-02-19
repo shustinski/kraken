@@ -29,8 +29,7 @@ class TrainingMetricsDock(QDockWidget):
         self._batch_points: list[tuple[float, float]] = []
 
         self._pg = None
-        self._train_plot = None
-        self._val_plot = None
+        self._epoch_plot = None
         self._batch_plot = None
         self._train_curve = None
         self._val_curve = None
@@ -42,22 +41,28 @@ class TrainingMetricsDock(QDockWidget):
             self._pg = pg
             pg.setConfigOptions(antialias=True)
 
-            self._train_plot = pg.PlotWidget(title='Train Loss vs Epoch')
-            self._val_plot = pg.PlotWidget(title='Val Loss vs Epoch')
+            self._epoch_plot = pg.PlotWidget(title='Loss vs Epoch')
             self._batch_plot = pg.PlotWidget(title='Train Loss vs Batch (Current Epoch)')
 
-            for plot in (self._train_plot, self._val_plot, self._batch_plot):
+            for plot in (self._epoch_plot, self._batch_plot):
                 plot.showGrid(x=True, y=True, alpha=0.3)
                 plot.setBackground('#10161d')
                 plot.getAxis('left').setTextPen('#c9d7e8')
                 plot.getAxis('bottom').setTextPen('#c9d7e8')
 
-            self._train_curve = self._train_plot.plot(pen=pg.mkPen('#50baff', width=2))
-            self._val_curve = self._val_plot.plot(pen=pg.mkPen('#ffaa5c', width=2))
+            if self._epoch_plot is not None:
+                self._epoch_plot.addLegend()
+            self._train_curve = self._epoch_plot.plot(
+                pen=pg.mkPen('#50baff', width=2),
+                name='Train Loss',
+            )
+            self._val_curve = self._epoch_plot.plot(
+                pen=pg.mkPen('#ffaa5c', width=2),
+                name='Val Loss',
+            )
             self._batch_curve = self._batch_plot.plot(pen=pg.mkPen('#89e47d', width=2))
 
-            layout.addWidget(self._train_plot)
-            layout.addWidget(self._val_plot)
+            layout.addWidget(self._epoch_plot)
             layout.addWidget(self._batch_plot)
         except Exception:
             layout.addWidget(QLabel('pyqtgraph is not available. Install pyqtgraph to enable live charts.'))

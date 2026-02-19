@@ -39,11 +39,26 @@ def test_state_store_roundtrip_settings(monkeypatch):
         model='M 720k',
         optimizer_name='adamw',
         mixed_precision='fp16',
+        loss_function='bce_dice',
+        dice_loss_weight=0.6,
+        iou_loss_weight=0.4,
         learning_rate=0.0002,
         weight_decay=0.01,
         warmup_enabled=True,
         warmup_epochs=5,
         warmup_start_factor=0.25,
+        additional_augmentation=True,
+        augmentation_brightness_strength=0.2,
+        augmentation_contrast_strength=0.3,
+        augmentation_noise_probability=0.6,
+        augmentation_noise_sigma=0.015,
+        crop_enabled=True,
+        resize_enabled=False,
+        hard_mining_enabled=True,
+        hard_mining_strength=3.5,
+        hard_mining_ema_alpha=0.4,
+        skip_uniform_labels=True,
+        torch_compile_enabled=False,
         early_stopping_enabled=True,
         early_stopping_patience=8,
         early_stopping_min_delta=0.003,
@@ -56,11 +71,26 @@ def test_state_store_roundtrip_settings(monkeypatch):
     assert loaded.sample_size == (11, 22)
     assert loaded.optimizer_name == 'adamw'
     assert loaded.mixed_precision == 'fp16'
+    assert loaded.loss_function == 'bce_dice'
+    assert loaded.dice_loss_weight == 0.6
+    assert loaded.iou_loss_weight == 0.4
     assert loaded.learning_rate == 0.0002
     assert loaded.weight_decay == 0.01
     assert loaded.warmup_enabled is True
     assert loaded.warmup_epochs == 5
     assert loaded.warmup_start_factor == 0.25
+    assert loaded.additional_augmentation is True
+    assert loaded.augmentation_brightness_strength == 0.2
+    assert loaded.augmentation_contrast_strength == 0.3
+    assert loaded.augmentation_noise_probability == 0.6
+    assert loaded.augmentation_noise_sigma == 0.015
+    assert loaded.crop_enabled is True
+    assert loaded.resize_enabled is False
+    assert loaded.hard_mining_enabled is True
+    assert loaded.hard_mining_strength == 3.5
+    assert loaded.hard_mining_ema_alpha == 0.4
+    assert loaded.skip_uniform_labels is True
+    assert loaded.torch_compile_enabled is False
     assert loaded.early_stopping_enabled is True
     assert loaded.early_stopping_patience == 8
     assert loaded.early_stopping_min_delta == 0.003
@@ -105,11 +135,26 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
         validation_percent=25,
         optimizer_name='adamw_muon',
         mixed_precision='off',
+        loss_function='dice',
+        dice_loss_weight=1.0,
+        iou_loss_weight=0.3,
         learning_rate=0.0003,
         weight_decay=0.02,
         warmup_enabled=True,
         warmup_epochs=3,
         warmup_start_factor=0.1,
+        additional_augmentation=False,
+        augmentation_brightness_strength=0.12,
+        augmentation_contrast_strength=0.08,
+        augmentation_noise_probability=0.25,
+        augmentation_noise_sigma=0.005,
+        crop_enabled=False,
+        resize_enabled=True,
+        hard_mining_enabled=True,
+        hard_mining_strength=2.8,
+        hard_mining_ema_alpha=0.3,
+        skip_uniform_labels=True,
+        torch_compile_enabled=False,
         early_stopping_enabled=True,
         early_stopping_patience=4,
         early_stopping_min_delta=0.001,
@@ -125,11 +170,26 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
     assert loaded.validation_percent == 25
     assert loaded.optimizer_name == 'adamw_muon'
     assert loaded.mixed_precision == 'off'
+    assert loaded.loss_function == 'dice'
+    assert loaded.dice_loss_weight == 1.0
+    assert loaded.iou_loss_weight == 0.3
     assert loaded.learning_rate == 0.0003
     assert loaded.weight_decay == 0.02
     assert loaded.warmup_enabled is True
     assert loaded.warmup_epochs == 3
     assert loaded.warmup_start_factor == 0.1
+    assert loaded.additional_augmentation is False
+    assert loaded.augmentation_brightness_strength == 0.12
+    assert loaded.augmentation_contrast_strength == 0.08
+    assert loaded.augmentation_noise_probability == 0.25
+    assert loaded.augmentation_noise_sigma == 0.005
+    assert loaded.crop_enabled is False
+    assert loaded.resize_enabled is True
+    assert loaded.hard_mining_enabled is True
+    assert loaded.hard_mining_strength == 2.8
+    assert loaded.hard_mining_ema_alpha == 0.3
+    assert loaded.skip_uniform_labels is True
+    assert loaded.torch_compile_enabled is False
     assert loaded.early_stopping_enabled is True
     assert loaded.early_stopping_patience == 4
     assert loaded.early_stopping_min_delta == 0.001

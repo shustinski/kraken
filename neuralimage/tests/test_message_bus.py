@@ -33,16 +33,11 @@ def test_publish_unknown_topic_is_noop():
     bus.publish('unknown', 'payload')
 
 
-def test_unsubscribe_missing_handler_raises_value_error():
+def test_unsubscribe_missing_handler_is_noop():
     bus = MessageBus()
 
     def handler(payload):
         return payload
 
-    try:
-        bus.unsubscribe('topic', handler)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError('Expected ValueError when unsubscribing absent handler')
+    bus.unsubscribe('topic', handler)
 

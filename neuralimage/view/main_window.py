@@ -26,6 +26,8 @@ from UI import ClickableLabel
 import numpy as np
 from lib.data_interfaces import WorkMode
 from lib.ui_texts import get_ui_section
+from lib.version import get_app_title
+from view.changelog_dialog import show_changelog_dialog
 from view.help_dialog import show_help_dialog
 from view.metrics_panel import TrainingMetricsDock
 from view.settings_panel import create_spinbox
@@ -72,7 +74,7 @@ class MainView(QMainWindow):
 
     def __init__(self, side_panel: QWidget | None = None):
         super().__init__()
-        self.setWindowTitle("NeuralImage")
+        self.setWindowTitle(get_app_title())
         self.setWindowIcon(QIcon("_internal/icon.png"))
         self.setGeometry(200, 200, 1200, 740)
         
@@ -213,8 +215,11 @@ class MainView(QMainWindow):
         self.log_layout.setContentsMargins(5, 5, 5, 5)
         self.log_layout.setSpacing(2)
         self.log_scroll.setWidget(self.log_container)
+        self.log_dock = QDockWidget(t.get("log_dock_title", "Лог"), self)
+        self.log_dock.setObjectName("logDock")
+        self.log_dock.setWidget(self.log_scroll)
+        self.log_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
 
-        self.main_grid.addWidget(self.log_scroll, row, 0, 1, 2)
         self.main_grid.setRowStretch(row, 10)
 
         self.setCentralWidget(central)
@@ -222,11 +227,14 @@ class MainView(QMainWindow):
         self.metrics_panel = TrainingMetricsDock(self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.metrics_panel)
         self.metrics_panel.setMinimumHeight(220)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.log_dock)
+        self.tabifyDockWidget(self.metrics_panel, self.log_dock)
 
         if self.settings_dock is not None:
             self.settings_dock.setWindowTitle(t["settings_dock_title"])
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.settings_dock)
             self.tabifyDockWidget(self.metrics_panel, self.settings_dock)
+            self.tabifyDockWidget(self.log_dock, self.settings_dock)
             self.settings_dock.show()
             self.settings_dock.raise_()
 
@@ -249,6 +257,10 @@ class MainView(QMainWindow):
         if metrics_action is not None:
             metrics_action.setText(t["menu_metrics"])
             view_menu.addAction(metrics_action)
+        log_action = self.log_dock.toggleViewAction()
+        if log_action is not None:
+            log_action.setText(t.get("menu_log_panel", "Панель лога"))
+            view_menu.addAction(log_action)
         if self.settings_dock is not None:
             settings_action = self.settings_dock.toggleViewAction()
             if settings_action is not None:
@@ -263,6 +275,9 @@ class MainView(QMainWindow):
         help_action = QAction(t["menu_open_help"], self)
         help_action.triggered.connect(lambda: show_help_dialog(self))
         info_menu.addAction(help_action)
+        changelog_action = QAction(t.get("menu_open_changelog", "Список изменений"), self)
+        changelog_action.triggered.connect(lambda: show_changelog_dialog(self))
+        info_menu.addAction(changelog_action)
         menu_action = info_menu.menuAction()
         if menu_action is not None:
             menu_action.setVisible(True)
@@ -322,7 +337,7 @@ class MainView(QMainWindow):
         )
         self.rb_recognition.clicked.connect(lambda _: self.sample_type_changed.emit(WorkMode.recognition_only.value))
         self.rb_further_train_model.clicked.connect(
-            lambda _: self.sample_type_changed.emit(WorkMode.futher_training.value)
+            lambda _: self.sample_type_changed.emit(WorkMode.further_training.value)
         )
         self.rb_train_only.clicked.connect(lambda _: self.sample_type_changed.emit(WorkMode.train_only.value))
 
@@ -403,9 +418,7 @@ class MainView(QMainWindow):
             loss = float(data.get("loss", 0.0))
             epoch_points = self._batch_points_by_epoch.setdefault(epoch, [])
             epoch_points.append((batch_index, loss))
-            if len(epoch_points) > 200:
-                epoch_points[:] = epoch_points[-200:]
-            self.metrics_panel.set_batch_points(epoch, epoch_points)
+            self.metrics_panel.set_batch_points(epoch, self._sparsify_batch_points(epoch_points))
             return
 
         if metric_type == "train_epoch_progress":
@@ -456,6 +469,12 @@ class MainView(QMainWindow):
                 f"Batch ms | data: {data_wait_ms:.1f} | fwd: {forward_ms:.1f} | bwd: {backward_ms:.1f} | opt: {optimizer_ms:.1f} | total: {total_ms:.1f}"
             )
             return
+
+    @staticmethod
+    def _sparsify_batch_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        if len(points) > 1000:
+            return points[::2]
+        return points
 
     @staticmethod
     def _set_progress_bar(progress_bar: QProgressBar, current: int, total: int):

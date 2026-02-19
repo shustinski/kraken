@@ -1,5 +1,6 @@
 import os
 
+from lib.data_interfaces import WorkMode, normalize_work_mode
 from view.window_dataclasses import MainWindowState
 
 
@@ -15,11 +16,13 @@ def can_start_processing(state: MainWindowState) -> bool:
     model_ok = bool(state.model_path and os.path.isfile(state.model_path))
     epochs_ok = bool(state.epochs)
 
-    ok = src_ok and res_ok and epochs_ok
-    if state.work_mode == 'train_and_recognition':
-        return ok and training_ok
-    if state.work_mode == 'recognintion_only':
-        return ok and model_ok
-    if state.work_mode == 'futher_training':
-        return ok and training_ok and model_ok
-    return ok
+    work_mode = normalize_work_mode(state.work_mode)
+    if work_mode == WorkMode.train_only.value:
+        return epochs_ok and training_ok
+    if work_mode == WorkMode.train_and_recognition.value:
+        return epochs_ok and src_ok and res_ok and training_ok
+    if work_mode == WorkMode.recognition_only.value:
+        return epochs_ok and src_ok and res_ok and model_ok
+    if work_mode == WorkMode.further_training.value:
+        return epochs_ok and src_ok and res_ok and training_ok and model_ok
+    return False

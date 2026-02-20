@@ -1,20 +1,155 @@
 from __future__ import annotations
 
+import importlib
 import os
+import re
 from collections.abc import Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
 
-from .registrator import create_model
+from . import CNN_Models, blocks
+from .registrator import create_model, get_registered_models
 
 
 MODEL_ARTIFACT_FORMAT = 'neuralimage_model_artifact'
 MODEL_ARTIFACT_VERSION = 1
 _UNSAFE_MODEL_LOAD_ENV = 'NEURALIMAGE_ALLOW_UNSAFE_MODEL_LOAD'
 _TRUE_VALUES = {'1', 'true', 'yes', 'on'}
+_MAX_DYNAMIC_SAFE_GLOBAL_RETRIES = 32
+_UNSUPPORTED_GLOBAL_PATTERN = re.compile(r'Unsupported global: GLOBAL ([\w\.]+)')
+_DYNAMIC_SAFE_GLOBAL_PREFIXES = (
+    'model.NeuralNetwork.',
+    'torch.nn.',
+    'collections.',
+)
+
+
+def _iter_internal_module_classes(module: Any) -> list[type[Any]]:
+    classes: list[type[Any]] = []
+    for value in vars(module).values():
+        if not isinstance(value, type):
+            continue
+        if not issubclass(value, nn.Module):
+            continue
+        module_name = str(getattr(value, '__module__', ''))
+        if module_name.startswith('model.NeuralNetwork.'):
+            classes.append(value)
+    return classes
+
+
+def _iter_torch_nn_classes() -> list[type[Any]]:
+    classes: list[type[Any]] = []
+    for value in vars(nn).values():
+        if not isinstance(value, type):
+            continue
+        module_name = str(getattr(value, '__module__', ''))
+        if module_name.startswith('torch.nn.modules.') or module_name == 'torch.nn.parameter':
+            classes.append(value)
+    return classes
+
+
+def _resolve_safe_pickle_globals() -> list[Any]:
+    candidates: list[Any] = []
+    candidates.extend(_iter_torch_nn_classes())
+    candidates.extend(get_registered_models().values())
+    candidates.extend(_iter_internal_module_classes(CNN_Models))
+    candidates.extend(_iter_internal_module_classes(blocks))
+
+    seen: set[tuple[str, str]] = set()
+    resolved: list[Any] = []
+    for item in candidates:
+        key = (str(getattr(item, '__module__', '')), str(getattr(item, '__qualname__', '')))
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(item)
+    return resolved
+
+
+def _is_dynamic_safe_global_path(path: str) -> bool:
+    return any(path.startswith(prefix) for prefix in _DYNAMIC_SAFE_GLOBAL_PREFIXES)
+
+
+def _extract_unsupported_global_path(error: Exception) -> str | None:
+    match = _UNSUPPORTED_GLOBAL_PATTERN.search(str(error))
+    if match is None:
+        return None
+    return str(match.group(1))
+
+
+def _resolve_global_symbol(path: str) -> Any | None:
+    parts = [part for part in str(path).split('.') if part]
+    if len(parts) < 2:
+        return None
+    for split_index in range(len(parts) - 1, 0, -1):
+        module_name = '.'.join(parts[:split_index])
+        attr_chain = parts[split_index:]
+        try:
+            target: Any = importlib.import_module(module_name)
+        except Exception:
+            continue
+        try:
+            for attr in attr_chain:
+                target = getattr(target, attr)
+            return target
+        except Exception:
+            continue
+    return None
+
+
+def _torch_load_with_safe_globals(
+    path: Path,
+    *,
+    map_location: str | torch.device | None,
+    allowed_globals: list[Any],
+) -> Any:
+    serialization = getattr(torch, 'serialization', None)
+    safe_globals_ctx = getattr(serialization, 'safe_globals', None) if serialization is not None else None
+    add_safe_globals = getattr(serialization, 'add_safe_globals', None) if serialization is not None else None
+    if callable(safe_globals_ctx) and allowed_globals:
+        with safe_globals_ctx(allowed_globals):
+            return torch.load(path, map_location=map_location, weights_only=True)
+
+    if callable(add_safe_globals) and allowed_globals:
+        add_safe_globals(allowed_globals)
+        return torch.load(path, map_location=map_location, weights_only=True)
+
+    with nullcontext():
+        return torch.load(path, map_location=map_location, weights_only=True)
+
+
+def _load_torch_safe_weights_only(
+    path: Path,
+    *,
+    map_location: str | torch.device | None,
+) -> Any:
+    allowed_globals = _resolve_safe_pickle_globals()
+    added_symbols: set[str] = set()
+    for _ in range(_MAX_DYNAMIC_SAFE_GLOBAL_RETRIES):
+        try:
+            return _torch_load_with_safe_globals(
+                path,
+                map_location=map_location,
+                allowed_globals=allowed_globals,
+            )
+        except Exception as error:
+            global_path = _extract_unsupported_global_path(error)
+            if not global_path:
+                raise
+            if global_path in added_symbols:
+                raise
+            if not _is_dynamic_safe_global_path(global_path):
+                raise
+            symbol = _resolve_global_symbol(global_path)
+            if symbol is None:
+                raise
+            allowed_globals.append(symbol)
+            added_symbols.add(global_path)
+    raise RuntimeError('Unable to resolve safe globals for weights-only load.')
 
 
 def _resolve_allow_unsafe_model_load(explicit: bool | None = None) -> bool:
@@ -131,7 +266,7 @@ def load_model_artifact(
 
     safe_load_error: Exception | None = None
     try:
-        payload = torch.load(path, map_location=map_location, weights_only=True)
+        payload = _load_torch_safe_weights_only(path, map_location=map_location)
         model = _load_model_from_safe_payload(
             payload,
             model_name_fallback=model_name_fallback,

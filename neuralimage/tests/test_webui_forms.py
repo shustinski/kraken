@@ -6,9 +6,32 @@ django = pytest.importorskip("django")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "webui_project.settings")
 django.setup()
 
-from webui.forms import MainWindowForm, SettingsForm, defaults_from_settings_state
-from view.window_dataclasses import SettingsState
+from webui.forms import MainWindowForm, SettingsForm, defaults_from_main_state, defaults_from_settings_state
+from view.window_dataclasses import MainWindowState, SettingsState
 from tests.helpers import make_test_dir
+
+
+def _build_valid_main_window_form_data(work_mode: str) -> dict[str, str]:
+    root = make_test_dir(f"web_form_valid_{work_mode}")
+    source = root / "source"
+    result = root / "result"
+    sample = root / "sample"
+    label = root / "label"
+    model = root / "model.pth"
+    source.mkdir()
+    result.mkdir()
+    sample.mkdir()
+    label.mkdir()
+    model.write_text("x", encoding="utf-8")
+    return {
+        "work_mode": work_mode,
+        "source_folder": str(source),
+        "result_folder": str(result),
+        "sample_folder": str(sample),
+        "label_folder": str(label),
+        "model_path": str(model),
+        "epochs": "5",
+    }
 
 
 def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
@@ -177,3 +200,85 @@ def test_main_window_form_normalizes_legacy_work_mode_alias():
     assert form.is_valid(), form.errors
     state = form.to_state()
     assert state.work_mode == "recognition_only"
+
+
+def test_main_window_form_normalizer_keeps_payload_when_data_missing():
+    args, kwargs = MainWindowForm._normalize_legacy_work_mode_payload((), {})
+    assert args == ()
+    assert kwargs == {}
+
+
+def test_main_window_form_normalizer_updates_positional_data_payload():
+    original_data = {"work_mode": "recognintion_only"}
+    args, kwargs = MainWindowForm._normalize_legacy_work_mode_payload((original_data,), {})
+
+    assert kwargs == {}
+    assert original_data["work_mode"] == "recognintion_only"
+    assert args[0]["work_mode"] == "recognition_only"
+
+
+def test_main_window_form_rejects_missing_source_folder_for_recognition_mode():
+    data = _build_valid_main_window_form_data("recognition_only")
+    data["source_folder"] = ""
+
+    form = MainWindowForm(data=data)
+    assert not form.is_valid()
+    assert form.errors.as_data()["__all__"][0].message == 'Field "Source folder" must point to an existing directory.'
+
+
+def test_main_window_form_rejects_missing_result_folder_for_recognition_mode():
+    data = _build_valid_main_window_form_data("recognition_only")
+    data["result_folder"] = f"{data['result_folder']}_missing"
+
+    form = MainWindowForm(data=data)
+    assert not form.is_valid()
+    assert form.errors.as_data()["__all__"][0].message == 'Field "Result folder" must point to an existing directory.'
+
+
+def test_main_window_form_rejects_missing_sample_folder_for_training_mode():
+    data = _build_valid_main_window_form_data("train_and_recognition")
+    data["sample_folder"] = f"{data['sample_folder']}_missing"
+
+    form = MainWindowForm(data=data)
+    assert not form.is_valid()
+    assert form.errors.as_data()["__all__"][0].message == "Training mode requires an existing sample folder."
+
+
+def test_main_window_form_rejects_missing_label_folder_for_training_mode():
+    data = _build_valid_main_window_form_data("train_and_recognition")
+    data["label_folder"] = f"{data['label_folder']}_missing"
+
+    form = MainWindowForm(data=data)
+    assert not form.is_valid()
+    assert form.errors.as_data()["__all__"][0].message == "Training mode requires an existing label folder."
+
+
+def test_main_window_form_rejects_missing_model_path_for_recognition_mode():
+    data = _build_valid_main_window_form_data("recognition_only")
+    data["model_path"] = f"{data['model_path']}_missing"
+
+    form = MainWindowForm(data=data)
+    assert not form.is_valid()
+    assert form.errors.as_data()["__all__"][0].message == "Selected mode requires a valid model file path (.pth)."
+
+
+def test_defaults_from_main_state_returns_dataclass_dict():
+    state = MainWindowState(
+        work_mode="train_only",
+        source_folder="D:/src",
+        result_folder="D:/res",
+        model_path="D:/models/m.pth",
+        label_folder="D:/label",
+        sample_folder="D:/sample",
+        epochs=7,
+    )
+
+    assert defaults_from_main_state(state) == {
+        "work_mode": "train_only",
+        "source_folder": "D:/src",
+        "result_folder": "D:/res",
+        "model_path": "D:/models/m.pth",
+        "label_folder": "D:/label",
+        "sample_folder": "D:/sample",
+        "epochs": 7,
+    }

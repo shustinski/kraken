@@ -33,6 +33,39 @@ def test_cut_and_sew_image_smoke():
     assert res.size == (4, 4)
 
 
+def test_cut_and_sew_image_non_square_segments():
+    base = np.arange(1 * 6 * 4, dtype=np.float32).reshape(1, 6, 4)
+    parts = cut_image(base, (1, 2, 3), overlap=0)
+    assert parts.shape[1:] == (1, 3, 2)
+
+    pred = np.ones((parts.shape[0], 1, 3, 2), dtype=np.float32)
+    res = sew_image((4, 6), pred, overlap=0)
+    arr = np.array(res)
+    assert arr.shape == (6, 4)
+    assert int(arr.min()) == 255
+    assert int(arr.max()) == 255
+
+
+def test_cut_image_small_source_with_large_segment():
+    base = np.full((1, 64, 64), 255, dtype=np.float32)
+    parts = cut_image(base, (1, 512, 512), overlap=0)
+
+    assert parts.shape == (1, 1, 512, 512)
+    assert np.all(parts[0, 0, :64, :64] == 1.0)
+    assert np.all(parts[0, 0, 64:, :] == 0.0)
+    assert np.all(parts[0, 0, :, 64:] == 0.0)
+
+
+def test_sew_image_small_source_with_large_segment():
+    pred = np.ones((1, 1, 512, 512), dtype=np.float32)
+    res = sew_image((64, 64), pred, overlap=32)
+    arr = np.array(res)
+
+    assert arr.shape == (64, 64)
+    assert int(arr.min()) == 255
+    assert int(arr.max()) == 255
+
+
 def test_img_crop_border_crops_to_black_frame():
     img = Image.fromarray(np.full((5, 5), 255, dtype=np.uint8), mode='L')
     cropped = img_crop_border(1, img)

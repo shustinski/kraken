@@ -39,6 +39,14 @@ def test_main_view_metrics_are_collected_without_capping(qapp):
     )
     view.metrics_message.emit(
         {
+            'type': 'system_memory',
+            'ram_mb': 256.0,
+            'vram_allocated_mb': 128.0,
+            'vram_reserved_mb': 192.0,
+        }
+    )
+    view.metrics_message.emit(
+        {
             'type': 'train_batch_preview',
             'image': np.full((32, 32), 128, dtype=np.uint8),
             'label': np.full((32, 32), 255, dtype=np.uint8),
@@ -58,6 +66,9 @@ def test_main_view_metrics_are_collected_without_capping(qapp):
     assert view.recognition_progress_bar.value() == 25
     assert "IoU: 80.00%" in view.validation_quality_label.text()
     assert "total: 30.0" in view.performance_label.text()
+    assert "RAM: 256 МБ" in view.memory_usage_label.text()
+    assert "VRAM: 128/192 МБ" in view.memory_usage_label.text()
+    assert "33.33 batch/s" in view.memory_usage_label.text()
     assert view.preview_image_label.pixmap() is not None
     assert view.preview_label_label.pixmap() is not None
 

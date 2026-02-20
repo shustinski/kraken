@@ -373,6 +373,7 @@ def run_single_thread_recognition(
     reporter = ProgressReporter(publish=publish, total_frames=len(source_files))
     reporter.publish_started()
     _publish_memory_metrics(publish=publish, collect_memory_metrics=collect_memory_metrics)
+    compile_fallback_checked = False
 
     shape = (colors, part_size[0], part_size[1])
     for index, image_path in enumerate(source_files, start=1):
@@ -380,6 +381,68 @@ def run_single_thread_recognition(
             break
         prepared = cut_image_prepare(image_path, shape, overlap)
         predicted = gpu_predict(prepared, model, device, batch_size)
+        # Some torch.compile configurations can produce degenerate outputs on inference.
+        if (not compile_fallback_checked) and hasattr(model, '_orig_mod'):
+            compile_fallback_checked = True
+            compiled_stats = predicted.get('_prediction_stats')
+            compiled_max = (
+                float(compiled_stats.get('max', 0.0))
+                if isinstance(compiled_stats, dict)
+                else 0.0
+            )
+            original_model = getattr(model, '_orig_mod', None)
+            if isinstance(original_model, nn.Module) and compiled_max <= 0.05:
+                publish(
+                    'logging',
+                    (
+                        'Recognition: low-probability output detected on torch.compile model; '
+                        'retrying with uncompiled model.'
+                    ),
+                )
+                original_model.eval()
+                original_model.to(device)
+                fallback_predicted = gpu_predict(prepared, original_model, device, batch_size)
+                fallback_stats = fallback_predicted.get('_prediction_stats')
+                fallback_max = (
+                    float(fallback_stats.get('max', 0.0))
+                    if isinstance(fallback_stats, dict)
+                    else 0.0
+                )
+                if fallback_max > (compiled_max + 0.01):
+                    model = original_model
+                    predicted = fallback_predicted
+                    publish(
+                        'logging',
+                        (
+                            'Recognition: switched to uncompiled model '
+                            f'(max prob {compiled_max:.6f} -> {fallback_max:.6f}).'
+                        ),
+                    )
+        stats = predicted.get('_prediction_stats')
+        if isinstance(stats, dict):
+            prob_min = float(stats.get('min', 0.0))
+            prob_max = float(stats.get('max', 0.0))
+            prob_mean = float(stats.get('mean', 0.0))
+            non_finite = int(stats.get('non_finite', 0))
+            fp32_retries = int(stats.get('fp32_retries', 0))
+            should_log_stats = index == 1 or non_finite > 0 or prob_max <= 0.05
+            if should_log_stats:
+                publish(
+                    'logging',
+                    (
+                        f'Recognition output stats [{index}/{len(source_files)}]: '
+                        f'min={prob_min:.6f}, max={prob_max:.6f}, mean={prob_mean:.6f}, '
+                        f'non_finite={non_finite}, fp32_retries={fp32_retries}'
+                    ),
+                )
+            if prob_max <= 0.05:
+                publish(
+                    'logging',
+                    (
+                        'Recognition warning: output probabilities are very low '
+                        '(max <= 0.05), resulting masks can look black.'
+                    ),
+                )
         sew(result_folder, predicted)
         reporter.publish_frame(index)
         _publish_memory_metrics(publish=publish, collect_memory_metrics=collect_memory_metrics)
@@ -505,18 +568,62 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
 
     tensor_data = torch.from_numpy(img['cutted_image']).float()
     use_amp = device.type == 'cuda'
+    min_prob = float('inf')
+    max_prob = float('-inf')
+    mean_acc = 0.0
+    processed_batches = 0
+    non_finite_values = 0
+    fp32_retries = 0
     with torch.inference_mode():
         for batch_index, batch in enumerate(create_batches(tensor_data, batch_size)):
             batch = batch.to(device, non_blocking=use_amp)
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
                 outputs = model(batch)
-                outputs = torch.sigmoid(outputs)
+
+            if not bool(torch.isfinite(outputs).all()):
+                fp32_retries += 1
+                outputs = model(batch.float())
+
+            finite_mask = torch.isfinite(outputs)
+            if not bool(finite_mask.all()):
+                non_finite_values += int((~finite_mask).sum().item())
+                outputs = torch.nan_to_num(outputs, nan=0.0, posinf=20.0, neginf=-20.0)
+
+            outputs = torch.sigmoid(outputs)
+            if not bool(torch.isfinite(outputs).all()):
+                finite_after_sigmoid = torch.isfinite(outputs)
+                non_finite_values += int((~finite_after_sigmoid).sum().item())
+                outputs = torch.nan_to_num(outputs, nan=0.0, posinf=1.0, neginf=0.0)
+
             predictions = outputs.detach().cpu().numpy()
+            batch_min = float(np.min(predictions))
+            batch_max = float(np.max(predictions))
+            batch_mean = float(np.mean(predictions))
+            min_prob = min(min_prob, batch_min)
+            max_prob = max(max_prob, batch_max)
+            mean_acc += batch_mean
+            processed_batches += 1
             start = batch_size * batch_index
             end = min(start + batch_size, parts_in_image)
             predicted_image[start:end] = predictions[: end - start]
 
     img['predicted_image'] = predicted_image
+    if processed_batches > 0:
+        img['_prediction_stats'] = {
+            'min': float(min_prob),
+            'max': float(max_prob),
+            'mean': float(mean_acc / processed_batches),
+            'non_finite': int(non_finite_values),
+            'fp32_retries': int(fp32_retries),
+        }
+    else:
+        img['_prediction_stats'] = {
+            'min': 0.0,
+            'max': 0.0,
+            'mean': 0.0,
+            'non_finite': int(non_finite_values),
+            'fp32_retries': int(fp32_retries),
+        }
     return img
 
 

@@ -1,5 +1,6 @@
 ﻿
 import os
+import math
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon, QImage, QPixmap
@@ -31,6 +32,7 @@ from view.changelog_dialog import show_changelog_dialog
 from view.help_dialog import show_help_dialog
 from view.metrics_panel import TrainingMetricsDock
 from view.settings_panel import create_spinbox
+from view.tic_tac_toe_dialog import TicTacToeDialog
 from view.window_dataclasses import MainWindowState
 
 
@@ -71,6 +73,7 @@ class MainView(QMainWindow):
     toggle_start_stop: pyqtSignal = pyqtSignal(bool)
     batch_preview_visibility_changed: pyqtSignal = pyqtSignal(bool)
     release_memory_requested: pyqtSignal = pyqtSignal()
+    open_tic_tac_toe_requested: pyqtSignal = pyqtSignal()
 
     def __init__(self, side_panel: QWidget | None = None):
         super().__init__()
@@ -84,6 +87,11 @@ class MainView(QMainWindow):
         self.log_scroll: QScrollArea | None = None
 
         self._batch_points_by_epoch: dict[int, list[tuple[float, float]]] = {}
+        self._tic_tac_toe_dialog: TicTacToeDialog | None = None
+        self._ram_mb: float | None = None
+        self._vram_alloc_mb: float | None = None
+        self._vram_reserved_mb: float | None = None
+        self._train_speed_batches_per_sec: float | None = None
 
         self._setup_ui()
 
@@ -272,6 +280,11 @@ class MainView(QMainWindow):
         view_menu.addAction(self.batch_preview_action)
         self.release_memory_action = QAction(t["menu_release_memory"], self)
         view_menu.addAction(self.release_memory_action)
+        self.open_tic_tac_toe_action = QAction(
+            t.get("menu_open_tic_tac_toe", "Крестики-нолики (нейросеть)"),
+            self,
+        )
+        view_menu.addAction(self.open_tic_tac_toe_action)
         help_action = QAction(t["menu_open_help"], self)
         help_action.triggered.connect(lambda: show_help_dialog(self))
         info_menu.addAction(help_action)
@@ -360,6 +373,9 @@ class MainView(QMainWindow):
             self.batch_preview_action.toggled.connect(self.set_batch_preview_enabled)
         if hasattr(self, "release_memory_action"):
             self.release_memory_action.triggered.connect(self.release_memory_requested.emit)
+        if hasattr(self, "open_tic_tac_toe_action"):
+            self.open_tic_tac_toe_action.triggered.connect(self.open_tic_tac_toe_requested.emit)
+        self.open_tic_tac_toe_requested.connect(self._open_tic_tac_toe_dialog)
 
         self.log_message.connect(self._append_log)
         self.log_message_with_delete_last.connect(self.append_with_delete_previous)
@@ -450,13 +466,10 @@ class MainView(QMainWindow):
             ram_mb = data.get("ram_mb")
             vram_alloc_mb = data.get("vram_allocated_mb")
             vram_reserved_mb = data.get("vram_reserved_mb")
-            ram_text = f"RAM: {float(ram_mb):.0f} МБ" if ram_mb is not None else "RAM: —"
-            if vram_alloc_mb is None:
-                vram_text = "VRAM: —"
-            else:
-                vram_reserved_text = f"/{float(vram_reserved_mb):.0f}" if vram_reserved_mb is not None else ""
-                vram_text = f"VRAM: {float(vram_alloc_mb):.0f}{vram_reserved_text} МБ"
-            self.memory_usage_label.setText(f"{ram_text} | {vram_text}")
+            self._ram_mb = float(ram_mb) if ram_mb is not None else None
+            self._vram_alloc_mb = float(vram_alloc_mb) if vram_alloc_mb is not None else None
+            self._vram_reserved_mb = float(vram_reserved_mb) if vram_reserved_mb is not None else None
+            self._update_memory_runtime_label()
             return
 
         if metric_type in ("train_perf", "train_perf_epoch"):
@@ -468,7 +481,42 @@ class MainView(QMainWindow):
             self.performance_label.setText(
                 f"Batch ms | data: {data_wait_ms:.1f} | fwd: {forward_ms:.1f} | bwd: {backward_ms:.1f} | opt: {optimizer_ms:.1f} | total: {total_ms:.1f}"
             )
+            if math.isfinite(total_ms) and total_ms > 0.0:
+                self._train_speed_batches_per_sec = 1000.0 / total_ms
+            else:
+                self._train_speed_batches_per_sec = None
+            self._update_memory_runtime_label()
             return
+
+    def _update_memory_runtime_label(self) -> None:
+        no_runtime_data = (
+            self._ram_mb is None
+            and self._vram_alloc_mb is None
+            and self._vram_reserved_mb is None
+            and self._train_speed_batches_per_sec is None
+        )
+        if no_runtime_data:
+            self.memory_usage_label.setText(get_ui_section("main_window")["memory_label_default"])
+            return
+
+        ram_text = f"RAM: {self._ram_mb:.0f} МБ" if self._ram_mb is not None else "RAM: —"
+        if self._vram_alloc_mb is None:
+            vram_text = "VRAM: —"
+        else:
+            reserved_text = f"/{self._vram_reserved_mb:.0f}" if self._vram_reserved_mb is not None else ""
+            vram_text = f"VRAM: {self._vram_alloc_mb:.0f}{reserved_text} МБ"
+        speed_text = (
+            f"Скорость: {self._train_speed_batches_per_sec:.2f} batch/s"
+            if self._train_speed_batches_per_sec is not None
+            else "Скорость: — batch/s"
+        )
+        self.memory_usage_label.setText(f"{ram_text} | {vram_text} | {speed_text}")
+
+    def _reset_runtime_metrics(self) -> None:
+        self._ram_mb = None
+        self._vram_alloc_mb = None
+        self._vram_reserved_mb = None
+        self._train_speed_batches_per_sec = None
 
     @staticmethod
     def _sparsify_batch_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -518,6 +566,7 @@ class MainView(QMainWindow):
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(show_stop)
         if show_stop:
+            self._reset_runtime_metrics()
             self.metrics_panel.clear()
             self._batch_points_by_epoch.clear()
             self._set_progress_bar(self.epoch_progress_bar, 0, 0)
@@ -529,9 +578,16 @@ class MainView(QMainWindow):
             self.preview_image_label.setText(get_ui_section("main_window")["preview_image"])
             self.preview_label_label.setText(get_ui_section("main_window")["preview_label"])
             self.preview_output_label.setText(get_ui_section("main_window")["preview_output"])
-            self.memory_usage_label.setText(get_ui_section("main_window")["memory_label_default"])
+            self._update_memory_runtime_label()
             self.validation_quality_label.setText(get_ui_section("main_window")["validation_quality_default"])
             self.performance_label.setText(get_ui_section("main_window")["performance_label_default"])
+
+    def _open_tic_tac_toe_dialog(self):
+        if self._tic_tac_toe_dialog is None:
+            self._tic_tac_toe_dialog = TicTacToeDialog(self)
+        self._tic_tac_toe_dialog.show()
+        self._tic_tac_toe_dialog.raise_()
+        self._tic_tac_toe_dialog.activateWindow()
 
     def get_selected_queue_row(self) -> int:
         return self.queue_list.currentRow()

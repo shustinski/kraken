@@ -455,10 +455,15 @@ class GeneralNeuralHandler:
         self.current_thread = ModelRecognizer(
             self.recognition_parameters,
             message_bus=self.message_bus,
-            callback=self._stop_recognition_callback,
+            callback=None,
         )
         self.current_thread.daemon = False
         self.current_thread.start()
+        self.current_thread.join()
+        if not getattr(self.current_thread, 'succeeded', False):
+            if (not self._need_stop) and getattr(self.current_thread, 'error_message', None) is None:
+                self.message_bus.publish('error', 'Распознавание завершилось с ошибкой.')
+        self._stop_recognition_callback()
 
     def _stop_recognition_callback(self):
         self._drop_runtime_references()

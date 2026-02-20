@@ -95,6 +95,7 @@ class _EpochStats:
     train_loss: float = 0.0
     train_samples_count: int = 0
     skipped_uniform_count: int = 0
+    skipped_non_finite_count: int = 0
     data_wait_ms: float = 0.0
     forward_ms: float = 0.0
     backward_ms: float = 0.0
@@ -326,7 +327,7 @@ class ModelTrainer(threading.Thread):
     def _validate_training_inputs(self) -> bool:
         if self._train_dataloader is not None and self._model is not None:
             return True
-        self.error_message = 'Error: training data or model is missing for process startup.'
+        self.error_message = 'Ошибка: отсутствуют необходимые данные для обучения модели.'
         self._bus.publish('error', self.error_message)
         return False
 
@@ -367,26 +368,23 @@ class ModelTrainer(threading.Thread):
         message: Any,
         *,
         append_elapsed_suffix: bool,
-        last_message_at: float,
-    ) -> float:
+        started_at: float,
+    ) -> None:
         topic, payload = message[0], message[1]
-        now = time.perf_counter()
         if append_elapsed_suffix and isinstance(payload, str) and topic != 'error':
-            payload = payload + self._elapsed_suffix(last_message_at)
+            payload = payload + self._elapsed_suffix(started_at)
         if topic == 'error' and isinstance(payload, str):
             self.error_message = payload
         self._bus.publish(topic, payload)
-        return now
 
-    def _drain_training_queue(self, *, append_elapsed_suffix: bool, last_message_at: float) -> float:
+    def _drain_training_queue(self, *, append_elapsed_suffix: bool, started_at: float) -> None:
         while not self.message_queue.empty():
             queued_message = self.message_queue.get()
-            last_message_at = self._publish_training_message(
+            self._publish_training_message(
                 queued_message,
                 append_elapsed_suffix=append_elapsed_suffix,
-                last_message_at=last_message_at,
+                started_at=started_at,
             )
-        return last_message_at
 
     def _finalize_training_result(self, training_process: Any) -> bool:
         if self._stop_event.is_set():
@@ -414,19 +412,19 @@ class ModelTrainer(threading.Thread):
             training_process = self._create_training_process()
             training_process.start()
 
-            last_message_at = time.perf_counter()
+            started_at = time.perf_counter()
             while training_process.is_alive():
                 if self._stop_event.is_set():
                     training_process.kill()
                     break
-                last_message_at = self._drain_training_queue(
+                self._drain_training_queue(
                     append_elapsed_suffix=True,
-                    last_message_at=last_message_at,
+                    started_at=started_at,
                 )
                 time.sleep(1)
 
             training_process.join()
-            self._drain_training_queue(append_elapsed_suffix=False, last_message_at=last_message_at)
+            self._drain_training_queue(append_elapsed_suffix=False, started_at=started_at)
             self._finalize_training_result(training_process)
         finally:
             if training_process is not None and training_process.is_alive():
@@ -737,16 +735,32 @@ class TrainerProcess(mp.Process):
     def _resolved_iou_weight(self) -> float:
         return float(min(max(self._iou_loss_weight, 0.0), 1.0))
 
+    @staticmethod
+    def _is_finite_tensor(tensor: torch.Tensor) -> bool:
+        return bool(torch.isfinite(tensor).all())
+
+    @staticmethod
+    def _sanitize_outputs_for_loss(outputs: torch.Tensor) -> torch.Tensor:
+        return torch.nan_to_num(outputs, nan=0.0, posinf=20.0, neginf=-20.0)
+
+    @staticmethod
+    def _sanitize_labels_for_loss(label: torch.Tensor) -> torch.Tensor:
+        sanitized = torch.nan_to_num(label, nan=0.0, posinf=1.0, neginf=0.0)
+        return torch.clamp(sanitized, min=0.0, max=1.0)
+
     def _compute_per_sample_loss(
         self,
         outputs: torch.Tensor,
         label: torch.Tensor,
         bce_criterion: nn.Module,
     ) -> torch.Tensor:
+        outputs = self._sanitize_outputs_for_loss(outputs)
+        label = self._sanitize_labels_for_loss(label)
         loss_mode = self._resolved_loss_function()
         bce_per_sample = cast(torch.Tensor, bce_criterion(outputs, label)).view(outputs.shape[0], -1).mean(dim=1)
+        bce_per_sample = torch.nan_to_num(bce_per_sample, nan=1.0, posinf=50.0, neginf=0.0)
         if loss_mode == 'bce':
-            return bce_per_sample
+            return torch.clamp(bce_per_sample, min=0.0, max=50.0)
 
         probs = torch.sigmoid(outputs)
         probs_flat = probs.view(probs.shape[0], -1)
@@ -762,14 +776,18 @@ class TrainerProcess(mp.Process):
         if loss_mode == 'dice':
             return dice_per_sample
         if loss_mode == 'iou':
-            return iou_per_sample
+            return torch.clamp(torch.nan_to_num(iou_per_sample, nan=1.0, posinf=50.0, neginf=0.0), min=0.0, max=50.0)
 
         if loss_mode == 'bce_dice':
             dice_weight = self._resolved_dice_weight()
-            return ((1.0 - dice_weight) * bce_per_sample) + (dice_weight * dice_per_sample)
+            mixed = ((1.0 - dice_weight) * bce_per_sample) + (dice_weight * dice_per_sample)
+            mixed = torch.nan_to_num(mixed, nan=1.0, posinf=50.0, neginf=0.0)
+            return torch.clamp(mixed, min=0.0, max=50.0)
 
         iou_weight = self._resolved_iou_weight()
-        return ((1.0 - iou_weight) * bce_per_sample) + (iou_weight * iou_per_sample)
+        mixed = ((1.0 - iou_weight) * bce_per_sample) + (iou_weight * iou_per_sample)
+        mixed = torch.nan_to_num(mixed, nan=1.0, posinf=50.0, neginf=0.0)
+        return torch.clamp(mixed, min=0.0, max=50.0)
 
     def _run_validation_epoch(
         self,
@@ -785,11 +803,13 @@ class TrainerProcess(mp.Process):
 
         self._model.eval()
         val_loss = 0.0
+        val_loss_samples = 0
         correct = 0
         total = 0
         true_positive = 0.0
         false_positive = 0.0
         false_negative = 0.0
+        skipped_non_finite_batches = 0
         with torch.no_grad():
             for data, target in self._val_dataloader:
                 image = data.to(device, non_blocking=True)
@@ -799,10 +819,15 @@ class TrainerProcess(mp.Process):
                     per_sample_loss = self._compute_per_sample_loss(outputs, label, bce_criterion)
                     loss = per_sample_loss.mean()
 
+                if not self._is_finite_tensor(loss):
+                    skipped_non_finite_batches += 1
+                    continue
+
                 val_loss += loss.item() * image.size(0)
-                probs = torch.sigmoid(outputs)
+                val_loss_samples += int(image.size(0))
+                probs = torch.sigmoid(self._sanitize_outputs_for_loss(outputs))
                 preds = probs >= 0.5
-                label_bin = label >= 0.5
+                label_bin = self._sanitize_labels_for_loss(label) >= 0.5
                 correct += (preds == label_bin).sum().item()
                 total += label_bin.numel()
                 preds_f = preds.float()
@@ -811,7 +836,19 @@ class TrainerProcess(mp.Process):
                 false_positive += float((preds_f * (1.0 - label_f)).sum().item())
                 false_negative += float(((1.0 - preds_f) * label_f).sum().item())
 
-        avg_val_loss = val_loss / val_dataset_len
+        if skipped_non_finite_batches > 0:
+            self._bus.put([
+                'logging',
+                (
+                    'Validation warning: '
+                    f'skipped {skipped_non_finite_batches} batch(es) with non-finite loss.'
+                ),
+            ])
+        if val_loss_samples <= 0:
+            self._bus.put(['logging', 'Validation warning: all batches were skipped due to non-finite loss.'])
+            return None
+
+        avg_val_loss = val_loss / val_loss_samples
         val_accuracy = (correct / total) if total else 0.0
         iou_denom = true_positive + false_positive + false_negative
         dice_denom = (2.0 * true_positive) + false_positive + false_negative
@@ -1240,11 +1277,11 @@ class TrainerProcess(mp.Process):
             self._bus.put(['logging', f'Unknown loss "{self._loss_function}". Using "bce".'])
         if resolved_loss_mode == 'bce_dice':
             self._bus.put(['logging', f'Loss function: bce_dice (dice_weight={self._resolved_dice_weight():.2f}).'])
-            return
-        if resolved_loss_mode == 'bce_iou':
+        elif resolved_loss_mode == 'bce_iou':
             self._bus.put(['logging', f'Loss function: bce_iou (iou_weight={self._resolved_iou_weight():.2f}).'])
-            return
-        self._bus.put(['logging', f'Loss function: {resolved_loss_mode}.'])
+        else:
+            self._bus.put(['logging', f'Loss function: {resolved_loss_mode}.'])
+        self._bus.put(['logging', 'Loss normalization: per-sample mean (batch-size invariant).'])
 
     def _log_sampling_configuration(self, *, train_sampler: Any, supports_loss_aware_sampling: bool) -> None:
         if self._skip_uniform_labels:
@@ -1473,11 +1510,21 @@ class TrainerProcess(mp.Process):
         else:
             sample_idx_tensor = torch.as_tensor(sample_indices, dtype=torch.long).flatten()
         sample_loss_tensor = per_sample_loss.detach().to(device='cpu', dtype=torch.float32).flatten()
+        sample_loss_tensor = torch.nan_to_num(sample_loss_tensor, nan=1.0, posinf=50.0, neginf=0.0)
         if sample_idx_tensor.numel() == sample_loss_tensor.numel():
             cast(_SupportsLossAwareSampling, run_context.train_sampler).update_batch_losses(
                 sample_idx_tensor,
                 sample_loss_tensor,
             )
+
+    def _has_non_finite_gradients(self) -> bool:
+        for param in self._model.parameters():
+            gradient = param.grad
+            if gradient is None:
+                continue
+            if not self._is_finite_tensor(gradient):
+                return True
+        return False
 
     def _prepare_train_batch(
         self,
@@ -1516,19 +1563,37 @@ class TrainerProcess(mp.Process):
         *,
         run_context: _RunContext,
         batch: _PreparedTrainBatch,
-    ) -> _TrainStepResult:
+    ) -> _TrainStepResult | None:
         run_context.optimizer.zero_grad(set_to_none=True)
 
         forward_start = time.perf_counter()
+        backward_denominator = float(max(1, int(batch.image.size(0))))
         with run_context.autocast_ctx():
             outputs = self._model(batch.image)
             per_sample_loss = self._compute_per_sample_loss(outputs, batch.label, run_context.bce_criterion)
-            loss = per_sample_loss.mean()
+            metric_loss = per_sample_loss.mean()
+            loss = per_sample_loss.sum() / backward_denominator
+        if (not self._is_finite_tensor(loss)) or (not self._is_finite_tensor(metric_loss)):
+            # Retry in full precision to avoid occasional AMP overflow/underflow instability.
+            with nullcontext():
+                outputs = self._model(batch.image.float())
+                per_sample_loss = self._compute_per_sample_loss(outputs, batch.label, run_context.bce_criterion)
+                metric_loss = per_sample_loss.mean()
+                loss = per_sample_loss.sum() / backward_denominator
+            if (not self._is_finite_tensor(loss)) or (not self._is_finite_tensor(metric_loss)):
+                self._bus.put(['logging', 'Training warning: non-finite loss detected, batch skipped.'])
+                run_context.optimizer.zero_grad(set_to_none=True)
+                return None
         forward_ms = (time.perf_counter() - forward_start) * 1000.0
 
         backward_start = time.perf_counter()
         run_context.scaler.scale(loss).backward()
         run_context.scaler.unscale_(run_context.optimizer)
+        if self._has_non_finite_gradients():
+            self._bus.put(['logging', 'Training warning: non-finite gradients detected, optimizer step skipped.'])
+            run_context.optimizer.zero_grad(set_to_none=True)
+            run_context.scaler.update()
+            return None
         torch.nn.utils.clip_grad_norm_(self._model.parameters(), 1.0)
         backward_ms = (time.perf_counter() - backward_start) * 1000.0
 
@@ -1542,7 +1607,7 @@ class TrainerProcess(mp.Process):
         return _TrainStepResult(
             outputs=outputs,
             per_sample_loss=per_sample_loss,
-            batch_loss=float(loss.item()),
+            batch_loss=float(metric_loss.item()),
             batch_samples=int(batch.image.size(0)),
             forward_ms=forward_ms,
             backward_ms=backward_ms,
@@ -1643,6 +1708,11 @@ class TrainerProcess(mp.Process):
                 continue
 
             step_result = self._run_train_step(run_context=run_context, batch=prepared_batch)
+            if step_result is None:
+                epoch_stats.skipped_non_finite_count += 1
+                self._step_training_profiler(active_profiler)
+                prev_batch_end = time.perf_counter()
+                continue
             batch_total_ms = (time.perf_counter() - prepared_batch.batch_start) * 1000.0
 
             epoch_stats.add_batch(
@@ -1720,6 +1790,14 @@ class TrainerProcess(mp.Process):
             self._bus.put([
                 'logging',
                 f'Пропущено сэмплов из-за uniform label (0/1): {epoch_stats.skipped_uniform_count}',
+            ])
+        if epoch_stats.skipped_non_finite_count > 0:
+            self._bus.put([
+                'logging',
+                (
+                    'Training warning: '
+                    f'skipped {epoch_stats.skipped_non_finite_count} batch(es) with non-finite loss/gradients.'
+                ),
             ])
 
     def _publish_epoch_load_breakdown(
@@ -2336,26 +2414,23 @@ class ModelRecognizer(threading.Thread):
         message: Any,
         *,
         append_elapsed_suffix: bool,
-        last_message_at: float,
-    ) -> float:
+        started_at: float,
+    ) -> None:
         topic, payload = message[0], message[1]
-        now = time.perf_counter()
         if append_elapsed_suffix and isinstance(payload, str) and topic != 'error':
-            payload = payload + self._elapsed_suffix(last_message_at)
+            payload = payload + self._elapsed_suffix(started_at)
         if topic == 'error' and isinstance(payload, str):
             self.error_message = payload
         self._bus.publish(topic, payload)
-        return now
 
-    def _drain_recognition_queue(self, *, append_elapsed_suffix: bool, last_message_at: float) -> float:
+    def _drain_recognition_queue(self, *, append_elapsed_suffix: bool, started_at: float) -> None:
         while not self.message_queue.empty():
             queued_message = self.message_queue.get()
-            last_message_at = self._publish_recognition_message(
+            self._publish_recognition_message(
                 queued_message,
                 append_elapsed_suffix=append_elapsed_suffix,
-                last_message_at=last_message_at,
+                started_at=started_at,
             )
-        return last_message_at
 
     def _finalize_recognition_result(self, recognition_process: Any) -> bool:
         if self._stop_event.is_set():
@@ -2381,7 +2456,7 @@ class ModelRecognizer(threading.Thread):
                 multithreading=self._multithreading,
             )
             recognition_process.start()
-            last_message_at = time.perf_counter()
+            started_at = time.perf_counter()
             while recognition_process.is_alive():
                 if self._stop_event.is_set():
                     self._process_stop_event.set()
@@ -2389,14 +2464,14 @@ class ModelRecognizer(threading.Thread):
                     if recognition_process.is_alive():
                         recognition_process.kill()
                     break
-                last_message_at = self._drain_recognition_queue(
+                self._drain_recognition_queue(
                     append_elapsed_suffix=True,
-                    last_message_at=last_message_at,
+                    started_at=started_at,
                 )
                 time.sleep(1)
 
             recognition_process.join()
-            self._drain_recognition_queue(append_elapsed_suffix=False, last_message_at=last_message_at)
+            self._drain_recognition_queue(append_elapsed_suffix=False, started_at=started_at)
             self._finalize_recognition_result(recognition_process)
         finally:
             if recognition_process is not None and recognition_process.is_alive():

@@ -44,32 +44,38 @@ def reshape_imgs(imgs):
 # Разрезать большое входное изображение на массив маленьких входных картинок для НС
 def cut_image(base_image, segment_size, overlap):
     # segment_size(width,height,channels)
-    channels, segment_width, segment_height  = segment_size
+    channels, segment_width, segment_height = segment_size
     base_height = base_image.shape[1]
     base_width = base_image.shape[2]
+    stride_height = max(1, int(segment_height - overlap))
+    stride_width = max(1, int(segment_width - overlap))
 
-    row_steps = int(base_height / (segment_height - overlap)) + 1
-    column_steps = int(base_width / (segment_width - overlap)) + 1
+    row_steps = int(base_height / stride_height) + 1
+    column_steps = int(base_width / stride_width) + 1
 
     fragments = row_steps * column_steps
-    images = np.zeros((fragments, channels, segment_width, segment_height))
+    # Tensor layout is (N, C, H, W)
+    images = np.zeros((fragments, channels, segment_height, segment_width), dtype=base_image.dtype)
 
     for row in range(row_steps):
         for col in range(column_steps):
             image_index = row * column_steps + col
-            left = col * (segment_width - overlap)
+            left = col * stride_width
             right = left + segment_width
-            top = row * (segment_height - overlap)
+            top = row * stride_height
             bottom = top + segment_height
 
-            if right >= base_width and bottom >= base_height:
-                images[image_index] = base_image[:,-segment_height:, -segment_width:]
-            elif right > base_width:
-                images[image_index] = base_image[:,top:bottom, -segment_width:]
-            elif bottom > base_height:
-                images[image_index] = base_image[:,-segment_height:, left:right]
-            else:
-                images[image_index] = base_image[:,top:bottom, left:right]
+            src_top = top if bottom <= base_height else max(0, base_height - segment_height)
+            src_left = left if right <= base_width else max(0, base_width - segment_width)
+            src_bottom = min(base_height, src_top + segment_height)
+            src_right = min(base_width, src_left + segment_width)
+
+            patch = np.zeros((channels, segment_height, segment_width), dtype=base_image.dtype)
+            copy_height = max(0, int(src_bottom - src_top))
+            copy_width = max(0, int(src_right - src_left))
+            if copy_height > 0 and copy_width > 0:
+                patch[:, :copy_height, :copy_width] = base_image[:, src_top:src_bottom, src_left:src_right]
+            images[image_index] = patch
 
     return images / 255
 
@@ -99,51 +105,68 @@ def sew_image(base_image, predictions: npt.ArrayLike, overlap) -> Image:
     :param overlap:
     :return: sewed image
     """
-    base_width = base_image[0]
-    base_height = base_image[1]
-    result = np.zeros((base_height, base_width))
+    base_width = int(base_image[0])
+    base_height = int(base_image[1])
+    result = np.zeros((base_height, base_width), dtype=np.float32)
 
-    segment_width = predictions.shape[2]
-    segment_height = predictions.shape[3]
+    # Predictions layout is (N, C, H, W)
+    segment_height = int(predictions.shape[2])
+    segment_width = int(predictions.shape[3])
+    stride_height = max(1, int(segment_height - overlap))
+    stride_width = max(1, int(segment_width - overlap))
+    row_steps = int(base_height / stride_height) + 1
+    column_steps = int(base_width / stride_width) + 1
 
-    row_steps = int(base_height / (segment_width - overlap)) + 1
-    column_steps = int(base_width / (segment_height - overlap)) + 1
-    crop_border = int(overlap / 2) if overlap % 2 == 0 else int(overlap / 2) + 1
+    # If overlap is too large we still keep at least one pixel in each direction.
+    raw_crop = int(overlap / 2) if overlap % 2 == 0 else int(overlap / 2) + 1
+    crop_height = min(raw_crop, max(0, segment_height // 2))
+    crop_width = min(raw_crop, max(0, segment_width // 2))
+    parts_count = int(predictions.shape[0])
 
     for row in range(row_steps):
         for col in range(column_steps):
-            # big image coordinates
-            if row == 0:
-                top_coord_big_img = crop_border
-                bot_coord_big_img = segment_height - crop_border
-            elif row == (row_steps - 1):
-                top_coord_big_img = base_height - segment_height + crop_border
-                bot_coord_big_img = base_height - crop_border
-            else:
-                top_coord_big_img = row * (segment_height - overlap) + crop_border
-                bot_coord_big_img = row * (segment_height - overlap) + segment_height - crop_border
-
-            if col == 0:
-                left_coord_big_img = crop_border
-                right_coord_big_img = segment_width - crop_border
-            elif col == (column_steps - 1):
-                left_coord_big_img = base_width - segment_width + crop_border
-                right_coord_big_img = base_width - crop_border
-            else:
-                left_coord_big_img = col * (segment_width - overlap) + crop_border
-                right_coord_big_img = col * (segment_width - overlap) + segment_width - crop_border
-
             sewed_part_index = row * column_steps + col
-            if crop_border == 0:
-                patch = predictions[sewed_part_index, 0, :, :]
-            else:
-                patch = predictions[
-                    sewed_part_index,
-                    0,
-                    crop_border:-crop_border,
-                    crop_border:-crop_border,
-                ]
-            result[top_coord_big_img:bot_coord_big_img, left_coord_big_img:right_coord_big_img] = patch
+            if sewed_part_index >= parts_count:
+                continue
+
+            left = col * stride_width
+            right = left + segment_width
+            top = row * stride_height
+            bottom = top + segment_height
+
+            src_top = top if bottom <= base_height else max(0, base_height - segment_height)
+            src_left = left if right <= base_width else max(0, base_width - segment_width)
+
+            top_crop = 0 if row == 0 else crop_height
+            bottom_crop = 0 if row == (row_steps - 1) else crop_height
+            left_crop = 0 if col == 0 else crop_width
+            right_crop = 0 if col == (column_steps - 1) else crop_width
+
+            dst_top = src_top + top_crop
+            dst_bottom = src_top + segment_height - bottom_crop
+            dst_left = src_left + left_crop
+            dst_right = src_left + segment_width - right_crop
+
+            dst_top = max(0, min(base_height, dst_top))
+            dst_bottom = max(0, min(base_height, dst_bottom))
+            dst_left = max(0, min(base_width, dst_left))
+            dst_right = max(0, min(base_width, dst_right))
+
+            if dst_bottom <= dst_top or dst_right <= dst_left:
+                continue
+
+            src_patch_top = dst_top - src_top
+            src_patch_left = dst_left - src_left
+            src_patch_bottom = src_patch_top + (dst_bottom - dst_top)
+            src_patch_right = src_patch_left + (dst_right - dst_left)
+
+            patch = predictions[sewed_part_index, 0, :, :]
+            result[dst_top:dst_bottom, dst_left:dst_right] = patch[
+                src_patch_top:src_patch_bottom,
+                src_patch_left:src_patch_right,
+            ]
+    result = np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0)
+    result = np.clip(result, 0.0, 1.0)
     result = result * 255
     # result = result.reshape(base_height, base_width)
     resimg = Image.fromarray(result.astype('uint8'), mode='L')

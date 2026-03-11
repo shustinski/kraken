@@ -24,7 +24,8 @@ class ChangelogDialog(QDialog):
         text.setAcceptRichText(False)
         text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         content = self._resolve_content(str(texts.get('content', '')))
-        text.setPlainText(f'Текущая версия: {APP_VERSION}\n\n{content}')
+        version_template = str(texts.get('version_template', 'Текущая версия: {version}'))
+        text.setPlainText(f'{version_template.format(version=APP_VERSION)}\n\n{content}')
         text.moveCursor(text.textCursor().MoveOperation.Start)
         layout.addWidget(text)
 

@@ -4,6 +4,7 @@ import time
 import socket
 import sys
 import importlib.util
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import threading
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.distributed as dist
 import torch.multiprocessing as torch_mp
 from torch import optim
@@ -27,15 +29,20 @@ from torch.utils.data.distributed import DistributedSampler
 from lib import System
 from model.NeuralNetwork.dataset import CustomDataset
 from lib.data_interfaces import (
+    CutoutParameters,
     RecognitionParameters,
     OptimizerParameters,
     OptimizerName,
+    MixupParameters,
     MixedPrecisionMode,
     EarlyStoppingParameters,
     WarmupParameters,
+    HardMiningParameters,
+    normalize_multi_gpu_mode,
 )
 from lib.file_func import filter_images
 from lib.func import get_input_channels
+from lib.loss_config import format_loss_formula, resolve_loss_term_weights, sanitize_loss_term_weights
 from lib.message_bus import AbstractMessageBus
 from model.NeuralNetwork.model_io import load_model_artifact, save_model_artifact
 from model.NeuralNetwork.recognition_pipeline import (
@@ -58,6 +65,12 @@ CHECKPOINT_SUFFIX = '.ckpt'
 STOP_TOKEN = '__STOP__'
 # Global profiler switch (set in code, not via env var).
 TRAINING_PROFILER_ENABLED = False
+FOCAL_LOSS_ALPHA = 0.25
+FOCAL_LOSS_GAMMA = 2.0
+FOCAL_TVERSKY_ALPHA = 0.3
+FOCAL_TVERSKY_BETA = 0.7
+BOUNDARY_LOSS_KERNEL_SIZE = 3
+VALIDATION_THRESHOLD_CANDIDATES: tuple[float, ...] = tuple(value / 100.0 for value in range(10, 95, 5))
 
 
 class _NoOpQueue:
@@ -128,6 +141,7 @@ class _EarlyStoppingState:
     bad_epochs: int = 0
     best_epoch: int = 0
     best_model_state: dict[str, torch.Tensor] | None = None
+    best_threshold: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -176,6 +190,8 @@ class _PreparedTrainBatch:
     data: Any
     target: Any
     sample_indices: Any
+    mixup_pair_indices: Any
+    mixup_lambdas: torch.Tensor | None
     image: torch.Tensor
     label: torch.Tensor
     batch_start: float
@@ -253,6 +269,16 @@ def _is_module_available(module_name: str) -> bool:
         return False
 
 
+def _is_debugger_attached() -> bool:
+    gettrace = getattr(sys, 'gettrace', None)
+    if not callable(gettrace):
+        return False
+    try:
+        return bool(gettrace())
+    except Exception:
+        return False
+
+
 _TORCH_COMPILE_MODES = {'default', 'reduce-overhead', 'max-autotune'}
 _MAX_AUTOTUNE_MIN_SMS = 68
 
@@ -289,13 +315,18 @@ class ModelTrainer(threading.Thread):
                  optimizer_params: OptimizerParameters | None = None,
                  mixed_precision: MixedPrecisionMode = MixedPrecisionMode.bf16,
                  loss_function: str = 'bce',
+                 loss_term_weights: dict[str, float] | None = None,
                  dice_loss_weight: float = 0.5,
                  iou_loss_weight: float = 0.5,
+                 hard_mining_params: HardMiningParameters | None = None,
+                 cutout_params: CutoutParameters | None = None,
+                 mixup_params: MixupParameters | None = None,
                  early_stopping_params: EarlyStoppingParameters | None = None,
                  warmup_params: WarmupParameters | None = None,
                  skip_uniform_labels: bool = False,
                  resume_from_checkpoint: bool = False,
                  use_multi_gpu: bool = True,
+                 multi_gpu_mode: str | None = None,
                  show_batch_preview: bool = True,
                  log_update_frequency: int = 0):
         super().__init__()
@@ -309,19 +340,28 @@ class ModelTrainer(threading.Thread):
         self._optimizer_params = optimizer_params or OptimizerParameters()
         self._mixed_precision = mixed_precision
         self._loss_function = str(loss_function or 'bce').strip().lower()
+        self._loss_term_weights = sanitize_loss_term_weights(loss_term_weights)
         self._dice_loss_weight = float(dice_loss_weight)
         self._iou_loss_weight = float(iou_loss_weight)
+        self._hard_mining_params = hard_mining_params or HardMiningParameters()
+        self._cutout_params = cutout_params or CutoutParameters()
+        self._mixup_params = mixup_params or MixupParameters()
         self._early_stopping_params = early_stopping_params or EarlyStoppingParameters()
         self._warmup_params = warmup_params or WarmupParameters()
         self._skip_uniform_labels = bool(skip_uniform_labels)
         self._resume_from_checkpoint = resume_from_checkpoint
-        self._use_multi_gpu = use_multi_gpu
+        self._multi_gpu_mode = normalize_multi_gpu_mode(
+            multi_gpu_mode,
+            use_multi_gpu_fallback=bool(use_multi_gpu),
+        )
+        self._use_multi_gpu = self._multi_gpu_mode != 'off'
         self._show_batch_preview = show_batch_preview
         self._log_update_frequency = max(0, int(log_update_frequency))
         self._stop_event = threading.Event()
         self.message_queue = mp.Queue()
         self.succeeded = False
         self.error_message: str | None = None
+        self._recommended_inference_threshold = 0.5
 
 
     def _validate_training_inputs(self) -> bool:
@@ -345,13 +385,18 @@ class ModelTrainer(threading.Thread):
             optimizer_params=self._optimizer_params,
             mixed_precision=self._mixed_precision,
             loss_function=self._loss_function,
+            loss_term_weights=self._loss_term_weights,
             dice_loss_weight=self._dice_loss_weight,
             iou_loss_weight=self._iou_loss_weight,
+            hard_mining_params=self._hard_mining_params,
+            cutout_params=self._cutout_params,
+            mixup_params=self._mixup_params,
             early_stopping_params=self._early_stopping_params,
             warmup_params=self._warmup_params,
             skip_uniform_labels=self._skip_uniform_labels,
             resume_from_checkpoint=self._resume_from_checkpoint,
             use_multi_gpu=self._use_multi_gpu,
+            multi_gpu_mode=self._multi_gpu_mode,
             show_batch_preview=self._show_batch_preview,
             log_update_frequency=self._log_update_frequency,
         )
@@ -409,6 +454,26 @@ class ModelTrainer(threading.Thread):
             if not self._validate_training_inputs():
                 return
 
+            if _is_debugger_attached():
+                self._bus.publish(
+                    'logging',
+                    'Debugger detected: training multiprocessing disabled for this run.',
+                )
+                training_process = self._create_training_process()
+                started_at = time.perf_counter()
+                try:
+                    training_process.run()
+                except Exception as error:
+                    self.error_message = f'Training error: {error}'
+                    self._bus.publish('error', self.error_message)
+                    self.succeeded = False
+                    return
+                self._drain_training_queue(append_elapsed_suffix=False, started_at=started_at)
+                self.succeeded = True
+                if self.callback is not None:
+                    self.callback()
+                return
+
             training_process = self._create_training_process()
             training_process.start()
 
@@ -450,13 +515,18 @@ class TrainerProcess(mp.Process):
                  optimizer_params: OptimizerParameters | None = None,
                  mixed_precision: MixedPrecisionMode = MixedPrecisionMode.bf16,
                  loss_function: str = 'bce',
+                 loss_term_weights: dict[str, float] | None = None,
                  dice_loss_weight: float = 0.5,
                  iou_loss_weight: float = 0.5,
+                 hard_mining_params: HardMiningParameters | None = None,
+                 cutout_params: CutoutParameters | None = None,
+                 mixup_params: MixupParameters | None = None,
                  early_stopping_params: EarlyStoppingParameters | None = None,
                  warmup_params: WarmupParameters | None = None,
                  skip_uniform_labels: bool = False,
                  resume_from_checkpoint: bool = False,
                  use_multi_gpu: bool = True,
+                 multi_gpu_mode: str | None = None,
                  show_batch_preview: bool = True,
                  log_update_frequency: int = 0):
         super().__init__()
@@ -470,16 +540,27 @@ class TrainerProcess(mp.Process):
         self._optimizer_params = optimizer_params or OptimizerParameters()
         self._mixed_precision = mixed_precision
         self._loss_function = str(loss_function or 'bce').strip().lower()
+        self._loss_term_weights = sanitize_loss_term_weights(loss_term_weights)
         self._dice_loss_weight = float(dice_loss_weight)
         self._iou_loss_weight = float(iou_loss_weight)
+        self._hard_mining_params = hard_mining_params or HardMiningParameters()
+        self._cutout_params = cutout_params or CutoutParameters()
+        self._mixup_params = mixup_params or MixupParameters()
         self._early_stopping_params = early_stopping_params or EarlyStoppingParameters()
         self._warmup_params = warmup_params or WarmupParameters()
         self._skip_uniform_labels = bool(skip_uniform_labels)
         self._resume_from_checkpoint = resume_from_checkpoint
-        self._use_multi_gpu = use_multi_gpu
+        self._multi_gpu_mode = normalize_multi_gpu_mode(
+            multi_gpu_mode,
+            use_multi_gpu_fallback=bool(use_multi_gpu),
+        )
+        self._use_multi_gpu = self._multi_gpu_mode != 'off'
         self._show_batch_preview = show_batch_preview
         self._log_update_frequency = max(0, int(log_update_frequency))
         self._training_profiler_config = self._resolve_training_profiler_config()
+        self._uncompiled_model: nn.Module | None = None
+        self._torch_compile_active = False
+        self._recommended_inference_threshold = 0.5
 
     @property
     def _base_model(self) -> nn.Module:
@@ -488,21 +569,34 @@ class TrainerProcess(mp.Process):
             return self._model.module
         return self._model
 
-    def _resolve_model_artifact_metadata(self) -> tuple[str, int]:
+    def _resolve_model_artifact_metadata(self) -> tuple[str, int, dict[str, Any]]:
         base_model = self._base_model
         model_name = str(getattr(base_model, '_neuralimage_model_name', base_model.__class__.__name__))
         input_channels = getattr(base_model, '_neuralimage_input_channels', None)
         if input_channels is None:
             input_channels = get_input_channels(base_model)
-        return model_name, int(input_channels)
+        model_kwargs = getattr(base_model, '_neuralimage_model_kwargs', {})
+        if not isinstance(model_kwargs, dict):
+            model_kwargs = {}
+        return model_name, int(input_channels), dict(model_kwargs)
+
+    def _resolve_artifact_runtime_metadata(self) -> dict[str, Any]:
+        threshold = float(min(max(getattr(self, '_recommended_inference_threshold', 0.5), 0.0), 1.0))
+        return {
+            'inference': {
+                'recommended_threshold': threshold,
+            },
+        }
 
     def _save_model_artifact(self) -> None:
-        model_name, input_channels = self._resolve_model_artifact_metadata()
+        model_name, input_channels, model_kwargs = self._resolve_model_artifact_metadata()
         save_model_artifact(
             self._base_model,
             self._save_path,
             model_name=model_name,
             input_channels=input_channels,
+            model_kwargs=model_kwargs,
+            metadata=self._resolve_artifact_runtime_metadata(),
         )
 
     @staticmethod
@@ -549,13 +643,34 @@ class TrainerProcess(mp.Process):
             loader_kwargs['persistent_workers'] = bool(getattr(base_loader, 'persistent_workers', False))
         return DataLoader(**loader_kwargs)
 
-    def _should_use_ddp(self) -> bool:
-        if not self._use_multi_gpu:
-            self._bus.put(['logging', 'Режим multi GPU отключен в настройках.'])
-            return False
+    def _has_multi_gpu_cuda(self) -> bool:
         if not torch.cuda.is_available():
             return False
-        if torch.cuda.device_count() <= 1:
+        return torch.cuda.device_count() > 1
+
+    def _log_multi_gpu_unavailable(self, requested_mode: str) -> None:
+        if requested_mode == 'off':
+            self._bus.put(['logging', 'Multi-GPU mode is disabled in settings.'])
+            return
+        if not torch.cuda.is_available():
+            self._bus.put(['logging', f'multi-GPU mode "{requested_mode}" skipped: CUDA is unavailable.'])
+            return
+        gpu_count = int(torch.cuda.device_count())
+        if gpu_count <= 1:
+            self._bus.put(['logging', f'multi-GPU mode "{requested_mode}" skipped: found {gpu_count} GPU.'])
+            return
+        if requested_mode == 'distributeddataparallel' and os.name == 'nt':
+            self._bus.put(['logging', 'DDP requested but disabled on Windows in this build.'])
+            return
+        self._bus.put(['logging', f'multi-GPU mode "{requested_mode}" unavailable; using single GPU.'])
+
+    def _should_use_ddp(self) -> bool:
+        if self._multi_gpu_mode == 'off':
+            self._bus.put(['logging', 'Режим multi GPU отключен в настройках.'])
+            return False
+        if self._multi_gpu_mode != 'distributeddataparallel':
+            return False
+        if not self._has_multi_gpu_cuda():
             return False
         if os.name == 'nt':
             # On Windows, DDP+gloo can hang during rendezvous on some setups.
@@ -563,13 +678,9 @@ class TrainerProcess(mp.Process):
         return True
 
     def _should_use_data_parallel(self) -> bool:
-        if not self._use_multi_gpu:
+        if self._multi_gpu_mode != 'dataparallel':
             return False
-        if not torch.cuda.is_available():
-            return False
-        if torch.cuda.device_count() <= 1:
-            return False
-        return os.name == 'nt'
+        return self._has_multi_gpu_cuda()
 
     def _run_ddp(self, world_size: int) -> None:
         master_port = self._find_free_port()
@@ -642,6 +753,7 @@ class TrainerProcess(mp.Process):
         early_stopping_bad_epochs: int = 0,
         early_stopping_best_epoch: int = 0,
         early_stopping_best_model_state: dict[str, torch.Tensor] | None = None,
+        early_stopping_best_threshold: float = 0.5,
     ) -> None:
         checkpoint = {
             'version': 1,
@@ -658,6 +770,10 @@ class TrainerProcess(mp.Process):
             'early_stopping_bad_epochs': early_stopping_bad_epochs,
             'early_stopping_best_epoch': early_stopping_best_epoch,
             'early_stopping_best_model_state': early_stopping_best_model_state,
+            'early_stopping_best_threshold': float(min(max(early_stopping_best_threshold, 0.0), 1.0)),
+            'recommended_inference_threshold': float(
+                min(max(getattr(self, '_recommended_inference_threshold', 0.5), 0.0), 1.0)
+            ),
         }
         torch.save(checkpoint, self._checkpoint_path())
 
@@ -685,6 +801,12 @@ class TrainerProcess(mp.Process):
                 scaler.load_state_dict(scaler_state)
             if scheduler is not None and scheduler_state:
                 scheduler.load_state_dict(scheduler_state)
+            self._recommended_inference_threshold = float(
+                min(
+                    max(float(checkpoint.get('recommended_inference_threshold', 0.5)), 0.0),
+                    1.0,
+                )
+            )
 
             start_epoch = max(0, min(completed_epoch, self._epochs))
             self._bus.put([
@@ -725,7 +847,20 @@ class TrainerProcess(mp.Process):
         return int(self._epochs)
 
     def _resolved_loss_function(self) -> str:
-        if self._loss_function in ('bce', 'dice', 'bce_dice', 'iou', 'bce_iou'):
+        if self._loss_function in (
+            'bce',
+            'dice',
+            'bce_dice',
+            'iou',
+            'bce_iou',
+            'ce',
+            'ce_dice',
+            'focal_bce',
+            'focal_dice',
+            'focal_iou',
+            'boundary',
+            'focal_tversky',
+        ):
             return self._loss_function
         return 'bce'
 
@@ -735,32 +870,230 @@ class TrainerProcess(mp.Process):
     def _resolved_iou_weight(self) -> float:
         return float(min(max(self._iou_loss_weight, 0.0), 1.0))
 
+    def _resolved_loss_term_weights(self) -> dict[str, float]:
+        return resolve_loss_term_weights(
+            getattr(self, '_loss_term_weights', None),
+            fallback_loss_function=self._resolved_loss_function(),
+        )
+
+    def _resolved_hard_pixel_keep_ratio(self) -> float:
+        params = getattr(self, '_hard_mining_params', None)
+        ratio = float(getattr(params, 'pixel_keep_ratio', 0.25))
+        return float(min(max(ratio, 0.01), 1.0))
+
+    def _hard_pixel_mining_enabled(self) -> bool:
+        params = getattr(self, '_hard_mining_params', None)
+        return bool(getattr(params, 'pixel_enabled', False))
+
+    def _loss_supports_hard_pixel_mining(self, loss_mode: str) -> bool:
+        return loss_mode not in ('dice', 'iou', 'boundary', 'focal_tversky')
+
     @staticmethod
     def _is_finite_tensor(tensor: torch.Tensor) -> bool:
         return bool(torch.isfinite(tensor).all())
 
     @staticmethod
     def _sanitize_outputs_for_loss(outputs: torch.Tensor) -> torch.Tensor:
-        return torch.nan_to_num(outputs, nan=0.0, posinf=20.0, neginf=-20.0)
+        sanitized = torch.where(torch.isnan(outputs), torch.zeros_like(outputs), outputs)
+        sanitized = torch.where(torch.isposinf(sanitized), torch.full_like(sanitized, 20.0), sanitized)
+        sanitized = torch.where(torch.isneginf(sanitized), torch.full_like(sanitized, -20.0), sanitized)
+        return torch.clamp(sanitized, min=-20.0, max=20.0)
 
     @staticmethod
     def _sanitize_labels_for_loss(label: torch.Tensor) -> torch.Tensor:
         sanitized = torch.nan_to_num(label, nan=0.0, posinf=1.0, neginf=0.0)
         return torch.clamp(sanitized, min=0.0, max=1.0)
 
-    def _compute_per_sample_loss(
+    def _resolved_cutout_parameters(self) -> tuple[bool, float, int, float]:
+        params = getattr(self, '_cutout_params', None)
+        enabled = bool(getattr(params, 'enabled', False))
+        probability = float(getattr(params, 'probability', 1.0))
+        holes = max(1, int(getattr(params, 'holes', 1)))
+        size_ratio = float(getattr(params, 'size_ratio', 0.25))
+        probability = float(min(max(probability, 0.0), 1.0))
+        size_ratio = float(min(max(size_ratio, 0.0), 1.0))
+        return enabled, probability, holes, size_ratio
+
+    def _resolved_mixup_parameters(self) -> tuple[bool, float, float]:
+        params = getattr(self, '_mixup_params', None)
+        enabled = bool(getattr(params, 'enabled', False))
+        probability = float(getattr(params, 'probability', 1.0))
+        alpha = float(getattr(params, 'alpha', 0.2))
+        probability = float(min(max(probability, 0.0), 1.0))
+        alpha = float(max(alpha, 0.0))
+        return enabled, probability, alpha
+
+    @staticmethod
+    def _resolved_ignore_index() -> int:
+        raw = str(os.getenv('NEURALIMAGE_IGNORE_INDEX', '-100')).strip()
+        try:
+            return int(raw)
+        except ValueError:
+            return -100
+
+    def _reduce_loss_map_per_sample(
+        self,
+        loss_map: torch.Tensor,
+        *,
+        loss_mode: str,
+        apply_pixel_mining: bool,
+        valid_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        loss_flat = loss_map.view(loss_map.shape[0], -1)
+        valid_flat = valid_mask.view(valid_mask.shape[0], -1).to(dtype=torch.bool) if valid_mask is not None else None
+        use_pixel_mining = (
+            apply_pixel_mining
+            and self._hard_pixel_mining_enabled()
+            and self._loss_supports_hard_pixel_mining(loss_mode)
+        )
+        keep_ratio = self._resolved_hard_pixel_keep_ratio()
+        reduced_losses: list[torch.Tensor] = []
+        for batch_index in range(loss_flat.shape[0]):
+            sample_losses = loss_flat[batch_index]
+            if valid_flat is not None:
+                sample_losses = sample_losses[valid_flat[batch_index]]
+            if sample_losses.numel() == 0:
+                reduced_losses.append(loss_flat.new_tensor(0.0))
+                continue
+            if use_pixel_mining and keep_ratio < 1.0:
+                keep_count = max(1, int(math.ceil(sample_losses.numel() * keep_ratio)))
+                if keep_count < sample_losses.numel():
+                    sample_losses = torch.topk(sample_losses, keep_count, largest=True, sorted=False).values
+            reduced_losses.append(sample_losses.mean())
+        return torch.stack(reduced_losses, dim=0)
+
+    @staticmethod
+    def _compute_focal_bce_loss_map(
+        outputs: torch.Tensor,
+        label: torch.Tensor,
+        bce_loss_map: torch.Tensor,
+    ) -> torch.Tensor:
+        probs = torch.sigmoid(outputs)
+        pt = (probs * label) + ((1.0 - probs) * (1.0 - label))
+        pt = torch.clamp(pt, min=0.0, max=1.0)
+        alpha_t = (FOCAL_LOSS_ALPHA * label) + ((1.0 - FOCAL_LOSS_ALPHA) * (1.0 - label))
+        focal_factor = torch.pow(1.0 - pt, FOCAL_LOSS_GAMMA)
+        focal_map = alpha_t * focal_factor * bce_loss_map
+        focal_map = torch.nan_to_num(focal_map, nan=1.0, posinf=50.0, neginf=0.0)
+        return torch.clamp(focal_map, min=0.0, max=50.0)
+
+    @staticmethod
+    def _compute_soft_boundary_map(
+        mask: torch.Tensor,
+        *,
+        kernel_size: int = BOUNDARY_LOSS_KERNEL_SIZE,
+    ) -> torch.Tensor:
+        kernel_size = max(1, int(kernel_size))
+        if kernel_size <= 1:
+            return torch.clamp(torch.nan_to_num(mask, nan=0.0, posinf=1.0, neginf=0.0), min=0.0, max=1.0)
+
+        pad = kernel_size // 2
+        padded_mask = F.pad(mask, (pad, pad, pad, pad), mode='constant', value=0.0)
+        dilation = F.max_pool2d(padded_mask, kernel_size=kernel_size, stride=1)
+        erosion = -F.max_pool2d(-padded_mask, kernel_size=kernel_size, stride=1)
+        boundary_map = dilation - erosion
+        boundary_map = torch.nan_to_num(boundary_map, nan=0.0, posinf=1.0, neginf=0.0)
+        return torch.clamp(boundary_map, min=0.0, max=1.0)
+
+    def _compute_boundary_loss_per_sample(
         self,
         outputs: torch.Tensor,
         label: torch.Tensor,
-        bce_criterion: nn.Module,
     ) -> torch.Tensor:
-        outputs = self._sanitize_outputs_for_loss(outputs)
-        label = self._sanitize_labels_for_loss(label)
-        loss_mode = self._resolved_loss_function()
-        bce_per_sample = cast(torch.Tensor, bce_criterion(outputs, label)).view(outputs.shape[0], -1).mean(dim=1)
-        bce_per_sample = torch.nan_to_num(bce_per_sample, nan=1.0, posinf=50.0, neginf=0.0)
-        if loss_mode == 'bce':
-            return torch.clamp(bce_per_sample, min=0.0, max=50.0)
+        probs = torch.sigmoid(outputs)
+        label_bin = (label >= 0.5).to(dtype=probs.dtype)
+        pred_boundary = self._compute_soft_boundary_map(probs)
+        target_boundary = self._compute_soft_boundary_map(label_bin)
+        pred_boundary_flat = pred_boundary.view(pred_boundary.shape[0], -1)
+        target_boundary_flat = target_boundary.view(target_boundary.shape[0], -1)
+        eps = 1e-6
+        intersection = (pred_boundary_flat * target_boundary_flat).sum(dim=1)
+        denom = pred_boundary_flat.sum(dim=1) + target_boundary_flat.sum(dim=1)
+        boundary_loss = 1.0 - ((2.0 * intersection + eps) / (denom + eps))
+        boundary_loss = torch.nan_to_num(boundary_loss, nan=1.0, posinf=50.0, neginf=0.0)
+        return torch.clamp(boundary_loss, min=0.0, max=50.0)
+
+    @staticmethod
+    def _compute_focal_tversky_loss_per_sample(
+        outputs: torch.Tensor,
+        label: torch.Tensor,
+    ) -> torch.Tensor:
+        probs = torch.sigmoid(outputs)
+        probs_flat = probs.view(probs.shape[0], -1)
+        label_flat = label.view(label.shape[0], -1)
+        eps = 1e-6
+        true_positive = (probs_flat * label_flat).sum(dim=1)
+        false_positive = (probs_flat * (1.0 - label_flat)).sum(dim=1)
+        false_negative = ((1.0 - probs_flat) * label_flat).sum(dim=1)
+        tversky = (true_positive + eps) / (
+            true_positive
+            + (FOCAL_TVERSKY_ALPHA * false_positive)
+            + (FOCAL_TVERSKY_BETA * false_negative)
+            + eps
+        )
+        focal_tversky_loss = torch.pow(1.0 - tversky, FOCAL_LOSS_GAMMA)
+        focal_tversky_loss = torch.nan_to_num(focal_tversky_loss, nan=1.0, posinf=50.0, neginf=0.0)
+        return torch.clamp(focal_tversky_loss, min=0.0, max=50.0)
+
+    def _compute_single_per_sample_loss(
+        self,
+        loss_mode: str,
+        outputs: torch.Tensor,
+        label: torch.Tensor,
+        bce_criterion: nn.Module,
+        *,
+        apply_pixel_mining: bool = False,
+    ) -> torch.Tensor:
+        if loss_mode in ('ce', 'ce_dice'):
+            logits_two_class = torch.cat([-outputs, outputs], dim=1)
+            soft_label = label[:, 0, :, :]
+            target_probs = torch.stack((1.0 - soft_label, soft_label), dim=1)
+            log_probs = F.log_softmax(logits_two_class, dim=1)
+            ce_map = -(target_probs * log_probs).sum(dim=1)
+            valid_mask = torch.ones_like(soft_label, dtype=ce_map.dtype)
+            ce_per_sample = self._reduce_loss_map_per_sample(
+                ce_map,
+                loss_mode=loss_mode,
+                apply_pixel_mining=apply_pixel_mining,
+                valid_mask=valid_mask,
+            )
+            ce_per_sample = torch.nan_to_num(ce_per_sample, nan=1.0, posinf=50.0, neginf=0.0)
+            if loss_mode == 'ce':
+                return torch.clamp(ce_per_sample, min=0.0, max=50.0)
+
+            probs_fg = torch.softmax(logits_two_class, dim=1)[:, 1, :, :]
+            probs_flat = probs_fg.view(probs_fg.shape[0], -1)
+            label_flat = soft_label.view(soft_label.shape[0], -1)
+            valid_flat = valid_mask.view(valid_mask.shape[0], -1)
+            probs_flat = probs_flat * valid_flat
+            label_flat = label_flat * valid_flat
+            eps = 1e-6
+            intersection = (probs_flat * label_flat).sum(dim=1)
+            denom = probs_flat.sum(dim=1) + label_flat.sum(dim=1)
+            dice_per_sample = 1.0 - ((2.0 * intersection + eps) / (denom + eps))
+            dice_weight = self._resolved_dice_weight()
+            mixed = ((1.0 - dice_weight) * ce_per_sample) + (dice_weight * dice_per_sample)
+            mixed = torch.nan_to_num(mixed, nan=1.0, posinf=50.0, neginf=0.0)
+            return torch.clamp(mixed, min=0.0, max=50.0)
+
+        if loss_mode == 'boundary':
+            return self._compute_boundary_loss_per_sample(outputs, label)
+
+        if loss_mode == 'focal_tversky':
+            return self._compute_focal_tversky_loss_per_sample(outputs, label)
+
+        bce_loss_map = cast(torch.Tensor, bce_criterion(outputs, label))
+        pointwise_loss_map = bce_loss_map
+        if loss_mode in ('focal_bce', 'focal_dice', 'focal_iou'):
+            pointwise_loss_map = self._compute_focal_bce_loss_map(outputs, label, bce_loss_map)
+        pointwise_per_sample = self._reduce_loss_map_per_sample(
+            pointwise_loss_map,
+            loss_mode=loss_mode,
+            apply_pixel_mining=apply_pixel_mining,
+        )
+        pointwise_per_sample = torch.nan_to_num(pointwise_per_sample, nan=1.0, posinf=50.0, neginf=0.0)
+        if loss_mode in ('bce', 'focal_bce'):
+            return torch.clamp(pointwise_per_sample, min=0.0, max=50.0)
 
         probs = torch.sigmoid(outputs)
         probs_flat = probs.view(probs.shape[0], -1)
@@ -778,16 +1111,102 @@ class TrainerProcess(mp.Process):
         if loss_mode == 'iou':
             return torch.clamp(torch.nan_to_num(iou_per_sample, nan=1.0, posinf=50.0, neginf=0.0), min=0.0, max=50.0)
 
-        if loss_mode == 'bce_dice':
+        if loss_mode in ('bce_dice', 'focal_dice'):
             dice_weight = self._resolved_dice_weight()
-            mixed = ((1.0 - dice_weight) * bce_per_sample) + (dice_weight * dice_per_sample)
+            mixed = ((1.0 - dice_weight) * pointwise_per_sample) + (dice_weight * dice_per_sample)
             mixed = torch.nan_to_num(mixed, nan=1.0, posinf=50.0, neginf=0.0)
             return torch.clamp(mixed, min=0.0, max=50.0)
 
         iou_weight = self._resolved_iou_weight()
-        mixed = ((1.0 - iou_weight) * bce_per_sample) + (iou_weight * iou_per_sample)
+        mixed = ((1.0 - iou_weight) * pointwise_per_sample) + (iou_weight * iou_per_sample)
         mixed = torch.nan_to_num(mixed, nan=1.0, posinf=50.0, neginf=0.0)
         return torch.clamp(mixed, min=0.0, max=50.0)
+
+    def _compute_per_sample_loss(
+        self,
+        outputs: torch.Tensor,
+        label: torch.Tensor,
+        bce_criterion: nn.Module,
+        *,
+        apply_pixel_mining: bool = False,
+    ) -> torch.Tensor:
+        outputs = self._sanitize_outputs_for_loss(outputs)
+        label = self._sanitize_labels_for_loss(label)
+        combined_loss: torch.Tensor | None = None
+        for loss_mode, coefficient in self._resolved_loss_term_weights().items():
+            single_loss = self._compute_single_per_sample_loss(
+                loss_mode,
+                outputs,
+                label,
+                bce_criterion,
+                apply_pixel_mining=apply_pixel_mining,
+            )
+            weighted_loss = single_loss * float(coefficient)
+            combined_loss = weighted_loss if combined_loss is None else (combined_loss + weighted_loss)
+        if combined_loss is None:
+            fallback_loss = self._compute_single_per_sample_loss(
+                self._resolved_loss_function(),
+                outputs,
+                label,
+                bce_criterion,
+                apply_pixel_mining=apply_pixel_mining,
+            )
+            return torch.clamp(torch.nan_to_num(fallback_loss, nan=1.0, posinf=50.0, neginf=0.0), min=0.0, max=50.0)
+        combined_loss = torch.nan_to_num(combined_loss, nan=1.0, posinf=50.0, neginf=0.0)
+        return torch.clamp(combined_loss, min=0.0, max=50.0)
+
+    @staticmethod
+    def _compute_binary_metrics(
+        *,
+        true_positive: float,
+        false_positive: float,
+        false_negative: float,
+        correct: int,
+        total: int,
+    ) -> dict[str, float]:
+        accuracy = (float(correct) / float(total)) if total else 0.0
+        iou_denom = true_positive + false_positive + false_negative
+        dice_denom = (2.0 * true_positive) + false_positive + false_negative
+        if iou_denom == 0.0:
+            return {
+                'accuracy': float(accuracy),
+                'iou': 1.0,
+                'dice': 1.0,
+                'f1': 1.0,
+            }
+
+        iou = true_positive / iou_denom
+        dice = (2.0 * true_positive) / dice_denom if dice_denom > 0.0 else 0.0
+        precision_denom = true_positive + false_positive
+        recall_denom = true_positive + false_negative
+        precision = true_positive / precision_denom if precision_denom > 0.0 else 0.0
+        recall = true_positive / recall_denom if recall_denom > 0.0 else 0.0
+        f1_denom = precision + recall
+        f1 = (2.0 * precision * recall) / f1_denom if f1_denom > 0.0 else 0.0
+        return {
+            'accuracy': float(accuracy),
+            'iou': float(iou),
+            'dice': float(dice),
+            'f1': float(f1),
+        }
+
+    @staticmethod
+    def _pick_best_validation_threshold(
+        threshold_metrics: dict[float, dict[str, float]],
+    ) -> tuple[float, dict[str, float]]:
+        if not threshold_metrics:
+            return 0.5, {'accuracy': 0.0, 'iou': 0.0, 'dice': 0.0, 'f1': 0.0}
+
+        def _sort_key(item: tuple[float, dict[str, float]]) -> tuple[float, float, float]:
+            threshold, metrics = item
+            return (
+                float(metrics.get('dice', 0.0)),
+                float(metrics.get('iou', 0.0)),
+                -abs(float(threshold) - 0.5),
+            )
+
+        best_threshold, best_metrics = max(threshold_metrics.items(), key=_sort_key)
+        return float(best_threshold), dict(best_metrics)
 
     def _run_validation_epoch(
         self,
@@ -809,13 +1228,23 @@ class TrainerProcess(mp.Process):
         true_positive = 0.0
         false_positive = 0.0
         false_negative = 0.0
+        threshold_counts = {
+            float(threshold): {
+                'correct': 0,
+                'total': 0,
+                'tp': 0.0,
+                'fp': 0.0,
+                'fn': 0.0,
+            }
+            for threshold in VALIDATION_THRESHOLD_CANDIDATES
+        }
         skipped_non_finite_batches = 0
         with torch.no_grad():
             for data, target in self._val_dataloader:
                 image = data.to(device, non_blocking=True)
                 label = target.to(device, non_blocking=True)
                 with autocast_ctx():
-                    outputs = self._model(image)
+                    outputs = self._forward_model(image)
                     per_sample_loss = self._compute_per_sample_loss(outputs, label, bce_criterion)
                     loss = per_sample_loss.mean()
 
@@ -835,6 +1264,14 @@ class TrainerProcess(mp.Process):
                 true_positive += float((preds_f * label_f).sum().item())
                 false_positive += float((preds_f * (1.0 - label_f)).sum().item())
                 false_negative += float(((1.0 - preds_f) * label_f).sum().item())
+                for threshold, counts in threshold_counts.items():
+                    threshold_preds = probs >= float(threshold)
+                    counts['correct'] += int((threshold_preds == label_bin).sum().item())
+                    counts['total'] += int(label_bin.numel())
+                    threshold_preds_f = threshold_preds.float()
+                    counts['tp'] += float((threshold_preds_f * label_f).sum().item())
+                    counts['fp'] += float((threshold_preds_f * (1.0 - label_f)).sum().item())
+                    counts['fn'] += float(((1.0 - threshold_preds_f) * label_f).sum().item())
 
         if skipped_non_finite_batches > 0:
             self._bus.put([
@@ -849,29 +1286,37 @@ class TrainerProcess(mp.Process):
             return None
 
         avg_val_loss = val_loss / val_loss_samples
-        val_accuracy = (correct / total) if total else 0.0
-        iou_denom = true_positive + false_positive + false_negative
-        dice_denom = (2.0 * true_positive) + false_positive + false_negative
-        if iou_denom == 0.0:
-            iou = 1.0
-            dice = 1.0
-            f1 = 1.0
-        else:
-            iou = true_positive / iou_denom
-            dice = (2.0 * true_positive) / dice_denom if dice_denom > 0.0 else 0.0
-            precision_denom = true_positive + false_positive
-            recall_denom = true_positive + false_negative
-            precision = true_positive / precision_denom if precision_denom > 0.0 else 0.0
-            recall = true_positive / recall_denom if recall_denom > 0.0 else 0.0
-            f1_denom = precision + recall
-            f1 = (2.0 * precision * recall) / f1_denom if f1_denom > 0.0 else 0.0
+        base_metrics = self._compute_binary_metrics(
+            true_positive=true_positive,
+            false_positive=false_positive,
+            false_negative=false_negative,
+            correct=correct,
+            total=total,
+        )
+        threshold_metrics = {
+            float(threshold): self._compute_binary_metrics(
+                true_positive=float(counts['tp']),
+                false_positive=float(counts['fp']),
+                false_negative=float(counts['fn']),
+                correct=int(counts['correct']),
+                total=int(counts['total']),
+            )
+            for threshold, counts in threshold_counts.items()
+        }
+        best_threshold, best_threshold_metrics = self._pick_best_validation_threshold(threshold_metrics)
+        self._recommended_inference_threshold = float(best_threshold)
 
         return {
             'loss': float(avg_val_loss),
-            'accuracy': float(val_accuracy),
-            'iou': float(iou),
-            'dice': float(dice),
-            'f1': float(f1),
+            'accuracy': float(base_metrics['accuracy']),
+            'iou': float(base_metrics['iou']),
+            'dice': float(base_metrics['dice']),
+            'f1': float(base_metrics['f1']),
+            'best_threshold': float(best_threshold),
+            'best_threshold_accuracy': float(best_threshold_metrics['accuracy']),
+            'best_threshold_iou': float(best_threshold_metrics['iou']),
+            'best_threshold_dice': float(best_threshold_metrics['dice']),
+            'best_threshold_f1': float(best_threshold_metrics['f1']),
         }
 
     def _create_optimizer(self):
@@ -1019,35 +1464,81 @@ class TrainerProcess(mp.Process):
 
     def _try_compile_model(self, is_main_process: bool = True, device: torch.device | None = None) -> None:
         if bool(getattr(sys, 'frozen', False)):
+            self._torch_compile_active = False
             if is_main_process:
                 self._bus.put(['logging', 'torch.compile отключен в сборке PyInstaller.'])
             return
         if isinstance(self._model, nn.DataParallel):
+            self._torch_compile_active = False
             if is_main_process:
                 self._bus.put(['logging', 'torch.compile skipped: nn.DataParallel model wrapper is active.'])
             return
         if not self._env_bool('NEURALIMAGE_TORCH_COMPILE', True):
+            self._torch_compile_active = False
             if is_main_process:
                 self._bus.put(['logging', 'torch.compile disabled by NEURALIMAGE_TORCH_COMPILE=0.'])
             return
         compile_fn = getattr(torch, 'compile', None)
         if compile_fn is None:
+            self._torch_compile_active = False
             if is_main_process:
                 self._bus.put(['logging', 'torch.compile недоступен в этой версии PyTorch.'])
             return
         target_device_type = device.type if device is not None else ('cuda' if torch.cuda.is_available() else 'cpu')
         if target_device_type == 'cuda' and not _is_module_available('triton'):
+            self._torch_compile_active = False
             if is_main_process:
                 self._bus.put(['logging', 'torch.compile disabled: Triton is not installed for CUDA backend.'])
             return
         try:
+            self._uncompiled_model = self._model
             compile_mode, mode_reason = _resolve_torch_compile_mode(target_device_type, device)
             self._model = compile_fn(self._model, mode=compile_mode, dynamic=False)
+            self._torch_compile_active = True
             if is_main_process:
                 self._bus.put(['logging', f'torch.compile enabled (mode={compile_mode}, reason={mode_reason}).'])
         except Exception as error:
+            self._torch_compile_active = False
             if is_main_process:
                 self._bus.put(['logging', f'torch.compile отключен (fallback): {error}'])
+
+    @staticmethod
+    def _is_torch_compile_runtime_failure(error: Exception) -> bool:
+        current: BaseException | None = error
+        for _ in range(6):
+            if current is None:
+                break
+            message = str(current)
+            if type(current).__name__ == 'BackendCompilerFailed':
+                return True
+            if "backend='inductor'" in message:
+                return True
+            if 'triton_key' in message:
+                return True
+            current = current.__cause__ if current.__cause__ is not None else current.__context__
+        return False
+
+    def _disable_torch_compile_runtime_fallback(self, error: Exception) -> bool:
+        if not self._torch_compile_active:
+            return False
+        if self._uncompiled_model is None:
+            return False
+        if isinstance(self._model, (DDP, nn.DataParallel)):
+            return False
+        if not self._is_torch_compile_runtime_failure(error):
+            return False
+        self._model = self._uncompiled_model
+        self._torch_compile_active = False
+        self._bus.put(['logging', f'torch.compile disabled at runtime (fallback): {error}'])
+        return True
+
+    def _forward_model(self, image: torch.Tensor) -> torch.Tensor:
+        try:
+            return self._model(image)
+        except Exception as error:
+            if self._disable_torch_compile_runtime_fallback(error):
+                return self._model(image)
+            raise
 
     @staticmethod
     def _create_grad_scaler(device_type: str, enabled: bool) -> Any:
@@ -1065,19 +1556,34 @@ class TrainerProcess(mp.Process):
 
     def run(self):
         try:
+            requested_multi_gpu_mode = self._multi_gpu_mode
             if self._should_use_ddp():
                 self._run_ddp(world_size=torch.cuda.device_count())
                 return
 
-            if self._should_use_data_parallel():
+            if (
+                requested_multi_gpu_mode == 'distributeddataparallel'
+                and self._has_multi_gpu_cuda()
+                and os.name == 'nt'
+            ):
                 gpu_count = int(torch.cuda.device_count())
                 self._bus.put([
                     'logging',
-                    f'Windows fallback: using nn.DataParallel on {gpu_count} GPU instead of DDP.',
+                    f'DDP requested on Windows; using nn.DataParallel on {gpu_count} GPU as fallback.',
+                ])
+                self._model = nn.DataParallel(self._model)
+                device = torch.device('cuda:0')
+            elif self._should_use_data_parallel():
+                gpu_count = int(torch.cuda.device_count())
+                self._bus.put([
+                    'logging',
+                    f'Включен режим multi GPU: nn.DataParallel на {gpu_count} GPU.',
                 ])
                 self._model = nn.DataParallel(self._model)
                 device = torch.device('cuda:0')
             else:
+                if requested_multi_gpu_mode != 'off':
+                    self._log_multi_gpu_unavailable(requested_multi_gpu_mode)
                 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self._model.to(device)
             self._run_impl(device=device, rank=0, world_size=1, distributed=False)
@@ -1273,14 +1779,33 @@ class TrainerProcess(mp.Process):
 
     def _log_loss_configuration(self) -> None:
         resolved_loss_mode = self._resolved_loss_function()
-        if resolved_loss_mode != self._loss_function:
+        resolved_loss_weights = self._resolved_loss_term_weights()
+        if (not getattr(self, '_loss_term_weights', {})) and resolved_loss_mode != self._loss_function:
             self._bus.put(['logging', f'Unknown loss "{self._loss_function}". Using "bce".'])
-        if resolved_loss_mode == 'bce_dice':
-            self._bus.put(['logging', f'Loss function: bce_dice (dice_weight={self._resolved_dice_weight():.2f}).'])
-        elif resolved_loss_mode == 'bce_iou':
-            self._bus.put(['logging', f'Loss function: bce_iou (iou_weight={self._resolved_iou_weight():.2f}).'])
-        else:
-            self._bus.put(['logging', f'Loss function: {resolved_loss_mode}.'])
+        self._bus.put(['logging', f'Loss formula: {format_loss_formula(resolved_loss_weights)}'])
+        for loss_mode, coefficient in resolved_loss_weights.items():
+            self._bus.put(['logging', f'Loss term: {coefficient:.2f} * {loss_mode}.'])
+        if self._hard_pixel_mining_enabled():
+            supported_terms = [
+                loss_mode for loss_mode in resolved_loss_weights
+                if self._loss_supports_hard_pixel_mining(loss_mode)
+            ]
+            if supported_terms:
+                self._bus.put([
+                    'logging',
+                    (
+                        f'Hard pixel mining is enabled: keep_ratio={self._resolved_hard_pixel_keep_ratio():.2f}. '
+                        f'Applied only to terms with pointwise loss: {", ".join(supported_terms)}.'
+                    ),
+                ])
+            else:
+                self._bus.put([
+                    'logging',
+                    (
+                        'Hard pixel mining is enabled but ignored because all active loss terms '
+                        'lack a pointwise pixel term.'
+                    ),
+                ])
         self._bus.put(['logging', 'Loss normalization: per-sample mean (batch-size invariant).'])
 
     def _log_sampling_configuration(self, *, train_sampler: Any, supports_loss_aware_sampling: bool) -> None:
@@ -1367,6 +1892,7 @@ class TrainerProcess(mp.Process):
             bad_epochs=int(checkpoint.get('early_stopping_bad_epochs', 0)),
             best_epoch=int(checkpoint.get('early_stopping_best_epoch', 0)),
             best_model_state=checkpoint.get('early_stopping_best_model_state'),
+            best_threshold=float(checkpoint.get('early_stopping_best_threshold', self._recommended_inference_threshold)),
         )
 
         has_validation = bool(self._val_dataloader is not None)
@@ -1446,10 +1972,12 @@ class TrainerProcess(mp.Process):
     ) -> tuple[torch.Tensor, torch.Tensor, Any, int, bool]:
         if not self._skip_uniform_labels:
             return image, label, sample_indices, 0, True
-        label_flat = label.view(label.shape[0], -1)
-        eps = 1e-6
-        is_all_zero = (label_flat <= eps).all(dim=1)
-        is_all_one = (label_flat >= (1.0 - eps)).all(dim=1)
+        # Binarize before uniformity detection so labels normalized as 255/256
+        # are still treated as "all ones".
+        label_flat = self._sanitize_labels_for_loss(label).reshape(label.shape[0], -1)
+        label_bin = label_flat >= 0.5
+        is_all_zero = (~label_bin).all(dim=1)
+        is_all_one = label_bin.all(dim=1)
         valid_mask = ~(is_all_zero | is_all_one)
         skipped_here = int((~valid_mask).sum().item())
         if not bool(valid_mask.any()):
@@ -1465,6 +1993,79 @@ class TrainerProcess(mp.Process):
             sample_indices_tensor = torch.as_tensor(sample_indices)
             sample_indices = sample_indices_tensor[valid_mask.detach().to(device='cpu')]
         return image, label, sample_indices, skipped_here, True
+
+    @staticmethod
+    def _permute_sample_indices(sample_indices: Any, permutation: torch.Tensor) -> Any:
+        if sample_indices is None:
+            return None
+        if torch.is_tensor(sample_indices):
+            return sample_indices[permutation.detach().to(device=sample_indices.device)]
+        sample_indices_tensor = torch.as_tensor(sample_indices, dtype=torch.long)
+        return sample_indices_tensor[permutation.detach().to(device='cpu')]
+
+    def _apply_mixup_to_batch(
+        self,
+        image: torch.Tensor,
+        label: torch.Tensor,
+        sample_indices: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor | None]:
+        enabled, probability, alpha = self._resolved_mixup_parameters()
+        batch_size = int(image.size(0))
+        if (not enabled) or batch_size <= 1 or probability <= 0.0 or alpha <= 0.0:
+            return image, label, None, None
+        if float(np.random.random()) > probability:
+            return image, label, None, None
+
+        lambda_value = float(np.random.beta(alpha, alpha))
+        lambda_value = float(min(max(lambda_value, 0.0), 1.0))
+        permutation = torch.randperm(batch_size, device=image.device)
+        order = torch.arange(batch_size, device=image.device)
+        if bool((permutation == order).any()):
+            permutation = torch.roll(order, shifts=1)
+
+        lambda_tensor = image.new_full((batch_size,), lambda_value)
+        lambda_view = lambda_tensor.view(batch_size, 1, 1, 1)
+        mixed_image = (lambda_view * image) + ((1.0 - lambda_view) * image[permutation])
+        mixed_label = (lambda_view * label) + ((1.0 - lambda_view) * label[permutation])
+        pair_indices = self._permute_sample_indices(sample_indices, permutation)
+        return mixed_image, mixed_label, pair_indices, lambda_tensor
+
+    def _apply_cutout_to_batch(self, image: torch.Tensor) -> torch.Tensor:
+        enabled, probability, holes, size_ratio = self._resolved_cutout_parameters()
+        if (not enabled) or probability <= 0.0 or size_ratio <= 0.0:
+            return image
+
+        batch_size, _channels, height, width = image.shape
+        cutout_height = max(1, min(height, int(round(height * size_ratio))))
+        cutout_width = max(1, min(width, int(round(width * size_ratio))))
+        if cutout_height <= 0 or cutout_width <= 0:
+            return image
+
+        cutout_image = image.clone()
+        max_top = max(0, height - cutout_height)
+        max_left = max(0, width - cutout_width)
+        for sample_index in range(batch_size):
+            if float(np.random.random()) > probability:
+                continue
+            for _ in range(holes):
+                top = 0 if max_top == 0 else int(torch.randint(0, max_top + 1, (1,), device=image.device).item())
+                left = 0 if max_left == 0 else int(torch.randint(0, max_left + 1, (1,), device=image.device).item())
+                cutout_image[sample_index, :, top:top + cutout_height, left:left + cutout_width] = 0.0
+        return cutout_image
+
+    def _apply_training_batch_augmentations(
+        self,
+        image: torch.Tensor,
+        label: torch.Tensor,
+        sample_indices: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor | None]:
+        image, label, mixup_pair_indices, mixup_lambdas = self._apply_mixup_to_batch(
+            image,
+            label,
+            sample_indices,
+        )
+        image = self._apply_cutout_to_batch(image)
+        return image, label, mixup_pair_indices, mixup_lambdas
 
     def _publish_batch_preview(
         self,
@@ -1502,6 +2103,8 @@ class TrainerProcess(mp.Process):
         run_context: _RunContext,
         sample_indices: Any,
         per_sample_loss: torch.Tensor,
+        mixup_pair_indices: Any = None,
+        mixup_lambdas: torch.Tensor | None = None,
     ) -> None:
         if not run_context.supports_loss_aware_sampling or sample_indices is None:
             return
@@ -1511,11 +2114,31 @@ class TrainerProcess(mp.Process):
             sample_idx_tensor = torch.as_tensor(sample_indices, dtype=torch.long).flatten()
         sample_loss_tensor = per_sample_loss.detach().to(device='cpu', dtype=torch.float32).flatten()
         sample_loss_tensor = torch.nan_to_num(sample_loss_tensor, nan=1.0, posinf=50.0, neginf=0.0)
-        if sample_idx_tensor.numel() == sample_loss_tensor.numel():
-            cast(_SupportsLossAwareSampling, run_context.train_sampler).update_batch_losses(
-                sample_idx_tensor,
-                sample_loss_tensor,
-            )
+        if sample_idx_tensor.numel() != sample_loss_tensor.numel():
+            return
+
+        sampler = cast(_SupportsLossAwareSampling, run_context.train_sampler)
+        if mixup_pair_indices is None or mixup_lambdas is None:
+            sampler.update_batch_losses(sample_idx_tensor, sample_loss_tensor)
+            return
+
+        lambda_tensor = mixup_lambdas.detach().to(device='cpu', dtype=torch.float32).flatten()
+        if lambda_tensor.numel() == 1 and sample_loss_tensor.numel() > 1:
+            lambda_tensor = lambda_tensor.expand_as(sample_loss_tensor)
+        if lambda_tensor.numel() != sample_loss_tensor.numel():
+            sampler.update_batch_losses(sample_idx_tensor, sample_loss_tensor)
+            return
+
+        if torch.is_tensor(mixup_pair_indices):
+            pair_idx_tensor = mixup_pair_indices.detach().to(device='cpu', dtype=torch.long).flatten()
+        else:
+            pair_idx_tensor = torch.as_tensor(mixup_pair_indices, dtype=torch.long).flatten()
+        if pair_idx_tensor.numel() != sample_loss_tensor.numel():
+            sampler.update_batch_losses(sample_idx_tensor, sample_loss_tensor)
+            return
+
+        sampler.update_batch_losses(sample_idx_tensor, sample_loss_tensor * lambda_tensor)
+        sampler.update_batch_losses(pair_idx_tensor, sample_loss_tensor * (1.0 - lambda_tensor))
 
     def _has_non_finite_gradients(self) -> bool:
         for param in self._model.parameters():
@@ -1531,10 +2154,8 @@ class TrainerProcess(mp.Process):
         *,
         batch: Any,
         device: torch.device,
-        prev_batch_end: float,
+        data_wait_started_at: float,
     ) -> tuple[_PreparedTrainBatch | None, int]:
-        batch_start = time.perf_counter()
-        data_wait_ms = (batch_start - prev_batch_end) * 1000.0
         data, target, sample_indices = self._split_batch(batch)
         image = data.to(device, non_blocking=True)
         label = target.to(device, non_blocking=True)
@@ -1543,13 +2164,22 @@ class TrainerProcess(mp.Process):
             label,
             sample_indices,
         )
+        batch_start = data_wait_started_at
+        data_wait_ms = (time.perf_counter() - data_wait_started_at) * 1000.0
         if not has_valid_samples:
             return None, skipped_here
+        image, label, mixup_pair_indices, mixup_lambdas = self._apply_training_batch_augmentations(
+            image,
+            label,
+            sample_indices,
+        )
         return (
             _PreparedTrainBatch(
                 data=data,
                 target=target,
                 sample_indices=sample_indices,
+                mixup_pair_indices=mixup_pair_indices,
+                mixup_lambdas=mixup_lambdas,
                 image=image,
                 label=label,
                 batch_start=batch_start,
@@ -1569,15 +2199,25 @@ class TrainerProcess(mp.Process):
         forward_start = time.perf_counter()
         backward_denominator = float(max(1, int(batch.image.size(0))))
         with run_context.autocast_ctx():
-            outputs = self._model(batch.image)
-            per_sample_loss = self._compute_per_sample_loss(outputs, batch.label, run_context.bce_criterion)
+            outputs = self._sanitize_outputs_for_loss(self._forward_model(batch.image))
+            per_sample_loss = self._compute_per_sample_loss(
+                outputs,
+                batch.label,
+                run_context.bce_criterion,
+                apply_pixel_mining=True,
+            )
             metric_loss = per_sample_loss.mean()
             loss = per_sample_loss.sum() / backward_denominator
         if (not self._is_finite_tensor(loss)) or (not self._is_finite_tensor(metric_loss)):
             # Retry in full precision to avoid occasional AMP overflow/underflow instability.
             with nullcontext():
-                outputs = self._model(batch.image.float())
-                per_sample_loss = self._compute_per_sample_loss(outputs, batch.label, run_context.bce_criterion)
+                outputs = self._sanitize_outputs_for_loss(self._forward_model(batch.image.float()))
+                per_sample_loss = self._compute_per_sample_loss(
+                    outputs,
+                    batch.label,
+                    run_context.bce_criterion,
+                    apply_pixel_mining=True,
+                )
                 metric_loss = per_sample_loss.mean()
                 loss = per_sample_loss.sum() / backward_denominator
             if (not self._is_finite_tensor(loss)) or (not self._is_finite_tensor(metric_loss)):
@@ -1593,7 +2233,15 @@ class TrainerProcess(mp.Process):
             self._bus.put(['logging', 'Training warning: non-finite gradients detected, optimizer step skipped.'])
             run_context.optimizer.zero_grad(set_to_none=True)
             run_context.scaler.update()
-            return None
+            return _TrainStepResult(
+                outputs=outputs,
+                per_sample_loss=per_sample_loss,
+                batch_loss=float(metric_loss.item()),
+                batch_samples=int(batch.image.size(0)),
+                forward_ms=forward_ms,
+                backward_ms=(time.perf_counter() - backward_start) * 1000.0,
+                optimizer_ms=0.0,
+            )
         torch.nn.utils.clip_grad_norm_(self._model.parameters(), 1.0)
         backward_ms = (time.perf_counter() - backward_start) * 1000.0
 
@@ -1628,8 +2276,8 @@ class TrainerProcess(mp.Process):
             epoch=epoch,
             batch_index=batch_index,
             train_size=run_context.train_size,
-            data=batch.data,
-            target=batch.target,
+            data=batch.image,
+            target=batch.label,
             outputs=step_result.outputs,
             preview_stride=run_context.strides.preview,
         )
@@ -1668,17 +2316,6 @@ class TrainerProcess(mp.Process):
                 },
             ])
 
-        if (batch_index % run_context.strides.log == 0) or (batch_index == run_context.train_size - 1):
-            self._bus.put([
-                'training',
-                (
-                    f'Epoch [{epoch + 1}/{self._epochs}] '
-                    f'Loss: {step_result.batch_loss:>7f} '
-                    f'Batch: [{batch_index:>5d}/{run_context.train_size:>5d}] '
-                    f'| step: {batch_total_ms:.1f} ms'
-                ),
-            ])
-
     def _run_train_epoch(
         self,
         epoch: int,
@@ -1687,31 +2324,37 @@ class TrainerProcess(mp.Process):
         active_profiler: _ActiveTrainProfiler | None = None,
     ) -> _EpochStats:
         epoch_stats = _EpochStats()
-        prev_batch_end = time.perf_counter()
 
         train_dataset = self._train_dataloader.dataset
         if hasattr(train_dataset, 'set_epoch'):
             cast(_SupportsSetEpoch, train_dataset).set_epoch()
 
-        for batch_index, batch in enumerate(self._train_dataloader):
+        train_iterator = iter(self._train_dataloader)
+        batch_index = 0
+        while True:
+            data_wait_started_at = time.perf_counter()
+            try:
+                batch = next(train_iterator)
+            except StopIteration:
+                break
             prepared_batch, skipped_here = self._prepare_train_batch(
                 batch=batch,
                 device=device,
-                prev_batch_end=prev_batch_end,
+                data_wait_started_at=data_wait_started_at,
             )
             if skipped_here > 0:
                 epoch_stats.skipped_uniform_count += skipped_here
 
             if prepared_batch is None:
                 self._step_training_profiler(active_profiler)
-                prev_batch_end = time.perf_counter()
+                batch_index += 1
                 continue
 
             step_result = self._run_train_step(run_context=run_context, batch=prepared_batch)
             if step_result is None:
                 epoch_stats.skipped_non_finite_count += 1
                 self._step_training_profiler(active_profiler)
-                prev_batch_end = time.perf_counter()
+                batch_index += 1
                 continue
             batch_total_ms = (time.perf_counter() - prepared_batch.batch_start) * 1000.0
 
@@ -1728,6 +2371,8 @@ class TrainerProcess(mp.Process):
                 run_context=run_context,
                 sample_indices=prepared_batch.sample_indices,
                 per_sample_loss=step_result.per_sample_loss,
+                mixup_pair_indices=prepared_batch.mixup_pair_indices,
+                mixup_lambdas=prepared_batch.mixup_lambdas,
             )
             self._publish_train_batch_runtime(
                 epoch=epoch,
@@ -1738,7 +2383,7 @@ class TrainerProcess(mp.Process):
                 batch_total_ms=batch_total_ms,
             )
             self._step_training_profiler(active_profiler)
-            prev_batch_end = time.perf_counter()
+            batch_index += 1
 
         return epoch_stats
 
@@ -1772,7 +2417,6 @@ class TrainerProcess(mp.Process):
             return
         avg_train_loss = global_train_loss / global_train_samples
         self._bus.put(['metrics', {'type': 'train_epoch', 'epoch': epoch + 1, 'loss': float(avg_train_loss)}])
-        self._bus.put(['logging', f'Средняя потеря на обучающей выборке: {avg_train_loss}'])
         avg_denom = max(1, run_context.train_size)
         self._bus.put([
             'metrics',
@@ -1867,14 +2511,19 @@ class TrainerProcess(mp.Process):
         val_iou = validation_result['iou']
         val_dice = validation_result['dice']
         val_f1 = validation_result['f1']
+        best_threshold = float(validation_result.get('best_threshold', 0.5))
+        best_threshold_iou = float(validation_result.get('best_threshold_iou', val_iou))
+        best_threshold_dice = float(validation_result.get('best_threshold_dice', val_dice))
+        best_threshold_f1 = float(validation_result.get('best_threshold_f1', val_f1))
 
         self._bus.put([
             'logging',
             (
                 f'Epoch [{epoch + 1}/{self._epochs}] '
-                f'Validation loss: {avg_val_loss:.6f} | '
                 f'Validation accuracy: {val_accuracy:.4%} | '
-                f'IoU: {val_iou:.4%} | Dice: {val_dice:.4%} | F1: {val_f1:.4%}'
+                f'IoU: {val_iou:.4%} | Dice: {val_dice:.4%} | F1: {val_f1:.4%} | '
+                f'Best threshold: {best_threshold:.2f} '
+                f'(IoU {best_threshold_iou:.4%}, Dice {best_threshold_dice:.4%}, F1 {best_threshold_f1:.4%})'
             ),
         ])
         self._bus.put([
@@ -1887,6 +2536,10 @@ class TrainerProcess(mp.Process):
                 'iou': float(val_iou),
                 'dice': float(val_dice),
                 'f1': float(val_f1),
+                'best_threshold': float(best_threshold),
+                'best_threshold_iou': float(best_threshold_iou),
+                'best_threshold_dice': float(best_threshold_dice),
+                'best_threshold_f1': float(best_threshold_f1),
             },
         ])
 
@@ -1910,6 +2563,7 @@ class TrainerProcess(mp.Process):
             early_stopping_state.best_loss = avg_val_loss
             early_stopping_state.bad_epochs = 0
             early_stopping_state.best_epoch = int(epoch + 1)
+            early_stopping_state.best_threshold = float(validation_result.get('best_threshold', self._recommended_inference_threshold))
             if self._early_stopping_params.restore_best_weights:
                 early_stopping_state.best_model_state = {
                     key: value.detach().cpu().clone()
@@ -1973,6 +2627,7 @@ class TrainerProcess(mp.Process):
             early_stopping_bad_epochs=early_stopping_state.bad_epochs,
             early_stopping_best_epoch=early_stopping_state.best_epoch,
             early_stopping_best_model_state=early_stopping_state.best_model_state,
+            early_stopping_best_threshold=early_stopping_state.best_threshold,
         )
 
     @staticmethod
@@ -2111,6 +2766,7 @@ class TrainerProcess(mp.Process):
             ])
             if self._early_stopping_params.restore_best_weights and runtime_state.early_stopping_state.best_model_state:
                 self._base_model.load_state_dict(runtime_state.early_stopping_state.best_model_state)
+                self._recommended_inference_threshold = float(runtime_state.early_stopping_state.best_threshold)
                 self._bus.put(['logging', 'Best validation weights restored.'])
         return True
 
@@ -2194,6 +2850,7 @@ class NeuralRecognizer(threading.Thread):
         self.model:nn.Module|None = None
         self._thread_stop_event = threading.Event()
         self.stop_event = mp.Event()
+        self._resolved_output_threshold: float = 0.5
 
     def run(self, multithreading=False):
         try:
@@ -2251,12 +2908,71 @@ class NeuralRecognizer(threading.Thread):
             return [torch.device('cpu')], 0
         return [torch.device(f'cuda:{gpu}') for gpu in range(gpu_count)], gpu_count
 
+    @staticmethod
+    def _normalize_output_threshold(value: Any, *, fallback: float = 0.5) -> float:
+        try:
+            threshold = float(value)
+        except (TypeError, ValueError):
+            threshold = float(fallback)
+        return float(min(max(threshold, 0.0), 1.0))
+
+    @staticmethod
+    def _extract_recommended_threshold(model: nn.Module) -> float | None:
+        metadata = getattr(model, '_neuralimage_artifact_metadata', None)
+        if not isinstance(metadata, dict):
+            return None
+        inference = metadata.get('inference')
+        if not isinstance(inference, dict):
+            return None
+        threshold = inference.get('recommended_threshold')
+        if threshold is None:
+            return None
+        return NeuralRecognizer._normalize_output_threshold(threshold, fallback=0.5)
+
+    def _resolve_output_threshold(self, model: nn.Module) -> None:
+        manual_threshold = self._normalize_output_threshold(
+            getattr(self._parameters, 'threshold', 0.5),
+            fallback=0.5,
+        )
+        if not bool(getattr(self._parameters, 'binarize_output', True)):
+            self._resolved_output_threshold = manual_threshold
+            self._bus.publish(
+                'logging',
+                'Recognition output binarization disabled: saving probability maps.',
+            )
+            return
+
+        if bool(getattr(self._parameters, 'use_auto_threshold', True)):
+            recommended_threshold = self._extract_recommended_threshold(model)
+            if recommended_threshold is not None:
+                self._resolved_output_threshold = recommended_threshold
+                self._bus.publish(
+                    'logging',
+                    f'Recognition threshold: using recommended model threshold {recommended_threshold:.2f}.',
+                )
+                return
+            self._bus.publish(
+                'logging',
+                (
+                    'Recognition threshold: model metadata does not contain a recommended '
+                    f'threshold, using fallback {manual_threshold:.2f}.'
+                ),
+            )
+        else:
+            self._bus.publish(
+                'logging',
+                f'Recognition threshold: using manual value {manual_threshold:.2f}.',
+            )
+
+        self._resolved_output_threshold = manual_threshold
+
     def prepare_model(self):
         loaded_model: str | Path | nn.Module = self._parameters.model
         if isinstance(loaded_model, (str, Path)):
             loaded_model = load_model_artifact(loaded_model, map_location='cpu')
         if not isinstance(loaded_model, nn.Module):
             raise TypeError('Recognition model must be a torch.nn.Module or a model path.')
+        self._resolve_output_threshold(loaded_model)
         if not bool(getattr(sys, 'frozen', False)):
             compile_enabled = str(os.getenv('NEURALIMAGE_TORCH_COMPILE', '1')).strip().lower() in {'1', 'true', 'yes', 'on'}
             compile_fn = getattr(torch, 'compile', None)
@@ -2269,7 +2985,16 @@ class NeuralRecognizer(threading.Thread):
             if can_compile:
                 try:
                     compile_mode, mode_reason = _resolve_torch_compile_mode(target_device_type)
-                    loaded_model = compile_fn(loaded_model, mode=compile_mode, dynamic=False)
+                    compiled_model = compile_fn(loaded_model, mode=compile_mode, dynamic=False)
+                    for attr_name in (
+                        '_neuralimage_model_name',
+                        '_neuralimage_input_channels',
+                        '_neuralimage_model_kwargs',
+                        '_neuralimage_artifact_metadata',
+                    ):
+                        if hasattr(loaded_model, attr_name):
+                            setattr(compiled_model, attr_name, getattr(loaded_model, attr_name))
+                    loaded_model = compiled_model
                     self._bus.publish(
                         'logging',
                         f'Распознавание: torch.compile enabled (mode={compile_mode}, reason={mode_reason}).',
@@ -2295,6 +3020,11 @@ class NeuralRecognizer(threading.Thread):
             overlap=self._parameters.overlap,
             batch_size=self._parameters.batch_size,
             colors=self.colors,
+            jpeg_quality=int(getattr(self._parameters, 'jpeg_quality', 95)),
+            binarize_output=bool(getattr(self._parameters, 'binarize_output', True)),
+            threshold=float(self._resolved_output_threshold),
+            postprocess_enabled=bool(getattr(self._parameters, 'postprocess_enabled', False)),
+            postprocess_kernel_size=max(1, int(getattr(self._parameters, 'postprocess_kernel_size', 3))),
             devices=list(self.devices_list),
             model_source=cast(str | Path, self._parameters.model),
         )
@@ -2329,6 +3059,11 @@ class NeuralRecognizer(threading.Thread):
             stop_event=self._thread_stop_event,
             publish=self._bus.publish,
             collect_memory_metrics=_collect_memory_metrics,
+            jpeg_quality=int(getattr(self._parameters, 'jpeg_quality', 95)),
+            binarize_output=bool(getattr(self._parameters, 'binarize_output', True)),
+            threshold=float(self._resolved_output_threshold),
+            postprocess_enabled=bool(getattr(self._parameters, 'postprocess_enabled', False)),
+            postprocess_kernel_size=max(1, int(getattr(self._parameters, 'postprocess_kernel_size', 3))),
         )
 
     def stop(self):
@@ -2399,6 +3134,7 @@ class ModelRecognizer(threading.Thread):
         self._stop_event = threading.Event()
         self._process_stop_event = mp.Event()
         self.message_queue = mp.Queue()
+        self._inline_recognizer: NeuralRecognizer | None = None
         self.succeeded = False
         self.error_message: str | None = None
 
@@ -2449,6 +3185,28 @@ class ModelRecognizer(threading.Thread):
     def run(self):
         recognition_process: Any = None
         try:
+            if _is_debugger_attached():
+                self._bus.publish(
+                    'logging',
+                    'Debugger detected: recognition multiprocessing disabled for this run.',
+                )
+                inline_recognizer = NeuralRecognizer(
+                    self._parameters,
+                    message_bus=self._bus,
+                    callback=None,
+                )
+                self._inline_recognizer = inline_recognizer
+                if self._stop_event.is_set():
+                    inline_recognizer.stop()
+                try:
+                    inline_recognizer.run(multithreading=False)
+                    self.succeeded = not self._stop_event.is_set()
+                except Exception as error:
+                    self.error_message = f'Recognition error: {error}'
+                    self._bus.publish('error', self.error_message)
+                    self.succeeded = False
+                return
+
             recognition_process = RecognizerProcess(
                 self._parameters,
                 self.message_queue,
@@ -2474,6 +3232,7 @@ class ModelRecognizer(threading.Thread):
             self._drain_recognition_queue(append_elapsed_suffix=False, started_at=started_at)
             self._finalize_recognition_result(recognition_process)
         finally:
+            self._inline_recognizer = None
             if recognition_process is not None and recognition_process.is_alive():
                 recognition_process.kill()
                 recognition_process.join(timeout=5)
@@ -2488,6 +3247,9 @@ class ModelRecognizer(threading.Thread):
     def stop(self):
         self._stop_event.set()
         self._process_stop_event.set()
+        inline_recognizer = self._inline_recognizer
+        if inline_recognizer is not None:
+            inline_recognizer.stop()
 
 
 class NeuralRecognitioner(NeuralRecognizer):
@@ -2532,19 +3294,50 @@ def create_batches(tensor_data, batch_size):
     return _create_batches(tensor_data, batch_size)
 
 
-def imgsew(outputDir, sew_queue, sewed_queue, stop_event):
+def imgsew(
+    outputDir,
+    sew_queue,
+    sewed_queue,
+    stop_event,
+    jpeg_quality=95,
+    threshold=None,
+    postprocess_kernel_size=0,
+):
     return _imgsew(
         outputDir,
         sew_queue,
         sewed_queue,
+        jpeg_quality,
         stop_event,
+        threshold=threshold,
+        postprocess_kernel_size=postprocess_kernel_size,
         stop_token=STOP_TOKEN,
     )
 
 
-def sew_from_queue(output_dir, sew_queue, sewed_queue):
-    return _sew_from_queue(output_dir, sew_queue, sewed_queue)
+def sew_from_queue(
+    output_dir,
+    sew_queue,
+    sewed_queue,
+    jpeg_quality=95,
+    threshold=None,
+    postprocess_kernel_size=0,
+):
+    return _sew_from_queue(
+        output_dir,
+        sew_queue,
+        sewed_queue,
+        jpeg_quality=jpeg_quality,
+        threshold=threshold,
+        postprocess_kernel_size=postprocess_kernel_size,
+    )
 
 
-def sew(save_dir, item):
-    return _sew(save_dir, item)
+def sew(save_dir, item, jpeg_quality=95, *, threshold=None, postprocess_kernel_size=0):
+    return _sew(
+        save_dir,
+        item,
+        jpeg_quality=jpeg_quality,
+        threshold=threshold,
+        postprocess_kernel_size=postprocess_kernel_size,
+    )

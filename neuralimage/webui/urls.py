@@ -9,4 +9,5 @@ urlpatterns = [
     path('start/', views.start_processing, name='start_processing'),
     path('stop/', views.stop_processing, name='stop_processing'),
     path('api/status/', views.status_api, name='status_api'),
+    path('api/pick-path/', views.pick_path_api, name='pick_path_api'),
 ]

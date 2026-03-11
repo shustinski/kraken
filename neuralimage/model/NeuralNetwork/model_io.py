@@ -11,12 +11,12 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from . import CNN_Models, blocks
+from . import CNN_Models, blocks, transformer_segmentation
 from .registrator import create_model, get_registered_models
 
 
 MODEL_ARTIFACT_FORMAT = 'neuralimage_model_artifact'
-MODEL_ARTIFACT_VERSION = 1
+MODEL_ARTIFACT_VERSION = 2
 _UNSAFE_MODEL_LOAD_ENV = 'NEURALIMAGE_ALLOW_UNSAFE_MODEL_LOAD'
 _TRUE_VALUES = {'1', 'true', 'yes', 'on'}
 _MAX_DYNAMIC_SAFE_GLOBAL_RETRIES = 32
@@ -57,6 +57,7 @@ def _resolve_safe_pickle_globals() -> list[Any]:
     candidates.extend(_iter_torch_nn_classes())
     candidates.extend(get_registered_models().values())
     candidates.extend(_iter_internal_module_classes(CNN_Models))
+    candidates.extend(_iter_internal_module_classes(transformer_segmentation))
     candidates.extend(_iter_internal_module_classes(blocks))
 
     seen: set[tuple[str, str]] = set()
@@ -166,9 +167,55 @@ def _infer_channels_from_state_dict(state_dict: Mapping[str, Any]) -> int | None
     return None
 
 
-def _attach_model_metadata(model: nn.Module, *, model_name: str, input_channels: int) -> nn.Module:
+def _coerce_model_kwargs(raw_kwargs: Any) -> dict[str, Any]:
+    if not isinstance(raw_kwargs, Mapping):
+        return {}
+
+    normalized: dict[str, Any] = {}
+    for key, value in dict(raw_kwargs).items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, (bool, int, float, str)):
+            normalized[key] = value
+            continue
+        if isinstance(value, (list, tuple)) and all(isinstance(item, (bool, int, float, str)) for item in value):
+            normalized[key] = tuple(value)
+    return normalized
+
+
+def _coerce_artifact_metadata(raw_metadata: Any) -> dict[str, Any]:
+    if not isinstance(raw_metadata, Mapping):
+        return {}
+
+    normalized: dict[str, Any] = {}
+    for key, value in dict(raw_metadata).items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, (bool, int, float, str)):
+            normalized[key] = value
+            continue
+        if isinstance(value, Mapping):
+            nested = _coerce_artifact_metadata(value)
+            if nested:
+                normalized[key] = nested
+            continue
+        if isinstance(value, (list, tuple)) and all(isinstance(item, (bool, int, float, str)) for item in value):
+            normalized[key] = tuple(value)
+    return normalized
+
+
+def _attach_model_metadata(
+    model: nn.Module,
+    *,
+    model_name: str,
+    input_channels: int,
+    model_kwargs: Mapping[str, Any] | None = None,
+    artifact_metadata: Mapping[str, Any] | None = None,
+) -> nn.Module:
     setattr(model, '_neuralimage_model_name', str(model_name))
     setattr(model, '_neuralimage_input_channels', int(input_channels))
+    setattr(model, '_neuralimage_model_kwargs', _coerce_model_kwargs(model_kwargs))
+    setattr(model, '_neuralimage_artifact_metadata', _coerce_artifact_metadata(artifact_metadata))
     return model
 
 
@@ -177,6 +224,8 @@ def _build_model_from_state_dict(
     *,
     model_name: str | None,
     input_channels: int | None,
+    model_kwargs: Mapping[str, Any] | None = None,
+    artifact_metadata: Mapping[str, Any] | None = None,
 ) -> nn.Module | None:
     if not model_name:
         return None
@@ -185,9 +234,16 @@ def _build_model_from_state_dict(
     if resolved_channels is None:
         return None
 
-    model = create_model(str(model_name), int(resolved_channels))
+    normalized_model_kwargs = _coerce_model_kwargs(model_kwargs)
+    model = create_model(str(model_name), int(resolved_channels), **normalized_model_kwargs)
     model.load_state_dict(state_dict)
-    return _attach_model_metadata(model, model_name=str(model_name), input_channels=int(resolved_channels))
+    return _attach_model_metadata(
+        model,
+        model_name=str(model_name),
+        input_channels=int(resolved_channels),
+        model_kwargs=normalized_model_kwargs,
+        artifact_metadata=artifact_metadata,
+    )
 
 
 def _load_model_from_safe_payload(
@@ -213,6 +269,8 @@ def _load_model_from_safe_payload(
                     if payload_map.get('input_channels') is not None
                     else input_channels_fallback
                 ),
+                model_kwargs=payload_map.get('model_kwargs'),
+                artifact_metadata=payload_map.get('metadata'),
             )
 
         state_dict = payload_map.get('model_state_dict')
@@ -225,6 +283,8 @@ def _load_model_from_safe_payload(
                     if payload_map.get('input_channels') is not None
                     else input_channels_fallback
                 ),
+                model_kwargs=payload_map.get('model_kwargs'),
+                artifact_metadata=payload_map.get('metadata'),
             )
 
         if all(isinstance(value, torch.Tensor) for value in payload_map.values()):
@@ -243,12 +303,22 @@ def save_model_artifact(
     *,
     model_name: str,
     input_channels: int,
+    model_kwargs: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> None:
+    normalized_model_kwargs = _coerce_model_kwargs(
+        model_kwargs if model_kwargs is not None else getattr(model, '_neuralimage_model_kwargs', None)
+    )
+    normalized_metadata = _coerce_artifact_metadata(
+        metadata if metadata is not None else getattr(model, '_neuralimage_artifact_metadata', None)
+    )
     payload = {
         'format': MODEL_ARTIFACT_FORMAT,
         'version': MODEL_ARTIFACT_VERSION,
         'model_name': str(model_name),
         'input_channels': int(input_channels),
+        'model_kwargs': normalized_model_kwargs,
+        'metadata': normalized_metadata,
         'state_dict': model.state_dict(),
     }
     torch.save(payload, save_path)

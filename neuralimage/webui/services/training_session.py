@@ -5,15 +5,17 @@ import threading
 import time
 from typing import Any
 
+from application.dto import MainWindowState, SettingsState
+from bootstrap.composition_root import create_web_presenter
+from lib.logging_policy import MAX_LOG_MESSAGES, should_forward_log_event
 from lib.message_bus import MessageBus
 from presenter.web_presenter import WebPresenter
-from view.window_dataclasses import MainWindowState, SettingsState
 
 _LOG = logging.getLogger(__name__)
 
 
 class TrainingSessionService:
-    def __init__(self) -> None:
+    def __init__(self, presenter: WebPresenter) -> None:
         self._lock = threading.RLock()
         self._status = 'idle'
         self._events: list[dict[str, Any]] = []
@@ -33,7 +35,7 @@ class TrainingSessionService:
         self._bus.subscribe('training', self._on_training)
         self._bus.subscribe('metrics', self._on_metrics)
 
-        self._presenter = WebPresenter()
+        self._presenter = presenter
 
     def _append_event(self, topic: str, message: str) -> None:
         with self._lock:
@@ -45,13 +47,17 @@ class TrainingSessionService:
             }
             self._next_event_id += 1
             self._events.append(event)
-            if len(self._events) > 5000:
-                self._events[:] = self._events[-5000:]
+            if len(self._events) > MAX_LOG_MESSAGES:
+                self._events[:] = self._events[-MAX_LOG_MESSAGES:]
 
     def _on_logging(self, payload: Any) -> None:
+        if not should_forward_log_event('logging', payload):
+            return
         self._append_event('logging', str(payload))
 
     def _on_training(self, payload: Any) -> None:
+        if not should_forward_log_event('training', payload):
+            return
         self._append_event('training', str(payload))
 
     def _on_metrics(self, payload: Any) -> None:
@@ -143,9 +149,17 @@ class TrainingSessionService:
                 self._status = 'idle'
                 self._handler = None
 
-    def _question_yes(self, text: str, header: str) -> bool:
-        self._append_event('question', f'{header}: {text}. Ответ по умолчанию: Да')
-        return True
+    def _question_yes(
+        self,
+        text: str,
+        header: str,
+        default_answer: bool = True,
+        timeout_seconds: int | None = None,
+    ) -> bool:
+        default_label = 'Да' if default_answer else 'Нет'
+        timeout_suffix = f', автоответ через {int(timeout_seconds)} сек.' if timeout_seconds else ''
+        self._append_event('question', f'{header}: {text}. Ответ по умолчанию: {default_label}{timeout_suffix}')
+        return bool(default_answer)
 
     def _on_finished(self) -> None:
         self._append_event('logging', 'Обработка завершена.')
@@ -228,6 +242,6 @@ _session_singleton: TrainingSessionService | None = None
 def get_session_service() -> TrainingSessionService:
     global _session_singleton
     if _session_singleton is None:
-        _session_singleton = TrainingSessionService()
+        _session_singleton = TrainingSessionService(presenter=create_web_presenter())
     return _session_singleton
 

@@ -39,9 +39,9 @@ class AppController:
             self.main_window.show()
         else:
             # Keep import lazy so UI-only mode can run without heavy business dependencies.
-            from presenter import MainPresenter
+            from bootstrap.composition_root import create_main_presenter
 
-            self.main_window_presenter = MainPresenter()
+            self.main_window_presenter = create_main_presenter()
 
     def exec(self):
         return self.app.exec()

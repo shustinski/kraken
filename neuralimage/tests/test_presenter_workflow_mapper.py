@@ -1,6 +1,5 @@
-from presenter.workflow_mapper import resolve_work_mode
-from presenter.workflow_mapper import build_workflow_parameters
-from view.window_dataclasses import MainWindowState, SettingsState
+from application.dto import MainWindowState, SettingsState
+from application.services.workflow_mapper import build_workflow_parameters, resolve_work_mode
 from tests.helpers import make_test_dir
 
 
@@ -37,6 +36,7 @@ def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
     settings = SettingsState(
         optimizer_name='invalid_optimizer_name',
         loss_function='bce_dice',
+        loss_term_weights={'bce': 0.35, 'dice': 0.65},
         dice_loss_weight=0.7,
         iou_loss_weight=0.2,
         warmup_enabled=True,
@@ -45,7 +45,18 @@ def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
         hard_mining_enabled=True,
         hard_mining_strength=3.0,
         hard_mining_ema_alpha=0.35,
+        hard_pixel_mining_enabled=True,
+        hard_pixel_mining_ratio=0.2,
+        cutout_enabled=True,
+        cutout_probability=0.85,
+        cutout_holes=3,
+        cutout_size_ratio=0.3,
+        mixup_enabled=True,
+        mixup_probability=0.65,
+        mixup_alpha=0.4,
         skip_uniform_labels=True,
+        rare_patch_oversampling_enabled=True,
+        rare_patch_oversampling_factor=6,
         early_stopping_enabled=True,
         early_stopping_patience=7,
         early_stopping_min_delta=0.005,
@@ -56,6 +67,7 @@ def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
 
     assert training.optimizer.name.value == 'adam'
     assert training.loss_function == 'bce_dice'
+    assert training.loss_term_weights == {'bce': 0.35, 'dice': 0.65}
     assert training.dice_loss_weight == 0.7
     assert training.iou_loss_weight == 0.2
     assert training.warmup.enabled is True
@@ -64,7 +76,18 @@ def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
     assert training.hard_mining.enabled is True
     assert training.hard_mining.strength == 3.0
     assert training.hard_mining.ema_alpha == 0.35
+    assert training.hard_mining.pixel_enabled is True
+    assert training.hard_mining.pixel_keep_ratio == 0.2
+    assert training.cutout.enabled is True
+    assert training.cutout.probability == 0.85
+    assert training.cutout.holes == 3
+    assert training.cutout.size_ratio == 0.3
+    assert training.mixup.enabled is True
+    assert training.mixup.probability == 0.65
+    assert training.mixup.alpha == 0.4
     assert training.skip_uniform_labels is True
+    assert training.rare_patch_oversampling_enabled is True
+    assert training.rare_patch_oversampling_factor == 6
     assert training.early_stopping.enabled is True
     assert training.early_stopping.patience == 7
     assert training.early_stopping.min_delta == 0.005
@@ -91,8 +114,11 @@ def test_build_workflow_parameters_maps_separate_crop_and_resize_flags():
         additional_augmentation=True,
         augmentation_brightness_strength=0.2,
         augmentation_contrast_strength=0.15,
+        augmentation_gamma_strength=0.17,
         augmentation_noise_probability=0.65,
         augmentation_noise_sigma=0.02,
+        augmentation_blur_probability=0.35,
+        augmentation_blur_radius=1.4,
         edge_cut_size=12,
         target_size=(1024, 768),
     )
@@ -104,7 +130,123 @@ def test_build_workflow_parameters_maps_separate_crop_and_resize_flags():
     assert training.generation.additional_augmentation is True
     assert training.generation.augmentation_brightness_strength == 0.2
     assert training.generation.augmentation_contrast_strength == 0.15
+    assert training.generation.augmentation_gamma_strength == 0.17
     assert training.generation.augmentation_noise_probability == 0.65
     assert training.generation.augmentation_noise_sigma == 0.02
+    assert training.generation.augmentation_blur_probability == 0.35
+    assert training.generation.augmentation_blur_radius == 1.4
     assert training.prepare.edge_cut == (12, 12)
     assert training.prepare.target_size == (1024, 768)
+
+
+def test_build_workflow_parameters_maps_frame_and_patch_shuffle_flags_separately():
+    source = make_test_dir("workflow_source_shuffle")
+    result = make_test_dir("workflow_result_shuffle")
+    sample = make_test_dir("workflow_sample_shuffle")
+    label = make_test_dir("workflow_label_shuffle")
+
+    main = MainWindowState(
+        work_mode='train_only',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(
+        shuffle=False,
+        shuffle_patches_in_frame=True,
+        random_crop=True,
+        crops_per_image=17,
+    )
+
+    _, training, _ = build_workflow_parameters(main, settings)
+
+    assert training.shuffle is False
+    assert training.generation.shuffle_patches_in_frame is True
+    assert training.generation.random_crop is True
+    assert training.generation.crops_per_image == 17
+
+
+def test_build_workflow_parameters_maps_recognition_output_parameters():
+    source = make_test_dir("workflow_source_jpeg_quality")
+    result = make_test_dir("workflow_result_jpeg_quality")
+    sample = make_test_dir("workflow_sample_jpeg_quality")
+    label = make_test_dir("workflow_label_jpeg_quality")
+
+    main = MainWindowState(
+        work_mode='recognition_only',
+        source_folder=str(source),
+        result_folder=str(result),
+        model_path=str(result / "model.pth"),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(
+        recognition_jpeg_quality=87,
+        recognition_binarize_output=False,
+        recognition_use_auto_threshold=False,
+        recognition_threshold=0.61,
+        recognition_postprocess=True,
+        recognition_postprocess_kernel_size=5,
+    )
+
+    _, _, recognition = build_workflow_parameters(main, settings)
+
+    assert recognition.jpeg_quality == 87
+    assert recognition.binarize_output is False
+    assert recognition.use_auto_threshold is False
+    assert recognition.threshold == 0.61
+    assert recognition.postprocess_enabled is True
+    assert recognition.postprocess_kernel_size == 5
+
+
+def test_build_workflow_parameters_syncs_patch_sizes_when_enabled():
+    source = make_test_dir("workflow_source_sync_patch")
+    result = make_test_dir("workflow_result_sync_patch")
+    sample = make_test_dir("workflow_sample_sync_patch")
+    label = make_test_dir("workflow_label_sync_patch")
+
+    main = MainWindowState(
+        work_mode='train_and_recognition',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(
+        train_patch_size=(192, 128),
+        recognition_patch_size=(320, 224),
+        sync_patch_sizes=True,
+    )
+
+    _, _, recognition = build_workflow_parameters(main, settings)
+
+    assert recognition.part_size == (192, 128)
+
+
+def test_build_workflow_parameters_keeps_recognition_patch_size_when_sync_disabled():
+    source = make_test_dir("workflow_source_no_sync_patch")
+    result = make_test_dir("workflow_result_no_sync_patch")
+    sample = make_test_dir("workflow_sample_no_sync_patch")
+    label = make_test_dir("workflow_label_no_sync_patch")
+
+    main = MainWindowState(
+        work_mode='train_and_recognition',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(
+        train_patch_size=(192, 128),
+        recognition_patch_size=(320, 224),
+        sync_patch_sizes=False,
+    )
+
+    _, _, recognition = build_workflow_parameters(main, settings)
+
+    assert recognition.part_size == (320, 224)

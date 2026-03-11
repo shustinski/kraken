@@ -5,6 +5,17 @@
     const toggleSettingsBtn = document.getElementById('toggle-settings');
     const statusNode = document.getElementById('run-status');
     const logContainer = document.getElementById('logs-container');
+    const maxLogLines = 500;
+    const textsNode = document.getElementById('webui-texts-data');
+
+    let uiTexts = {};
+    if (textsNode && textsNode.textContent) {
+        try {
+            uiTexts = JSON.parse(textsNode.textContent);
+        } catch (_error) {
+            uiTexts = {};
+        }
+    }
 
     const chartTrainEpoch = document.getElementById('chart-train-epoch');
     const chartValEpoch = document.getElementById('chart-val-epoch');
@@ -21,6 +32,7 @@
     const startBtn = document.getElementById('start-btn');
     const stopBtn = document.getElementById('stop-btn');
     const stopPanel = document.getElementById('stop-form');
+    const pickPathButtons = document.querySelectorAll('.pick-path-btn');
 
     const workModeSelect = document.querySelector('[name="main-work_mode"]');
     const workModeRadios = document.querySelectorAll('input[name="work_mode_radio"]');
@@ -32,7 +44,12 @@
     const cropEnabledInput = document.querySelector('[name="settings-crop_enabled"]');
     const resizeEnabledInput = document.querySelector('[name="settings-resize_enabled"]');
     const additionalAugmentationInput = document.querySelector('[name="settings-additional_augmentation"]');
+    const randomCropInput = document.querySelector('[name="settings-random_crop"]');
+    const scaleAugmentationInput = document.querySelector('[name="settings-scale_augmentation"]');
+    const cutoutEnabledInput = document.querySelector('[name="settings-cutout_enabled"]');
+    const mixupEnabledInput = document.querySelector('[name="settings-mixup_enabled"]');
     const hardMiningEnabledInput = document.querySelector('[name="settings-hard_mining_enabled"]');
+    const hardPixelMiningEnabledInput = document.querySelector('[name="settings-hard_pixel_mining_enabled"]');
     const lossFunctionInput = document.querySelector('[name="settings-loss_function"]');
 
     const optimizerInput = document.querySelector('[name="settings-optimizer_name"]');
@@ -53,11 +70,27 @@
     const edgeCutField = document.querySelector('[data-role="edge-cut"]');
     const targetSizeField = document.querySelector('[data-role="target-size"]');
     const extraAugmentationFields = document.querySelector('[data-role="extra-aug-fields"]');
+    const stepField = document.querySelector('[data-role="step-field"]');
+    const cropsPerImageField = document.querySelector('[data-role="crops-per-image-field"]');
+    const scaleAugmentationStrengthField = document.querySelector('[data-role="scale-augmentation-strength"]');
+    const cutoutFields = document.querySelector('[data-role="cutout-fields"]');
+    const mixupFields = document.querySelector('[data-role="mixup-fields"]');
     const hardMiningField = document.querySelector('[data-role="hard-mining-fields"]');
+    const hardPixelMiningField = document.querySelector('[data-role="hard-pixel-mining-fields"]');
     const diceLossWeightField = document.querySelector('[data-role="dice-loss-weight"]');
     const iouLossWeightField = document.querySelector('[data-role="iou-loss-weight"]');
 
     let afterId = 0;
+
+    function t(key, fallback) {
+        const value = uiTexts[key];
+        return typeof value === 'string' && value.trim() ? value : fallback;
+    }
+
+    function getCsrfToken() {
+        const tokenNode = document.querySelector('#start-form input[name=\"csrfmiddlewaretoken\"]');
+        return tokenNode ? tokenNode.value : '';
+    }
 
     function normalizeWorkModeValue(raw) {
         if (raw === 'recognintion_only') return 'recognition_only';
@@ -134,6 +167,15 @@
         });
     }
 
+    function setFieldReadonly(wrapper, enabled) {
+        if (!wrapper) return;
+        wrapper.style.opacity = enabled ? '1' : '0.55';
+        const controls = wrapper.querySelectorAll('input');
+        controls.forEach((node) => {
+            node.readOnly = !enabled;
+        });
+    }
+
     function syncWorkModeSelectFromRadios() {
         if (!workModeSelect) return;
         const checked = document.querySelector('input[name="work_mode_radio"]:checked');
@@ -191,13 +233,78 @@
     }
 
     function applyDependentRules() {
+        syncCutModeSelectFromRadios();
+        const isOnlineCutMode = !!(cutModeSelect && cutModeSelect.value === 'online');
+        const randomCropEnabled = !!(isOnlineCutMode && randomCropInput && randomCropInput.checked);
+        const scaleAugmentationEnabled = !!(
+            isOnlineCutMode && scaleAugmentationInput && scaleAugmentationInput.checked
+        );
+
         setFieldEnabled(validationPercentField, !!(useValidationInput && useValidationInput.checked));
         setFieldEnabled(edgeCutField, !!(cropEnabledInput && cropEnabledInput.checked));
         setFieldEnabled(targetSizeField, !!(resizeEnabledInput && resizeEnabledInput.checked));
         setFieldEnabled(extraAugmentationFields, !!(additionalAugmentationInput && additionalAugmentationInput.checked));
+        setFieldReadonly(stepField, !randomCropEnabled);
+        setFieldReadonly(cropsPerImageField, randomCropEnabled);
+        setFieldEnabled(scaleAugmentationStrengthField, scaleAugmentationEnabled);
+        setFieldEnabled(cutoutFields, !!(cutoutEnabledInput && cutoutEnabledInput.checked));
+        setFieldEnabled(mixupFields, !!(mixupEnabledInput && mixupEnabledInput.checked));
         setFieldEnabled(hardMiningField, !!(hardMiningEnabledInput && hardMiningEnabledInput.checked));
-        setFieldEnabled(diceLossWeightField, !!(lossFunctionInput && lossFunctionInput.value === 'bce_dice'));
-        setFieldEnabled(iouLossWeightField, !!(lossFunctionInput && lossFunctionInput.value === 'bce_iou'));
+        setFieldEnabled(hardPixelMiningField, !!(hardPixelMiningEnabledInput && hardPixelMiningEnabledInput.checked));
+        setFieldEnabled(
+            diceLossWeightField,
+            !!(lossFunctionInput && ['bce_dice', 'focal_dice', 'ce_dice'].includes(lossFunctionInput.value)),
+        );
+        setFieldEnabled(
+            iouLossWeightField,
+            !!(lossFunctionInput && ['bce_iou', 'focal_iou'].includes(lossFunctionInput.value)),
+        );
+    }
+
+    async function handlePickPath(button) {
+        const targetSelector = button.dataset.target || '';
+        const kind = button.dataset.kind || 'folder';
+        const fileFilter = button.dataset.filter || '';
+        const targetInput = document.querySelector(targetSelector);
+        if (!targetInput) return;
+
+        const csrf = getCsrfToken();
+        if (!csrf) {
+            window.alert(t('csrf_missing', 'CSRF token not found. Reload page and try again.'));
+            return;
+        }
+
+        const body = new URLSearchParams();
+        body.set('kind', kind);
+        if (fileFilter) body.set('filter', fileFilter);
+
+        button.disabled = true;
+        try {
+            const response = await fetch('/api/pick-path/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                    'X-CSRFToken': csrf,
+                },
+                body: body.toString(),
+            });
+            const payload = await response.json();
+            if (!response.ok || !payload.ok) {
+                if (!payload.cancelled) {
+                    const message = payload.error || `Path picker failed (${response.status})`;
+                    window.alert(message);
+                }
+                return;
+            }
+            targetInput.value = payload.path || '';
+            targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+            targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+            persistFormState();
+        } catch (_error) {
+            window.alert(t('pick_path_failed', 'Failed to pick path. Check WebUI backend logs.'));
+        } finally {
+            button.disabled = false;
+        }
     }
 
     function markActivePreset() {
@@ -285,6 +392,9 @@
             div.textContent = `[${event.id}] ${event.message}`;
             logContainer.appendChild(div);
         });
+        while (logContainer && logContainer.children.length > maxLogLines) {
+            logContainer.removeChild(logContainer.firstElementChild);
+        }
         if (events.length > 0) {
             logContainer.scrollTop = logContainer.scrollHeight;
         }
@@ -325,7 +435,7 @@
 
             const data = await response.json();
             const status = data.status || 'idle';
-            if (statusNode) statusNode.textContent = status;
+            if (statusNode) statusNode.textContent = data.status_display || status;
             updateButtonsByStatus(status);
 
             afterId = data.last_event_id || afterId;
@@ -341,6 +451,10 @@
             shell.classList.toggle('show-settings');
         });
     }
+
+    pickPathButtons.forEach((btn) => {
+        btn.addEventListener('click', () => handlePickPath(btn));
+    });
 
     workModeRadios.forEach((node) => node.addEventListener('change', () => {
         applyModeRules();
@@ -363,7 +477,12 @@
     if (cropEnabledInput) cropEnabledInput.addEventListener('change', applyDependentRules);
     if (resizeEnabledInput) resizeEnabledInput.addEventListener('change', applyDependentRules);
     if (additionalAugmentationInput) additionalAugmentationInput.addEventListener('change', applyDependentRules);
+    if (randomCropInput) randomCropInput.addEventListener('change', applyDependentRules);
+    if (scaleAugmentationInput) scaleAugmentationInput.addEventListener('change', applyDependentRules);
+    if (cutoutEnabledInput) cutoutEnabledInput.addEventListener('change', applyDependentRules);
+    if (mixupEnabledInput) mixupEnabledInput.addEventListener('change', applyDependentRules);
     if (hardMiningEnabledInput) hardMiningEnabledInput.addEventListener('change', applyDependentRules);
+    if (hardPixelMiningEnabledInput) hardPixelMiningEnabledInput.addEventListener('change', applyDependentRules);
     if (lossFunctionInput) lossFunctionInput.addEventListener('change', applyDependentRules);
 
     restoreFormState();

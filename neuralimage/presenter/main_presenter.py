@@ -2,7 +2,7 @@
 import multiprocessing as mp
 import gc
 import os
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -10,11 +10,15 @@ from PyQt6.QtCore import QObject, QThread
 from PyQt6.QtWidgets import QMessageBox, QFileDialog
 from PyQt6 import QtCore, QtWidgets
 
-from lib.message_bus import MessageBus, AbstractMessageBus
-from model.NeuralNetwork import get_registered_models
-from model.general_neural_handler import GeneralNeuralHandler
-from view import MainView, SettingsPanel
-from view.window_dataclasses import MainWindowState, SettingsState
+from application.dto import MainWindowState, SettingsState
+from application.ports import StateStore
+from application.services import (
+    ActiveTaskMutationError,
+    ProcessingSession,
+    QueuedTask,
+    build_workflow_parameters,
+    can_start_processing,
+)
 from lib.data_interfaces import (
     CutSettings,
     SampleCutMode,
@@ -22,18 +26,24 @@ from lib.data_interfaces import (
     TrainingParameters,
     RecognitionParameters,
     normalize_work_mode,
+    normalize_multi_gpu_mode,
 )
-
+from lib.file_func import filter_files
+from lib.loss_config import dominant_loss_function, resolve_loss_term_weights
+from lib.logging_policy import should_forward_log_event
+from lib.message_bus import MessageBus, AbstractMessageBus
 from lib.images import SampleWorker
-from presenter.state_store import (
-    load_main_window_state,
-    load_settings_state,
-    save_main_window_state,
-    save_settings_state,
-)
-from presenter.workflow_mapper import build_workflow_parameters
-from presenter.validation import can_start_processing
+from model.NeuralNetwork import get_registered_models
+from model.general_neural_handler import GeneralNeuralHandler
 from lib.ui_texts import get_ui_section
+from view import MainView, SettingsPanel
+from view.task_properties_dialog import TaskPropertiesDialog
+
+
+def _format_auto_answer_button_text(text: str, seconds_left: int) -> str:
+    if seconds_left <= 0:
+        return text
+    return f'{text} ({int(seconds_left)})'
 
 
 def _tk_filedialog(kind: str, filetypes=None) -> str | None:
@@ -51,23 +61,15 @@ def _tk_filedialog(kind: str, filetypes=None) -> str | None:
         path, _ = QFileDialog.getOpenFileName(None, 'Выберите файл', '', filter_str)
     return path if path else None
 
-
-@dataclass
-class QueuedTask:
-    task_id: int
-    main_window_state: MainWindowState
-    settings_state: SettingsState
-    paused: bool = False
-
-
 class MainPresenter(QObject):
     """
     Связывает View и Model. Содержит всю бизнес-логику
     (валидацию, формирование параметров, запуск/остановку потока).
     """
 
-    def __init__(self):
+    def __init__(self, state_store: StateStore):
         super().__init__()
+        self._state_store = state_store
 
         self.sample_calculator = SampleWorker()
 
@@ -82,11 +84,9 @@ class MainPresenter(QObject):
         self.view = MainView(side_panel=self.settings_panel)
 
         self.stop_event = mp.Event()
-        self._queued_tasks: list[QueuedTask] = []
-        self._next_task_id = 1
-        self._active_task: QueuedTask | None = None
-        self._active_stop_requested = False
+        self._processing_session = ProcessingSession()
         self.neuaral_handler: GeneralNeuralHandlerThread | None = None
+        self._rare_patch_editor_prepare_thread: RarePatchEditorPreparationThread | None = None
 
         # --------------------- 1. Подписка на сигналы View --------------------- #
         self._conncet_to_message_bus()
@@ -125,8 +125,12 @@ class MainPresenter(QObject):
         v.stop_requested.connect(self._on_stop_requested)
         v.queue_remove_requested.connect(self._on_queue_remove_requested)
         v.queue_pause_toggle_requested.connect(self._on_queue_pause_toggle_requested)
+        v.queue_context_remove_requested.connect(self._on_queue_context_remove_requested)
+        v.queue_properties_requested.connect(self._on_queue_properties_requested)
         v.batch_preview_visibility_changed.connect(self._on_batch_preview_visibility_changed)
         v.release_memory_requested.connect(self._on_release_memory_requested)
+        v.ui_language_selected.connect(self._on_ui_language_selected)
+        v.theme_selected.connect(self._on_theme_selected)
 
         v.request_close.connect(self._on_close_requested)
 
@@ -140,6 +144,8 @@ class MainPresenter(QObject):
         v.optimizer_settings_changed.connect(self._update_settings_window_state)
         v.validation_settings_changed.connect(self._update_settings_window_state)
         v.reset_defaults_requested.connect(self._reset_settings_to_defaults)
+        v.ui_language_changed.connect(self.view.apply_ui_language)
+        v.rare_patch_editor_requested.connect(self._open_rare_patch_editor)
 
     # ------------------------------------------------------------------ #
     #   Инициализация UI
@@ -163,11 +169,11 @@ class MainPresenter(QObject):
         self._validate_start_button()
 
     def _load_main_window_settings(self):
-        self.main_window_state = load_main_window_state()
+        self.main_window_state = self._state_store.load_main_window_state()
         self.sample_calculator.set_path(Path(self.main_window_state.sample_folder))
 
     def _load_settings_panel_settings(self):
-        self.settings_state = load_settings_state()
+        self.settings_state = self._state_store.load_settings_state()
 
     # ------------------------------------------------------------------ #
     #   Обновление класса состояния окон
@@ -249,20 +255,45 @@ class MainPresenter(QObject):
         s.additional_augmentation_check_box.setChecked(state.additional_augmentation)
         s.augmentation_brightness_spinbox.setValue(state.augmentation_brightness_strength)
         s.augmentation_contrast_spinbox.setValue(state.augmentation_contrast_strength)
+        s.augmentation_gamma_spinbox.setValue(float(getattr(state, 'augmentation_gamma_strength', 0.15)))
         s.augmentation_noise_probability_spinbox.setValue(state.augmentation_noise_probability)
         s.augmentation_noise_sigma_spinbox.setValue(state.augmentation_noise_sigma)
+        s.augmentation_blur_probability_spinbox.setValue(float(getattr(state, 'augmentation_blur_probability', 0.25)))
+        s.augmentation_blur_radius_spinbox.setValue(float(getattr(state, 'augmentation_blur_radius', 1.0)))
         if hasattr(s, '_sync_augmentation_controls'):
             s._sync_augmentation_controls(state.additional_augmentation)
 
         # 3.2  Spin boxes (int/float)
         s.shift_spinbox.setValue(state.step)
-        s.sample_x_size.setValue(state.sample_size[0])
-        s.sample_y_size.setValue(state.sample_size[1])
+        train_patch_size = tuple(getattr(state, 'train_patch_size', None) or state.sample_size)
+        recognition_patch_size = tuple(getattr(state, 'recognition_patch_size', None) or state.sample_size)
+        s.train_patch_x_size.setValue(train_patch_size[0])
+        s.train_patch_y_size.setValue(train_patch_size[1])
+        s.recognition_patch_x_size.setValue(recognition_patch_size[0])
+        s.recognition_patch_y_size.setValue(recognition_patch_size[1])
 
         # 3.3 Combo-box (str - используем setCurrentText, который выбирает
         #      entry if it exists, otherwise it will add a new entry.)
         s.nn_model_type.setCurrentText(state.model)
-        s.color_type.setCurrentText(state.color_mode)
+        if hasattr(s, 'set_color_mode_value'):
+            s.set_color_mode_value(state.color_mode)
+        else:
+            s.color_type.setCurrentText(state.color_mode)
+        s.shuffle_frames_check_box.setChecked(bool(getattr(state, 'shuffle', True)))
+        s.shuffle_patches_in_frame_check_box.setChecked(
+            bool(getattr(state, 'shuffle_patches_in_frame', getattr(state, 'shuffle', True)))
+        )
+        s.random_crop_check_box.setChecked(bool(getattr(state, 'random_crop', False)))
+        s.crops_per_image_spinbox.setValue(int(getattr(state, 'crops_per_image', 64)))
+        s.scale_augmentation_check_box.setChecked(bool(getattr(state, 'scale_augmentation', False)))
+        s.scale_augmentation_strength_spinbox.setValue(float(getattr(state, 'scale_augmentation_strength', 0.2)))
+        s.cutout_check_box.setChecked(bool(getattr(state, 'cutout_enabled', False)))
+        s.cutout_probability_spinbox.setValue(float(getattr(state, 'cutout_probability', 1.0)))
+        s.cutout_holes_spinbox.setValue(int(getattr(state, 'cutout_holes', 1)))
+        s.cutout_size_ratio_spinbox.setValue(float(getattr(state, 'cutout_size_ratio', 0.25)))
+        s.mixup_check_box.setChecked(bool(getattr(state, 'mixup_enabled', False)))
+        s.mixup_probability_spinbox.setValue(float(getattr(state, 'mixup_probability', 1.0)))
+        s.mixup_alpha_spinbox.setValue(float(getattr(state, 'mixup_alpha', 0.2)))
 
         # 3.4  Validation controls
         s.validation_check_box.setChecked(state.use_validation)
@@ -271,18 +302,39 @@ class MainPresenter(QObject):
         # 3.5 Режим нарезки
 
         s.restore_cut_mode(state.sample_cut_mode)
+        if hasattr(s, '_sync_augmentation_controls'):
+            s._sync_augmentation_controls(state.additional_augmentation)
+        if hasattr(s, '_sync_training_augmentation_controls'):
+            s._sync_training_augmentation_controls()
 
         # 3.6 Размер батча / overlap
-        s.batch_spinbox.setValue(state.batch_size)
+        train_batch_size = int(getattr(state, 'train_batch_size', None) or state.batch_size)
+        recognition_batch_size = int(getattr(state, 'recognition_batch_size', None) or state.batch_size)
+        s.train_batch_spinbox.setValue(train_batch_size)
+        s.recognition_batch_spinbox.setValue(recognition_batch_size)
         s.overlap_spinbox.setValue(state.overlap)
+        s.recognition_jpeg_quality_spinbox.setValue(int(getattr(state, 'recognition_jpeg_quality', 95)))
+        s.recognition_binarize_output_check_box.setChecked(bool(getattr(state, 'recognition_binarize_output', True)))
+        s.recognition_use_auto_threshold_check_box.setChecked(
+            bool(getattr(state, 'recognition_use_auto_threshold', True))
+        )
+        s.recognition_threshold_spinbox.setValue(float(getattr(state, 'recognition_threshold', 0.5)))
+        s.recognition_postprocess_check_box.setChecked(bool(getattr(state, 'recognition_postprocess', False)))
+        s.recognition_postprocess_kernel_size_spinbox.setValue(
+            int(getattr(state, 'recognition_postprocess_kernel_size', 3))
+        )
         s.log_update_frequency_spinbox.setValue(state.log_update_frequency)
         s.optimizer_type.setCurrentText(state.optimizer_name)
         s.mixed_precision_type.setCurrentText(state.mixed_precision)
-        s.loss_function_type.setCurrentText(state.loss_function)
-        s.dice_loss_weight_spinbox.setValue(state.dice_loss_weight)
-        s.iou_loss_weight_spinbox.setValue(state.iou_loss_weight)
+        if hasattr(s, 'set_loss_term_weights'):
+            s.set_loss_term_weights(
+                resolve_loss_term_weights(
+                    getattr(state, 'loss_term_weights', None),
+                    fallback_loss_function=state.loss_function,
+                )
+            )
         if hasattr(s, '_sync_loss_controls'):
-            s._sync_loss_controls(s.loss_function_type.currentIndex())
+            s._sync_loss_controls()
         s.learning_rate_spinbox.setValue(state.learning_rate)
         s.weight_decay_spinbox.setValue(state.weight_decay)
         s.early_stopping_check_box.setChecked(state.early_stopping_enabled)
@@ -295,8 +347,21 @@ class MainPresenter(QObject):
         s.hard_mining_check_box.setChecked(state.hard_mining_enabled)
         s.hard_mining_strength_spinbox.setValue(state.hard_mining_strength)
         s.hard_mining_ema_alpha_spinbox.setValue(state.hard_mining_ema_alpha)
+        s.hard_pixel_mining_check_box.setChecked(bool(getattr(state, 'hard_pixel_mining_enabled', False)))
+        s.hard_pixel_mining_ratio_spinbox.setValue(float(getattr(state, 'hard_pixel_mining_ratio', 0.25)))
         s.skip_uniform_labels_check_box.setChecked(state.skip_uniform_labels)
-        s.multi_gpu_check_box.setChecked(state.use_multi_gpu)
+        s.rare_patch_oversampling_check_box.setChecked(
+            bool(getattr(state, 'rare_patch_oversampling_enabled', False))
+        )
+        s.rare_patch_oversampling_factor_spinbox.setValue(
+            int(getattr(state, 'rare_patch_oversampling_factor', 2))
+        )
+        multi_gpu_mode = normalize_multi_gpu_mode(
+            getattr(state, 'multi_gpu_mode', ''),
+            use_multi_gpu_fallback=bool(getattr(state, 'use_multi_gpu', False)),
+        )
+        s.sync_patch_sizes_check_box.setChecked(bool(getattr(state, 'sync_patch_sizes', True)))
+        s.multi_gpu_mode_combo.setCurrentText(multi_gpu_mode)
         s.torch_compile_check_box.setChecked(state.torch_compile_enabled)
         view = self.__dict__.get('view')
         if view is not None and hasattr(view, 'set_batch_preview_enabled'):
@@ -307,6 +372,12 @@ class MainPresenter(QObject):
         s.enable_resize_processing.setChecked(state.resize_enabled)
         if hasattr(s, '_sync_preprocess_controls'):
             s._sync_preprocess_controls()
+        if hasattr(s, '_sync_patch_size_controls'):
+            s._sync_patch_size_controls()
+        if hasattr(s, '_sync_rare_patch_oversampling_controls'):
+            s._sync_rare_patch_oversampling_controls()
+        if hasattr(s, '_sync_recognition_output_controls'):
+            s._sync_recognition_output_controls()
         if hasattr(s, 'sync_business_logic_controls'):
             main_state = self.__dict__.get('main_window_state')
             work_mode = getattr(main_state, 'work_mode', '')
@@ -340,23 +411,59 @@ class MainPresenter(QObject):
         additional_augmentation = s.additional_augmentation_check_box.isChecked()
         augmentation_brightness_strength = s.augmentation_brightness_spinbox.value()
         augmentation_contrast_strength = s.augmentation_contrast_spinbox.value()
+        augmentation_gamma_strength = s.augmentation_gamma_spinbox.value()
         augmentation_noise_probability = s.augmentation_noise_probability_spinbox.value()
         augmentation_noise_sigma = s.augmentation_noise_sigma_spinbox.value()
+        augmentation_blur_probability = s.augmentation_blur_probability_spinbox.value()
+        augmentation_blur_radius = s.augmentation_blur_radius_spinbox.value()
         step = s.shift_spinbox.value()
-        sample_size = (s.sample_x_size.value(), s.sample_y_size.value())
+        train_patch_size = (s.train_patch_x_size.value(), s.train_patch_y_size.value())
+        recognition_patch_size = (s.recognition_patch_x_size.value(), s.recognition_patch_y_size.value())
         model = s.nn_model_type.currentText()
-        color_mode = s.color_type.currentText()
+        color_mode = s.get_color_mode_value() if hasattr(s, 'get_color_mode_value') else s.color_type.currentText()
+        shuffle_frames = s.shuffle_frames_check_box.isChecked()
+        shuffle_patches_in_frame = s.shuffle_patches_in_frame_check_box.isChecked()
+        random_crop = s.random_crop_check_box.isChecked()
+        crops_per_image = s.crops_per_image_spinbox.value()
+        scale_augmentation = s.scale_augmentation_check_box.isChecked()
+        scale_augmentation_strength = s.scale_augmentation_strength_spinbox.value()
+        cutout_enabled = s.cutout_check_box.isChecked()
+        cutout_probability = s.cutout_probability_spinbox.value()
+        cutout_holes = s.cutout_holes_spinbox.value()
+        cutout_size_ratio = s.cutout_size_ratio_spinbox.value()
+        mixup_enabled = s.mixup_check_box.isChecked()
+        mixup_probability = s.mixup_probability_spinbox.value()
+        mixup_alpha = s.mixup_alpha_spinbox.value()
         validation = s.validation_check_box.isChecked()
         validation_percent = s.validation_spinbox.value()
         cut_mode = self._update_cut_mode()
-        batch_size = s.batch_spinbox.value()
+        train_batch_size = s.train_batch_spinbox.value()
+        recognition_batch_size = s.recognition_batch_spinbox.value()
+        sync_patch_sizes = s.sync_patch_sizes_check_box.isChecked()
+        if sync_patch_sizes:
+            recognition_patch_size = train_patch_size
         overlap = s.overlap_spinbox.value()
+        recognition_jpeg_quality = s.recognition_jpeg_quality_spinbox.value()
+        recognition_binarize_output = s.recognition_binarize_output_check_box.isChecked()
+        recognition_use_auto_threshold = s.recognition_use_auto_threshold_check_box.isChecked()
+        recognition_threshold = s.recognition_threshold_spinbox.value()
+        recognition_postprocess = s.recognition_postprocess_check_box.isChecked()
+        recognition_postprocess_kernel_size = s.recognition_postprocess_kernel_size_spinbox.value()
         log_update_frequency = s.log_update_frequency_spinbox.value()
         optimizer_name = s.optimizer_type.currentText()
         mixed_precision = s.mixed_precision_type.currentText()
-        loss_function = s.loss_function_type.currentText()
-        dice_loss_weight = s.dice_loss_weight_spinbox.value()
-        iou_loss_weight = s.iou_loss_weight_spinbox.value()
+        current_state = getattr(self, 'settings_state', SettingsState())
+        loss_term_weights = (
+            s.get_loss_term_weights()
+            if hasattr(s, 'get_loss_term_weights')
+            else resolve_loss_term_weights({}, fallback_loss_function='bce')
+        )
+        loss_function = dominant_loss_function(
+            loss_term_weights,
+            fallback=getattr(current_state, 'loss_function', 'bce'),
+        )
+        dice_loss_weight = float(getattr(current_state, 'dice_loss_weight', 0.5))
+        iou_loss_weight = float(getattr(current_state, 'iou_loss_weight', 0.5))
         learning_rate = s.learning_rate_spinbox.value()
         weight_decay = s.weight_decay_spinbox.value()
         early_stopping_enabled = s.early_stopping_check_box.isChecked()
@@ -369,8 +476,13 @@ class MainPresenter(QObject):
         hard_mining_enabled = s.hard_mining_check_box.isChecked()
         hard_mining_strength = s.hard_mining_strength_spinbox.value()
         hard_mining_ema_alpha = s.hard_mining_ema_alpha_spinbox.value()
+        hard_pixel_mining_enabled = s.hard_pixel_mining_check_box.isChecked()
+        hard_pixel_mining_ratio = s.hard_pixel_mining_ratio_spinbox.value()
         skip_uniform_labels = s.skip_uniform_labels_check_box.isChecked()
-        use_multi_gpu = s.multi_gpu_check_box.isChecked()
+        rare_patch_oversampling_enabled = s.rare_patch_oversampling_check_box.isChecked()
+        rare_patch_oversampling_factor = s.rare_patch_oversampling_factor_spinbox.value()
+        multi_gpu_mode = normalize_multi_gpu_mode(s.multi_gpu_mode_combo.currentText())
+        use_multi_gpu = multi_gpu_mode != 'off'
         torch_compile_enabled = s.torch_compile_check_box.isChecked()
         show_batch_preview = self.view.is_batch_preview_enabled()
         crop_enabled = s.enable_crop_processing.isChecked()
@@ -382,17 +494,50 @@ class MainPresenter(QObject):
                               additional_augmentation=additional_augmentation,
                               augmentation_brightness_strength=augmentation_brightness_strength,
                               augmentation_contrast_strength=augmentation_contrast_strength,
+                              augmentation_gamma_strength=augmentation_gamma_strength,
                               augmentation_noise_probability=augmentation_noise_probability,
                               augmentation_noise_sigma=augmentation_noise_sigma,
-                              sample_size=sample_size,
-                              model=model, color_mode=color_mode, use_validation=validation,
+                              augmentation_blur_probability=augmentation_blur_probability,
+                              augmentation_blur_radius=augmentation_blur_radius,
+                              sample_size=train_patch_size,
+                              train_patch_size=train_patch_size,
+                              recognition_patch_size=recognition_patch_size,
+                              model=model,
+                              color_mode=color_mode,
+                              shuffle=shuffle_frames,
+                              shuffle_patches_in_frame=shuffle_patches_in_frame,
+                              random_crop=random_crop,
+                              crops_per_image=crops_per_image,
+                              scale_augmentation=scale_augmentation,
+                              scale_augmentation_strength=scale_augmentation_strength,
+                              cutout_enabled=cutout_enabled,
+                              cutout_probability=cutout_probability,
+                              cutout_holes=cutout_holes,
+                              cutout_size_ratio=cutout_size_ratio,
+                              mixup_enabled=mixup_enabled,
+                              mixup_probability=mixup_probability,
+                              mixup_alpha=mixup_alpha,
+                              use_validation=validation,
                               validation_percent=validation_percent,
-                              sample_cut_mode=cut_mode, batch_size=batch_size, overlap=overlap,
+                              sample_cut_mode=cut_mode,
+                              batch_size=train_batch_size,
+                              train_batch_size=train_batch_size,
+                              recognition_batch_size=recognition_batch_size,
+                              sync_patch_sizes=sync_patch_sizes,
+                              patch_batch_sync_mode='patch' if sync_patch_sizes else 'off',
+                              overlap=overlap,
+                              recognition_jpeg_quality=recognition_jpeg_quality,
+                              recognition_binarize_output=recognition_binarize_output,
+                              recognition_use_auto_threshold=recognition_use_auto_threshold,
+                              recognition_threshold=recognition_threshold,
+                              recognition_postprocess=recognition_postprocess,
+                              recognition_postprocess_kernel_size=recognition_postprocess_kernel_size,
                               crop_enabled=crop_enabled, resize_enabled=resize_enabled, edge_cut_size=edge_cut_size,
                               target_size=target_size,
                               optimizer_name=optimizer_name,
                               mixed_precision=mixed_precision,
                               loss_function=loss_function,
+                              loss_term_weights=loss_term_weights,
                               dice_loss_weight=dice_loss_weight,
                               iou_loss_weight=iou_loss_weight,
                               learning_rate=learning_rate,
@@ -407,9 +552,14 @@ class MainPresenter(QObject):
                               hard_mining_enabled=hard_mining_enabled,
                               hard_mining_strength=hard_mining_strength,
                               hard_mining_ema_alpha=hard_mining_ema_alpha,
+                              hard_pixel_mining_enabled=hard_pixel_mining_enabled,
+                              hard_pixel_mining_ratio=hard_pixel_mining_ratio,
                               log_update_frequency=log_update_frequency,
                               skip_uniform_labels=skip_uniform_labels,
+                              rare_patch_oversampling_enabled=rare_patch_oversampling_enabled,
+                              rare_patch_oversampling_factor=rare_patch_oversampling_factor,
                               use_multi_gpu=use_multi_gpu,
+                              multi_gpu_mode=multi_gpu_mode,
                               torch_compile_enabled=torch_compile_enabled,
                               show_batch_preview=show_batch_preview)
 
@@ -418,10 +568,88 @@ class MainPresenter(QObject):
     def _on_batch_preview_visibility_changed(self, enabled: bool):
         self.settings_state.show_batch_preview = bool(enabled)
 
+    def _open_rare_patch_editor(self):
+        self._update_main_window_state()
+        sample_folder = Path(self.main_window_state.sample_folder)
+        label_folder = Path(self.main_window_state.label_folder)
+        if not sample_folder.is_dir() or not label_folder.is_dir():
+            self.view.show_warning.emit(
+                'Выберите существующие папки с изображениями и метками перед открытием редактора редких областей.'
+            )
+            return
+
+        if self._rare_patch_editor_prepare_thread is not None:
+            self.message_bus.publish(
+                'logging',
+                'Подготовка меток для редактора редких областей уже выполняется.',
+            )
+            return
+
+        if filter_files(label_folder, ('.cif',)):
+            self._start_rare_patch_editor_cif_conversion(sample_folder, label_folder)
+            return
+
+        self._open_rare_patch_editor_dialog(sample_folder, label_folder)
+
+    def _start_rare_patch_editor_cif_conversion(self, sample_folder: Path, label_folder: Path) -> None:
+        self.message_bus.publish(
+            'logging',
+            'Обнаружены CIF-метки. Готовлю binary_cif для редактора редких областей.',
+        )
+        self._set_rare_patch_editor_preparing(True)
+        thread = RarePatchEditorPreparationThread(
+            sample_folder=sample_folder,
+            label_folder=label_folder,
+            message_bus=self.message_bus,
+        )
+        thread.prepared.connect(self._on_rare_patch_editor_prepared)
+        thread.finished.connect(thread.deleteLater)
+        self._rare_patch_editor_prepare_thread = thread
+        thread.start()
+
+    def _set_rare_patch_editor_preparing(self, active: bool) -> None:
+        button = getattr(self.settings_panel, 'edit_rare_regions_button', None)
+        if button is not None:
+            button.setEnabled(not active)
+
+    @QtCore.pyqtSlot(str, str, str)
+    def _on_rare_patch_editor_prepared(
+        self,
+        sample_folder: str,
+        resolved_label_folder: str,
+        error_message: str,
+    ) -> None:
+        self._set_rare_patch_editor_preparing(False)
+        self._rare_patch_editor_prepare_thread = None
+
+        if error_message:
+            self.view.show_warning.emit(error_message)
+            return
+
+        self.view.set_label_path(resolved_label_folder)
+        self.main_window_state.label_folder = resolved_label_folder
+        self._open_rare_patch_editor_dialog(Path(sample_folder), Path(resolved_label_folder))
+
+    def _open_rare_patch_editor_dialog(self, sample_folder: Path, label_folder: Path) -> None:
+        from lib.rare_patch_masks import collect_matching_sample_label_pairs
+        from view.rare_patch_editor_dialog import RarePatchEditorDialog
+
+        _pairs, error_message = collect_matching_sample_label_pairs(sample_folder, label_folder)
+        if error_message is not None:
+            self.view.show_warning.emit(error_message)
+            return
+
+        dialog = RarePatchEditorDialog(sample_folder, label_folder, self.view)
+        dialog.exec()
+
     def _log_message_emit(self, data):
+        if not should_forward_log_event('logging', data):
+            return
         self.view.log_message.emit(data)
 
     def _train_message_emit(self, data):
+        if not should_forward_log_event('training', data):
+            return
         self.view.log_message_with_delete_last.emit(data)
 
     def _metrics_message_emit(self, data):
@@ -453,12 +681,12 @@ class MainPresenter(QObject):
         self._save_nn_settings_to_qsettings()
 
     def _save_main_window_to_qsettings(self):
-        save_main_window_state(self.main_window_state)
+        self._state_store.save_main_window_state(self.main_window_state)
 
     def _save_nn_settings_to_qsettings(self):
         state = getattr(self, "settings_state", None) or SettingsState()
         self.settings_state = state
-        save_settings_state(state)
+        self._state_store.save_settings_state(state)
 
     def _reset_settings_to_defaults(self):
         self.settings_state = SettingsState()
@@ -536,13 +764,10 @@ class MainPresenter(QObject):
             self.message_bus.publish('logging', 'Задача не добавлена. Проверьте обязательные поля.')
             return
 
-        task = QueuedTask(
-            task_id=self._next_task_id,
-            main_window_state=replace(self.main_window_state),
+        task = self._processing_session.enqueue_task(
+            main_state=replace(self.main_window_state),
             settings_state=replace(self.settings_state),
         )
-        self._next_task_id += 1
-        self._queued_tasks.append(task)
         self.message_bus.publish('logging', f'Задача #{task.task_id} добавлена в очередь.')
         self._refresh_queue_view(selected_task_id=task.task_id)
         self._start_next_task_if_possible()
@@ -550,36 +775,87 @@ class MainPresenter(QObject):
     def _on_stop_requested(self):
         if self.neuaral_handler is None:
             return
-        self._active_stop_requested = True
         self.neuaral_handler.stop()
-        if self._active_task is not None:
-            self.message_bus.publish('logging', f'Остановлена активная задача #{self._active_task.task_id}.')
+        active_task = self._processing_session.request_stop()
+        if active_task is not None:
+            self.message_bus.publish('logging', f'Остановлена активная задача #{active_task.task_id}.')
 
     def _on_release_memory_requested(self):
         gc.collect()
         self.message_bus.publish('logging', 'Выполнена очистка памяти Python.')
 
+    def _on_ui_language_selected(self, language: str):
+        self.settings_panel.set_ui_language(language)
+
+    def _on_theme_selected(self, theme: str):
+        self.view.apply_theme(theme)
+
     def _on_queue_remove_requested(self):
         row = self.view.get_selected_queue_row()
-        if row < 0 or row >= len(self._queued_tasks):
+        self._remove_queue_row(row)
+
+    def _on_queue_context_remove_requested(self, row: int):
+        self._remove_queue_row(row)
+
+    def _remove_queue_row(self, row: int):
+        try:
+            task = self._processing_session.remove_task_by_index(row)
+        except ActiveTaskMutationError as error:
+            self.message_bus.publish('logging', f'Нельзя убрать активную задачу #{error.task_id}.')
             return
-        task = self._queued_tasks[row]
-        if self._active_task is not None and task.task_id == self._active_task.task_id:
-            self.message_bus.publish('logging', f'Нельзя убрать активную задачу #{task.task_id}.')
+        if task is None:
             return
-        self._queued_tasks.pop(row)
         self.message_bus.publish('logging', f'Задача #{task.task_id} удалена из очереди.')
-        self._refresh_queue_view(selected_row=min(row, len(self._queued_tasks) - 1))
+        queue_size = len(self._processing_session.queue_snapshot())
+        self._refresh_queue_view(selected_row=min(row, queue_size - 1))
+
+    def _on_queue_properties_requested(self, row: int):
+        task = self._processing_session.get_task_by_index(row)
+        snapshot = self._processing_session.queue_snapshot()
+        if task is None or row < 0 or row >= len(snapshot):
+            return
+
+        dialog = TaskPropertiesDialog(
+            task_id=task.task_id,
+            status=snapshot[row].status,
+            paused=task.paused,
+            main_window_state=task.main_window_state,
+            settings_state=task.settings_state,
+            parent=self.view,
+        )
+        dialog.restore_requested.connect(self._on_task_restore_requested)
+        dialog.exec()
+
+    def _on_task_restore_requested(self, main_state: MainWindowState, settings_state: SettingsState):
+        self._restore_task_state_to_ui(main_state, settings_state)
+
+    def _restore_task_state_to_ui(self, main_state: MainWindowState, settings_state: SettingsState):
+        self.main_window_state = replace(main_state)
+        self.settings_state = replace(settings_state)
+        self.sample_calculator.set_path(Path(self.main_window_state.sample_folder))
+
+        self.view.restore_from_dataclass(self.main_window_state)
+        self._apply_settings_to_panel()
+        self._restore_work_mode_ui()
+        if hasattr(self.view, 'show_settings_dock'):
+            self.view.show_settings_dock()
+
+        self._update_main_window_state()
+        self._update_settings_window_state()
+        self._set_max_shift()
+        self._calculate_expected_samples()
+        self._validate_start_button()
+        self.message_bus.publish('logging', 'Параметры задачи восстановлены в интерфейсе.')
 
     def _on_queue_pause_toggle_requested(self):
         row = self.view.get_selected_queue_row()
-        if row < 0 or row >= len(self._queued_tasks):
+        try:
+            task = self._processing_session.toggle_pause_by_index(row)
+        except ActiveTaskMutationError as error:
+            self.message_bus.publish('logging', f'Нельзя поставить на паузу активную задачу #{error.task_id}.')
             return
-        task = self._queued_tasks[row]
-        if self._active_task is not None and task.task_id == self._active_task.task_id:
-            self.message_bus.publish('logging', f'Нельзя поставить на паузу активную задачу #{task.task_id}.')
+        if task is None:
             return
-        task.paused = not task.paused
         state = 'поставлена на паузу' if task.paused else 'снята с паузы'
         self.message_bus.publish('logging', f'Задача #{task.task_id} {state}.')
         self._refresh_queue_view(selected_task_id=task.task_id)
@@ -588,29 +864,29 @@ class MainPresenter(QObject):
     def _refresh_queue_view(self, selected_row: int = -1, selected_task_id: int | None = None):
         items: list[str] = []
         resolved_selected_row = selected_row
-        for idx, task in enumerate(self._queued_tasks):
-            status = 'в очереди'
-            if task.paused:
-                status = 'на паузе'
-            if self._active_task is not None and task.task_id == self._active_task.task_id:
-                status = 'выполняется'
-            mode = task.main_window_state.work_mode or 'unknown'
-            items.append(f'#{task.task_id} | {mode} | {status}')
+        status_map = {
+            'queued': 'в очереди',
+            'paused': 'на паузе',
+            'running': 'выполняется',
+        }
+        for idx, task in enumerate(self._processing_session.queue_snapshot()):
+            status = status_map.get(task.status, task.status)
+            items.append(f'#{task.task_id} | {task.work_mode} | {status}')
             if selected_task_id is not None and task.task_id == selected_task_id:
                 resolved_selected_row = idx
         self.view.set_task_queue_items(items, resolved_selected_row)
 
     def _start_next_task_if_possible(self):
-        if self.neuaral_handler is not None and self.neuaral_handler.isRunning():
+        decision = self._processing_session.next_task_to_start(
+            worker_running=self.neuaral_handler is not None and self.neuaral_handler.isRunning()
+        )
+        if decision.worker_busy:
             return
-        next_task = next((task for task in self._queued_tasks if not task.paused), None)
+        next_task = decision.task
         if next_task is None:
-            self._active_task = None
             self.view.toggle_start_stop.emit(False)
             return
 
-        self._active_task = next_task
-        self._active_stop_requested = False
         self._refresh_queue_view(selected_task_id=next_task.task_id)
         self.view.toggle_start_stop.emit(True)
         self._start_task(next_task)
@@ -626,8 +902,7 @@ class MainPresenter(QObject):
         )
         if work_mode is None:
             self.message_bus.publish('error', f'Задача #{task.task_id}: не удалось определить режим работы.')
-            self._queued_tasks = [t for t in self._queued_tasks if t.task_id != task.task_id]
-            self._active_task = None
+            self._processing_session.drop_task(task.task_id)
             self.view.toggle_start_stop.emit(False)
             self._refresh_queue_view()
             self._start_next_task_if_possible()
@@ -646,16 +921,13 @@ class MainPresenter(QObject):
         self.message_bus.publish('logging', f'Запущена задача #{task.task_id}.')
 
     def _on_task_finished(self):
-        finished_task = self._active_task
-        if finished_task is not None:
-            self._queued_tasks = [t for t in self._queued_tasks if t.task_id != finished_task.task_id]
-            if self._active_stop_requested:
-                self.message_bus.publish('logging', f'Задача #{finished_task.task_id} остановлена.')
+        result = self._processing_session.complete_active_task()
+        if result.task is not None:
+            if result.stop_requested:
+                self.message_bus.publish('logging', f'Задача #{result.task.task_id} остановлена.')
             else:
-                self.message_bus.publish('logging', f'Задача #{finished_task.task_id} завершена.')
+                self.message_bus.publish('logging', f'Задача #{result.task.task_id} завершена.')
         self.neuaral_handler = None
-        self._active_task = None
-        self._active_stop_requested = False
         self._refresh_queue_view()
         self._start_next_task_if_possible()
     def _on_close_requested(self):
@@ -683,19 +955,31 @@ class MainPresenter(QObject):
 
     def get_cut_settings_from_window_state(self) -> CutSettings:
         s = self.settings_state
+        train_patch_size = tuple(getattr(s, 'train_patch_size', None) or s.sample_size)
+        online_mode = getattr(s, 'sample_cut_mode', SampleCutMode.online.value) == SampleCutMode.online.value
         return CutSettings(step=s.step,
-                           x_size=s.sample_size[0],
-                           y_size=s.sample_size[1],
+                           x_size=train_patch_size[0],
+                           y_size=train_patch_size[1],
                            vertical_rotation=s.vertical_rotation,
                            horizontal_rotation=s.horizontal_rotation,
                            color_mode=s.color_mode,
                            model=s.model,
                            additional_augmentation=s.additional_augmentation,
+                           augmentation_gamma_strength=float(getattr(s, 'augmentation_gamma_strength', 0.15)),
+                           augmentation_blur_probability=float(getattr(s, 'augmentation_blur_probability', 0.25)),
+                           augmentation_blur_radius=float(getattr(s, 'augmentation_blur_radius', 1.0)),
+                           random_crop=bool(
+                               getattr(s, 'random_crop', False)
+                               and online_mode
+                           ),
+                           crops_per_image=int(getattr(s, 'crops_per_image', 64)),
+                           scale_augmentation=bool(getattr(s, 'scale_augmentation', False) and online_mode),
+                           scale_augmentation_strength=float(getattr(s, 'scale_augmentation_strength', 0.2)),
                            )
 
     def _set_sample_number(self):
         total_samples = len(self.sample_calculator)
-        self.settings_panel.samples_number.setText(f'Кадров в выборке: {total_samples}')
+        self.settings_panel.set_samples_count(total_samples)
 
     def _set_max_shift(self):
         s = self.settings_panel
@@ -719,11 +1003,63 @@ class MainPresenter(QObject):
     # ------------------------------------------------------------------ #
     #   Управление началом потоков
     # ------------------------------------------------------------------ #
-    def _thread_ask(self, question: str, header: str = 'Обратите внимание'):
-        reply = QMessageBox.question(None, header, question,
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                     QMessageBox.StandardButton.No,
-                                     )
+    def _thread_ask(
+        self,
+        question: str,
+        header: str = 'Обратите внимание',
+        default_answer: bool = False,
+        timeout_seconds: int = 0,
+    ):
+        buttons = QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        default_button = QMessageBox.StandardButton.Yes if default_answer else QMessageBox.StandardButton.No
+
+        dialog = QMessageBox(self.view)
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setWindowTitle(header)
+        dialog.setText(question)
+        dialog.setStandardButtons(buttons)
+        dialog.setDefaultButton(default_button)
+        dialog.setEscapeButton(default_button)
+
+        if timeout_seconds > 0:
+            timer = QtCore.QTimer(dialog)
+            timer.setInterval(1000)
+            seconds_left = max(0, int(timeout_seconds))
+            default_button_widget = dialog.button(default_button)
+            default_button_text = (
+                default_button_widget.text() if default_button_widget is not None else ''
+            )
+
+            def _update_button_text():
+                if default_button_widget is None:
+                    return
+                default_button_widget.setText(
+                    _format_auto_answer_button_text(default_button_text, seconds_left)
+                )
+
+            def _auto_answer():
+                nonlocal seconds_left
+                if not dialog.isVisible():
+                    return
+                seconds_left -= 1
+                if seconds_left <= 0:
+                    timer.stop()
+                    if default_button_widget is not None:
+                        default_button_widget.setText(default_button_text)
+                        default_button_widget.click()
+                    else:
+                        dialog.done(int(default_button))
+                    return
+                _update_button_text()
+
+            _update_button_text()
+            timer.timeout.connect(_auto_answer)
+            dialog.finished.connect(timer.stop)
+            timer.start()
+
+        dialog.exec()
+        clicked_button = dialog.clickedButton()
+        reply = dialog.standardButton(clicked_button) if clicked_button is not None else default_button
 
         answer = True if reply == QMessageBox.StandardButton.Yes else False
 
@@ -732,8 +1068,50 @@ class MainPresenter(QObject):
             handler.answer.emit(answer)
 
 
+class RarePatchEditorPreparationThread(QThread):
+    prepared = QtCore.pyqtSignal(str, str, str)
+
+    def __init__(
+        self,
+        *,
+        sample_folder: Path,
+        label_folder: Path,
+        message_bus: AbstractMessageBus,
+    ) -> None:
+        super().__init__()
+        self._sample_folder = Path(sample_folder)
+        self._label_folder = Path(label_folder)
+        self._message_bus = message_bus
+
+    def run(self) -> None:
+        from lib.rare_patch_masks import (
+            collect_matching_sample_label_pairs,
+            prepare_label_folder_for_rare_patch_editor,
+        )
+
+        try:
+            resolved_label_folder, error_message = prepare_label_folder_for_rare_patch_editor(
+                self._label_folder,
+                log_callback=lambda message: self._message_bus.publish('logging', message),
+            )
+            if error_message is None:
+                _pairs, error_message = collect_matching_sample_label_pairs(
+                    self._sample_folder,
+                    resolved_label_folder,
+                )
+        except Exception as exc:
+            resolved_label_folder = self._label_folder
+            error_message = f'Не удалось подготовить метки для редактора редких областей: {exc}'
+
+        self.prepared.emit(
+            str(self._sample_folder),
+            str(resolved_label_folder),
+            '' if error_message is None else str(error_message),
+        )
+
+
 class GeneralNeuralHandlerThread(QThread):
-    ask = QtCore.pyqtSignal(str, str)  # title, text
+    ask = QtCore.pyqtSignal(str, str, bool, int)  # text, title, default answer, timeout
     answer = QtCore.pyqtSignal(bool)
 
     def __init__(self, work_mode: WorkMode,
@@ -753,10 +1131,12 @@ class GeneralNeuralHandlerThread(QThread):
     def run(self):
         self.main_logic.start()
 
-    def check(self, text, theme):
+    def check(self, text, theme, default_answer: bool = False, timeout_seconds: int | None = None):
         self.ask.emit(
             text,
-            theme
+            theme,
+            bool(default_answer),
+            max(0, int(timeout_seconds or 0)),
         )
         # Ждем ответ в локальном event-loop
         loop = QtCore.QEventLoop()

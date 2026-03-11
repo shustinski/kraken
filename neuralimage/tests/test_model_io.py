@@ -34,6 +34,35 @@ def test_save_and_load_model_artifact_roundtrip():
     assert torch.equal(_first_parameter_tensor(loaded), _first_parameter_tensor(model))
 
 
+def test_save_and_load_model_artifact_roundtrip_with_model_kwargs():
+    transformer_kwargs = {
+        'img_size': 64,
+        'embed_dim': 48,
+        'depth': 1,
+        'num_heads': 4,
+        'mlp_ratio': 2.0,
+        'dropout': 0.0,
+    }
+    model = create_model('Transformer', 1, **transformer_kwargs)
+    save_path = make_test_dir('model_io_safe_transformer') / 'safe_model.pth'
+
+    save_model_artifact(
+        model,
+        save_path,
+        model_name='Transformer',
+        input_channels=1,
+        model_kwargs=transformer_kwargs,
+    )
+    loaded = load_model_artifact(save_path)
+
+    assert loaded is not None
+    assert getattr(loaded, '_neuralimage_model_name') == 'Transformer'
+    assert int(getattr(loaded, '_neuralimage_input_channels')) == 1
+    assert getattr(loaded, '_neuralimage_model_kwargs') == transformer_kwargs
+    assert int(getattr(loaded, 'img_size')) == 64
+    assert torch.equal(_first_parameter_tensor(loaded), _first_parameter_tensor(model))
+
+
 def test_legacy_pickle_registered_model_loads_without_unsafe_opt_in():
     model = create_model('S 660k', 1)
     legacy_path = make_test_dir('model_io_legacy_registered') / 'legacy_model.pth'

@@ -4,14 +4,13 @@ from dataclasses import dataclass
 import logging
 from typing import Callable
 
+from application.dto import MainWindowState, SettingsState
+from application.ports import StateStore
+from application.services import build_workflow_parameters, can_start_processing
 from lib.message_bus import AbstractMessageBus
-from presenter.state_store import IniStateStore, StateStore
-from presenter.validation import can_start_processing
-from presenter.workflow_mapper import build_workflow_parameters
-from view.window_dataclasses import MainWindowState, SettingsState
 
 
-QuestionModule = Callable[[str, str], bool]
+QuestionModule = Callable[..., bool]
 _LOG = logging.getLogger(__name__)
 
 
@@ -28,8 +27,8 @@ class WebPresenter:
     similarly to Qt presenter responsibilities.
     """
 
-    def __init__(self, state_store: StateStore | None = None) -> None:
-        self._state_store = state_store or IniStateStore()
+    def __init__(self, state_store: StateStore) -> None:
+        self._state_store = state_store
 
     def load_initial_states(self) -> tuple[MainWindowState, SettingsState]:
         return self._state_store.load_main_window_state(), self._state_store.load_settings_state()

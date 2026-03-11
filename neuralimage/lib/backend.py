@@ -21,7 +21,7 @@ def find_size(cif_lines: list[list[str]]) -> tuple[bool, tuple[int, int] | list[
 
 
 def cif_to_jpg(cif_file) -> Image.Image | tuple[int, str]:
-    with open(cif_file, 'r', encoding='utf-8') as file:
+    with open(cif_file, 'r') as file:
         cif_lines = file.readlines()
 
     cif_splitted = make_lines_splitted(cif_lines, ' ')

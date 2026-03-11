@@ -1,26 +1,32 @@
 from __future__ import annotations
 
-import datetime
 import os
-import time
 import multiprocessing as mp
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty
 from typing import Any, Callable, Iterable, cast
+from contextlib import suppress
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from multiprocessing.synchronize import Event as MpEvent
 from PIL import Image
 
 from lib.image_processing import cut_image, sew_image
 from model.NeuralNetwork.model_io import load_model_artifact
 
+try:
+    from multiprocessing.shared_memory import SharedMemory
+except Exception:  # pragma: no cover - platform/runtime fallback
+    SharedMemory = None  # type: ignore[assignment]
+
 
 Publisher = Callable[[str, Any], None]
 MemoryMetricsCollector = Callable[[], dict[str, float] | None]
+_SHARED_ARRAY_MARKER = '__neuralimage_shared_array__'
 
 
 @dataclass(frozen=True)
@@ -31,6 +37,11 @@ class RecognitionWorkload:
     overlap: int
     batch_size: int
     colors: int
+    jpeg_quality: int
+    binarize_output: bool
+    threshold: float
+    postprocess_enabled: bool
+    postprocess_kernel_size: int
     devices: list[torch.device]
     model_source: str | Path
 
@@ -86,8 +97,6 @@ class ProgressReporter:
     def __init__(self, publish: Publisher, total_frames: int):
         self._publish = publish
         self._total_frames = int(total_frames)
-        self._started_at = datetime.datetime.now()
-        self._last_frame_at = time.perf_counter()
 
     def publish_started(self) -> None:
         self._publish(
@@ -107,16 +116,6 @@ class ProgressReporter:
         )
 
     def publish_frame(self, current_frame: int) -> None:
-        frame_elapsed = round(time.perf_counter() - self._last_frame_at, 3)
-        elapsed = datetime.datetime.now() - self._started_at
-        elapsed = elapsed - datetime.timedelta(microseconds=elapsed.microseconds)
-        self._publish(
-            'logging',
-            (
-                f'Frame: {int(current_frame)}/{int(self._total_frames)}. '
-                f'Per-frame time: {frame_elapsed} sec. Elapsed: {elapsed}'
-            ),
-        )
         self._publish(
             'metrics',
             {
@@ -125,7 +124,6 @@ class ProgressReporter:
                 'total': int(self._total_frames),
             },
         )
-        self._last_frame_at = time.perf_counter()
 
 
 class MultiprocessingRecognitionRunner:
@@ -161,9 +159,13 @@ class MultiprocessingRecognitionRunner:
             queues.close()
 
     def _create_queues(self) -> PipelineQueues:
-        predict_queue_size = max(4, len(self._config.workload.devices) * 4)
+        worker_total = max(
+            4,
+            int(self._config.worker_counts.cut + self._config.worker_counts.predict + self._config.worker_counts.sew),
+        )
+        predict_queue_size = max(8, worker_total * 2, len(self._config.workload.devices) * 6)
         return PipelineQueues(
-            cut=mp.Queue(),
+            cut=mp.Queue(maxsize=max(8, worker_total * 2)),
             predict=mp.Queue(maxsize=predict_queue_size),
             sew=mp.Queue(maxsize=predict_queue_size),
             sewed=mp.Queue(),
@@ -235,7 +237,14 @@ class MultiprocessingRecognitionRunner:
                     self._config.workload.result_folder,
                     queues.sew,
                     queues.sewed,
+                    self._config.workload.jpeg_quality,
                     self._stop_event,
+                    (self._config.workload.threshold if self._config.workload.binarize_output else None),
+                    (
+                        self._config.workload.postprocess_kernel_size
+                        if self._config.workload.binarize_output and self._config.workload.postprocess_enabled
+                        else 0
+                    ),
                     self._config.stop_token,
                 ),
             )
@@ -365,6 +374,11 @@ def run_single_thread_recognition(
     stop_event: Any,
     publish: Publisher,
     collect_memory_metrics: MemoryMetricsCollector,
+    jpeg_quality: int = 95,
+    binarize_output: bool = True,
+    threshold: float = 0.5,
+    postprocess_enabled: bool = False,
+    postprocess_kernel_size: int = 3,
 ) -> None:
     model.eval()
     model.to(device)
@@ -443,7 +457,13 @@ def run_single_thread_recognition(
                         '(max <= 0.05), resulting masks can look black.'
                     ),
                 )
-        sew(result_folder, predicted)
+        sew(
+            result_folder,
+            predicted,
+            jpeg_quality=jpeg_quality,
+            threshold=(float(threshold) if binarize_output else None),
+            postprocess_kernel_size=(int(postprocess_kernel_size) if postprocess_enabled else 0),
+        )
         reporter.publish_frame(index)
         _publish_memory_metrics(publish=publish, collect_memory_metrics=collect_memory_metrics)
 
@@ -474,6 +494,7 @@ def cut_image_process(
         if image_path == stop_token:
             break
         image_payload = cut_image_prepare(cast(Path, image_path), size, overlap)
+        _store_payload_array_in_shared_memory(image_payload, 'cutted_image')
         cutted_queue.put(image_payload)
 
 
@@ -557,8 +578,13 @@ def imgpredict(
             continue
         if item == stop_token:
             break
-        predicted = gpu_predict(item, model, gpu, batch_size)
+        restored_item, shared_handles = _restore_payload_arrays_from_shared_memory(item, ('cutted_image',))
+        try:
+            predicted = gpu_predict(restored_item, model, gpu, batch_size)
+        finally:
+            _cleanup_shared_handles(shared_handles, unlink=True)
         predicted.pop('cutted_image', None)
+        _store_payload_array_in_shared_memory(predicted, 'predicted_image')
         predicted_queue.put(predicted)
 
 
@@ -568,17 +594,74 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
 
     tensor_data = torch.from_numpy(img['cutted_image']).float()
     use_amp = device.type == 'cuda'
+    if use_amp and hasattr(tensor_data, 'pin_memory'):
+        with suppress(Exception):
+            tensor_data = tensor_data.pin_memory()
     min_prob = float('inf')
     max_prob = float('-inf')
     mean_acc = 0.0
     processed_batches = 0
     non_finite_values = 0
     fp32_retries = 0
+    tta_flip = str(os.getenv('NEURALIMAGE_TTA_FLIP', '0')).strip().lower() in {'1', 'true', 'yes', 'on'}
+    multiscale_values = str(os.getenv('NEURALIMAGE_MS_SCALES', '1.0')).strip()
+    ms_scales: list[float] = []
+    for token in multiscale_values.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            scale = float(token)
+        except ValueError:
+            continue
+        if scale <= 0.0:
+            continue
+        ms_scales.append(scale)
+    if not ms_scales:
+        ms_scales = [1.0]
+
+    def _predict_once(batch_tensor: torch.Tensor) -> torch.Tensor:
+        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+            return model(batch_tensor)
+
+    def _predict_with_multi_scale_and_tta(batch_tensor: torch.Tensor) -> torch.Tensor:
+        base_h, base_w = int(batch_tensor.shape[-2]), int(batch_tensor.shape[-1])
+        logits_acc = torch.zeros(
+            (batch_tensor.shape[0], 1, base_h, base_w),
+            dtype=batch_tensor.dtype,
+            device=batch_tensor.device,
+        )
+        weight = 0.0
+        for scale in ms_scales:
+            if abs(scale - 1.0) < 1e-8:
+                scaled = batch_tensor
+            else:
+                scaled_h = max(8, int(round(base_h * scale)))
+                scaled_w = max(8, int(round(base_w * scale)))
+                scaled = F.interpolate(
+                    batch_tensor,
+                    size=(scaled_h, scaled_w),
+                    mode='bilinear',
+                    align_corners=False,
+                )
+            logits = _predict_once(scaled)
+            if logits.shape[-2:] != (base_h, base_w):
+                logits = F.interpolate(logits, size=(base_h, base_w), mode='bilinear', align_corners=False)
+            logits_acc += logits
+            weight += 1.0
+            if tta_flip:
+                logits_h = _predict_once(torch.flip(scaled, dims=[-1]))
+                logits_h = torch.flip(logits_h, dims=[-1])
+                if logits_h.shape[-2:] != (base_h, base_w):
+                    logits_h = F.interpolate(logits_h, size=(base_h, base_w), mode='bilinear', align_corners=False)
+                logits_acc += logits_h
+                weight += 1.0
+        return logits_acc / max(weight, 1.0)
+
     with torch.inference_mode():
         for batch_index, batch in enumerate(create_batches(tensor_data, batch_size)):
             batch = batch.to(device, non_blocking=use_amp)
-            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
-                outputs = model(batch)
+            outputs = _predict_with_multi_scale_and_tta(batch)
 
             if not bool(torch.isfinite(outputs).all()):
                 fp32_retries += 1
@@ -637,7 +720,10 @@ def imgsew(
     output_dir: Path | str,
     sew_queue: mp.Queue,
     sewed_queue: mp.Queue,
+    jpeg_quality: int,
     stop_event: MpEvent,
+    threshold: float | None = None,
+    postprocess_kernel_size: int = 0,
     stop_token: str = '__STOP__',
 ) -> None:
     while not stop_event.is_set():
@@ -647,17 +733,47 @@ def imgsew(
             continue
         if item == stop_token:
             break
-        sew(output_dir, item)
-        sewed_queue.put(item['name'])
+        restored_item, shared_handles = _restore_payload_arrays_from_shared_memory(item, ('predicted_image',))
+        try:
+            sew(
+                output_dir,
+                restored_item,
+                jpeg_quality=jpeg_quality,
+                threshold=threshold,
+                postprocess_kernel_size=postprocess_kernel_size,
+            )
+            sewed_queue.put(restored_item['name'])
+        finally:
+            _cleanup_shared_handles(shared_handles, unlink=True)
 
 
-def sew_from_queue(output_dir: Path | str, sew_queue: mp.Queue, sewed_queue: mp.Queue) -> None:
+def sew_from_queue(
+    output_dir: Path | str,
+    sew_queue: mp.Queue,
+    sewed_queue: mp.Queue,
+    jpeg_quality: int = 95,
+    threshold: float | None = None,
+    postprocess_kernel_size: int = 0,
+) -> None:
     item = sew_queue.get()
-    sew(output_dir, item)
+    sew(
+        output_dir,
+        item,
+        jpeg_quality=jpeg_quality,
+        threshold=threshold,
+        postprocess_kernel_size=postprocess_kernel_size,
+    )
     sewed_queue.put(item['name'])
 
 
-def sew(save_dir: Path | str, item: dict[str, Any]) -> None:
+def sew(
+    save_dir: Path | str,
+    item: dict[str, Any],
+    jpeg_quality: int = 95,
+    *,
+    threshold: float | None = None,
+    postprocess_kernel_size: int = 0,
+) -> None:
     output_name = '.'.join(item['name'].split('.')[:-1]) + '.jpg'
     output_path = os.path.join(str(save_dir), output_name)
     image = cast(
@@ -666,6 +782,90 @@ def sew(save_dir: Path | str, item: dict[str, Any]) -> None:
             base_image=item['baseim_size'],
             predictions=item['predicted_image'],
             overlap=item['overlap'],
+            threshold=threshold,
+            postprocess_kernel_size=postprocess_kernel_size,
         ),
     )
-    image.save(output_path)
+    quality = max(1, min(100, int(jpeg_quality)))
+    image.save(output_path, format='JPEG', quality=quality)
+
+
+def _shared_memory_available() -> bool:
+    return SharedMemory is not None
+
+
+def _is_shared_array_descriptor(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value.get(_SHARED_ARRAY_MARKER))
+
+
+def _store_array_in_shared_memory(array: np.ndarray) -> dict[str, Any] | None:
+    if not _shared_memory_available():
+        return None
+    contiguous = np.ascontiguousarray(array)
+    try:
+        shm = SharedMemory(create=True, size=int(contiguous.nbytes))
+    except Exception:
+        return None
+    try:
+        shm_view = np.ndarray(contiguous.shape, dtype=contiguous.dtype, buffer=shm.buf)
+        shm_view[...] = contiguous
+        return {
+            _SHARED_ARRAY_MARKER: True,
+            'name': str(shm.name),
+            'shape': tuple(int(x) for x in contiguous.shape),
+            'dtype': str(contiguous.dtype.str),
+        }
+    finally:
+        shm.close()
+
+
+def _restore_array_from_shared_memory(value: Any) -> tuple[np.ndarray | Any, list[Any]]:
+    if not _is_shared_array_descriptor(value):
+        return value, []
+    if not _shared_memory_available():
+        return value, []
+    descriptor = cast(dict[str, Any], value)
+    shm = SharedMemory(name=str(descriptor['name']))
+    array = np.ndarray(
+        tuple(int(x) for x in descriptor['shape']),
+        dtype=np.dtype(str(descriptor['dtype'])),
+        buffer=shm.buf,
+    )
+    return array, [shm]
+
+
+def _cleanup_shared_handles(handles: Iterable[Any], *, unlink: bool) -> None:
+    for handle in handles:
+        try:
+            handle.close()
+        except Exception:
+            pass
+        if unlink:
+            try:
+                handle.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+
+
+def _store_payload_array_in_shared_memory(payload: dict[str, Any], key: str) -> None:
+    value = payload.get(key)
+    if not isinstance(value, np.ndarray):
+        return
+    descriptor = _store_array_in_shared_memory(value)
+    if descriptor is not None:
+        payload[key] = descriptor
+
+
+def _restore_payload_arrays_from_shared_memory(
+    payload: dict[str, Any],
+    keys: Iterable[str],
+) -> tuple[dict[str, Any], list[Any]]:
+    restored_payload = dict(payload)
+    handles: list[Any] = []
+    for key in keys:
+        restored_value, restored_handles = _restore_array_from_shared_memory(restored_payload.get(key))
+        restored_payload[key] = restored_value
+        handles.extend(restored_handles)
+    return restored_payload, handles

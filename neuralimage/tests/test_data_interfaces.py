@@ -78,4 +78,11 @@ def test_training_parameters_default_optimizer():
     assert train.mixed_precision.value == 'bf16'
     assert train.warmup.enabled is False
     assert train.early_stopping.enabled is False
+    assert train.cutout.enabled is False
+    assert train.cutout.probability == 1.0
+    assert train.cutout.holes == 1
+    assert train.cutout.size_ratio == 0.25
+    assert train.mixup.enabled is False
+    assert train.mixup.probability == 1.0
+    assert train.mixup.alpha == 0.2
 

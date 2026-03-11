@@ -5,6 +5,7 @@ pytest.importorskip('PyQt6')
 
 from PyQt6.QtWidgets import QApplication, QWidget
 
+from lib.logging_policy import MAX_LOG_MESSAGES
 from view.main_window import MainView
 
 
@@ -97,6 +98,38 @@ def test_main_view_batch_points_are_sparsified_after_1000(qapp):
     assert len(points) == 501
 
 
+def test_main_view_log_history_is_capped(qapp):
+    view = MainView(QWidget())
+    view.connect_internal_signals()
+
+    for i in range(MAX_LOG_MESSAGES + 25):
+        view.log_message.emit(f"log message {i}")
+
+    assert view.log_layout.count() == MAX_LOG_MESSAGES
+    first_item = view.log_layout.itemAt(0)
+    first_widget = first_item.widget() if first_item is not None else None
+    assert first_widget is not None
+    assert first_widget.text() == "log message 25"
+
+
+def test_main_view_recognition_speed_label_updates_and_resets(qapp, monkeypatch):
+    view = MainView(QWidget())
+    view.connect_internal_signals()
+
+    timestamps = iter([100.0, 102.0])
+    monkeypatch.setattr("view.main_window.time.perf_counter", lambda: next(timestamps))
+
+    view.metrics_message.emit({'type': 'recognition_progress', 'current': 0, 'total': 12})
+    assert "—" in view.recognition_speed_label.text()
+
+    view.metrics_message.emit({'type': 'recognition_progress', 'current': 6, 'total': 12})
+    assert "3.00" in view.recognition_speed_label.text()
+    assert "изобр./с" in view.recognition_speed_label.text()
+
+    view._switch_start_stop(True)
+    assert "—" in view.recognition_speed_label.text()
+
+
 def test_metrics_panel_can_be_restored_from_view_menu(qapp):
     view = MainView(QWidget())
     view.show()
@@ -131,3 +164,26 @@ def test_main_view_queue_widget_and_start_stop_visibility(qapp):
     view._switch_start_stop(True)
     assert view.btn_start.isHidden() is False
     assert view.btn_stop.isHidden() is False
+
+
+def test_main_view_queue_context_menu_emits_properties_signal(qapp, monkeypatch):
+    view = MainView(QWidget())
+    view.connect_internal_signals()
+    view.show()
+    qapp.processEvents()
+    view.set_task_queue_items(['#1 | train_only | queued'])
+
+    captured_rows: list[int] = []
+    view.queue_properties_requested.connect(captured_rows.append)
+
+    monkeypatch.setattr(
+        'view.main_window.QMenu.exec',
+        lambda menu, *_args, **_kwargs: menu.actions()[1],
+    )
+
+    item = view.queue_list.item(0)
+    assert item is not None
+    position = view.queue_list.visualItemRect(item).center()
+    view._show_queue_context_menu(position)
+
+    assert captured_rows == [0]

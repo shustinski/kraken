@@ -54,15 +54,16 @@ def sample_fast_cutter_getitem(
         label = label_matrix[:, -sample_y:, left:right].copy()
 
     if rotation_index != 0:
-        if rotation_index == 1:
-            image[0] = np.flipud(image[0].T)
-            label[0] = np.flipud(label[0].T)
-        elif rotation_index == 2:
-            image[0] = image[0, ::-1, ::-1]
-            label[0] = label[0, ::-1, ::-1]
-        else:
-            image[0] = np.fliplr(image[0].T)
-            label[0] = np.fliplr(label[0].T)
+        if rotation_index == 2:
+            image = image[:, ::-1, ::-1].copy()
+            label = label[:, ::-1, ::-1].copy()
+        elif sample_x == sample_y:
+            if rotation_index == 1:
+                image = np.rot90(image, k=1, axes=(1, 2)).copy()
+                label = np.rot90(label, k=1, axes=(1, 2)).copy()
+            else:
+                image = np.rot90(image, k=-1, axes=(1, 2)).copy()
+                label = np.rot90(label, k=-1, axes=(1, 2)).copy()
 
     return image, label
 

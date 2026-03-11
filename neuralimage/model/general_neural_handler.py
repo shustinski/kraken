@@ -2,13 +2,21 @@ import shutil
 import threading
 import os
 import sys
+import hashlib
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import torch
 from torch.utils.data import DataLoader, Dataset, Sampler
+from PIL import Image
 
-from lib.data_interfaces import WorkMode, RecognitionParameters, TrainingParameters, SampleCutMode
+from lib.data_interfaces import (
+    WorkMode,
+    RecognitionParameters,
+    TrainingParameters,
+    SampleCutMode,
+    normalize_multi_gpu_mode,
+)
 from lib.file_func import filter_files, filter_images
 from lib.message_bus import AbstractMessageBus
 from model.NeuralNetwork import create_model
@@ -16,6 +24,104 @@ from model.NeuralNetwork.dataset import CustomDataset, NoCutDataset
 from model.NeuralNetwork.model_io import load_model_artifact
 from model.NeuralNetwork.model_train_and_recognition import ModelRecognizer, ModelTrainer
 from model.image_workers import ConvertCifThread, CutImageThread
+
+
+_VALIDATION_SPLIT_SEED = 1337
+_VALIDATION_FOREGROUND_BUCKETS: tuple[float, ...] = (0.0, 0.001, 0.01, 0.05, 0.2, 1.0)
+
+
+def _is_debugger_attached() -> bool:
+    gettrace = getattr(sys, 'gettrace', None)
+    if not callable(gettrace):
+        return False
+    try:
+        return bool(gettrace())
+    except Exception:
+        return False
+
+
+def _stable_sample_sort_key(sample: tuple[Path, Path], *, seed: int = _VALIDATION_SPLIT_SEED) -> str:
+    image_path, label_path = sample
+    payload = f'{seed}:{image_path.stem}:{label_path.stem}'.encode('utf-8', errors='ignore')
+    return hashlib.sha1(payload).hexdigest()
+
+
+def _estimate_label_foreground_ratio(label_path: Path) -> float:
+    with Image.open(label_path) as image:
+        grayscale = image.convert('L')
+        histogram = grayscale.histogram()
+    if not histogram:
+        return 0.0
+    total_pixels = int(sum(histogram))
+    if total_pixels <= 0:
+        return 0.0
+    foreground_pixels = int(sum(histogram[1:]))
+    return min(max(float(foreground_pixels) / float(total_pixels), 0.0), 1.0)
+
+
+def _label_ratio_bucket(ratio: float) -> int:
+    normalized = min(max(float(ratio), 0.0), 1.0)
+    for bucket_index, upper_bound in enumerate(_VALIDATION_FOREGROUND_BUCKETS):
+        if normalized <= upper_bound:
+            return bucket_index
+    return len(_VALIDATION_FOREGROUND_BUCKETS)
+
+
+def _deterministic_validation_split(
+    samples: list[tuple[Path, Path]],
+    *,
+    val_count: int,
+    seed: int = _VALIDATION_SPLIT_SEED,
+) -> tuple[list[tuple[Path, Path]], list[tuple[Path, Path]]]:
+    ordered_samples = sorted(samples, key=lambda sample: _stable_sample_sort_key(sample, seed=seed))
+    total_count = len(ordered_samples)
+    resolved_val_count = max(0, min(int(val_count), max(0, total_count - 1)))
+    if resolved_val_count <= 0:
+        return ordered_samples, []
+
+    try:
+        bucket_to_samples: dict[int, list[tuple[Path, Path]]] = {}
+        for sample in ordered_samples:
+            ratio = _estimate_label_foreground_ratio(sample[1])
+            bucket = _label_ratio_bucket(ratio)
+            bucket_to_samples.setdefault(bucket, []).append(sample)
+    except Exception:
+        return ordered_samples[resolved_val_count:], ordered_samples[:resolved_val_count]
+
+    bucket_counts = {bucket: len(bucket_samples) for bucket, bucket_samples in bucket_to_samples.items()}
+    assigned_val_counts = {bucket: 0 for bucket in bucket_to_samples}
+    remainders: list[tuple[float, int]] = []
+    for bucket, bucket_size in bucket_counts.items():
+        ideal = (bucket_size * resolved_val_count) / max(1, total_count)
+        assigned = min(bucket_size, int(ideal))
+        assigned_val_counts[bucket] = assigned
+        remainders.append((ideal - assigned, bucket))
+
+    remaining_slots = resolved_val_count - sum(assigned_val_counts.values())
+    for _remainder, bucket in sorted(remainders, key=lambda item: (-item[0], item[1])):
+        if remaining_slots <= 0:
+            break
+        if assigned_val_counts[bucket] >= bucket_counts[bucket]:
+            continue
+        assigned_val_counts[bucket] += 1
+        remaining_slots -= 1
+
+    validation_samples: list[tuple[Path, Path]] = []
+    training_candidates: list[tuple[Path, Path]] = []
+    for bucket, bucket_samples in sorted(bucket_to_samples.items()):
+        take = min(assigned_val_counts[bucket], len(bucket_samples))
+        validation_samples.extend(bucket_samples[:take])
+        training_candidates.extend(bucket_samples[take:])
+
+    if len(validation_samples) < resolved_val_count:
+        missing = resolved_val_count - len(validation_samples)
+        validation_samples.extend(training_candidates[:missing])
+        training_candidates = training_candidates[missing:]
+
+    validation_keys = {_stable_sample_sort_key(sample, seed=seed) for sample in validation_samples}
+    training_samples = [sample for sample in ordered_samples if _stable_sample_sort_key(sample, seed=seed) not in validation_keys]
+    validation_samples = [sample for sample in ordered_samples if _stable_sample_sort_key(sample, seed=seed) in validation_keys]
+    return training_samples, validation_samples
 
 
 class IndexedDataset(Dataset):
@@ -85,10 +191,13 @@ class LossAwareSampler(Sampler[int]):
 
 
 class GeneralNeuralHandler:
+    EXISTING_FOLDER_DEFAULT_ANSWER = False
+    EXISTING_FOLDER_TIMEOUT_SECONDS = 15
+
     def __init__(
         self,
         work_mode: WorkMode,
-        question_module: Callable[[str, str], bool],
+        question_module: Callable[..., bool],
         message_bus: AbstractMessageBus,
         recogniton_parameters: RecognitionParameters | None = None,
         tranining_parameters: TrainingParameters | None = None,
@@ -170,11 +279,29 @@ class GeneralNeuralHandler:
 
         return dataset_image, dataset_label
 
+    def _resolve_model_creation_kwargs(self, model_name: str) -> dict[str, Any]:
+        if str(model_name) != 'Transformer':
+            return {}
+        patch_size = self.tranining_parameters.generation.segment_size
+        img_size = max(1, int(patch_size[0]))
+        if int(patch_size[0]) != int(patch_size[1]):
+            self.message_bus.publish(
+                'logging',
+                (
+                    'Transformer expects square inputs. '
+                    f'Using img_size={img_size} derived from patch size {tuple(patch_size)}.'
+                ),
+            )
+        return {'img_size': img_size}
+
     def _resolve_training_model(self):
         if self.work_mode in (WorkMode.train_and_recognition, WorkMode.train_only):
-            model = create_model(self.recognition_parameters.model, self.tranining_parameters.colors)
-            setattr(model, '_neuralimage_model_name', str(self.recognition_parameters.model))
+            model_name = str(self.recognition_parameters.model)
+            model_kwargs = self._resolve_model_creation_kwargs(model_name)
+            model = create_model(model_name, self.tranining_parameters.colors, **model_kwargs)
+            setattr(model, '_neuralimage_model_name', model_name)
             setattr(model, '_neuralimage_input_channels', int(self.tranining_parameters.colors))
+            setattr(model, '_neuralimage_model_kwargs', dict(model_kwargs))
             model_save_path = self._declare_model_name_and_path()
         else:
             model = load_model_artifact(self.recognition_parameters.model, map_location='cpu')
@@ -316,6 +443,8 @@ class GeneralNeuralHandler:
             )
 
     def _resolve_dataloader_workers(self) -> int:
+        if _is_debugger_attached():
+            return 0
         cpu_count = os.cpu_count() or 1
         max_workers = 8 if sys.platform.startswith('win') else 16
         workers = max(0, min(max_workers, cpu_count - 1))
@@ -385,9 +514,17 @@ class GeneralNeuralHandler:
                 val_count = 1
             if val_count >= total_count:
                 val_count = max(total_count - 1, 0)
-            train_count = total_count - val_count
-            train_samples = zipped_images[:train_count]
-            val_samples = zipped_images[train_count:]
+            train_samples, val_samples = _deterministic_validation_split(
+                zipped_images,
+                val_count=val_count,
+            )
+            self.message_bus.publish(
+                'logging',
+                (
+                    'Validation split: deterministic stratified split by label coverage '
+                    f'(train={len(train_samples)}, val={len(val_samples)}).'
+                ),
+            )
             return train_samples, val_samples
 
         return zipped_images, None
@@ -406,9 +543,12 @@ class GeneralNeuralHandler:
 
     def _start_training(self, model, model_save_path: Path):
         resume_from_checkpoint = self.work_mode == WorkMode.further_training
-        use_multi_gpu = bool(self.tranining_parameters.use_multi_gpu)
-        if self._hard_mining_active and use_multi_gpu:
-            use_multi_gpu = False
+        multi_gpu_mode = normalize_multi_gpu_mode(
+            getattr(self.tranining_parameters, 'multi_gpu_mode', ''),
+            use_multi_gpu_fallback=bool(getattr(self.tranining_parameters, 'use_multi_gpu', False)),
+        )
+        if self._hard_mining_active and multi_gpu_mode != 'off':
+            multi_gpu_mode = 'off'
             self.message_bus.publish(
                 'logging',
                 'Hard mining включен: multi-GPU отключен для обучения в этом запуске.',
@@ -424,13 +564,18 @@ class GeneralNeuralHandler:
             optimizer_params=self.tranining_parameters.optimizer,
             mixed_precision=self.tranining_parameters.mixed_precision,
             loss_function=self.tranining_parameters.loss_function,
+            loss_term_weights=getattr(self.tranining_parameters, 'loss_term_weights', {}),
             dice_loss_weight=self.tranining_parameters.dice_loss_weight,
             iou_loss_weight=self.tranining_parameters.iou_loss_weight,
+            hard_mining_params=self.tranining_parameters.hard_mining,
+            cutout_params=getattr(self.tranining_parameters, 'cutout', None),
+            mixup_params=getattr(self.tranining_parameters, 'mixup', None),
             early_stopping_params=self.tranining_parameters.early_stopping,
             warmup_params=self.tranining_parameters.warmup,
             skip_uniform_labels=self.tranining_parameters.skip_uniform_labels,
             resume_from_checkpoint=resume_from_checkpoint,
-            use_multi_gpu=use_multi_gpu,
+            use_multi_gpu=multi_gpu_mode != 'off',
+            multi_gpu_mode=multi_gpu_mode,
             show_batch_preview=self.tranining_parameters.show_batch_preview,
             log_update_frequency=self.tranining_parameters.log_update_frequency,
         )
@@ -484,6 +629,8 @@ class GeneralNeuralHandler:
             answer = self.question(
                 f'Папка {folder.name} существует, использовать данные из неё?',
                 'Папка существует',
+                default_answer=self.EXISTING_FOLDER_DEFAULT_ANSWER,
+                timeout_seconds=self.EXISTING_FOLDER_TIMEOUT_SECONDS,
             )
             if not answer:
                 shutil.rmtree(folder, ignore_errors=False)

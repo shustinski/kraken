@@ -6,7 +6,6 @@
 
 import numpy as np
 cimport numpy as cnp
-from libc.string cimport memcpy
 
 
 ctypedef cnp.float32_t float32_t
@@ -78,15 +77,16 @@ cdef tuple _sample_fast_cutter_getitem_impl(
     label = label_matrix[:, src_top:src_top + sample_y, src_left:src_left + sample_x].copy()
 
     if rotation_index != 0:
-        if rotation_index == 1:
-            image[0] = np.flipud(image[0].T)
-            label[0] = np.flipud(label[0].T)
-        elif rotation_index == 2:
-            image[0] = image[0, ::-1, ::-1]
-            label[0] = label[0, ::-1, ::-1]
-        else:
-            image[0] = np.fliplr(image[0].T)
-            label[0] = np.fliplr(label[0].T)
+        if rotation_index == 2:
+            image = image[:, ::-1, ::-1].copy()
+            label = label[:, ::-1, ::-1].copy()
+        elif sample_x == sample_y:
+            if rotation_index == 1:
+                image = np.rot90(image, k=1, axes=(1, 2)).copy()
+                label = np.rot90(label, k=1, axes=(1, 2)).copy()
+            else:
+                image = np.rot90(image, k=-1, axes=(1, 2)).copy()
+                label = np.rot90(label, k=-1, axes=(1, 2)).copy()
 
     return image, label
 
@@ -168,115 +168,17 @@ cdef class SampleFastCutterCython:
         cdef cnp.ndarray[int32_t, ndim=1] parts = self._parts
         cdef cnp.ndarray[float32_t, ndim=3] image_matrix = self._image_matrix
         cdef cnp.ndarray[float32_t, ndim=3] label_matrix = self._label_matrix
-        cdef float32_t[:, :, ::1] image_src = image_matrix
-        cdef float32_t[:, :, ::1] label_src = label_matrix
-        cdef int loc = parts[item]
-        cdef int location
-        cdef int rotation_index
-        cdef int row
-        cdef int col
-        cdef int left
-        cdef int top
-        cdef int right
-        cdef int bottom
-        cdef int src_top
-        cdef int src_left
-        cdef int channels
-        cdef int ch
-        cdef int y
-        cdef int x
-        cdef cnp.ndarray[float32_t, ndim=3] image
-        cdef cnp.ndarray[float32_t, ndim=3] label
-        cdef float32_t[:, :, ::1] image_out
-        cdef float32_t[:, :, ::1] label_out
-        cdef bint square_sample
-
-        if self._vertical_rotation and self._horizontal_rotation:
-            location = loc // 4
-            rotation_index = loc % 4
-        elif self._horizontal_rotation:
-            location = loc // 3
-            rotation_index = 2 - (loc % 3)
-        elif self._vertical_rotation:
-            location = loc // 2
-            rotation_index = 2 * (loc % 2)
-        else:
-            location = loc
-            rotation_index = 0
-
-        row = location // self._width_steps
-        col = location - row * self._width_steps
-        left = col * self._step
-        top = row * self._step
-        right = left + self._sample_x
-        bottom = top + self._sample_y
-
-        if right <= self._base_w and bottom <= self._base_h:
-            src_top = top
-            src_left = left
-        elif right > self._base_w and bottom > self._base_h:
-            src_top = self._base_h - self._sample_y
-            src_left = self._base_w - self._sample_x
-        elif right > self._base_w:
-            src_top = top
-            src_left = self._base_w - self._sample_x
-        else:
-            src_top = self._base_h - self._sample_y
-            src_left = left
-
-        channels = image_src.shape[0]
-        image = np.empty((channels, self._sample_y, self._sample_x), dtype=np.float32)
-        label = np.empty((channels, self._sample_y, self._sample_x), dtype=np.float32)
-        image_out = image
-        label_out = label
-        square_sample = self._sample_x == self._sample_y
-
-        if rotation_index == 0:
-            for ch in range(channels):
-                for y in range(self._sample_y):
-                    memcpy(&image_out[ch, y, 0], &image_src[ch, src_top + y, src_left], self._sample_x * sizeof(float32_t))
-                    memcpy(&label_out[ch, y, 0], &label_src[ch, src_top + y, src_left], self._sample_x * sizeof(float32_t))
-            return image, label
-
-        for ch in range(channels):
-            if ch != 0:
-                for y in range(self._sample_y):
-                    for x in range(self._sample_x):
-                        image_out[ch, y, x] = image_src[ch, src_top + y, src_left + x]
-                        label_out[ch, y, x] = label_src[ch, src_top + y, src_left + x]
-                continue
-
-            if rotation_index == 2:
-                for y in range(self._sample_y):
-                    for x in range(self._sample_x):
-                        image_out[0, y, x] = image_src[0, src_top + (self._sample_y - 1 - y), src_left + (self._sample_x - 1 - x)]
-                        label_out[0, y, x] = label_src[0, src_top + (self._sample_y - 1 - y), src_left + (self._sample_x - 1 - x)]
-                continue
-
-            if square_sample and rotation_index == 1:
-                for y in range(self._sample_y):
-                    for x in range(self._sample_x):
-                        image_out[0, y, x] = image_src[0, src_top + x, src_left + (self._sample_x - 1 - y)]
-                        label_out[0, y, x] = label_src[0, src_top + x, src_left + (self._sample_x - 1 - y)]
-                continue
-
-            if square_sample and rotation_index == 3:
-                for y in range(self._sample_y):
-                    for x in range(self._sample_x):
-                        image_out[0, y, x] = image_src[0, src_top + (self._sample_y - 1 - x), src_left + y]
-                        label_out[0, y, x] = label_src[0, src_top + (self._sample_y - 1 - x), src_left + y]
-                continue
-
-            # Preserve legacy behavior for non-square samples on 90/270 rotations.
-            for y in range(self._sample_y):
-                for x in range(self._sample_x):
-                    image_out[0, y, x] = image_src[0, src_top + y, src_left + x]
-                    label_out[0, y, x] = label_src[0, src_top + y, src_left + x]
-            if rotation_index == 1:
-                image[0] = np.flipud(image[0].T)
-                label[0] = np.flipud(label[0].T)
-            else:
-                image[0] = np.fliplr(image[0].T)
-                label[0] = np.fliplr(label[0].T)
-
-        return image, label
+        return _sample_fast_cutter_getitem_impl(
+            parts,
+            item,
+            self._vertical_rotation,
+            self._horizontal_rotation,
+            self._width_steps,
+            self._step,
+            self._sample_x,
+            self._sample_y,
+            self._base_w,
+            self._base_h,
+            image_matrix,
+            label_matrix,
+        )

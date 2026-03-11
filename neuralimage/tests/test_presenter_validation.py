@@ -1,5 +1,5 @@
-from view.window_dataclasses import MainWindowState
-from presenter.validation import can_start_processing
+from application.dto import MainWindowState
+from application.services.validation import can_start_processing
 from tests.helpers import make_test_dir
 
 

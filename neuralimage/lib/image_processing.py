@@ -3,6 +3,8 @@ import os
 import numpy as np
 import numpy.typing as npt
 from PIL import Image
+import torch
+import torch.nn.functional as F
 
 
 # Считывание файла с именами изображений
@@ -96,8 +98,48 @@ def img_crop_border(cropBorder, img):
     return img
 
 
+def _normalize_morph_kernel_size(kernel_size: int) -> int:
+    size = max(1, int(kernel_size))
+    if size % 2 == 0:
+        size += 1
+    return size
+
+
+def _binary_dilate(mask: torch.Tensor, kernel_size: int) -> torch.Tensor:
+    if kernel_size <= 1:
+        return mask
+    padding = kernel_size // 2
+    return F.max_pool2d(mask, kernel_size=kernel_size, stride=1, padding=padding)
+
+
+def _binary_erode(mask: torch.Tensor, kernel_size: int) -> torch.Tensor:
+    if kernel_size <= 1:
+        return mask
+    padding = kernel_size // 2
+    return 1.0 - F.max_pool2d(1.0 - mask, kernel_size=kernel_size, stride=1, padding=padding)
+
+
+def _apply_binary_postprocess(probabilities: np.ndarray, *, threshold: float, kernel_size: int) -> np.ndarray:
+    binary = (probabilities >= float(threshold)).astype(np.float32, copy=False)
+    normalized_kernel = _normalize_morph_kernel_size(kernel_size)
+    if normalized_kernel <= 1:
+        return binary
+
+    mask_tensor = torch.from_numpy(binary[None, None, :, :])
+    closed = _binary_erode(_binary_dilate(mask_tensor, normalized_kernel), normalized_kernel)
+    opened = _binary_dilate(_binary_erode(closed, normalized_kernel), normalized_kernel)
+    return opened.squeeze(0).squeeze(0).detach().cpu().numpy().astype(np.float32, copy=False)
+
+
 # base_image, segment_size, overlap
-def sew_image(base_image, predictions: npt.ArrayLike, overlap) -> Image:
+def sew_image(
+    base_image,
+    predictions: npt.ArrayLike,
+    overlap,
+    *,
+    threshold: float | None = None,
+    postprocess_kernel_size: int = 0,
+) -> Image:
     """
 
     :param base_image:  (width,height)
@@ -108,6 +150,7 @@ def sew_image(base_image, predictions: npt.ArrayLike, overlap) -> Image:
     base_width = int(base_image[0])
     base_height = int(base_image[1])
     result = np.zeros((base_height, base_width), dtype=np.float32)
+    weight_sum = np.zeros((base_height, base_width), dtype=np.float32)
 
     # Predictions layout is (N, C, H, W)
     segment_height = int(predictions.shape[2])
@@ -122,6 +165,20 @@ def sew_image(base_image, predictions: npt.ArrayLike, overlap) -> Image:
     crop_height = min(raw_crop, max(0, segment_height // 2))
     crop_width = min(raw_crop, max(0, segment_width // 2))
     parts_count = int(predictions.shape[0])
+
+    base_weight = np.ones((segment_height, segment_width), dtype=np.float32)
+    if overlap > 0:
+        taper_h = min(segment_height // 2, max(1, int(overlap)))
+        taper_w = min(segment_width // 2, max(1, int(overlap)))
+        if taper_h > 0:
+            ramp_h = np.linspace(0.2, 1.0, taper_h, dtype=np.float32)
+            base_weight[:taper_h, :] *= ramp_h[:, None]
+            base_weight[-taper_h:, :] *= ramp_h[::-1][:, None]
+        if taper_w > 0:
+            ramp_w = np.linspace(0.2, 1.0, taper_w, dtype=np.float32)
+            base_weight[:, :taper_w] *= ramp_w[None, :]
+            base_weight[:, -taper_w:] *= ramp_w[::-1][None, :]
+    base_weight = np.clip(base_weight, 1e-4, 1.0)
 
     for row in range(row_steps):
         for col in range(column_steps):
@@ -161,12 +218,20 @@ def sew_image(base_image, predictions: npt.ArrayLike, overlap) -> Image:
             src_patch_right = src_patch_left + (dst_right - dst_left)
 
             patch = predictions[sewed_part_index, 0, :, :]
-            result[dst_top:dst_bottom, dst_left:dst_right] = patch[
-                src_patch_top:src_patch_bottom,
-                src_patch_left:src_patch_right,
-            ]
+            patch_crop = patch[src_patch_top:src_patch_bottom, src_patch_left:src_patch_right]
+            weight_crop = base_weight[src_patch_top:src_patch_bottom, src_patch_left:src_patch_right]
+            result[dst_top:dst_bottom, dst_left:dst_right] += patch_crop * weight_crop
+            weight_sum[dst_top:dst_bottom, dst_left:dst_right] += weight_crop
+    weight_sum = np.where(weight_sum <= 0.0, 1.0, weight_sum)
+    result = result / weight_sum
     result = np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0)
     result = np.clip(result, 0.0, 1.0)
+    if threshold is not None:
+        result = _apply_binary_postprocess(
+            result,
+            threshold=float(min(max(threshold, 0.0), 1.0)),
+            kernel_size=int(max(0, postprocess_kernel_size)),
+        )
     result = result * 255
     # result = result.reshape(base_height, base_width)
     resimg = Image.fromarray(result.astype('uint8'), mode='L')

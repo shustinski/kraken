@@ -1,8 +1,8 @@
 from itertools import product
 from pathlib import Path
 
-from presenter.workflow_mapper import build_workflow_parameters
-from view.window_dataclasses import MainWindowState, SettingsState
+from application.dto import MainWindowState, SettingsState
+from application.services.workflow_mapper import build_workflow_parameters
 from tests.helpers import make_test_dir
 
 

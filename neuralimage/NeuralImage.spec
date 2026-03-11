@@ -26,8 +26,13 @@ datas = [
     ('_internal/resources/icons/chevron_down_light.svg', 'resources/icons'),
     ('_internal/resources/icons/chevron_up_light.svg', 'resources/icons'),
     ('resources/ui_texts_ru.json', 'resources'),
+    ('resources/ui_texts_en.json', 'resources'),
     ('resources/changelog.md', 'resources'),
     ('resources/help.md', 'resources'),
+    ('resources/changelog_ru.md', 'resources'),
+    ('resources/changelog_en.md', 'resources'),
+    ('resources/help_ru.md', 'resources'),
+    ('resources/help_en.md', 'resources'),
 ]
 
 if include_webui:

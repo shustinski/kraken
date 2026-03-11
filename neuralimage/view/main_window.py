@@ -1,9 +1,10 @@
 ﻿
 import os
 import math
+import time
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon, QImage, QPixmap
+from PyQt6.QtGui import QAction, QActionGroup, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -14,6 +15,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -23,17 +25,18 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from application.dto import MainWindowState
 from UI import ClickableLabel
 import numpy as np
 from lib.data_interfaces import WorkMode
-from lib.ui_texts import get_ui_section
+from lib.logging_policy import MAX_LOG_MESSAGES
+from lib.ui_texts import get_ui_language, get_ui_section
 from lib.version import get_app_title
 from view.changelog_dialog import show_changelog_dialog
 from view.help_dialog import show_help_dialog
 from view.metrics_panel import TrainingMetricsDock
 from view.settings_panel import create_spinbox
 from view.tic_tac_toe_dialog import TicTacToeDialog
-from view.window_dataclasses import MainWindowState
 
 
 def load_qss_from_resource(qss_path: str):
@@ -60,6 +63,8 @@ class MainView(QMainWindow):
     stop_requested: pyqtSignal = pyqtSignal()
     queue_remove_requested: pyqtSignal = pyqtSignal()
     queue_pause_toggle_requested: pyqtSignal = pyqtSignal()
+    queue_context_remove_requested: pyqtSignal = pyqtSignal(int)
+    queue_properties_requested: pyqtSignal = pyqtSignal(int)
 
     epochs_changed: pyqtSignal = pyqtSignal()
     request_close: pyqtSignal = pyqtSignal()
@@ -74,6 +79,11 @@ class MainView(QMainWindow):
     batch_preview_visibility_changed: pyqtSignal = pyqtSignal(bool)
     release_memory_requested: pyqtSignal = pyqtSignal()
     open_tic_tac_toe_requested: pyqtSignal = pyqtSignal()
+    ui_language_selected: pyqtSignal = pyqtSignal(str)
+    theme_selected: pyqtSignal = pyqtSignal(str)
+
+    DARK_THEME_QSS_PATH = "_internal/resources/dark_modern.qss"
+    LIGHT_THEME_QSS_PATH = "_internal/resources/style.qss"
 
     def __init__(self, side_panel: QWidget | None = None):
         super().__init__()
@@ -92,6 +102,27 @@ class MainView(QMainWindow):
         self._vram_alloc_mb: float | None = None
         self._vram_reserved_mb: float | None = None
         self._train_speed_batches_per_sec: float | None = None
+        self._recognition_speed_images_per_sec: float | None = None
+        self._recognition_started_at: float | None = None
+        self._recognition_last_current = 0
+        self._recognition_last_total = 0
+        self._last_validation_metrics: tuple[float, float, float] | None = None
+        self._last_performance_metrics: dict[str, float] | None = None
+        self._ui_language = get_ui_language()
+        self._theme = "dark"
+        self._settings_menu = None
+        self._view_menu = None
+        self._info_menu = None
+        self._language_menu = None
+        self._theme_menu = None
+        self._settings_sample_action = None
+        self._settings_train_action = None
+        self._settings_pred_action = None
+        self._metrics_toggle_action = None
+        self._log_toggle_action = None
+        self._settings_toggle_action = None
+        self._help_action = None
+        self._changelog_action = None
 
         self._setup_ui()
 
@@ -105,8 +136,8 @@ class MainView(QMainWindow):
         row = 0
         self.main_grid.setColumnStretch(0, 1)
         self.main_grid.setColumnStretch(1, 10)
-        sample_type_group = QGroupBox(t["mode"])
-        sample_type_layout = QHBoxLayout(sample_type_group)
+        self.work_mode_group = QGroupBox(t["mode"])
+        sample_type_layout = QHBoxLayout(self.work_mode_group)
 
         self.rb_train_and_recognition = QRadioButton(t["mode_train_and_rec"])
         self.rb_further_train_model = QRadioButton(t["mode_ft_and_rec"])
@@ -117,15 +148,17 @@ class MainView(QMainWindow):
         sample_type_layout.addWidget(self.rb_further_train_model)
         sample_type_layout.addWidget(self.rb_recognition)
         sample_type_layout.addWidget(self.rb_train_only)
-        self.main_grid.addWidget(sample_type_group, row, 0, 1, 2)
+        self.main_grid.addWidget(self.work_mode_group, row, 0, 1, 2)
 
         row += 1
-        self.main_grid.addWidget(QLabel(t["source"]), row, 0)
+        self.source_title_label = QLabel(t["source"])
+        self.main_grid.addWidget(self.source_title_label, row, 0)
         self.lbl_source = ClickableLabel()
         self.main_grid.addWidget(self.lbl_source, row, 1)
 
         row += 1
-        self.main_grid.addWidget(QLabel(t["result"]), row, 0)
+        self.result_title_label = QLabel(t["result"])
+        self.main_grid.addWidget(self.result_title_label, row, 0)
         self.lbl_result = ClickableLabel()
         self.main_grid.addWidget(self.lbl_result, row, 1)
 
@@ -137,18 +170,22 @@ class MainView(QMainWindow):
         self.sample_path = ClickableLabel()
         self.sample_path.setToolTip(t["sample_tip"])
         sample_path_form.addRow(t["sample_src"], self.sample_path)
+        self.sample_src_title_label = sample_path_form.labelForField(self.sample_path)
 
         self.label_path = ClickableLabel()
         self.label_path.setToolTip(t["label_tip"])
         sample_path_form.addRow(t["labels"], self.label_path)
+        self.label_path_title_label = sample_path_form.labelForField(self.label_path)
 
         row += 1
-        self.main_grid.addWidget(QLabel(t["model"]), row, 0)
+        self.model_title_label = QLabel(t["model"])
+        self.main_grid.addWidget(self.model_title_label, row, 0)
         self.model_path = ClickableLabel()
         self.main_grid.addWidget(self.model_path, row, 1)
 
         row += 1
-        self.main_grid.addWidget(QLabel(t["epochs"]), row, 0)
+        self.epochs_title_label = QLabel(t["epochs"])
+        self.main_grid.addWidget(self.epochs_title_label, row, 0)
         self.le_epochs = create_spinbox((0, 1000), 1, 40)
         self.main_grid.addWidget(self.le_epochs, row, 1)
 
@@ -168,6 +205,7 @@ class MainView(QMainWindow):
         self.queue_group = QGroupBox(t["queue"])
         queue_layout = QVBoxLayout(self.queue_group)
         self.queue_list = QListWidget()
+        self.queue_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         queue_layout.addWidget(self.queue_list)
         queue_buttons_layout = QHBoxLayout()
         self.btn_queue_remove = QPushButton(t["queue_remove"])
@@ -188,8 +226,16 @@ class MainView(QMainWindow):
             progress_bar.setValue(0)
             progress_bar.setFormat("%p%")
         progress_layout.addRow(t["progress_epochs"], self.epoch_progress_bar)
+        self.progress_epochs_title_label = progress_layout.labelForField(self.epoch_progress_bar)
         progress_layout.addRow(t["progress_batches"], self.batch_progress_bar)
+        self.progress_batches_title_label = progress_layout.labelForField(self.batch_progress_bar)
+        recognition_speed_default = (
+            "Recognition speed: —" if self._ui_language == "en" else "Скорость распознавания: —"
+        )
+        self.recognition_speed_label = QLabel(t.get("recognition_speed_default", recognition_speed_default))
+        progress_layout.addRow(self.recognition_speed_label)
         progress_layout.addRow(t["progress_recognition"], self.recognition_progress_bar)
+        self.progress_recognition_title_label = progress_layout.labelForField(self.recognition_progress_bar)
         self.memory_usage_label = QLabel(t["memory_label_default"])
         progress_layout.addRow(self.memory_usage_label)
         self.validation_quality_label = QLabel(t["validation_quality_default"])
@@ -247,33 +293,43 @@ class MainView(QMainWindow):
             self.settings_dock.raise_()
 
         self._create_menubar(t)
+        self._apply_theme(self._theme)
 
     def _create_menubar(self, t: dict[str, str]):
         menubar = self.menuBar()
         if menubar is None:
             return
         settings_menu = menubar.addMenu(t["menu_settings"])
-        view_menu = menubar.addMenu(t["menu_view"])
+        self._view_menu = menubar.addMenu(t["menu_view"])
+        view_menu = self._view_menu
         info_menu = menubar.addMenu(t["menu_help"])
+        self._settings_menu = settings_menu
+        self._info_menu = info_menu
         if settings_menu is None or view_menu is None or info_menu is None:
             return
 
-        settings_menu.addAction(QAction(QIcon("./assets/new.png"), t["menu_sample"], self))
-        settings_menu.addAction(QAction(QIcon("./assets/new.png"), t["menu_train"], self))
-        settings_menu.addAction(QAction(QIcon("./assets/new.png"), t["menu_pred"], self))
+        self._settings_sample_action = QAction(QIcon("./assets/new.png"), t["menu_sample"], self)
+        self._settings_train_action = QAction(QIcon("./assets/new.png"), t["menu_train"], self)
+        self._settings_pred_action = QAction(QIcon("./assets/new.png"), t["menu_pred"], self)
+        settings_menu.addAction(self._settings_sample_action)
+        settings_menu.addAction(self._settings_train_action)
+        settings_menu.addAction(self._settings_pred_action)
         metrics_action = self.metrics_panel.toggleViewAction()
         if metrics_action is not None:
             metrics_action.setText(t["menu_metrics"])
             view_menu.addAction(metrics_action)
+            self._metrics_toggle_action = metrics_action
         log_action = self.log_dock.toggleViewAction()
         if log_action is not None:
             log_action.setText(t.get("menu_log_panel", "Панель лога"))
             view_menu.addAction(log_action)
+            self._log_toggle_action = log_action
         if self.settings_dock is not None:
             settings_action = self.settings_dock.toggleViewAction()
             if settings_action is not None:
                 settings_action.setText(t["menu_settings_panel"])
                 view_menu.addAction(settings_action)
+                self._settings_toggle_action = settings_action
         self.batch_preview_action = QAction(t["menu_batch_preview"], self)
         self.batch_preview_action.setCheckable(True)
         self.batch_preview_action.setChecked(True)
@@ -285,12 +341,43 @@ class MainView(QMainWindow):
             self,
         )
         view_menu.addAction(self.open_tic_tac_toe_action)
+        view_menu.addSeparator()
+        self._language_menu = view_menu.addMenu(t.get("menu_language", "Язык"))
+        language_group = QActionGroup(self)
+        language_group.setExclusive(True)
+        self.ui_language_ru_action = QAction(t.get("lang_ru", "Русский"), self)
+        self.ui_language_ru_action.setCheckable(True)
+        self.ui_language_ru_action.setData("ru")
+        language_group.addAction(self.ui_language_ru_action)
+        self._language_menu.addAction(self.ui_language_ru_action)
+        self.ui_language_en_action = QAction(t.get("lang_en", "English"), self)
+        self.ui_language_en_action.setCheckable(True)
+        self.ui_language_en_action.setData("en")
+        language_group.addAction(self.ui_language_en_action)
+        self._language_menu.addAction(self.ui_language_en_action)
+        self._theme_menu = view_menu.addMenu(t.get("menu_theme", "Тема"))
+        theme_group = QActionGroup(self)
+        theme_group.setExclusive(True)
+        self.theme_dark_action = QAction(t.get("theme_dark", "Темная"), self)
+        self.theme_dark_action.setCheckable(True)
+        self.theme_dark_action.setData("dark")
+        theme_group.addAction(self.theme_dark_action)
+        self._theme_menu.addAction(self.theme_dark_action)
+        self.theme_light_action = QAction(t.get("theme_light", "Светлая"), self)
+        self.theme_light_action.setCheckable(True)
+        self.theme_light_action.setData("light")
+        theme_group.addAction(self.theme_light_action)
+        self._theme_menu.addAction(self.theme_light_action)
+        self._sync_language_menu_checks()
+        self._sync_theme_menu_checks()
         help_action = QAction(t["menu_open_help"], self)
         help_action.triggered.connect(lambda: show_help_dialog(self))
         info_menu.addAction(help_action)
+        self._help_action = help_action
         changelog_action = QAction(t.get("menu_open_changelog", "Список изменений"), self)
         changelog_action.triggered.connect(lambda: show_changelog_dialog(self))
         info_menu.addAction(changelog_action)
+        self._changelog_action = changelog_action
         menu_action = info_menu.menuAction()
         if menu_action is not None:
             menu_action.setVisible(True)
@@ -325,6 +412,9 @@ class MainView(QMainWindow):
         self.settings_dock.show()
         self.settings_dock.raise_()
 
+    def show_settings_dock(self) -> None:
+        self._show_side_panel_fully()
+
     def _hide_side_panel(self):
         if self.settings_dock is None:
             return
@@ -344,7 +434,6 @@ class MainView(QMainWindow):
         return
 
     def connect_internal_signals(self):
-        t = self._texts if hasattr(self, "_texts") else get_ui_section("main_window")
         self.rb_train_and_recognition.clicked.connect(
             lambda _: self.sample_type_changed.emit(WorkMode.train_and_recognition.value)
         )
@@ -368,6 +457,7 @@ class MainView(QMainWindow):
         self.btn_stop.clicked.connect(lambda: self.stop_requested.emit())
         self.btn_queue_remove.clicked.connect(lambda: self.queue_remove_requested.emit())
         self.btn_queue_pause_toggle.clicked.connect(lambda: self.queue_pause_toggle_requested.emit())
+        self.queue_list.customContextMenuRequested.connect(self._show_queue_context_menu)
         if hasattr(self, "batch_preview_action"):
             self.batch_preview_action.toggled.connect(self.batch_preview_visibility_changed.emit)
             self.batch_preview_action.toggled.connect(self.set_batch_preview_enabled)
@@ -375,20 +465,101 @@ class MainView(QMainWindow):
             self.release_memory_action.triggered.connect(self.release_memory_requested.emit)
         if hasattr(self, "open_tic_tac_toe_action"):
             self.open_tic_tac_toe_action.triggered.connect(self.open_tic_tac_toe_requested.emit)
+        if hasattr(self, "ui_language_ru_action"):
+            self.ui_language_ru_action.triggered.connect(lambda: self._handle_ui_language_action("ru"))
+        if hasattr(self, "ui_language_en_action"):
+            self.ui_language_en_action.triggered.connect(lambda: self._handle_ui_language_action("en"))
+        if hasattr(self, "theme_dark_action"):
+            self.theme_dark_action.triggered.connect(lambda: self._handle_theme_action("dark"))
+        if hasattr(self, "theme_light_action"):
+            self.theme_light_action.triggered.connect(lambda: self._handle_theme_action("light"))
         self.open_tic_tac_toe_requested.connect(self._open_tic_tac_toe_dialog)
 
         self.log_message.connect(self._append_log)
         self.log_message_with_delete_last.connect(self.append_with_delete_previous)
         self.metrics_message.connect(self._append_metrics)
         self.enable_start.connect(self._set_start_enabled)
-        self.show_info.connect(lambda txt: QMessageBox.information(self, t["info"], txt))
-        self.show_warning.connect(lambda txt: QMessageBox.warning(self, t["warning"], txt))
+        self.show_info.connect(self._show_info_message)
+        self.show_warning.connect(self._show_warning_message)
         self.toggle_start_stop.connect(self._switch_start_stop)
+
+    def _show_queue_context_menu(self, position) -> None:
+        item = self.queue_list.itemAt(position)
+        if item is None:
+            return
+        row = self.queue_list.row(item)
+        if row < 0:
+            return
+
+        self.queue_list.setCurrentRow(row)
+        texts = self._main_texts()
+        menu = QMenu(self.queue_list)
+        remove_action = menu.addAction(str(texts.get("queue_remove", "Удалить из очереди")))
+        properties_action = menu.addAction(str(texts.get("queue_properties", "Свойства")))
+        selected_action = menu.exec(self.queue_list.viewport().mapToGlobal(position))
+
+        if selected_action is remove_action:
+            self.queue_context_remove_requested.emit(row)
+        elif selected_action is properties_action:
+            self.queue_properties_requested.emit(row)
+
+    def _main_texts(self) -> dict[str, str]:
+        texts = getattr(self, "_texts", None)
+        return texts if isinstance(texts, dict) else get_ui_section("main_window")
+
+    def _show_info_message(self, text: str) -> None:
+        QMessageBox.information(self, str(self._main_texts().get("info", "Информация")), text)
+
+    def _show_warning_message(self, text: str) -> None:
+        QMessageBox.warning(self, str(self._main_texts().get("warning", "Предупреждение")), text)
+
+    def _format_validation_quality_text(self, iou: float, dice: float, f1: float) -> str:
+        t = self._main_texts()
+        template = str(
+            t.get(
+                "validation_quality_template",
+                "IoU: {iou} | Dice: {dice} | F1: {f1}",
+            )
+        )
+        return template.format(
+            iou=f"{float(iou):.2%}",
+            dice=f"{float(dice):.2%}",
+            f1=f"{float(f1):.2%}",
+        )
+
+    def _format_performance_text(
+        self,
+        data_wait_ms: float,
+        forward_ms: float,
+        backward_ms: float,
+        optimizer_ms: float,
+        total_ms: float,
+    ) -> str:
+        t = self._main_texts()
+        template = str(
+            t.get(
+                "performance_label_template",
+                "Batch timing | data: {data_wait_ms:.1f} ms | forward: {forward_ms:.1f} ms | "
+                "backward: {backward_ms:.1f} ms | optimizer: {optimizer_ms:.1f} ms | total: {total_ms:.1f} ms",
+            )
+        )
+        return template.format(
+            data_wait_ms=float(data_wait_ms),
+            forward_ms=float(forward_ms),
+            backward_ms=float(backward_ms),
+            optimizer_ms=float(optimizer_ms),
+            total_ms=float(total_ms),
+        )
 
     def _append_log(self, data):
         layout: QVBoxLayout = self.log_layout
         new_label = QLabel(data)
         layout.addWidget(new_label)
+        while layout.count() > MAX_LOG_MESSAGES:
+            item = layout.takeAt(0)
+            old_widget = item.widget() if item is not None else None
+            if isinstance(old_widget, QWidget):
+                old_widget.deleteLater()
 
         if isinstance(self.log_scroll, QScrollArea):
             vbar = self.log_scroll.verticalScrollBar()
@@ -423,8 +594,9 @@ class MainView(QMainWindow):
             dice = data.get("dice")
             f1 = data.get("f1")
             if iou is not None and dice is not None and f1 is not None:
+                self._last_validation_metrics = (float(iou), float(dice), float(f1))
                 self.validation_quality_label.setText(
-                    f"IoU: {float(iou):.2%} | Dice: {float(dice):.2%} | F1: {float(f1):.2%}"
+                    self._format_validation_quality_text(float(iou), float(dice), float(f1))
                 )
             return
 
@@ -446,11 +618,10 @@ class MainView(QMainWindow):
             return
 
         if metric_type == "recognition_progress":
-            self._set_progress_bar(
-                self.recognition_progress_bar,
-                int(data.get("current", 0)),
-                int(data.get("total", 0)),
-            )
+            current = int(data.get("current", 0))
+            total = int(data.get("total", 0))
+            self._set_progress_bar(self.recognition_progress_bar, current, total)
+            self._update_recognition_speed(current, total)
             return
 
         if metric_type == "train_batch_preview":
@@ -478,8 +649,21 @@ class MainView(QMainWindow):
             backward_ms = float(data.get("backward_ms", 0.0))
             optimizer_ms = float(data.get("optimizer_ms", 0.0))
             total_ms = float(data.get("total_ms", 0.0))
+            self._last_performance_metrics = {
+                "data_wait_ms": data_wait_ms,
+                "forward_ms": forward_ms,
+                "backward_ms": backward_ms,
+                "optimizer_ms": optimizer_ms,
+                "total_ms": total_ms,
+            }
             self.performance_label.setText(
-                f"Batch ms | data: {data_wait_ms:.1f} | fwd: {forward_ms:.1f} | bwd: {backward_ms:.1f} | opt: {optimizer_ms:.1f} | total: {total_ms:.1f}"
+                self._format_performance_text(
+                    data_wait_ms,
+                    forward_ms,
+                    backward_ms,
+                    optimizer_ms,
+                    total_ms,
+                )
             )
             if math.isfinite(total_ms) and total_ms > 0.0:
                 self._train_speed_batches_per_sec = 1000.0 / total_ms
@@ -489,6 +673,7 @@ class MainView(QMainWindow):
             return
 
     def _update_memory_runtime_label(self) -> None:
+        t = self._main_texts()
         no_runtime_data = (
             self._ram_mb is None
             and self._vram_alloc_mb is None
@@ -496,27 +681,81 @@ class MainView(QMainWindow):
             and self._train_speed_batches_per_sec is None
         )
         if no_runtime_data:
-            self.memory_usage_label.setText(get_ui_section("main_window")["memory_label_default"])
+            self.memory_usage_label.setText(str(t.get("memory_label_default", "Память: —")))
             return
 
-        ram_text = f"RAM: {self._ram_mb:.0f} МБ" if self._ram_mb is not None else "RAM: —"
+        memory_unit = str(t.get("memory_unit", "МБ"))
+        speed_unit = str(t.get("speed_unit", "batch/s"))
+        ram_label = str(t.get("runtime_ram_label", "RAM"))
+        vram_label = str(t.get("runtime_vram_label", "VRAM"))
+        speed_label = str(t.get("runtime_speed_label", "Скорость"))
+
+        ram_text = f"{ram_label}: {self._ram_mb:.0f} {memory_unit}" if self._ram_mb is not None else f"{ram_label}: —"
         if self._vram_alloc_mb is None:
-            vram_text = "VRAM: —"
+            vram_text = f"{vram_label}: —"
         else:
             reserved_text = f"/{self._vram_reserved_mb:.0f}" if self._vram_reserved_mb is not None else ""
-            vram_text = f"VRAM: {self._vram_alloc_mb:.0f}{reserved_text} МБ"
+            vram_text = f"{vram_label}: {self._vram_alloc_mb:.0f}{reserved_text} {memory_unit}"
         speed_text = (
-            f"Скорость: {self._train_speed_batches_per_sec:.2f} batch/s"
+            f"{speed_label}: {self._train_speed_batches_per_sec:.2f} {speed_unit}"
             if self._train_speed_batches_per_sec is not None
-            else "Скорость: — batch/s"
+            else f"{speed_label}: — {speed_unit}"
         )
         self.memory_usage_label.setText(f"{ram_text} | {vram_text} | {speed_text}")
+
+    def _update_recognition_speed(self, current: int, total: int) -> None:
+        if total <= 0:
+            self._recognition_speed_images_per_sec = None
+            self._recognition_started_at = None
+            self._recognition_last_current = 0
+            self._recognition_last_total = 0
+            self._update_recognition_speed_label()
+            return
+
+        now = time.perf_counter()
+        run_restarted = (
+            self._recognition_started_at is None
+            or total != self._recognition_last_total
+            or current < self._recognition_last_current
+            or current == 0
+        )
+        if run_restarted:
+            self._recognition_started_at = now
+            self._recognition_speed_images_per_sec = None
+        elif self._recognition_started_at is not None and current > 0:
+            elapsed_seconds = max(1e-6, now - self._recognition_started_at)
+            self._recognition_speed_images_per_sec = current / elapsed_seconds
+
+        self._recognition_last_current = current
+        self._recognition_last_total = total
+        self._update_recognition_speed_label()
+
+    def _update_recognition_speed_label(self) -> None:
+        t = self._main_texts()
+        label_fallback = "Recognition speed" if self._ui_language == "en" else "Скорость распознавания"
+        default_fallback = "Recognition speed: —" if self._ui_language == "en" else "Скорость распознавания: —"
+        unit_fallback = "img/s" if self._ui_language == "en" else "изобр./с"
+        default_text = str(t.get("recognition_speed_default", default_fallback))
+        label = str(t.get("recognition_speed_label", label_fallback))
+        unit = str(t.get("recognition_speed_unit", unit_fallback))
+        if self._recognition_speed_images_per_sec is None:
+            self.recognition_speed_label.setText(default_text)
+            return
+        self.recognition_speed_label.setText(
+            f"{label}: {self._recognition_speed_images_per_sec:.2f} {unit}"
+        )
 
     def _reset_runtime_metrics(self) -> None:
         self._ram_mb = None
         self._vram_alloc_mb = None
         self._vram_reserved_mb = None
         self._train_speed_batches_per_sec = None
+        self._recognition_speed_images_per_sec = None
+        self._recognition_started_at = None
+        self._recognition_last_current = 0
+        self._recognition_last_total = 0
+        self._last_validation_metrics = None
+        self._last_performance_metrics = None
 
     @staticmethod
     def _sparsify_batch_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -572,6 +811,7 @@ class MainView(QMainWindow):
             self._set_progress_bar(self.epoch_progress_bar, 0, 0)
             self._set_progress_bar(self.batch_progress_bar, 0, 0)
             self._set_progress_bar(self.recognition_progress_bar, 0, 0)
+            self._update_recognition_speed_label()
             self.preview_image_label.clear()
             self.preview_label_label.clear()
             self.preview_output_label.clear()
@@ -600,6 +840,142 @@ class MainView(QMainWindow):
 
     def set_stylesheet(self, style):
         self.setStyleSheet(style)
+
+    def _theme_qss_path(self, theme: str) -> str:
+        if theme == "light":
+            return self.LIGHT_THEME_QSS_PATH
+        return self.DARK_THEME_QSS_PATH
+
+    def _sync_language_menu_checks(self) -> None:
+        if hasattr(self, "ui_language_ru_action"):
+            self.ui_language_ru_action.setChecked(self._ui_language == "ru")
+        if hasattr(self, "ui_language_en_action"):
+            self.ui_language_en_action.setChecked(self._ui_language == "en")
+
+    def _sync_theme_menu_checks(self) -> None:
+        if hasattr(self, "theme_dark_action"):
+            self.theme_dark_action.setChecked(self._theme == "dark")
+        if hasattr(self, "theme_light_action"):
+            self.theme_light_action.setChecked(self._theme == "light")
+
+    def _apply_theme(self, theme: str) -> None:
+        self._theme = "light" if theme == "light" else "dark"
+        qss_path = self._theme_qss_path(self._theme)
+        self.set_stylesheet(load_qss_from_resource(qss_path))
+        self._sync_theme_menu_checks()
+
+    def apply_theme(self, theme: str) -> None:
+        self._apply_theme(theme)
+
+    def _handle_theme_action(self, theme: str) -> None:
+        self._apply_theme(theme)
+        self.theme_selected.emit(self._theme)
+
+    def apply_ui_language(self, language: str) -> None:
+        self._ui_language = "en" if language == "en" else "ru"
+        t = get_ui_section("main_window")
+        self._texts = t
+        self.work_mode_group.setTitle(t["mode"])
+        self.rb_train_and_recognition.setText(t["mode_train_and_rec"])
+        self.rb_further_train_model.setText(t["mode_ft_and_rec"])
+        self.rb_recognition.setText(t["mode_rec"])
+        self.rb_train_only.setText(t["mode_train"])
+        self.source_title_label.setText(t["source"])
+        self.result_title_label.setText(t["result"])
+        self.sample_path_group.setTitle(t["sample"])
+        self.sample_path.setToolTip(t["sample_tip"])
+        self.label_path.setToolTip(t["label_tip"])
+        if self.sample_src_title_label is not None:
+            self.sample_src_title_label.setText(t["sample_src"])
+        if self.label_path_title_label is not None:
+            self.label_path_title_label.setText(t["labels"])
+        self.model_title_label.setText(t["model"])
+        self.epochs_title_label.setText(t["epochs"])
+        self.btn_start.setText(t["start"])
+        self.btn_stop.setText(t["stop"])
+        self.queue_group.setTitle(t["queue"])
+        self.btn_queue_remove.setText(t["queue_remove"])
+        self.btn_queue_pause_toggle.setText(t["queue_pause"])
+        self.progress_group.setTitle(t["progress_group"])
+        if self.progress_epochs_title_label is not None:
+            self.progress_epochs_title_label.setText(t["progress_epochs"])
+        if self.progress_batches_title_label is not None:
+            self.progress_batches_title_label.setText(t["progress_batches"])
+        if self.progress_recognition_title_label is not None:
+            self.progress_recognition_title_label.setText(t["progress_recognition"])
+        self._update_recognition_speed_label()
+        self.preview_group.setTitle(t["preview_group"])
+        if self.preview_image_label.pixmap() is None:
+            self.preview_image_label.setText(t["preview_image"])
+        if self.preview_label_label.pixmap() is None:
+            self.preview_label_label.setText(t["preview_label"])
+        if self.preview_output_label.pixmap() is None:
+            self.preview_output_label.setText(t["preview_output"])
+        if self._settings_menu is not None:
+            self._settings_menu.setTitle(t["menu_settings"])
+        if self._view_menu is not None:
+            self._view_menu.setTitle(t["menu_view"])
+        if self._info_menu is not None:
+            self._info_menu.setTitle(t["menu_help"])
+        if self._language_menu is not None:
+            self._language_menu.setTitle(t.get("menu_language", "Язык"))
+        if self._theme_menu is not None:
+            self._theme_menu.setTitle(t.get("menu_theme", "Тема"))
+        if self._settings_sample_action is not None:
+            self._settings_sample_action.setText(t.get("menu_sample", "Выборка"))
+        if self._settings_train_action is not None:
+            self._settings_train_action.setText(t.get("menu_train", "Обучение"))
+        if self._settings_pred_action is not None:
+            self._settings_pred_action.setText(t.get("menu_pred", "Распознавание"))
+        if self._metrics_toggle_action is not None:
+            self._metrics_toggle_action.setText(t.get("menu_metrics", "Панель графиков"))
+        if self._log_toggle_action is not None:
+            self._log_toggle_action.setText(t.get("menu_log_panel", "Панель лога"))
+        if self._settings_toggle_action is not None:
+            self._settings_toggle_action.setText(t.get("menu_settings_panel", "Панель настроек"))
+        if hasattr(self, "batch_preview_action"):
+            self.batch_preview_action.setText(t.get("menu_batch_preview", "Превью пакета обучения"))
+        if hasattr(self, "release_memory_action"):
+            self.release_memory_action.setText(t.get("menu_release_memory", "Освободить память GPU"))
+        if hasattr(self, "open_tic_tac_toe_action"):
+            self.open_tic_tac_toe_action.setText(
+                t.get("menu_open_tic_tac_toe", "Крестики-нолики (нейросеть)")
+            )
+        if self._help_action is not None:
+            self._help_action.setText(t.get("menu_open_help", "Открыть справку"))
+        if self._changelog_action is not None:
+            self._changelog_action.setText(t.get("menu_open_changelog", "Список изменений"))
+        if hasattr(self, "ui_language_ru_action"):
+            self.ui_language_ru_action.setText(t.get("lang_ru", "Русский"))
+        if hasattr(self, "ui_language_en_action"):
+            self.ui_language_en_action.setText(t.get("lang_en", "English"))
+        if hasattr(self, "theme_dark_action"):
+            self.theme_dark_action.setText(t.get("theme_dark", "Темная"))
+        if hasattr(self, "theme_light_action"):
+            self.theme_light_action.setText(t.get("theme_light", "Светлая"))
+        self.log_dock.setWindowTitle(t.get("log_dock_title", "Лог"))
+        if self.settings_dock is not None:
+            self.settings_dock.setWindowTitle(t.get("settings_dock_title", "Настройки"))
+        self._update_memory_runtime_label()
+        if self._last_validation_metrics is not None:
+            iou, dice, f1 = self._last_validation_metrics
+            self.validation_quality_label.setText(self._format_validation_quality_text(iou, dice, f1))
+        else:
+            self.validation_quality_label.setText(t["validation_quality_default"])
+        if self._last_performance_metrics is not None:
+            self.performance_label.setText(
+                self._format_performance_text(**self._last_performance_metrics)
+            )
+        else:
+            self.performance_label.setText(t["performance_label_default"])
+        self._sync_language_menu_checks()
+
+    def _handle_ui_language_action(self, language: str) -> None:
+        if self.settings_dock is not None and hasattr(self.settings_dock, "set_ui_language"):
+            self.settings_dock.set_ui_language(language)
+        else:
+            self.apply_ui_language(language)
+        self.ui_language_selected.emit(language)
 
     def set_source_path(self, path: str):
         self.lbl_source.setText(path)

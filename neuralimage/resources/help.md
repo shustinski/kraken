@@ -82,17 +82,16 @@
 - Weight decay: 0.01
 - Batch size: 16
 - Mixed precision: bf16 (если GPU поддерживает), иначе fp16
-- Loss function: bce_dice
-- Dice loss weight: 0.5
-- Warmup: включено, 3 эпохи, start factor 0.1
-- Hard mining: optional, usually OFF for the first baseline run
+- Loss function: bce
+- Warmup: включено, 1 эпоха, start factor 0.1
+- Hard mining: отключен
 - Early stopping: включено, patience 10, min delta 0.0005
 - Восстановить лучшие веса: включено
 
 11. Если что-то пошло не так
 
 - Нехватка памяти GPU: уменьшите Batch size, затем Sample size.
-- Слабое качество: включите валидацию, уменьшите learning rate, проверьте метки.
+- Плохое качество: включите валидацию, уменьшите learning rate, включите hard mining, проверьте метки.
 - Медленная работа:
   если высокое data wait - уменьшите нагрузку предобработки и проверьте диск.
   если высокие forward/backward - уменьшите размер модели или батч.

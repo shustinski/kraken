@@ -17,6 +17,7 @@ from lib.data_interfaces import (
     WarmupParameters,
     WorkMode,
     parse_work_mode,
+    normalize_multi_gpu_mode,
 )
 from lib.message_bus import MessageBus
 from model.general_neural_handler import GeneralNeuralHandler
@@ -26,10 +27,18 @@ def _log(message: Any) -> None:
     print(str(message))
 
 
-def _question(theme: str, message: str) -> bool:
+def _question(
+    text: str,
+    header: str,
+    default_answer: bool = False,
+    timeout_seconds: int | None = None,
+) -> bool:
     while True:
-        print(theme)
-        print(message)
+        print(header)
+        print(text)
+        if timeout_seconds:
+            default_label = 'Y' if default_answer else 'N'
+            print(f'Default answer is {default_label}; CLI auto-timeout is not supported.')
         answer = input('Y/N: ').strip().lower()
         if answer in ('y', 'yes', 'д', 'да'):
             return True
@@ -73,6 +82,10 @@ def _build_training_parameters(raw: dict[str, Any]) -> TrainingParameters:
         augmentation_contrast_strength=float(generation_raw.get('augmentation_contrast_strength', 0.1)),
         augmentation_noise_probability=float(generation_raw.get('augmentation_noise_probability', 0.5)),
         augmentation_noise_sigma=float(generation_raw.get('augmentation_noise_sigma', 0.01)),
+        random_crop=bool(generation_raw.get('random_crop', False)),
+        crops_per_image=int(generation_raw.get('crops_per_image', 64)),
+        scale_augmentation=bool(generation_raw.get('scale_augmentation', False)),
+        scale_augmentation_strength=float(generation_raw.get('scale_augmentation_strength', 0.2)),
     )
 
     edge_cut_raw = prepare_raw.get('edge_cut')
@@ -107,6 +120,13 @@ def _build_training_parameters(raw: dict[str, Any]) -> TrainingParameters:
         enabled=bool(hard_mining_raw.get('enabled', False)),
         strength=float(hard_mining_raw.get('strength', 2.0)),
         ema_alpha=float(hard_mining_raw.get('ema_alpha', 0.2)),
+        pixel_enabled=bool(hard_mining_raw.get('pixel_enabled', False)),
+        pixel_keep_ratio=float(hard_mining_raw.get('pixel_keep_ratio', 0.25)),
+    )
+    legacy_use_multi_gpu = bool(raw.get('use_multi_gpu', True))
+    multi_gpu_mode = normalize_multi_gpu_mode(
+        raw.get('multi_gpu_mode', ''),
+        use_multi_gpu_fallback=legacy_use_multi_gpu,
     )
 
     return TrainingParameters(
@@ -130,7 +150,8 @@ def _build_training_parameters(raw: dict[str, Any]) -> TrainingParameters:
         warmup=warmup,
         hard_mining=hard_mining,
         skip_uniform_labels=bool(raw.get('skip_uniform_labels', False)),
-        use_multi_gpu=bool(raw.get('use_multi_gpu', True)),
+        use_multi_gpu=bool(multi_gpu_mode != 'off'),
+        multi_gpu_mode=multi_gpu_mode,
         show_batch_preview=bool(raw.get('show_batch_preview', True)),
         log_update_frequency=int(raw.get('log_update_frequency', 0)),
     )
@@ -148,6 +169,7 @@ def _build_recognition_parameters(raw: dict[str, Any]) -> RecognitionParameters:
         part_size=_to_tuple2(raw.get('part_size', [256, 256]), 'recogniton_parameters.part_size'),
         batch_size=int(raw.get('batch_size', 16)),
         overlap=int(raw.get('overlap', 8)),
+        jpeg_quality=int(raw.get('jpeg_quality', 95)),
     )
 
 
@@ -171,6 +193,7 @@ def _config_template() -> dict[str, Any]:
             'part_size': [256, 256],
             'batch_size': 8,
             'overlap': 16,
+            'jpeg_quality': 95,
         },
         'tranining_parameters': {
             'image_path': 'D:/data/train/images',
@@ -193,6 +216,10 @@ def _config_template() -> dict[str, Any]:
                 'augmentation_contrast_strength': 0.1,
                 'augmentation_noise_probability': 0.5,
                 'augmentation_noise_sigma': 0.01,
+                'random_crop': False,
+                'crops_per_image': 64,
+                'scale_augmentation': False,
+                'scale_augmentation_strength': 0.2,
             },
             'prepare': {
                 'enable_crop': False,
@@ -206,7 +233,7 @@ def _config_template() -> dict[str, Any]:
                 'weight_decay': 0.0001,
             },
             'mixed_precision': 'bf16',
-            'loss_function': 'bce_dice',
+            'loss_function': 'focal_dice',
             'dice_loss_weight': 0.7,
             'iou_loss_weight': 0.3,
             'early_stopping': {
@@ -224,9 +251,12 @@ def _config_template() -> dict[str, Any]:
                 'enabled': False,
                 'strength': 2.0,
                 'ema_alpha': 0.2,
+                'pixel_enabled': False,
+                'pixel_keep_ratio': 0.25,
             },
             'skip_uniform_labels': False,
             'use_multi_gpu': True,
+            'multi_gpu_mode': 'distributeddataparallel',
             'show_batch_preview': True,
             'log_update_frequency': 50,
         },

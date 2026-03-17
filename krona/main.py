@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from logic_analyzer.bootstrap import logic_functions_to_dict, parse_to_dict, run_gui
+from logic_analyzer.bootstrap import logic_functions_to_dict, parse_to_dict, run_gui, structural_analysis_to_dict
 
 
 def main() -> None:
@@ -12,7 +12,6 @@ def main() -> None:
     parser.add_argument(
         "edf_path",
         nargs="?",
-        default=str(Path("test_edifs/e1_model.EDF")),
         help="Path to EDF file",
     )
     parser.add_argument(
@@ -29,9 +28,27 @@ def main() -> None:
         action="store_true",
         help="Extract logic function(s) from the selected EDF and print/export JSON",
     )
+    parser.add_argument(
+        "--structural",
+        action="store_true",
+        help="Run structural sequential analysis (SCC/phase/pattern classification) and print/export JSON",
+    )
     args = parser.parse_args()
 
+    if args.structural:
+        if not args.edf_path:
+            parser.error("edf_path is required when using --structural")
+        output = structural_analysis_to_dict(args.edf_path)
+        json_text = json.dumps(output, indent=2 if args.pretty or not args.json_out else None)
+        if args.json_out:
+            Path(args.json_out).write_text(json_text, encoding="utf-8")
+        else:
+            print(json_text)
+        return
+
     if args.logic:
+        if not args.edf_path:
+            parser.error("edf_path is required when using --logic")
         output = logic_functions_to_dict(args.edf_path)
         json_text = json.dumps(output, indent=2 if args.pretty or not args.json_out else None)
         if args.json_out:
@@ -41,6 +58,8 @@ def main() -> None:
         return
 
     if args.json_out or args.pretty:
+        if not args.edf_path:
+            parser.error("edf_path is required when using --json-out or --pretty")
         output = parse_to_dict(args.edf_path)
         json_text = json.dumps(output, indent=2 if args.pretty else None)
         if args.json_out:

@@ -21,13 +21,20 @@ class ThemeManager:
     def available_themes(self) -> list[str]:
         return list(self._THEME_FILES.keys())
 
-    def load_saved_theme(self, default: str = "Dark") -> str:
+    def _read_settings(self) -> dict:
         if not self._settings_path.exists():
-            return default
+            return {}
         try:
             payload = json.loads(self._settings_path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
-            return default
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _write_settings(self, payload: dict) -> None:
+        self._settings_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def load_saved_theme(self, default: str = "Dark") -> str:
+        payload = self._read_settings()
         value = payload.get("theme")
         if value in self._THEME_FILES:
             return value
@@ -36,8 +43,19 @@ class ThemeManager:
     def save_theme(self, theme_name: str) -> None:
         if theme_name not in self._THEME_FILES:
             return
-        payload = {"theme": theme_name}
-        self._settings_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        payload = self._read_settings()
+        payload["theme"] = theme_name
+        self._write_settings(payload)
+
+    def load_saved_language(self, default: str = "English") -> str:
+        payload = self._read_settings()
+        value = payload.get("language")
+        return value if isinstance(value, str) and value else default
+
+    def save_language(self, language_name: str) -> None:
+        payload = self._read_settings()
+        payload["language"] = language_name
+        self._write_settings(payload)
 
     def stylesheet_for(self, theme_name: str) -> str:
         filename = self._THEME_FILES.get(theme_name)

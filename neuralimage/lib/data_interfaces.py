@@ -224,12 +224,33 @@ class CutoutParameters:
     size_ratio: float = 0.25
 
 
+RANDOM_ARTIFACT_TYPES: tuple[str, ...] = (
+    'dust',
+    'resist_residue',
+    'etch_residue',
+    'particle_cluster',
+    'flake',
+)
+
+
 @dataclass
 class RandomArtifactsParameters:
     enabled: bool = False
     probability: float = 1.0
     count: int = 1
     size_ratio: float = 0.25
+    dust_enabled: bool = True
+    resist_residue_enabled: bool = True
+    etch_residue_enabled: bool = True
+    particle_cluster_enabled: bool = True
+    flake_enabled: bool = True
+
+    def enabled_types(self) -> tuple[str, ...]:
+        enabled_names: list[str] = []
+        for artifact_name in RANDOM_ARTIFACT_TYPES:
+            if bool(getattr(self, f'{artifact_name}_enabled', True)):
+                enabled_names.append(artifact_name)
+        return tuple(enabled_names)
 
 
 @dataclass

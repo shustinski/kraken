@@ -6,14 +6,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from lib.data_interfaces import RANDOM_ARTIFACT_TYPES
 
-ARTIFACT_TYPES: tuple[str, ...] = (
-    'dust',
-    'resist_residue',
-    'etch_residue',
-    'particle_cluster',
-    'flake',
-)
+ARTIFACT_TYPES: tuple[str, ...] = RANDOM_ARTIFACT_TYPES
 
 
 def _normalize_tensor(tensor: torch.Tensor) -> torch.Tensor:
@@ -329,9 +324,13 @@ def generate_random_artifact_patch(
     *,
     device: torch.device,
     dtype: torch.dtype,
+    artifact_types: tuple[str, ...] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     work_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
-    artifact_type = ARTIFACT_TYPES[int(np.random.randint(0, len(ARTIFACT_TYPES)))]
+    available_types = tuple(artifact_types or ARTIFACT_TYPES)
+    if not available_types:
+        raise ValueError('At least one artifact type must be enabled.')
+    artifact_type = available_types[int(np.random.randint(0, len(available_types)))]
     patch_scale = float(max(height, width))
     params = _sample_artifact_parameters(artifact_type, patch_scale)
 

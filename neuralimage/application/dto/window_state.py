@@ -106,6 +106,11 @@ class SettingsState:
     random_artifacts_probability: float = 1.0
     random_artifacts_count: int = 1
     random_artifacts_size_ratio: float = 0.25
+    random_artifacts_dust_enabled: bool = True
+    random_artifacts_resist_residue_enabled: bool = True
+    random_artifacts_etch_residue_enabled: bool = True
+    random_artifacts_particle_cluster_enabled: bool = True
+    random_artifacts_flake_enabled: bool = True
     mixup_enabled: bool = False
     mixup_probability: float = 1.0
     mixup_alpha: float = 0.2

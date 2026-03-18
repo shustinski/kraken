@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 
 from UI import ClickableLabel
 from lib.data_interfaces import (
+    RANDOM_ARTIFACT_TYPES,
     SampleCutMode,
     build_pcb_defect_parameters,
     build_tech_augmentation_config,
@@ -228,6 +229,11 @@ class SettingsPanel(QDockWidget):
         self.tech_augmentation_debug_pair_check_box = QCheckBox('')
         self.cutout_check_box = QCheckBox('')
         self.random_artifacts_check_box = QCheckBox('')
+        self.random_artifact_type_checkboxes: dict[str, QCheckBox] = {
+            artifact_name: QCheckBox('') for artifact_name in RANDOM_ARTIFACT_TYPES
+        }
+        for checkbox in self.random_artifact_type_checkboxes.values():
+            checkbox.setChecked(True)
         self.mixup_check_box = QCheckBox('')
         self.pcb_defects_check_box = QCheckBox('')
         self.pcb_defects_use_input_mask_check_box = QCheckBox('')
@@ -674,6 +680,7 @@ class SettingsPanel(QDockWidget):
                 self.tech_augmentation_debug_pair_check_box,
                 self.cutout_check_box,
                 self.random_artifacts_check_box,
+                *self.random_artifact_type_checkboxes.values(),
                 self.mixup_check_box,
                 self.pcb_defects_groupbox,
                 self.pcb_defects_check_box,
@@ -1345,6 +1352,8 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.augmentation_form, self.cutout_holes_spinbox, 'cutout_holes')
         self._add_labeled_row(self.augmentation_form, self.cutout_size_ratio_spinbox, 'cutout_size_ratio')
         self.augmentation_form.addRow(self.random_artifacts_check_box)
+        for artifact_name in RANDOM_ARTIFACT_TYPES:
+            self.augmentation_form.addRow(self.random_artifact_type_checkboxes[artifact_name])
         self._add_labeled_row(
             self.augmentation_form,
             self.random_artifacts_probability_spinbox,
@@ -1405,6 +1414,8 @@ class SettingsPanel(QDockWidget):
         self.tech_augmentation_check_box.toggled.connect(self._sync_tech_augmentation_controls)
         self.cutout_check_box.toggled.connect(self._sync_training_augmentation_controls)
         self.random_artifacts_check_box.toggled.connect(self._sync_training_augmentation_controls)
+        for checkbox in self.random_artifact_type_checkboxes.values():
+            checkbox.toggled.connect(self._sync_training_augmentation_controls)
         self.mixup_check_box.toggled.connect(self._sync_training_augmentation_controls)
         self.pcb_defects_check_box.toggled.connect(self._sync_training_augmentation_controls)
         self.pcb_defects_min_count_spinbox.valueChanged.connect(self._sync_pcb_defect_count_bounds)
@@ -2004,6 +2015,9 @@ class SettingsPanel(QDockWidget):
         training_enabled = self._training_controls_applicable
         self.cutout_check_box.setEnabled(training_enabled)
         self.random_artifacts_check_box.setEnabled(training_enabled)
+        random_artifacts_enabled = training_enabled and bool(self.random_artifacts_check_box.isChecked())
+        for checkbox in self.random_artifact_type_checkboxes.values():
+            checkbox.setEnabled(random_artifacts_enabled)
         self.mixup_check_box.setEnabled(training_enabled)
         pcb_defects_enabled = training_enabled and bool(self.pcb_defects_check_box.isChecked())
         self.pcb_defects_groupbox.setEnabled(training_enabled)
@@ -2024,15 +2038,15 @@ class SettingsPanel(QDockWidget):
         )
         self._set_field_enabled(
             self.random_artifacts_probability_spinbox,
-            training_enabled and bool(self.random_artifacts_check_box.isChecked()),
+            random_artifacts_enabled,
         )
         self._set_field_enabled(
             self.random_artifacts_count_spinbox,
-            training_enabled and bool(self.random_artifacts_check_box.isChecked()),
+            random_artifacts_enabled,
         )
         self._set_field_enabled(
             self.random_artifacts_size_ratio_spinbox,
-            training_enabled and bool(self.random_artifacts_check_box.isChecked()),
+            random_artifacts_enabled,
         )
         self._set_field_enabled(
             self.mixup_probability_spinbox,

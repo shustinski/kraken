@@ -309,6 +309,8 @@ class MainPresenter(QObject):
         s.random_artifacts_size_ratio_spinbox.setValue(
             float(getattr(state, 'random_artifacts_size_ratio', 0.25))
         )
+        for artifact_name, checkbox in getattr(s, 'random_artifact_type_checkboxes', {}).items():
+            checkbox.setChecked(bool(getattr(state, f'random_artifacts_{artifact_name}_enabled', True)))
         s.mixup_check_box.setChecked(bool(getattr(state, 'mixup_enabled', False)))
         s.mixup_probability_spinbox.setValue(float(getattr(state, 'mixup_probability', 1.0)))
         s.mixup_alpha_spinbox.setValue(float(getattr(state, 'mixup_alpha', 0.2)))
@@ -494,6 +496,10 @@ class MainPresenter(QObject):
         random_artifacts_probability = s.random_artifacts_probability_spinbox.value()
         random_artifacts_count = s.random_artifacts_count_spinbox.value()
         random_artifacts_size_ratio = s.random_artifacts_size_ratio_spinbox.value()
+        random_artifact_type_enabled = {
+            artifact_name: checkbox.isChecked()
+            for artifact_name, checkbox in getattr(s, 'random_artifact_type_checkboxes', {}).items()
+        }
         mixup_enabled = s.mixup_check_box.isChecked()
         mixup_probability = s.mixup_probability_spinbox.value()
         mixup_alpha = s.mixup_alpha_spinbox.value()
@@ -605,6 +611,19 @@ class MainPresenter(QObject):
                               random_artifacts_probability=random_artifacts_probability,
                               random_artifacts_count=random_artifacts_count,
                               random_artifacts_size_ratio=random_artifacts_size_ratio,
+                              random_artifacts_dust_enabled=bool(random_artifact_type_enabled.get('dust', True)),
+                              random_artifacts_resist_residue_enabled=bool(
+                                  random_artifact_type_enabled.get('resist_residue', True)
+                              ),
+                              random_artifacts_etch_residue_enabled=bool(
+                                  random_artifact_type_enabled.get('etch_residue', True)
+                              ),
+                              random_artifacts_particle_cluster_enabled=bool(
+                                  random_artifact_type_enabled.get('particle_cluster', True)
+                              ),
+                              random_artifacts_flake_enabled=bool(
+                                  random_artifact_type_enabled.get('flake', True)
+                              ),
                               mixup_enabled=mixup_enabled,
                               mixup_probability=mixup_probability,
                               mixup_alpha=mixup_alpha,

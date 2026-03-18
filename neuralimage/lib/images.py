@@ -676,14 +676,14 @@ class SampleFastCutter:
 
     @staticmethod
     def get_matrix_from_image(img, channels):
-        matrix = np.array(img).astype('float32')
-        matrix = matrix/255
+        matrix = np.asarray(img, dtype=np.float32)
+        matrix /= 255.0
         if channels == 1:
             matrix = np.reshape(matrix, (channels, matrix.shape[0], matrix.shape[1]))
         else:
             matrix = matrix.transpose(2, 0, 1)
 
-        return  matrix
+        return np.ascontiguousarray(matrix)
 
     def __len__(self):
         return len(self._parts_list)

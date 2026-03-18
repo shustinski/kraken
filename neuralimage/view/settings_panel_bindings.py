@@ -125,6 +125,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.cut_corner_spinbox.valueChanged,
             panel.target_x_size.valueChanged,
             panel.target_y_size.valueChanged,
+            *(checkbox.toggled for checkbox in getattr(panel, 'random_artifact_type_checkboxes', {}).values()),
         ),
         panel.optimizer_settings_changed,
     )

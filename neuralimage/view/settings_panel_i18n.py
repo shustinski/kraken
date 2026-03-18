@@ -723,6 +723,23 @@ def apply_settings_panel_texts(panel: Any) -> None:
             'Overlay synthetic textured artifacts on training images only.',
         )
     )
+    for artifact_name, default_text in (
+        ('dust', 'Dust'),
+        ('resist_residue', 'Resist residue'),
+        ('etch_residue', 'Etch residue'),
+        ('particle_cluster', 'Particle cluster'),
+        ('flake', 'Flake'),
+    ):
+        checkbox = panel.random_artifact_type_checkboxes[artifact_name]
+        checkbox.setText(str(t.get(f'random_artifacts_type_{artifact_name}', default_text)))
+        checkbox.setToolTip(
+            str(
+                t.get(
+                    f'random_artifacts_type_{artifact_name}_tip',
+                    f'Enable synthetic {default_text.lower()} artifacts.',
+                )
+            )
+        )
     panel.mixup_check_box.setText(
         _read_text_from_mappings(
             (t, labels_map),

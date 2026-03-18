@@ -270,13 +270,8 @@ class NoCutDataset(Dataset):
     def _resolve_frame_cache_limit() -> int:
         worker_info = get_worker_info()
         if worker_info is None:
-            return 4
-        worker_count = max(1, int(worker_info.num_workers))
-        if worker_count >= 6:
-            return 1
-        if worker_count >= 3:
             return 2
-        return 4
+        return 1
 
     def _get_frame_cutter(self, frame_index: int, *, shuffle: bool) -> SampleFastCutter:
         cache_limit = max(1, int(self._frame_cache_limit))

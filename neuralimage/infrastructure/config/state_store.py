@@ -364,6 +364,26 @@ def _build_settings_state(
             'random_artifacts_size_ratio',
             getattr(defaults, 'random_artifacts_size_ratio', 0.25),
         ),
+        random_artifacts_dust_enabled=read_bool(
+            'random_artifacts_dust_enabled',
+            getattr(defaults, 'random_artifacts_dust_enabled', True),
+        ),
+        random_artifacts_resist_residue_enabled=read_bool(
+            'random_artifacts_resist_residue_enabled',
+            getattr(defaults, 'random_artifacts_resist_residue_enabled', True),
+        ),
+        random_artifacts_etch_residue_enabled=read_bool(
+            'random_artifacts_etch_residue_enabled',
+            getattr(defaults, 'random_artifacts_etch_residue_enabled', True),
+        ),
+        random_artifacts_particle_cluster_enabled=read_bool(
+            'random_artifacts_particle_cluster_enabled',
+            getattr(defaults, 'random_artifacts_particle_cluster_enabled', True),
+        ),
+        random_artifacts_flake_enabled=read_bool(
+            'random_artifacts_flake_enabled',
+            getattr(defaults, 'random_artifacts_flake_enabled', True),
+        ),
         mixup_enabled=read_bool(
             'mixup_enabled',
             getattr(defaults, 'mixup_enabled', False),
@@ -534,6 +554,17 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'random_artifacts_probability': float(getattr(state, 'random_artifacts_probability', 1.0)),
         'random_artifacts_count': int(max(1, int(getattr(state, 'random_artifacts_count', 1)))),
         'random_artifacts_size_ratio': float(getattr(state, 'random_artifacts_size_ratio', 0.25)),
+        'random_artifacts_dust_enabled': bool(getattr(state, 'random_artifacts_dust_enabled', True)),
+        'random_artifacts_resist_residue_enabled': bool(
+            getattr(state, 'random_artifacts_resist_residue_enabled', True)
+        ),
+        'random_artifacts_etch_residue_enabled': bool(
+            getattr(state, 'random_artifacts_etch_residue_enabled', True)
+        ),
+        'random_artifacts_particle_cluster_enabled': bool(
+            getattr(state, 'random_artifacts_particle_cluster_enabled', True)
+        ),
+        'random_artifacts_flake_enabled': bool(getattr(state, 'random_artifacts_flake_enabled', True)),
         'mixup_enabled': bool(getattr(state, 'mixup_enabled', False)),
         'mixup_probability': float(getattr(state, 'mixup_probability', 1.0)),
         'mixup_alpha': float(getattr(state, 'mixup_alpha', 0.2)),

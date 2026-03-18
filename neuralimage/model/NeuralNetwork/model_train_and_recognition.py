@@ -1343,15 +1343,20 @@ class TrainerProcess(mp.Process):
         size_ratio = float(min(max(size_ratio, 0.0), 1.0))
         return enabled, probability, holes, size_ratio
 
-    def _resolved_random_artifact_parameters(self) -> tuple[bool, float, int, float]:
+    def _resolved_random_artifact_parameters(self) -> tuple[bool, float, int, float, tuple[str, ...]]:
         params = getattr(self, '_random_artifacts_params', None)
         enabled = bool(getattr(params, 'enabled', False))
         probability = float(getattr(params, 'probability', 1.0))
         count = max(1, int(getattr(params, 'count', 1)))
         size_ratio = float(getattr(params, 'size_ratio', 0.25))
+        artifact_types = (
+            tuple(params.enabled_types())
+            if params is not None and hasattr(params, 'enabled_types')
+            else ('dust', 'resist_residue', 'etch_residue', 'particle_cluster', 'flake')
+        )
         probability = float(min(max(probability, 0.0), 1.0))
         size_ratio = float(min(max(size_ratio, 0.0), 1.0))
-        return enabled, probability, count, size_ratio
+        return enabled, probability, count, size_ratio, artifact_types
 
     def _resolved_mixup_parameters(self) -> tuple[bool, float, float]:
         params = getattr(self, '_mixup_params', None)
@@ -2796,8 +2801,8 @@ class TrainerProcess(mp.Process):
         return cutout_image
 
     def _apply_random_artifacts_to_batch(self, image: torch.Tensor) -> torch.Tensor:
-        enabled, probability, count, size_ratio = self._resolved_random_artifact_parameters()
-        if (not enabled) or probability <= 0.0 or size_ratio <= 0.0:
+        enabled, probability, count, size_ratio, artifact_types = self._resolved_random_artifact_parameters()
+        if (not enabled) or probability <= 0.0 or size_ratio <= 0.0 or not artifact_types:
             return image
 
         batch_size, channels, height, width = image.shape
@@ -2851,6 +2856,7 @@ class TrainerProcess(mp.Process):
                     int(artifact_width),
                     device=image.device,
                     dtype=image.dtype,
+                    artifact_types=artifact_types,
                 )
                 patch = artifact_image[sample_index, :, top:top + artifact_height, left:left + artifact_width]
                 artifact_image[sample_index, :, top:top + artifact_height, left:left + artifact_width] = torch.clamp(

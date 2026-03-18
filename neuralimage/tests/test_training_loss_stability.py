@@ -411,10 +411,11 @@ def test_prepare_train_batch_applies_random_artifacts_only_to_image(monkeypatch)
     def _fake_randint(_low, _high, _size, device=None):
         return torch.tensor([next(randint_values)], device=device)
 
-    def _fake_generate_random_artifact_patch(channels, height, width, *, device, dtype):
+    def _fake_generate_random_artifact_patch(channels, height, width, *, device, dtype, artifact_types=None):
         assert channels == 3
         assert height == 2
         assert width == 3
+        assert artifact_types
         overlay = torch.tensor(
             [
                 [[0.2, 0.2, 0.2], [0.2, 0.2, 0.2]],

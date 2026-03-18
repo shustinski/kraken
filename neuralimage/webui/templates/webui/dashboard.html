@@ -308,6 +308,13 @@
                     </div>
                     <label class="check-row" title="{{ settings_form.random_artifacts_enabled.help_text }}">{{ settings_form.random_artifacts_enabled }} {{ settings_form.random_artifacts_enabled.label }}</label>
                     <div class="inline-3" data-role="random-artifacts-fields">
+                        <div class="field compact checkbox-stack">
+                            <label class="check-row">{{ settings_form.random_artifacts_dust_enabled }} {{ settings_form.random_artifacts_dust_enabled.label }}</label>
+                            <label class="check-row">{{ settings_form.random_artifacts_resist_residue_enabled }} {{ settings_form.random_artifacts_resist_residue_enabled.label }}</label>
+                            <label class="check-row">{{ settings_form.random_artifacts_etch_residue_enabled }} {{ settings_form.random_artifacts_etch_residue_enabled.label }}</label>
+                            <label class="check-row">{{ settings_form.random_artifacts_particle_cluster_enabled }} {{ settings_form.random_artifacts_particle_cluster_enabled.label }}</label>
+                            <label class="check-row">{{ settings_form.random_artifacts_flake_enabled }} {{ settings_form.random_artifacts_flake_enabled.label }}</label>
+                        </div>
                         <div class="field compact">
                             <label>{{ settings_form.random_artifacts_probability.label }}</label>
                             {{ settings_form.random_artifacts_probability }}

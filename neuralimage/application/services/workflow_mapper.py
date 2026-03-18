@@ -210,6 +210,11 @@ def build_workflow_parameters(
             probability=float(getattr(settings, 'random_artifacts_probability', 1.0)),
             count=max(1, int(getattr(settings, 'random_artifacts_count', 1))),
             size_ratio=float(getattr(settings, 'random_artifacts_size_ratio', 0.25)),
+            dust_enabled=bool(getattr(settings, 'random_artifacts_dust_enabled', True)),
+            resist_residue_enabled=bool(getattr(settings, 'random_artifacts_resist_residue_enabled', True)),
+            etch_residue_enabled=bool(getattr(settings, 'random_artifacts_etch_residue_enabled', True)),
+            particle_cluster_enabled=bool(getattr(settings, 'random_artifacts_particle_cluster_enabled', True)),
+            flake_enabled=bool(getattr(settings, 'random_artifacts_flake_enabled', True)),
         ),
         mixup=MixupParameters(
             enabled=bool(getattr(settings, 'mixup_enabled', False)),

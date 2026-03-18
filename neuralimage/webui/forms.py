@@ -383,6 +383,11 @@ class SettingsForm(forms.Form):
         max_value=1.0,
         required=False,
     )
+    random_artifacts_dust_enabled = forms.BooleanField(label='Dust', required=False)
+    random_artifacts_resist_residue_enabled = forms.BooleanField(label='Resist residue', required=False)
+    random_artifacts_etch_residue_enabled = forms.BooleanField(label='Etch residue', required=False)
+    random_artifacts_particle_cluster_enabled = forms.BooleanField(label='Particle cluster', required=False)
+    random_artifacts_flake_enabled = forms.BooleanField(label='Flake', required=False)
     mixup_enabled = forms.BooleanField(label='Enable mixup', required=False)
     mixup_probability = forms.FloatField(label='Mixup probability', min_value=0.0, max_value=1.0, required=False)
     mixup_alpha = forms.FloatField(label='Mixup alpha', min_value=0.0, max_value=10.0, required=False)
@@ -680,6 +685,14 @@ class SettingsForm(forms.Form):
             random_artifacts_probability=_with_default('random_artifacts_probability'),
             random_artifacts_count=_with_default('random_artifacts_count'),
             random_artifacts_size_ratio=_with_default('random_artifacts_size_ratio'),
+            random_artifacts_dust_enabled=cleaned.get('random_artifacts_dust_enabled', False),
+            random_artifacts_resist_residue_enabled=cleaned.get('random_artifacts_resist_residue_enabled', False),
+            random_artifacts_etch_residue_enabled=cleaned.get('random_artifacts_etch_residue_enabled', False),
+            random_artifacts_particle_cluster_enabled=cleaned.get(
+                'random_artifacts_particle_cluster_enabled',
+                False,
+            ),
+            random_artifacts_flake_enabled=cleaned.get('random_artifacts_flake_enabled', False),
             mixup_enabled=cleaned.get('mixup_enabled', False),
             mixup_probability=_with_default('mixup_probability'),
             mixup_alpha=_with_default('mixup_alpha'),
@@ -781,6 +794,23 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'random_artifacts_probability': getattr(state, 'random_artifacts_probability', 1.0),
         'random_artifacts_count': getattr(state, 'random_artifacts_count', 1),
         'random_artifacts_size_ratio': getattr(state, 'random_artifacts_size_ratio', 0.25),
+        'random_artifacts_dust_enabled': getattr(state, 'random_artifacts_dust_enabled', True),
+        'random_artifacts_resist_residue_enabled': getattr(
+            state,
+            'random_artifacts_resist_residue_enabled',
+            True,
+        ),
+        'random_artifacts_etch_residue_enabled': getattr(
+            state,
+            'random_artifacts_etch_residue_enabled',
+            True,
+        ),
+        'random_artifacts_particle_cluster_enabled': getattr(
+            state,
+            'random_artifacts_particle_cluster_enabled',
+            True,
+        ),
+        'random_artifacts_flake_enabled': getattr(state, 'random_artifacts_flake_enabled', True),
         'mixup_enabled': getattr(state, 'mixup_enabled', False),
         'mixup_probability': getattr(state, 'mixup_probability', 1.0),
         'mixup_alpha': getattr(state, 'mixup_alpha', 0.2),

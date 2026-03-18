@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+from pathlib import Path
 from typing import Callable
 
 from application.dto import MainWindowState, SettingsState
 from application.ports import StateStore
 from application.services import build_workflow_parameters, can_start_processing
+from application.services.training_artifacts import build_training_artifact_dir
+from infrastructure.config.state_store import WORKFLOW_SNAPSHOT_FILENAME, save_workflow_snapshot
+from lib.data_interfaces import WorkMode
 from lib.message_bus import AbstractMessageBus
 
 
@@ -41,7 +45,7 @@ class WebPresenter:
         question_module: QuestionModule,
         callback: Callable[..., None] | None = None,
     ) -> BuildHandlerResult:
-        if not can_start_processing(main_state):
+        if not can_start_processing(main_state, settings_state):
             return BuildHandlerResult(None, 'Fill in required fields and verify that all paths exist.')
 
         work_mode, training_parameters, recognition_parameters = build_workflow_parameters(
@@ -50,6 +54,19 @@ class WebPresenter:
         )
         if work_mode is None:
             return BuildHandlerResult(None, 'Invalid work mode.')
+
+        if work_mode in (WorkMode.train_only, WorkMode.train_and_recognition, WorkMode.further_training):
+            try:
+                artifact_dir = build_training_artifact_dir(main_state, settings_state, work_mode)
+                training_parameters.artifact_dir = artifact_dir
+                save_workflow_snapshot(
+                    main_state,
+                    settings_state,
+                    destination=Path(artifact_dir) / WORKFLOW_SNAPSHOT_FILENAME,
+                    workflow_snapshot=(work_mode, training_parameters, recognition_parameters),
+                )
+            except OSError as error:
+                return BuildHandlerResult(None, f'Failed to prepare run artifacts: {error}')
 
         self._state_store.save_main_window_state(main_state)
         self._state_store.save_settings_state(settings_state)

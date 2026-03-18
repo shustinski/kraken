@@ -10,6 +10,7 @@ from torchvision.transforms import ToTensor
 from lib.data_interfaces import TrainingParameters, SampleGenerationSettings, SamplePrepareSettings
 from lib.images import ImagePreparator, SampleCalculator, SampleFastCutter
 from lib.rare_patch_masks import resolve_rare_patch_mask_path
+from model.NeuralNetwork.context_utils import PatchWindow, extract_centered_crop, normalize_size_pair
 
 
 class NoCutDataset(Dataset):
@@ -29,6 +30,19 @@ class NoCutDataset(Dataset):
         self._rare_patch_oversampling_factor = max(
             1,
             int(getattr(settings, 'rare_patch_oversampling_factor', 2)),
+        )
+        self._use_context_branch = bool(getattr(settings, 'use_context_branch', False))
+        self._local_crop_size = normalize_size_pair(
+            getattr(settings, 'local_crop_size', None),
+            fallback=tuple(self._cut_settings.segment_size),
+        )
+        self._context_crop_size = normalize_size_pair(
+            getattr(settings, 'context_crop_size', None),
+            fallback=(self._local_crop_size[0] * 2, self._local_crop_size[1] * 2),
+        )
+        self._context_input_size = normalize_size_pair(
+            getattr(settings, 'context_input_size', None),
+            fallback=self._local_crop_size,
         )
         self.shuffle_patches_in_frame = bool(
             getattr(self._cut_settings, 'shuffle_patches_in_frame', self.shuffle_frames)
@@ -65,11 +79,19 @@ class NoCutDataset(Dataset):
                 frame,
                 shuffle=self.shuffle_patches_in_frame,
             )
-
-        return self._current_image_cutter[part]
+        image, label = self._current_image_cutter[part]
+        if not self._use_context_branch:
+            return image, label
+        context_image = self._build_context_crop(self._current_image_cutter, part)
+        return {'local_image': image, 'context_image': context_image}, label
 
     def __len__(self):
         return self._samples_amount
+
+    def describe_sample(self, index: int) -> str:
+        frame, part = index_in_list(int(index), self._lookup_len_list)
+        image_path, _label_path = self.samples[frame]
+        return f'{image_path.stem}__part_{int(part):06d}'
 
     def _create_files_list(self):
         if self.shuffle_frames:
@@ -176,6 +198,23 @@ class NoCutDataset(Dataset):
             return None
         return rare_mask
 
+    def _build_context_crop(self, cutter: SampleFastCutter, part: int):
+        left, top, right, bottom = cutter.resolve_part_coordinates(part)
+        window = PatchWindow(
+            left=int(left),
+            top=int(top),
+            width=max(1, int(right - left)),
+            height=max(1, int(bottom - top)),
+        )
+        return extract_centered_crop(
+            cutter.image_matrix,
+            center_x=window.center_x,
+            center_y=window.center_y,
+            crop_size_xy=self._context_crop_size,
+            output_size_xy=self._context_input_size,
+            interpolation_mode='bilinear',
+        )
+
 
 def summarise_list(datalist: list[int]):
     for i in range(len(datalist)):
@@ -213,6 +252,10 @@ class CustomDataset(Dataset):
 
     def __len__(self):
         return len(self.samples)
+
+    def describe_sample(self, idx: int) -> str:
+        image_path, _label_path = self.samples[int(idx)]
+        return str(image_path.stem)
 
     def __getitem__(self, idx):
         image = Image.open(self.samples[idx][0]).convert("RGB" if self.channels == 3 else "L")

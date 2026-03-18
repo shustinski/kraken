@@ -491,6 +491,37 @@ class SampleFastCutter:
             patch = self._resize_patch_tensor(patch, (self._sample_x, self._sample_y), resample=resample)
         return patch
 
+    def _decode_part_index(self, item: int) -> tuple[int, int, int, int]:
+        """Decode an item index into location and augmentation variants."""
+
+        loc = self._parts_list[item]
+        augmentation_variant = 0
+        if self._additional_augmentation:
+            loc, augmentation_variant = divmod(loc, 2)
+        scale_variant = 0
+        if self._scale_augmentation:
+            loc, scale_variant = divmod(loc, 2)
+
+        if self._vertical_rotation and self._horizontal_rotation:
+            location = loc // 4
+            rotation_index = loc % 4
+        elif self._horizontal_rotation:
+            location = loc // 3
+            rotation_index = 2 - (loc % 3)
+        elif self._vertical_rotation:
+            location = loc // 2
+            rotation_index = 2 * (loc % 2)
+        else:
+            location = loc
+            rotation_index = 0
+        return int(location), int(rotation_index), int(scale_variant), int(augmentation_variant)
+
+    def resolve_part_coordinates(self, item: int) -> tuple[int, int, int, int]:
+        """Resolve source-image crop coordinates for an item index."""
+
+        location, _rotation_index, scale_variant, _augmentation_variant = self._decode_part_index(item)
+        return self._resolve_crop_coordinates(location, scale_variant=scale_variant)
+
     def _is_uniform_label_location(self, location: int, *, scale_variant: int = 0) -> bool:
         label_patch = self._extract_patch(
             self.label_matrix,
@@ -536,26 +567,7 @@ class SampleFastCutter:
         #         # Disable accelerator for this instance after first failure.
         #         self._use_accelerator = False
 
-        loc = self._parts_list[item]
-        augmentation_variant = 0
-        if self._additional_augmentation:
-            loc, augmentation_variant = divmod(loc, 2)
-        scale_variant = 0
-        if self._scale_augmentation:
-            loc, scale_variant = divmod(loc, 2)
-
-        if self._vertical_rotation and self._horizontal_rotation:
-            location = loc // 4
-            rotation_index = loc % 4
-        elif self._horizontal_rotation:
-            location = loc // 3
-            rotation_index = 2 - (loc % 3)
-        elif self._vertical_rotation:
-            location = loc // 2
-            rotation_index = 2 * (loc % 2)
-        else:
-            location = loc
-            rotation_index = 0
+        location, rotation_index, scale_variant, augmentation_variant = self._decode_part_index(item)
 
         image = self._extract_patch(self.image_matrix, location, scale_variant=scale_variant)
         label = self._extract_patch(self.label_matrix, location, is_label=True, scale_variant=scale_variant)
@@ -665,7 +677,7 @@ class SampleFastCutter:
     @staticmethod
     def get_matrix_from_image(img, channels):
         matrix = np.array(img).astype('float32')
-        matrix = matrix/256
+        matrix = matrix/255
         if channels == 1:
             matrix = np.reshape(matrix, (channels, matrix.shape[0], matrix.shape[1]))
         else:

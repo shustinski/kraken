@@ -26,13 +26,18 @@ class TrainingMetricsDock(QDockWidget):
 
         self._train_epoch_points: list[tuple[float, float]] = []
         self._val_epoch_points: list[tuple[float, float]] = []
+        self._val_iou_points: list[tuple[float, float]] = []
+        self._val_dice_points: list[tuple[float, float]] = []
         self._batch_points: list[tuple[float, float]] = []
 
         self._pg = None
         self._epoch_plot = None
+        self._quality_plot = None
         self._batch_plot = None
         self._train_curve = None
         self._val_curve = None
+        self._iou_curve = None
+        self._dice_curve = None
         self._batch_curve = None
 
         try:
@@ -42,9 +47,10 @@ class TrainingMetricsDock(QDockWidget):
             pg.setConfigOptions(antialias=True)
 
             self._epoch_plot = pg.PlotWidget(title='Loss vs Epoch')
+            self._quality_plot = pg.PlotWidget(title='Validation IoU / Dice vs Epoch')
             self._batch_plot = pg.PlotWidget(title='Train Loss vs Batch (Current Epoch)')
 
-            for plot in (self._epoch_plot, self._batch_plot):
+            for plot in (self._epoch_plot, self._quality_plot, self._batch_plot):
                 plot.showGrid(x=True, y=True, alpha=0.3)
                 plot.setBackground('#10161d')
                 plot.getAxis('left').setTextPen('#c9d7e8')
@@ -52,6 +58,8 @@ class TrainingMetricsDock(QDockWidget):
 
             if self._epoch_plot is not None:
                 self._epoch_plot.addLegend()
+            if self._quality_plot is not None:
+                self._quality_plot.addLegend()
             self._train_curve = self._epoch_plot.plot(
                 pen=pg.mkPen('#50baff', width=2),
                 name='Train Loss',
@@ -60,9 +68,18 @@ class TrainingMetricsDock(QDockWidget):
                 pen=pg.mkPen('#ffaa5c', width=2),
                 name='Val Loss',
             )
+            self._iou_curve = self._quality_plot.plot(
+                pen=pg.mkPen('#8ed26e', width=2),
+                name='IoU',
+            )
+            self._dice_curve = self._quality_plot.plot(
+                pen=pg.mkPen('#ff6f91', width=2),
+                name='Dice',
+            )
             self._batch_curve = self._batch_plot.plot(pen=pg.mkPen('#89e47d', width=2))
 
             layout.addWidget(self._epoch_plot)
+            layout.addWidget(self._quality_plot)
             layout.addWidget(self._batch_plot)
         except Exception:
             layout.addWidget(QLabel('pyqtgraph is not available. Install pyqtgraph to enable live charts.'))
@@ -72,11 +89,17 @@ class TrainingMetricsDock(QDockWidget):
     def clear(self):
         self._train_epoch_points.clear()
         self._val_epoch_points.clear()
+        self._val_iou_points.clear()
+        self._val_dice_points.clear()
         self._batch_points.clear()
         if self._train_curve is not None:
             self._train_curve.setData([], [])
         if self._val_curve is not None:
             self._val_curve.setData([], [])
+        if self._iou_curve is not None:
+            self._iou_curve.setData([], [])
+        if self._dice_curve is not None:
+            self._dice_curve.setData([], [])
         if self._batch_curve is not None:
             self._batch_curve.setData([], [])
         if self._batch_plot is not None:
@@ -95,6 +118,18 @@ class TrainingMetricsDock(QDockWidget):
             xs = [p[0] for p in self._val_epoch_points]
             ys = [p[1] for p in self._val_epoch_points]
             self._val_curve.setData(xs, ys)
+
+    def add_val_quality_point(self, epoch: int, iou: float, dice: float):
+        self._val_iou_points.append((float(epoch), float(iou)))
+        self._val_dice_points.append((float(epoch), float(dice)))
+        if self._iou_curve is not None:
+            xs = [p[0] for p in self._val_iou_points]
+            ys = [p[1] for p in self._val_iou_points]
+            self._iou_curve.setData(xs, ys)
+        if self._dice_curve is not None:
+            xs = [p[0] for p in self._val_dice_points]
+            ys = [p[1] for p in self._val_dice_points]
+            self._dice_curve.setData(xs, ys)
 
     def set_batch_points(self, epoch: int, points: list[tuple[float, float]]):
         self._batch_points = list(points)

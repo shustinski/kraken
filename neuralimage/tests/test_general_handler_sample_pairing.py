@@ -1,6 +1,18 @@
 from types import SimpleNamespace
 
-from model.general_neural_handler import GeneralNeuralHandler
+import numpy as np
+import pytest
+
+pytest.importorskip('PIL')
+
+from PIL import Image
+
+from model.general_neural_handler import (
+    GeneralNeuralHandler,
+    _deterministic_validation_split,
+    _estimate_label_foreground_ratio,
+    _label_ratio_bucket,
+)
 from tests.helpers import make_test_dir
 
 
@@ -59,3 +71,38 @@ def test_get_zipped_samples_pairs_by_stem():
     assert val_samples is None
     assert [image.stem for image, _ in train_samples] == ['a', 'b']
     assert [label.stem for _, label in train_samples] == ['a', 'b']
+
+
+def test_deterministic_validation_split_stratifies_by_label_coverage():
+    root = make_test_dir('pairing_validation_split')
+    image_dir = root / 'images'
+    label_dir = root / 'labels'
+    image_dir.mkdir()
+    label_dir.mkdir()
+
+    samples: list[tuple[object, object]] = []
+    patterns = {
+        'a': np.zeros((8, 8), dtype=np.uint8),
+        'b': np.pad(np.ones((2, 2), dtype=np.uint8) * 255, 3),
+        'c': np.full((8, 8), 255, dtype=np.uint8),
+    }
+
+    for prefix, pattern in patterns.items():
+        for index in range(3):
+            image_path = image_dir / f'{prefix}{index}.png'
+            label_path = label_dir / f'{prefix}{index}.png'
+            image_path.write_bytes(b'x')
+            Image.fromarray(pattern, mode='L').save(label_path)
+            samples.append((image_path, label_path))
+
+    train_samples, val_samples = _deterministic_validation_split(samples, val_count=3)
+
+    val_buckets = {
+        _label_ratio_bucket(_estimate_label_foreground_ratio(label_path))
+        for _image_path, label_path in val_samples
+    }
+
+    assert len(train_samples) == 6
+    assert len(val_samples) == 3
+    assert len(val_buckets) == 3
+    assert {image.stem for image, _ in val_samples} != {'c0', 'c1', 'c2'}

@@ -29,7 +29,7 @@ def test_start_recognition_waits_for_model_recognizer_join(monkeypatch):
     flow: list[str] = []
 
     class _FakeRecognizer:
-        def __init__(self, recognition_parameters, message_bus, callback=None):
+        def __init__(self, recognition_parameters, message_bus, callback=None, multithreading=False):
             self.succeeded = True
             self.error_message = None
 
@@ -52,7 +52,7 @@ def test_start_recognition_reports_generic_error_on_failed_recognizer_without_me
     import model.general_neural_handler as target
 
     class _FakeRecognizer:
-        def __init__(self, recognition_parameters, message_bus, callback=None):
+        def __init__(self, recognition_parameters, message_bus, callback=None, multithreading=False):
             self.succeeded = False
             self.error_message = None
 

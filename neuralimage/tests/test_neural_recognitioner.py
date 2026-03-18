@@ -1,12 +1,11 @@
 from pathlib import Path
 
 import pytest
-
 torch = pytest.importorskip("torch")
 nn = pytest.importorskip("torch.nn")
 
 from lib.data_interfaces import RecognitionParameters
-from model.NeuralNetwork.model_train_and_recognition import NeuralRecognizer
+from model.NeuralNetwork.model_train_and_recognition import ModelRecognizer, NeuralRecognizer
 from tests.helpers import make_test_dir
 
 
@@ -32,12 +31,14 @@ def _build_params(base_dir: Path, model) -> RecognitionParameters:
 def test_run_uses_one_thread_on_small_workload(monkeypatch):
     base_dir = make_test_dir("neural_rec_small")
     bus = _StubBus()
-    recognizer = NeuralRecognizer(_build_params(base_dir, model="dummy_model_path.pth"), bus)
+    params = _build_params(base_dir, model="dummy_model_path.pth")
+    params.source_files = [Path("frame_001.jpg")]
+    recognizer = NeuralRecognizer(params, bus)
 
     calls = {"one": 0, "multi": 0}
     recognizer.prepare_model = lambda: None
     recognizer.run_one_thread = lambda: calls.__setitem__("one", calls["one"] + 1)
-    recognizer.run_multiprocessing = lambda: calls.__setitem__("multi", calls["multi"] + 1)
+    recognizer.run_multiprocessing = lambda _runtime_plan=None: calls.__setitem__("multi", calls["multi"] + 1)
     monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
     monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
 
@@ -45,6 +46,64 @@ def test_run_uses_one_thread_on_small_workload(monkeypatch):
 
     assert calls["one"] == 1
     assert calls["multi"] == 0
+
+
+def test_run_uses_multiprocessing_for_two_or_more_source_images(monkeypatch):
+    base_dir = make_test_dir("neural_rec_multi")
+    bus = _StubBus()
+    recognizer = NeuralRecognizer(_build_params(base_dir, model="dummy_model_path.pth"), bus)
+
+    calls = {"one": 0, "multi": 0}
+    recognizer.prepare_model = lambda: None
+    recognizer.run_one_thread = lambda: calls.__setitem__("one", calls["one"] + 1)
+    recognizer.run_multiprocessing = lambda _runtime_plan=None: calls.__setitem__("multi", calls["multi"] + 1)
+    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
+    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
+
+    recognizer.run(multithreading=True)
+
+    assert calls["one"] == 0
+    assert calls["multi"] == 1
+
+
+def test_runtime_plan_uses_four_cut_and_sew_workers_per_gpu(monkeypatch):
+    base_dir = make_test_dir("neural_rec_plan_gpu1")
+    bus = _StubBus()
+    recognizer = NeuralRecognizer(_build_params(base_dir, model="dummy_model_path.pth"), bus)
+
+    monkeypatch.setattr(
+        recognizer,
+        "_resolve_devices",
+        lambda: ([torch.device("cuda:0")], 1),
+    )
+
+    runtime_plan = recognizer._build_runtime_plan(multithreading=True)
+
+    assert runtime_plan.predict_workers == 1
+    assert runtime_plan.cut_workers == 4
+    assert runtime_plan.sew_workers == 4
+    assert runtime_plan.threads == 9
+
+
+def test_runtime_plan_scales_cut_and_sew_workers_with_gpu_count(monkeypatch):
+    base_dir = make_test_dir("neural_rec_plan_gpu2")
+    bus = _StubBus()
+    params = _build_params(base_dir, model="dummy_model_path.pth")
+    params.source_files = [Path("frame_001.jpg"), Path("frame_002.jpg"), Path("frame_003.jpg")]
+    recognizer = NeuralRecognizer(params, bus)
+
+    monkeypatch.setattr(
+        recognizer,
+        "_resolve_devices",
+        lambda: ([torch.device("cuda:0"), torch.device("cuda:1")], 2),
+    )
+
+    runtime_plan = recognizer._build_runtime_plan(multithreading=True)
+
+    assert runtime_plan.predict_workers == 2
+    assert runtime_plan.cut_workers == 8
+    assert runtime_plan.sew_workers == 8
+    assert runtime_plan.threads == 18
 
 
 def test_stop_sets_both_stop_events():
@@ -66,7 +125,7 @@ def test_run_falls_back_to_one_thread_for_in_memory_model(monkeypatch):
     calls = {"one": 0, "multi": 0}
     recognizer.prepare_model = lambda: None
     recognizer.run_one_thread = lambda: calls.__setitem__("one", calls["one"] + 1)
-    recognizer.run_multiprocessing = lambda: calls.__setitem__("multi", calls["multi"] + 1)
+    recognizer.run_multiprocessing = lambda _runtime_plan=None: calls.__setitem__("multi", calls["multi"] + 1)
     monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
     monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
 
@@ -74,3 +133,156 @@ def test_run_falls_back_to_one_thread_for_in_memory_model(monkeypatch):
 
     assert calls["one"] == 1
     assert calls["multi"] == 0
+
+
+def test_run_uses_parameter_flag_to_disable_multiprocessing(monkeypatch):
+    base_dir = make_test_dir("neural_rec_flag_off")
+    bus = _StubBus()
+    params = _build_params(base_dir, model="dummy_model_path.pth")
+    params.recognition_multiprocessing_enabled = False
+    recognizer = NeuralRecognizer(params, bus)
+
+    calls = {"one": 0, "multi": 0}
+    recognizer.prepare_model = lambda: None
+    recognizer.run_one_thread = lambda: calls.__setitem__("one", calls["one"] + 1)
+    recognizer.run_multiprocessing = lambda runtime_plan=None: calls.__setitem__("multi", calls["multi"] + 1)
+    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
+    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
+
+    recognizer.run()
+
+    assert calls["one"] == 1
+    assert calls["multi"] == 0
+
+
+def test_prepare_model_resolves_recommended_threshold_from_artifact_metadata(monkeypatch):
+    base_dir = make_test_dir("neural_rec_threshold_auto")
+    bus = _StubBus()
+    model = nn.Conv2d(1, 1, kernel_size=1)
+    setattr(model, "_neuralimage_artifact_metadata", {"inference": {"recommended_threshold": 0.73}})
+    recognizer = NeuralRecognizer(_build_params(base_dir, model=model), bus)
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setenv("NEURALIMAGE_TORCH_COMPILE", "0")
+    monkeypatch.setattr(
+        "model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    recognizer.prepare_model()
+    recognizer.run_one_thread()
+
+    assert recognizer._resolved_output_threshold == pytest.approx(0.73)
+    assert captured["threshold"] == pytest.approx(0.73)
+    assert captured["binarize_output"] is True
+    assert any("recommended model threshold" in str(payload) for topic, payload in bus.messages if topic == "logging")
+
+
+def test_prepare_model_uses_manual_threshold_and_postprocess_settings(monkeypatch):
+    base_dir = make_test_dir("neural_rec_threshold_manual")
+    bus = _StubBus()
+    model = nn.Conv2d(1, 1, kernel_size=1)
+    params = _build_params(base_dir, model=model)
+    params.use_auto_threshold = False
+    params.threshold = 0.64
+    params.postprocess_enabled = True
+    params.postprocess_kernel_size = 5
+    recognizer = NeuralRecognizer(params, bus)
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setenv("NEURALIMAGE_TORCH_COMPILE", "0")
+    monkeypatch.setattr(
+        "model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    recognizer.prepare_model()
+    recognizer.run_one_thread()
+
+    assert recognizer._resolved_output_threshold == pytest.approx(0.64)
+    assert captured["threshold"] == pytest.approx(0.64)
+    assert captured["postprocess_enabled"] is True
+    assert captured["postprocess_kernel_size"] == 5
+
+
+def test_prepare_model_disables_threshold_when_binarization_is_off(monkeypatch):
+    base_dir = make_test_dir("neural_rec_threshold_disabled")
+    bus = _StubBus()
+    model = nn.Conv2d(1, 1, kernel_size=1)
+    params = _build_params(base_dir, model=model)
+    params.binarize_output = False
+    params.use_auto_threshold = True
+    params.threshold = 0.81
+    recognizer = NeuralRecognizer(params, bus)
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setenv("NEURALIMAGE_TORCH_COMPILE", "0")
+    monkeypatch.setattr(
+        "model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    recognizer.prepare_model()
+    recognizer.run_one_thread()
+
+    assert recognizer._resolved_output_threshold is None
+    assert captured["binarize_output"] is False
+    assert captured["threshold"] is None
+    assert any("saving probability maps" in str(payload) for topic, payload in bus.messages if topic == "logging")
+
+
+def test_run_multiprocessing_propagates_disabled_binarization_as_none_threshold(monkeypatch):
+    base_dir = make_test_dir("neural_rec_threshold_disabled_mp")
+    bus = _StubBus()
+    params = _build_params(base_dir, model="dummy_model_path.pth")
+    params.binarize_output = False
+    recognizer = NeuralRecognizer(params, bus)
+    recognizer.devices_list = [torch.device("cpu")]
+    recognizer._resolved_output_threshold = None
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "model.NeuralNetwork.model_train_and_recognition.run_multiprocessing_recognition",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    recognizer.run_multiprocessing()
+
+    workload = captured["workload"]
+    assert workload.binarize_output is False
+    assert workload.threshold is None
+
+
+def test_model_recognizer_does_not_disable_process_mode_under_debugger(monkeypatch):
+    base_dir = make_test_dir("neural_rec_debugger")
+    bus = _StubBus()
+    params = _build_params(base_dir, model="dummy_model_path.pth")
+    started = {"value": False}
+
+    class _FakeProcess:
+        exitcode = 0
+
+        def __init__(self, recognition_parameters, message_queue, stop_event, multithreading=False):
+            self._alive = False
+
+        def start(self):
+            started["value"] = True
+
+        def is_alive(self):
+            return False
+
+        def join(self, timeout=None):
+            return
+
+    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition._is_debugger_attached", lambda: True)
+    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.RecognizerProcess", _FakeProcess)
+
+    recognizer = ModelRecognizer(params, bus, multithreading=True)
+    recognizer.run()
+
+    assert started["value"] is True
+    assert recognizer.succeeded is True

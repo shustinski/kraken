@@ -2,13 +2,16 @@ from pathlib import Path
 
 from lib.data_interfaces import (
     WorkMode,
+    ValidationSource,
     normalize_work_mode,
+    normalize_validation_source,
     parse_work_mode,
     SampleCutMode,
     OptimizerName,
     OptimizerParameters,
     SampleGenerationSettings,
     SamplePrepareSettings,
+    SchedulerName,
     TrainingParameters,
     RecognitionParameters,
 )
@@ -25,6 +28,11 @@ def test_work_mode_legacy_aliases_are_normalized():
     assert normalize_work_mode('futher_training') == WorkMode.further_training.value
     assert parse_work_mode('recognintion_only') == WorkMode.recognition_only
     assert parse_work_mode('futher_training') == WorkMode.further_training
+
+
+def test_validation_source_defaults_to_split():
+    assert normalize_validation_source('external') == ValidationSource.external.value
+    assert normalize_validation_source(None) == ValidationSource.split.value
 
 
 def test_dataclass_instantiation():
@@ -53,7 +61,13 @@ def test_dataclass_instantiation():
     )
 
     assert train.generation.segment_size == (16, 16)
+    assert train.validation_source == ValidationSource.split.value
+    assert train.validation_image_path is None
+    assert train.validation_label_path is None
+    assert train.save_validation_binary_images is False
+    assert train.dataloader_num_workers == -1
     assert rec.source_files == [Path('x')]
+    assert rec.recognition_multiprocessing_enabled is True
 
 
 def test_training_parameters_default_optimizer():
@@ -77,11 +91,20 @@ def test_training_parameters_default_optimizer():
     assert train.optimizer.weight_decay == 0.0
     assert train.mixed_precision.value == 'bf16'
     assert train.warmup.enabled is False
+    assert train.scheduler.name == SchedulerName.off
+    assert train.scheduler.plateau_factor == 0.5
+    assert train.scheduler.cosine_t_max == 10
+    assert train.scheduler.one_cycle_anneal_strategy == 'cos'
+    assert train.scheduler.step_lr_gamma == 0.1
     assert train.early_stopping.enabled is False
     assert train.cutout.enabled is False
     assert train.cutout.probability == 1.0
     assert train.cutout.holes == 1
     assert train.cutout.size_ratio == 0.25
+    assert train.random_artifacts.enabled is False
+    assert train.random_artifacts.probability == 1.0
+    assert train.random_artifacts.count == 1
+    assert train.random_artifacts.size_ratio == 0.25
     assert train.mixup.enabled is False
     assert train.mixup.probability == 1.0
     assert train.mixup.alpha == 0.2

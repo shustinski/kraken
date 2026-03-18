@@ -4,18 +4,24 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from lib.data_interfaces import (
+    CutoutParameters,
     EarlyStoppingParameters,
     HardMiningParameters,
     MixedPrecisionMode,
+    MixupParameters,
     OptimizerName,
     OptimizerParameters,
+    RandomArtifactsParameters,
     RecognitionParameters,
     SampleCutMode,
     SampleGenerationSettings,
     SamplePrepareSettings,
+    SchedulerName,
+    SchedulerParameters,
     TrainingParameters,
     WarmupParameters,
     WorkMode,
+    normalize_scheduler_name,
     parse_work_mode,
     normalize_multi_gpu_mode,
 )
@@ -63,17 +69,27 @@ def _to_work_mode(value: str) -> WorkMode:
     )
 
 
-def _build_training_parameters(raw: dict[str, Any]) -> TrainingParameters:
+def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = None) -> TrainingParameters:
     generation_raw = raw.get('generation', {})
     prepare_raw = raw.get('prepare', {})
     optimizer_raw = raw.get('optimizer', {})
     early_stopping_raw = raw.get('early_stopping', {})
     warmup_raw = raw.get('warmup', {})
+    scheduler_raw = raw.get('scheduler', {})
     hard_mining_raw = raw.get('hard_mining', {})
+    cutout_raw = raw.get('cutout', {})
+    random_artifacts_raw = raw.get('random_artifacts', {})
+    mixup_raw = raw.get('mixup', {})
+    resolved_model_name = str(model_name or raw.get('model_name', '')).strip()
+    default_context_branch = resolved_model_name in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}
+    local_crop_size = _to_tuple2(
+        raw.get('local_crop_size', generation_raw.get('segment_size', [256, 256])),
+        'tranining_parameters.local_crop_size',
+    )
 
     generation = SampleGenerationSettings(
         step=int(generation_raw.get('step', 100)),
-        segment_size=_to_tuple2(generation_raw.get('segment_size', [256, 256]), 'generation.segment_size'),
+        segment_size=local_crop_size,
         vertical_rotation=bool(generation_raw.get('vertical_rotation', True)),
         horizontal_rotation=bool(generation_raw.get('horizontal_rotation', True)),
         channels=int(generation_raw.get('channels', 3)),
@@ -116,6 +132,25 @@ def _build_training_parameters(raw: dict[str, Any]) -> TrainingParameters:
         start_factor=float(warmup_raw.get('start_factor', 0.1)),
     )
 
+    scheduler = SchedulerParameters(
+        name=SchedulerName(normalize_scheduler_name(scheduler_raw.get('name', SchedulerName.off.value))),
+        plateau_factor=float(scheduler_raw.get('plateau_factor', 0.5)),
+        plateau_patience=int(scheduler_raw.get('plateau_patience', 3)),
+        plateau_threshold=float(scheduler_raw.get('plateau_threshold', 1e-4)),
+        plateau_min_lr=float(scheduler_raw.get('plateau_min_lr', 1e-6)),
+        plateau_cooldown=int(scheduler_raw.get('plateau_cooldown', 0)),
+        cosine_t_max=int(scheduler_raw.get('cosine_t_max', 10)),
+        cosine_eta_min=float(scheduler_raw.get('cosine_eta_min', 1e-6)),
+        one_cycle_max_lr=float(scheduler_raw.get('one_cycle_max_lr', 1e-3)),
+        one_cycle_pct_start=float(scheduler_raw.get('one_cycle_pct_start', 0.3)),
+        one_cycle_anneal_strategy=str(scheduler_raw.get('one_cycle_anneal_strategy', 'cos')).strip().lower(),
+        one_cycle_div_factor=float(scheduler_raw.get('one_cycle_div_factor', 25.0)),
+        one_cycle_final_div_factor=float(scheduler_raw.get('one_cycle_final_div_factor', 10000.0)),
+        one_cycle_three_phase=bool(scheduler_raw.get('one_cycle_three_phase', False)),
+        step_lr_step_size=int(scheduler_raw.get('step_lr_step_size', 10)),
+        step_lr_gamma=float(scheduler_raw.get('step_lr_gamma', 0.1)),
+    )
+
     hard_mining = HardMiningParameters(
         enabled=bool(hard_mining_raw.get('enabled', False)),
         strength=float(hard_mining_raw.get('strength', 2.0)),
@@ -148,28 +183,79 @@ def _build_training_parameters(raw: dict[str, Any]) -> TrainingParameters:
         iou_loss_weight=float(raw.get('iou_loss_weight', 0.5)),
         early_stopping=early_stopping,
         warmup=warmup,
+        scheduler=scheduler,
         hard_mining=hard_mining,
+        cutout=CutoutParameters(
+            enabled=bool(cutout_raw.get('enabled', False)),
+            probability=float(cutout_raw.get('probability', 1.0)),
+            holes=max(1, int(cutout_raw.get('holes', 1))),
+            size_ratio=float(cutout_raw.get('size_ratio', 0.25)),
+        ),
+        random_artifacts=RandomArtifactsParameters(
+            enabled=bool(random_artifacts_raw.get('enabled', False)),
+            probability=float(random_artifacts_raw.get('probability', 1.0)),
+            count=max(1, int(random_artifacts_raw.get('count', 1))),
+            size_ratio=float(random_artifacts_raw.get('size_ratio', 0.25)),
+        ),
+        mixup=MixupParameters(
+            enabled=bool(mixup_raw.get('enabled', False)),
+            probability=float(mixup_raw.get('probability', 1.0)),
+            alpha=float(mixup_raw.get('alpha', 0.2)),
+        ),
         skip_uniform_labels=bool(raw.get('skip_uniform_labels', False)),
         use_multi_gpu=bool(multi_gpu_mode != 'off'),
         multi_gpu_mode=multi_gpu_mode,
         show_batch_preview=bool(raw.get('show_batch_preview', True)),
         log_update_frequency=int(raw.get('log_update_frequency', 0)),
+        local_crop_size=local_crop_size,
+        context_crop_size=(
+            _to_tuple2(raw.get('context_crop_size'), 'tranining_parameters.context_crop_size')
+            if raw.get('context_crop_size') is not None
+            else None
+        ),
+        context_input_size=(
+            _to_tuple2(raw.get('context_input_size'), 'tranining_parameters.context_input_size')
+            if raw.get('context_input_size') is not None
+            else None
+        ),
+        context_branch_channels=tuple(int(value) for value in raw.get('context_branch_channels', [16, 32, 64, 128])),
+        fusion_type=str(raw.get('fusion_type', 'concat')),
+        use_context_branch=bool(raw.get('use_context_branch', default_context_branch)),
+        dataloader_num_workers=int(raw.get('dataloader_num_workers', -1)),
     )
 
 
 def _build_recognition_parameters(raw: dict[str, Any]) -> RecognitionParameters:
     source_files = [Path(p) for p in raw.get('source_files', [])]
-    model_value = raw.get('model', '')
+    model_value = raw.get('model', raw.get('model_name', ''))
     model = Path(model_value) if isinstance(model_value, str) and model_value.lower().endswith('.pth') else model_value
 
     return RecognitionParameters(
         source_files=source_files,
         result_folder=Path(raw.get('result_folder', '')),
         model=model,
-        part_size=_to_tuple2(raw.get('part_size', [256, 256]), 'recogniton_parameters.part_size'),
+        part_size=_to_tuple2(
+            raw.get('part_size', raw.get('local_crop_size', [256, 256])),
+            'recogniton_parameters.part_size',
+        ),
         batch_size=int(raw.get('batch_size', 16)),
         overlap=int(raw.get('overlap', 8)),
         jpeg_quality=int(raw.get('jpeg_quality', 95)),
+        use_context_branch=(
+            bool(raw.get('use_context_branch'))
+            if 'use_context_branch' in raw
+            else None
+        ),
+        context_crop_size=(
+            _to_tuple2(raw.get('context_crop_size'), 'recogniton_parameters.context_crop_size')
+            if raw.get('context_crop_size') is not None
+            else None
+        ),
+        context_input_size=(
+            _to_tuple2(raw.get('context_input_size'), 'recogniton_parameters.context_input_size')
+            if raw.get('context_input_size') is not None
+            else None
+        ),
     )
 
 
@@ -189,8 +275,10 @@ def _config_template() -> dict[str, Any]:
         'recogniton_parameters': {
             'source_files': ['D:/data/inference/source_1.jpg'],
             'result_folder': 'D:/data/inference/results',
-            'model': 'M 720k',
-            'part_size': [256, 256],
+            'model_name': 'quasi_dual_scale_unet',
+            'local_crop_size': [256, 256],
+            'context_crop_size': [512, 512],
+            'context_input_size': [256, 256],
             'batch_size': 8,
             'overlap': 16,
             'jpeg_quality': 95,
@@ -202,9 +290,16 @@ def _config_template() -> dict[str, Any]:
             'validation': True,
             'validation_percent': 20,
             'batch_size': 8,
+            'dataloader_num_workers': -1,
             'cut_mode': 'online',
             'colors': 3,
             'epochs': 30,
+            'local_crop_size': [256, 256],
+            'context_crop_size': [512, 512],
+            'context_input_size': [256, 256],
+            'context_branch_channels': [16, 32, 64, 128],
+            'fusion_type': 'concat',
+            'use_context_branch': True,
             'generation': {
                 'step': 128,
                 'segment_size': [256, 256],
@@ -247,12 +342,47 @@ def _config_template() -> dict[str, Any]:
                 'epochs': 3,
                 'start_factor': 0.1,
             },
+            'scheduler': {
+                'name': 'off',
+                'plateau_factor': 0.5,
+                'plateau_patience': 3,
+                'plateau_threshold': 0.0001,
+                'plateau_min_lr': 0.000001,
+                'plateau_cooldown': 0,
+                'cosine_t_max': 10,
+                'cosine_eta_min': 0.000001,
+                'one_cycle_max_lr': 0.001,
+                'one_cycle_pct_start': 0.3,
+                'one_cycle_anneal_strategy': 'cos',
+                'one_cycle_div_factor': 25.0,
+                'one_cycle_final_div_factor': 10000.0,
+                'one_cycle_three_phase': False,
+                'step_lr_step_size': 10,
+                'step_lr_gamma': 0.1,
+            },
             'hard_mining': {
                 'enabled': False,
                 'strength': 2.0,
                 'ema_alpha': 0.2,
                 'pixel_enabled': False,
                 'pixel_keep_ratio': 0.25,
+            },
+            'cutout': {
+                'enabled': False,
+                'probability': 1.0,
+                'holes': 1,
+                'size_ratio': 0.25,
+            },
+            'random_artifacts': {
+                'enabled': False,
+                'probability': 1.0,
+                'count': 1,
+                'size_ratio': 0.25,
+            },
+            'mixup': {
+                'enabled': False,
+                'probability': 1.0,
+                'alpha': 0.2,
             },
             'skip_uniform_labels': False,
             'use_multi_gpu': True,
@@ -268,8 +398,10 @@ def _load_settings(path: Path, work_mode_override: str | None = None) -> tuple[W
 
     work_mode_raw = work_mode_override if work_mode_override else payload.get('work_mode', 'train_and_recognition')
     work_mode = _to_work_mode(work_mode_raw)
-    training_parameters = _build_training_parameters(payload.get('tranining_parameters', {}))
-    recognition_parameters = _build_recognition_parameters(payload.get('recogniton_parameters', {}))
+    recognition_payload = payload.get('recogniton_parameters', {})
+    model_name = str(recognition_payload.get('model', recognition_payload.get('model_name', ''))).strip() or None
+    training_parameters = _build_training_parameters(payload.get('tranining_parameters', {}), model_name=model_name)
+    recognition_parameters = _build_recognition_parameters(recognition_payload)
     return work_mode, training_parameters, recognition_parameters
 
 

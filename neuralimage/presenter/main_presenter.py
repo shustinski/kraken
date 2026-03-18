@@ -19,6 +19,12 @@ from application.services import (
     build_workflow_parameters,
     can_start_processing,
 )
+from application.services.training_artifacts import build_training_artifact_dir
+from infrastructure.config.state_store import (
+    WORKFLOW_SNAPSHOT_FILENAME,
+    load_workflow_snapshot,
+    save_workflow_snapshot,
+)
 from lib.data_interfaces import (
     CutSettings,
     SampleCutMode,
@@ -27,6 +33,7 @@ from lib.data_interfaces import (
     RecognitionParameters,
     normalize_work_mode,
     normalize_multi_gpu_mode,
+    normalize_validation_source,
 )
 from lib.file_func import filter_files
 from lib.loss_config import dominant_loss_function, resolve_loss_term_weights
@@ -120,6 +127,7 @@ class MainPresenter(QObject):
         v.label_path_requested.connect(self._chosse_cif_label_path)
 
         v.model_path_requested.connect(self._choose_model_path)
+        v.open_config_requested.connect(self._on_open_config_requested)
 
         v.start_requested.connect(self._on_start_requested)
         v.stop_requested.connect(self._on_stop_requested)
@@ -143,6 +151,8 @@ class MainPresenter(QObject):
         v.sample_size_changed.connect(self._set_max_shift)
         v.optimizer_settings_changed.connect(self._update_settings_window_state)
         v.validation_settings_changed.connect(self._update_settings_window_state)
+        v.validation_image_path_requested.connect(self._choose_validation_image_folder)
+        v.validation_label_path_requested.connect(self._choose_validation_label_folder)
         v.reset_defaults_requested.connect(self._reset_settings_to_defaults)
         v.ui_language_changed.connect(self.view.apply_ui_language)
         v.rare_patch_editor_requested.connect(self._open_rare_patch_editor)
@@ -291,6 +301,12 @@ class MainPresenter(QObject):
         s.cutout_probability_spinbox.setValue(float(getattr(state, 'cutout_probability', 1.0)))
         s.cutout_holes_spinbox.setValue(int(getattr(state, 'cutout_holes', 1)))
         s.cutout_size_ratio_spinbox.setValue(float(getattr(state, 'cutout_size_ratio', 0.25)))
+        s.random_artifacts_check_box.setChecked(bool(getattr(state, 'random_artifacts_enabled', False)))
+        s.random_artifacts_probability_spinbox.setValue(float(getattr(state, 'random_artifacts_probability', 1.0)))
+        s.random_artifacts_count_spinbox.setValue(int(getattr(state, 'random_artifacts_count', 1)))
+        s.random_artifacts_size_ratio_spinbox.setValue(
+            float(getattr(state, 'random_artifacts_size_ratio', 0.25))
+        )
         s.mixup_check_box.setChecked(bool(getattr(state, 'mixup_enabled', False)))
         s.mixup_probability_spinbox.setValue(float(getattr(state, 'mixup_probability', 1.0)))
         s.mixup_alpha_spinbox.setValue(float(getattr(state, 'mixup_alpha', 0.2)))
@@ -298,6 +314,14 @@ class MainPresenter(QObject):
         # 3.4  Validation controls
         s.validation_check_box.setChecked(state.use_validation)
         s.validation_spinbox.setValue(state.validation_percent)
+        s.set_validation_source_value(
+            normalize_validation_source(getattr(state, 'validation_source', 'split'))
+        )
+        s.set_validation_image_path(str(getattr(state, 'validation_image_folder', '')))
+        s.set_validation_label_path(str(getattr(state, 'validation_label_folder', '')))
+        s.save_validation_binary_images_check_box.setChecked(
+            bool(getattr(state, 'save_validation_binary_images', False))
+        )
 
         # 3.5 Режим нарезки
 
@@ -311,9 +335,13 @@ class MainPresenter(QObject):
         train_batch_size = int(getattr(state, 'train_batch_size', None) or state.batch_size)
         recognition_batch_size = int(getattr(state, 'recognition_batch_size', None) or state.batch_size)
         s.train_batch_spinbox.setValue(train_batch_size)
+        s.dataloader_num_workers_spinbox.setValue(int(getattr(state, 'dataloader_num_workers', -1)))
         s.recognition_batch_spinbox.setValue(recognition_batch_size)
         s.overlap_spinbox.setValue(state.overlap)
         s.recognition_jpeg_quality_spinbox.setValue(int(getattr(state, 'recognition_jpeg_quality', 95)))
+        s.recognition_multiprocessing_check_box.setChecked(
+            bool(getattr(state, 'recognition_multiprocessing_enabled', True))
+        )
         s.recognition_binarize_output_check_box.setChecked(bool(getattr(state, 'recognition_binarize_output', True)))
         s.recognition_use_auto_threshold_check_box.setChecked(
             bool(getattr(state, 'recognition_use_auto_threshold', True))
@@ -344,6 +372,32 @@ class MainPresenter(QObject):
         s.warmup_check_box.setChecked(state.warmup_enabled)
         s.warmup_epochs_spinbox.setValue(state.warmup_epochs)
         s.warmup_start_factor_spinbox.setValue(state.warmup_start_factor)
+        s.set_scheduler_value(str(getattr(state, 'scheduler_name', 'off')))
+        s.scheduler_plateau_factor_spinbox.setValue(float(getattr(state, 'scheduler_plateau_factor', 0.5)))
+        s.scheduler_plateau_patience_spinbox.setValue(int(getattr(state, 'scheduler_plateau_patience', 3)))
+        s.scheduler_plateau_threshold_spinbox.setValue(float(getattr(state, 'scheduler_plateau_threshold', 1e-4)))
+        s.scheduler_plateau_min_lr_spinbox.setValue(float(getattr(state, 'scheduler_plateau_min_lr', 1e-6)))
+        s.scheduler_plateau_cooldown_spinbox.setValue(int(getattr(state, 'scheduler_plateau_cooldown', 0)))
+        s.scheduler_cosine_t_max_spinbox.setValue(int(getattr(state, 'scheduler_cosine_t_max', 10)))
+        s.scheduler_cosine_eta_min_spinbox.setValue(float(getattr(state, 'scheduler_cosine_eta_min', 1e-6)))
+        s.scheduler_one_cycle_max_lr_spinbox.setValue(float(getattr(state, 'scheduler_one_cycle_max_lr', 1e-3)))
+        s.scheduler_one_cycle_pct_start_spinbox.setValue(
+            float(getattr(state, 'scheduler_one_cycle_pct_start', 0.3))
+        )
+        s.set_scheduler_one_cycle_anneal_strategy_value(
+            str(getattr(state, 'scheduler_one_cycle_anneal_strategy', 'cos'))
+        )
+        s.scheduler_one_cycle_div_factor_spinbox.setValue(
+            float(getattr(state, 'scheduler_one_cycle_div_factor', 25.0))
+        )
+        s.scheduler_one_cycle_final_div_factor_spinbox.setValue(
+            float(getattr(state, 'scheduler_one_cycle_final_div_factor', 10000.0))
+        )
+        s.scheduler_one_cycle_three_phase_check_box.setChecked(
+            bool(getattr(state, 'scheduler_one_cycle_three_phase', False))
+        )
+        s.scheduler_step_lr_step_size_spinbox.setValue(int(getattr(state, 'scheduler_step_lr_step_size', 10)))
+        s.scheduler_step_lr_gamma_spinbox.setValue(float(getattr(state, 'scheduler_step_lr_gamma', 0.1)))
         s.hard_mining_check_box.setChecked(state.hard_mining_enabled)
         s.hard_mining_strength_spinbox.setValue(state.hard_mining_strength)
         s.hard_mining_ema_alpha_spinbox.setValue(state.hard_mining_ema_alpha)
@@ -431,19 +485,29 @@ class MainPresenter(QObject):
         cutout_probability = s.cutout_probability_spinbox.value()
         cutout_holes = s.cutout_holes_spinbox.value()
         cutout_size_ratio = s.cutout_size_ratio_spinbox.value()
+        random_artifacts_enabled = s.random_artifacts_check_box.isChecked()
+        random_artifacts_probability = s.random_artifacts_probability_spinbox.value()
+        random_artifacts_count = s.random_artifacts_count_spinbox.value()
+        random_artifacts_size_ratio = s.random_artifacts_size_ratio_spinbox.value()
         mixup_enabled = s.mixup_check_box.isChecked()
         mixup_probability = s.mixup_probability_spinbox.value()
         mixup_alpha = s.mixup_alpha_spinbox.value()
         validation = s.validation_check_box.isChecked()
         validation_percent = s.validation_spinbox.value()
+        validation_source = normalize_validation_source(s.get_validation_source_value())
+        validation_image_folder = s.validation_image_path()
+        validation_label_folder = s.validation_label_path()
+        save_validation_binary_images = s.save_validation_binary_images_check_box.isChecked()
         cut_mode = self._update_cut_mode()
         train_batch_size = s.train_batch_spinbox.value()
+        dataloader_num_workers = s.dataloader_num_workers_spinbox.value()
         recognition_batch_size = s.recognition_batch_spinbox.value()
         sync_patch_sizes = s.sync_patch_sizes_check_box.isChecked()
         if sync_patch_sizes:
             recognition_patch_size = train_patch_size
         overlap = s.overlap_spinbox.value()
         recognition_jpeg_quality = s.recognition_jpeg_quality_spinbox.value()
+        recognition_multiprocessing_enabled = s.recognition_multiprocessing_check_box.isChecked()
         recognition_binarize_output = s.recognition_binarize_output_check_box.isChecked()
         recognition_use_auto_threshold = s.recognition_use_auto_threshold_check_box.isChecked()
         recognition_threshold = s.recognition_threshold_spinbox.value()
@@ -473,6 +537,22 @@ class MainPresenter(QObject):
         warmup_enabled = s.warmup_check_box.isChecked()
         warmup_epochs = s.warmup_epochs_spinbox.value()
         warmup_start_factor = s.warmup_start_factor_spinbox.value()
+        scheduler_name = s.get_scheduler_value()
+        scheduler_plateau_factor = s.scheduler_plateau_factor_spinbox.value()
+        scheduler_plateau_patience = s.scheduler_plateau_patience_spinbox.value()
+        scheduler_plateau_threshold = s.scheduler_plateau_threshold_spinbox.value()
+        scheduler_plateau_min_lr = s.scheduler_plateau_min_lr_spinbox.value()
+        scheduler_plateau_cooldown = s.scheduler_plateau_cooldown_spinbox.value()
+        scheduler_cosine_t_max = s.scheduler_cosine_t_max_spinbox.value()
+        scheduler_cosine_eta_min = s.scheduler_cosine_eta_min_spinbox.value()
+        scheduler_one_cycle_max_lr = s.scheduler_one_cycle_max_lr_spinbox.value()
+        scheduler_one_cycle_pct_start = s.scheduler_one_cycle_pct_start_spinbox.value()
+        scheduler_one_cycle_anneal_strategy = s.get_scheduler_one_cycle_anneal_strategy_value()
+        scheduler_one_cycle_div_factor = s.scheduler_one_cycle_div_factor_spinbox.value()
+        scheduler_one_cycle_final_div_factor = s.scheduler_one_cycle_final_div_factor_spinbox.value()
+        scheduler_one_cycle_three_phase = s.scheduler_one_cycle_three_phase_check_box.isChecked()
+        scheduler_step_lr_step_size = s.scheduler_step_lr_step_size_spinbox.value()
+        scheduler_step_lr_gamma = s.scheduler_step_lr_gamma_spinbox.value()
         hard_mining_enabled = s.hard_mining_check_box.isChecked()
         hard_mining_strength = s.hard_mining_strength_spinbox.value()
         hard_mining_ema_alpha = s.hard_mining_ema_alpha_spinbox.value()
@@ -514,19 +594,29 @@ class MainPresenter(QObject):
                               cutout_probability=cutout_probability,
                               cutout_holes=cutout_holes,
                               cutout_size_ratio=cutout_size_ratio,
+                              random_artifacts_enabled=random_artifacts_enabled,
+                              random_artifacts_probability=random_artifacts_probability,
+                              random_artifacts_count=random_artifacts_count,
+                              random_artifacts_size_ratio=random_artifacts_size_ratio,
                               mixup_enabled=mixup_enabled,
                               mixup_probability=mixup_probability,
                               mixup_alpha=mixup_alpha,
                               use_validation=validation,
                               validation_percent=validation_percent,
+                              validation_source=validation_source,
+                              validation_image_folder=validation_image_folder,
+                              validation_label_folder=validation_label_folder,
+                              save_validation_binary_images=save_validation_binary_images,
                               sample_cut_mode=cut_mode,
                               batch_size=train_batch_size,
+                              dataloader_num_workers=dataloader_num_workers,
                               train_batch_size=train_batch_size,
                               recognition_batch_size=recognition_batch_size,
                               sync_patch_sizes=sync_patch_sizes,
                               patch_batch_sync_mode='patch' if sync_patch_sizes else 'off',
                               overlap=overlap,
                               recognition_jpeg_quality=recognition_jpeg_quality,
+                              recognition_multiprocessing_enabled=recognition_multiprocessing_enabled,
                               recognition_binarize_output=recognition_binarize_output,
                               recognition_use_auto_threshold=recognition_use_auto_threshold,
                               recognition_threshold=recognition_threshold,
@@ -549,6 +639,22 @@ class MainPresenter(QObject):
                               warmup_enabled=warmup_enabled,
                               warmup_epochs=warmup_epochs,
                               warmup_start_factor=warmup_start_factor,
+                              scheduler_name=scheduler_name,
+                              scheduler_plateau_factor=scheduler_plateau_factor,
+                              scheduler_plateau_patience=scheduler_plateau_patience,
+                              scheduler_plateau_threshold=scheduler_plateau_threshold,
+                              scheduler_plateau_min_lr=scheduler_plateau_min_lr,
+                              scheduler_plateau_cooldown=scheduler_plateau_cooldown,
+                              scheduler_cosine_t_max=scheduler_cosine_t_max,
+                              scheduler_cosine_eta_min=scheduler_cosine_eta_min,
+                              scheduler_one_cycle_max_lr=scheduler_one_cycle_max_lr,
+                              scheduler_one_cycle_pct_start=scheduler_one_cycle_pct_start,
+                              scheduler_one_cycle_anneal_strategy=scheduler_one_cycle_anneal_strategy,
+                              scheduler_one_cycle_div_factor=scheduler_one_cycle_div_factor,
+                              scheduler_one_cycle_final_div_factor=scheduler_one_cycle_final_div_factor,
+                              scheduler_one_cycle_three_phase=scheduler_one_cycle_three_phase,
+                              scheduler_step_lr_step_size=scheduler_step_lr_step_size,
+                              scheduler_step_lr_gamma=scheduler_step_lr_gamma,
                               hard_mining_enabled=hard_mining_enabled,
                               hard_mining_strength=hard_mining_strength,
                               hard_mining_ema_alpha=hard_mining_ema_alpha,
@@ -720,6 +826,20 @@ class MainPresenter(QObject):
 
             self._validate_start_button()
 
+    def _choose_validation_image_folder(self):
+        path = _tk_filedialog('folder')
+        if path:
+            self.settings_panel.set_validation_image_path(path)
+            self.settings_state.validation_image_folder = path
+            self._validate_start_button()
+
+    def _choose_validation_label_folder(self):
+        path = _tk_filedialog('folder')
+        if path:
+            self.settings_panel.set_validation_label_path(path)
+            self.settings_state.validation_label_folder = path
+            self._validate_start_button()
+
     def _choose_result_folder(self):
         path = _tk_filedialog('folder')
         if path:
@@ -732,6 +852,23 @@ class MainPresenter(QObject):
         if path:
             self.view.model_path.setText(path)
             self._validate_start_button()
+
+    def _on_open_config_requested(self):
+        path = _tk_filedialog('file', [('JSON', '.json')])
+        if not path:
+            return
+        try:
+            main_state, settings_state = load_workflow_snapshot(path)
+        except (OSError, ValueError) as error:
+            self.view.show_warning.emit(f'Не удалось загрузить параметры из файла: {error}')
+            return
+
+        self._restore_task_state_to_ui(
+            main_state,
+            settings_state,
+            log_message='Параметры восстановлены из файла.',
+        )
+        self._save_windows_to_qsettings()
 
     def _on_sample_type_changed(self, typ: str):
         """typ = ''train_and_recognition'', 'recognition_only', further_training."""
@@ -760,7 +897,7 @@ class MainPresenter(QObject):
         self._save_windows_to_qsettings()
         self._update_main_window_state()
         self._update_settings_window_state()
-        if not can_start_processing(self.main_window_state):
+        if not can_start_processing(self.main_window_state, self.settings_state):
             self.message_bus.publish('logging', 'Задача не добавлена. Проверьте обязательные поля.')
             return
 
@@ -829,7 +966,13 @@ class MainPresenter(QObject):
     def _on_task_restore_requested(self, main_state: MainWindowState, settings_state: SettingsState):
         self._restore_task_state_to_ui(main_state, settings_state)
 
-    def _restore_task_state_to_ui(self, main_state: MainWindowState, settings_state: SettingsState):
+    def _restore_task_state_to_ui(
+        self,
+        main_state: MainWindowState,
+        settings_state: SettingsState,
+        *,
+        log_message: str = 'Параметры задачи восстановлены в интерфейсе.',
+    ):
         self.main_window_state = replace(main_state)
         self.settings_state = replace(settings_state)
         self.sample_calculator.set_path(Path(self.main_window_state.sample_folder))
@@ -845,7 +988,7 @@ class MainPresenter(QObject):
         self._set_max_shift()
         self._calculate_expected_samples()
         self._validate_start_button()
-        self.message_bus.publish('logging', 'Параметры задачи восстановлены в интерфейсе.')
+        self.message_bus.publish('logging', log_message)
 
     def _on_queue_pause_toggle_requested(self):
         row = self.view.get_selected_queue_row()
@@ -907,6 +1050,28 @@ class MainPresenter(QObject):
             self._refresh_queue_view()
             self._start_next_task_if_possible()
             return
+        if work_mode in (
+            WorkMode.train_only,
+            WorkMode.train_and_recognition,
+            WorkMode.further_training,
+        ):
+            try:
+                artifact_dir = build_training_artifact_dir(
+                    task.main_window_state,
+                    task.settings_state,
+                    work_mode,
+                )
+                training_settings.artifact_dir = artifact_dir
+                snapshot_path = save_workflow_snapshot(
+                    task.main_window_state,
+                    task.settings_state,
+                    destination=artifact_dir / WORKFLOW_SNAPSHOT_FILENAME,
+                    workflow_snapshot=(work_mode, training_settings, recognition_parameters),
+                )
+                self.message_bus.publish('logging', f'Артефакты запуска будут сохранены в {artifact_dir}.')
+                self.message_bus.publish('logging', f'Параметры запуска сохранены в {snapshot_path}.')
+            except OSError as error:
+                self.message_bus.publish('error', f'Не удалось сохранить параметры запуска: {error}')
 
         self.neuaral_handler = GeneralNeuralHandlerThread(
             work_mode=work_mode,
@@ -998,7 +1163,8 @@ class MainPresenter(QObject):
     def _validate_start_button(self):
         """Проверяем, что все обязательные поля заполнены."""
         self._update_main_window_state()
-        self.view.enable_start.emit(can_start_processing(self.main_window_state))
+        self._update_settings_window_state()
+        self.view.enable_start.emit(can_start_processing(self.main_window_state, self.settings_state))
 
     # ------------------------------------------------------------------ #
     #   Управление началом потоков

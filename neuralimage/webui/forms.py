@@ -11,8 +11,17 @@ from lib.data_interfaces import (
     OptimizerName,
     MixedPrecisionMode,
     SampleCutMode,
+    SchedulerName,
+    ValidationSource,
     WorkMode,
+    normalize_scheduler_name,
+    normalize_validation_source,
     normalize_work_mode,
+)
+from lib.loss_config import (
+    LOSS_SELECTION_NAMES,
+    dominant_loss_function,
+    resolve_loss_term_weights,
 )
 from lib.ui_texts import get_ui_section
 
@@ -253,13 +262,25 @@ class SettingsForm(forms.Form):
     model = forms.CharField(label='Model architecture')
     color_mode = forms.ChoiceField(label='Color mode', choices=[('RGB', 'RGB'), ('ЧБ', 'ЧБ')])
     use_validation = forms.BooleanField(label='Use validation', required=False)
+    validation_source = forms.ChoiceField(
+        label='Validation source',
+        choices=[
+            (ValidationSource.split.value, 'Split'),
+            (ValidationSource.external.value, 'External folders'),
+        ],
+        required=False,
+    )
     validation_percent = forms.IntegerField(label='Validation percent', min_value=0, max_value=90, required=False)
+    validation_image_folder = forms.CharField(label='Validation image folder', required=False)
+    validation_label_folder = forms.CharField(label='Validation label folder', required=False)
+    save_validation_binary_images = forms.BooleanField(label='Save validation binary images', required=False)
     shuffle = forms.BooleanField(label='Shuffle dataset', required=False)
     sample_cut_mode = forms.ChoiceField(
         label='Sample cut mode',
         choices=[(SampleCutMode.disk.value, 'To disk'), (SampleCutMode.online.value, 'Online')],
     )
     batch_size = forms.IntegerField(label='Batch size', min_value=1, max_value=512)
+    dataloader_num_workers = forms.IntegerField(label='DataLoader workers', min_value=-1, max_value=64, required=False)
     overlap = forms.IntegerField(label='Overlap', min_value=0, max_value=256)
     log_update_frequency = forms.IntegerField(label='Log update frequency', min_value=0, max_value=5000)
     crop_enabled = forms.BooleanField(label='Enable edge crop', required=False)
@@ -277,16 +298,11 @@ class SettingsForm(forms.Form):
         choices=[
             ('bce', 'bce'),
             ('dice', 'dice'),
-            ('bce_dice', 'bce_dice'),
             ('iou', 'iou'),
-            ('bce_iou', 'bce_iou'),
             ('focal_bce', 'focal_bce'),
-            ('focal_dice', 'focal_dice'),
-            ('focal_iou', 'focal_iou'),
             ('boundary', 'boundary'),
             ('focal_tversky', 'focal_tversky'),
             ('ce', 'ce'),
-            ('ce_dice', 'ce_dice'),
         ],
     )
     dice_loss_weight = forms.FloatField(label='Dice loss weight', min_value=0.0, max_value=1.0, required=False)
@@ -296,6 +312,50 @@ class SettingsForm(forms.Form):
     warmup_enabled = forms.BooleanField(label='Enable warmup', required=False)
     warmup_epochs = forms.IntegerField(label='Warmup epochs', min_value=1, max_value=2000)
     warmup_start_factor = forms.FloatField(label='Warmup start factor', min_value=0.0, max_value=1.0)
+    scheduler_name = forms.ChoiceField(
+        label='Scheduler',
+        choices=[(scheduler.value, scheduler.value) for scheduler in SchedulerName],
+        required=False,
+    )
+    scheduler_plateau_factor = forms.FloatField(label='Plateau factor', min_value=0.01, max_value=1.0, required=False)
+    scheduler_plateau_patience = forms.IntegerField(label='Plateau patience', min_value=0, max_value=2000, required=False)
+    scheduler_plateau_threshold = forms.FloatField(
+        label='Plateau threshold',
+        min_value=0.0,
+        max_value=10.0,
+        required=False,
+    )
+    scheduler_plateau_min_lr = forms.FloatField(label='Plateau min LR', min_value=0.0, max_value=10.0, required=False)
+    scheduler_plateau_cooldown = forms.IntegerField(label='Plateau cooldown', min_value=0, max_value=2000, required=False)
+    scheduler_cosine_t_max = forms.IntegerField(label='Cosine T_max', min_value=1, max_value=10000, required=False)
+    scheduler_cosine_eta_min = forms.FloatField(label='Cosine eta_min', min_value=0.0, max_value=10.0, required=False)
+    scheduler_one_cycle_max_lr = forms.FloatField(label='OneCycle max LR', min_value=0.0, max_value=10.0, required=False)
+    scheduler_one_cycle_pct_start = forms.FloatField(
+        label='OneCycle pct_start',
+        min_value=0.0,
+        max_value=1.0,
+        required=False,
+    )
+    scheduler_one_cycle_anneal_strategy = forms.ChoiceField(
+        label='OneCycle anneal strategy',
+        choices=[('cos', 'cos'), ('linear', 'linear')],
+        required=False,
+    )
+    scheduler_one_cycle_div_factor = forms.FloatField(
+        label='OneCycle div factor',
+        min_value=1.0,
+        max_value=1000000.0,
+        required=False,
+    )
+    scheduler_one_cycle_final_div_factor = forms.FloatField(
+        label='OneCycle final div factor',
+        min_value=1.0,
+        max_value=1000000.0,
+        required=False,
+    )
+    scheduler_one_cycle_three_phase = forms.BooleanField(label='OneCycle three phase', required=False)
+    scheduler_step_lr_step_size = forms.IntegerField(label='StepLR step size', min_value=1, max_value=10000, required=False)
+    scheduler_step_lr_gamma = forms.FloatField(label='StepLR gamma', min_value=0.01, max_value=1.0, required=False)
     hard_mining_enabled = forms.BooleanField(label='Enable hard mining', required=False)
     hard_mining_strength = forms.FloatField(label='Hard mining strength', min_value=0.0, max_value=10.0, required=False)
     hard_mining_ema_alpha = forms.FloatField(
@@ -309,6 +369,20 @@ class SettingsForm(forms.Form):
     cutout_probability = forms.FloatField(label='Cutout probability', min_value=0.0, max_value=1.0, required=False)
     cutout_holes = forms.IntegerField(label='Cutout holes', min_value=1, max_value=32, required=False)
     cutout_size_ratio = forms.FloatField(label='Cutout size ratio', min_value=0.0, max_value=1.0, required=False)
+    random_artifacts_enabled = forms.BooleanField(label='Enable random artifacts', required=False)
+    random_artifacts_probability = forms.FloatField(
+        label='Random artifacts probability',
+        min_value=0.0,
+        max_value=1.0,
+        required=False,
+    )
+    random_artifacts_count = forms.IntegerField(label='Random artifacts count', min_value=1, max_value=16, required=False)
+    random_artifacts_size_ratio = forms.FloatField(
+        label='Random artifacts size ratio',
+        min_value=0.0,
+        max_value=1.0,
+        required=False,
+    )
     mixup_enabled = forms.BooleanField(label='Enable mixup', required=False)
     mixup_probability = forms.FloatField(label='Mixup probability', min_value=0.0, max_value=1.0, required=False)
     mixup_alpha = forms.FloatField(label='Mixup alpha', min_value=0.0, max_value=10.0, required=False)
@@ -338,6 +412,7 @@ class SettingsForm(forms.Form):
             'sample_y',
             'validation_percent',
             'batch_size',
+            'dataloader_num_workers',
             'overlap',
             'log_update_frequency',
             'edge_cut_size',
@@ -353,12 +428,28 @@ class SettingsForm(forms.Form):
             'weight_decay',
             'warmup_epochs',
             'warmup_start_factor',
+            'scheduler_plateau_factor',
+            'scheduler_plateau_patience',
+            'scheduler_plateau_threshold',
+            'scheduler_plateau_min_lr',
+            'scheduler_plateau_cooldown',
+            'scheduler_cosine_t_max',
+            'scheduler_cosine_eta_min',
+            'scheduler_one_cycle_max_lr',
+            'scheduler_one_cycle_pct_start',
+            'scheduler_one_cycle_div_factor',
+            'scheduler_one_cycle_final_div_factor',
+            'scheduler_step_lr_step_size',
+            'scheduler_step_lr_gamma',
             'hard_mining_strength',
             'hard_mining_ema_alpha',
             'hard_pixel_mining_ratio',
             'cutout_probability',
             'cutout_holes',
             'cutout_size_ratio',
+            'random_artifacts_probability',
+            'random_artifacts_count',
+            'random_artifacts_size_ratio',
             'mixup_probability',
             'mixup_alpha',
             'early_stopping_patience',
@@ -366,12 +457,29 @@ class SettingsForm(forms.Form):
         ):
             self.fields[field_name].widget.attrs.update(_BASE_NUM_INPUT_ATTRS)
 
-        for field_name in ('color_mode', 'sample_cut_mode', 'optimizer_name', 'mixed_precision', 'loss_function'):
+        for field_name in (
+            'color_mode',
+            'validation_source',
+            'sample_cut_mode',
+            'optimizer_name',
+            'mixed_precision',
+            'loss_function',
+            'scheduler_name',
+            'scheduler_one_cycle_anneal_strategy',
+        ):
             self.fields[field_name].widget.attrs.update(_BASE_SELECT_ATTRS)
 
         placeholders = _copy_dict(self._settings_form_texts.get('placeholders', {}))
         self.fields['model'].widget.attrs.update(
             _BASE_TEXT_INPUT_ATTRS | {'placeholder': _read_text(placeholders, 'model', 'M 720k')}
+        )
+        self.fields['validation_image_folder'].widget.attrs.update(
+            _BASE_TEXT_INPUT_ATTRS
+            | {'placeholder': _read_text(placeholders, 'validation_image_folder', r'D:\data\validation\images')}
+        )
+        self.fields['validation_label_folder'].widget.attrs.update(
+            _BASE_TEXT_INPUT_ATTRS
+            | {'placeholder': _read_text(placeholders, 'validation_label_folder', r'D:\data\validation\labels')}
         )
         self._apply_localized_texts()
 
@@ -400,10 +508,28 @@ class SettingsForm(forms.Form):
             (SampleCutMode.online.value, _read_text(sample_cut_choices, SampleCutMode.online.value, 'Online')),
         ]
 
+        validation_source_choices = _copy_dict(choices.get('validation_source', {}))
+        self.fields['validation_source'].choices = [
+            (
+                ValidationSource.split.value,
+                _read_text(validation_source_choices, ValidationSource.split.value, 'Split'),
+            ),
+            (
+                ValidationSource.external.value,
+                _read_text(validation_source_choices, ValidationSource.external.value, 'External folders'),
+            ),
+        ]
+
         optimizer_choices = _copy_dict(choices.get('optimizer_name', {}))
         self.fields['optimizer_name'].choices = [
             (optimizer.value, _read_text(optimizer_choices, optimizer.value, optimizer.value))
             for optimizer in OptimizerName
+        ]
+
+        scheduler_choices = _copy_dict(choices.get('scheduler_name', {}))
+        self.fields['scheduler_name'].choices = [
+            (scheduler.value, _read_text(scheduler_choices, scheduler.value, scheduler.value))
+            for scheduler in SchedulerName
         ]
 
         mixed_precision_choices = _copy_dict(choices.get('mixed_precision', {}))
@@ -412,21 +538,50 @@ class SettingsForm(forms.Form):
             for mode in MixedPrecisionMode
         ]
 
-        loss_function_choices = _copy_dict(choices.get('loss_function', {}))
-        self.fields['loss_function'].choices = [
-            ('bce', _read_text(loss_function_choices, 'bce', 'BCE')),
-            ('dice', _read_text(loss_function_choices, 'dice', 'Dice')),
-            ('bce_dice', _read_text(loss_function_choices, 'bce_dice', 'BCE + Dice')),
-            ('iou', _read_text(loss_function_choices, 'iou', 'IoU')),
-            ('bce_iou', _read_text(loss_function_choices, 'bce_iou', 'BCE + IoU')),
-            ('focal_bce', _read_text(loss_function_choices, 'focal_bce', 'Focal BCE')),
-            ('focal_dice', _read_text(loss_function_choices, 'focal_dice', 'Focal Dice')),
-            ('focal_iou', _read_text(loss_function_choices, 'focal_iou', 'Focal IoU')),
-            ('boundary', _read_text(loss_function_choices, 'boundary', 'Boundary')),
-            ('focal_tversky', _read_text(loss_function_choices, 'focal_tversky', 'Focal Tversky')),
-            ('ce', _read_text(loss_function_choices, 'ce', 'CE')),
-            ('ce_dice', _read_text(loss_function_choices, 'ce_dice', 'CE + Dice')),
+        anneal_strategy_choices = _copy_dict(choices.get('scheduler_one_cycle_anneal_strategy', {}))
+        self.fields['scheduler_one_cycle_anneal_strategy'].choices = [
+            ('cos', _read_text(anneal_strategy_choices, 'cos', 'cos')),
+            ('linear', _read_text(anneal_strategy_choices, 'linear', 'linear')),
         ]
+
+        loss_function_choices = _copy_dict(choices.get('loss_function', {}))
+        default_loss_labels = {
+            'bce': 'BCE',
+            'dice': 'Dice',
+            'iou': 'IoU',
+            'focal_bce': 'Focal BCE',
+            'boundary': 'Boundary',
+            'focal_tversky': 'Focal Tversky',
+            'ce': 'CE',
+        }
+        self.fields['loss_function'].choices = [
+            (
+                loss_name,
+                _read_text(loss_function_choices, loss_name, default_loss_labels[loss_name]),
+            )
+            for loss_name in LOSS_SELECTION_NAMES
+        ]
+
+    def clean(self):
+        cleaned = super().clean()
+        use_validation = bool(cleaned.get('use_validation', False))
+        validation_source = normalize_validation_source(cleaned.get('validation_source'))
+        validation_image_folder = str(cleaned.get('validation_image_folder') or '').strip()
+        validation_label_folder = str(cleaned.get('validation_label_folder') or '').strip()
+
+        cleaned['validation_source'] = validation_source
+        cleaned['validation_image_folder'] = validation_image_folder
+        cleaned['validation_label_folder'] = validation_label_folder
+
+        if not use_validation or validation_source != ValidationSource.external.value:
+            return cleaned
+
+        if not validation_image_folder or not Path(validation_image_folder).is_dir():
+            self.add_error('validation_image_folder', 'Validation image folder must point to an existing directory.')
+        if not validation_label_folder or not Path(validation_label_folder).is_dir():
+            self.add_error('validation_label_folder', 'Validation label folder must point to an existing directory.')
+
+        return cleaned
 
     def to_state(self) -> SettingsState:
         cleaned = self.cleaned_data
@@ -462,9 +617,14 @@ class SettingsForm(forms.Form):
             color_mode=cleaned['color_mode'],
             shuffle=cleaned.get('shuffle', False),
             use_validation=cleaned.get('use_validation', False),
+            validation_source=normalize_validation_source(cleaned.get('validation_source')),
             validation_percent=_with_default('validation_percent'),
+            validation_image_folder=str(cleaned.get('validation_image_folder', '') or ''),
+            validation_label_folder=str(cleaned.get('validation_label_folder', '') or ''),
+            save_validation_binary_images=cleaned.get('save_validation_binary_images', False),
             sample_cut_mode=cleaned['sample_cut_mode'],
             batch_size=cleaned['batch_size'],
+            dataloader_num_workers=_with_default('dataloader_num_workers'),
             overlap=cleaned['overlap'],
             log_update_frequency=cleaned['log_update_frequency'],
             crop_enabled=cleaned.get('crop_enabled', False),
@@ -477,6 +637,10 @@ class SettingsForm(forms.Form):
             optimizer_name=cleaned['optimizer_name'],
             mixed_precision=cleaned['mixed_precision'],
             loss_function=cleaned['loss_function'],
+            loss_term_weights=resolve_loss_term_weights(
+                {},
+                fallback_loss_function=cleaned['loss_function'],
+            ),
             dice_loss_weight=_with_default('dice_loss_weight'),
             iou_loss_weight=_with_default('iou_loss_weight'),
             learning_rate=cleaned['learning_rate'],
@@ -484,6 +648,25 @@ class SettingsForm(forms.Form):
             warmup_enabled=cleaned.get('warmup_enabled', False),
             warmup_epochs=cleaned['warmup_epochs'],
             warmup_start_factor=cleaned['warmup_start_factor'],
+            scheduler_name=normalize_scheduler_name(cleaned.get('scheduler_name')),
+            scheduler_plateau_factor=_with_default('scheduler_plateau_factor'),
+            scheduler_plateau_patience=_with_default('scheduler_plateau_patience'),
+            scheduler_plateau_threshold=_with_default('scheduler_plateau_threshold'),
+            scheduler_plateau_min_lr=_with_default('scheduler_plateau_min_lr'),
+            scheduler_plateau_cooldown=_with_default('scheduler_plateau_cooldown'),
+            scheduler_cosine_t_max=_with_default('scheduler_cosine_t_max'),
+            scheduler_cosine_eta_min=_with_default('scheduler_cosine_eta_min'),
+            scheduler_one_cycle_max_lr=_with_default('scheduler_one_cycle_max_lr'),
+            scheduler_one_cycle_pct_start=_with_default('scheduler_one_cycle_pct_start'),
+            scheduler_one_cycle_anneal_strategy=(
+                str(cleaned.get('scheduler_one_cycle_anneal_strategy') or '')
+                or defaults.scheduler_one_cycle_anneal_strategy
+            ),
+            scheduler_one_cycle_div_factor=_with_default('scheduler_one_cycle_div_factor'),
+            scheduler_one_cycle_final_div_factor=_with_default('scheduler_one_cycle_final_div_factor'),
+            scheduler_one_cycle_three_phase=cleaned.get('scheduler_one_cycle_three_phase', False),
+            scheduler_step_lr_step_size=_with_default('scheduler_step_lr_step_size'),
+            scheduler_step_lr_gamma=_with_default('scheduler_step_lr_gamma'),
             hard_mining_enabled=cleaned.get('hard_mining_enabled', False),
             hard_mining_strength=_with_default('hard_mining_strength'),
             hard_mining_ema_alpha=_with_default('hard_mining_ema_alpha'),
@@ -493,6 +676,10 @@ class SettingsForm(forms.Form):
             cutout_probability=_with_default('cutout_probability'),
             cutout_holes=_with_default('cutout_holes'),
             cutout_size_ratio=_with_default('cutout_size_ratio'),
+            random_artifacts_enabled=cleaned.get('random_artifacts_enabled', False),
+            random_artifacts_probability=_with_default('random_artifacts_probability'),
+            random_artifacts_count=_with_default('random_artifacts_count'),
+            random_artifacts_size_ratio=_with_default('random_artifacts_size_ratio'),
             mixup_enabled=cleaned.get('mixup_enabled', False),
             mixup_probability=_with_default('mixup_probability'),
             mixup_alpha=_with_default('mixup_alpha'),
@@ -512,6 +699,12 @@ def defaults_from_main_state(state: MainWindowState) -> dict:
 
 
 def defaults_from_settings_state(state: SettingsState) -> dict:
+    resolved_loss_weights = resolve_loss_term_weights(
+        getattr(state, 'loss_term_weights', None),
+        fallback_loss_function=state.loss_function,
+        dice_weight=float(getattr(state, 'dice_loss_weight', 0.5)),
+        iou_weight=float(getattr(state, 'iou_loss_weight', 0.5)),
+    )
     return {
         'step': state.step,
         'vertical_rotation': state.vertical_rotation,
@@ -531,9 +724,14 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'color_mode': state.color_mode,
         'shuffle': state.shuffle,
         'use_validation': state.use_validation,
+        'validation_source': getattr(state, 'validation_source', ValidationSource.split.value),
         'validation_percent': state.validation_percent,
+        'validation_image_folder': getattr(state, 'validation_image_folder', ''),
+        'validation_label_folder': getattr(state, 'validation_label_folder', ''),
+        'save_validation_binary_images': getattr(state, 'save_validation_binary_images', False),
         'sample_cut_mode': state.sample_cut_mode,
         'batch_size': state.batch_size,
+        'dataloader_num_workers': getattr(state, 'dataloader_num_workers', -1),
         'overlap': state.overlap,
         'log_update_frequency': state.log_update_frequency,
         'crop_enabled': state.crop_enabled,
@@ -543,7 +741,10 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'target_y': state.target_size[1],
         'optimizer_name': state.optimizer_name,
         'mixed_precision': state.mixed_precision,
-        'loss_function': state.loss_function,
+        'loss_function': dominant_loss_function(
+            resolved_loss_weights,
+            fallback=state.loss_function,
+        ),
         'dice_loss_weight': state.dice_loss_weight,
         'iou_loss_weight': state.iou_loss_weight,
         'learning_rate': state.learning_rate,
@@ -551,6 +752,22 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'warmup_enabled': state.warmup_enabled,
         'warmup_epochs': state.warmup_epochs,
         'warmup_start_factor': state.warmup_start_factor,
+        'scheduler_name': normalize_scheduler_name(getattr(state, 'scheduler_name', 'off')),
+        'scheduler_plateau_factor': getattr(state, 'scheduler_plateau_factor', 0.5),
+        'scheduler_plateau_patience': getattr(state, 'scheduler_plateau_patience', 3),
+        'scheduler_plateau_threshold': getattr(state, 'scheduler_plateau_threshold', 1e-4),
+        'scheduler_plateau_min_lr': getattr(state, 'scheduler_plateau_min_lr', 1e-6),
+        'scheduler_plateau_cooldown': getattr(state, 'scheduler_plateau_cooldown', 0),
+        'scheduler_cosine_t_max': getattr(state, 'scheduler_cosine_t_max', 10),
+        'scheduler_cosine_eta_min': getattr(state, 'scheduler_cosine_eta_min', 1e-6),
+        'scheduler_one_cycle_max_lr': getattr(state, 'scheduler_one_cycle_max_lr', 1e-3),
+        'scheduler_one_cycle_pct_start': getattr(state, 'scheduler_one_cycle_pct_start', 0.3),
+        'scheduler_one_cycle_anneal_strategy': getattr(state, 'scheduler_one_cycle_anneal_strategy', 'cos'),
+        'scheduler_one_cycle_div_factor': getattr(state, 'scheduler_one_cycle_div_factor', 25.0),
+        'scheduler_one_cycle_final_div_factor': getattr(state, 'scheduler_one_cycle_final_div_factor', 10000.0),
+        'scheduler_one_cycle_three_phase': getattr(state, 'scheduler_one_cycle_three_phase', False),
+        'scheduler_step_lr_step_size': getattr(state, 'scheduler_step_lr_step_size', 10),
+        'scheduler_step_lr_gamma': getattr(state, 'scheduler_step_lr_gamma', 0.1),
         'hard_mining_enabled': state.hard_mining_enabled,
         'hard_mining_strength': state.hard_mining_strength,
         'hard_mining_ema_alpha': state.hard_mining_ema_alpha,
@@ -560,6 +777,10 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'cutout_probability': getattr(state, 'cutout_probability', 1.0),
         'cutout_holes': getattr(state, 'cutout_holes', 1),
         'cutout_size_ratio': getattr(state, 'cutout_size_ratio', 0.25),
+        'random_artifacts_enabled': getattr(state, 'random_artifacts_enabled', False),
+        'random_artifacts_probability': getattr(state, 'random_artifacts_probability', 1.0),
+        'random_artifacts_count': getattr(state, 'random_artifacts_count', 1),
+        'random_artifacts_size_ratio': getattr(state, 'random_artifacts_size_ratio', 0.25),
         'mixup_enabled': getattr(state, 'mixup_enabled', False),
         'mixup_probability': getattr(state, 'mixup_probability', 1.0),
         'mixup_alpha': getattr(state, 'mixup_alpha', 0.2),

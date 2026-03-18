@@ -58,6 +58,7 @@ class MainView(QMainWindow):
     jpg_path_requested: pyqtSignal = pyqtSignal()
 
     model_path_requested: pyqtSignal = pyqtSignal()
+    open_config_requested: pyqtSignal = pyqtSignal()
 
     start_requested: pyqtSignal = pyqtSignal()
     stop_requested: pyqtSignal = pyqtSignal()
@@ -110,11 +111,13 @@ class MainView(QMainWindow):
         self._last_performance_metrics: dict[str, float] | None = None
         self._ui_language = get_ui_language()
         self._theme = "dark"
+        self._file_menu = None
         self._settings_menu = None
         self._view_menu = None
         self._info_menu = None
         self._language_menu = None
         self._theme_menu = None
+        self._open_config_action = None
         self._settings_sample_action = None
         self._settings_train_action = None
         self._settings_pred_action = None
@@ -299,15 +302,19 @@ class MainView(QMainWindow):
         menubar = self.menuBar()
         if menubar is None:
             return
+        file_menu = menubar.addMenu(t.get("menu_file", "Файл"))
         settings_menu = menubar.addMenu(t["menu_settings"])
         self._view_menu = menubar.addMenu(t["menu_view"])
         view_menu = self._view_menu
         info_menu = menubar.addMenu(t["menu_help"])
+        self._file_menu = file_menu
         self._settings_menu = settings_menu
         self._info_menu = info_menu
-        if settings_menu is None or view_menu is None or info_menu is None:
+        if file_menu is None or settings_menu is None or view_menu is None or info_menu is None:
             return
 
+        self._open_config_action = QAction(t.get("menu_open_config", "Открыть"), self)
+        file_menu.addAction(self._open_config_action)
         self._settings_sample_action = QAction(QIcon("./assets/new.png"), t["menu_sample"], self)
         self._settings_train_action = QAction(QIcon("./assets/new.png"), t["menu_train"], self)
         self._settings_pred_action = QAction(QIcon("./assets/new.png"), t["menu_pred"], self)
@@ -450,6 +457,18 @@ class MainView(QMainWindow):
         self.sample_path.clicked.connect(lambda: self.jpg_path_requested.emit())
 
         self.model_path.clicked.connect(lambda: self.model_path_requested.emit())
+        if self._open_config_action is not None:
+            self._open_config_action.triggered.connect(lambda _checked=False: self.open_config_requested.emit())
+        if self._settings_sample_action is not None and self.settings_dock is not None:
+            self._settings_sample_action.triggered.connect(lambda _checked=False: self._show_settings_page("base"))
+        if self._settings_train_action is not None and self.settings_dock is not None:
+            self._settings_train_action.triggered.connect(
+                lambda _checked=False: self._show_settings_page("training")
+            )
+        if self._settings_pred_action is not None and self.settings_dock is not None:
+            self._settings_pred_action.triggered.connect(
+                lambda _checked=False: self._show_settings_page("recognition")
+            )
 
         self.le_epochs.valueChanged.connect(lambda _: self.epochs_changed.emit())
 
@@ -502,6 +521,11 @@ class MainView(QMainWindow):
             self.queue_context_remove_requested.emit(row)
         elif selected_action is properties_action:
             self.queue_properties_requested.emit(row)
+
+    def _show_settings_page(self, page_key: str) -> None:
+        self.show_settings_dock()
+        if self.settings_dock is not None and hasattr(self.settings_dock, "show_settings_page"):
+            self.settings_dock.show_settings_page(page_key)
 
     def _main_texts(self) -> dict[str, str]:
         texts = getattr(self, "_texts", None)
@@ -594,6 +618,11 @@ class MainView(QMainWindow):
             dice = data.get("dice")
             f1 = data.get("f1")
             if iou is not None and dice is not None and f1 is not None:
+                self.metrics_panel.add_val_quality_point(
+                    int(data.get("epoch", 0)),
+                    float(iou),
+                    float(dice),
+                )
                 self._last_validation_metrics = (float(iou), float(dice), float(f1))
                 self.validation_quality_label.setText(
                     self._format_validation_quality_text(float(iou), float(dice), float(f1))
@@ -913,10 +942,14 @@ class MainView(QMainWindow):
             self.preview_output_label.setText(t["preview_output"])
         if self._settings_menu is not None:
             self._settings_menu.setTitle(t["menu_settings"])
+        if self._file_menu is not None:
+            self._file_menu.setTitle(t.get("menu_file", "Файл"))
         if self._view_menu is not None:
             self._view_menu.setTitle(t["menu_view"])
         if self._info_menu is not None:
             self._info_menu.setTitle(t["menu_help"])
+        if self._open_config_action is not None:
+            self._open_config_action.setText(t.get("menu_open_config", "Открыть"))
         if self._language_menu is not None:
             self._language_menu.setTitle(t.get("menu_language", "Язык"))
         if self._theme_menu is not None:

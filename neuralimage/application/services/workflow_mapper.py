@@ -9,15 +9,21 @@ from lib.data_interfaces import (
     MixedPrecisionMode,
     OptimizerName,
     OptimizerParameters,
+    RandomArtifactsParameters,
     RecognitionParameters,
     SampleCutMode,
     SampleGenerationSettings,
     SamplePrepareSettings,
+    SchedulerName,
+    SchedulerParameters,
     TrainingParameters,
+    ValidationSource,
     WarmupParameters,
     WorkMode,
     normalize_multi_gpu_mode,
     normalize_patch_batch_sync_mode,
+    normalize_scheduler_name,
+    normalize_validation_source,
     parse_work_mode,
 )
 from lib.file_func import filter_images
@@ -45,6 +51,12 @@ def build_workflow_parameters(
     )
     if sync_patch_sizes:
         recognition_patch_size = train_patch_size
+    local_crop_size = tuple(getattr(settings, 'local_crop_size', None) or train_patch_size)
+    context_crop_size = getattr(settings, 'context_crop_size', None)
+    context_input_size = getattr(settings, 'context_input_size', None)
+    requested_context_branch = getattr(settings, 'use_context_branch', None)
+    if requested_context_branch is None:
+        requested_context_branch = settings.model in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}
     model = (
         settings.model
         if work_mode in (WorkMode.train_only, WorkMode.train_and_recognition)
@@ -89,6 +101,12 @@ def build_workflow_parameters(
         mixed_precision = MixedPrecisionMode(settings.mixed_precision)
     except ValueError:
         mixed_precision = MixedPrecisionMode.bf16
+    try:
+        scheduler_name = SchedulerName(
+            normalize_scheduler_name(getattr(settings, 'scheduler_name', SchedulerName.off.value))
+        )
+    except ValueError:
+        scheduler_name = SchedulerName.off
     multi_gpu_mode = normalize_multi_gpu_mode(
         getattr(settings, 'multi_gpu_mode', ''),
         use_multi_gpu_fallback=bool(getattr(settings, 'use_multi_gpu', False)),
@@ -106,6 +124,22 @@ def build_workflow_parameters(
         epochs=main_window.epochs,
         generation=generation,
         prepare=prep,
+        validation_source=normalize_validation_source(
+            getattr(settings, 'validation_source', ValidationSource.split.value)
+        ),
+        validation_image_path=(
+            Path(getattr(settings, 'validation_image_folder', ''))
+            if str(getattr(settings, 'validation_image_folder', '')).strip()
+            else None
+        ),
+        validation_label_path=(
+            Path(getattr(settings, 'validation_label_folder', ''))
+            if str(getattr(settings, 'validation_label_folder', '')).strip()
+            else None
+        ),
+        save_validation_binary_images=bool(
+            getattr(settings, 'save_validation_binary_images', False)
+        ),
         optimizer=OptimizerParameters(
             name=optimizer_name,
             learning_rate=settings.learning_rate,
@@ -130,6 +164,31 @@ def build_workflow_parameters(
             epochs=settings.warmup_epochs,
             start_factor=settings.warmup_start_factor,
         ),
+        scheduler=SchedulerParameters(
+            name=scheduler_name,
+            plateau_factor=float(getattr(settings, 'scheduler_plateau_factor', 0.5)),
+            plateau_patience=max(0, int(getattr(settings, 'scheduler_plateau_patience', 3))),
+            plateau_threshold=max(0.0, float(getattr(settings, 'scheduler_plateau_threshold', 1e-4))),
+            plateau_min_lr=max(0.0, float(getattr(settings, 'scheduler_plateau_min_lr', 1e-6))),
+            plateau_cooldown=max(0, int(getattr(settings, 'scheduler_plateau_cooldown', 0))),
+            cosine_t_max=max(1, int(getattr(settings, 'scheduler_cosine_t_max', 10))),
+            cosine_eta_min=max(0.0, float(getattr(settings, 'scheduler_cosine_eta_min', 1e-6))),
+            one_cycle_max_lr=max(0.0, float(getattr(settings, 'scheduler_one_cycle_max_lr', 1e-3))),
+            one_cycle_pct_start=float(
+                min(max(getattr(settings, 'scheduler_one_cycle_pct_start', 0.3), 0.0), 1.0)
+            ),
+            one_cycle_anneal_strategy=str(
+                getattr(settings, 'scheduler_one_cycle_anneal_strategy', 'cos') or 'cos'
+            ).strip().lower(),
+            one_cycle_div_factor=max(1.0, float(getattr(settings, 'scheduler_one_cycle_div_factor', 25.0))),
+            one_cycle_final_div_factor=max(
+                1.0,
+                float(getattr(settings, 'scheduler_one_cycle_final_div_factor', 10000.0)),
+            ),
+            one_cycle_three_phase=bool(getattr(settings, 'scheduler_one_cycle_three_phase', False)),
+            step_lr_step_size=max(1, int(getattr(settings, 'scheduler_step_lr_step_size', 10))),
+            step_lr_gamma=float(min(max(getattr(settings, 'scheduler_step_lr_gamma', 0.1), 0.0), 1.0)),
+        ),
         hard_mining=HardMiningParameters(
             enabled=settings.hard_mining_enabled,
             strength=settings.hard_mining_strength,
@@ -142,6 +201,12 @@ def build_workflow_parameters(
             probability=float(getattr(settings, 'cutout_probability', 1.0)),
             holes=max(1, int(getattr(settings, 'cutout_holes', 1))),
             size_ratio=float(getattr(settings, 'cutout_size_ratio', 0.25)),
+        ),
+        random_artifacts=RandomArtifactsParameters(
+            enabled=bool(getattr(settings, 'random_artifacts_enabled', False)),
+            probability=float(getattr(settings, 'random_artifacts_probability', 1.0)),
+            count=max(1, int(getattr(settings, 'random_artifacts_count', 1))),
+            size_ratio=float(getattr(settings, 'random_artifacts_size_ratio', 0.25)),
         ),
         mixup=MixupParameters(
             enabled=bool(getattr(settings, 'mixup_enabled', False)),
@@ -160,6 +225,13 @@ def build_workflow_parameters(
         multi_gpu_mode=multi_gpu_mode,
         show_batch_preview=settings.show_batch_preview,
         log_update_frequency=settings.log_update_frequency,
+        local_crop_size=local_crop_size,
+        context_crop_size=tuple(context_crop_size) if context_crop_size is not None else None,
+        context_input_size=tuple(context_input_size) if context_input_size is not None else None,
+        context_branch_channels=tuple(getattr(settings, 'context_branch_channels', (16, 32, 64, 128))),
+        fusion_type=str(getattr(settings, 'fusion_type', 'concat')),
+        use_context_branch=bool(requested_context_branch),
+        dataloader_num_workers=int(getattr(settings, 'dataloader_num_workers', -1)),
     )
 
     recognition = RecognitionParameters(
@@ -170,6 +242,9 @@ def build_workflow_parameters(
         part_size=recognition_patch_size,
         overlap=settings.overlap,
         jpeg_quality=int(getattr(settings, 'recognition_jpeg_quality', 95)),
+        recognition_multiprocessing_enabled=bool(
+            getattr(settings, 'recognition_multiprocessing_enabled', True)
+        ),
         binarize_output=bool(getattr(settings, 'recognition_binarize_output', True)),
         use_auto_threshold=bool(getattr(settings, 'recognition_use_auto_threshold', True)),
         threshold=float(getattr(settings, 'recognition_threshold', 0.5)),
@@ -178,6 +253,13 @@ def build_workflow_parameters(
             1,
             int(getattr(settings, 'recognition_postprocess_kernel_size', 3)),
         ),
+        use_context_branch=(
+            bool(requested_context_branch)
+            if getattr(settings, 'use_context_branch', None) is not None
+            else None
+        ),
+        context_crop_size=tuple(context_crop_size) if context_crop_size is not None else None,
+        context_input_size=tuple(context_input_size) if context_input_size is not None else None,
     )
 
     return work_mode, training, recognition

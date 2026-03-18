@@ -5,10 +5,11 @@ import socket
 import sys
 import importlib.util
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from collections.abc import Callable, Sized
+from collections.abc import Callable, Mapping, Sized
 from contextlib import nullcontext
 from typing import Any, ContextManager, Protocol, cast
 
@@ -25,6 +26,7 @@ from torch import optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
+from PIL import Image, ImageDraw, ImageFont
 
 from lib import System
 from model.NeuralNetwork.dataset import CustomDataset
@@ -36,6 +38,9 @@ from lib.data_interfaces import (
     MixupParameters,
     MixedPrecisionMode,
     EarlyStoppingParameters,
+    RandomArtifactsParameters,
+    SchedulerName,
+    SchedulerParameters,
     WarmupParameters,
     HardMiningParameters,
     normalize_multi_gpu_mode,
@@ -44,6 +49,8 @@ from lib.file_func import filter_images
 from lib.func import get_input_channels
 from lib.loss_config import format_loss_formula, resolve_loss_term_weights, sanitize_loss_term_weights
 from lib.message_bus import AbstractMessageBus
+from lib.random_artifacts import generate_random_artifact_patch
+from model.NeuralNetwork.context_utils import normalize_size_pair
 from model.NeuralNetwork.model_io import load_model_artifact, save_model_artifact
 from model.NeuralNetwork.recognition_pipeline import (
     RecognitionWorkload,
@@ -71,6 +78,8 @@ FOCAL_TVERSKY_ALPHA = 0.3
 FOCAL_TVERSKY_BETA = 0.7
 BOUNDARY_LOSS_KERNEL_SIZE = 3
 VALIDATION_THRESHOLD_CANDIDATES: tuple[float, ...] = tuple(value / 100.0 for value in range(10, 95, 5))
+RECOGNITION_AUX_WORKERS_PER_GPU = 4
+_ARTIFACT_NAME_SANITIZE_PATTERN = re.compile(r'[^A-Za-z0-9._-]+')
 
 
 class _NoOpQueue:
@@ -162,6 +171,9 @@ class _RunContext:
     train_sampler: Any
     supports_loss_aware_sampling: bool
     strides: _TrainLoopStrides
+    scheduler_step_mode: str = 'none'
+    warmup_scheduler: Any = None
+    warmup_total_steps: int = 0
 
 
 @dataclass(frozen=True)
@@ -192,7 +204,9 @@ class _PreparedTrainBatch:
     sample_indices: Any
     mixup_pair_indices: Any
     mixup_lambdas: torch.Tensor | None
+    inputs: Any
     image: torch.Tensor
+    context_image: torch.Tensor | None
     label: torch.Tensor
     batch_start: float
     data_wait_ms: float
@@ -269,6 +283,35 @@ def _is_module_available(module_name: str) -> bool:
         return False
 
 
+def _get_torch_compile_unavailable_reason(target_device_type: str) -> str | None:
+    if target_device_type != 'cuda':
+        return None
+    if not _is_module_available('triton'):
+        return 'Triton is not installed for CUDA backend.'
+    try:
+        from torch.utils import _triton as torch_triton
+    except Exception:
+        torch_triton = None
+
+    if torch_triton is not None:
+        has_triton_package = getattr(torch_triton, 'has_triton_package', None)
+        if callable(has_triton_package):
+            try:
+                if not bool(has_triton_package()):
+                    return 'Triton package is incompatible with this PyTorch build.'
+                return None
+            except Exception as error:
+                return f'Triton compatibility probe failed: {error}'
+
+    try:
+        from triton.compiler.compiler import triton_key
+    except Exception as error:
+        return f'Triton package is incompatible with this PyTorch build: {error}'
+    if triton_key is None:
+        return 'Triton package is incompatible with this PyTorch build.'
+    return None
+
+
 def _is_debugger_attached() -> bool:
     gettrace = getattr(sys, 'gettrace', None)
     if not callable(gettrace):
@@ -320,15 +363,18 @@ class ModelTrainer(threading.Thread):
                  iou_loss_weight: float = 0.5,
                  hard_mining_params: HardMiningParameters | None = None,
                  cutout_params: CutoutParameters | None = None,
+                 random_artifacts_params: RandomArtifactsParameters | None = None,
                  mixup_params: MixupParameters | None = None,
                  early_stopping_params: EarlyStoppingParameters | None = None,
                  warmup_params: WarmupParameters | None = None,
+                 scheduler_params: SchedulerParameters | None = None,
                  skip_uniform_labels: bool = False,
                  resume_from_checkpoint: bool = False,
                  use_multi_gpu: bool = True,
                  multi_gpu_mode: str | None = None,
                  show_batch_preview: bool = True,
-                 log_update_frequency: int = 0):
+                 log_update_frequency: int = 0,
+                 save_validation_binary_images: bool = False):
         super().__init__()
         self._train_dataloader = train_dataloader
         self._val_dataloader = val_dataloader
@@ -345,9 +391,11 @@ class ModelTrainer(threading.Thread):
         self._iou_loss_weight = float(iou_loss_weight)
         self._hard_mining_params = hard_mining_params or HardMiningParameters()
         self._cutout_params = cutout_params or CutoutParameters()
+        self._random_artifacts_params = random_artifacts_params or RandomArtifactsParameters()
         self._mixup_params = mixup_params or MixupParameters()
         self._early_stopping_params = early_stopping_params or EarlyStoppingParameters()
         self._warmup_params = warmup_params or WarmupParameters()
+        self._scheduler_params = scheduler_params or SchedulerParameters()
         self._skip_uniform_labels = bool(skip_uniform_labels)
         self._resume_from_checkpoint = resume_from_checkpoint
         self._multi_gpu_mode = normalize_multi_gpu_mode(
@@ -357,6 +405,7 @@ class ModelTrainer(threading.Thread):
         self._use_multi_gpu = self._multi_gpu_mode != 'off'
         self._show_batch_preview = show_batch_preview
         self._log_update_frequency = max(0, int(log_update_frequency))
+        self._save_validation_binary_images = bool(save_validation_binary_images)
         self._stop_event = threading.Event()
         self.message_queue = mp.Queue()
         self.succeeded = False
@@ -390,15 +439,18 @@ class ModelTrainer(threading.Thread):
             iou_loss_weight=self._iou_loss_weight,
             hard_mining_params=self._hard_mining_params,
             cutout_params=self._cutout_params,
+            random_artifacts_params=self._random_artifacts_params,
             mixup_params=self._mixup_params,
             early_stopping_params=self._early_stopping_params,
             warmup_params=self._warmup_params,
+            scheduler_params=self._scheduler_params,
             skip_uniform_labels=self._skip_uniform_labels,
             resume_from_checkpoint=self._resume_from_checkpoint,
             use_multi_gpu=self._use_multi_gpu,
             multi_gpu_mode=self._multi_gpu_mode,
             show_batch_preview=self._show_batch_preview,
             log_update_frequency=self._log_update_frequency,
+            save_validation_binary_images=self._save_validation_binary_images,
         )
 
     @staticmethod
@@ -520,15 +572,18 @@ class TrainerProcess(mp.Process):
                  iou_loss_weight: float = 0.5,
                  hard_mining_params: HardMiningParameters | None = None,
                  cutout_params: CutoutParameters | None = None,
+                 random_artifacts_params: RandomArtifactsParameters | None = None,
                  mixup_params: MixupParameters | None = None,
                  early_stopping_params: EarlyStoppingParameters | None = None,
                  warmup_params: WarmupParameters | None = None,
+                 scheduler_params: SchedulerParameters | None = None,
                  skip_uniform_labels: bool = False,
                  resume_from_checkpoint: bool = False,
                  use_multi_gpu: bool = True,
                  multi_gpu_mode: str | None = None,
                  show_batch_preview: bool = True,
-                 log_update_frequency: int = 0):
+                 log_update_frequency: int = 0,
+                 save_validation_binary_images: bool = False):
         super().__init__()
         self._train_dataloader = train_dataloader
         self._val_dataloader = val_dataloader
@@ -545,9 +600,11 @@ class TrainerProcess(mp.Process):
         self._iou_loss_weight = float(iou_loss_weight)
         self._hard_mining_params = hard_mining_params or HardMiningParameters()
         self._cutout_params = cutout_params or CutoutParameters()
+        self._random_artifacts_params = random_artifacts_params or RandomArtifactsParameters()
         self._mixup_params = mixup_params or MixupParameters()
         self._early_stopping_params = early_stopping_params or EarlyStoppingParameters()
         self._warmup_params = warmup_params or WarmupParameters()
+        self._scheduler_params = scheduler_params or SchedulerParameters()
         self._skip_uniform_labels = bool(skip_uniform_labels)
         self._resume_from_checkpoint = resume_from_checkpoint
         self._multi_gpu_mode = normalize_multi_gpu_mode(
@@ -557,10 +614,16 @@ class TrainerProcess(mp.Process):
         self._use_multi_gpu = self._multi_gpu_mode != 'off'
         self._show_batch_preview = show_batch_preview
         self._log_update_frequency = max(0, int(log_update_frequency))
+        self._save_validation_binary_images = bool(save_validation_binary_images)
         self._training_profiler_config = self._resolve_training_profiler_config()
         self._uncompiled_model: nn.Module | None = None
         self._torch_compile_active = False
         self._recommended_inference_threshold = 0.5
+        self._train_epoch_history: list[tuple[float, float]] = []
+        self._val_epoch_history: list[tuple[float, float]] = []
+        self._val_iou_history: list[tuple[float, float]] = []
+        self._val_dice_history: list[tuple[float, float]] = []
+        self._batch_points_by_epoch: dict[int, list[tuple[float, float]]] = {}
 
     @property
     def _base_model(self) -> nn.Module:
@@ -598,6 +661,150 @@ class TrainerProcess(mp.Process):
             model_kwargs=model_kwargs,
             metadata=self._resolve_artifact_runtime_metadata(),
         )
+
+    @staticmethod
+    def _sanitize_artifact_name(value: str, *, fallback: str = 'sample') -> str:
+        cleaned = _ARTIFACT_NAME_SANITIZE_PATTERN.sub('_', str(value or '').strip()).strip('._-')
+        return cleaned or fallback
+
+    @staticmethod
+    def _render_chart_image(
+        *,
+        save_path: Path,
+        title: str,
+        x_label: str,
+        y_label: str,
+        series: list[tuple[str, list[tuple[float, float]], tuple[int, int, int]]],
+        y_formatter: Callable[[float], str] | None = None,
+    ) -> None:
+        non_empty_series = [(label, points, color) for label, points, color in series if points]
+        if not non_empty_series:
+            return
+
+        width, height = 1280, 720
+        margin_left, margin_right = 100, 40
+        margin_top, margin_bottom = 70, 90
+        plot_left = margin_left
+        plot_top = margin_top
+        plot_right = width - margin_right
+        plot_bottom = height - margin_bottom
+        plot_width = max(1, plot_right - plot_left)
+        plot_height = max(1, plot_bottom - plot_top)
+        background_color = (255, 255, 255)
+        axis_color = (40, 40, 40)
+        grid_color = (222, 228, 236)
+        text_color = (25, 25, 25)
+
+        all_points = [point for _label, points, _color in non_empty_series for point in points]
+        x_values = [float(point[0]) for point in all_points]
+        y_values = [float(point[1]) for point in all_points]
+        x_min = min(x_values)
+        x_max = max(x_values)
+        y_min = min(y_values)
+        y_max = max(y_values)
+        if math.isclose(x_min, x_max):
+            x_min -= 1.0
+            x_max += 1.0
+        if math.isclose(y_min, y_max):
+            delta = 1.0 if math.isclose(y_min, 0.0) else abs(y_min) * 0.1
+            y_min -= delta
+            y_max += delta
+        if y_min > 0.0:
+            y_min = 0.0
+
+        x_span = max(1e-9, x_max - x_min)
+        y_span = max(1e-9, y_max - y_min)
+        format_y = y_formatter or (lambda value: f'{float(value):.4f}')
+
+        image = Image.new('RGB', (width, height), color=background_color)
+        draw = ImageDraw.Draw(image)
+        font = ImageFont.load_default()
+
+        draw.text((plot_left, 24), str(title), fill=text_color, font=font)
+
+        tick_count = 5
+        for tick_index in range(tick_count + 1):
+            x = plot_left + (plot_width * tick_index / tick_count)
+            y = plot_top + (plot_height * tick_index / tick_count)
+            draw.line((x, plot_top, x, plot_bottom), fill=grid_color, width=1)
+            draw.line((plot_left, y, plot_right, y), fill=grid_color, width=1)
+
+            x_value = x_min + (x_span * tick_index / tick_count)
+            y_value = y_max - (y_span * tick_index / tick_count)
+            x_text = f'{x_value:.0f}' if abs(x_value - round(x_value)) < 1e-6 else f'{x_value:.2f}'
+            y_text = format_y(y_value)
+            draw.text((x - 12, plot_bottom + 12), x_text, fill=text_color, font=font)
+            draw.text((12, y - 6), y_text, fill=text_color, font=font)
+
+        draw.line((plot_left, plot_bottom, plot_right, plot_bottom), fill=axis_color, width=2)
+        draw.line((plot_left, plot_top, plot_left, plot_bottom), fill=axis_color, width=2)
+        draw.text((plot_right - 50, plot_bottom + 40), str(x_label), fill=text_color, font=font)
+        draw.text((16, plot_top - 24), str(y_label), fill=text_color, font=font)
+
+        for series_index, (label, points, color) in enumerate(non_empty_series):
+            scaled_points: list[tuple[float, float]] = []
+            for x_value, y_value in points:
+                normalized_x = (float(x_value) - x_min) / x_span
+                normalized_y = (float(y_value) - y_min) / y_span
+                scaled_x = plot_left + (normalized_x * plot_width)
+                scaled_y = plot_bottom - (normalized_y * plot_height)
+                scaled_points.append((scaled_x, scaled_y))
+            if len(scaled_points) == 1:
+                x_coord, y_coord = scaled_points[0]
+                draw.ellipse((x_coord - 3, y_coord - 3, x_coord + 3, y_coord + 3), fill=color)
+            else:
+                draw.line(scaled_points, fill=color, width=3)
+                for x_coord, y_coord in scaled_points:
+                    draw.ellipse((x_coord - 2, y_coord - 2, x_coord + 2, y_coord + 2), fill=color)
+
+            legend_x = plot_right - 220
+            legend_y = 24 + (series_index * 22)
+            draw.line((legend_x, legend_y + 7, legend_x + 24, legend_y + 7), fill=color, width=3)
+            draw.text((legend_x + 32, legend_y), str(label), fill=text_color, font=font)
+
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(save_path)
+
+    def _save_metric_charts(self) -> None:
+        artifact_dir = self._save_path.parent
+        if self._train_epoch_history or self._val_epoch_history:
+            self._render_chart_image(
+                save_path=artifact_dir / 'training_metrics_loss_by_epoch.png',
+                title='Loss vs Epoch',
+                x_label='Epoch',
+                y_label='Loss',
+                series=[
+                    ('Train Loss', list(self._train_epoch_history), (80, 186, 255)),
+                    ('Val Loss', list(self._val_epoch_history), (255, 170, 92)),
+                ],
+            )
+        if self._val_iou_history or self._val_dice_history:
+            self._render_chart_image(
+                save_path=artifact_dir / 'training_metrics_validation_quality.png',
+                title='Validation IoU / Dice vs Epoch',
+                x_label='Epoch',
+                y_label='Score',
+                series=[
+                    ('IoU', list(self._val_iou_history), (142, 210, 110)),
+                    ('Dice', list(self._val_dice_history), (255, 111, 145)),
+                ],
+                y_formatter=lambda value: f'{float(value) * 100.0:.1f}%',
+            )
+        if self._batch_points_by_epoch:
+            last_epoch = max(self._batch_points_by_epoch)
+            self._render_chart_image(
+                save_path=artifact_dir / f'training_metrics_train_loss_epoch_{int(last_epoch):04d}.png',
+                title=f'Train Loss vs Batch (Epoch {int(last_epoch)})',
+                x_label='Batch',
+                y_label='Loss',
+                series=[
+                    (
+                        'Train Loss',
+                        list(self._batch_points_by_epoch.get(last_epoch, [])),
+                        (137, 228, 125),
+                    ),
+                ],
+            )
 
     @staticmethod
     def _find_free_port() -> int:
@@ -748,7 +955,8 @@ class TrainerProcess(mp.Process):
         completed_epoch: int,
         optimizer,
         scaler,
-        scheduler,
+        warmup_scheduler,
+        lr_scheduler,
         early_stopping_best_loss: float | None = None,
         early_stopping_bad_epochs: int = 0,
         early_stopping_best_epoch: int = 0,
@@ -765,7 +973,9 @@ class TrainerProcess(mp.Process):
             'optimizer_name': self._optimizer_params.name.value,
             'learning_rate': self._optimizer_params.learning_rate,
             'weight_decay': self._optimizer_params.weight_decay,
-            'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+            'warmup_scheduler_state_dict': warmup_scheduler.state_dict() if warmup_scheduler is not None else None,
+            'lr_scheduler_state_dict': lr_scheduler.state_dict() if lr_scheduler is not None else None,
+            'scheduler_state_dict': warmup_scheduler.state_dict() if warmup_scheduler is not None else None,
             'early_stopping_best_loss': early_stopping_best_loss,
             'early_stopping_bad_epochs': early_stopping_bad_epochs,
             'early_stopping_best_epoch': early_stopping_best_epoch,
@@ -777,7 +987,13 @@ class TrainerProcess(mp.Process):
         }
         torch.save(checkpoint, self._checkpoint_path())
 
-    def _load_checkpoint_if_available(self, optimizer, scaler, scheduler) -> tuple[int, dict[str, Any]]:
+    def _load_checkpoint_if_available(
+        self,
+        optimizer,
+        scaler,
+        warmup_scheduler,
+        lr_scheduler,
+    ) -> tuple[int, dict[str, Any]]:
         if not self._resume_from_checkpoint:
             return 0, {}
 
@@ -791,7 +1007,9 @@ class TrainerProcess(mp.Process):
             model_state = checkpoint.get('model_state_dict')
             optimizer_state = checkpoint.get('optimizer_state_dict')
             scaler_state = checkpoint.get('scaler_state_dict')
-            scheduler_state = checkpoint.get('scheduler_state_dict')
+            legacy_scheduler_state = checkpoint.get('scheduler_state_dict')
+            warmup_scheduler_state = checkpoint.get('warmup_scheduler_state_dict', legacy_scheduler_state)
+            lr_scheduler_state = checkpoint.get('lr_scheduler_state_dict')
             completed_epoch = int(checkpoint.get('completed_epoch', 0))
             if model_state:
                 self._base_model.load_state_dict(model_state)
@@ -799,8 +1017,10 @@ class TrainerProcess(mp.Process):
                 optimizer.load_state_dict(optimizer_state)
             if scaler_state:
                 scaler.load_state_dict(scaler_state)
-            if scheduler is not None and scheduler_state:
-                scheduler.load_state_dict(scheduler_state)
+            if warmup_scheduler is not None and warmup_scheduler_state:
+                warmup_scheduler.load_state_dict(warmup_scheduler_state)
+            if lr_scheduler is not None and lr_scheduler_state:
+                lr_scheduler.load_state_dict(lr_scheduler_state)
             self._recommended_inference_threshold = float(
                 min(
                     max(float(checkpoint.get('recommended_inference_threshold', 0.5)), 0.0),
@@ -818,12 +1038,31 @@ class TrainerProcess(mp.Process):
             self._bus.put(['logging', f'Ошибка загрузки контрольной точки: {error}. Обучение начнется с первой эпохи.'])
             return 0, {}
 
-    def _create_warmup_scheduler(self, optimizer, train_steps_per_epoch: int):
+    def _resolved_scheduler_name(self) -> SchedulerName:
+        scheduler_params = getattr(self, '_scheduler_params', None)
+        scheduler_name = getattr(scheduler_params, 'name', SchedulerName.off)
+        if isinstance(scheduler_name, SchedulerName):
+            return scheduler_name
+        try:
+            return SchedulerName(str(scheduler_name or SchedulerName.off.value).strip().lower())
+        except ValueError:
+            return SchedulerName.off
+
+    def _warmup_supported_with_scheduler(self) -> bool:
+        return self._resolved_scheduler_name() != SchedulerName.one_cycle
+
+    def _create_warmup_scheduler(self, optimizer, train_steps_per_epoch: int) -> tuple[Any, int]:
         warmup = self._warmup_params
         if not warmup.enabled:
-            return None
+            return None, 0
+        if not self._warmup_supported_with_scheduler():
+            self._bus.put([
+                'logging',
+                'Warmup disabled for OneCycleLR: use OneCycle pct_start to control the initial ramp phase.',
+            ])
+            return None, 0
         if train_steps_per_epoch <= 0:
-            return None
+            return None, 0
 
         warmup_epochs = max(1, int(warmup.epochs))
         warmup_steps = warmup_epochs * train_steps_per_epoch
@@ -835,7 +1074,115 @@ class TrainerProcess(mp.Process):
             progress = (step + 1) / warmup_steps
             return start_factor + (1.0 - start_factor) * progress
 
-        return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+        return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda), warmup_steps
+
+    @staticmethod
+    def _resolve_one_cycle_anneal_strategy(value: str) -> str:
+        normalized = str(value or 'cos').strip().lower()
+        return normalized if normalized in {'cos', 'linear'} else 'cos'
+
+    def _create_lr_scheduler(
+        self,
+        optimizer,
+        *,
+        train_steps_per_epoch: int,
+    ) -> tuple[Any, str]:
+        scheduler_params = getattr(self, '_scheduler_params', None) or SchedulerParameters()
+        scheduler_name = self._resolved_scheduler_name()
+        if scheduler_name == SchedulerName.off:
+            return None, 'none'
+        if scheduler_name == SchedulerName.reduce_on_plateau:
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=float(min(max(getattr(scheduler_params, 'plateau_factor', 0.5), 1e-4), 0.9999)),
+                patience=max(0, int(getattr(scheduler_params, 'plateau_patience', 3))),
+                threshold=max(0.0, float(getattr(scheduler_params, 'plateau_threshold', 1e-4))),
+                min_lr=max(0.0, float(getattr(scheduler_params, 'plateau_min_lr', 1e-6))),
+                cooldown=max(0, int(getattr(scheduler_params, 'plateau_cooldown', 0))),
+            )
+            return scheduler, 'plateau'
+        if scheduler_name == SchedulerName.cosine_annealing:
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=max(1, int(getattr(scheduler_params, 'cosine_t_max', 10))),
+                eta_min=max(0.0, float(getattr(scheduler_params, 'cosine_eta_min', 1e-6))),
+            )
+            return scheduler, 'epoch'
+        if scheduler_name == SchedulerName.one_cycle:
+            scheduler = optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=max(0.0, float(getattr(scheduler_params, 'one_cycle_max_lr', 1e-3))),
+                epochs=max(1, int(self._epochs)),
+                steps_per_epoch=max(1, int(train_steps_per_epoch)),
+                pct_start=float(
+                    min(max(getattr(scheduler_params, 'one_cycle_pct_start', 0.3), 0.0), 1.0)
+                ),
+                anneal_strategy=self._resolve_one_cycle_anneal_strategy(
+                    getattr(scheduler_params, 'one_cycle_anneal_strategy', 'cos')
+                ),
+                div_factor=max(1.0, float(getattr(scheduler_params, 'one_cycle_div_factor', 25.0))),
+                final_div_factor=max(
+                    1.0,
+                    float(getattr(scheduler_params, 'one_cycle_final_div_factor', 10000.0)),
+                ),
+                three_phase=bool(getattr(scheduler_params, 'one_cycle_three_phase', False)),
+            )
+            return scheduler, 'batch'
+        if scheduler_name == SchedulerName.step_lr:
+            scheduler = optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=max(1, int(getattr(scheduler_params, 'step_lr_step_size', 10))),
+                gamma=float(min(max(getattr(scheduler_params, 'step_lr_gamma', 0.1), 1e-4), 1.0)),
+            )
+            return scheduler, 'epoch'
+        return None, 'none'
+
+    def _step_batch_schedulers(self, run_context: _RunContext) -> None:
+        warmup_scheduler = run_context.warmup_scheduler
+        if warmup_scheduler is not None and int(run_context.warmup_total_steps) > 0:
+            completed_steps = int(getattr(warmup_scheduler, 'last_epoch', -1)) + 1
+            if completed_steps < int(run_context.warmup_total_steps):
+                warmup_scheduler.step()
+                return
+        if run_context.scheduler is not None and run_context.scheduler_step_mode == 'batch':
+            run_context.scheduler.step()
+
+    def _step_epoch_scheduler(
+        self,
+        *,
+        run_context: _RunContext,
+        validation_result: dict[str, float] | None,
+        train_loss: float | None,
+        distributed: bool,
+        device: torch.device,
+        is_main_process: bool,
+    ) -> None:
+        scheduler = run_context.scheduler
+        if scheduler is None:
+            return
+        if run_context.scheduler_step_mode == 'epoch':
+            scheduler.step()
+            return
+        if run_context.scheduler_step_mode != 'plateau':
+            return
+
+        metric = validation_result.get('loss') if validation_result is not None else train_loss
+        try:
+            metric_value = float(metric) if metric is not None else None
+        except (TypeError, ValueError):
+            metric_value = None
+        if metric_value is None or not math.isfinite(metric_value):
+            return
+        if distributed:
+            metric_tensor = torch.tensor(
+                [metric_value if is_main_process else 0.0],
+                device=device,
+                dtype=torch.float64,
+            )
+            dist.broadcast(metric_tensor, src=0)
+            metric_value = float(metric_tensor.item())
+        scheduler.step(metric_value)
 
     def _resolve_target_epochs(self, start_epoch: int) -> int:
         """
@@ -913,6 +1260,16 @@ class TrainerProcess(mp.Process):
         probability = float(min(max(probability, 0.0), 1.0))
         size_ratio = float(min(max(size_ratio, 0.0), 1.0))
         return enabled, probability, holes, size_ratio
+
+    def _resolved_random_artifact_parameters(self) -> tuple[bool, float, int, float]:
+        params = getattr(self, '_random_artifacts_params', None)
+        enabled = bool(getattr(params, 'enabled', False))
+        probability = float(getattr(params, 'probability', 1.0))
+        count = max(1, int(getattr(params, 'count', 1)))
+        size_ratio = float(getattr(params, 'size_ratio', 0.25))
+        probability = float(min(max(probability, 0.0), 1.0))
+        size_ratio = float(min(max(size_ratio, 0.0), 1.0))
+        return enabled, probability, count, size_ratio
 
     def _resolved_mixup_parameters(self) -> tuple[bool, float, float]:
         params = getattr(self, '_mixup_params', None)
@@ -1208,8 +1565,75 @@ class TrainerProcess(mp.Process):
         best_threshold, best_metrics = max(threshold_metrics.items(), key=_sort_key)
         return float(best_threshold), dict(best_metrics)
 
+    def _resolve_validation_dataset(self) -> Any:
+        if self._val_dataloader is None:
+            return None
+        return getattr(self._val_dataloader, 'dataset', None)
+
+    def _describe_validation_sample(self, dataset: Any, sample_index: int, fallback_index: int) -> str:
+        describe_fn = getattr(dataset, 'describe_sample', None)
+        if callable(describe_fn):
+            try:
+                return self._sanitize_artifact_name(str(describe_fn(int(sample_index))), fallback='sample')
+            except Exception:
+                pass
+        return f'sample_{int(fallback_index):06d}'
+
+    def _save_validation_binary_predictions(
+        self,
+        *,
+        epoch: int,
+        device: torch.device,
+        autocast_ctx: Callable[[], ContextManager[Any]],
+        threshold: float,
+    ) -> None:
+        if (not self._save_validation_binary_images) or self._val_dataloader is None:
+            return
+        dataset = self._resolve_validation_dataset()
+        if dataset is None:
+            return
+
+        epoch_dir = self._save_path.parent / 'validation_binary_predictions' / f'epoch_{int(epoch + 1):04d}'
+        epoch_dir.mkdir(parents=True, exist_ok=True)
+        saved_images = 0
+        with torch.no_grad():
+            for batch in self._val_dataloader:
+                data, _target, sample_indices = self._split_batch(batch)
+                inputs = self._move_batch_input_to_device(data, device)
+                with autocast_ctx():
+                    outputs = self._forward_model(inputs)
+                probs = torch.sigmoid(self._sanitize_outputs_for_loss(outputs))
+                binary_predictions = (probs >= float(threshold)).detach().cpu()
+
+                if torch.is_tensor(sample_indices):
+                    resolved_indices = sample_indices.detach().cpu().tolist()
+                elif sample_indices is None:
+                    resolved_indices = list(range(saved_images, saved_images + int(binary_predictions.shape[0])))
+                else:
+                    resolved_indices = list(sample_indices)
+
+                for batch_offset in range(int(binary_predictions.shape[0])):
+                    sample_index = int(resolved_indices[batch_offset]) if batch_offset < len(resolved_indices) else saved_images
+                    sample_name = self._describe_validation_sample(dataset, sample_index, saved_images)
+                    sample_path = epoch_dir / f'{saved_images:06d}_{sample_name}.png'
+                    sample_tensor = binary_predictions[batch_offset]
+                    if sample_tensor.ndim == 3:
+                        sample_tensor = sample_tensor[0]
+                    sample_array = sample_tensor.numpy().astype(np.uint8) * 255
+                    Image.fromarray(sample_array, mode='L').save(sample_path)
+                    saved_images += 1
+
+        self._bus.put([
+            'logging',
+            (
+                f'Validation binary predictions saved: {saved_images} file(s) '
+                f'in {epoch_dir}.'
+            ),
+        ])
+
     def _run_validation_epoch(
         self,
+        epoch: int,
         device: torch.device,
         bce_criterion: nn.Module,
         autocast_ctx: Callable[[], ContextManager[Any]],
@@ -1240,11 +1664,13 @@ class TrainerProcess(mp.Process):
         }
         skipped_non_finite_batches = 0
         with torch.no_grad():
-            for data, target in self._val_dataloader:
-                image = data.to(device, non_blocking=True)
+            for batch in self._val_dataloader:
+                data, target, _sample_indices = self._split_batch(batch)
+                inputs = self._move_batch_input_to_device(data, device)
+                image = self._extract_local_image(inputs)
                 label = target.to(device, non_blocking=True)
                 with autocast_ctx():
-                    outputs = self._forward_model(image)
+                    outputs = self._forward_model(inputs)
                     per_sample_loss = self._compute_per_sample_loss(outputs, label, bce_criterion)
                     loss = per_sample_loss.mean()
 
@@ -1305,6 +1731,12 @@ class TrainerProcess(mp.Process):
         }
         best_threshold, best_threshold_metrics = self._pick_best_validation_threshold(threshold_metrics)
         self._recommended_inference_threshold = float(best_threshold)
+        self._save_validation_binary_predictions(
+            epoch=epoch,
+            device=device,
+            autocast_ctx=autocast_ctx,
+            threshold=float(best_threshold),
+        )
 
         return {
             'loss': float(avg_val_loss),
@@ -1485,10 +1917,11 @@ class TrainerProcess(mp.Process):
                 self._bus.put(['logging', 'torch.compile недоступен в этой версии PyTorch.'])
             return
         target_device_type = device.type if device is not None else ('cuda' if torch.cuda.is_available() else 'cpu')
-        if target_device_type == 'cuda' and not _is_module_available('triton'):
+        compile_unavailable_reason = _get_torch_compile_unavailable_reason(target_device_type)
+        if compile_unavailable_reason is not None:
             self._torch_compile_active = False
             if is_main_process:
-                self._bus.put(['logging', 'torch.compile disabled: Triton is not installed for CUDA backend.'])
+                self._bus.put(['logging', f'torch.compile disabled: {compile_unavailable_reason}'])
             return
         try:
             self._uncompiled_model = self._model
@@ -1532,7 +1965,7 @@ class TrainerProcess(mp.Process):
         self._bus.put(['logging', f'torch.compile disabled at runtime (fallback): {error}'])
         return True
 
-    def _forward_model(self, image: torch.Tensor) -> torch.Tensor:
+    def _forward_model(self, image: Any) -> torch.Tensor:
         try:
             return self._model(image)
         except Exception as error:
@@ -1843,6 +2276,59 @@ class TrainerProcess(mp.Process):
             ),
         ])
 
+    def _log_scheduler_configuration(self, scheduler: Any, scheduler_step_mode: str) -> None:
+        if scheduler is None:
+            return
+        scheduler_name = self._resolved_scheduler_name()
+        scheduler_params = getattr(self, '_scheduler_params', None) or SchedulerParameters()
+        if scheduler_name == SchedulerName.reduce_on_plateau:
+            self._bus.put([
+                'logging',
+                (
+                    'LR scheduler enabled: ReduceLROnPlateau '
+                    f'(factor={float(getattr(scheduler_params, "plateau_factor", 0.5)):.4f}, '
+                    f'patience={int(getattr(scheduler_params, "plateau_patience", 3))}, '
+                    f'threshold={float(getattr(scheduler_params, "plateau_threshold", 1e-4)):.6f}, '
+                    f'min_lr={float(getattr(scheduler_params, "plateau_min_lr", 1e-6)):.6f}, '
+                    f'cooldown={int(getattr(scheduler_params, "plateau_cooldown", 0))}).'
+                ),
+            ])
+            return
+        if scheduler_name == SchedulerName.cosine_annealing:
+            self._bus.put([
+                'logging',
+                (
+                    'LR scheduler enabled: CosineAnnealingLR '
+                    f'(T_max={int(getattr(scheduler_params, "cosine_t_max", 10))}, '
+                    f'eta_min={float(getattr(scheduler_params, "cosine_eta_min", 1e-6)):.6f}).'
+                ),
+            ])
+            return
+        if scheduler_name == SchedulerName.one_cycle:
+            self._bus.put([
+                'logging',
+                (
+                    'LR scheduler enabled: OneCycleLR '
+                    f'(max_lr={float(getattr(scheduler_params, "one_cycle_max_lr", 1e-3)):.6f}, '
+                    f'pct_start={float(getattr(scheduler_params, "one_cycle_pct_start", 0.3)):.3f}, '
+                    f'anneal={self._resolve_one_cycle_anneal_strategy(getattr(scheduler_params, "one_cycle_anneal_strategy", "cos"))}, '
+                    f'div_factor={float(getattr(scheduler_params, "one_cycle_div_factor", 25.0)):.2f}, '
+                    f'final_div_factor={float(getattr(scheduler_params, "one_cycle_final_div_factor", 10000.0)):.2f}, '
+                    f'three_phase={bool(getattr(scheduler_params, "one_cycle_three_phase", False))}).'
+                ),
+            ])
+            return
+        if scheduler_name == SchedulerName.step_lr:
+            self._bus.put([
+                'logging',
+                (
+                    'LR scheduler enabled: StepLR '
+                    f'(step_size={int(getattr(scheduler_params, "step_lr_step_size", 10))}, '
+                    f'gamma={float(getattr(scheduler_params, "step_lr_gamma", 0.1)):.4f}, '
+                    f'step_mode={scheduler_step_mode}).'
+                ),
+            ])
+
     def _create_run_context(self, device: torch.device, is_main_process: bool, distributed: bool) -> _RunContext:
         self._prepare_training_device(device, is_main_process=is_main_process, distributed=distributed)
 
@@ -1862,8 +2348,13 @@ class TrainerProcess(mp.Process):
 
         scaler = self._create_grad_scaler(device_type=device.type, enabled=scaler_enabled)
         autocast_ctx = self._build_autocast_context(device_type=device.type, autocast_dtype=autocast_dtype)
-        scheduler = self._create_warmup_scheduler(optimizer, train_size)
-        self._log_warmup_configuration(scheduler)
+        warmup_scheduler, warmup_total_steps = self._create_warmup_scheduler(optimizer, train_size)
+        scheduler, scheduler_step_mode = self._create_lr_scheduler(
+            optimizer,
+            train_steps_per_epoch=train_size,
+        )
+        self._log_warmup_configuration(warmup_scheduler)
+        self._log_scheduler_configuration(scheduler, scheduler_step_mode)
 
         return _RunContext(
             bce_criterion=bce_criterion,
@@ -1875,12 +2366,16 @@ class TrainerProcess(mp.Process):
             train_sampler=train_sampler,
             supports_loss_aware_sampling=supports_loss_aware_sampling,
             strides=strides,
+            scheduler_step_mode=scheduler_step_mode,
+            warmup_scheduler=warmup_scheduler,
+            warmup_total_steps=warmup_total_steps,
         )
 
     def _restore_training_state(self, run_context: _RunContext) -> tuple[int, _EarlyStoppingState, _EarlyStoppingConfig]:
         start_epoch, checkpoint = self._load_checkpoint_if_available(
             run_context.optimizer,
             run_context.scaler,
+            run_context.warmup_scheduler,
             run_context.scheduler,
         )
         early_stopping_state = _EarlyStoppingState(
@@ -1964,12 +2459,62 @@ class TrainerProcess(mp.Process):
         data, target = batch
         return data, target, None
 
+    @staticmethod
+    def _move_batch_input_to_device(data: Any, device: torch.device) -> Any:
+        if isinstance(data, Mapping):
+            moved: dict[str, Any] = {}
+            for key, value in data.items():
+                if torch.is_tensor(value):
+                    moved[str(key)] = value.to(device, non_blocking=True)
+                else:
+                    moved[str(key)] = value
+            return moved
+        if torch.is_tensor(data):
+            return data.to(device, non_blocking=True)
+        raise TypeError(f'Unsupported batch input type: {type(data)!r}')
+
+    @staticmethod
+    def _extract_local_image(data: Any) -> torch.Tensor:
+        if isinstance(data, Mapping):
+            local_image = data.get('local_image')
+            if not torch.is_tensor(local_image):
+                raise TypeError('Expected "local_image" tensor in model input mapping.')
+            return local_image
+        if not torch.is_tensor(data):
+            raise TypeError(f'Unsupported local batch input type: {type(data)!r}')
+        return data
+
+    @staticmethod
+    def _extract_context_image(data: Any) -> torch.Tensor | None:
+        if not isinstance(data, Mapping):
+            return None
+        context_image = data.get('context_image')
+        if context_image is None:
+            return None
+        if not torch.is_tensor(context_image):
+            raise TypeError('Expected "context_image" tensor in model input mapping.')
+        return context_image
+
+    @staticmethod
+    def _filter_batch_input(data: Any, valid_mask: torch.Tensor) -> Any:
+        if isinstance(data, Mapping):
+            filtered: dict[str, Any] = {}
+            for key, value in data.items():
+                if torch.is_tensor(value) and value.ndim > 0 and int(value.shape[0]) == int(valid_mask.shape[0]):
+                    filtered[str(key)] = value[valid_mask.detach().to(device=value.device)]
+                else:
+                    filtered[str(key)] = value
+            return filtered
+        if torch.is_tensor(data):
+            return data[valid_mask]
+        raise TypeError(f'Unsupported batch input type: {type(data)!r}')
+
     def _filter_uniform_batch_samples(
         self,
-        image: torch.Tensor,
+        image: Any,
         label: torch.Tensor,
         sample_indices: Any,
-    ) -> tuple[torch.Tensor, torch.Tensor, Any, int, bool]:
+    ) -> tuple[Any, torch.Tensor, Any, int, bool]:
         if not self._skip_uniform_labels:
             return image, label, sample_indices, 0, True
         # Binarize before uniformity detection so labels normalized as 255/256
@@ -1983,7 +2528,7 @@ class TrainerProcess(mp.Process):
         if not bool(valid_mask.any()):
             return image, label, sample_indices, skipped_here, False
 
-        image = image[valid_mask]
+        image = self._filter_batch_input(image, valid_mask)
         label = label[valid_mask]
         if sample_indices is None:
             return image, label, None, skipped_here, True
@@ -2005,12 +2550,13 @@ class TrainerProcess(mp.Process):
 
     def _apply_mixup_to_batch(
         self,
-        image: torch.Tensor,
+        image: Any,
         label: torch.Tensor,
         sample_indices: Any,
-    ) -> tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor | None]:
+    ) -> tuple[Any, torch.Tensor, Any, torch.Tensor | None]:
         enabled, probability, alpha = self._resolved_mixup_parameters()
-        batch_size = int(image.size(0))
+        local_image = self._extract_local_image(image)
+        batch_size = int(local_image.size(0))
         if (not enabled) or batch_size <= 1 or probability <= 0.0 or alpha <= 0.0:
             return image, label, None, None
         if float(np.random.random()) > probability:
@@ -2018,17 +2564,31 @@ class TrainerProcess(mp.Process):
 
         lambda_value = float(np.random.beta(alpha, alpha))
         lambda_value = float(min(max(lambda_value, 0.0), 1.0))
-        permutation = torch.randperm(batch_size, device=image.device)
-        order = torch.arange(batch_size, device=image.device)
+        permutation = torch.randperm(batch_size, device=local_image.device)
+        order = torch.arange(batch_size, device=local_image.device)
         if bool((permutation == order).any()):
             permutation = torch.roll(order, shifts=1)
 
-        lambda_tensor = image.new_full((batch_size,), lambda_value)
+        lambda_tensor = local_image.new_full((batch_size,), lambda_value)
         lambda_view = lambda_tensor.view(batch_size, 1, 1, 1)
-        mixed_image = (lambda_view * image) + ((1.0 - lambda_view) * image[permutation])
+        mixed_image = self._mixup_batch_input(image, permutation, lambda_view)
         mixed_label = (lambda_view * label) + ((1.0 - lambda_view) * label[permutation])
         pair_indices = self._permute_sample_indices(sample_indices, permutation)
         return mixed_image, mixed_label, pair_indices, lambda_tensor
+
+    @staticmethod
+    def _mixup_batch_input(data: Any, permutation: torch.Tensor, lambda_view: torch.Tensor) -> Any:
+        if isinstance(data, Mapping):
+            mixed: dict[str, Any] = {}
+            for key, value in data.items():
+                if torch.is_tensor(value) and value.ndim >= 4 and int(value.shape[0]) == int(permutation.shape[0]):
+                    mixed[str(key)] = (lambda_view * value) + ((1.0 - lambda_view) * value[permutation])
+                else:
+                    mixed[str(key)] = value
+            return mixed
+        if torch.is_tensor(data):
+            return (lambda_view * data) + ((1.0 - lambda_view) * data[permutation])
+        raise TypeError(f'Unsupported batch input type: {type(data)!r}')
 
     def _apply_cutout_to_batch(self, image: torch.Tensor) -> torch.Tensor:
         enabled, probability, holes, size_ratio = self._resolved_cutout_parameters()
@@ -2036,35 +2596,132 @@ class TrainerProcess(mp.Process):
             return image
 
         batch_size, _channels, height, width = image.shape
-        cutout_height = max(1, min(height, int(round(height * size_ratio))))
-        cutout_width = max(1, min(width, int(round(width * size_ratio))))
-        if cutout_height <= 0 or cutout_width <= 0:
+        max_cutout_height = max(1, min(height, int(round(height * size_ratio))))
+        max_cutout_width = max(1, min(width, int(round(width * size_ratio))))
+        if max_cutout_height <= 0 or max_cutout_width <= 0:
             return image
 
         cutout_image = image.clone()
-        max_top = max(0, height - cutout_height)
-        max_left = max(0, width - cutout_width)
         for sample_index in range(batch_size):
             if float(np.random.random()) > probability:
                 continue
             for _ in range(holes):
+                cutout_height = (
+                    1
+                    if max_cutout_height == 1
+                    else int(torch.randint(1, max_cutout_height + 1, (1,), device=image.device).item())
+                )
+                cutout_width = (
+                    1
+                    if max_cutout_width == 1
+                    else int(torch.randint(1, max_cutout_width + 1, (1,), device=image.device).item())
+                )
+                max_top = max(0, height - cutout_height)
+                max_left = max(0, width - cutout_width)
                 top = 0 if max_top == 0 else int(torch.randint(0, max_top + 1, (1,), device=image.device).item())
                 left = 0 if max_left == 0 else int(torch.randint(0, max_left + 1, (1,), device=image.device).item())
-                cutout_image[sample_index, :, top:top + cutout_height, left:left + cutout_width] = 0.0
+                fill_color = torch.rand((_channels, 1, 1), device=image.device, dtype=image.dtype)
+                cutout_image[sample_index, :, top:top + cutout_height, left:left + cutout_width] = fill_color
         return cutout_image
+
+    def _apply_random_artifacts_to_batch(self, image: torch.Tensor) -> torch.Tensor:
+        enabled, probability, count, size_ratio = self._resolved_random_artifact_parameters()
+        if (not enabled) or probability <= 0.0 or size_ratio <= 0.0:
+            return image
+
+        batch_size, channels, height, width = image.shape
+        max_artifact_height = max(1, min(height, int(round(height * size_ratio))))
+        max_artifact_width = max(1, min(width, int(round(width * size_ratio))))
+        if max_artifact_height <= 0 or max_artifact_width <= 0:
+            return image
+
+        min_artifact_height = 1 if max_artifact_height <= 2 else max(2, int(round(max_artifact_height * 0.35)))
+        min_artifact_width = 1 if max_artifact_width <= 2 else max(2, int(round(max_artifact_width * 0.35)))
+        min_artifact_height = min(max_artifact_height, min_artifact_height)
+        min_artifact_width = min(max_artifact_width, min_artifact_width)
+
+        artifact_image = image.clone()
+        for sample_index in range(batch_size):
+            if float(np.random.random()) > probability:
+                continue
+            for _ in range(count):
+                artifact_height = (
+                    int(min_artifact_height)
+                    if max_artifact_height == min_artifact_height
+                    else int(
+                        torch.randint(
+                            min_artifact_height,
+                            max_artifact_height + 1,
+                            (1,),
+                            device=image.device,
+                        ).item()
+                    )
+                )
+                artifact_width = (
+                    int(min_artifact_width)
+                    if max_artifact_width == min_artifact_width
+                    else int(
+                        torch.randint(
+                            min_artifact_width,
+                            max_artifact_width + 1,
+                            (1,),
+                            device=image.device,
+                        ).item()
+                    )
+                )
+                max_top = max(0, height - artifact_height)
+                max_left = max(0, width - artifact_width)
+                top = 0 if max_top == 0 else int(torch.randint(0, max_top + 1, (1,), device=image.device).item())
+                left = 0 if max_left == 0 else int(torch.randint(0, max_left + 1, (1,), device=image.device).item())
+
+                overlay, alpha = generate_random_artifact_patch(
+                    int(channels),
+                    int(artifact_height),
+                    int(artifact_width),
+                    device=image.device,
+                    dtype=image.dtype,
+                )
+                patch = artifact_image[sample_index, :, top:top + artifact_height, left:left + artifact_width]
+                artifact_image[sample_index, :, top:top + artifact_height, left:left + artifact_width] = torch.clamp(
+                    (patch * (1.0 - alpha)) + (overlay * alpha),
+                    min=0.0,
+                    max=1.0,
+                )
+        return artifact_image
+
+    def _apply_cutout_to_input(self, image: Any) -> Any:
+        if not isinstance(image, Mapping):
+            return self._apply_cutout_to_batch(image)
+        local_image = image.get('local_image')
+        if not torch.is_tensor(local_image):
+            return image
+        updated = dict(image)
+        updated['local_image'] = self._apply_cutout_to_batch(local_image)
+        return updated
+
+    def _apply_random_artifacts_to_input(self, image: Any) -> Any:
+        if not isinstance(image, Mapping):
+            return self._apply_random_artifacts_to_batch(image)
+        local_image = image.get('local_image')
+        if not torch.is_tensor(local_image):
+            return image
+        updated = dict(image)
+        updated['local_image'] = self._apply_random_artifacts_to_batch(local_image)
+        return updated
 
     def _apply_training_batch_augmentations(
         self,
-        image: torch.Tensor,
+        image: Any,
         label: torch.Tensor,
         sample_indices: Any,
-    ) -> tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor | None]:
+    ) -> tuple[Any, torch.Tensor, Any, torch.Tensor | None]:
         image, label, mixup_pair_indices, mixup_lambdas = self._apply_mixup_to_batch(
             image,
             label,
             sample_indices,
         )
-        image = self._apply_cutout_to_batch(image)
+        image = self._apply_cutout_to_input(image)
+        image = self._apply_random_artifacts_to_input(image)
         return image, label, mixup_pair_indices, mixup_lambdas
 
     def _publish_batch_preview(
@@ -2157,10 +2814,10 @@ class TrainerProcess(mp.Process):
         data_wait_started_at: float,
     ) -> tuple[_PreparedTrainBatch | None, int]:
         data, target, sample_indices = self._split_batch(batch)
-        image = data.to(device, non_blocking=True)
+        inputs = self._move_batch_input_to_device(data, device)
         label = target.to(device, non_blocking=True)
-        image, label, sample_indices, skipped_here, has_valid_samples = self._filter_uniform_batch_samples(
-            image,
+        inputs, label, sample_indices, skipped_here, has_valid_samples = self._filter_uniform_batch_samples(
+            inputs,
             label,
             sample_indices,
         )
@@ -2168,11 +2825,13 @@ class TrainerProcess(mp.Process):
         data_wait_ms = (time.perf_counter() - data_wait_started_at) * 1000.0
         if not has_valid_samples:
             return None, skipped_here
-        image, label, mixup_pair_indices, mixup_lambdas = self._apply_training_batch_augmentations(
-            image,
+        inputs, label, mixup_pair_indices, mixup_lambdas = self._apply_training_batch_augmentations(
+            inputs,
             label,
             sample_indices,
         )
+        image = self._extract_local_image(inputs)
+        context_image = self._extract_context_image(inputs)
         return (
             _PreparedTrainBatch(
                 data=data,
@@ -2180,7 +2839,9 @@ class TrainerProcess(mp.Process):
                 sample_indices=sample_indices,
                 mixup_pair_indices=mixup_pair_indices,
                 mixup_lambdas=mixup_lambdas,
+                inputs=inputs,
                 image=image,
+                context_image=context_image,
                 label=label,
                 batch_start=batch_start,
                 data_wait_ms=data_wait_ms,
@@ -2199,7 +2860,7 @@ class TrainerProcess(mp.Process):
         forward_start = time.perf_counter()
         backward_denominator = float(max(1, int(batch.image.size(0))))
         with run_context.autocast_ctx():
-            outputs = self._sanitize_outputs_for_loss(self._forward_model(batch.image))
+            outputs = self._sanitize_outputs_for_loss(self._forward_model(batch.inputs))
             per_sample_loss = self._compute_per_sample_loss(
                 outputs,
                 batch.label,
@@ -2211,7 +2872,15 @@ class TrainerProcess(mp.Process):
         if (not self._is_finite_tensor(loss)) or (not self._is_finite_tensor(metric_loss)):
             # Retry in full precision to avoid occasional AMP overflow/underflow instability.
             with nullcontext():
-                outputs = self._sanitize_outputs_for_loss(self._forward_model(batch.image.float()))
+                retry_inputs = (
+                    batch.image.float()
+                    if not isinstance(batch.inputs, Mapping)
+                    else {
+                        key: value.float() if torch.is_tensor(value) else value
+                        for key, value in batch.inputs.items()
+                    }
+                )
+                outputs = self._sanitize_outputs_for_loss(self._forward_model(retry_inputs))
                 per_sample_loss = self._compute_per_sample_loss(
                     outputs,
                     batch.label,
@@ -2248,8 +2917,7 @@ class TrainerProcess(mp.Process):
         optimizer_start = time.perf_counter()
         run_context.scaler.step(run_context.optimizer)
         run_context.scaler.update()
-        if run_context.scheduler is not None:
-            run_context.scheduler.step()
+        self._step_batch_schedulers(run_context)
         optimizer_ms = (time.perf_counter() - optimizer_start) * 1000.0
 
         return _TrainStepResult(
@@ -2283,6 +2951,8 @@ class TrainerProcess(mp.Process):
         )
 
         if (batch_index % run_context.strides.metric == 0) or (batch_index == run_context.train_size - 1):
+            epoch_points = self._batch_points_by_epoch.setdefault(int(epoch + 1), [])
+            epoch_points.append((float(batch_index + 1), float(step_result.batch_loss)))
             self._bus.put([
                 'metrics',
                 {
@@ -2416,6 +3086,7 @@ class TrainerProcess(mp.Process):
         if global_train_samples <= 0:
             return
         avg_train_loss = global_train_loss / global_train_samples
+        self._train_epoch_history.append((float(epoch + 1), float(avg_train_loss)))
         self._bus.put(['metrics', {'type': 'train_epoch', 'epoch': epoch + 1, 'loss': float(avg_train_loss)}])
         avg_denom = max(1, run_context.train_size)
         self._bus.put([
@@ -2493,6 +3164,7 @@ class TrainerProcess(mp.Process):
     def _run_validation_if_main_process(
         self,
         *,
+        epoch: int,
         is_main_process: bool,
         device: torch.device,
         run_context: _RunContext,
@@ -2500,6 +3172,7 @@ class TrainerProcess(mp.Process):
         if not is_main_process:
             return None
         return self._run_validation_epoch(
+            epoch,
             device,
             run_context.bce_criterion,
             run_context.autocast_ctx,
@@ -2515,6 +3188,9 @@ class TrainerProcess(mp.Process):
         best_threshold_iou = float(validation_result.get('best_threshold_iou', val_iou))
         best_threshold_dice = float(validation_result.get('best_threshold_dice', val_dice))
         best_threshold_f1 = float(validation_result.get('best_threshold_f1', val_f1))
+        self._val_epoch_history.append((float(epoch + 1), float(avg_val_loss)))
+        self._val_iou_history.append((float(epoch + 1), float(val_iou)))
+        self._val_dice_history.append((float(epoch + 1), float(val_dice)))
 
         self._bus.put([
             'logging',
@@ -2590,14 +3266,15 @@ class TrainerProcess(mp.Process):
         early_stopping_state: _EarlyStoppingState,
         early_stopping_config: _EarlyStoppingConfig,
         is_main_process: bool,
-    ) -> None:
+    ) -> dict[str, float] | None:
         validation_result = self._run_validation_if_main_process(
+            epoch=epoch,
             is_main_process=is_main_process,
             device=device,
             run_context=run_context,
         )
         if validation_result is None:
-            return
+            return None
 
         self._publish_validation_metrics(epoch=epoch, validation_result=validation_result)
         self._update_early_stopping_from_validation(
@@ -2606,6 +3283,7 @@ class TrainerProcess(mp.Process):
             early_stopping_state=early_stopping_state,
             early_stopping_config=early_stopping_config,
         )
+        return validation_result
 
     def _save_epoch_artifacts(
         self,
@@ -2622,6 +3300,7 @@ class TrainerProcess(mp.Process):
             epoch + 1,
             run_context.optimizer,
             run_context.scaler,
+            run_context.warmup_scheduler,
             run_context.scheduler,
             early_stopping_best_loss=early_stopping_state.best_loss,
             early_stopping_bad_epochs=early_stopping_state.bad_epochs,
@@ -2694,6 +3373,11 @@ class TrainerProcess(mp.Process):
             distributed=distributed,
             device=device,
         )
+        average_train_loss = (
+            float(global_train_loss) / float(global_train_samples)
+            if int(global_train_samples) > 0
+            else None
+        )
         if runtime_state.is_main_process:
             self._publish_epoch_train_metrics(
                 epoch=epoch,
@@ -2704,12 +3388,20 @@ class TrainerProcess(mp.Process):
             )
 
         validation_start = time.perf_counter()
-        self._handle_validation(
+        validation_result = self._handle_validation(
             epoch=epoch,
             device=device,
             run_context=run_context,
             early_stopping_state=runtime_state.early_stopping_state,
             early_stopping_config=runtime_state.early_stopping_config,
+            is_main_process=runtime_state.is_main_process,
+        )
+        self._step_epoch_scheduler(
+            run_context=run_context,
+            validation_result=validation_result,
+            train_loss=average_train_loss,
+            distributed=distributed,
+            device=device,
             is_main_process=runtime_state.is_main_process,
         )
         validation_ms = (time.perf_counter() - validation_start) * 1000.0
@@ -2780,6 +3472,10 @@ class TrainerProcess(mp.Process):
     def _finalize_training_success(self, *, is_main_process: bool) -> None:
         if is_main_process:
             self._save_model_artifact()
+            try:
+                self._save_metric_charts()
+            except Exception as error:
+                self._bus.put(['logging', f'Failed to save training metric charts: {error}'])
         if self.callback is not None and is_main_process:
             self.callback()
         if is_main_process:
@@ -2850,11 +3546,16 @@ class NeuralRecognizer(threading.Thread):
         self.model:nn.Module|None = None
         self._thread_stop_event = threading.Event()
         self.stop_event = mp.Event()
-        self._resolved_output_threshold: float = 0.5
+        self._resolved_output_threshold: float | None = 0.5
+        self._use_context_branch = False
+        self._context_crop_size: tuple[int, int] | None = None
+        self._context_input_size: tuple[int, int] | None = None
 
-    def run(self, multithreading=False):
+    def run(self, multithreading: bool | None = None):
         try:
             self.prepare_model()
+            if multithreading is None:
+                multithreading = bool(getattr(self._parameters, 'recognition_multiprocessing_enabled', True))
             runtime_plan = self._build_runtime_plan(multithreading=multithreading)
             self.number_of_threads = runtime_plan.threads
             self.devices_list = runtime_plan.devices
@@ -2862,10 +3563,20 @@ class NeuralRecognizer(threading.Thread):
             if runtime_plan.use_multiprocessing:
                 self.run_multiprocessing(runtime_plan)
             else:
-                if multithreading and not isinstance(self._parameters.model, (str, Path)):
+                if not multithreading:
+                    self._bus.publish(
+                        'logging',
+                        'Recognition multiprocessing disabled by settings; using single-thread mode.',
+                    )
+                elif multithreading and not isinstance(self._parameters.model, (str, Path)):
                     self._bus.publish(
                         'logging',
                         'Многопроцессное распознавание доступно только при загрузке модели из файла. Переход в однопоточный режим.',
+                    )
+                elif len(self._parameters.source_files) < 2:
+                    self._bus.publish(
+                        'logging',
+                        'Recognition multiprocessing requires at least 2 source images; falling back to single-thread mode.',
                     )
                 self.run_one_thread()
         finally:
@@ -2877,17 +3588,22 @@ class NeuralRecognizer(threading.Thread):
     def _build_runtime_plan(self, multithreading: bool) -> RecognitionRuntimePlan:
         source_count = len(self._parameters.source_files)
         cpu_threads = mp.cpu_count()
-        threads = min(source_count, cpu_threads)
         devices, gpu_count = self._resolve_devices()
 
         can_use_multiprocessing_model = isinstance(self._parameters.model, (str, Path))
-        enough_threads_for_pipeline = (threads - gpu_count) >= 3
-        use_multiprocessing = bool(multithreading and can_use_multiprocessing_model and enough_threads_for_pipeline)
-
-        predict_workers = max(1, len(devices))
-        remaining_workers = max(2, threads - predict_workers)
-        cut_workers = max(1, remaining_workers // 2)
-        sew_workers = max(1, remaining_workers - cut_workers)
+        enough_inputs_for_pipeline = source_count >= 2
+        use_multiprocessing = bool(multithreading and can_use_multiprocessing_model and enough_inputs_for_pipeline)
+        if gpu_count > 0:
+            predict_workers = int(gpu_count)
+            cut_workers = int(RECOGNITION_AUX_WORKERS_PER_GPU * gpu_count)
+            sew_workers = int(RECOGNITION_AUX_WORKERS_PER_GPU * gpu_count)
+            threads = int(predict_workers + cut_workers + sew_workers)
+        else:
+            threads = min(source_count, cpu_threads)
+            predict_workers = max(1, len(devices))
+            remaining_workers = max(2, threads - predict_workers)
+            cut_workers = max(1, remaining_workers // 2)
+            sew_workers = max(1, remaining_workers - cut_workers)
 
         return RecognitionRuntimePlan(
             threads=threads,
@@ -2935,7 +3651,7 @@ class NeuralRecognizer(threading.Thread):
             fallback=0.5,
         )
         if not bool(getattr(self._parameters, 'binarize_output', True)):
-            self._resolved_output_threshold = manual_threshold
+            self._resolved_output_threshold = None
             self._bus.publish(
                 'logging',
                 'Recognition output binarization disabled: saving probability maps.',
@@ -2966,6 +3682,58 @@ class NeuralRecognizer(threading.Thread):
 
         self._resolved_output_threshold = manual_threshold
 
+    def _resolve_context_branch_settings(self, model: nn.Module) -> None:
+        model_kwargs = getattr(model, '_neuralimage_model_kwargs', {})
+        if not isinstance(model_kwargs, dict):
+            model_kwargs = {}
+
+        use_context_override = getattr(self._parameters, 'use_context_branch', None)
+        requested_context_branch = (
+            bool(model_kwargs.get('use_context_branch', False))
+            if use_context_override is None
+            else bool(use_context_override)
+        )
+        if not requested_context_branch:
+            self._use_context_branch = False
+            self._context_crop_size = None
+            self._context_input_size = None
+            return
+
+        fallback_local = tuple(getattr(self._parameters, 'part_size', (256, 256)))
+        context_crop_raw = getattr(self._parameters, 'context_crop_size', None)
+        if context_crop_raw is None:
+            context_crop_raw = model_kwargs.get('context_crop_size')
+        context_input_raw = getattr(self._parameters, 'context_input_size', None)
+        if context_input_raw is None:
+            context_input_raw = model_kwargs.get('context_input_size')
+
+        if context_crop_raw is None or context_input_raw is None:
+            self._use_context_branch = False
+            self._context_crop_size = None
+            self._context_input_size = None
+            self._bus.publish(
+                'logging',
+                'Recognition context branch disabled: model/context sizes are missing.',
+            )
+            return
+
+        self._use_context_branch = True
+        self._context_crop_size = normalize_size_pair(
+            context_crop_raw,
+            fallback=(int(fallback_local[0]) * 2, int(fallback_local[1]) * 2),
+        )
+        self._context_input_size = normalize_size_pair(
+            context_input_raw,
+            fallback=(int(fallback_local[0]), int(fallback_local[1])),
+        )
+        self._bus.publish(
+            'logging',
+            (
+                'Recognition context branch enabled: '
+                f'crop={self._context_crop_size}, input={self._context_input_size}.'
+            ),
+        )
+
     def prepare_model(self):
         loaded_model: str | Path | nn.Module = self._parameters.model
         if isinstance(loaded_model, (str, Path)):
@@ -2977,10 +3745,11 @@ class NeuralRecognizer(threading.Thread):
             compile_enabled = str(os.getenv('NEURALIMAGE_TORCH_COMPILE', '1')).strip().lower() in {'1', 'true', 'yes', 'on'}
             compile_fn = getattr(torch, 'compile', None)
             target_device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+            compile_unavailable_reason = _get_torch_compile_unavailable_reason(target_device_type)
             can_compile = (
                 compile_enabled
                 and compile_fn is not None
-                and (target_device_type != 'cuda' or _is_module_available('triton'))
+                and compile_unavailable_reason is None
             )
             if can_compile:
                 try:
@@ -3006,9 +3775,13 @@ class NeuralRecognizer(threading.Thread):
             elif compile_fn is None:
                 self._bus.publish('logging', 'Распознавание: torch.compile недоступен в этой версии PyTorch.')
             else:
-                self._bus.publish('logging', 'Распознавание: torch.compile отключен, Triton не установлен для CUDA backend.')
+                self._bus.publish(
+                    'logging',
+                    f'Распознавание: torch.compile отключен, {compile_unavailable_reason}',
+                )
         self.model = loaded_model
         self.colors = get_input_channels(loaded_model)
+        self._resolve_context_branch_settings(loaded_model)
 
     def run_multiprocessing(self, runtime_plan: RecognitionRuntimePlan | None = None):
         if runtime_plan is None:
@@ -3022,11 +3795,14 @@ class NeuralRecognizer(threading.Thread):
             colors=self.colors,
             jpeg_quality=int(getattr(self._parameters, 'jpeg_quality', 95)),
             binarize_output=bool(getattr(self._parameters, 'binarize_output', True)),
-            threshold=float(self._resolved_output_threshold),
+            threshold=self._resolved_output_threshold,
             postprocess_enabled=bool(getattr(self._parameters, 'postprocess_enabled', False)),
             postprocess_kernel_size=max(1, int(getattr(self._parameters, 'postprocess_kernel_size', 3))),
             devices=list(self.devices_list),
             model_source=cast(str | Path, self._parameters.model),
+            use_context_branch=bool(self._use_context_branch),
+            context_crop_size=self._context_crop_size,
+            context_input_size=self._context_input_size,
         )
         run_multiprocessing_recognition(
             workload=workload,
@@ -3061,9 +3837,12 @@ class NeuralRecognizer(threading.Thread):
             collect_memory_metrics=_collect_memory_metrics,
             jpeg_quality=int(getattr(self._parameters, 'jpeg_quality', 95)),
             binarize_output=bool(getattr(self._parameters, 'binarize_output', True)),
-            threshold=float(self._resolved_output_threshold),
+            threshold=self._resolved_output_threshold,
             postprocess_enabled=bool(getattr(self._parameters, 'postprocess_enabled', False)),
             postprocess_kernel_size=max(1, int(getattr(self._parameters, 'postprocess_kernel_size', 3))),
+            use_context_branch=bool(self._use_context_branch),
+            context_crop_size=self._context_crop_size,
+            context_input_size=self._context_input_size,
         )
 
     def stop(self):
@@ -3124,12 +3903,14 @@ class ModelRecognizer(threading.Thread):
         recognition_parameters: RecognitionParameters,
         message_bus: AbstractMessageBus,
         callback: Callable[..., None] | None = None,
-        multithreading: bool = False,
+        multithreading: bool | None = None,
     ):
         super().__init__()
         self._parameters = recognition_parameters
         self._bus = message_bus
         self.callback = callback
+        if multithreading is None:
+            multithreading = bool(getattr(recognition_parameters, 'recognition_multiprocessing_enabled', True))
         self._multithreading = bool(multithreading)
         self._stop_event = threading.Event()
         self._process_stop_event = mp.Event()
@@ -3185,28 +3966,6 @@ class ModelRecognizer(threading.Thread):
     def run(self):
         recognition_process: Any = None
         try:
-            if _is_debugger_attached():
-                self._bus.publish(
-                    'logging',
-                    'Debugger detected: recognition multiprocessing disabled for this run.',
-                )
-                inline_recognizer = NeuralRecognizer(
-                    self._parameters,
-                    message_bus=self._bus,
-                    callback=None,
-                )
-                self._inline_recognizer = inline_recognizer
-                if self._stop_event.is_set():
-                    inline_recognizer.stop()
-                try:
-                    inline_recognizer.run(multithreading=False)
-                    self.succeeded = not self._stop_event.is_set()
-                except Exception as error:
-                    self.error_message = f'Recognition error: {error}'
-                    self._bus.publish('error', self.error_message)
-                    self.succeeded = False
-                return
-
             recognition_process = RecognizerProcess(
                 self._parameters,
                 self.message_queue,
@@ -3255,19 +4014,46 @@ class ModelRecognizer(threading.Thread):
 class NeuralRecognitioner(NeuralRecognizer):
     """Backward-compatible alias for the legacy misspelled class name."""
 
-def cut_image_process(cut_queue, cutted_queue, size, overlap, stop_event):
+def cut_image_process(
+    cut_queue,
+    cutted_queue,
+    size,
+    overlap,
+    stop_event,
+    use_context_branch: bool = False,
+    context_crop_size: tuple[int, int] | None = None,
+    context_input_size: tuple[int, int] | None = None,
+):
     return _cut_image_process(
         cut_queue,
         cutted_queue,
         size,
         overlap,
         stop_event,
+        use_context_branch=use_context_branch,
+        context_crop_size=context_crop_size,
+        context_input_size=context_input_size,
         stop_token=STOP_TOKEN,
     )
 
 
-def cut_image_prepare(img_path: Path, segment_size: tuple[int, int, int], overlap: int):
-    return _cut_image_prepare(img_path, segment_size, overlap)
+def cut_image_prepare(
+    img_path: Path,
+    segment_size: tuple[int, int, int],
+    overlap: int,
+    *,
+    use_context_branch: bool = False,
+    context_crop_size: tuple[int, int] | None = None,
+    context_input_size: tuple[int, int] | None = None,
+):
+    return _cut_image_prepare(
+        img_path,
+        segment_size,
+        overlap,
+        use_context_branch=use_context_branch,
+        context_crop_size=context_crop_size,
+        context_input_size=context_input_size,
+    )
 
 
 def get_array_from_image(path, channels):

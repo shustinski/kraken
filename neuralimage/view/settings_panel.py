@@ -13,14 +13,17 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QGroupBox,
     QRadioButton,
+    QTabWidget,
     QVBoxLayout,
     QHBoxLayout,
 )
 
-from lib.data_interfaces import SampleCutMode
+from UI import ClickableLabel
+from lib.data_interfaces import SampleCutMode, normalize_scheduler_name
 from lib.loss_config import (
     DEFAULT_LOSS_TERM_WEIGHTS,
-    LOSS_TERM_NAMES,
+    LOSS_SELECTION_NAMES,
+    LOSS_TERM_DISPLAY_NAMES,
     MAX_LOSS_TERM_WEIGHT_SUM,
     format_loss_formula_html,
     loss_term_weight_sum,
@@ -62,8 +65,10 @@ SAMPLE_SIZE_MAX = 2000
 VALIDATION_MIN = 0
 VALIDATION_MAX = 50
 
-MIN_BATCH = 4
+MIN_BATCH = 1
 MAX_BATCH = 64
+MIN_DATALOADER_WORKERS = -1
+MAX_DATALOADER_WORKERS = 64
 
 MIN_OVERLAP = 0
 MAX_OVERLAP = 32
@@ -84,6 +89,24 @@ MIN_WARMUP_EPOCHS = 1
 MAX_WARMUP_EPOCHS = 2000
 MIN_WARMUP_START_FACTOR = 0.0
 MAX_WARMUP_START_FACTOR = 1.0
+MIN_SCHEDULER_FACTOR = 0.01
+MAX_SCHEDULER_FACTOR = 0.99
+MIN_SCHEDULER_PATIENCE = 0
+MAX_SCHEDULER_PATIENCE = 2000
+MIN_SCHEDULER_THRESHOLD = 0.0
+MAX_SCHEDULER_THRESHOLD = 10.0
+MIN_SCHEDULER_MIN_LR = 0.0
+MAX_SCHEDULER_MIN_LR = 1.0
+MIN_SCHEDULER_COOLDOWN = 0
+MAX_SCHEDULER_COOLDOWN = 2000
+MIN_SCHEDULER_T_MAX = 1
+MAX_SCHEDULER_T_MAX = 10000
+MIN_SCHEDULER_STEP_SIZE = 1
+MAX_SCHEDULER_STEP_SIZE = 10000
+MIN_SCHEDULER_DIV_FACTOR = 1.0
+MAX_SCHEDULER_DIV_FACTOR = 1000000.0
+MIN_SCHEDULER_FINAL_DIV_FACTOR = 1.0
+MAX_SCHEDULER_FINAL_DIV_FACTOR = 1000000.0
 MIN_HARD_MINING_STRENGTH = 0.0
 MAX_HARD_MINING_STRENGTH = 10.0
 MIN_HARD_MINING_EMA_ALPHA = 0.0
@@ -102,6 +125,8 @@ MIN_CROPS_PER_IMAGE = 1
 MAX_CROPS_PER_IMAGE = 5000
 MIN_CUTOUT_HOLES = 1
 MAX_CUTOUT_HOLES = 32
+MIN_RANDOM_ARTIFACTS_COUNT = 1
+MAX_RANDOM_ARTIFACTS_COUNT = 16
 MIN_AUGMENTATION_PROBABILITY = 0.0
 MAX_AUGMENTATION_PROBABILITY = 1.0
 MIN_MIXUP_ALPHA = 0.0
@@ -112,8 +137,10 @@ MIN_POSTPROCESS_KERNEL_SIZE = 1
 MAX_POSTPROCESS_KERNEL_SIZE = 31
 OPTIMIZERS = ('adam', 'adamw', 'adamw_muon')
 MIXED_PRECISION_MODES = ('off', 'fp16', 'bf16')
-LOSS_FUNCTIONS = LOSS_TERM_NAMES
+LOSS_FUNCTIONS = LOSS_SELECTION_NAMES
 MULTI_GPU_MODES = ('off', 'dataparallel', 'distributeddataparallel')
+SCHEDULER_NAMES = ('off', 'reduce_on_plateau', 'cosine_annealing', 'one_cycle', 'step_lr')
+ONE_CYCLE_ANNEAL_STRATEGIES = ('cos', 'linear')
 OPTIMIZER_PRESETS = (
     ('Adam', 'adam', 1e-3, 0.0),
     ('AdamW', 'adamw', 5e-4, 1e-2),
@@ -130,6 +157,8 @@ class SettingsPanel(QDockWidget):
     sample_size_changed: pyqtSignal = pyqtSignal()
     optimizer_settings_changed: pyqtSignal = pyqtSignal()
     validation_settings_changed: pyqtSignal = pyqtSignal()
+    validation_image_path_requested: pyqtSignal = pyqtSignal()
+    validation_label_path_requested: pyqtSignal = pyqtSignal()
     reset_defaults_requested: pyqtSignal = pyqtSignal()
     ui_language_changed: pyqtSignal = pyqtSignal(str)
     rare_patch_editor_requested: pyqtSignal = pyqtSignal()
@@ -149,6 +178,7 @@ class SettingsPanel(QDockWidget):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
         self.models: list[str] = []
+        self._page_indexes: dict[str, int] = {}
         self.size_policy = QSizePolicy()
         self._desc_labels: dict[str, QLabel] = {}
         self._field_rows: dict[QWidget, QWidget] = {}
@@ -170,8 +200,10 @@ class SettingsPanel(QDockWidget):
         self.random_crop_check_box = QCheckBox('')
         self.scale_augmentation_check_box = QCheckBox('')
         self.cutout_check_box = QCheckBox('')
+        self.random_artifacts_check_box = QCheckBox('')
         self.mixup_check_box = QCheckBox('')
         self.validation_check_box = QCheckBox('')
+        self.save_validation_binary_images_check_box = QCheckBox('')
         self.samples_number = QLabel('')
         self.shuffle_frames_check_box = QCheckBox('')
         self.shuffle_patches_in_frame_check_box = QCheckBox('')
@@ -254,6 +286,23 @@ class SettingsPanel(QDockWidget):
             default_value=0.25,
             decimals=2,
         )
+        self.random_artifacts_probability_spinbox = create_double_spinbox(
+            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
+            step=0.05,
+            default_value=1.0,
+            decimals=2,
+        )
+        self.random_artifacts_count_spinbox = create_spinbox(
+            (MIN_RANDOM_ARTIFACTS_COUNT, MAX_RANDOM_ARTIFACTS_COUNT),
+            default_value=1,
+            step=1,
+        )
+        self.random_artifacts_size_ratio_spinbox = create_double_spinbox(
+            (0.0, 1.0),
+            step=0.05,
+            default_value=0.25,
+            decimals=2,
+        )
         self.mixup_probability_spinbox = create_double_spinbox(
             (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
             step=0.05,
@@ -276,7 +325,17 @@ class SettingsPanel(QDockWidget):
         self.sample_y_size = self.train_patch_y_size
 
         self.validation_spinbox = create_spinbox((VALIDATION_MIN, VALIDATION_MAX), default_value=20, step=5)
+        self.validation_mode_combo = NoWheelComboBox()
+        self.validation_mode_combo.addItem('split', 'split')
+        self.validation_mode_combo.addItem('external', 'external')
+        self.validation_image_path_label = ClickableLabel()
+        self.validation_label_path_label = ClickableLabel()
+        self._validation_image_path_value = ''
+        self._validation_label_path_value = ''
         self.validation_check_box.toggled.connect(self._sync_validation_controls)
+        self.validation_mode_combo.currentIndexChanged.connect(
+            lambda *_args, **_kwargs: self._sync_validation_controls(self.validation_check_box.isChecked())
+        )
         self._sync_validation_controls(self.validation_check_box.isChecked())
 
         self._init_color_type_combobox()
@@ -327,7 +386,7 @@ class SettingsPanel(QDockWidget):
 
         for loss_name in LOSS_FUNCTIONS:
             checkbox = QCheckBox('')
-            label = QLabel(loss_name)
+            label = QLabel(LOSS_TERM_DISPLAY_NAMES.get(loss_name, loss_name))
             spinbox = create_double_spinbox(
                 (0.0, MAX_LOSS_TERM_WEIGHT_SUM),
                 step=0.05,
@@ -425,6 +484,7 @@ class SettingsPanel(QDockWidget):
             for loss_name in LOSS_FUNCTIONS:
                 checkbox = self.loss_term_checkboxes[loss_name]
                 spinbox = self.loss_term_spinboxes[loss_name]
+                spinbox.setMaximum(MAX_LOSS_TERM_WEIGHT_SUM)
                 checkbox.setChecked(loss_name in sanitized)
                 spinbox.setValue(float(sanitized.get(loss_name, 0.0)))
         finally:
@@ -436,6 +496,13 @@ class SettingsPanel(QDockWidget):
         if row_widget is not None:
             row_widget.setEnabled(enabled)
         field.setEnabled(enabled)
+
+    def _set_field_visible(self, field: QWidget, visible: bool) -> None:
+        row_widget = self._field_rows.get(field)
+        if row_widget is not None:
+            row_widget.setVisible(visible)
+        else:
+            field.setVisible(visible)
 
     def _set_fields_enabled(self, fields: Iterable[QWidget], enabled: bool) -> None:
         for field in fields:
@@ -491,6 +558,7 @@ class SettingsPanel(QDockWidget):
                 self.random_crop_check_box,
                 self.scale_augmentation_check_box,
                 self.cutout_check_box,
+                self.random_artifacts_check_box,
                 self.mixup_check_box,
                 self.validation_groupbox,
                 self.validation_check_box,
@@ -520,6 +588,7 @@ class SettingsPanel(QDockWidget):
                 self.optimizer_type,
                 self.learning_rate_spinbox,
                 self.weight_decay_spinbox,
+                self.dataloader_num_workers_spinbox,
                 self.log_update_frequency_spinbox,
                 self.mixed_precision_type,
                 self.loss_terms_groupbox,
@@ -551,6 +620,7 @@ class SettingsPanel(QDockWidget):
             (
                 self.warmup_groupbox,
                 self.warmup_check_box,
+                self.scheduler_groupbox,
                 self.hard_mining_groupbox,
                 self.hard_mining_check_box,
                 self.hard_pixel_mining_check_box,
@@ -560,6 +630,7 @@ class SettingsPanel(QDockWidget):
             training_applicable,
         )
         self._sync_warmup_controls(self.warmup_check_box.isChecked())
+        self._sync_scheduler_controls()
         self._sync_hard_mining_controls(self.hard_mining_check_box.isChecked())
         self._sync_early_stopping_controls(self.early_stopping_check_box.isChecked())
 
@@ -589,6 +660,11 @@ class SettingsPanel(QDockWidget):
         )
         self._sync_optional_training_mode_controls(training_applicable)
         self._sync_patch_size_controls()
+        self._set_settings_page_visible('base', True)
+        self._set_settings_page_visible('training', training_applicable)
+        self._set_settings_page_visible('recognition', recognition_applicable)
+        self._set_settings_page_visible('expert', training_applicable or recognition_applicable)
+        self._ensure_visible_settings_page_selected()
 
     @staticmethod
     def _create_form_layout(
@@ -628,6 +704,37 @@ class SettingsPanel(QDockWidget):
             self.color_type.setCurrentIndex(index)
             return
         self.color_type.setCurrentText(value)
+
+    def get_scheduler_value(self) -> str:
+        value = self.scheduler_type_combo.currentData()
+        if isinstance(value, str) and value:
+            return normalize_scheduler_name(value)
+        return normalize_scheduler_name(self.scheduler_type_combo.currentText())
+
+    def set_scheduler_value(self, value: str) -> None:
+        normalized = normalize_scheduler_name(value)
+        index = self.scheduler_type_combo.findData(normalized)
+        if index >= 0:
+            self.scheduler_type_combo.setCurrentIndex(index)
+            return
+        self.scheduler_type_combo.setCurrentText(normalized)
+
+    def get_scheduler_one_cycle_anneal_strategy_value(self) -> str:
+        value = self.scheduler_one_cycle_anneal_strategy_combo.currentData()
+        if isinstance(value, str) and value in ONE_CYCLE_ANNEAL_STRATEGIES:
+            return value
+        normalized = str(self.scheduler_one_cycle_anneal_strategy_combo.currentText() or 'cos').strip().lower()
+        return normalized if normalized in ONE_CYCLE_ANNEAL_STRATEGIES else 'cos'
+
+    def set_scheduler_one_cycle_anneal_strategy_value(self, value: str) -> None:
+        normalized = str(value or 'cos').strip().lower()
+        if normalized not in ONE_CYCLE_ANNEAL_STRATEGIES:
+            normalized = 'cos'
+        index = self.scheduler_one_cycle_anneal_strategy_combo.findData(normalized)
+        if index >= 0:
+            self.scheduler_one_cycle_anneal_strategy_combo.setCurrentIndex(index)
+            return
+        self.scheduler_one_cycle_anneal_strategy_combo.setCurrentText(normalized)
 
     def _init_sample_type(self) -> None:
         self.sample_type_groupbox = QGroupBox('')
@@ -725,6 +832,12 @@ class SettingsPanel(QDockWidget):
         )
 
         self.train_batch_spinbox = create_spinbox((MIN_BATCH, MAX_BATCH), step=1, default_value=16)
+        self.dataloader_num_workers_spinbox = create_spinbox(
+            (MIN_DATALOADER_WORKERS, MAX_DATALOADER_WORKERS),
+            step=1,
+            default_value=-1,
+        )
+        self.dataloader_num_workers_spinbox.setSpecialValueText('auto')
         self.recognition_batch_spinbox = create_spinbox((MIN_BATCH, MAX_BATCH), step=1, default_value=16)
         # Backward-compatible alias (legacy code expects training batch control).
         self.batch_spinbox = self.train_batch_spinbox
@@ -734,6 +847,8 @@ class SettingsPanel(QDockWidget):
             step=1,
             default_value=95,
         )
+        self.recognition_multiprocessing_check_box = QCheckBox('')
+        self.recognition_multiprocessing_check_box.setChecked(True)
         self.recognition_binarize_output_check_box = QCheckBox('')
         self.recognition_binarize_output_check_box.setChecked(True)
         self.recognition_use_auto_threshold_check_box = QCheckBox('')
@@ -767,6 +882,87 @@ class SettingsPanel(QDockWidget):
             step=0.01,
             default_value=0.1,
             decimals=3,
+        )
+        self.scheduler_type_combo = NoWheelComboBox()
+        for value in SCHEDULER_NAMES:
+            self.scheduler_type_combo.addItem(value, value)
+        self.scheduler_plateau_factor_spinbox = create_double_spinbox(
+            (MIN_SCHEDULER_FACTOR, MAX_SCHEDULER_FACTOR),
+            step=0.05,
+            default_value=0.5,
+            decimals=2,
+        )
+        self.scheduler_plateau_patience_spinbox = create_spinbox(
+            (MIN_SCHEDULER_PATIENCE, MAX_SCHEDULER_PATIENCE),
+            step=1,
+            default_value=3,
+        )
+        self.scheduler_plateau_threshold_spinbox = create_double_spinbox(
+            (MIN_SCHEDULER_THRESHOLD, MAX_SCHEDULER_THRESHOLD),
+            step=1e-4,
+            default_value=1e-4,
+            decimals=6,
+        )
+        self.scheduler_plateau_min_lr_spinbox = create_double_spinbox(
+            (MIN_SCHEDULER_MIN_LR, MAX_SCHEDULER_MIN_LR),
+            step=1e-5,
+            default_value=1e-6,
+            decimals=6,
+        )
+        self.scheduler_plateau_cooldown_spinbox = create_spinbox(
+            (MIN_SCHEDULER_COOLDOWN, MAX_SCHEDULER_COOLDOWN),
+            step=1,
+            default_value=0,
+        )
+        self.scheduler_cosine_t_max_spinbox = create_spinbox(
+            (MIN_SCHEDULER_T_MAX, MAX_SCHEDULER_T_MAX),
+            step=1,
+            default_value=10,
+        )
+        self.scheduler_cosine_eta_min_spinbox = create_double_spinbox(
+            (MIN_SCHEDULER_MIN_LR, MAX_SCHEDULER_MIN_LR),
+            step=1e-5,
+            default_value=1e-6,
+            decimals=6,
+        )
+        self.scheduler_one_cycle_max_lr_spinbox = create_double_spinbox(
+            (MIN_LEARNING_RATE, MAX_LEARNING_RATE),
+            step=1e-4,
+            default_value=1e-3,
+            decimals=6,
+        )
+        self.scheduler_one_cycle_pct_start_spinbox = create_double_spinbox(
+            (0.0, 1.0),
+            step=0.05,
+            default_value=0.3,
+            decimals=2,
+        )
+        self.scheduler_one_cycle_anneal_strategy_combo = NoWheelComboBox()
+        for value in ONE_CYCLE_ANNEAL_STRATEGIES:
+            self.scheduler_one_cycle_anneal_strategy_combo.addItem(value, value)
+        self.scheduler_one_cycle_div_factor_spinbox = create_double_spinbox(
+            (MIN_SCHEDULER_DIV_FACTOR, MAX_SCHEDULER_DIV_FACTOR),
+            step=1.0,
+            default_value=25.0,
+            decimals=2,
+        )
+        self.scheduler_one_cycle_final_div_factor_spinbox = create_double_spinbox(
+            (MIN_SCHEDULER_FINAL_DIV_FACTOR, MAX_SCHEDULER_FINAL_DIV_FACTOR),
+            step=100.0,
+            default_value=10000.0,
+            decimals=2,
+        )
+        self.scheduler_one_cycle_three_phase_check_box = QCheckBox('')
+        self.scheduler_step_lr_step_size_spinbox = create_spinbox(
+            (MIN_SCHEDULER_STEP_SIZE, MAX_SCHEDULER_STEP_SIZE),
+            step=1,
+            default_value=10,
+        )
+        self.scheduler_step_lr_gamma_spinbox = create_double_spinbox(
+            (MIN_SCHEDULER_FACTOR, MAX_WARMUP_START_FACTOR),
+            step=0.05,
+            default_value=0.1,
+            decimals=2,
         )
         self.hard_mining_check_box = QCheckBox('')
         self.hard_mining_strength_spinbox = create_double_spinbox(
@@ -813,8 +1009,10 @@ class SettingsPanel(QDockWidget):
 
         self.optimizer_groupbox, self.optimizer_form = _build_subgroup()
         self.precision_loss_groupbox, self.precision_loss_form = _build_subgroup()
+        self.recognition_groupbox, self.recognition_form = _build_subgroup()
         self.runtime_groupbox, self.runtime_form = _build_subgroup()
         self.warmup_groupbox, self.warmup_form = _build_subgroup()
+        self.scheduler_groupbox, self.scheduler_form = _build_subgroup()
         self.hard_mining_groupbox, self.hard_mining_form = _build_subgroup()
         self.early_stopping_groupbox, self.early_stopping_form = _build_subgroup()
 
@@ -826,24 +1024,26 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.optimizer_form, self.learning_rate_spinbox, 'learning_rate')
         self._add_labeled_row(self.optimizer_form, self.weight_decay_spinbox, 'weight_decay')
         self._add_labeled_row(self.optimizer_form, self.train_batch_spinbox, 'train_batch_size')
-        self._add_labeled_row(self.optimizer_form, self.recognition_batch_spinbox, 'recognition_batch_size')
-        self._add_labeled_row(self.optimizer_form, self.overlap_spinbox, 'overlap')
-        self._add_labeled_row(self.optimizer_form, self.recognition_jpeg_quality_spinbox, 'recognition_jpeg_quality')
+        self._add_labeled_row(self.optimizer_form, self.dataloader_num_workers_spinbox, 'dataloader_num_workers')
         self._add_labeled_row(self.optimizer_form, self.log_update_frequency_spinbox, 'log_update_frequency')
 
         self._add_labeled_row(self.precision_loss_form, self.mixed_precision_type, 'mixed_precision')
         self.precision_loss_form.addRow(self.loss_terms_groupbox)
 
-        self._add_labeled_row(self.runtime_form, self.multi_gpu_mode_combo, 'multi_gpu')
-        self.runtime_form.addRow(self.recognition_binarize_output_check_box)
-        self.runtime_form.addRow(self.recognition_use_auto_threshold_check_box)
-        self._add_labeled_row(self.runtime_form, self.recognition_threshold_spinbox, 'recognition_threshold')
-        self.runtime_form.addRow(self.recognition_postprocess_check_box)
+        self._add_labeled_row(self.recognition_form, self.recognition_batch_spinbox, 'recognition_batch_size')
+        self._add_labeled_row(self.recognition_form, self.overlap_spinbox, 'overlap')
+        self._add_labeled_row(self.recognition_form, self.recognition_jpeg_quality_spinbox, 'recognition_jpeg_quality')
+        self.recognition_form.addRow(self.recognition_multiprocessing_check_box)
+        self.recognition_form.addRow(self.recognition_binarize_output_check_box)
+        self.recognition_form.addRow(self.recognition_use_auto_threshold_check_box)
+        self._add_labeled_row(self.recognition_form, self.recognition_threshold_spinbox, 'recognition_threshold')
+        self.recognition_form.addRow(self.recognition_postprocess_check_box)
         self._add_labeled_row(
-            self.runtime_form,
+            self.recognition_form,
             self.recognition_postprocess_kernel_size_spinbox,
             'recognition_postprocess_kernel_size',
         )
+        self._add_labeled_row(self.runtime_form, self.multi_gpu_mode_combo, 'multi_gpu')
         self.runtime_form.addRow(self.torch_compile_check_box)
         self.runtime_form.addRow(self.skip_uniform_labels_check_box)
         self.runtime_form.addRow(self.rare_patch_oversampling_check_box)
@@ -858,6 +1058,55 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.warmup_form, self.warmup_epochs_spinbox, 'warmup_epochs')
         self._add_labeled_row(self.warmup_form, self.warmup_start_factor_spinbox, 'warmup_start_factor')
 
+        self._add_labeled_row(self.scheduler_form, self.scheduler_type_combo, 'scheduler_name')
+        self._add_labeled_row(self.scheduler_form, self.scheduler_plateau_factor_spinbox, 'scheduler_plateau_factor')
+        self._add_labeled_row(self.scheduler_form, self.scheduler_plateau_patience_spinbox, 'scheduler_plateau_patience')
+        self._add_labeled_row(
+            self.scheduler_form,
+            self.scheduler_plateau_threshold_spinbox,
+            'scheduler_plateau_threshold',
+        )
+        self._add_labeled_row(self.scheduler_form, self.scheduler_plateau_min_lr_spinbox, 'scheduler_plateau_min_lr')
+        self._add_labeled_row(
+            self.scheduler_form,
+            self.scheduler_plateau_cooldown_spinbox,
+            'scheduler_plateau_cooldown',
+        )
+        self._add_labeled_row(self.scheduler_form, self.scheduler_cosine_t_max_spinbox, 'scheduler_cosine_t_max')
+        self._add_labeled_row(self.scheduler_form, self.scheduler_cosine_eta_min_spinbox, 'scheduler_cosine_eta_min')
+        self._add_labeled_row(self.scheduler_form, self.scheduler_one_cycle_max_lr_spinbox, 'scheduler_one_cycle_max_lr')
+        self._add_labeled_row(
+            self.scheduler_form,
+            self.scheduler_one_cycle_pct_start_spinbox,
+            'scheduler_one_cycle_pct_start',
+        )
+        self._add_labeled_row(
+            self.scheduler_form,
+            self.scheduler_one_cycle_anneal_strategy_combo,
+            'scheduler_one_cycle_anneal_strategy',
+        )
+        self._add_labeled_row(
+            self.scheduler_form,
+            self.scheduler_one_cycle_div_factor_spinbox,
+            'scheduler_one_cycle_div_factor',
+        )
+        self._add_labeled_row(
+            self.scheduler_form,
+            self.scheduler_one_cycle_final_div_factor_spinbox,
+            'scheduler_one_cycle_final_div_factor',
+        )
+        self._add_labeled_row(
+            self.scheduler_form,
+            self.scheduler_one_cycle_three_phase_check_box,
+            'scheduler_one_cycle_three_phase',
+        )
+        self._add_labeled_row(
+            self.scheduler_form,
+            self.scheduler_step_lr_step_size_spinbox,
+            'scheduler_step_lr_step_size',
+        )
+        self._add_labeled_row(self.scheduler_form, self.scheduler_step_lr_gamma_spinbox, 'scheduler_step_lr_gamma')
+
         self.hard_mining_form.addRow(self.hard_mining_check_box)
         self._add_labeled_row(self.hard_mining_form, self.hard_mining_strength_spinbox, 'hard_mining_strength')
         self._add_labeled_row(self.hard_mining_form, self.hard_mining_ema_alpha_spinbox, 'hard_mining_ema_alpha')
@@ -871,14 +1120,16 @@ class SettingsPanel(QDockWidget):
 
         nn_sections_layout.addWidget(self.optimizer_groupbox)
         nn_sections_layout.addWidget(self.precision_loss_groupbox)
-        nn_sections_layout.addWidget(self.runtime_groupbox)
         nn_sections_layout.addWidget(self.warmup_groupbox)
+        nn_sections_layout.addWidget(self.scheduler_groupbox)
         nn_sections_layout.addWidget(self.hard_mining_groupbox)
         nn_sections_layout.addWidget(self.early_stopping_groupbox)
+        nn_sections_layout.addWidget(self.runtime_groupbox)
         nn_sections_layout.addStretch(1)
 
         self._sync_active_optimizer_preset()
         self.warmup_check_box.toggled.connect(self._sync_warmup_controls)
+        self.scheduler_type_combo.currentIndexChanged.connect(self._sync_scheduler_controls)
         self.hard_mining_check_box.toggled.connect(self._sync_hard_mining_controls)
         self.hard_pixel_mining_check_box.toggled.connect(self._sync_hard_mining_controls)
         self.early_stopping_check_box.toggled.connect(self._sync_early_stopping_controls)
@@ -887,6 +1138,7 @@ class SettingsPanel(QDockWidget):
         self.recognition_use_auto_threshold_check_box.toggled.connect(self._sync_recognition_output_controls)
         self.recognition_postprocess_check_box.toggled.connect(self._sync_recognition_output_controls)
         self._sync_warmup_controls(self.warmup_check_box.isChecked())
+        self._sync_scheduler_controls()
         self._sync_loss_controls()
         self._sync_hard_mining_controls(self.hard_mining_check_box.isChecked())
         self._sync_early_stopping_controls(self.early_stopping_check_box.isChecked())
@@ -928,6 +1180,22 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.augmentation_form, self.cutout_probability_spinbox, 'cutout_probability')
         self._add_labeled_row(self.augmentation_form, self.cutout_holes_spinbox, 'cutout_holes')
         self._add_labeled_row(self.augmentation_form, self.cutout_size_ratio_spinbox, 'cutout_size_ratio')
+        self.augmentation_form.addRow(self.random_artifacts_check_box)
+        self._add_labeled_row(
+            self.augmentation_form,
+            self.random_artifacts_probability_spinbox,
+            'random_artifacts_probability',
+        )
+        self._add_labeled_row(
+            self.augmentation_form,
+            self.random_artifacts_count_spinbox,
+            'random_artifacts_count',
+        )
+        self._add_labeled_row(
+            self.augmentation_form,
+            self.random_artifacts_size_ratio_spinbox,
+            'random_artifacts_size_ratio',
+        )
         self.augmentation_form.addRow(self.mixup_check_box)
         self._add_labeled_row(self.augmentation_form, self.mixup_probability_spinbox, 'mixup_probability')
         self._add_labeled_row(self.augmentation_form, self.mixup_alpha_spinbox, 'mixup_alpha')
@@ -943,6 +1211,7 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.augmentation_form, self.shift_spinbox, 'shift')
         self.additional_augmentation_check_box.toggled.connect(self._sync_augmentation_controls)
         self.cutout_check_box.toggled.connect(self._sync_training_augmentation_controls)
+        self.random_artifacts_check_box.toggled.connect(self._sync_training_augmentation_controls)
         self.mixup_check_box.toggled.connect(self._sync_training_augmentation_controls)
         self.augmentation_blur_probability_spinbox.valueChanged.connect(
             lambda *_args, **_kwargs: self._sync_augmentation_controls(self.additional_augmentation_check_box.isChecked())
@@ -954,20 +1223,66 @@ class SettingsPanel(QDockWidget):
         self.validation_form = self._create_form_layout()
         self.validation_groupbox.setLayout(self.validation_form)
         self.validation_form.addRow(self.validation_check_box)
+        self._add_labeled_row(self.validation_form, self.validation_mode_combo, 'validation_source')
         self._add_labeled_row(self.validation_form, self.validation_spinbox, 'validation_percent')
+        self._add_labeled_row(self.validation_form, self.validation_image_path_label, 'validation_image_path')
+        self._add_labeled_row(self.validation_form, self.validation_label_path_label, 'validation_label_path')
+        self.validation_form.addRow(self.save_validation_binary_images_check_box)
 
         self.main_form = self.general_form
         self.reset_defaults_button = QPushButton('')
 
+        self.settings_tabs = QTabWidget()
+        self.settings_tabs.setDocumentMode(True)
+
+        self.base_page = QWidget()
+        self.base_page_layout = QVBoxLayout(self.base_page)
+        self.base_page_layout.setContentsMargins(0, 0, 0, 0)
+        self.base_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        self.base_page_layout.addWidget(self.general_groupbox)
+        self.base_page_layout.addWidget(self.sample_type_groupbox)
+        self.base_page_layout.addWidget(self.prepare_samples_groupbox)
+        self.base_page_layout.addWidget(self.validation_groupbox)
+        self.base_page_layout.addStretch(1)
+
+        self.training_page = QWidget()
+        self.training_page_layout = QVBoxLayout(self.training_page)
+        self.training_page_layout.setContentsMargins(0, 0, 0, 0)
+        self.training_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        self.training_page_layout.addWidget(self.augmentation_groupbox)
+        self.training_page_layout.addWidget(self.optimizer_groupbox)
+        self.training_page_layout.addWidget(self.precision_loss_groupbox)
+        self.training_page_layout.addStretch(1)
+
+        self.recognition_page = QWidget()
+        self.recognition_page_layout = QVBoxLayout(self.recognition_page)
+        self.recognition_page_layout.setContentsMargins(0, 0, 0, 0)
+        self.recognition_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        self.recognition_page_layout.addWidget(self.recognition_groupbox)
+        self.recognition_page_layout.addStretch(1)
+
+        self.expert_page = QWidget()
+        self.expert_page_layout = QVBoxLayout(self.expert_page)
+        self.expert_page_layout.setContentsMargins(0, 0, 0, 0)
+        self.expert_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        self.expert_page_layout.addWidget(self.warmup_groupbox)
+        self.expert_page_layout.addWidget(self.scheduler_groupbox)
+        self.expert_page_layout.addWidget(self.hard_mining_groupbox)
+        self.expert_page_layout.addWidget(self.early_stopping_groupbox)
+        self.expert_page_layout.addWidget(self.runtime_groupbox)
+        self.expert_page_layout.addStretch(1)
+
+        self._page_indexes = {
+            'base': self.settings_tabs.addTab(self.base_page, ''),
+            'training': self.settings_tabs.addTab(self.training_page, ''),
+            'recognition': self.settings_tabs.addTab(self.recognition_page, ''),
+            'expert': self.settings_tabs.addTab(self.expert_page, ''),
+        }
+
         layout = QVBoxLayout()
         layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
         layout.setSpacing(CONTENT_LAYOUT_SPACING)
-        layout.addWidget(self.general_groupbox)
-        layout.addWidget(self.augmentation_groupbox)
-        layout.addWidget(self.validation_groupbox)
-        layout.addWidget(self.sample_type_groupbox)
-        layout.addWidget(self.prepare_samples_groupbox)
-        layout.addWidget(self.nn_auxilary_settings_groupbox)
+        layout.addWidget(self.settings_tabs)
 
         reset_row = QHBoxLayout()
         reset_row.setContentsMargins(0, 0, 0, 0)
@@ -979,7 +1294,11 @@ class SettingsPanel(QDockWidget):
         self.general_form.setAlignment(self.nn_model_type, Qt.AlignmentFlag.AlignRight)
         self.general_form.setAlignment(self.color_type, Qt.AlignmentFlag.AlignRight)
         self.augmentation_form.setAlignment(self.shift_spinbox, Qt.AlignmentFlag.AlignRight)
+        self.validation_form.setAlignment(self.validation_mode_combo, Qt.AlignmentFlag.AlignRight)
         self.validation_form.setAlignment(self.validation_spinbox, Qt.AlignmentFlag.AlignRight)
+        self.recognition_form.setAlignment(self.recognition_batch_spinbox, Qt.AlignmentFlag.AlignRight)
+        self.recognition_form.setAlignment(self.overlap_spinbox, Qt.AlignmentFlag.AlignRight)
+        self.recognition_form.setAlignment(self.recognition_jpeg_quality_spinbox, Qt.AlignmentFlag.AlignRight)
 
         self._content_widget.setLayout(layout)
 
@@ -990,8 +1309,36 @@ class SettingsPanel(QDockWidget):
         active_language = set_global_ui_language(language)
         self._texts = get_ui_section('settings_panel')
         self._apply_localized_texts()
+        self._sync_validation_path_labels()
         self.set_samples_count(self._sample_count_value)
         self.ui_language_changed.emit(active_language)
+
+    def get_validation_source_value(self) -> str:
+        current_data = self.validation_mode_combo.currentData()
+        if current_data is None:
+            return 'split'
+        return str(current_data)
+
+    def set_validation_source_value(self, value: str) -> None:
+        normalized = str(value or 'split').strip().lower() or 'split'
+        index = self.validation_mode_combo.findData(normalized)
+        if index < 0:
+            index = 0
+        self.validation_mode_combo.setCurrentIndex(index)
+
+    def validation_image_path(self) -> str:
+        return str(self._validation_image_path_value)
+
+    def set_validation_image_path(self, path: str) -> None:
+        self._validation_image_path_value = str(path or '').strip()
+        self._sync_validation_path_labels()
+
+    def validation_label_path(self) -> str:
+        return str(self._validation_label_path_value)
+
+    def set_validation_label_path(self, path: str) -> None:
+        self._validation_label_path_value = str(path or '').strip()
+        self._sync_validation_path_labels()
 
     def set_samples_count(self, total_samples: int) -> None:
         try:
@@ -1007,6 +1354,31 @@ class SettingsPanel(QDockWidget):
 
     def connect_internal_signals(self) -> None:
         connect_settings_panel_signals(self)
+
+    def show_settings_page(self, page_key: str) -> None:
+        index = self._page_indexes.get(str(page_key or '').strip().lower())
+        if index is None:
+            return
+        self.settings_tabs.setCurrentIndex(index)
+
+    def _set_settings_page_visible(self, page_key: str, visible: bool) -> None:
+        index = self._page_indexes.get(page_key)
+        if index is None:
+            return
+        if hasattr(self.settings_tabs, 'setTabVisible'):
+            self.settings_tabs.setTabVisible(index, visible)
+
+    def _ensure_visible_settings_page_selected(self) -> None:
+        current_index = self.settings_tabs.currentIndex()
+        if hasattr(self.settings_tabs, 'isTabVisible') and self.settings_tabs.isTabVisible(current_index):
+            return
+        for page_key in ('base', 'training', 'recognition', 'expert'):
+            index = self._page_indexes.get(page_key)
+            if index is None:
+                continue
+            if hasattr(self.settings_tabs, 'isTabVisible') and self.settings_tabs.isTabVisible(index):
+                self.settings_tabs.setCurrentIndex(index)
+                return
 
     def _apply_optimizer_preset(self, optimizer_name: str, learning_rate: float, weight_decay: float) -> None:
         if optimizer_name not in OPTIMIZERS:
@@ -1035,15 +1407,78 @@ class SettingsPanel(QDockWidget):
             btn.setChecked(is_active)
 
     def _sync_validation_controls(self, enabled: bool) -> None:
+        validation_enabled = self._training_controls_applicable and bool(enabled)
+        external_mode = self.get_validation_source_value() == 'external'
+        self._set_field_enabled(self.validation_mode_combo, validation_enabled)
         self._set_field_enabled(
             self.validation_spinbox,
-            self._training_controls_applicable and bool(enabled),
+            validation_enabled and not external_mode,
         )
+        self._set_field_enabled(
+            self.validation_image_path_label,
+            validation_enabled and external_mode,
+        )
+        self._set_field_enabled(
+            self.validation_label_path_label,
+            validation_enabled and external_mode,
+        )
+        self.save_validation_binary_images_check_box.setEnabled(validation_enabled)
+        self._sync_validation_path_labels()
+
+    def _sync_validation_path_labels(self) -> None:
+        texts = self._texts if isinstance(self._texts, dict) else {}
+        image_placeholder = str(texts.get('validation_image_path_placeholder', 'Click to choose validation image folder'))
+        label_placeholder = str(texts.get('validation_label_path_placeholder', 'Click to choose validation label folder'))
+        self.validation_image_path_label.setText(self._validation_image_path_value or image_placeholder)
+        self.validation_label_path_label.setText(self._validation_label_path_value or label_placeholder)
 
     def _sync_warmup_controls(self, enabled: bool) -> None:
         control_enabled = self._training_controls_applicable and bool(enabled)
         self._set_field_enabled(self.warmup_epochs_spinbox, control_enabled)
         self._set_field_enabled(self.warmup_start_factor_spinbox, control_enabled)
+
+    def _sync_scheduler_controls(self, _index: int | None = None) -> None:
+        scheduler_name = self.get_scheduler_value()
+        scheduler_enabled = self._training_controls_applicable
+        plateau_fields = (
+            self.scheduler_plateau_factor_spinbox,
+            self.scheduler_plateau_patience_spinbox,
+            self.scheduler_plateau_threshold_spinbox,
+            self.scheduler_plateau_min_lr_spinbox,
+            self.scheduler_plateau_cooldown_spinbox,
+        )
+        cosine_fields = (
+            self.scheduler_cosine_t_max_spinbox,
+            self.scheduler_cosine_eta_min_spinbox,
+        )
+        one_cycle_fields = (
+            self.scheduler_one_cycle_max_lr_spinbox,
+            self.scheduler_one_cycle_pct_start_spinbox,
+            self.scheduler_one_cycle_anneal_strategy_combo,
+            self.scheduler_one_cycle_div_factor_spinbox,
+            self.scheduler_one_cycle_final_div_factor_spinbox,
+            self.scheduler_one_cycle_three_phase_check_box,
+        )
+        step_lr_fields = (
+            self.scheduler_step_lr_step_size_spinbox,
+            self.scheduler_step_lr_gamma_spinbox,
+        )
+
+        self._set_field_enabled(self.scheduler_type_combo, scheduler_enabled)
+
+        visibility_map = {
+            'reduce_on_plateau': plateau_fields,
+            'cosine_annealing': cosine_fields,
+            'one_cycle': one_cycle_fields,
+            'step_lr': step_lr_fields,
+        }
+        all_fields = plateau_fields + cosine_fields + one_cycle_fields + step_lr_fields
+        visible_fields = set(visibility_map.get(scheduler_name, ()))
+
+        for field in all_fields:
+            is_visible = field in visible_fields
+            self._set_field_visible(field, is_visible)
+            self._set_field_enabled(field, scheduler_enabled and is_visible)
 
     def _sync_hard_mining_controls(self, enabled: bool) -> None:
         sample_control_enabled = self._training_controls_applicable and bool(self.hard_mining_check_box.isChecked())
@@ -1129,6 +1564,7 @@ class SettingsPanel(QDockWidget):
         auto_threshold = binarize_output and bool(self.recognition_use_auto_threshold_check_box.isChecked())
         postprocess_enabled = binarize_output and bool(self.recognition_postprocess_check_box.isChecked())
 
+        self.recognition_multiprocessing_check_box.setEnabled(recognition_enabled)
         self.recognition_binarize_output_check_box.setEnabled(recognition_enabled)
         self.recognition_use_auto_threshold_check_box.setEnabled(binarize_output)
         self._set_field_enabled(self.recognition_threshold_spinbox, binarize_output and not auto_threshold)
@@ -1138,6 +1574,7 @@ class SettingsPanel(QDockWidget):
     def _sync_training_augmentation_controls(self, _enabled: bool | None = None) -> None:
         training_enabled = self._training_controls_applicable
         self.cutout_check_box.setEnabled(training_enabled)
+        self.random_artifacts_check_box.setEnabled(training_enabled)
         self.mixup_check_box.setEnabled(training_enabled)
         self._set_field_enabled(
             self.cutout_probability_spinbox,
@@ -1150,6 +1587,18 @@ class SettingsPanel(QDockWidget):
         self._set_field_enabled(
             self.cutout_size_ratio_spinbox,
             training_enabled and bool(self.cutout_check_box.isChecked()),
+        )
+        self._set_field_enabled(
+            self.random_artifacts_probability_spinbox,
+            training_enabled and bool(self.random_artifacts_check_box.isChecked()),
+        )
+        self._set_field_enabled(
+            self.random_artifacts_count_spinbox,
+            training_enabled and bool(self.random_artifacts_check_box.isChecked()),
+        )
+        self._set_field_enabled(
+            self.random_artifacts_size_ratio_spinbox,
+            training_enabled and bool(self.random_artifacts_check_box.isChecked()),
         )
         self._set_field_enabled(
             self.mixup_probability_spinbox,

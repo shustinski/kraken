@@ -36,6 +36,20 @@ def parse_work_mode(value: str | WorkMode | None) -> WorkMode | None:
     except ValueError:
         return None
 
+
+class ValidationSource(enum.Enum):
+    split = 'split'
+    external = 'external'
+
+
+def normalize_validation_source(value: str | ValidationSource | None) -> str:
+    if isinstance(value, ValidationSource):
+        return value.value
+    raw = str(value or '').strip().lower()
+    if raw in {mode.value for mode in ValidationSource}:
+        return raw
+    return ValidationSource.split.value
+
 class SampleCutMode(enum.Enum):
     disk = 'disk'
     online = 'online'
@@ -51,6 +65,39 @@ class MixedPrecisionMode(enum.Enum):
     off = 'off'
     fp16 = 'fp16'
     bf16 = 'bf16'
+
+
+class SchedulerName(enum.Enum):
+    off = 'off'
+    reduce_on_plateau = 'reduce_on_plateau'
+    cosine_annealing = 'cosine_annealing'
+    one_cycle = 'one_cycle'
+    step_lr = 'step_lr'
+
+
+_SCHEDULER_NAME_ALIASES: dict[str, str] = {
+    'none': SchedulerName.off.value,
+    'reducelronplateau': SchedulerName.reduce_on_plateau.value,
+    'reduce_lr_on_plateau': SchedulerName.reduce_on_plateau.value,
+    'cosine': SchedulerName.cosine_annealing.value,
+    'cosineannealing': SchedulerName.cosine_annealing.value,
+    'cosineannealinglr': SchedulerName.cosine_annealing.value,
+    'onecycle': SchedulerName.one_cycle.value,
+    'onecyclelr': SchedulerName.one_cycle.value,
+    'steplr': SchedulerName.step_lr.value,
+    'step': SchedulerName.step_lr.value,
+}
+
+
+def normalize_scheduler_name(value: str | SchedulerName | None) -> str:
+    if isinstance(value, SchedulerName):
+        return value.value
+    raw = str(value or '').strip().lower()
+    if raw in _SCHEDULER_NAME_ALIASES:
+        raw = _SCHEDULER_NAME_ALIASES[raw]
+    if raw in {mode.value for mode in SchedulerName}:
+        return raw
+    return SchedulerName.off.value
 
 
 class MultiGpuMode(enum.Enum):
@@ -140,6 +187,26 @@ class WarmupParameters:
 
 
 @dataclass
+class SchedulerParameters:
+    name: SchedulerName = SchedulerName.off
+    plateau_factor: float = 0.5
+    plateau_patience: int = 3
+    plateau_threshold: float = 1e-4
+    plateau_min_lr: float = 1e-6
+    plateau_cooldown: int = 0
+    cosine_t_max: int = 10
+    cosine_eta_min: float = 1e-6
+    one_cycle_max_lr: float = 1e-3
+    one_cycle_pct_start: float = 0.3
+    one_cycle_anneal_strategy: str = 'cos'
+    one_cycle_div_factor: float = 25.0
+    one_cycle_final_div_factor: float = 10000.0
+    one_cycle_three_phase: bool = False
+    step_lr_step_size: int = 10
+    step_lr_gamma: float = 0.1
+
+
+@dataclass
 class HardMiningParameters:
     enabled: bool = False
     strength: float = 2.0
@@ -153,6 +220,14 @@ class CutoutParameters:
     enabled: bool = False
     probability: float = 1.0
     holes: int = 1
+    size_ratio: float = 0.25
+
+
+@dataclass
+class RandomArtifactsParameters:
+    enabled: bool = False
+    probability: float = 1.0
+    count: int = 1
     size_ratio: float = 0.25
 
 
@@ -204,6 +279,10 @@ class TrainingParameters:
     epochs: int
     generation:SampleGenerationSettings
     prepare:SamplePrepareSettings
+    validation_source: str = ValidationSource.split.value
+    validation_image_path: Path | None = None
+    validation_label_path: Path | None = None
+    save_validation_binary_images: bool = False
     optimizer: OptimizerParameters = field(default_factory=OptimizerParameters)
     mixed_precision: MixedPrecisionMode = MixedPrecisionMode.bf16
     loss_function: str = 'bce'
@@ -212,8 +291,10 @@ class TrainingParameters:
     iou_loss_weight: float = 0.5
     early_stopping: EarlyStoppingParameters = field(default_factory=EarlyStoppingParameters)
     warmup: WarmupParameters = field(default_factory=WarmupParameters)
+    scheduler: SchedulerParameters = field(default_factory=SchedulerParameters)
     hard_mining: HardMiningParameters = field(default_factory=HardMiningParameters)
     cutout: CutoutParameters = field(default_factory=CutoutParameters)
+    random_artifacts: RandomArtifactsParameters = field(default_factory=RandomArtifactsParameters)
     mixup: MixupParameters = field(default_factory=MixupParameters)
     skip_uniform_labels: bool = False
     rare_patch_oversampling_enabled: bool = False
@@ -222,6 +303,14 @@ class TrainingParameters:
     multi_gpu_mode: str = ''
     show_batch_preview: bool = True
     log_update_frequency: int = 0
+    local_crop_size: tuple[int, int] | None = None
+    context_crop_size: tuple[int, int] | None = None
+    context_input_size: tuple[int, int] | None = None
+    context_branch_channels: tuple[int, ...] = (16, 32, 64, 128)
+    fusion_type: str = 'concat'
+    use_context_branch: bool | None = None
+    artifact_dir: Path | None = None
+    dataloader_num_workers: int = -1
 
 @dataclass
 class RecognitionParameters:
@@ -232,11 +321,15 @@ class RecognitionParameters:
     batch_size: int
     overlap: int
     jpeg_quality: int = 95
+    recognition_multiprocessing_enabled: bool = True
     binarize_output: bool = True
     use_auto_threshold: bool = True
     threshold: float = 0.5
     postprocess_enabled: bool = False
     postprocess_kernel_size: int = 3
+    use_context_branch: bool | None = None
+    context_crop_size: tuple[int, int] | None = None
+    context_input_size: tuple[int, int] | None = None
 
 
 @dataclass

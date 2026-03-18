@@ -33,6 +33,10 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.cutout_probability_spinbox.valueChanged,
             panel.cutout_holes_spinbox.valueChanged,
             panel.cutout_size_ratio_spinbox.valueChanged,
+            panel.random_artifacts_check_box.toggled,
+            panel.random_artifacts_probability_spinbox.valueChanged,
+            panel.random_artifacts_count_spinbox.valueChanged,
+            panel.random_artifacts_size_ratio_spinbox.valueChanged,
             panel.mixup_check_box.toggled,
             panel.mixup_probability_spinbox.valueChanged,
             panel.mixup_alpha_spinbox.valueChanged,
@@ -52,8 +56,10 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.weight_decay_spinbox.valueChanged,
             panel.mixed_precision_type.currentIndexChanged,
             panel.train_batch_spinbox.valueChanged,
+            panel.dataloader_num_workers_spinbox.valueChanged,
             panel.recognition_batch_spinbox.valueChanged,
             panel.recognition_jpeg_quality_spinbox.valueChanged,
+            panel.recognition_multiprocessing_check_box.toggled,
             panel.recognition_binarize_output_check_box.toggled,
             panel.recognition_use_auto_threshold_check_box.toggled,
             panel.recognition_threshold_spinbox.valueChanged,
@@ -65,6 +71,22 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.warmup_check_box.toggled,
             panel.warmup_epochs_spinbox.valueChanged,
             panel.warmup_start_factor_spinbox.valueChanged,
+            panel.scheduler_type_combo.currentIndexChanged,
+            panel.scheduler_plateau_factor_spinbox.valueChanged,
+            panel.scheduler_plateau_patience_spinbox.valueChanged,
+            panel.scheduler_plateau_threshold_spinbox.valueChanged,
+            panel.scheduler_plateau_min_lr_spinbox.valueChanged,
+            panel.scheduler_plateau_cooldown_spinbox.valueChanged,
+            panel.scheduler_cosine_t_max_spinbox.valueChanged,
+            panel.scheduler_cosine_eta_min_spinbox.valueChanged,
+            panel.scheduler_one_cycle_max_lr_spinbox.valueChanged,
+            panel.scheduler_one_cycle_pct_start_spinbox.valueChanged,
+            panel.scheduler_one_cycle_anneal_strategy_combo.currentIndexChanged,
+            panel.scheduler_one_cycle_div_factor_spinbox.valueChanged,
+            panel.scheduler_one_cycle_final_div_factor_spinbox.valueChanged,
+            panel.scheduler_one_cycle_three_phase_check_box.toggled,
+            panel.scheduler_step_lr_step_size_spinbox.valueChanged,
+            panel.scheduler_step_lr_gamma_spinbox.valueChanged,
             panel.hard_mining_check_box.toggled,
             panel.hard_mining_strength_spinbox.valueChanged,
             panel.hard_mining_ema_alpha_spinbox.valueChanged,
@@ -118,10 +140,14 @@ def connect_settings_panel_signals(panel: Any) -> None:
     _connect_emitters(
         (
             panel.validation_check_box.toggled,
+            panel.validation_mode_combo.currentIndexChanged,
             panel.validation_spinbox.valueChanged,
+            panel.save_validation_binary_images_check_box.toggled,
         ),
         panel.validation_settings_changed,
     )
+    _connect_noarg(panel.validation_image_path_label.clicked, panel.validation_image_path_requested.emit)
+    _connect_noarg(panel.validation_label_path_label.clicked, panel.validation_label_path_requested.emit)
     _connect_noarg(panel.reset_defaults_button.clicked, panel.reset_defaults_requested.emit)
     _connect_noarg(panel.edit_rare_regions_button.clicked, panel.rare_patch_editor_requested.emit)
 
@@ -147,6 +173,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
         lambda *_args, **_kwargs: panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
     )
     panel.cutout_check_box.toggled.connect(panel._sync_training_augmentation_controls)
+    panel.random_artifacts_check_box.toggled.connect(panel._sync_training_augmentation_controls)
     panel.mixup_check_box.toggled.connect(panel._sync_training_augmentation_controls)
     panel.cut_dataset_type.toggled.connect(panel._sync_rare_patch_oversampling_controls)
     panel.no_cut_dataset_type.toggled.connect(panel._sync_rare_patch_oversampling_controls)

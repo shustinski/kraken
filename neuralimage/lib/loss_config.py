@@ -9,17 +9,21 @@ from typing import Any
 LOSS_TERM_NAMES: tuple[str, ...] = (
     'bce',
     'dice',
-    'bce_dice',
     'iou',
-    'bce_iou',
     'focal_bce',
-    'focal_dice',
-    'focal_iou',
     'boundary',
     'focal_tversky',
     'ce',
+)
+LOSS_SELECTION_NAMES: tuple[str, ...] = LOSS_TERM_NAMES
+LEGACY_COMBINED_LOSS_TERM_NAMES: tuple[str, ...] = (
+    'bce_dice',
+    'bce_iou',
+    'focal_dice',
+    'focal_iou',
     'ce_dice',
 )
+ALL_LOSS_TERM_NAMES: tuple[str, ...] = LOSS_TERM_NAMES + LEGACY_COMBINED_LOSS_TERM_NAMES
 DEFAULT_LOSS_TERM_WEIGHTS: dict[str, float] = {'bce': 1.0}
 MAX_LOSS_TERM_WEIGHT_SUM = 1.0
 LOSS_TERM_DISPLAY_NAMES: dict[str, str] = {
@@ -40,7 +44,7 @@ LOSS_TERM_DISPLAY_NAMES: dict[str, str] = {
 
 def normalize_loss_term_name(value: Any) -> str | None:
     normalized = str(value or '').strip().lower()
-    if normalized in LOSS_TERM_NAMES:
+    if normalized in ALL_LOSS_TERM_NAMES:
         return normalized
     return None
 
@@ -64,18 +68,60 @@ def _coerce_loss_term_weight(raw: Any) -> float | None:
     return value
 
 
+def _normalize_mix_weight(raw: Any, *, default: float = 0.5) -> float:
+    value = _coerce_loss_term_weight(raw)
+    if value is None:
+        value = float(default)
+    return float(min(max(value, 0.0), 1.0))
+
+
+def loss_function_to_weights(
+    value: Any,
+    *,
+    dice_weight: float = 0.5,
+    iou_weight: float = 0.5,
+) -> dict[str, float]:
+    normalized = normalize_loss_term_name(value)
+    if normalized is None:
+        return dict(DEFAULT_LOSS_TERM_WEIGHTS)
+    if normalized in LOSS_TERM_NAMES:
+        return {normalized: 1.0}
+    if normalized == 'bce_dice':
+        mix_weight = _normalize_mix_weight(dice_weight)
+        return sanitize_loss_term_weights({'bce': 1.0 - mix_weight, 'dice': mix_weight})
+    if normalized == 'bce_iou':
+        mix_weight = _normalize_mix_weight(iou_weight)
+        return sanitize_loss_term_weights({'bce': 1.0 - mix_weight, 'iou': mix_weight})
+    if normalized == 'focal_dice':
+        mix_weight = _normalize_mix_weight(dice_weight)
+        return sanitize_loss_term_weights({'focal_bce': 1.0 - mix_weight, 'dice': mix_weight})
+    if normalized == 'focal_iou':
+        mix_weight = _normalize_mix_weight(iou_weight)
+        return sanitize_loss_term_weights({'focal_bce': 1.0 - mix_weight, 'iou': mix_weight})
+    if normalized == 'ce_dice':
+        mix_weight = _normalize_mix_weight(dice_weight)
+        return sanitize_loss_term_weights({'ce': 1.0 - mix_weight, 'dice': mix_weight})
+    return dict(DEFAULT_LOSS_TERM_WEIGHTS)
+
+
 def sanitize_loss_term_weights(weights: Mapping[str, Any] | None) -> dict[str, float]:
     sanitized: dict[str, float] = {}
     if not isinstance(weights, Mapping):
         return sanitized
 
-    for loss_name in LOSS_TERM_NAMES:
+    for loss_name in ALL_LOSS_TERM_NAMES:
         value = _coerce_loss_term_weight(weights.get(loss_name))
         if value is None:
             continue
-        value = min(max(value, 0.0), MAX_LOSS_TERM_WEIGHT_SUM)
-        if value > 0.0:
-            sanitized[loss_name] = value
+        value = float(min(max(value, 0.0), MAX_LOSS_TERM_WEIGHT_SUM))
+        if value <= 0.0:
+            continue
+        if loss_name in LOSS_TERM_NAMES:
+            sanitized[loss_name] = sanitized.get(loss_name, 0.0) + value
+            continue
+        legacy_weights = loss_function_to_weights(loss_name)
+        for normalized_name, coefficient in legacy_weights.items():
+            sanitized[normalized_name] = sanitized.get(normalized_name, 0.0) + (value * coefficient)
 
     total = sum(sanitized.values())
     if total > MAX_LOSS_TERM_WEIGHT_SUM and total > 0.0:
@@ -111,12 +157,17 @@ def resolve_loss_term_weights(
     weights: Mapping[str, Any] | None,
     *,
     fallback_loss_function: str = 'bce',
+    dice_weight: float = 0.5,
+    iou_weight: float = 0.5,
 ) -> dict[str, float]:
     sanitized = sanitize_loss_term_weights(weights)
     if sanitized:
         return sanitized
-    fallback = normalize_loss_term_name(fallback_loss_function) or 'bce'
-    return {fallback: 1.0}
+    return loss_function_to_weights(
+        fallback_loss_function,
+        dice_weight=dice_weight,
+        iou_weight=iou_weight,
+    )
 
 
 def loss_term_weight_sum(weights: Mapping[str, Any] | None) -> float:
@@ -131,7 +182,15 @@ def dominant_loss_function(
     sanitized = sanitize_loss_term_weights(weights)
     if not sanitized:
         normalized_fallback = normalize_loss_term_name(fallback)
-        return normalized_fallback or 'bce'
+        if normalized_fallback in LOSS_TERM_NAMES:
+            return normalized_fallback
+        fallback_weights = loss_function_to_weights(normalized_fallback or fallback)
+        if not fallback_weights:
+            return 'bce'
+        return max(
+            LOSS_TERM_NAMES,
+            key=lambda loss_name: fallback_weights.get(loss_name, -1.0),
+        )
     return max(
         LOSS_TERM_NAMES,
         key=lambda loss_name: sanitized.get(loss_name, -1.0),

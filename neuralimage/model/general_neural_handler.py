@@ -16,10 +16,13 @@ from lib.data_interfaces import (
     TrainingParameters,
     SampleCutMode,
     normalize_multi_gpu_mode,
+    normalize_validation_source,
 )
 from lib.file_func import filter_files, filter_images
+from lib.func import get_input_channels
 from lib.message_bus import AbstractMessageBus
 from model.NeuralNetwork import create_model
+from model.NeuralNetwork.context_utils import normalize_size_pair
 from model.NeuralNetwork.dataset import CustomDataset, NoCutDataset
 from model.NeuralNetwork.model_io import load_model_artifact
 from model.NeuralNetwork.model_train_and_recognition import ModelRecognizer, ModelTrainer
@@ -135,6 +138,12 @@ class IndexedDataset(Dataset):
         image, label = self._base_dataset[index]
         return image, label, int(index)
 
+    def describe_sample(self, index: int) -> str:
+        describe_fn = getattr(self._base_dataset, 'describe_sample', None)
+        if callable(describe_fn):
+            return str(describe_fn(int(index)))
+        return f'sample_{int(index):06d}'
+
 
 class LossAwareSampler(Sampler[int]):
     MULTINOMIAL_MAX_CATEGORIES = 1 << 24
@@ -246,6 +255,8 @@ class GeneralNeuralHandler:
             return
 
         model, model_save_path = self._resolve_training_model()
+        if self._need_stop:
+            return
         self._start_training(model, model_save_path)
 
         if self._need_stop or self._training_failed or self.work_mode == WorkMode.train_only:
@@ -257,21 +268,63 @@ class GeneralNeuralHandler:
 
     def _prepare_training_pipeline(self):
         dataset_image, dataset_label = self._prepare_dataset_folders()
-        train_dataset, val_dataset = self._create_dataset(dataset_image, dataset_label)
+        validation_image = None
+        validation_label = None
+        if self._uses_external_validation():
+            validation_image, validation_label = self._prepare_external_validation_folders()
+            if self._need_stop:
+                return
+        train_dataset, val_dataset = self._create_dataset(
+            dataset_image,
+            dataset_label,
+            validation_image_folder=validation_image,
+            validation_label_folder=validation_label,
+        )
         self._create_dataloader(train_dataset, val_dataset)
 
+    def _uses_external_validation(self) -> bool:
+        if not bool(getattr(self.tranining_parameters, 'validation', False)):
+            return False
+        validation_source = normalize_validation_source(
+            getattr(self.tranining_parameters, 'validation_source', 'split')
+        )
+        return validation_source == 'external'
+
     def _prepare_dataset_folders(self) -> tuple[Path, Path]:
-        dataset_image = self.tranining_parameters.image_path
-        dataset_label = self.tranining_parameters.label_path
+        return self._prepare_dataset_pair(
+            self.tranining_parameters.image_path,
+            self.tranining_parameters.label_path,
+            purpose='train',
+        )
+
+    def _prepare_external_validation_folders(self) -> tuple[Path, Path]:
+        validation_image_path = getattr(self.tranining_parameters, 'validation_image_path', None)
+        validation_label_path = getattr(self.tranining_parameters, 'validation_label_path', None)
+        if validation_image_path is None or validation_label_path is None:
+            self.message_bus.publish('error', 'External validation requires both image and label folders.')
+            self._need_stop = True
+            return Path(), Path()
+        return self._prepare_dataset_pair(
+            Path(validation_image_path),
+            Path(validation_label_path),
+            purpose='validation',
+        )
+
+    def _prepare_dataset_pair(self, dataset_image: Path, dataset_label: Path, *, purpose: str) -> tuple[Path, Path]:
+        normalized_purpose = str(purpose or 'train').strip().lower()
+        is_training_data = normalized_purpose == 'train'
 
         if filter_files(dataset_label, ('.cif',)):
-            binary_labels = dataset_label.parent / 'binary_cif'
+            binary_dir_name = 'binary_cif' if is_training_data else f'binary_cif_{normalized_purpose}'
+            binary_labels = dataset_label.parent / binary_dir_name
             self._start_cif_conversion(dataset_label, binary_labels)
             dataset_label = binary_labels
 
         if self.tranining_parameters.cut_mode == SampleCutMode.disk:
-            cut_images = dataset_image.parent / 'input_dir'
-            cut_labels = dataset_label.parent / 'label_dir'
+            image_dir_name = 'input_dir' if is_training_data else f'input_dir_{normalized_purpose}'
+            label_dir_name = 'label_dir' if is_training_data else f'label_dir_{normalized_purpose}'
+            cut_images = dataset_image.parent / image_dir_name
+            cut_labels = dataset_label.parent / label_dir_name
             self._start_cut(dataset_image, cut_images)
             self._start_cut(dataset_label, cut_labels)
             dataset_image = cut_images
@@ -280,21 +333,59 @@ class GeneralNeuralHandler:
         return dataset_image, dataset_label
 
     def _resolve_model_creation_kwargs(self, model_name: str) -> dict[str, Any]:
-        if str(model_name) != 'Transformer':
+        resolved_name = str(model_name)
+        if resolved_name == 'Transformer':
+            patch_size = self.tranining_parameters.generation.segment_size
+            img_size = max(1, int(patch_size[0]))
+            if int(patch_size[0]) != int(patch_size[1]):
+                self.message_bus.publish(
+                    'logging',
+                    (
+                        'Transformer expects square inputs. '
+                        f'Using img_size={img_size} derived from patch size {tuple(patch_size)}.'
+                    ),
+                )
+            return {'img_size': img_size}
+
+        if resolved_name not in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}:
             return {}
-        patch_size = self.tranining_parameters.generation.segment_size
-        img_size = max(1, int(patch_size[0]))
-        if int(patch_size[0]) != int(patch_size[1]):
-            self.message_bus.publish(
-                'logging',
-                (
-                    'Transformer expects square inputs. '
-                    f'Using img_size={img_size} derived from patch size {tuple(patch_size)}.'
-                ),
+
+        requested_context_branch = getattr(self.tranining_parameters, 'use_context_branch', None)
+        if requested_context_branch is None:
+            requested_context_branch = True
+        if bool(requested_context_branch) and self.tranining_parameters.cut_mode != SampleCutMode.online:
+            raise ValueError(
+                'Context branch requires online patch generation (cut_mode=online) because '
+                'the dataset must build context crops from the full prepared frame.'
             )
-        return {'img_size': img_size}
+
+        local_crop_size = normalize_size_pair(
+            getattr(self.tranining_parameters, 'local_crop_size', None),
+            fallback=tuple(self.tranining_parameters.generation.segment_size),
+        )
+        context_crop_size = normalize_size_pair(
+            getattr(self.tranining_parameters, 'context_crop_size', None),
+            fallback=(local_crop_size[0] * 2, local_crop_size[1] * 2),
+        )
+        context_input_size = normalize_size_pair(
+            getattr(self.tranining_parameters, 'context_input_size', None),
+            fallback=local_crop_size,
+        )
+        context_branch_channels = tuple(
+            int(channel)
+            for channel in getattr(self.tranining_parameters, 'context_branch_channels', (16, 32, 64, 128))
+        )
+        return {
+            'local_crop_size': local_crop_size,
+            'context_crop_size': context_crop_size,
+            'context_input_size': context_input_size,
+            'context_branch_channels': context_branch_channels,
+            'fusion_type': str(getattr(self.tranining_parameters, 'fusion_type', 'concat')),
+            'use_context_branch': bool(requested_context_branch),
+        }
 
     def _resolve_training_model(self):
+        artifact_dir = self._resolve_training_artifact_dir()
         if self.work_mode in (WorkMode.train_and_recognition, WorkMode.train_only):
             model_name = str(self.recognition_parameters.model)
             model_kwargs = self._resolve_model_creation_kwargs(model_name)
@@ -302,11 +393,50 @@ class GeneralNeuralHandler:
             setattr(model, '_neuralimage_model_name', model_name)
             setattr(model, '_neuralimage_input_channels', int(self.tranining_parameters.colors))
             setattr(model, '_neuralimage_model_kwargs', dict(model_kwargs))
-            model_save_path = self._declare_model_name_and_path()
+            model_save_path = artifact_dir / self._declare_model_name()
         else:
             model = load_model_artifact(self.recognition_parameters.model, map_location='cpu')
-            model_save_path = Path(self.recognition_parameters.model)
+            self._validate_loaded_model_input_channels(model)
+            model_save_path = artifact_dir / Path(self.recognition_parameters.model).name
         return model, model_save_path
+
+    def _resolve_loaded_model_input_channels(self, model: Any) -> int:
+        declared_channels = getattr(model, '_neuralimage_input_channels', None)
+        if declared_channels is not None:
+            try:
+                return int(declared_channels)
+            except (TypeError, ValueError):
+                pass
+        return int(get_input_channels(model))
+
+    def _validate_loaded_model_input_channels(self, model: Any) -> bool:
+        expected_channels = max(1, int(getattr(self.tranining_parameters, 'colors', 1)))
+        actual_channels = self._resolve_loaded_model_input_channels(model)
+        if actual_channels == expected_channels:
+            return True
+
+        selected_mode = 'RGB' if expected_channels == 3 else 'grayscale'
+        self.message_bus.publish(
+            'error',
+            (
+                'Training input channels mismatch: '
+                f'selected {selected_mode} mode ({expected_channels} channels), '
+                f'but the loaded model expects {actual_channels} channel(s). '
+                'Choose a matching checkpoint or change the color mode.'
+            ),
+        )
+        self._need_stop = True
+        return False
+
+    def _resolve_training_artifact_dir(self) -> Path:
+        artifact_dir = getattr(self.tranining_parameters, 'artifact_dir', None)
+        if artifact_dir is not None:
+            resolved = Path(artifact_dir)
+            resolved.mkdir(parents=True, exist_ok=True)
+            return resolved
+        if self.work_mode == WorkMode.further_training and str(getattr(self.recognition_parameters, 'model', '')).strip():
+            return Path(self.recognition_parameters.model).parent
+        return self.tranining_parameters.image_path.parent
 
     def _start_cif_conversion(self, source: Path, result: Path):
         if self._check_folder_existance(result):
@@ -328,11 +458,49 @@ class GeneralNeuralHandler:
         self.current_thread.start()
         self.current_thread.join()
 
-    def _create_dataset(self, image_folder: Path, label_folder: Path):
+    def _create_dataset(
+        self,
+        image_folder: Path,
+        label_folder: Path,
+        *,
+        validation_image_folder: Path | None = None,
+        validation_label_folder: Path | None = None,
+    ):
         if self._need_stop:
             return None, None
+        if (
+            bool(getattr(self.tranining_parameters, 'use_context_branch', False))
+            and self.tranining_parameters.cut_mode == SampleCutMode.disk
+        ):
+            raise ValueError(
+                'Context branch is supported only with online patch generation (cut_mode=online).'
+            )
 
-        train_samples, val_samples = self._get_zipped_samples(image_folder, label_folder)
+        train_samples = self._collect_matched_samples(image_folder, label_folder)
+        if self._need_stop or train_samples is None:
+            return None, None
+
+        val_samples: list[tuple[Path, Path]] | None = None
+        if self._uses_external_validation():
+            if validation_image_folder is None or validation_label_folder is None:
+                self.message_bus.publish('error', 'External validation folders are not configured.')
+                self._need_stop = True
+                return None, None
+            val_samples = self._collect_matched_samples(validation_image_folder, validation_label_folder)
+            if self._need_stop or val_samples is None:
+                return None, None
+            self.message_bus.publish(
+                'logging',
+                (
+                    'Validation source: external dataset '
+                    f'(train={len(train_samples)}, val={len(val_samples)}).'
+                ),
+            )
+        elif self.tranining_parameters.validation:
+            train_samples, val_samples = self._split_validation_samples(train_samples)
+            if self._need_stop:
+                return None, None
+
         if self.tranining_parameters.cut_mode == SampleCutMode.disk:
             train_dataset = CustomDataset(train_samples, self.tranining_parameters.generation.channels)
             val_dataset = (
@@ -343,6 +511,29 @@ class GeneralNeuralHandler:
             val_dataset = NoCutDataset(val_samples, self.tranining_parameters) if val_samples else None
 
         return train_dataset, val_dataset
+
+    def _split_validation_samples(
+        self,
+        samples: list[tuple[Path, Path]],
+    ) -> tuple[list[tuple[Path, Path]], list[tuple[Path, Path]]]:
+        total_count = len(samples)
+        val_count = int(total_count * self.tranining_parameters.validation_percent / 100)
+        if self.tranining_parameters.validation_percent > 0 and total_count > 1 and val_count == 0:
+            val_count = 1
+        if val_count >= total_count:
+            val_count = max(total_count - 1, 0)
+        train_samples, val_samples = _deterministic_validation_split(
+            samples,
+            val_count=val_count,
+        )
+        self.message_bus.publish(
+            'logging',
+            (
+                'Validation split: deterministic stratified split by label coverage '
+                f'(train={len(train_samples)}, val={len(val_samples)}).'
+            ),
+        )
+        return train_samples, val_samples
 
     def _create_dataloader(self, train_dataset, val_dataset):
         self._hard_mining_active = False
@@ -400,6 +591,8 @@ class GeneralNeuralHandler:
             )
         else:
             train_loader_kwargs['shuffle'] = shuffle
+        if val_dataset is not None:
+            val_dataset = IndexedDataset(val_dataset)
         try:
             self.train_loader = DataLoader(
                 train_dataset,
@@ -445,6 +638,12 @@ class GeneralNeuralHandler:
     def _resolve_dataloader_workers(self) -> int:
         if _is_debugger_attached():
             return 0
+        try:
+            configured_workers = int(getattr(self.tranining_parameters, 'dataloader_num_workers', -1))
+        except (TypeError, ValueError):
+            configured_workers = -1
+        if configured_workers >= 0:
+            return configured_workers
         cpu_count = os.cpu_count() or 1
         max_workers = 8 if sys.platform.startswith('win') else 16
         workers = max(0, min(max_workers, cpu_count - 1))
@@ -454,7 +653,11 @@ class GeneralNeuralHandler:
             workers = min(workers, 2)
         return workers
 
-    def _get_zipped_samples(self, image_folder, label_folder) -> tuple[list[tuple[Path, Path]], list[tuple[Path, Path]]] | tuple[list[tuple[Path, Path]], None]:
+    def _collect_matched_samples(
+        self,
+        image_folder: Path,
+        label_folder: Path,
+    ) -> list[tuple[Path, Path]] | None:
         image_files = sorted(filter_images(image_folder))
         label_files = sorted(filter_images(label_folder))
 
@@ -480,7 +683,7 @@ class GeneralNeuralHandler:
         image_map = _build_file_map(image_files, 'image')
         label_map = _build_file_map(label_files, 'label')
         if self._need_stop:
-            return [], None
+            return None
 
         image_stems = set(image_map.keys())
         label_stems = set(label_map.keys())
@@ -498,38 +701,25 @@ class GeneralNeuralHandler:
                 ),
             )
             self._need_stop = True
-            return [], None
+            return None
 
         common_stems = sorted(image_stems)
         zipped_images = [(image_map[stem], label_map[stem]) for stem in common_stems]
         if not zipped_images:
-            self.message_bus.publish('error', 'No matched image/label pairs found for training.')
+            self.message_bus.publish('error', 'No matched image/label pairs found in the selected dataset.')
             self._need_stop = True
+            return None
+        return zipped_images
+
+    def _get_zipped_samples(self, image_folder, label_folder) -> tuple[list[tuple[Path, Path]], list[tuple[Path, Path]]] | tuple[list[tuple[Path, Path]], None]:
+        matched_samples = self._collect_matched_samples(Path(image_folder), Path(label_folder))
+        if self._need_stop or matched_samples is None:
             return [], None
+        if self.tranining_parameters.validation and not self._uses_external_validation():
+            return self._split_validation_samples(matched_samples)
+        return matched_samples, None
 
-        if self.tranining_parameters.validation:
-            total_count = len(zipped_images)
-            val_count = int(total_count * self.tranining_parameters.validation_percent / 100)
-            if self.tranining_parameters.validation_percent > 0 and total_count > 1 and val_count == 0:
-                val_count = 1
-            if val_count >= total_count:
-                val_count = max(total_count - 1, 0)
-            train_samples, val_samples = _deterministic_validation_split(
-                zipped_images,
-                val_count=val_count,
-            )
-            self.message_bus.publish(
-                'logging',
-                (
-                    'Validation split: deterministic stratified split by label coverage '
-                    f'(train={len(train_samples)}, val={len(val_samples)}).'
-                ),
-            )
-            return train_samples, val_samples
-
-        return zipped_images, None
-
-    def _declare_model_name_and_path(self) -> Path:
+    def _declare_model_name(self) -> str:
         generation = self.tranining_parameters.generation
 
         model_name = str(self.recognition_parameters.model)
@@ -539,7 +729,7 @@ class GeneralNeuralHandler:
         model_name += f'epoch{self.tranining_parameters.epochs}'
         model_name += '.pth'
 
-        return self.tranining_parameters.image_path.parent / model_name
+        return model_name
 
     def _start_training(self, model, model_save_path: Path):
         resume_from_checkpoint = self.work_mode == WorkMode.further_training
@@ -547,11 +737,11 @@ class GeneralNeuralHandler:
             getattr(self.tranining_parameters, 'multi_gpu_mode', ''),
             use_multi_gpu_fallback=bool(getattr(self.tranining_parameters, 'use_multi_gpu', False)),
         )
-        if self._hard_mining_active and multi_gpu_mode != 'off':
-            multi_gpu_mode = 'off'
+        if self._hard_mining_active and multi_gpu_mode == 'distributeddataparallel':
+            multi_gpu_mode = 'dataparallel'
             self.message_bus.publish(
                 'logging',
-                'Hard mining включен: multi-GPU отключен для обучения в этом запуске.',
+                'Hard mining включен: DistributedDataParallel заменен на nn.DataParallel для этого запуска.',
             )
         self.current_thread = ModelTrainer(
             self.train_loader,
@@ -569,15 +759,20 @@ class GeneralNeuralHandler:
             iou_loss_weight=self.tranining_parameters.iou_loss_weight,
             hard_mining_params=self.tranining_parameters.hard_mining,
             cutout_params=getattr(self.tranining_parameters, 'cutout', None),
+            random_artifacts_params=getattr(self.tranining_parameters, 'random_artifacts', None),
             mixup_params=getattr(self.tranining_parameters, 'mixup', None),
             early_stopping_params=self.tranining_parameters.early_stopping,
             warmup_params=self.tranining_parameters.warmup,
+            scheduler_params=getattr(self.tranining_parameters, 'scheduler', None),
             skip_uniform_labels=self.tranining_parameters.skip_uniform_labels,
             resume_from_checkpoint=resume_from_checkpoint,
             use_multi_gpu=multi_gpu_mode != 'off',
             multi_gpu_mode=multi_gpu_mode,
             show_batch_preview=self.tranining_parameters.show_batch_preview,
             log_update_frequency=self.tranining_parameters.log_update_frequency,
+            save_validation_binary_images=bool(
+                getattr(self.tranining_parameters, 'save_validation_binary_images', False)
+            ),
         )
         self.current_thread.daemon = False
         self.current_thread.start()
@@ -601,6 +796,7 @@ class GeneralNeuralHandler:
             self.recognition_parameters,
             message_bus=self.message_bus,
             callback=None,
+            multithreading=bool(getattr(self.recognition_parameters, 'recognition_multiprocessing_enabled', True)),
         )
         self.current_thread.daemon = False
         self.current_thread.start()

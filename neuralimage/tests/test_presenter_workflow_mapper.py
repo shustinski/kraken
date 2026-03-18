@@ -39,9 +39,19 @@ def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
         loss_term_weights={'bce': 0.35, 'dice': 0.65},
         dice_loss_weight=0.7,
         iou_loss_weight=0.2,
+        validation_source='external',
+        validation_image_folder=str(result / 'val_images'),
+        validation_label_folder=str(result / 'val_labels'),
+        save_validation_binary_images=True,
         warmup_enabled=True,
         warmup_epochs=4,
         warmup_start_factor=0.2,
+        scheduler_name='reduce_on_plateau',
+        scheduler_plateau_factor=0.4,
+        scheduler_plateau_patience=5,
+        scheduler_plateau_threshold=0.002,
+        scheduler_plateau_min_lr=1e-5,
+        scheduler_plateau_cooldown=2,
         hard_mining_enabled=True,
         hard_mining_strength=3.0,
         hard_mining_ema_alpha=0.35,
@@ -51,6 +61,10 @@ def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
         cutout_probability=0.85,
         cutout_holes=3,
         cutout_size_ratio=0.3,
+        random_artifacts_enabled=True,
+        random_artifacts_probability=0.55,
+        random_artifacts_count=2,
+        random_artifacts_size_ratio=0.22,
         mixup_enabled=True,
         mixup_probability=0.65,
         mixup_alpha=0.4,
@@ -70,9 +84,19 @@ def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
     assert training.loss_term_weights == {'bce': 0.35, 'dice': 0.65}
     assert training.dice_loss_weight == 0.7
     assert training.iou_loss_weight == 0.2
+    assert training.validation_source == 'external'
+    assert training.validation_image_path == result / 'val_images'
+    assert training.validation_label_path == result / 'val_labels'
+    assert training.save_validation_binary_images is True
     assert training.warmup.enabled is True
     assert training.warmup.epochs == 4
     assert training.warmup.start_factor == 0.2
+    assert training.scheduler.name.value == 'reduce_on_plateau'
+    assert training.scheduler.plateau_factor == 0.4
+    assert training.scheduler.plateau_patience == 5
+    assert training.scheduler.plateau_threshold == 0.002
+    assert training.scheduler.plateau_min_lr == 1e-5
+    assert training.scheduler.plateau_cooldown == 2
     assert training.hard_mining.enabled is True
     assert training.hard_mining.strength == 3.0
     assert training.hard_mining.ema_alpha == 0.35
@@ -82,6 +106,10 @@ def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
     assert training.cutout.probability == 0.85
     assert training.cutout.holes == 3
     assert training.cutout.size_ratio == 0.3
+    assert training.random_artifacts.enabled is True
+    assert training.random_artifacts.probability == 0.55
+    assert training.random_artifacts.count == 2
+    assert training.random_artifacts.size_ratio == 0.22
     assert training.mixup.enabled is True
     assert training.mixup.probability == 0.65
     assert training.mixup.alpha == 0.4
@@ -185,6 +213,7 @@ def test_build_workflow_parameters_maps_recognition_output_parameters():
     )
     settings = SettingsState(
         recognition_jpeg_quality=87,
+        recognition_multiprocessing_enabled=False,
         recognition_binarize_output=False,
         recognition_use_auto_threshold=False,
         recognition_threshold=0.61,
@@ -195,11 +224,94 @@ def test_build_workflow_parameters_maps_recognition_output_parameters():
     _, _, recognition = build_workflow_parameters(main, settings)
 
     assert recognition.jpeg_quality == 87
+    assert recognition.recognition_multiprocessing_enabled is False
     assert recognition.binarize_output is False
     assert recognition.use_auto_threshold is False
     assert recognition.threshold == 0.61
     assert recognition.postprocess_enabled is True
     assert recognition.postprocess_kernel_size == 5
+
+
+def test_build_workflow_parameters_maps_dataloader_num_workers():
+    source = make_test_dir("workflow_source_dataloader_workers")
+    result = make_test_dir("workflow_result_dataloader_workers")
+    sample = make_test_dir("workflow_sample_dataloader_workers")
+    label = make_test_dir("workflow_label_dataloader_workers")
+
+    main = MainWindowState(
+        work_mode='train_only',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(dataloader_num_workers=6)
+
+    _, training, _ = build_workflow_parameters(main, settings)
+
+    assert training.dataloader_num_workers == 6
+
+
+def test_build_workflow_parameters_maps_one_cycle_scheduler():
+    source = make_test_dir("workflow_source_scheduler")
+    result = make_test_dir("workflow_result_scheduler")
+    sample = make_test_dir("workflow_sample_scheduler")
+    label = make_test_dir("workflow_label_scheduler")
+
+    main = MainWindowState(
+        work_mode='train_only',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=3,
+    )
+    settings = SettingsState(
+        scheduler_name='one_cycle',
+        scheduler_one_cycle_max_lr=0.002,
+        scheduler_one_cycle_pct_start=0.4,
+        scheduler_one_cycle_anneal_strategy='linear',
+        scheduler_one_cycle_div_factor=10.0,
+        scheduler_one_cycle_final_div_factor=500.0,
+        scheduler_one_cycle_three_phase=True,
+    )
+
+    _, training, _ = build_workflow_parameters(main, settings)
+
+    assert training.scheduler.name.value == 'one_cycle'
+    assert training.scheduler.one_cycle_max_lr == 0.002
+    assert training.scheduler.one_cycle_pct_start == 0.4
+    assert training.scheduler.one_cycle_anneal_strategy == 'linear'
+    assert training.scheduler.one_cycle_div_factor == 10.0
+    assert training.scheduler.one_cycle_final_div_factor == 500.0
+    assert training.scheduler.one_cycle_three_phase is True
+
+
+def test_build_workflow_parameters_defaults_to_split_validation_source():
+    source = make_test_dir("workflow_source_validation_default")
+    result = make_test_dir("workflow_result_validation_default")
+    sample = make_test_dir("workflow_sample_validation_default")
+    label = make_test_dir("workflow_label_validation_default")
+
+    main = MainWindowState(
+        work_mode='train_only',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(use_validation=True, validation_percent=15)
+
+    _, training, _ = build_workflow_parameters(main, settings)
+
+    assert training.validation is True
+    assert training.validation_percent == 15
+    assert training.validation_source == 'split'
+    assert training.validation_image_path is None
+    assert training.validation_label_path is None
+    assert training.save_validation_binary_images is False
 
 
 def test_build_workflow_parameters_syncs_patch_sizes_when_enabled():

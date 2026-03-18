@@ -66,6 +66,27 @@ def test_sew_image_small_source_with_large_segment():
     assert int(arr.max()) == 255
 
 
+def test_sew_image_applies_threshold_and_postprocess():
+    pred = np.array(
+        [
+            [
+                [
+                    [1.0, 1.0, 1.0],
+                    [1.0, 0.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                ]
+            ]
+        ],
+        dtype=np.float32,
+    )
+
+    raw = np.array(sew_image((3, 3), pred, overlap=0, threshold=0.5))
+    processed = np.array(sew_image((3, 3), pred, overlap=0, threshold=0.5, postprocess_kernel_size=3))
+
+    assert raw[1, 1] == 0
+    assert processed[1, 1] == 255
+
+
 def test_img_crop_border_crops_to_black_frame():
     img = Image.fromarray(np.full((5, 5), 255, dtype=np.uint8), mode='L')
     cropped = img_crop_border(1, img)

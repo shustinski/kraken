@@ -1,20 +1,30 @@
 import configparser
+import json
 import os
+from dataclasses import is_dataclass
+from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from PyQt6.QtCore import QSettings
 
 from application.dto import MainWindowState, SettingsState
 from application.ports import StateStore
+from application.services.workflow_mapper import build_workflow_parameters
 from lib.data_interfaces import (
+    WorkMode,
     normalize_multi_gpu_mode,
     normalize_patch_batch_sync_mode,
+    normalize_scheduler_name,
+    normalize_validation_source,
     normalize_work_mode,
 )
 from lib.loss_config import (
     deserialize_loss_term_weights,
     dominant_loss_function,
     normalize_loss_term_name,
+    resolve_loss_term_weights,
     serialize_loss_term_weights,
 )
 
@@ -26,6 +36,8 @@ SETTINGS_APP = 'Settings'
 
 INI_SECTION_MAIN = 'main_window'
 INI_SECTION_SETTINGS = 'settings'
+WORKFLOW_SNAPSHOT_FILENAME = 'neuralimage_workflow.json'
+WORKFLOW_SNAPSHOT_FORMAT_VERSION = 1
 
 
 def _build_main_window_state(
@@ -55,6 +67,13 @@ def _main_window_state_to_storage_dict(state: MainWindowState) -> dict[str, str 
         'sample_path': state.sample_folder,
         'epochs': int(state.epochs),
     }
+
+
+def _main_window_state_from_storage_dict(data: dict[str, Any]) -> MainWindowState:
+    return _build_main_window_state(
+        read_str=lambda key, default: _coerce_str(data.get(key), default),
+        read_int=lambda key, default: _coerce_int(data.get(key), default),
+    )
 
 
 def _build_settings_state(
@@ -89,11 +108,15 @@ def _build_settings_state(
         ),
     )
     legacy_loss_function = read_str('loss_function', defaults.loss_function)
+    dice_loss_weight = read_float('dice_loss_weight', defaults.dice_loss_weight)
+    iou_loss_weight = read_float('iou_loss_weight', defaults.iou_loss_weight)
     loss_term_weights_raw = read_str('loss_term_weights_json', '')
-    loss_term_weights = deserialize_loss_term_weights(loss_term_weights_raw)
-    if (not loss_term_weights) and (not str(loss_term_weights_raw).strip()):
-        legacy_name = normalize_loss_term_name(legacy_loss_function) or defaults.loss_function
-        loss_term_weights = {legacy_name: 1.0}
+    loss_term_weights = resolve_loss_term_weights(
+        deserialize_loss_term_weights(loss_term_weights_raw),
+        fallback_loss_function=legacy_loss_function,
+        dice_weight=dice_loss_weight,
+        iou_weight=iou_loss_weight,
+    )
     return SettingsState(
         step=read_int('cut_step', defaults.step),
         vertical_rotation=read_bool('vertical_rotation', defaults.vertical_rotation),
@@ -149,14 +172,37 @@ def _build_settings_state(
         ),
         use_validation=read_bool('validation', defaults.use_validation),
         validation_percent=read_int('validation_percent', defaults.validation_percent),
+        validation_source=normalize_validation_source(
+            read_str('validation_source', getattr(defaults, 'validation_source', 'split'))
+        ),
+        validation_image_folder=read_str(
+            'validation_image_folder',
+            getattr(defaults, 'validation_image_folder', ''),
+        ),
+        validation_label_folder=read_str(
+            'validation_label_folder',
+            getattr(defaults, 'validation_label_folder', ''),
+        ),
+        save_validation_binary_images=read_bool(
+            'save_validation_binary_images',
+            getattr(defaults, 'save_validation_binary_images', False),
+        ),
         sample_cut_mode=read_str('sample_cut_mode', defaults.sample_cut_mode),
         batch_size=legacy_batch_size,
+        dataloader_num_workers=read_int(
+            'dataloader_num_workers',
+            getattr(defaults, 'dataloader_num_workers', -1),
+        ),
         train_batch_size=read_int('train_batch_size', legacy_batch_size),
         recognition_batch_size=read_int('recognition_batch_size', legacy_batch_size),
         sync_patch_sizes=sync_patch_sizes,
         patch_batch_sync_mode=patch_batch_sync_mode,
         overlap=read_int('overlap', defaults.overlap),
         recognition_jpeg_quality=read_int('recognition_jpeg_quality', defaults.recognition_jpeg_quality),
+        recognition_multiprocessing_enabled=read_bool(
+            'recognition_multiprocessing_enabled',
+            getattr(defaults, 'recognition_multiprocessing_enabled', True),
+        ),
         recognition_binarize_output=read_bool(
             'recognition_binarize_output',
             getattr(defaults, 'recognition_binarize_output', True),
@@ -193,8 +239,8 @@ def _build_settings_state(
         loss_function=normalize_loss_term_name(legacy_loss_function)
         or dominant_loss_function(loss_term_weights, fallback=defaults.loss_function),
         loss_term_weights=loss_term_weights,
-        dice_loss_weight=read_float('dice_loss_weight', defaults.dice_loss_weight),
-        iou_loss_weight=read_float('iou_loss_weight', defaults.iou_loss_weight),
+        dice_loss_weight=dice_loss_weight,
+        iou_loss_weight=iou_loss_weight,
         learning_rate=read_float('learning_rate', defaults.learning_rate),
         weight_decay=read_float('weight_decay', defaults.weight_decay),
         early_stopping_enabled=read_bool('early_stopping_enabled', defaults.early_stopping_enabled),
@@ -206,6 +252,69 @@ def _build_settings_state(
         warmup_enabled=read_bool('warmup_enabled', defaults.warmup_enabled),
         warmup_epochs=read_int('warmup_epochs', defaults.warmup_epochs),
         warmup_start_factor=read_float('warmup_start_factor', defaults.warmup_start_factor),
+        scheduler_name=normalize_scheduler_name(
+            read_str('scheduler_name', getattr(defaults, 'scheduler_name', 'off'))
+        ),
+        scheduler_plateau_factor=read_float(
+            'scheduler_plateau_factor',
+            getattr(defaults, 'scheduler_plateau_factor', 0.5),
+        ),
+        scheduler_plateau_patience=read_int(
+            'scheduler_plateau_patience',
+            getattr(defaults, 'scheduler_plateau_patience', 3),
+        ),
+        scheduler_plateau_threshold=read_float(
+            'scheduler_plateau_threshold',
+            getattr(defaults, 'scheduler_plateau_threshold', 1e-4),
+        ),
+        scheduler_plateau_min_lr=read_float(
+            'scheduler_plateau_min_lr',
+            getattr(defaults, 'scheduler_plateau_min_lr', 1e-6),
+        ),
+        scheduler_plateau_cooldown=read_int(
+            'scheduler_plateau_cooldown',
+            getattr(defaults, 'scheduler_plateau_cooldown', 0),
+        ),
+        scheduler_cosine_t_max=read_int(
+            'scheduler_cosine_t_max',
+            getattr(defaults, 'scheduler_cosine_t_max', 10),
+        ),
+        scheduler_cosine_eta_min=read_float(
+            'scheduler_cosine_eta_min',
+            getattr(defaults, 'scheduler_cosine_eta_min', 1e-6),
+        ),
+        scheduler_one_cycle_max_lr=read_float(
+            'scheduler_one_cycle_max_lr',
+            getattr(defaults, 'scheduler_one_cycle_max_lr', 1e-3),
+        ),
+        scheduler_one_cycle_pct_start=read_float(
+            'scheduler_one_cycle_pct_start',
+            getattr(defaults, 'scheduler_one_cycle_pct_start', 0.3),
+        ),
+        scheduler_one_cycle_anneal_strategy=read_str(
+            'scheduler_one_cycle_anneal_strategy',
+            getattr(defaults, 'scheduler_one_cycle_anneal_strategy', 'cos'),
+        ),
+        scheduler_one_cycle_div_factor=read_float(
+            'scheduler_one_cycle_div_factor',
+            getattr(defaults, 'scheduler_one_cycle_div_factor', 25.0),
+        ),
+        scheduler_one_cycle_final_div_factor=read_float(
+            'scheduler_one_cycle_final_div_factor',
+            getattr(defaults, 'scheduler_one_cycle_final_div_factor', 10000.0),
+        ),
+        scheduler_one_cycle_three_phase=read_bool(
+            'scheduler_one_cycle_three_phase',
+            getattr(defaults, 'scheduler_one_cycle_three_phase', False),
+        ),
+        scheduler_step_lr_step_size=read_int(
+            'scheduler_step_lr_step_size',
+            getattr(defaults, 'scheduler_step_lr_step_size', 10),
+        ),
+        scheduler_step_lr_gamma=read_float(
+            'scheduler_step_lr_gamma',
+            getattr(defaults, 'scheduler_step_lr_gamma', 0.1),
+        ),
         hard_mining_enabled=read_bool('hard_mining_enabled', defaults.hard_mining_enabled),
         hard_mining_strength=read_float('hard_mining_strength', defaults.hard_mining_strength),
         hard_mining_ema_alpha=read_float('hard_mining_ema_alpha', defaults.hard_mining_ema_alpha),
@@ -236,6 +345,25 @@ def _build_settings_state(
             'cutout_size_ratio',
             getattr(defaults, 'cutout_size_ratio', 0.25),
         ),
+        random_artifacts_enabled=read_bool(
+            'random_artifacts_enabled',
+            getattr(defaults, 'random_artifacts_enabled', False),
+        ),
+        random_artifacts_probability=read_float(
+            'random_artifacts_probability',
+            getattr(defaults, 'random_artifacts_probability', 1.0),
+        ),
+        random_artifacts_count=max(
+            1,
+            read_int(
+                'random_artifacts_count',
+                getattr(defaults, 'random_artifacts_count', 1),
+            ),
+        ),
+        random_artifacts_size_ratio=read_float(
+            'random_artifacts_size_ratio',
+            getattr(defaults, 'random_artifacts_size_ratio', 0.25),
+        ),
         mixup_enabled=read_bool(
             'mixup_enabled',
             getattr(defaults, 'mixup_enabled', False),
@@ -258,6 +386,15 @@ def _build_settings_state(
         multi_gpu_mode=multi_gpu_mode,
         torch_compile_enabled=read_bool('torch_compile_enabled', defaults.torch_compile_enabled),
         show_batch_preview=read_bool('show_batch_preview', defaults.show_batch_preview),
+    )
+
+
+def _settings_state_from_storage_dict(data: dict[str, Any]) -> SettingsState:
+    return _build_settings_state(
+        read_bool=lambda key, default: _coerce_bool(data.get(key), default),
+        read_int=lambda key, default: _coerce_int(data.get(key), default),
+        read_float=lambda key, default: _coerce_float(data.get(key), default),
+        read_str=lambda key, default: _coerce_str(data.get(key), default),
     )
 
 
@@ -297,14 +434,26 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'scale_augmentation_strength': float(getattr(state, 'scale_augmentation_strength', 0.2)),
         'validation': bool(state.use_validation),
         'validation_percent': int(state.validation_percent),
+        'validation_source': normalize_validation_source(
+            getattr(state, 'validation_source', 'split')
+        ),
+        'validation_image_folder': str(getattr(state, 'validation_image_folder', '')),
+        'validation_label_folder': str(getattr(state, 'validation_label_folder', '')),
+        'save_validation_binary_images': bool(
+            getattr(state, 'save_validation_binary_images', False)
+        ),
         'sample_cut_mode': state.sample_cut_mode,
         'batch_size': int(train_batch_size),
+        'dataloader_num_workers': int(getattr(state, 'dataloader_num_workers', -1)),
         'train_batch_size': int(train_batch_size),
         'recognition_batch_size': int(recognition_batch_size),
         'sync_patch_sizes': bool(sync_patch_sizes),
         'patch_batch_sync_mode': patch_batch_sync_mode,
         'overlap': int(state.overlap),
         'recognition_jpeg_quality': int(getattr(state, 'recognition_jpeg_quality', 95)),
+        'recognition_multiprocessing_enabled': bool(
+            getattr(state, 'recognition_multiprocessing_enabled', True)
+        ),
         'recognition_binarize_output': bool(getattr(state, 'recognition_binarize_output', True)),
         'recognition_use_auto_threshold': bool(getattr(state, 'recognition_use_auto_threshold', True)),
         'recognition_threshold': float(getattr(state, 'recognition_threshold', 0.5)),
@@ -344,6 +493,26 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'warmup_enabled': bool(state.warmup_enabled),
         'warmup_epochs': int(state.warmup_epochs),
         'warmup_start_factor': float(state.warmup_start_factor),
+        'scheduler_name': normalize_scheduler_name(getattr(state, 'scheduler_name', 'off')),
+        'scheduler_plateau_factor': float(getattr(state, 'scheduler_plateau_factor', 0.5)),
+        'scheduler_plateau_patience': int(getattr(state, 'scheduler_plateau_patience', 3)),
+        'scheduler_plateau_threshold': float(getattr(state, 'scheduler_plateau_threshold', 1e-4)),
+        'scheduler_plateau_min_lr': float(getattr(state, 'scheduler_plateau_min_lr', 1e-6)),
+        'scheduler_plateau_cooldown': int(getattr(state, 'scheduler_plateau_cooldown', 0)),
+        'scheduler_cosine_t_max': int(getattr(state, 'scheduler_cosine_t_max', 10)),
+        'scheduler_cosine_eta_min': float(getattr(state, 'scheduler_cosine_eta_min', 1e-6)),
+        'scheduler_one_cycle_max_lr': float(getattr(state, 'scheduler_one_cycle_max_lr', 1e-3)),
+        'scheduler_one_cycle_pct_start': float(getattr(state, 'scheduler_one_cycle_pct_start', 0.3)),
+        'scheduler_one_cycle_anneal_strategy': str(
+            getattr(state, 'scheduler_one_cycle_anneal_strategy', 'cos')
+        ),
+        'scheduler_one_cycle_div_factor': float(getattr(state, 'scheduler_one_cycle_div_factor', 25.0)),
+        'scheduler_one_cycle_final_div_factor': float(
+            getattr(state, 'scheduler_one_cycle_final_div_factor', 10000.0)
+        ),
+        'scheduler_one_cycle_three_phase': bool(getattr(state, 'scheduler_one_cycle_three_phase', False)),
+        'scheduler_step_lr_step_size': int(getattr(state, 'scheduler_step_lr_step_size', 10)),
+        'scheduler_step_lr_gamma': float(getattr(state, 'scheduler_step_lr_gamma', 0.1)),
         'hard_mining_enabled': bool(state.hard_mining_enabled),
         'hard_mining_strength': float(state.hard_mining_strength),
         'hard_mining_ema_alpha': float(state.hard_mining_ema_alpha),
@@ -353,6 +522,10 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'cutout_probability': float(getattr(state, 'cutout_probability', 1.0)),
         'cutout_holes': int(max(1, int(getattr(state, 'cutout_holes', 1)))),
         'cutout_size_ratio': float(getattr(state, 'cutout_size_ratio', 0.25)),
+        'random_artifacts_enabled': bool(getattr(state, 'random_artifacts_enabled', False)),
+        'random_artifacts_probability': float(getattr(state, 'random_artifacts_probability', 1.0)),
+        'random_artifacts_count': int(max(1, int(getattr(state, 'random_artifacts_count', 1)))),
+        'random_artifacts_size_ratio': float(getattr(state, 'random_artifacts_size_ratio', 0.25)),
         'mixup_enabled': bool(getattr(state, 'mixup_enabled', False)),
         'mixup_probability': float(getattr(state, 'mixup_probability', 1.0)),
         'mixup_alpha': float(getattr(state, 'mixup_alpha', 0.2)),
@@ -368,6 +541,122 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'torch_compile_enabled': bool(state.torch_compile_enabled),
         'show_batch_preview': bool(state.show_batch_preview),
     }
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'1', 'true', 'yes', 'on'}:
+            return True
+        if normalized in {'0', 'false', 'no', 'off'}:
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _coerce_str(value: Any, default: str) -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _jsonify_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if is_dataclass(value):
+        return {key: _jsonify_value(item) for key, item in vars(value).items()}
+    if isinstance(value, dict):
+        return {str(key): _jsonify_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonify_value(item) for item in value]
+    return value
+
+
+def resolve_workflow_snapshot_path(main_state: MainWindowState) -> Path:
+    sample_folder = Path(main_state.sample_folder)
+    label_folder = Path(main_state.label_folder)
+    fallback_parent = sample_folder.parent if str(sample_folder) else Path.cwd()
+    if not str(sample_folder) or not str(label_folder):
+        return fallback_parent / WORKFLOW_SNAPSHOT_FILENAME
+    target_dir = sample_folder.parent
+    if sample_folder.parent == label_folder.parent:
+        target_dir = sample_folder.parent
+    return target_dir / WORKFLOW_SNAPSHOT_FILENAME
+
+
+def create_workflow_snapshot_payload(
+    main_state: MainWindowState,
+    settings_state: SettingsState,
+    workflow_snapshot: tuple[WorkMode | None, Any, Any] | None = None,
+) -> dict[str, Any]:
+    work_mode, training, recognition = workflow_snapshot or build_workflow_parameters(main_state, settings_state)
+    return {
+        'format_version': WORKFLOW_SNAPSHOT_FORMAT_VERSION,
+        'saved_at': datetime.now(timezone.utc).isoformat(),
+        'main_window_state': _main_window_state_to_storage_dict(main_state),
+        'settings_state': _settings_state_to_storage_dict(settings_state),
+        'workflow': {
+            'work_mode': work_mode.value if work_mode is not None else None,
+            'training': _jsonify_value(training),
+            'recognition': _jsonify_value(recognition),
+        },
+    }
+
+
+def save_workflow_snapshot(
+    main_state: MainWindowState,
+    settings_state: SettingsState,
+    destination: Path | None = None,
+    workflow_snapshot: tuple[WorkMode | None, Any, Any] | None = None,
+) -> Path:
+    snapshot_path = Path(destination) if destination is not None else resolve_workflow_snapshot_path(main_state)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = create_workflow_snapshot_payload(main_state, settings_state, workflow_snapshot=workflow_snapshot)
+    with snapshot_path.open('w', encoding='utf-8') as file:
+        json.dump(payload, file, indent=2, ensure_ascii=False)
+    return snapshot_path
+
+
+def load_workflow_snapshot(snapshot_path: Path | str) -> tuple[MainWindowState, SettingsState]:
+    path = Path(snapshot_path)
+    try:
+        with path.open('r', encoding='utf-8') as file:
+            payload = json.load(file)
+    except json.JSONDecodeError as error:
+        raise ValueError(f'Некорректный JSON: {error}') from error
+
+    if not isinstance(payload, dict):
+        raise ValueError('Файл параметров должен содержать JSON-объект.')
+    if payload.get('format_version') != WORKFLOW_SNAPSHOT_FORMAT_VERSION:
+        raise ValueError('Неподдерживаемая версия файла параметров.')
+
+    main_payload = payload.get('main_window_state')
+    settings_payload = payload.get('settings_state')
+    if not isinstance(main_payload, dict) or not isinstance(settings_payload, dict):
+        raise ValueError('В файле параметров отсутствуют main_window_state или settings_state.')
+
+    main_state = _main_window_state_from_storage_dict(main_payload)
+    settings_state = _settings_state_from_storage_dict(settings_payload)
+    return main_state, settings_state
 
 
 class QSettingsStateStore:

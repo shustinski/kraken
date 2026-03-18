@@ -17,16 +17,12 @@ from PIL import Image
 
 from lib.image_processing import cut_image, sew_image
 from model.NeuralNetwork.model_io import load_model_artifact
-
-try:
-    from multiprocessing.shared_memory import SharedMemory
-except Exception:  # pragma: no cover - platform/runtime fallback
-    SharedMemory = None  # type: ignore[assignment]
+from model.NeuralNetwork.context_utils import build_context_batch
 
 
 Publisher = Callable[[str, Any], None]
 MemoryMetricsCollector = Callable[[], dict[str, float] | None]
-_SHARED_ARRAY_MARKER = '__neuralimage_shared_array__'
+_QUEUE_EMPTY = object()
 
 
 @dataclass(frozen=True)
@@ -39,11 +35,14 @@ class RecognitionWorkload:
     colors: int
     jpeg_quality: int
     binarize_output: bool
-    threshold: float
+    threshold: float | None
     postprocess_enabled: bool
     postprocess_kernel_size: int
     devices: list[torch.device]
     model_source: str | Path
+    use_context_branch: bool = False
+    context_crop_size: tuple[int, int] | None = None
+    context_input_size: tuple[int, int] | None = None
 
     @property
     def frame_count(self) -> int:
@@ -126,6 +125,25 @@ class ProgressReporter:
         )
 
 
+def _try_get_queue_item(queue: Any, *, timeout: float) -> Any:
+    """Poll a multiprocessing queue without surfacing Empty in debuggers."""
+    reader = getattr(queue, '_reader', None)
+    if reader is not None:
+        try:
+            if not bool(reader.poll(timeout)):
+                return _QUEUE_EMPTY
+            # After poll() reports readiness, a blocking get() avoids get_nowait()
+            # spuriously raising Empty in debugger-attached multiprocessing runs.
+            return queue.get()
+        except (Empty, EOFError, OSError, ValueError):
+            return _QUEUE_EMPTY
+
+    try:
+        return queue.get(timeout=timeout)
+    except Empty:
+        return _QUEUE_EMPTY
+
+
 class MultiprocessingRecognitionRunner:
     def __init__(
         self,
@@ -144,11 +162,16 @@ class MultiprocessingRecognitionRunner:
         groups = WorkerGroups(cut=[], predict=[], sew=[])
         predict_stopped = False
         sew_stopped = False
+        completed = 0
+        failure_message: str | None = None
         try:
             self._prime_cut_queue(queues)
             self._publish_runtime_plan()
             groups = self._start_workers(queues)
-            predict_stopped, sew_stopped = self._monitor_processing(groups=groups, queues=queues)
+            predict_stopped, sew_stopped, completed, failure_message = self._monitor_processing(
+                groups=groups,
+                queues=queues,
+            )
         finally:
             self._send_missing_stop_tokens(
                 queues=queues,
@@ -157,6 +180,13 @@ class MultiprocessingRecognitionRunner:
             )
             self._shutdown_workers(groups)
             queues.close()
+        if failure_message is not None:
+            raise RuntimeError(failure_message)
+        if (not self._stop_event.is_set()) and completed < self._config.workload.frame_count:
+            raise RuntimeError(
+                'Recognition pipeline stopped before all frames were processed '
+                f'({completed}/{self._config.workload.frame_count}).'
+            )
 
     def _create_queues(self) -> PipelineQueues:
         worker_total = max(
@@ -165,7 +195,7 @@ class MultiprocessingRecognitionRunner:
         )
         predict_queue_size = max(8, worker_total * 2, len(self._config.workload.devices) * 6)
         return PipelineQueues(
-            cut=mp.Queue(maxsize=max(8, worker_total * 2)),
+            cut=mp.Queue(),
             predict=mp.Queue(maxsize=predict_queue_size),
             sew=mp.Queue(maxsize=predict_queue_size),
             sewed=mp.Queue(),
@@ -199,6 +229,9 @@ class MultiprocessingRecognitionRunner:
                     self._config.workload.segment_shape,
                     self._config.workload.overlap,
                     self._stop_event,
+                    self._config.workload.use_context_branch,
+                    self._config.workload.context_crop_size,
+                    self._config.workload.context_input_size,
                     self._config.stop_token,
                 ),
             )
@@ -239,10 +272,10 @@ class MultiprocessingRecognitionRunner:
                     queues.sewed,
                     self._config.workload.jpeg_quality,
                     self._stop_event,
-                    (self._config.workload.threshold if self._config.workload.binarize_output else None),
+                    self._config.workload.threshold,
                     (
                         self._config.workload.postprocess_kernel_size
-                        if self._config.workload.binarize_output and self._config.workload.postprocess_enabled
+                        if self._config.workload.threshold is not None and self._config.workload.postprocess_enabled
                         else 0
                     ),
                     self._config.stop_token,
@@ -264,10 +297,11 @@ class MultiprocessingRecognitionRunner:
         *,
         groups: WorkerGroups,
         queues: PipelineQueues,
-    ) -> tuple[bool, bool]:
+    ) -> tuple[bool, bool, int, str | None]:
         completed = 0
         predict_stopped = False
         sew_stopped = False
+        failure_message: str | None = None
         while completed < self._config.workload.frame_count:
             if self._stop_event.is_set():
                 break
@@ -281,11 +315,13 @@ class MultiprocessingRecognitionRunner:
                 sew_stopped = True
 
             completed = self._consume_completed_frame(queues=queues, completed=completed)
-            if self._has_failed_process(groups):
+            failed_process_message = self._get_failed_process_message(groups)
+            if failed_process_message is not None:
+                failure_message = failed_process_message
                 self._stop_event.set()
                 break
 
-        return predict_stopped, sew_stopped
+        return predict_stopped, sew_stopped, completed, failure_message
 
     @staticmethod
     def _all_stopped(processes: Iterable[mp.Process]) -> bool:
@@ -300,24 +336,21 @@ class MultiprocessingRecognitionRunner:
             sew_queue.put(self._config.stop_token)
 
     def _consume_completed_frame(self, *, queues: PipelineQueues, completed: int) -> int:
-        try:
-            queues.sewed.get(timeout=0.2)
-        except Empty:
+        completed_item = _try_get_queue_item(queues.sewed, timeout=0.2)
+        if completed_item is _QUEUE_EMPTY:
             return completed
         updated = completed + 1
         self._reporter.publish_frame(updated)
         return updated
 
-    def _has_failed_process(self, groups: WorkerGroups) -> bool:
+    def _get_failed_process_message(self, groups: WorkerGroups) -> str | None:
         for process in groups.all():
             if process.exitcode in (None, 0):
                 continue
-            self._publish(
-                'logging',
-                f'Child process failed. pid={process.pid}, code={process.exitcode}.',
-            )
-            return True
-        return False
+            message = f'Child process failed. pid={process.pid}, code={process.exitcode}.'
+            self._publish('logging', message)
+            return message
+        return None
 
     def _send_missing_stop_tokens(
         self,
@@ -376,9 +409,12 @@ def run_single_thread_recognition(
     collect_memory_metrics: MemoryMetricsCollector,
     jpeg_quality: int = 95,
     binarize_output: bool = True,
-    threshold: float = 0.5,
+    threshold: float | None = None,
     postprocess_enabled: bool = False,
     postprocess_kernel_size: int = 3,
+    use_context_branch: bool = False,
+    context_crop_size: tuple[int, int] | None = None,
+    context_input_size: tuple[int, int] | None = None,
 ) -> None:
     model.eval()
     model.to(device)
@@ -393,7 +429,14 @@ def run_single_thread_recognition(
     for index, image_path in enumerate(source_files, start=1):
         if stop_event.is_set():
             break
-        prepared = cut_image_prepare(image_path, shape, overlap)
+        prepared = cut_image_prepare(
+            image_path,
+            shape,
+            overlap,
+            use_context_branch=use_context_branch,
+            context_crop_size=context_crop_size,
+            context_input_size=context_input_size,
+        )
         predicted = gpu_predict(prepared, model, device, batch_size)
         # Some torch.compile configurations can produce degenerate outputs on inference.
         if (not compile_fallback_checked) and hasattr(model, '_orig_mod'):
@@ -461,7 +504,7 @@ def run_single_thread_recognition(
             result_folder,
             predicted,
             jpeg_quality=jpeg_quality,
-            threshold=(float(threshold) if binarize_output else None),
+            threshold=(float(threshold) if binarize_output and threshold is not None else None),
             postprocess_kernel_size=(int(postprocess_kernel_size) if postprocess_enabled else 0),
         )
         reporter.publish_frame(index)
@@ -484,26 +527,45 @@ def cut_image_process(
     size: tuple[int, int, int],
     overlap: int,
     stop_event: MpEvent,
+    use_context_branch: bool = False,
+    context_crop_size: tuple[int, int] | None = None,
+    context_input_size: tuple[int, int] | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
     while not stop_event.is_set():
-        try:
-            image_path = cut_queue.get(timeout=0.2)
-        except Empty:
+        image_path = _try_get_queue_item(cut_queue, timeout=0.2)
+        if image_path is _QUEUE_EMPTY:
             continue
         if image_path == stop_token:
             break
-        image_payload = cut_image_prepare(cast(Path, image_path), size, overlap)
-        _store_payload_array_in_shared_memory(image_payload, 'cutted_image')
+        image_payload = cut_image_prepare(
+            cast(Path, image_path),
+            size,
+            overlap,
+            use_context_branch=use_context_branch,
+            context_crop_size=context_crop_size,
+            context_input_size=context_input_size,
+        )
+        _store_payload_array_for_multiprocessing(image_payload, 'cutted_image')
+        _store_payload_array_for_multiprocessing(image_payload, 'context_image')
         cutted_queue.put(image_payload)
 
 
-def cut_image_prepare(img_path: Path, segment_size: tuple[int, int, int], overlap: int) -> dict[str, Any]:
+def cut_image_prepare(
+    img_path: Path,
+    segment_size: tuple[int, int, int],
+    overlap: int,
+    *,
+    use_context_branch: bool = False,
+    context_crop_size: tuple[int, int] | None = None,
+    context_input_size: tuple[int, int] | None = None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         'baseim_size': None,
         'segment_size': segment_size,
         'overlap': overlap,
         'cutted_image': None,
+        'context_image': None,
         'name': img_path.name,
     }
 
@@ -517,6 +579,17 @@ def cut_image_prepare(img_path: Path, segment_size: tuple[int, int, int], overla
 
     work_image = _to_channel_first(work_image, channels=channels)
     payload['cutted_image'] = cut_image(work_image, segment_size, overlap)
+    if use_context_branch and context_crop_size is not None and context_input_size is not None:
+        payload['context_image'] = (
+            build_context_batch(
+                work_image,
+                local_patch_size_xy=(int(segment_size[1]), int(segment_size[2])),
+                overlap=overlap,
+                context_crop_size_xy=tuple(context_crop_size),
+                context_input_size_xy=tuple(context_input_size),
+            )
+            / 255.0
+        ).astype(np.float32, copy=False)
     return payload
 
 
@@ -572,19 +645,17 @@ def imgpredict(
         torch.backends.cudnn.benchmark = True
 
     while not stop_event.is_set():
-        try:
-            item = prediction_queue.get(timeout=0.2)
-        except Empty:
+        item = _try_get_queue_item(prediction_queue, timeout=0.2)
+        if item is _QUEUE_EMPTY:
             continue
         if item == stop_token:
             break
-        restored_item, shared_handles = _restore_payload_arrays_from_shared_memory(item, ('cutted_image',))
-        try:
-            predicted = gpu_predict(restored_item, model, gpu, batch_size)
-        finally:
-            _cleanup_shared_handles(shared_handles, unlink=True)
+        restored = _restore_payload_array_from_multiprocessing(item, 'cutted_image')
+        restored = _restore_payload_array_from_multiprocessing(restored, 'context_image')
+        predicted = gpu_predict(restored, model, gpu, batch_size)
         predicted.pop('cutted_image', None)
-        _store_payload_array_in_shared_memory(predicted, 'predicted_image')
+        predicted.pop('context_image', None)
+        _store_payload_array_for_multiprocessing(predicted, 'predicted_image')
         predicted_queue.put(predicted)
 
 
@@ -592,11 +663,25 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
     predicted_image = np.empty_like(img['cutted_image'])
     parts_in_image = len(img['cutted_image'])
 
-    tensor_data = torch.from_numpy(img['cutted_image']).float()
+    source_batches = img['cutted_image']
+    if torch.is_tensor(source_batches):
+        tensor_data = source_batches.float()
+    else:
+        tensor_data = torch.from_numpy(source_batches).float()
+    context_batches = img.get('context_image')
+    context_tensor_data: torch.Tensor | None = None
+    if context_batches is not None:
+        if torch.is_tensor(context_batches):
+            context_tensor_data = context_batches.float()
+        else:
+            context_tensor_data = torch.from_numpy(context_batches).float()
     use_amp = device.type == 'cuda'
     if use_amp and hasattr(tensor_data, 'pin_memory'):
         with suppress(Exception):
             tensor_data = tensor_data.pin_memory()
+    if use_amp and context_tensor_data is not None and hasattr(context_tensor_data, 'pin_memory'):
+        with suppress(Exception):
+            context_tensor_data = context_tensor_data.pin_memory()
     min_prob = float('inf')
     max_prob = float('-inf')
     mean_acc = 0.0
@@ -620,11 +705,16 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
     if not ms_scales:
         ms_scales = [1.0]
 
-    def _predict_once(batch_tensor: torch.Tensor) -> torch.Tensor:
+    def _predict_once(batch_tensor: torch.Tensor, context_batch_tensor: torch.Tensor | None = None) -> torch.Tensor:
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
-            return model(batch_tensor)
+            if context_batch_tensor is None:
+                return model(batch_tensor)
+            return model({'local_image': batch_tensor, 'context_image': context_batch_tensor})
 
-    def _predict_with_multi_scale_and_tta(batch_tensor: torch.Tensor) -> torch.Tensor:
+    def _predict_with_multi_scale_and_tta(
+        batch_tensor: torch.Tensor,
+        context_batch_tensor: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         base_h, base_w = int(batch_tensor.shape[-2]), int(batch_tensor.shape[-1])
         logits_acc = torch.zeros(
             (batch_tensor.shape[0], 1, base_h, base_w),
@@ -644,13 +734,16 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
                     mode='bilinear',
                     align_corners=False,
                 )
-            logits = _predict_once(scaled)
+            logits = _predict_once(scaled, context_batch_tensor)
             if logits.shape[-2:] != (base_h, base_w):
                 logits = F.interpolate(logits, size=(base_h, base_w), mode='bilinear', align_corners=False)
             logits_acc += logits
             weight += 1.0
             if tta_flip:
-                logits_h = _predict_once(torch.flip(scaled, dims=[-1]))
+                flipped_context = None
+                if context_batch_tensor is not None:
+                    flipped_context = torch.flip(context_batch_tensor, dims=[-1])
+                logits_h = _predict_once(torch.flip(scaled, dims=[-1]), flipped_context)
                 logits_h = torch.flip(logits_h, dims=[-1])
                 if logits_h.shape[-2:] != (base_h, base_w):
                     logits_h = F.interpolate(logits_h, size=(base_h, base_w), mode='bilinear', align_corners=False)
@@ -659,13 +752,25 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
         return logits_acc / max(weight, 1.0)
 
     with torch.inference_mode():
-        for batch_index, batch in enumerate(create_batches(tensor_data, batch_size)):
-            batch = batch.to(device, non_blocking=use_amp)
-            outputs = _predict_with_multi_scale_and_tta(batch)
+        for batch_index, start in enumerate(range(0, parts_in_image, batch_size)):
+            end = min(start + batch_size, parts_in_image)
+            batch = tensor_data[start:end].to(device, non_blocking=use_amp)
+            context_batch = None
+            if context_tensor_data is not None:
+                context_batch = context_tensor_data[start:end].to(device, non_blocking=use_amp)
+            outputs = _predict_with_multi_scale_and_tta(batch, context_batch)
 
             if not bool(torch.isfinite(outputs).all()):
                 fp32_retries += 1
-                outputs = model(batch.float())
+                if context_batch is None:
+                    outputs = model(batch.float())
+                else:
+                    outputs = model(
+                        {
+                            'local_image': batch.float(),
+                            'context_image': context_batch.float(),
+                        }
+                    )
 
             finite_mask = torch.isfinite(outputs)
             if not bool(finite_mask.all()):
@@ -686,8 +791,6 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
             max_prob = max(max_prob, batch_max)
             mean_acc += batch_mean
             processed_batches += 1
-            start = batch_size * batch_index
-            end = min(start + batch_size, parts_in_image)
             predicted_image[start:end] = predictions[: end - start]
 
     img['predicted_image'] = predicted_image
@@ -727,24 +830,20 @@ def imgsew(
     stop_token: str = '__STOP__',
 ) -> None:
     while not stop_event.is_set():
-        try:
-            item = sew_queue.get(timeout=0.2)
-        except Empty:
+        item = _try_get_queue_item(sew_queue, timeout=0.2)
+        if item is _QUEUE_EMPTY:
             continue
         if item == stop_token:
             break
-        restored_item, shared_handles = _restore_payload_arrays_from_shared_memory(item, ('predicted_image',))
-        try:
-            sew(
-                output_dir,
-                restored_item,
-                jpeg_quality=jpeg_quality,
-                threshold=threshold,
-                postprocess_kernel_size=postprocess_kernel_size,
-            )
-            sewed_queue.put(restored_item['name'])
-        finally:
-            _cleanup_shared_handles(shared_handles, unlink=True)
+        restored_item = _restore_payload_array_from_multiprocessing(item, 'predicted_image')
+        sew(
+            output_dir,
+            restored_item,
+            jpeg_quality=jpeg_quality,
+            threshold=threshold,
+            postprocess_kernel_size=postprocess_kernel_size,
+        )
+        sewed_queue.put(restored_item['name'])
 
 
 def sew_from_queue(
@@ -790,82 +889,24 @@ def sew(
     image.save(output_path, format='JPEG', quality=quality)
 
 
-def _shared_memory_available() -> bool:
-    return SharedMemory is not None
-
-
-def _is_shared_array_descriptor(value: Any) -> bool:
-    return isinstance(value, dict) and bool(value.get(_SHARED_ARRAY_MARKER))
-
-
-def _store_array_in_shared_memory(array: np.ndarray) -> dict[str, Any] | None:
-    if not _shared_memory_available():
-        return None
-    contiguous = np.ascontiguousarray(array)
-    try:
-        shm = SharedMemory(create=True, size=int(contiguous.nbytes))
-    except Exception:
-        return None
-    try:
-        shm_view = np.ndarray(contiguous.shape, dtype=contiguous.dtype, buffer=shm.buf)
-        shm_view[...] = contiguous
-        return {
-            _SHARED_ARRAY_MARKER: True,
-            'name': str(shm.name),
-            'shape': tuple(int(x) for x in contiguous.shape),
-            'dtype': str(contiguous.dtype.str),
-        }
-    finally:
-        shm.close()
-
-
-def _restore_array_from_shared_memory(value: Any) -> tuple[np.ndarray | Any, list[Any]]:
-    if not _is_shared_array_descriptor(value):
-        return value, []
-    if not _shared_memory_available():
-        return value, []
-    descriptor = cast(dict[str, Any], value)
-    shm = SharedMemory(name=str(descriptor['name']))
-    array = np.ndarray(
-        tuple(int(x) for x in descriptor['shape']),
-        dtype=np.dtype(str(descriptor['dtype'])),
-        buffer=shm.buf,
-    )
-    return array, [shm]
-
-
-def _cleanup_shared_handles(handles: Iterable[Any], *, unlink: bool) -> None:
-    for handle in handles:
-        try:
-            handle.close()
-        except Exception:
-            pass
-        if unlink:
-            try:
-                handle.unlink()
-            except FileNotFoundError:
-                pass
-            except Exception:
-                pass
-
-
-def _store_payload_array_in_shared_memory(payload: dict[str, Any], key: str) -> None:
+def _store_payload_array_for_multiprocessing(payload: dict[str, Any], key: str) -> None:
     value = payload.get(key)
     if not isinstance(value, np.ndarray):
         return
-    descriptor = _store_array_in_shared_memory(value)
-    if descriptor is not None:
-        payload[key] = descriptor
+    contiguous = np.ascontiguousarray(value)
+    if _should_use_torch_tensor_transport():
+        payload[key] = torch.from_numpy(contiguous)
+        return
+    payload[key] = contiguous
 
 
-def _restore_payload_arrays_from_shared_memory(
-    payload: dict[str, Any],
-    keys: Iterable[str],
-) -> tuple[dict[str, Any], list[Any]]:
+def _restore_payload_array_from_multiprocessing(payload: dict[str, Any], key: str) -> dict[str, Any]:
     restored_payload = dict(payload)
-    handles: list[Any] = []
-    for key in keys:
-        restored_value, restored_handles = _restore_array_from_shared_memory(restored_payload.get(key))
-        restored_payload[key] = restored_value
-        handles.extend(restored_handles)
-    return restored_payload, handles
+    value = restored_payload.get(key)
+    if torch.is_tensor(value):
+        restored_payload[key] = value.numpy()
+    return restored_payload
+
+
+def _should_use_torch_tensor_transport() -> bool:
+    return os.name != 'nt'

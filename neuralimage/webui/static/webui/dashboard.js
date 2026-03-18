@@ -19,6 +19,7 @@
 
     const chartTrainEpoch = document.getElementById('chart-train-epoch');
     const chartValEpoch = document.getElementById('chart-val-epoch');
+    const chartValQuality = document.getElementById('chart-val-quality');
     const chartTrainBatch = document.getElementById('chart-train-batch');
     const valIouNode = document.getElementById('val-iou-value');
     const valDiceNode = document.getElementById('val-dice-value');
@@ -41,16 +42,19 @@
     const cutModeRadios = document.querySelectorAll('input[name="sample_cut_mode_radio"]');
 
     const useValidationInput = document.querySelector('[name="settings-use_validation"]');
+    const validationSourceInput = document.querySelector('[name="settings-validation_source"]');
     const cropEnabledInput = document.querySelector('[name="settings-crop_enabled"]');
     const resizeEnabledInput = document.querySelector('[name="settings-resize_enabled"]');
     const additionalAugmentationInput = document.querySelector('[name="settings-additional_augmentation"]');
     const randomCropInput = document.querySelector('[name="settings-random_crop"]');
     const scaleAugmentationInput = document.querySelector('[name="settings-scale_augmentation"]');
     const cutoutEnabledInput = document.querySelector('[name="settings-cutout_enabled"]');
+    const randomArtifactsEnabledInput = document.querySelector('[name="settings-random_artifacts_enabled"]');
     const mixupEnabledInput = document.querySelector('[name="settings-mixup_enabled"]');
     const hardMiningEnabledInput = document.querySelector('[name="settings-hard_mining_enabled"]');
     const hardPixelMiningEnabledInput = document.querySelector('[name="settings-hard_pixel_mining_enabled"]');
     const lossFunctionInput = document.querySelector('[name="settings-loss_function"]');
+    const schedulerInput = document.querySelector('[name="settings-scheduler_name"]');
 
     const optimizerInput = document.querySelector('[name="settings-optimizer_name"]');
     const learningRateInput = document.querySelector('[name="settings-learning_rate"]');
@@ -66,7 +70,10 @@
         modelPath: document.querySelector('[data-role="model-path"]'),
     };
 
+    const validationSourceField = document.querySelector('[data-role="validation-source"]');
     const validationPercentField = document.querySelector('[data-role="validation-percent"]');
+    const validationImageFolderField = document.querySelector('[data-role="validation-image-folder"]');
+    const validationLabelFolderField = document.querySelector('[data-role="validation-label-folder"]');
     const edgeCutField = document.querySelector('[data-role="edge-cut"]');
     const targetSizeField = document.querySelector('[data-role="target-size"]');
     const extraAugmentationFields = document.querySelector('[data-role="extra-aug-fields"]');
@@ -74,11 +81,14 @@
     const cropsPerImageField = document.querySelector('[data-role="crops-per-image-field"]');
     const scaleAugmentationStrengthField = document.querySelector('[data-role="scale-augmentation-strength"]');
     const cutoutFields = document.querySelector('[data-role="cutout-fields"]');
+    const randomArtifactsFields = document.querySelector('[data-role="random-artifacts-fields"]');
     const mixupFields = document.querySelector('[data-role="mixup-fields"]');
     const hardMiningField = document.querySelector('[data-role="hard-mining-fields"]');
     const hardPixelMiningField = document.querySelector('[data-role="hard-pixel-mining-fields"]');
     const diceLossWeightField = document.querySelector('[data-role="dice-loss-weight"]');
     const iouLossWeightField = document.querySelector('[data-role="iou-loss-weight"]');
+    const schedulerFields = document.querySelector('[data-role="scheduler-fields"]');
+    const schedulerGroups = document.querySelectorAll('[data-scheduler-group]');
 
     let afterId = 0;
 
@@ -161,7 +171,7 @@
     function setFieldEnabled(wrapper, enabled) {
         if (!wrapper) return;
         wrapper.style.opacity = enabled ? '1' : '0.55';
-        const controls = wrapper.querySelectorAll('input, select, textarea');
+        const controls = wrapper.querySelectorAll('input, select, textarea, button');
         controls.forEach((node) => {
             node.disabled = !enabled;
         });
@@ -174,6 +184,11 @@
         controls.forEach((node) => {
             node.readOnly = !enabled;
         });
+    }
+
+    function setFieldVisible(wrapper, visible) {
+        if (!wrapper) return;
+        wrapper.style.display = visible ? '' : 'none';
     }
 
     function syncWorkModeSelectFromRadios() {
@@ -239,8 +254,15 @@
         const scaleAugmentationEnabled = !!(
             isOnlineCutMode && scaleAugmentationInput && scaleAugmentationInput.checked
         );
+        const validationEnabled = !!(useValidationInput && useValidationInput.checked);
+        const validationSource = validationSourceInput ? validationSourceInput.value : 'split';
+        const useExternalValidation = validationEnabled && validationSource === 'external';
+        const schedulerValue = schedulerInput ? schedulerInput.value : 'off';
 
-        setFieldEnabled(validationPercentField, !!(useValidationInput && useValidationInput.checked));
+        setFieldEnabled(validationSourceField, validationEnabled);
+        setFieldEnabled(validationPercentField, validationEnabled && !useExternalValidation);
+        setFieldEnabled(validationImageFolderField, useExternalValidation);
+        setFieldEnabled(validationLabelFolderField, useExternalValidation);
         setFieldEnabled(edgeCutField, !!(cropEnabledInput && cropEnabledInput.checked));
         setFieldEnabled(targetSizeField, !!(resizeEnabledInput && resizeEnabledInput.checked));
         setFieldEnabled(extraAugmentationFields, !!(additionalAugmentationInput && additionalAugmentationInput.checked));
@@ -248,6 +270,7 @@
         setFieldReadonly(cropsPerImageField, randomCropEnabled);
         setFieldEnabled(scaleAugmentationStrengthField, scaleAugmentationEnabled);
         setFieldEnabled(cutoutFields, !!(cutoutEnabledInput && cutoutEnabledInput.checked));
+        setFieldEnabled(randomArtifactsFields, !!(randomArtifactsEnabledInput && randomArtifactsEnabledInput.checked));
         setFieldEnabled(mixupFields, !!(mixupEnabledInput && mixupEnabledInput.checked));
         setFieldEnabled(hardMiningField, !!(hardMiningEnabledInput && hardMiningEnabledInput.checked));
         setFieldEnabled(hardPixelMiningField, !!(hardPixelMiningEnabledInput && hardPixelMiningEnabledInput.checked));
@@ -259,6 +282,13 @@
             iouLossWeightField,
             !!(lossFunctionInput && ['bce_iou', 'focal_iou'].includes(lossFunctionInput.value)),
         );
+        setFieldEnabled(schedulerFields, schedulerValue !== 'off');
+        schedulerGroups.forEach((node) => {
+            const group = node.getAttribute('data-scheduler-group') || '';
+            const visible = schedulerValue !== 'off' && group === schedulerValue;
+            setFieldVisible(node, visible);
+            setFieldEnabled(node, visible);
+        });
     }
 
     async function handlePickPath(button) {
@@ -344,18 +374,10 @@
         }
     }
 
-    function linePath(points, width, height, color) {
-        if (!points || points.length === 0) {
+    function linePath(points, width, height, color, minX, maxX, minY, maxY) {
+        if (!points || points.length === 0 || !Number.isFinite(minX) || !Number.isFinite(maxX)) {
             return '';
         }
-
-        const xs = points.map((p) => Number(p.x));
-        const ys = points.map((p) => Number(p.y));
-
-        const minX = Math.min(...xs);
-        const maxX = Math.max(...xs);
-        const minY = Math.min(...ys);
-        const maxY = Math.max(...ys);
 
         const rangeX = (maxX - minX) || 1;
         const rangeY = (maxY - minY) || 1;
@@ -375,14 +397,41 @@
     }
 
     function drawChart(svg, points, color) {
+        drawMultiChart(svg, [{ points, color }]);
+    }
+
+    function drawMultiChart(svg, series) {
+        if (!svg) return;
         const width = 600;
         const height = 220;
+        const allPoints = [];
+        series.forEach((entry) => {
+            (entry.points || []).forEach((point) => allPoints.push(point));
+        });
+        const xs = allPoints.map((p) => Number(p.x)).filter((value) => Number.isFinite(value));
+        const ys = allPoints.map((p) => Number(p.y)).filter((value) => Number.isFinite(value));
+        const minX = xs.length > 0 ? Math.min(...xs) : 0;
+        const maxX = xs.length > 0 ? Math.max(...xs) : 1;
+        const minY = ys.length > 0 ? Math.min(...ys) : 0;
+        const maxY = ys.length > 0 ? Math.max(...ys) : 1;
         const grid = `
             <rect x="0" y="0" width="${width}" height="${height}" fill="#0f151e"></rect>
             <line x1="0" y1="${height - 16}" x2="${width}" y2="${height - 16}" stroke="#2f3947"/>
             <line x1="16" y1="0" x2="16" y2="${height}" stroke="#2f3947"/>
         `;
-        svg.innerHTML = grid + linePath(points, width, height, color);
+        const lines = series
+            .map((entry) => linePath(entry.points || [], width, height, entry.color, minX, maxX, minY, maxY))
+            .join('');
+        const legend = series
+            .filter((entry) => entry.label)
+            .map(
+                (entry, index) => `
+                    <circle cx="${28 + index * 90}" cy="18" r="4" fill="${entry.color}"></circle>
+                    <text x="${38 + index * 90}" y="22" fill="#dbe4f0" font-size="12">${entry.label}</text>
+                `
+            )
+            .join('');
+        svg.innerHTML = grid + lines + legend;
     }
 
     function appendLogs(events) {
@@ -402,10 +451,17 @@
 
     function updateMetrics(metrics) {
         const trainEpoch = (metrics.train_epoch || []).map((p) => ({ x: p.epoch, y: p.loss }));
-        const valEpoch = (metrics.val_epoch || []).map((p) => ({ x: p.epoch, y: p.loss }));
+        const rawValEpoch = metrics.val_epoch || [];
+        const valEpoch = rawValEpoch.map((p) => ({ x: p.epoch, y: p.loss }));
+        const valIou = rawValEpoch
+            .filter((p) => Number.isFinite(Number(p.iou)))
+            .map((p) => ({ x: p.epoch, y: Number(p.iou) }));
+        const valDice = rawValEpoch
+            .filter((p) => Number.isFinite(Number(p.dice)))
+            .map((p) => ({ x: p.epoch, y: Number(p.dice) }));
         const trainBatch = (metrics.train_batch || []).map((p) => ({ x: p.batch_index, y: p.loss }));
         const quality = metrics.validation_quality || {};
-        const lastValPoint = valEpoch.length > 0 ? (metrics.val_epoch || [])[valEpoch.length - 1] : null;
+        const lastValPoint = rawValEpoch.length > 0 ? rawValEpoch[rawValEpoch.length - 1] : null;
 
         const iou = Number(quality.iou ?? (lastValPoint ? lastValPoint.iou : NaN));
         const dice = Number(quality.dice ?? (lastValPoint ? lastValPoint.dice : NaN));
@@ -425,6 +481,10 @@
 
         drawChart(chartTrainEpoch, trainEpoch, '#58a6ff');
         drawChart(chartValEpoch, valEpoch, '#ffb86b');
+        drawMultiChart(chartValQuality, [
+            { points: valIou, color: '#58a6ff', label: 'IoU' },
+            { points: valDice, color: '#7ee787', label: 'Dice' },
+        ]);
         drawChart(chartTrainBatch, trainBatch, '#7ee787');
     }
 
@@ -474,16 +534,19 @@
     if (weightDecayInput) weightDecayInput.addEventListener('input', markActivePreset);
 
     if (useValidationInput) useValidationInput.addEventListener('change', applyDependentRules);
+    if (validationSourceInput) validationSourceInput.addEventListener('change', applyDependentRules);
     if (cropEnabledInput) cropEnabledInput.addEventListener('change', applyDependentRules);
     if (resizeEnabledInput) resizeEnabledInput.addEventListener('change', applyDependentRules);
     if (additionalAugmentationInput) additionalAugmentationInput.addEventListener('change', applyDependentRules);
     if (randomCropInput) randomCropInput.addEventListener('change', applyDependentRules);
     if (scaleAugmentationInput) scaleAugmentationInput.addEventListener('change', applyDependentRules);
     if (cutoutEnabledInput) cutoutEnabledInput.addEventListener('change', applyDependentRules);
+    if (randomArtifactsEnabledInput) randomArtifactsEnabledInput.addEventListener('change', applyDependentRules);
     if (mixupEnabledInput) mixupEnabledInput.addEventListener('change', applyDependentRules);
     if (hardMiningEnabledInput) hardMiningEnabledInput.addEventListener('change', applyDependentRules);
     if (hardPixelMiningEnabledInput) hardPixelMiningEnabledInput.addEventListener('change', applyDependentRules);
     if (lossFunctionInput) lossFunctionInput.addEventListener('change', applyDependentRules);
+    if (schedulerInput) schedulerInput.addEventListener('change', applyDependentRules);
 
     restoreFormState();
     syncWorkModeRadiosFromSelect();

@@ -88,6 +88,42 @@ def test_settings_panel_toggles_validation_spinbox(qapp):
     assert panel.validation_spinbox.isEnabled() is True
 
 
+def test_settings_panel_shows_only_selected_scheduler_fields(qapp):
+    panel = SettingsPanel()
+
+    panel.set_scheduler_value('off')
+    panel._sync_scheduler_controls()
+    assert panel._field_rows[panel.scheduler_step_lr_step_size_spinbox].isHidden() is True
+    assert panel._field_rows[panel.scheduler_one_cycle_max_lr_spinbox].isHidden() is True
+
+    panel.set_scheduler_value('step_lr')
+    panel._sync_scheduler_controls()
+    assert panel._field_rows[panel.scheduler_step_lr_step_size_spinbox].isHidden() is False
+    assert panel._field_rows[panel.scheduler_step_lr_gamma_spinbox].isHidden() is False
+    assert panel._field_rows[panel.scheduler_plateau_factor_spinbox].isHidden() is True
+
+    panel.set_scheduler_value('one_cycle')
+    panel._sync_scheduler_controls()
+    assert panel._field_rows[panel.scheduler_one_cycle_max_lr_spinbox].isHidden() is False
+    assert panel._field_rows[panel.scheduler_one_cycle_three_phase_check_box].isHidden() is False
+    assert panel._field_rows[panel.scheduler_step_lr_step_size_spinbox].isHidden() is True
+
+
+def test_settings_panel_switches_between_split_and_external_validation_controls(qapp):
+    panel = SettingsPanel()
+
+    panel.validation_check_box.setChecked(True)
+    panel.set_validation_source_value('split')
+    assert panel._field_rows[panel.validation_spinbox].isEnabled() is True
+    assert panel._field_rows[panel.validation_image_path_label].isEnabled() is False
+    assert panel._field_rows[panel.validation_label_path_label].isEnabled() is False
+
+    panel.set_validation_source_value('external')
+    assert panel._field_rows[panel.validation_spinbox].isEnabled() is False
+    assert panel._field_rows[panel.validation_image_path_label].isEnabled() is True
+    assert panel._field_rows[panel.validation_label_path_label].isEnabled() is True
+
+
 def test_settings_panel_disables_field_rows_and_descriptions(qapp):
     panel = SettingsPanel()
 
@@ -143,6 +179,8 @@ def test_settings_panel_lists_new_loss_functions(qapp):
 
     assert 'boundary' in panel.loss_term_checkboxes
     assert 'focal_tversky' in panel.loss_term_checkboxes
+    assert 'bce_dice' not in panel.loss_term_checkboxes
+    assert 'focal_dice' not in panel.loss_term_checkboxes
     assert panel.loss_terms_groupbox.title().strip()
     assert panel.loss_terms_widget not in panel._field_rows
 
@@ -169,8 +207,10 @@ def test_settings_panel_uses_single_visible_label_inside_each_labeled_row(qapp):
         (panel.general_form, 'recognition_patch_size', panel.recognition_patch_size_widget),
         (panel.augmentation_form, 'scale_augmentation_strength', panel.scale_augmentation_strength_spinbox),
         (panel.optimizer_form, 'train_batch_size', panel.train_batch_spinbox),
+        (panel.optimizer_form, 'dataloader_num_workers', panel.dataloader_num_workers_spinbox),
         (panel.optimizer_form, 'recognition_batch_size', panel.recognition_batch_spinbox),
         (panel.runtime_form, 'multi_gpu', panel.multi_gpu_mode_combo),
+        (panel.scheduler_form, 'scheduler_name', panel.scheduler_type_combo),
     )
 
     for form, key, field in cases:
@@ -198,6 +238,7 @@ def test_settings_panel_disables_irrelevant_controls_by_work_mode(qapp):
     assert panel.sample_type_groupbox.isEnabled() is False
     assert panel.additional_augmentation_check_box.isEnabled() is False
     assert panel.cutout_check_box.isEnabled() is False
+    assert panel.random_artifacts_check_box.isEnabled() is False
     assert panel.mixup_check_box.isEnabled() is False
     assert panel.validation_check_box.isEnabled() is False
     assert panel._field_rows[panel.optimizer_type].isEnabled() is False
@@ -212,6 +253,7 @@ def test_settings_panel_disables_irrelevant_controls_by_work_mode(qapp):
     assert panel.sample_type_groupbox.isEnabled() is True
     assert panel.additional_augmentation_check_box.isEnabled() is True
     assert panel.cutout_check_box.isEnabled() is True
+    assert panel.random_artifacts_check_box.isEnabled() is True
     assert panel.mixup_check_box.isEnabled() is True
     assert panel._field_rows[panel.optimizer_type].isEnabled() is True
     assert panel._field_rows[panel.overlap_spinbox].isEnabled() is False
@@ -269,6 +311,10 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     presenter.view.is_batch_preview_enabled = _is_batch_preview_enabled
     presenter.settings_state = SettingsState(
         model='MockNet',
+        validation_source='external',
+        validation_image_folder='C:/val_images',
+        validation_label_folder='C:/val_labels',
+        save_validation_binary_images=True,
         shuffle=False,
         shuffle_patches_in_frame=True,
         random_crop=True,
@@ -292,6 +338,9 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
         warmup_enabled=True,
         warmup_epochs=4,
         warmup_start_factor=0.3,
+        scheduler_name='step_lr',
+        scheduler_step_lr_step_size=5,
+        scheduler_step_lr_gamma=0.25,
         hard_mining_enabled=True,
         hard_mining_strength=2.6,
         hard_mining_ema_alpha=0.45,
@@ -301,6 +350,10 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
         cutout_probability=0.9,
         cutout_holes=2,
         cutout_size_ratio=0.3,
+        random_artifacts_enabled=True,
+        random_artifacts_probability=0.65,
+        random_artifacts_count=3,
+        random_artifacts_size_ratio=0.2,
         mixup_enabled=True,
         mixup_probability=0.8,
         mixup_alpha=0.35,
@@ -308,6 +361,7 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
         rare_patch_oversampling_enabled=True,
         rare_patch_oversampling_factor=7,
         recognition_jpeg_quality=88,
+        recognition_multiprocessing_enabled=False,
         recognition_binarize_output=False,
         recognition_use_auto_threshold=False,
         recognition_threshold=0.67,
@@ -319,6 +373,7 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
         early_stopping_min_delta=0.004,
         early_stopping_restore_best_weights=False,
         show_batch_preview=False,
+        dataloader_num_workers=7,
     )
 
     module.MainPresenter._apply_settings_to_panel(presenter)
@@ -327,6 +382,10 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert panel.shuffle_patches_in_frame_check_box.isChecked() is True
     assert panel.random_crop_check_box.isChecked() is True
     assert panel.crops_per_image_spinbox.value() == 19
+    assert panel.get_validation_source_value() == 'external'
+    assert panel.validation_image_path() == 'C:/val_images'
+    assert panel.validation_label_path() == 'C:/val_labels'
+    assert panel.save_validation_binary_images_check_box.isChecked() is True
     assert panel.additional_augmentation_check_box.isChecked() is True
     assert panel.augmentation_brightness_spinbox.value() == pytest.approx(0.22)
     assert panel.augmentation_contrast_spinbox.value() == pytest.approx(0.18)
@@ -340,9 +399,13 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert panel.get_loss_term_weights()['dice'] == pytest.approx(0.55)
     assert panel.learning_rate_spinbox.value() == pytest.approx(0.0007)
     assert panel.weight_decay_spinbox.value() == pytest.approx(0.02)
+    assert panel.dataloader_num_workers_spinbox.value() == 7
     assert panel.warmup_check_box.isChecked() is True
     assert panel.warmup_epochs_spinbox.value() == 4
     assert panel.warmup_start_factor_spinbox.value() == pytest.approx(0.3)
+    assert panel.get_scheduler_value() == 'step_lr'
+    assert panel.scheduler_step_lr_step_size_spinbox.value() == 5
+    assert panel.scheduler_step_lr_gamma_spinbox.value() == pytest.approx(0.25)
     assert panel.hard_mining_check_box.isChecked() is True
     assert panel.hard_mining_strength_spinbox.value() == pytest.approx(2.6)
     assert panel.hard_mining_ema_alpha_spinbox.value() == pytest.approx(0.45)
@@ -352,6 +415,10 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert panel.cutout_probability_spinbox.value() == pytest.approx(0.9)
     assert panel.cutout_holes_spinbox.value() == 2
     assert panel.cutout_size_ratio_spinbox.value() == pytest.approx(0.3)
+    assert panel.random_artifacts_check_box.isChecked() is True
+    assert panel.random_artifacts_probability_spinbox.value() == pytest.approx(0.65)
+    assert panel.random_artifacts_count_spinbox.value() == 3
+    assert panel.random_artifacts_size_ratio_spinbox.value() == pytest.approx(0.2)
     assert panel.mixup_check_box.isChecked() is True
     assert panel.mixup_probability_spinbox.value() == pytest.approx(0.8)
     assert panel.mixup_alpha_spinbox.value() == pytest.approx(0.35)
@@ -359,6 +426,7 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert panel.rare_patch_oversampling_check_box.isChecked() is True
     assert panel.rare_patch_oversampling_factor_spinbox.value() == 7
     assert panel.recognition_jpeg_quality_spinbox.value() == 88
+    assert panel.recognition_multiprocessing_check_box.isChecked() is False
     assert panel.recognition_binarize_output_check_box.isChecked() is False
     assert panel.recognition_use_auto_threshold_check_box.isChecked() is False
     assert panel.recognition_threshold_spinbox.value() == pytest.approx(0.67)
@@ -389,9 +457,17 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     panel.set_loss_term_weights({'bce': 0.2, 'iou': 0.8})
     panel.learning_rate_spinbox.setValue(0.0003)
     panel.weight_decay_spinbox.setValue(0.015)
+    panel.dataloader_num_workers_spinbox.setValue(2)
     panel.warmup_check_box.setChecked(False)
     panel.warmup_epochs_spinbox.setValue(2)
     panel.warmup_start_factor_spinbox.setValue(0.15)
+    panel.set_scheduler_value('one_cycle')
+    panel.scheduler_one_cycle_max_lr_spinbox.setValue(0.002)
+    panel.scheduler_one_cycle_pct_start_spinbox.setValue(0.4)
+    panel.set_scheduler_one_cycle_anneal_strategy_value('linear')
+    panel.scheduler_one_cycle_div_factor_spinbox.setValue(10.0)
+    panel.scheduler_one_cycle_final_div_factor_spinbox.setValue(500.0)
+    panel.scheduler_one_cycle_three_phase_check_box.setChecked(True)
     panel.hard_mining_check_box.setChecked(True)
     panel.hard_mining_strength_spinbox.setValue(3.4)
     panel.hard_mining_ema_alpha_spinbox.setValue(0.25)
@@ -401,13 +477,22 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     panel.cutout_probability_spinbox.setValue(0.75)
     panel.cutout_holes_spinbox.setValue(4)
     panel.cutout_size_ratio_spinbox.setValue(0.28)
+    panel.random_artifacts_check_box.setChecked(True)
+    panel.random_artifacts_probability_spinbox.setValue(0.55)
+    panel.random_artifacts_count_spinbox.setValue(2)
+    panel.random_artifacts_size_ratio_spinbox.setValue(0.18)
     panel.mixup_check_box.setChecked(True)
     panel.mixup_probability_spinbox.setValue(0.6)
     panel.mixup_alpha_spinbox.setValue(0.5)
+    panel.set_validation_source_value('external')
+    panel.set_validation_image_path('D:/val_images')
+    panel.set_validation_label_path('D:/val_labels')
+    panel.save_validation_binary_images_check_box.setChecked(True)
     panel.skip_uniform_labels_check_box.setChecked(False)
     panel.rare_patch_oversampling_check_box.setChecked(True)
     panel.rare_patch_oversampling_factor_spinbox.setValue(4)
     panel.recognition_jpeg_quality_spinbox.setValue(82)
+    panel.recognition_multiprocessing_check_box.setChecked(True)
     panel.recognition_binarize_output_check_box.setChecked(True)
     panel.recognition_use_auto_threshold_check_box.setChecked(False)
     panel.recognition_threshold_spinbox.setValue(0.59)
@@ -442,9 +527,17 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert presenter.settings_state.iou_loss_weight == pytest.approx(0.35)
     assert presenter.settings_state.learning_rate == pytest.approx(0.0003)
     assert presenter.settings_state.weight_decay == pytest.approx(0.015)
+    assert presenter.settings_state.dataloader_num_workers == 2
     assert presenter.settings_state.warmup_enabled is False
     assert presenter.settings_state.warmup_epochs == 2
     assert presenter.settings_state.warmup_start_factor == pytest.approx(0.15)
+    assert presenter.settings_state.scheduler_name == 'one_cycle'
+    assert presenter.settings_state.scheduler_one_cycle_max_lr == pytest.approx(0.002)
+    assert presenter.settings_state.scheduler_one_cycle_pct_start == pytest.approx(0.4)
+    assert presenter.settings_state.scheduler_one_cycle_anneal_strategy == 'linear'
+    assert presenter.settings_state.scheduler_one_cycle_div_factor == pytest.approx(10.0)
+    assert presenter.settings_state.scheduler_one_cycle_final_div_factor == pytest.approx(500.0)
+    assert presenter.settings_state.scheduler_one_cycle_three_phase is True
     assert presenter.settings_state.hard_mining_enabled is True
     assert presenter.settings_state.hard_mining_strength == pytest.approx(3.4)
     assert presenter.settings_state.hard_mining_ema_alpha == pytest.approx(0.25)
@@ -454,13 +547,22 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert presenter.settings_state.cutout_probability == pytest.approx(0.75)
     assert presenter.settings_state.cutout_holes == 4
     assert presenter.settings_state.cutout_size_ratio == pytest.approx(0.28)
+    assert presenter.settings_state.random_artifacts_enabled is True
+    assert presenter.settings_state.random_artifacts_probability == pytest.approx(0.55)
+    assert presenter.settings_state.random_artifacts_count == 2
+    assert presenter.settings_state.random_artifacts_size_ratio == pytest.approx(0.18)
     assert presenter.settings_state.mixup_enabled is True
     assert presenter.settings_state.mixup_probability == pytest.approx(0.6)
     assert presenter.settings_state.mixup_alpha == pytest.approx(0.5)
+    assert presenter.settings_state.validation_source == 'external'
+    assert presenter.settings_state.validation_image_folder == 'D:/val_images'
+    assert presenter.settings_state.validation_label_folder == 'D:/val_labels'
+    assert presenter.settings_state.save_validation_binary_images is True
     assert presenter.settings_state.skip_uniform_labels is False
     assert presenter.settings_state.rare_patch_oversampling_enabled is True
     assert presenter.settings_state.rare_patch_oversampling_factor == 4
     assert presenter.settings_state.recognition_jpeg_quality == 82
+    assert presenter.settings_state.recognition_multiprocessing_enabled is True
     assert presenter.settings_state.recognition_binarize_output is True
     assert presenter.settings_state.recognition_use_auto_threshold is False
     assert presenter.settings_state.recognition_threshold == pytest.approx(0.59)

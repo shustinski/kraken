@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 pytest.importorskip('PyQt6')
@@ -6,11 +8,15 @@ from application.dto import MainWindowState, SettingsState
 from infrastructure.config.state_store import (
     IniStateStore,
     QSettingsStateStore,
+    WORKFLOW_SNAPSHOT_FILENAME,
     create_state_store,
     load_main_window_state,
     load_settings_state,
+    load_workflow_snapshot,
+    resolve_workflow_snapshot_path,
     save_main_window_state,
     save_settings_state,
+    save_workflow_snapshot,
 )
 from tests.helpers import make_test_dir
 
@@ -65,11 +71,16 @@ def test_state_store_roundtrip_settings(monkeypatch):
         sample_size=(11, 22),
         sync_patch_sizes=False,
         recognition_jpeg_quality=89,
+        recognition_multiprocessing_enabled=False,
         shuffle=False,
         shuffle_patches_in_frame=True,
         random_crop=True,
         crops_per_image=21,
         model='M 720k',
+        validation_source='external',
+        validation_image_folder='val_images',
+        validation_label_folder='val_labels',
+        save_validation_binary_images=True,
         optimizer_name='adamw',
         mixed_precision='fp16',
         loss_function='bce_dice',
@@ -81,6 +92,9 @@ def test_state_store_roundtrip_settings(monkeypatch):
         warmup_enabled=True,
         warmup_epochs=5,
         warmup_start_factor=0.25,
+        scheduler_name='cosine_annealing',
+        scheduler_cosine_t_max=12,
+        scheduler_cosine_eta_min=2e-5,
         additional_augmentation=True,
         augmentation_brightness_strength=0.2,
         augmentation_contrast_strength=0.3,
@@ -105,6 +119,10 @@ def test_state_store_roundtrip_settings(monkeypatch):
         cutout_probability=0.8,
         cutout_holes=2,
         cutout_size_ratio=0.35,
+        random_artifacts_enabled=True,
+        random_artifacts_probability=0.6,
+        random_artifacts_count=3,
+        random_artifacts_size_ratio=0.2,
         mixup_enabled=True,
         mixup_probability=0.7,
         mixup_alpha=0.45,
@@ -117,6 +135,7 @@ def test_state_store_roundtrip_settings(monkeypatch):
         early_stopping_min_delta=0.003,
         early_stopping_restore_best_weights=False,
         show_batch_preview=False,
+        dataloader_num_workers=5,
     )
     save_settings_state(state)
     loaded = load_settings_state()
@@ -124,10 +143,15 @@ def test_state_store_roundtrip_settings(monkeypatch):
     assert loaded.sample_size == (11, 22)
     assert loaded.sync_patch_sizes is False
     assert loaded.recognition_jpeg_quality == 89
+    assert loaded.recognition_multiprocessing_enabled is False
     assert loaded.shuffle is False
     assert loaded.shuffle_patches_in_frame is True
     assert loaded.random_crop is True
     assert loaded.crops_per_image == 21
+    assert loaded.validation_source == 'external'
+    assert loaded.validation_image_folder == 'val_images'
+    assert loaded.validation_label_folder == 'val_labels'
+    assert loaded.save_validation_binary_images is True
     assert loaded.optimizer_name == 'adamw'
     assert loaded.mixed_precision == 'fp16'
     assert loaded.loss_function == 'bce_dice'
@@ -139,6 +163,9 @@ def test_state_store_roundtrip_settings(monkeypatch):
     assert loaded.warmup_enabled is True
     assert loaded.warmup_epochs == 5
     assert loaded.warmup_start_factor == 0.25
+    assert loaded.scheduler_name == 'cosine_annealing'
+    assert loaded.scheduler_cosine_t_max == 12
+    assert loaded.scheduler_cosine_eta_min == pytest.approx(2e-5)
     assert loaded.additional_augmentation is True
     assert loaded.augmentation_brightness_strength == 0.2
     assert loaded.augmentation_contrast_strength == 0.3
@@ -163,6 +190,10 @@ def test_state_store_roundtrip_settings(monkeypatch):
     assert loaded.cutout_probability == pytest.approx(0.8)
     assert loaded.cutout_holes == 2
     assert loaded.cutout_size_ratio == pytest.approx(0.35)
+    assert loaded.random_artifacts_enabled is True
+    assert loaded.random_artifacts_probability == pytest.approx(0.6)
+    assert loaded.random_artifacts_count == 3
+    assert loaded.random_artifacts_size_ratio == pytest.approx(0.2)
     assert loaded.mixup_enabled is True
     assert loaded.mixup_probability == pytest.approx(0.7)
     assert loaded.mixup_alpha == pytest.approx(0.45)
@@ -175,6 +206,7 @@ def test_state_store_roundtrip_settings(monkeypatch):
     assert loaded.early_stopping_min_delta == 0.003
     assert loaded.early_stopping_restore_best_weights is False
     assert loaded.show_batch_preview is False
+    assert loaded.dataloader_num_workers == 5
 
 
 def test_state_store_roundtrip_main_window_ini_backend(monkeypatch):
@@ -211,6 +243,7 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
         sample_size=(64, 96),
         sync_patch_sizes=False,
         recognition_jpeg_quality=91,
+        recognition_multiprocessing_enabled=False,
         shuffle=True,
         shuffle_patches_in_frame=False,
         random_crop=False,
@@ -218,6 +251,10 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
         model='M 720k',
         use_validation=True,
         validation_percent=25,
+        validation_source='external',
+        validation_image_folder='val_images_ini',
+        validation_label_folder='val_labels_ini',
+        save_validation_binary_images=True,
         optimizer_name='adamw_muon',
         mixed_precision='off',
         loss_function='dice',
@@ -229,6 +266,9 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
         warmup_enabled=True,
         warmup_epochs=3,
         warmup_start_factor=0.1,
+        scheduler_name='step_lr',
+        scheduler_step_lr_step_size=4,
+        scheduler_step_lr_gamma=0.2,
         additional_augmentation=False,
         augmentation_brightness_strength=0.12,
         augmentation_contrast_strength=0.08,
@@ -253,6 +293,10 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
         cutout_probability=0.9,
         cutout_holes=4,
         cutout_size_ratio=0.4,
+        random_artifacts_enabled=True,
+        random_artifacts_probability=0.5,
+        random_artifacts_count=2,
+        random_artifacts_size_ratio=0.18,
         mixup_enabled=True,
         mixup_probability=0.55,
         mixup_alpha=0.3,
@@ -265,6 +309,7 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
         early_stopping_min_delta=0.001,
         early_stopping_restore_best_weights=True,
         show_batch_preview=False,
+        dataloader_num_workers=3,
     )
     save_settings_state(state)
     loaded = load_settings_state()
@@ -273,12 +318,17 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
     assert loaded.sample_size == (64, 96)
     assert loaded.sync_patch_sizes is False
     assert loaded.recognition_jpeg_quality == 91
+    assert loaded.recognition_multiprocessing_enabled is False
     assert loaded.shuffle is True
     assert loaded.shuffle_patches_in_frame is False
     assert loaded.random_crop is False
     assert loaded.crops_per_image == 13
     assert loaded.use_validation is True
     assert loaded.validation_percent == 25
+    assert loaded.validation_source == 'external'
+    assert loaded.validation_image_folder == 'val_images_ini'
+    assert loaded.validation_label_folder == 'val_labels_ini'
+    assert loaded.save_validation_binary_images is True
     assert loaded.optimizer_name == 'adamw_muon'
     assert loaded.mixed_precision == 'off'
     assert loaded.loss_function == 'dice'
@@ -290,6 +340,9 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
     assert loaded.warmup_enabled is True
     assert loaded.warmup_epochs == 3
     assert loaded.warmup_start_factor == 0.1
+    assert loaded.scheduler_name == 'step_lr'
+    assert loaded.scheduler_step_lr_step_size == 4
+    assert loaded.scheduler_step_lr_gamma == pytest.approx(0.2)
     assert loaded.additional_augmentation is False
     assert loaded.augmentation_brightness_strength == 0.12
     assert loaded.augmentation_contrast_strength == 0.08
@@ -314,6 +367,10 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
     assert loaded.cutout_probability == pytest.approx(0.9)
     assert loaded.cutout_holes == 4
     assert loaded.cutout_size_ratio == pytest.approx(0.4)
+    assert loaded.random_artifacts_enabled is True
+    assert loaded.random_artifacts_probability == pytest.approx(0.5)
+    assert loaded.random_artifacts_count == 2
+    assert loaded.random_artifacts_size_ratio == pytest.approx(0.18)
     assert loaded.mixup_enabled is True
     assert loaded.mixup_probability == pytest.approx(0.55)
     assert loaded.mixup_alpha == pytest.approx(0.3)
@@ -326,3 +383,103 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
     assert loaded.early_stopping_min_delta == 0.001
     assert loaded.early_stopping_restore_best_weights is True
     assert loaded.show_batch_preview is False
+    assert loaded.dataloader_num_workers == 3
+
+
+def test_workflow_snapshot_roundtrip_and_payload():
+    root = make_test_dir("workflow_snapshot")
+    sample = root / "images"
+    label = root / "labels"
+    source = root / "source"
+    result = root / "result"
+    for path in (sample, label, source, result):
+        path.mkdir(parents=True, exist_ok=True)
+
+    main_state = MainWindowState(
+        work_mode='train_and_recognition',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=12,
+    )
+    settings_state = SettingsState(
+        sample_size=(128, 256),
+        train_patch_size=(128, 256),
+        recognition_patch_size=(64, 96),
+        sync_patch_sizes=False,
+        train_batch_size=9,
+        recognition_batch_size=5,
+        batch_size=9,
+        overlap=14,
+        recognition_jpeg_quality=88,
+        mixed_precision='fp16',
+    )
+
+    snapshot_path = root / "snapshot.json"
+    saved_path = save_workflow_snapshot(main_state, settings_state, destination=snapshot_path)
+    restored_main, restored_settings = load_workflow_snapshot(snapshot_path)
+    payload = json.loads(snapshot_path.read_text(encoding='utf-8'))
+
+    assert saved_path == snapshot_path
+    assert restored_main.work_mode == 'train_and_recognition'
+    assert restored_main.sample_folder == str(sample)
+    assert restored_main.label_folder == str(label)
+    assert restored_main.epochs == 12
+    assert restored_settings.train_patch_size == (128, 256)
+    assert restored_settings.recognition_patch_size == (64, 96)
+    assert restored_settings.sync_patch_sizes is False
+    assert restored_settings.train_batch_size == 9
+    assert restored_settings.recognition_batch_size == 5
+    assert restored_settings.recognition_jpeg_quality == 88
+    assert payload["format_version"] == 1
+    assert payload["main_window_state"]["sample_path"] == str(sample)
+    assert payload["settings_state"]["train_patch_x_size"] == 128
+    assert payload["workflow"]["work_mode"] == "train_and_recognition"
+    assert payload["workflow"]["training"]["image_path"] == str(sample)
+    assert payload["workflow"]["recognition"]["result_folder"] == str(result)
+
+
+def test_resolve_workflow_snapshot_path_uses_common_parent():
+    root = make_test_dir("workflow_snapshot_common")
+    sample = root / "images"
+    label = root / "labels"
+    sample.mkdir(parents=True, exist_ok=True)
+    label.mkdir(parents=True, exist_ok=True)
+
+    main_state = MainWindowState(sample_folder=str(sample), label_folder=str(label))
+
+    assert resolve_workflow_snapshot_path(main_state) == root / WORKFLOW_SNAPSHOT_FILENAME
+
+
+def test_resolve_workflow_snapshot_path_falls_back_to_sample_parent_when_roots_differ():
+    sample_root = make_test_dir("workflow_snapshot_sample_root")
+    label_root = make_test_dir("workflow_snapshot_label_root")
+    sample = sample_root / "images"
+    label = label_root / "labels"
+    sample.mkdir(parents=True, exist_ok=True)
+    label.mkdir(parents=True, exist_ok=True)
+
+    main_state = MainWindowState(sample_folder=str(sample), label_folder=str(label))
+
+    assert resolve_workflow_snapshot_path(main_state) == sample.parent / WORKFLOW_SNAPSHOT_FILENAME
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not-json",
+        {"format_version": 99},
+        {"format_version": 1, "main_window_state": {}},
+    ],
+)
+def test_load_workflow_snapshot_rejects_invalid_payload(payload):
+    root = make_test_dir("workflow_snapshot_invalid")
+    snapshot_path = root / "invalid.json"
+    if isinstance(payload, str):
+        snapshot_path.write_text(payload, encoding='utf-8')
+    else:
+        snapshot_path.write_text(json.dumps(payload), encoding='utf-8')
+
+    with pytest.raises(ValueError):
+        load_workflow_snapshot(snapshot_path)

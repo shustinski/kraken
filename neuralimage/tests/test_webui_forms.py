@@ -35,6 +35,11 @@ def _build_valid_main_window_form_data(work_mode: str) -> dict[str, str]:
 
 
 def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
+    validation_root = make_test_dir("web_form_validation_external")
+    validation_images = validation_root / "images"
+    validation_labels = validation_root / "labels"
+    validation_images.mkdir()
+    validation_labels.mkdir()
     data = {
         "step": "100",
         "vertical_rotation": "on",
@@ -51,10 +56,15 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
         "model": "M 720k",
         "color_mode": "RGB",
         "use_validation": "on",
+        "validation_source": "external",
         "validation_percent": "20",
+        "validation_image_folder": str(validation_images),
+        "validation_label_folder": str(validation_labels),
+        "save_validation_binary_images": "on",
         "shuffle": "on",
         "sample_cut_mode": "online",
         "batch_size": "8",
+        "dataloader_num_workers": "6",
         "overlap": "16",
         "log_update_frequency": "40",
         "crop_enabled": "on",
@@ -64,7 +74,7 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
         "target_y": "768",
         "optimizer_name": "adamw",
         "mixed_precision": "bf16",
-        "loss_function": "bce_dice",
+        "loss_function": "bce",
         "dice_loss_weight": "0.7",
         "iou_loss_weight": "0.3",
         "learning_rate": "0.0005",
@@ -72,6 +82,13 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
         "warmup_enabled": "on",
         "warmup_epochs": "3",
         "warmup_start_factor": "0.1",
+        "scheduler_name": "one_cycle",
+        "scheduler_one_cycle_max_lr": "0.002",
+        "scheduler_one_cycle_pct_start": "0.4",
+        "scheduler_one_cycle_anneal_strategy": "linear",
+        "scheduler_one_cycle_div_factor": "10",
+        "scheduler_one_cycle_final_div_factor": "500",
+        "scheduler_one_cycle_three_phase": "on",
         "hard_mining_enabled": "on",
         "hard_mining_strength": "2.5",
         "hard_mining_ema_alpha": "0.3",
@@ -81,6 +98,10 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
         "cutout_probability": "0.8",
         "cutout_holes": "3",
         "cutout_size_ratio": "0.35",
+        "random_artifacts_enabled": "on",
+        "random_artifacts_probability": "0.65",
+        "random_artifacts_count": "2",
+        "random_artifacts_size_ratio": "0.25",
         "mixup_enabled": "on",
         "mixup_probability": "0.7",
         "mixup_alpha": "0.4",
@@ -107,6 +128,7 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
     assert state.crop_enabled is True
     assert state.resize_enabled is True
     assert state.log_update_frequency == 40
+    assert state.dataloader_num_workers == 6
     assert state.torch_compile_enabled is True
     assert state.hard_pixel_mining_enabled is True
     assert state.hard_pixel_mining_ratio == pytest.approx(0.2)
@@ -114,9 +136,24 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
     assert state.cutout_probability == pytest.approx(0.8)
     assert state.cutout_holes == 3
     assert state.cutout_size_ratio == pytest.approx(0.35)
+    assert state.random_artifacts_enabled is True
+    assert state.random_artifacts_probability == pytest.approx(0.65)
+    assert state.random_artifacts_count == 2
+    assert state.random_artifacts_size_ratio == pytest.approx(0.25)
     assert state.mixup_enabled is True
     assert state.mixup_probability == pytest.approx(0.7)
     assert state.mixup_alpha == pytest.approx(0.4)
+    assert state.validation_source == "external"
+    assert state.validation_image_folder == str(validation_images)
+    assert state.validation_label_folder == str(validation_labels)
+    assert state.save_validation_binary_images is True
+    assert state.scheduler_name == "one_cycle"
+    assert state.scheduler_one_cycle_max_lr == pytest.approx(0.002)
+    assert state.scheduler_one_cycle_pct_start == pytest.approx(0.4)
+    assert state.scheduler_one_cycle_anneal_strategy == "linear"
+    assert state.scheduler_one_cycle_div_factor == pytest.approx(10.0)
+    assert state.scheduler_one_cycle_final_div_factor == pytest.approx(500.0)
+    assert state.scheduler_one_cycle_three_phase is True
 
 
 def test_defaults_from_settings_state_exposes_new_keys():
@@ -138,9 +175,24 @@ def test_defaults_from_settings_state_exposes_new_keys():
         cutout_probability=0.85,
         cutout_holes=2,
         cutout_size_ratio=0.4,
+        random_artifacts_enabled=True,
+        random_artifacts_probability=0.6,
+        random_artifacts_count=3,
+        random_artifacts_size_ratio=0.2,
         mixup_enabled=True,
         mixup_probability=0.65,
         mixup_alpha=0.35,
+        validation_source="external",
+        validation_image_folder=r"D:\data\validation\images",
+        validation_label_folder=r"D:\data\validation\labels",
+        save_validation_binary_images=True,
+        dataloader_num_workers=4,
+        scheduler_name='reduce_on_plateau',
+        scheduler_plateau_factor=0.4,
+        scheduler_plateau_patience=6,
+        scheduler_plateau_threshold=0.003,
+        scheduler_plateau_min_lr=2e-5,
+        scheduler_plateau_cooldown=1,
     )
     defaults = defaults_from_settings_state(state)
 
@@ -161,9 +213,24 @@ def test_defaults_from_settings_state_exposes_new_keys():
     assert defaults["cutout_probability"] == pytest.approx(0.85)
     assert defaults["cutout_holes"] == 2
     assert defaults["cutout_size_ratio"] == pytest.approx(0.4)
+    assert defaults["random_artifacts_enabled"] is True
+    assert defaults["random_artifacts_probability"] == pytest.approx(0.6)
+    assert defaults["random_artifacts_count"] == 3
+    assert defaults["random_artifacts_size_ratio"] == pytest.approx(0.2)
     assert defaults["mixup_enabled"] is True
     assert defaults["mixup_probability"] == pytest.approx(0.65)
     assert defaults["mixup_alpha"] == pytest.approx(0.35)
+    assert defaults["validation_source"] == "external"
+    assert defaults["validation_image_folder"] == r"D:\data\validation\images"
+    assert defaults["validation_label_folder"] == r"D:\data\validation\labels"
+    assert defaults["save_validation_binary_images"] is True
+    assert defaults["dataloader_num_workers"] == 4
+    assert defaults["scheduler_name"] == 'reduce_on_plateau'
+    assert defaults["scheduler_plateau_factor"] == pytest.approx(0.4)
+    assert defaults["scheduler_plateau_patience"] == 6
+    assert defaults["scheduler_plateau_threshold"] == pytest.approx(0.003)
+    assert defaults["scheduler_plateau_min_lr"] == pytest.approx(2e-5)
+    assert defaults["scheduler_plateau_cooldown"] == 1
 
 
 def test_settings_form_defaults_optional_disabled_fields():
@@ -194,6 +261,10 @@ def test_settings_form_defaults_optional_disabled_fields():
     state = form.to_state()
     defaults = SettingsState()
     assert state.validation_percent == defaults.validation_percent
+    assert state.dataloader_num_workers == defaults.dataloader_num_workers
+    assert state.scheduler_name == defaults.scheduler_name
+    assert state.scheduler_plateau_factor == defaults.scheduler_plateau_factor
+    assert state.scheduler_step_lr_gamma == defaults.scheduler_step_lr_gamma
     assert state.edge_cut_size == defaults.edge_cut_size
     assert state.target_size == defaults.target_size
     assert state.dice_loss_weight == defaults.dice_loss_weight
@@ -204,8 +275,43 @@ def test_settings_form_defaults_optional_disabled_fields():
     assert state.cutout_probability == defaults.cutout_probability
     assert state.cutout_holes == defaults.cutout_holes
     assert state.cutout_size_ratio == defaults.cutout_size_ratio
+    assert state.random_artifacts_probability == defaults.random_artifacts_probability
+    assert state.random_artifacts_count == defaults.random_artifacts_count
+    assert state.random_artifacts_size_ratio == defaults.random_artifacts_size_ratio
     assert state.mixup_probability == defaults.mixup_probability
     assert state.mixup_alpha == defaults.mixup_alpha
+
+
+def test_settings_form_requires_external_validation_paths_when_enabled():
+    data = {
+        "step": "100",
+        "sample_x": "256",
+        "sample_y": "256",
+        "model": "M 720k",
+        "color_mode": "RGB",
+        "use_validation": "on",
+        "validation_source": "external",
+        "validation_image_folder": "",
+        "validation_label_folder": "",
+        "sample_cut_mode": "online",
+        "batch_size": "8",
+        "overlap": "16",
+        "log_update_frequency": "0",
+        "optimizer_name": "adam",
+        "mixed_precision": "bf16",
+        "loss_function": "bce",
+        "learning_rate": "0.001",
+        "weight_decay": "0.0",
+        "warmup_epochs": "3",
+        "warmup_start_factor": "0.1",
+        "early_stopping_patience": "10",
+        "early_stopping_min_delta": "0.0",
+    }
+    form = SettingsForm(data=data)
+
+    assert not form.is_valid()
+    assert "validation_image_folder" in form.errors
+    assert "validation_label_folder" in form.errors
 
 
 def test_settings_form_lists_new_loss_function_choices():
@@ -214,6 +320,8 @@ def test_settings_form_lists_new_loss_function_choices():
 
     assert 'boundary' in loss_choices
     assert 'focal_tversky' in loss_choices
+    assert 'bce_dice' not in loss_choices
+    assert 'focal_dice' not in loss_choices
 
 
 def test_main_window_form_train_only_allows_empty_source_and_result():

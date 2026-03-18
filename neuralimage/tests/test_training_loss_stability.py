@@ -5,7 +5,7 @@ import pytest
 torch = pytest.importorskip('torch')
 
 import model.NeuralNetwork.model_train_and_recognition as target
-from lib.data_interfaces import CutoutParameters, HardMiningParameters, MixupParameters
+from lib.data_interfaces import CutoutParameters, HardMiningParameters, MixupParameters, RandomArtifactsParameters
 from model.NeuralNetwork.model_train_and_recognition import (
     TrainerProcess,
     _PreparedTrainBatch,
@@ -72,8 +72,10 @@ def _build_trainer(loss_mode: str) -> TrainerProcess:
     trainer._iou_loss_weight = 0.5
     trainer._hard_mining_params = HardMiningParameters()
     trainer._cutout_params = CutoutParameters()
+    trainer._random_artifacts_params = RandomArtifactsParameters()
     trainer._mixup_params = MixupParameters()
     trainer._bus = _StubBus()
+    trainer._batch_points_by_epoch = {}
     return trainer
 
 
@@ -172,7 +174,9 @@ def test_run_train_step_handles_nan_model_outputs():
         sample_indices=None,
         mixup_pair_indices=None,
         mixup_lambdas=None,
+        inputs=image,
         image=image,
+        context_image=None,
         label=label,
         batch_start=0.0,
         data_wait_ms=0.0,
@@ -259,7 +263,9 @@ def test_publish_train_batch_runtime_preview_uses_filtered_batch_tensors():
         sample_indices=None,
         mixup_pair_indices=None,
         mixup_lambdas=None,
+        inputs=filtered_image,
         image=filtered_image,
+        context_image=None,
         label=filtered_label,
         batch_start=0.0,
         data_wait_ms=0.0,
@@ -354,13 +360,26 @@ def test_soft_ce_accepts_soft_targets():
     assert float(per_sample_loss.item()) >= 0.0
 
 
-def test_prepare_train_batch_applies_cutout_only_to_image():
+def test_prepare_train_batch_applies_random_rectangular_cutout_only_to_image(monkeypatch):
     trainer = _build_trainer('bce')
     trainer._skip_uniform_labels = False
     trainer._cutout_params = CutoutParameters(enabled=True, probability=1.0, holes=1, size_ratio=1.0)
 
-    image = torch.ones((2, 1, 4, 4), dtype=torch.float32)
-    label = torch.full((2, 1, 4, 4), 0.5, dtype=torch.float32)
+    randint_values = iter((2, 3, 1, 0))
+
+    def _fake_randint(_low, _high, _size, device=None):
+        return torch.tensor([next(randint_values)], device=device)
+
+    monkeypatch.setattr(target.np.random, 'random', lambda: 0.0)
+    monkeypatch.setattr(target.torch, 'randint', _fake_randint)
+    monkeypatch.setattr(
+        target.torch,
+        'rand',
+        lambda _size, device=None, dtype=None: torch.tensor([[[0.2]], [[0.4]], [[0.6]]], device=device, dtype=dtype),
+    )
+
+    image = torch.zeros((1, 3, 4, 4), dtype=torch.float32)
+    label = torch.full((1, 1, 4, 4), 0.5, dtype=torch.float32)
     batch, skipped = trainer._prepare_train_batch(
         batch=(image, label),
         device=torch.device('cpu'),
@@ -370,7 +389,64 @@ def test_prepare_train_batch_applies_cutout_only_to_image():
     assert skipped == 0
     assert batch is not None
     assert bool(torch.equal(batch.label, label))
-    assert float(batch.image.sum().item()) == pytest.approx(0.0)
+    expected = torch.zeros((1, 3, 4, 4), dtype=torch.float32)
+    expected[:, 0:1, 1:3, 0:3] = 0.2
+    expected[:, 1:2, 1:3, 0:3] = 0.4
+    expected[:, 2:3, 1:3, 0:3] = 0.6
+    assert bool(torch.equal(batch.image, expected))
+
+
+def test_prepare_train_batch_applies_random_artifacts_only_to_image(monkeypatch):
+    trainer = _build_trainer('bce')
+    trainer._skip_uniform_labels = False
+    trainer._random_artifacts_params = RandomArtifactsParameters(
+        enabled=True,
+        probability=1.0,
+        count=1,
+        size_ratio=1.0,
+    )
+
+    randint_values = iter((2, 3, 1, 0))
+
+    def _fake_randint(_low, _high, _size, device=None):
+        return torch.tensor([next(randint_values)], device=device)
+
+    def _fake_generate_random_artifact_patch(channels, height, width, *, device, dtype):
+        assert channels == 3
+        assert height == 2
+        assert width == 3
+        overlay = torch.tensor(
+            [
+                [[0.2, 0.2, 0.2], [0.2, 0.2, 0.2]],
+                [[0.4, 0.4, 0.4], [0.4, 0.4, 0.4]],
+                [[0.6, 0.6, 0.6], [0.6, 0.6, 0.6]],
+            ],
+            device=device,
+            dtype=dtype,
+        )
+        alpha = torch.full((1, 2, 3), 0.5, device=device, dtype=dtype)
+        return overlay, alpha
+
+    monkeypatch.setattr(target.np.random, 'random', lambda: 0.0)
+    monkeypatch.setattr(target.torch, 'randint', _fake_randint)
+    monkeypatch.setattr(target, 'generate_random_artifact_patch', _fake_generate_random_artifact_patch)
+
+    image = torch.zeros((1, 3, 4, 4), dtype=torch.float32)
+    label = torch.full((1, 1, 4, 4), 0.5, dtype=torch.float32)
+    batch, skipped = trainer._prepare_train_batch(
+        batch=(image, label),
+        device=torch.device('cpu'),
+        data_wait_started_at=0.0,
+    )
+
+    assert skipped == 0
+    assert batch is not None
+    assert bool(torch.equal(batch.label, label))
+    expected = torch.zeros((1, 3, 4, 4), dtype=torch.float32)
+    expected[:, 0:1, 1:3, 0:3] = 0.1
+    expected[:, 1:2, 1:3, 0:3] = 0.2
+    expected[:, 2:3, 1:3, 0:3] = 0.3
+    assert bool(torch.equal(batch.image, expected))
 
 
 def test_prepare_train_batch_applies_mixup_to_images_labels_and_indices(monkeypatch):

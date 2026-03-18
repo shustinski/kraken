@@ -197,6 +197,10 @@
                         <svg id="chart-val-epoch" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
                     </article>
                     <article class="metric-card">
+                        <h3>{{ texts.val_quality_chart_title|default:"Validation IoU / Dice by epoch" }}</h3>
+                        <svg id="chart-val-quality" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+                    </article>
+                    <article class="metric-card">
                         <h3>{{ texts.train_batch_chart_title }}</h3>
                         <svg id="chart-train-batch" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
                     </article>
@@ -302,6 +306,24 @@
                             {% if settings_form.cutout_size_ratio.errors %}<div class="field-error">{{ settings_form.cutout_size_ratio.errors|striptags }}</div>{% endif %}
                         </div>
                     </div>
+                    <label class="check-row" title="{{ settings_form.random_artifacts_enabled.help_text }}">{{ settings_form.random_artifacts_enabled }} {{ settings_form.random_artifacts_enabled.label }}</label>
+                    <div class="inline-3" data-role="random-artifacts-fields">
+                        <div class="field compact">
+                            <label>{{ settings_form.random_artifacts_probability.label }}</label>
+                            {{ settings_form.random_artifacts_probability }}
+                            {% if settings_form.random_artifacts_probability.errors %}<div class="field-error">{{ settings_form.random_artifacts_probability.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.random_artifacts_count.label }}</label>
+                            {{ settings_form.random_artifacts_count }}
+                            {% if settings_form.random_artifacts_count.errors %}<div class="field-error">{{ settings_form.random_artifacts_count.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.random_artifacts_size_ratio.label }}</label>
+                            {{ settings_form.random_artifacts_size_ratio }}
+                            {% if settings_form.random_artifacts_size_ratio.errors %}<div class="field-error">{{ settings_form.random_artifacts_size_ratio.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
                     <label class="check-row" title="{{ settings_form.mixup_enabled.help_text }}">{{ settings_form.mixup_enabled }} {{ settings_form.mixup_enabled.label }}</label>
                     <div class="inline-2" data-role="mixup-fields">
                         <div class="field compact">
@@ -321,11 +343,49 @@
                     <h3>{{ texts.validation_section }}</h3>
                     <label class="check-row" title="{{ settings_form.shuffle.help_text }}">{{ settings_form.shuffle }} {{ settings_form.shuffle.label }}</label>
                     <label class="check-row" title="{{ settings_form.use_validation.help_text }}">{{ settings_form.use_validation }} {{ settings_form.use_validation.label }}</label>
+                    <div class="field compact" data-role="validation-source">
+                        <label>{{ settings_form.validation_source.label }}</label>
+                        {{ settings_form.validation_source }}
+                        {% if settings_form.validation_source.errors %}<div class="field-error">{{ settings_form.validation_source.errors|striptags }}</div>{% endif %}
+                    </div>
                     <div class="field compact" data-role="validation-percent">
                         <label>{{ settings_form.validation_percent.label }}</label>
                         {{ settings_form.validation_percent }}
                         {% if settings_form.validation_percent.errors %}<div class="field-error">{{ settings_form.validation_percent.errors|striptags }}</div>{% endif %}
                     </div>
+                    <div class="field" data-role="validation-image-folder">
+                        <label>{{ settings_form.validation_image_folder.label }}</label>
+                        <div class="path-picker-row">
+                            {{ settings_form.validation_image_folder }}
+                            <button
+                                type="button"
+                                class="pick-path-btn"
+                                data-target='[name="settings-validation_image_folder"]'
+                                data-kind="folder"
+                                title="{{ texts.select_path_tip }}"
+                            >
+                                {{ texts.select_path }}
+                            </button>
+                        </div>
+                        {% if settings_form.validation_image_folder.errors %}<div class="field-error">{{ settings_form.validation_image_folder.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field" data-role="validation-label-folder">
+                        <label>{{ settings_form.validation_label_folder.label }}</label>
+                        <div class="path-picker-row">
+                            {{ settings_form.validation_label_folder }}
+                            <button
+                                type="button"
+                                class="pick-path-btn"
+                                data-target='[name="settings-validation_label_folder"]'
+                                data-kind="folder"
+                                title="{{ texts.select_path_tip }}"
+                            >
+                                {{ texts.select_path }}
+                            </button>
+                        </div>
+                        {% if settings_form.validation_label_folder.errors %}<div class="field-error">{{ settings_form.validation_label_folder.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <label class="check-row" title="{{ settings_form.save_validation_binary_images.help_text }}">{{ settings_form.save_validation_binary_images }} {{ settings_form.save_validation_binary_images.label }}</label>
 
                     <div class="radio-col" id="cut-mode-radios">
                         {% with current_cut=settings_form.sample_cut_mode.value %}
@@ -395,6 +455,13 @@
                             {% if settings_form.batch_size.errors %}<div class="field-error">{{ settings_form.batch_size.errors|striptags }}</div>{% endif %}
                         </div>
                         <div class="field compact">
+                            <label>{{ settings_form.dataloader_num_workers.label }}</label>
+                            {{ settings_form.dataloader_num_workers }}
+                            {% if settings_form.dataloader_num_workers.errors %}<div class="field-error">{{ settings_form.dataloader_num_workers.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="inline-2">
+                        <div class="field compact">
                             <label>{{ settings_form.overlap.label }}</label>
                             {{ settings_form.overlap }}
                             {% if settings_form.overlap.errors %}<div class="field-error">{{ settings_form.overlap.errors|striptags }}</div>{% endif %}
@@ -422,6 +489,96 @@
                             <label>{{ settings_form.warmup_start_factor.label }}</label>
                             {{ settings_form.warmup_start_factor }}
                             {% if settings_form.warmup_start_factor.errors %}<div class="field-error">{{ settings_form.warmup_start_factor.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="field compact">
+                        <label>{{ settings_form.scheduler_name.label }}</label>
+                        {{ settings_form.scheduler_name }}
+                        {% if settings_form.scheduler_name.errors %}<div class="field-error">{{ settings_form.scheduler_name.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div data-role="scheduler-fields">
+                        <div class="inline-2" data-scheduler-group="reduce_on_plateau">
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_plateau_factor.label }}</label>
+                                {{ settings_form.scheduler_plateau_factor }}
+                                {% if settings_form.scheduler_plateau_factor.errors %}<div class="field-error">{{ settings_form.scheduler_plateau_factor.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_plateau_patience.label }}</label>
+                                {{ settings_form.scheduler_plateau_patience }}
+                                {% if settings_form.scheduler_plateau_patience.errors %}<div class="field-error">{{ settings_form.scheduler_plateau_patience.errors|striptags }}</div>{% endif %}
+                            </div>
+                        </div>
+                        <div class="inline-3" data-scheduler-group="reduce_on_plateau">
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_plateau_threshold.label }}</label>
+                                {{ settings_form.scheduler_plateau_threshold }}
+                                {% if settings_form.scheduler_plateau_threshold.errors %}<div class="field-error">{{ settings_form.scheduler_plateau_threshold.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_plateau_min_lr.label }}</label>
+                                {{ settings_form.scheduler_plateau_min_lr }}
+                                {% if settings_form.scheduler_plateau_min_lr.errors %}<div class="field-error">{{ settings_form.scheduler_plateau_min_lr.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_plateau_cooldown.label }}</label>
+                                {{ settings_form.scheduler_plateau_cooldown }}
+                                {% if settings_form.scheduler_plateau_cooldown.errors %}<div class="field-error">{{ settings_form.scheduler_plateau_cooldown.errors|striptags }}</div>{% endif %}
+                            </div>
+                        </div>
+                        <div class="inline-2" data-scheduler-group="cosine_annealing">
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_cosine_t_max.label }}</label>
+                                {{ settings_form.scheduler_cosine_t_max }}
+                                {% if settings_form.scheduler_cosine_t_max.errors %}<div class="field-error">{{ settings_form.scheduler_cosine_t_max.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_cosine_eta_min.label }}</label>
+                                {{ settings_form.scheduler_cosine_eta_min }}
+                                {% if settings_form.scheduler_cosine_eta_min.errors %}<div class="field-error">{{ settings_form.scheduler_cosine_eta_min.errors|striptags }}</div>{% endif %}
+                            </div>
+                        </div>
+                        <div class="inline-2" data-scheduler-group="one_cycle">
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_one_cycle_max_lr.label }}</label>
+                                {{ settings_form.scheduler_one_cycle_max_lr }}
+                                {% if settings_form.scheduler_one_cycle_max_lr.errors %}<div class="field-error">{{ settings_form.scheduler_one_cycle_max_lr.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_one_cycle_pct_start.label }}</label>
+                                {{ settings_form.scheduler_one_cycle_pct_start }}
+                                {% if settings_form.scheduler_one_cycle_pct_start.errors %}<div class="field-error">{{ settings_form.scheduler_one_cycle_pct_start.errors|striptags }}</div>{% endif %}
+                            </div>
+                        </div>
+                        <div class="inline-3" data-scheduler-group="one_cycle">
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_one_cycle_anneal_strategy.label }}</label>
+                                {{ settings_form.scheduler_one_cycle_anneal_strategy }}
+                                {% if settings_form.scheduler_one_cycle_anneal_strategy.errors %}<div class="field-error">{{ settings_form.scheduler_one_cycle_anneal_strategy.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_one_cycle_div_factor.label }}</label>
+                                {{ settings_form.scheduler_one_cycle_div_factor }}
+                                {% if settings_form.scheduler_one_cycle_div_factor.errors %}<div class="field-error">{{ settings_form.scheduler_one_cycle_div_factor.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_one_cycle_final_div_factor.label }}</label>
+                                {{ settings_form.scheduler_one_cycle_final_div_factor }}
+                                {% if settings_form.scheduler_one_cycle_final_div_factor.errors %}<div class="field-error">{{ settings_form.scheduler_one_cycle_final_div_factor.errors|striptags }}</div>{% endif %}
+                            </div>
+                        </div>
+                        <label class="check-row" title="{{ settings_form.scheduler_one_cycle_three_phase.help_text }}" data-scheduler-group="one_cycle">{{ settings_form.scheduler_one_cycle_three_phase }} {{ settings_form.scheduler_one_cycle_three_phase.label }}</label>
+                        <div class="inline-2" data-scheduler-group="step_lr">
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_step_lr_step_size.label }}</label>
+                                {{ settings_form.scheduler_step_lr_step_size }}
+                                {% if settings_form.scheduler_step_lr_step_size.errors %}<div class="field-error">{{ settings_form.scheduler_step_lr_step_size.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.scheduler_step_lr_gamma.label }}</label>
+                                {{ settings_form.scheduler_step_lr_gamma }}
+                                {% if settings_form.scheduler_step_lr_gamma.errors %}<div class="field-error">{{ settings_form.scheduler_step_lr_gamma.errors|striptags }}</div>{% endif %}
+                            </div>
                         </div>
                     </div>
                     <label class="check-row" title="{{ settings_form.hard_mining_enabled.help_text }}">{{ settings_form.hard_mining_enabled }} {{ settings_form.hard_mining_enabled.label }}</label>

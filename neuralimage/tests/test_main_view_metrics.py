@@ -61,6 +61,8 @@ def test_main_view_metrics_are_collected_without_capping(qapp):
 
     assert len(view.metrics_panel._train_epoch_points) == 1
     assert len(view.metrics_panel._val_epoch_points) == 1
+    assert len(view.metrics_panel._val_iou_points) == 1
+    assert len(view.metrics_panel._val_dice_points) == 1
     assert len(view._batch_points_by_epoch[1]) == 250
     assert view.epoch_progress_bar.value() == 20
     assert view.batch_progress_bar.value() == 25
@@ -150,6 +152,25 @@ def test_metrics_panel_can_be_restored_from_view_menu(qapp):
     metrics_action.trigger()
     qapp.processEvents()
     assert not view.metrics_panel.isHidden()
+
+
+def test_main_view_file_menu_exposes_open_action(qapp):
+    view = MainView(QWidget())
+    view.connect_internal_signals()
+
+    captured = []
+    view.open_config_requested.connect(lambda: captured.append(True))
+
+    menubar = view.menuBar()
+    assert menubar is not None
+    file_menu = next((action.menu() for action in menubar.actions() if action.text() == "Файл"), None)
+    assert file_menu is not None
+
+    open_action = next((action for action in file_menu.actions() if action.text() == "Открыть..."), None)
+    assert open_action is not None
+
+    open_action.trigger()
+    assert captured == [True]
 
 
 def test_main_view_queue_widget_and_start_stop_visibility(qapp):

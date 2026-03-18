@@ -8,7 +8,7 @@
 #endif
 
 #ifndef AppVersion
-  #define AppVersion "5.3.0"
+  #define AppVersion "5.7.0"
 #endif
 
 #ifndef AppPublisher
@@ -20,7 +20,7 @@
 #endif
 
 #ifndef BuildDir
-  #define BuildDir "dist\\NeuralImage 5.4"
+  #define BuildDir "dist\\NeuralImage"
 #endif
 
 #ifndef OutputDir
@@ -40,9 +40,10 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma2
 SolidCompression=yes
+CompressionThreads=auto
 WizardStyle=modern
 OutputDir={#OutputDir}
-OutputBaseFilename={#AppName}-setup-{#AppVersion}
+OutputBaseFilename={#AppName}-{#AppVersion}
 SetupIconFile={#BuildDir}\_internal\icon.ico
 VersionInfoVersion={#AppVersion}
 VersionInfoCompany={#AppPublisher}

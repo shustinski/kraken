@@ -14,6 +14,27 @@ def _copy_text_dict(value: Any) -> dict[str, Any]:
     return dict(value)
 
 
+def _read_first_text(mapping: dict[str, Any], keys: tuple[str, ...], default: str = '') -> str:
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            return str(mapping[key])
+    return default
+
+
+def _read_text_from_mappings(
+    mappings: tuple[dict[str, Any], ...],
+    keys: tuple[str, ...],
+    default: str = '',
+) -> str:
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        value = _read_first_text(mapping, keys, '')
+        if value:
+            return value
+    return default
+
+
 def apply_description_tooltips(
     panel: Any,
     descriptions: dict[str, Any],
@@ -35,6 +56,23 @@ def apply_settings_panel_texts(panel: Any) -> None:
     descriptions = _copy_text_dict(t.get('field_descriptions', {}))
     log_update_key = TEXT_FIELD_LOG_UPDATE_FREQUENCY
     jpeg_quality_key = TEXT_FIELD_RECOGNITION_JPEG_QUALITY
+    dataloader_workers_key = 'dataloader_num_workers'
+    scheduler_name_key = 'scheduler_name'
+    scheduler_plateau_factor_key = 'scheduler_plateau_factor'
+    scheduler_plateau_patience_key = 'scheduler_plateau_patience'
+    scheduler_plateau_threshold_key = 'scheduler_plateau_threshold'
+    scheduler_plateau_min_lr_key = 'scheduler_plateau_min_lr'
+    scheduler_plateau_cooldown_key = 'scheduler_plateau_cooldown'
+    scheduler_cosine_t_max_key = 'scheduler_cosine_t_max'
+    scheduler_cosine_eta_min_key = 'scheduler_cosine_eta_min'
+    scheduler_one_cycle_max_lr_key = 'scheduler_one_cycle_max_lr'
+    scheduler_one_cycle_pct_start_key = 'scheduler_one_cycle_pct_start'
+    scheduler_one_cycle_anneal_strategy_key = 'scheduler_one_cycle_anneal_strategy'
+    scheduler_one_cycle_div_factor_key = 'scheduler_one_cycle_div_factor'
+    scheduler_one_cycle_final_div_factor_key = 'scheduler_one_cycle_final_div_factor'
+    scheduler_one_cycle_three_phase_key = 'scheduler_one_cycle_three_phase'
+    scheduler_step_lr_step_size_key = 'scheduler_step_lr_step_size'
+    scheduler_step_lr_gamma_key = 'scheduler_step_lr_gamma'
     sync_patch_sizes_key = 'sync_patch_sizes'
     crops_per_image_key = 'crops_per_image'
     scale_augmentation_strength_key = 'scale_augmentation_strength'
@@ -44,11 +82,17 @@ def apply_settings_panel_texts(panel: Any) -> None:
     cutout_probability_key = 'cutout_probability'
     cutout_holes_key = 'cutout_holes'
     cutout_size_ratio_key = 'cutout_size_ratio'
+    random_artifacts_probability_key = 'random_artifacts_probability'
+    random_artifacts_count_key = 'random_artifacts_count'
+    random_artifacts_size_ratio_key = 'random_artifacts_size_ratio'
     mixup_probability_key = 'mixup_probability'
     mixup_alpha_key = 'mixup_alpha'
     rare_patch_oversampling_factor_key = 'rare_patch_oversampling_factor'
     recognition_threshold_key = 'recognition_threshold'
     recognition_postprocess_kernel_size_key = 'recognition_postprocess_kernel_size'
+    validation_source_key = 'validation_source'
+    validation_image_path_key = 'validation_image_path'
+    validation_label_path_key = 'validation_label_path'
     if log_update_key not in labels_map:
         labels_map[log_update_key] = 'Частота логов (батчей)'
     if log_update_key not in descriptions:
@@ -69,6 +113,159 @@ def apply_settings_panel_texts(panel: Any) -> None:
     if jpeg_quality_key not in descriptions:
         descriptions[jpeg_quality_key] = str(
             t.get('recognition_jpeg_quality_tip', 'JPEG quality for recognition output (1..100).')
+        )
+    if dataloader_workers_key not in labels_map:
+        labels_map[dataloader_workers_key] = str(t.get('dataloader_num_workers_label', 'DataLoader workers'))
+    if dataloader_workers_key not in descriptions:
+        descriptions[dataloader_workers_key] = str(
+            t.get(
+                'dataloader_num_workers_tip',
+                'Number of worker processes used by the training DataLoader. Use -1 for automatic selection.',
+            )
+        )
+    if scheduler_name_key not in labels_map:
+        labels_map[scheduler_name_key] = str(t.get('scheduler_name_label', 'Scheduler'))
+    if scheduler_name_key not in descriptions:
+        descriptions[scheduler_name_key] = str(
+            t.get(
+                'scheduler_tip',
+                'Learning-rate schedule applied after optimizer updates.',
+            )
+        )
+    if scheduler_plateau_factor_key not in labels_map:
+        labels_map[scheduler_plateau_factor_key] = 'Plateau factor'
+    if scheduler_plateau_factor_key not in descriptions:
+        descriptions[scheduler_plateau_factor_key] = str(
+            t.get(
+                'scheduler_plateau_factor_tip',
+                'Multiplier applied to the learning rate when ReduceLROnPlateau triggers.',
+            )
+        )
+    if scheduler_plateau_patience_key not in labels_map:
+        labels_map[scheduler_plateau_patience_key] = 'Plateau patience'
+    if scheduler_plateau_patience_key not in descriptions:
+        descriptions[scheduler_plateau_patience_key] = str(
+            t.get(
+                'scheduler_plateau_patience_tip',
+                'How many epochs without improvement to wait before reducing the learning rate.',
+            )
+        )
+    if scheduler_plateau_threshold_key not in labels_map:
+        labels_map[scheduler_plateau_threshold_key] = 'Plateau threshold'
+    if scheduler_plateau_threshold_key not in descriptions:
+        descriptions[scheduler_plateau_threshold_key] = str(
+            t.get(
+                'scheduler_plateau_threshold_tip',
+                'Minimum loss improvement that counts as progress for ReduceLROnPlateau.',
+            )
+        )
+    if scheduler_plateau_min_lr_key not in labels_map:
+        labels_map[scheduler_plateau_min_lr_key] = 'Plateau min LR'
+    if scheduler_plateau_min_lr_key not in descriptions:
+        descriptions[scheduler_plateau_min_lr_key] = str(
+            t.get(
+                'scheduler_plateau_min_lr_tip',
+                'Lower bound for the learning rate used by ReduceLROnPlateau.',
+            )
+        )
+    if scheduler_plateau_cooldown_key not in labels_map:
+        labels_map[scheduler_plateau_cooldown_key] = 'Plateau cooldown'
+    if scheduler_plateau_cooldown_key not in descriptions:
+        descriptions[scheduler_plateau_cooldown_key] = str(
+            t.get(
+                'scheduler_plateau_cooldown_tip',
+                'How many epochs to wait after a reduction before resuming Plateau checks.',
+            )
+        )
+    if scheduler_cosine_t_max_key not in labels_map:
+        labels_map[scheduler_cosine_t_max_key] = 'Cosine T_max'
+    if scheduler_cosine_t_max_key not in descriptions:
+        descriptions[scheduler_cosine_t_max_key] = str(
+            t.get(
+                'scheduler_cosine_t_max_tip',
+                'Number of scheduler epochs used by one cosine annealing cycle.',
+            )
+        )
+    if scheduler_cosine_eta_min_key not in labels_map:
+        labels_map[scheduler_cosine_eta_min_key] = 'Cosine eta_min'
+    if scheduler_cosine_eta_min_key not in descriptions:
+        descriptions[scheduler_cosine_eta_min_key] = str(
+            t.get(
+                'scheduler_cosine_eta_min_tip',
+                'Minimum learning rate reached by CosineAnnealingLR.',
+            )
+        )
+    if scheduler_one_cycle_max_lr_key not in labels_map:
+        labels_map[scheduler_one_cycle_max_lr_key] = 'OneCycle max LR'
+    if scheduler_one_cycle_max_lr_key not in descriptions:
+        descriptions[scheduler_one_cycle_max_lr_key] = str(
+            t.get(
+                'scheduler_one_cycle_max_lr_tip',
+                'Peak learning rate reached by OneCycleLR.',
+            )
+        )
+    if scheduler_one_cycle_pct_start_key not in labels_map:
+        labels_map[scheduler_one_cycle_pct_start_key] = 'OneCycle pct_start'
+    if scheduler_one_cycle_pct_start_key not in descriptions:
+        descriptions[scheduler_one_cycle_pct_start_key] = str(
+            t.get(
+                'scheduler_one_cycle_pct_start_tip',
+                'Fraction of training steps spent increasing the learning rate in OneCycleLR.',
+            )
+        )
+    if scheduler_one_cycle_anneal_strategy_key not in labels_map:
+        labels_map[scheduler_one_cycle_anneal_strategy_key] = 'OneCycle anneal'
+    if scheduler_one_cycle_anneal_strategy_key not in descriptions:
+        descriptions[scheduler_one_cycle_anneal_strategy_key] = str(
+            t.get(
+                'scheduler_one_cycle_anneal_strategy_tip',
+                'Shape of the learning-rate decay curve in OneCycleLR.',
+            )
+        )
+    if scheduler_one_cycle_div_factor_key not in labels_map:
+        labels_map[scheduler_one_cycle_div_factor_key] = 'OneCycle div factor'
+    if scheduler_one_cycle_div_factor_key not in descriptions:
+        descriptions[scheduler_one_cycle_div_factor_key] = str(
+            t.get(
+                'scheduler_one_cycle_div_factor_tip',
+                'Initial LR is max_lr divided by this factor in OneCycleLR.',
+            )
+        )
+    if scheduler_one_cycle_final_div_factor_key not in labels_map:
+        labels_map[scheduler_one_cycle_final_div_factor_key] = 'OneCycle final div'
+    if scheduler_one_cycle_final_div_factor_key not in descriptions:
+        descriptions[scheduler_one_cycle_final_div_factor_key] = str(
+            t.get(
+                'scheduler_one_cycle_final_div_factor_tip',
+                'Minimum LR is initial LR divided by this factor in OneCycleLR.',
+            )
+        )
+    if scheduler_one_cycle_three_phase_key not in labels_map:
+        labels_map[scheduler_one_cycle_three_phase_key] = 'OneCycle three phase'
+    if scheduler_one_cycle_three_phase_key not in descriptions:
+        descriptions[scheduler_one_cycle_three_phase_key] = str(
+            t.get(
+                'scheduler_one_cycle_three_phase_tip',
+                'Use the original three-phase OneCycle schedule instead of the fast two-phase variant.',
+            )
+        )
+    if scheduler_step_lr_step_size_key not in labels_map:
+        labels_map[scheduler_step_lr_step_size_key] = 'StepLR step size'
+    if scheduler_step_lr_step_size_key not in descriptions:
+        descriptions[scheduler_step_lr_step_size_key] = str(
+            t.get(
+                'scheduler_step_lr_step_size_tip',
+                'How many epochs to wait between StepLR reductions.',
+            )
+        )
+    if scheduler_step_lr_gamma_key not in labels_map:
+        labels_map[scheduler_step_lr_gamma_key] = 'StepLR gamma'
+    if scheduler_step_lr_gamma_key not in descriptions:
+        descriptions[scheduler_step_lr_gamma_key] = str(
+            t.get(
+                'scheduler_step_lr_gamma_tip',
+                'Multiplier applied to the learning rate on each StepLR decay step.',
+            )
         )
     if crops_per_image_key not in labels_map:
         labels_map[crops_per_image_key] = 'Crops per image'
@@ -133,6 +330,33 @@ def apply_settings_panel_texts(panel: Any) -> None:
         descriptions[cutout_size_ratio_key] = str(
             t.get('cutout_size_ratio_tip', 'Size of each cutout rectangle relative to patch width and height.')
         )
+    if random_artifacts_probability_key not in labels_map:
+        labels_map[random_artifacts_probability_key] = 'Random artifacts probability'
+    if random_artifacts_probability_key not in descriptions:
+        descriptions[random_artifacts_probability_key] = str(
+            t.get(
+                'random_artifacts_probability_tip',
+                'Probability of adding synthetic artifacts to a training sample.',
+            )
+        )
+    if random_artifacts_count_key not in labels_map:
+        labels_map[random_artifacts_count_key] = 'Random artifacts count'
+    if random_artifacts_count_key not in descriptions:
+        descriptions[random_artifacts_count_key] = str(
+            t.get(
+                'random_artifacts_count_tip',
+                'How many synthetic artifacts may be added to one training sample.',
+            )
+        )
+    if random_artifacts_size_ratio_key not in labels_map:
+        labels_map[random_artifacts_size_ratio_key] = 'Random artifacts size ratio'
+    if random_artifacts_size_ratio_key not in descriptions:
+        descriptions[random_artifacts_size_ratio_key] = str(
+            t.get(
+                'random_artifacts_size_ratio_tip',
+                'Maximum artifact size relative to patch width and height.',
+            )
+        )
     if mixup_probability_key not in labels_map:
         labels_map[mixup_probability_key] = 'Mixup probability'
     if mixup_probability_key not in descriptions:
@@ -170,6 +394,33 @@ def apply_settings_panel_texts(panel: Any) -> None:
             t.get(
                 'recognition_postprocess_kernel_size_tip',
                 'Odd kernel size used for binary mask cleanup after thresholding.',
+            )
+        )
+    if validation_source_key not in labels_map:
+        labels_map[validation_source_key] = str(t.get('validation_source_label', 'Validation source'))
+    if validation_source_key not in descriptions:
+        descriptions[validation_source_key] = str(
+            t.get(
+                'validation_source_tip',
+                'Choose between validation split from the training dataset or a separate validation dataset.',
+            )
+        )
+    if validation_image_path_key not in labels_map:
+        labels_map[validation_image_path_key] = str(t.get('validation_image_path_label', 'Validation images'))
+    if validation_image_path_key not in descriptions:
+        descriptions[validation_image_path_key] = str(
+            t.get(
+                'validation_image_path_tip',
+                'Folder with validation images used when external validation mode is selected.',
+            )
+        )
+    if validation_label_path_key not in labels_map:
+        labels_map[validation_label_path_key] = str(t.get('validation_label_path_label', 'Validation labels'))
+    if validation_label_path_key not in descriptions:
+        descriptions[validation_label_path_key] = str(
+            t.get(
+                'validation_label_path_tip',
+                'Folder with validation labels used when external validation mode is selected.',
             )
         )
 
@@ -226,13 +477,47 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
-    panel.cutout_check_box.setText(str(t.get('cutout_enable', 'Enable cutout')))
-    panel.cutout_check_box.setToolTip(
-        str(t.get('cutout_tip', 'Randomly erase rectangular regions in training images only.'))
+    panel.cutout_check_box.setText(
+        _read_text_from_mappings(
+            (t, labels_map),
+            ('cutout_enabled', 'cutout_enable'),
+            'Enable cutout',
+        )
     )
-    panel.mixup_check_box.setText(str(t.get('mixup_enable', 'Enable mixup')))
+    panel.cutout_check_box.setToolTip(
+        _read_text_from_mappings(
+            (t, descriptions),
+            ('cutout_tip', 'cutout_enabled'),
+            'Randomly erase rectangular regions in training images only.',
+        )
+    )
+    panel.random_artifacts_check_box.setText(
+        _read_text_from_mappings(
+            (t, labels_map),
+            ('random_artifacts_enabled', 'random_artifacts_enable'),
+            'Enable random artifacts',
+        )
+    )
+    panel.random_artifacts_check_box.setToolTip(
+        _read_text_from_mappings(
+            (t, descriptions),
+            ('random_artifacts_tip', 'random_artifacts_enabled'),
+            'Overlay synthetic textured artifacts on training images only.',
+        )
+    )
+    panel.mixup_check_box.setText(
+        _read_text_from_mappings(
+            (t, labels_map),
+            ('mixup_enabled', 'mixup_enable'),
+            'Enable mixup',
+        )
+    )
     panel.mixup_check_box.setToolTip(
-        str(t.get('mixup_tip', 'Mix pairs of training samples inside a batch using a random interpolation factor.'))
+        _read_text_from_mappings(
+            (t, descriptions),
+            ('mixup_tip', 'mixup_enabled'),
+            'Mix pairs of training samples inside a batch using a random interpolation factor.',
+        )
     )
     panel.augmentation_brightness_spinbox.setToolTip(str(t.get('extra_aug_brightness_tip', '')))
     panel.augmentation_contrast_spinbox.setToolTip(str(t.get('extra_aug_contrast_tip', '')))
@@ -245,11 +530,53 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.cutout_probability_spinbox.setToolTip(str(t.get('cutout_probability_tip', '')))
     panel.cutout_holes_spinbox.setToolTip(str(t.get('cutout_holes_tip', '')))
     panel.cutout_size_ratio_spinbox.setToolTip(str(t.get('cutout_size_ratio_tip', '')))
+    panel.random_artifacts_probability_spinbox.setToolTip(str(t.get('random_artifacts_probability_tip', '')))
+    panel.random_artifacts_count_spinbox.setToolTip(str(t.get('random_artifacts_count_tip', '')))
+    panel.random_artifacts_size_ratio_spinbox.setToolTip(str(t.get('random_artifacts_size_ratio_tip', '')))
     panel.mixup_probability_spinbox.setToolTip(str(t.get('mixup_probability_tip', '')))
     panel.mixup_alpha_spinbox.setToolTip(str(t.get('mixup_alpha_tip', '')))
     panel.shift_spinbox.setToolTip(str(t.get('shift_tip', '')))
     panel.validation_check_box.setText(str(t.get('validation', 'Use validation during training')))
     panel.validation_check_box.setToolTip(str(t.get('validation_tip', '')))
+    panel.save_validation_binary_images_check_box.setText(
+        str(t.get('save_validation_binary_images', 'Save binary validation predictions after each epoch'))
+    )
+    panel.save_validation_binary_images_check_box.setToolTip(
+        str(
+            t.get(
+                'save_validation_binary_images_tip',
+                'Save binary predictions for validation samples after each epoch into the run artifact folder.',
+            )
+        )
+    )
+    panel.validation_mode_combo.setToolTip(
+        str(
+            t.get(
+                'validation_source_tip',
+                'Choose between validation split from the training dataset or a separate validation dataset.',
+            )
+        )
+    )
+    split_text = str(t.get('validation_source_split', 'Split from training dataset'))
+    external_text = str(t.get('validation_source_external', 'Use external image/label folders'))
+    panel.validation_mode_combo.setItemText(0, split_text)
+    panel.validation_mode_combo.setItemText(1, external_text)
+    panel.validation_image_path_label.setToolTip(
+        str(
+            t.get(
+                'validation_image_path_tip',
+                'Folder with validation images used when external validation mode is selected.',
+            )
+        )
+    )
+    panel.validation_label_path_label.setToolTip(
+        str(
+            t.get(
+                'validation_label_path_tip',
+                'Folder with validation labels used when external validation mode is selected.',
+            )
+        )
+    )
     panel.general_groupbox.setTitle(str(t.get('general_group', 'Data and model')))
     panel.augmentation_groupbox.setTitle(str(t.get('augmentation_group', 'Augmentation and shift')))
     panel.validation_groupbox.setTitle(str(t.get('validation_group', 'Validation')))
@@ -263,18 +590,90 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.nn_auxilary_settings_groupbox.setTitle(str(t.get('aux_group', 'Additional settings')))
     panel.optimizer_groupbox.setTitle(str(t.get('optimizer_group', 'Optimizer and batch')))
     panel.precision_loss_groupbox.setTitle(str(t.get('loss_precision_group', 'Loss and mixed precision')))
+    panel.recognition_groupbox.setTitle(str(t.get('recognition_group', 'Recognition')))
     panel.runtime_groupbox.setTitle(str(t.get('runtime_group', 'Runtime and filtering')))
     panel.warmup_groupbox.setTitle(str(t.get('warmup_group', 'Warmup')))
+    panel.scheduler_groupbox.setTitle(str(t.get('scheduler_group', 'Scheduler')))
     panel.hard_mining_groupbox.setTitle(str(t.get('hard_mining_group', 'Hard mining')))
     panel.early_stopping_groupbox.setTitle(str(t.get('early_stopping_group', 'Early stopping')))
+    if hasattr(panel, 'settings_tabs'):
+        panel.settings_tabs.setTabText(panel._page_indexes.get('base', 0), str(t.get('tab_base', 'Базовые')))
+        panel.settings_tabs.setTabText(panel._page_indexes.get('training', 1), str(t.get('tab_training', 'Обучение')))
+        panel.settings_tabs.setTabText(
+            panel._page_indexes.get('recognition', 2),
+            str(t.get('tab_recognition', 'Распознавание')),
+        )
+        panel.settings_tabs.setTabText(panel._page_indexes.get('expert', 3), str(t.get('tab_expert', 'Эксперт')))
     panel.optimizer_type.setToolTip(str(t.get('optimizer_tip', '')))
     panel.learning_rate_spinbox.setToolTip(str(t.get('lr_tip', '')))
     panel.weight_decay_spinbox.setToolTip(str(t.get('wd_tip', '')))
     panel.train_batch_spinbox.setToolTip(str(t.get('train_batch_tip', t.get('batch_tip', ''))))
+    panel.dataloader_num_workers_spinbox.setToolTip(
+        str(
+            t.get(
+                'dataloader_num_workers_tip',
+                'Number of worker processes used by the training DataLoader. Use -1 for automatic selection.',
+            )
+        )
+    )
+    panel.dataloader_num_workers_spinbox.setSpecialValueText(str(t.get('auto_value', 'auto')))
+    panel.scheduler_type_combo.setToolTip(
+        str(
+            t.get(
+                'scheduler_tip',
+                'Learning-rate schedule applied after optimizer updates.',
+            )
+        )
+    )
+    panel.scheduler_type_combo.setItemText(0, str(t.get('scheduler_off', 'Off')))
+    panel.scheduler_type_combo.setItemText(1, str(t.get('scheduler_reduce_on_plateau', 'ReduceLROnPlateau')))
+    panel.scheduler_type_combo.setItemText(2, str(t.get('scheduler_cosine_annealing', 'CosineAnnealingLR')))
+    panel.scheduler_type_combo.setItemText(3, str(t.get('scheduler_one_cycle', 'OneCycleLR')))
+    panel.scheduler_type_combo.setItemText(4, str(t.get('scheduler_step_lr', 'StepLR')))
+    panel.scheduler_plateau_factor_spinbox.setToolTip(str(t.get('scheduler_plateau_factor_tip', '')))
+    panel.scheduler_plateau_patience_spinbox.setToolTip(str(t.get('scheduler_plateau_patience_tip', '')))
+    panel.scheduler_plateau_threshold_spinbox.setToolTip(str(t.get('scheduler_plateau_threshold_tip', '')))
+    panel.scheduler_plateau_min_lr_spinbox.setToolTip(str(t.get('scheduler_plateau_min_lr_tip', '')))
+    panel.scheduler_plateau_cooldown_spinbox.setToolTip(str(t.get('scheduler_plateau_cooldown_tip', '')))
+    panel.scheduler_cosine_t_max_spinbox.setToolTip(str(t.get('scheduler_cosine_t_max_tip', '')))
+    panel.scheduler_cosine_eta_min_spinbox.setToolTip(str(t.get('scheduler_cosine_eta_min_tip', '')))
+    panel.scheduler_one_cycle_max_lr_spinbox.setToolTip(str(t.get('scheduler_one_cycle_max_lr_tip', '')))
+    panel.scheduler_one_cycle_pct_start_spinbox.setToolTip(str(t.get('scheduler_one_cycle_pct_start_tip', '')))
+    panel.scheduler_one_cycle_anneal_strategy_combo.setToolTip(
+        str(t.get('scheduler_one_cycle_anneal_strategy_tip', ''))
+    )
+    panel.scheduler_one_cycle_anneal_strategy_combo.setItemText(
+        0,
+        str(t.get('scheduler_one_cycle_anneal_cos', 'Cosine')),
+    )
+    panel.scheduler_one_cycle_anneal_strategy_combo.setItemText(
+        1,
+        str(t.get('scheduler_one_cycle_anneal_linear', 'Linear')),
+    )
+    panel.scheduler_one_cycle_div_factor_spinbox.setToolTip(str(t.get('scheduler_one_cycle_div_factor_tip', '')))
+    panel.scheduler_one_cycle_final_div_factor_spinbox.setToolTip(
+        str(t.get('scheduler_one_cycle_final_div_factor_tip', ''))
+    )
+    panel.scheduler_one_cycle_three_phase_check_box.setToolTip(
+        str(t.get('scheduler_one_cycle_three_phase_tip', ''))
+    )
+    panel.scheduler_step_lr_step_size_spinbox.setToolTip(str(t.get('scheduler_step_lr_step_size_tip', '')))
+    panel.scheduler_step_lr_gamma_spinbox.setToolTip(str(t.get('scheduler_step_lr_gamma_tip', '')))
     panel.recognition_batch_spinbox.setToolTip(str(t.get('recognition_batch_tip', t.get('batch_tip', ''))))
     panel.overlap_spinbox.setToolTip(str(t.get('overlap_tip', '')))
     panel.recognition_jpeg_quality_spinbox.setToolTip(
         str(t.get('recognition_jpeg_quality_tip', 'JPEG quality for recognition output (1..100).'))
+    )
+    panel.recognition_multiprocessing_check_box.setText(
+        str(t.get('recognition_multiprocessing_enable', 'Use multiprocessing recognition'))
+    )
+    panel.recognition_multiprocessing_check_box.setToolTip(
+        str(
+            t.get(
+                'recognition_multiprocessing_tip',
+                'Speeds up recognition via separate cut/predict/sew processes and automatically falls back to single-thread mode when unsuitable.',
+            )
+        )
     )
     panel.recognition_binarize_output_check_box.setText(
         str(t.get('recognition_binarize_output', 'Binarize recognition output'))
@@ -391,5 +790,6 @@ def apply_settings_panel_texts(panel: Any) -> None:
     elif isinstance(color_modes, list) and color_modes:
         panel.set_color_mode_items([(str(v), str(v)) for v in color_modes])
     apply_description_tooltips(panel, descriptions, labels_map)
+    panel._sync_validation_path_labels()
 
 

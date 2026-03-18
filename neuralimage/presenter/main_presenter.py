@@ -297,6 +297,8 @@ class MainPresenter(QObject):
         s.crops_per_image_spinbox.setValue(int(getattr(state, 'crops_per_image', 64)))
         s.scale_augmentation_check_box.setChecked(bool(getattr(state, 'scale_augmentation', False)))
         s.scale_augmentation_strength_spinbox.setValue(float(getattr(state, 'scale_augmentation_strength', 0.2)))
+        if hasattr(s, 'set_tech_aug_config'):
+            s.set_tech_aug_config(getattr(state, 'tech_aug', {}))
         s.cutout_check_box.setChecked(bool(getattr(state, 'cutout_enabled', False)))
         s.cutout_probability_spinbox.setValue(float(getattr(state, 'cutout_probability', 1.0)))
         s.cutout_holes_spinbox.setValue(int(getattr(state, 'cutout_holes', 1)))
@@ -310,6 +312,8 @@ class MainPresenter(QObject):
         s.mixup_check_box.setChecked(bool(getattr(state, 'mixup_enabled', False)))
         s.mixup_probability_spinbox.setValue(float(getattr(state, 'mixup_probability', 1.0)))
         s.mixup_alpha_spinbox.setValue(float(getattr(state, 'mixup_alpha', 0.2)))
+        if hasattr(s, 'set_pcb_defects_config'):
+            s.set_pcb_defects_config(getattr(state, 'pcb_defects', {}))
 
         # 3.4  Validation controls
         s.validation_check_box.setChecked(state.use_validation)
@@ -481,6 +485,7 @@ class MainPresenter(QObject):
         crops_per_image = s.crops_per_image_spinbox.value()
         scale_augmentation = s.scale_augmentation_check_box.isChecked()
         scale_augmentation_strength = s.scale_augmentation_strength_spinbox.value()
+        tech_aug = s.get_tech_aug_config() if hasattr(s, 'get_tech_aug_config') else {}
         cutout_enabled = s.cutout_check_box.isChecked()
         cutout_probability = s.cutout_probability_spinbox.value()
         cutout_holes = s.cutout_holes_spinbox.value()
@@ -492,6 +497,7 @@ class MainPresenter(QObject):
         mixup_enabled = s.mixup_check_box.isChecked()
         mixup_probability = s.mixup_probability_spinbox.value()
         mixup_alpha = s.mixup_alpha_spinbox.value()
+        pcb_defects = s.get_pcb_defects_config() if hasattr(s, 'get_pcb_defects_config') else {}
         validation = s.validation_check_box.isChecked()
         validation_percent = s.validation_spinbox.value()
         validation_source = normalize_validation_source(s.get_validation_source_value())
@@ -590,6 +596,7 @@ class MainPresenter(QObject):
                               crops_per_image=crops_per_image,
                               scale_augmentation=scale_augmentation,
                               scale_augmentation_strength=scale_augmentation_strength,
+                              tech_aug=tech_aug,
                               cutout_enabled=cutout_enabled,
                               cutout_probability=cutout_probability,
                               cutout_holes=cutout_holes,
@@ -601,6 +608,7 @@ class MainPresenter(QObject):
                               mixup_enabled=mixup_enabled,
                               mixup_probability=mixup_probability,
                               mixup_alpha=mixup_alpha,
+                              pcb_defects=pcb_defects,
                               use_validation=validation,
                               validation_percent=validation_percent,
                               validation_source=validation_source,

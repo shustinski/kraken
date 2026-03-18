@@ -136,6 +136,14 @@ def test_state_store_roundtrip_settings(monkeypatch):
         early_stopping_restore_best_weights=False,
         show_batch_preview=False,
         dataloader_num_workers=5,
+        tech_aug={'enabled': True, 'boundary_aware': {'probability': 0.9}},
+        pcb_defects={
+            'enabled': True,
+            'defect_probability': 0.75,
+            'min_defects': 1,
+            'max_defects': 2,
+            'defect_probabilities': {'break': 1.0, 'short': 0.0},
+        },
     )
     save_settings_state(state)
     loaded = load_settings_state()
@@ -207,6 +215,10 @@ def test_state_store_roundtrip_settings(monkeypatch):
     assert loaded.early_stopping_restore_best_weights is False
     assert loaded.show_batch_preview is False
     assert loaded.dataloader_num_workers == 5
+    assert loaded.tech_aug == {'enabled': True, 'boundary_aware': {'probability': 0.9}}
+    assert loaded.pcb_defects['enabled'] is True
+    assert loaded.pcb_defects['defect_probability'] == pytest.approx(0.75)
+    assert loaded.pcb_defects['defect_probabilities']['short'] == pytest.approx(0.0)
 
 
 def test_state_store_roundtrip_main_window_ini_backend(monkeypatch):
@@ -310,6 +322,13 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
         early_stopping_restore_best_weights=True,
         show_batch_preview=False,
         dataloader_num_workers=3,
+        tech_aug={'enabled': True, 'global_width': {'probability': 0.75}},
+        pcb_defects={
+            'enabled': True,
+            'defect_probability': 0.65,
+            'min_defects': 1,
+            'max_defects': 3,
+        },
     )
     save_settings_state(state)
     loaded = load_settings_state()
@@ -384,6 +403,9 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
     assert loaded.early_stopping_restore_best_weights is True
     assert loaded.show_batch_preview is False
     assert loaded.dataloader_num_workers == 3
+    assert loaded.tech_aug == {'enabled': True, 'global_width': {'probability': 0.75}}
+    assert loaded.pcb_defects['enabled'] is True
+    assert loaded.pcb_defects['defect_probability'] == pytest.approx(0.65)
 
 
 def test_workflow_snapshot_roundtrip_and_payload():

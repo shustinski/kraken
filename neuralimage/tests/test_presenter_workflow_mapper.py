@@ -362,3 +362,44 @@ def test_build_workflow_parameters_keeps_recognition_patch_size_when_sync_disabl
     _, _, recognition = build_workflow_parameters(main, settings)
 
     assert recognition.part_size == (320, 224)
+
+
+def test_build_workflow_parameters_maps_pcb_defects():
+    source = make_test_dir("workflow_source_pcb_defects")
+    result = make_test_dir("workflow_result_pcb_defects")
+    sample = make_test_dir("workflow_sample_pcb_defects")
+    label = make_test_dir("workflow_label_pcb_defects")
+
+    main = MainWindowState(
+        work_mode='train_only',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(
+        pcb_defects={
+            'enabled': True,
+            'defect_probability': 0.8,
+            'min_defects': 2,
+            'max_defects': 4,
+            'use_input_mask': True,
+            'use_defect_mask_as_label': True,
+            'defect_probabilities': {
+                'break': 1.0,
+                'short': 0.0,
+            },
+        }
+    )
+
+    _, training, _ = build_workflow_parameters(main, settings)
+
+    assert training.pcb_defects.enabled is True
+    assert training.pcb_defects.defect_probability == 0.8
+    assert training.pcb_defects.min_defects == 2
+    assert training.pcb_defects.max_defects == 4
+    assert training.pcb_defects.use_input_mask is True
+    assert training.pcb_defects.use_defect_mask_as_label is True
+    assert training.pcb_defects.defect_probabilities['break'] == 1.0
+    assert training.pcb_defects.defect_probabilities['short'] == 0.0

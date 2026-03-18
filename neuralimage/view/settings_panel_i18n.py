@@ -76,6 +76,16 @@ def apply_settings_panel_texts(panel: Any) -> None:
     sync_patch_sizes_key = 'sync_patch_sizes'
     crops_per_image_key = 'crops_per_image'
     scale_augmentation_strength_key = 'scale_augmentation_strength'
+    tech_aug_min_operations_key = 'tech_aug_min_operations'
+    tech_aug_max_operations_key = 'tech_aug_max_operations'
+    tech_aug_max_changed_pixels_ratio_key = 'tech_aug_max_changed_pixels_ratio'
+    tech_aug_max_foreground_ratio_delta_key = 'tech_aug_max_foreground_ratio_delta'
+    tech_aug_global_width_probability_key = 'tech_aug_global_width_probability'
+    tech_aug_scale_rethreshold_probability_key = 'tech_aug_scale_rethreshold_probability'
+    tech_aug_blur_threshold_probability_key = 'tech_aug_blur_threshold_probability'
+    tech_aug_boundary_aware_probability_key = 'tech_aug_boundary_aware_probability'
+    tech_aug_local_morphology_probability_key = 'tech_aug_local_morphology_probability'
+    tech_aug_gap_variation_probability_key = 'tech_aug_gap_variation_probability'
     augmentation_gamma_strength_key = 'augmentation_gamma_strength'
     augmentation_blur_probability_key = 'augmentation_blur_probability'
     augmentation_blur_radius_key = 'augmentation_blur_radius'
@@ -87,6 +97,17 @@ def apply_settings_panel_texts(panel: Any) -> None:
     random_artifacts_size_ratio_key = 'random_artifacts_size_ratio'
     mixup_probability_key = 'mixup_probability'
     mixup_alpha_key = 'mixup_alpha'
+    pcb_defects_probability_key = 'pcb_defects_probability'
+    pcb_defects_min_count_key = 'pcb_defects_min_count'
+    pcb_defects_max_count_key = 'pcb_defects_max_count'
+    pcb_break_weight_key = 'pcb_break_weight'
+    pcb_short_weight_key = 'pcb_short_weight'
+    pcb_missing_copper_weight_key = 'pcb_missing_copper_weight'
+    pcb_excess_copper_weight_key = 'pcb_excess_copper_weight'
+    pcb_pinhole_weight_key = 'pcb_pinhole_weight'
+    pcb_spurious_copper_weight_key = 'pcb_spurious_copper_weight'
+    pcb_via_weight_key = 'pcb_via_weight'
+    pcb_misalignment_weight_key = 'pcb_misalignment_weight'
     rare_patch_oversampling_factor_key = 'rare_patch_oversampling_factor'
     recognition_threshold_key = 'recognition_threshold'
     recognition_postprocess_kernel_size_key = 'recognition_postprocess_kernel_size'
@@ -285,6 +306,96 @@ def apply_settings_panel_texts(panel: Any) -> None:
                 'How strongly scale augmentation zooms patches in or out before resizing them back.',
             )
         )
+    if tech_aug_min_operations_key not in labels_map:
+        labels_map[tech_aug_min_operations_key] = 'Tech aug min ops'
+    if tech_aug_min_operations_key not in descriptions:
+        descriptions[tech_aug_min_operations_key] = str(
+            t.get(
+                'tech_aug_min_operations_tip',
+                'Minimum number of geometry variation operators to sample for one mask.',
+            )
+        )
+    if tech_aug_max_operations_key not in labels_map:
+        labels_map[tech_aug_max_operations_key] = 'Tech aug max ops'
+    if tech_aug_max_operations_key not in descriptions:
+        descriptions[tech_aug_max_operations_key] = str(
+            t.get(
+                'tech_aug_max_operations_tip',
+                'Maximum number of geometry variation operators to sample for one mask.',
+            )
+        )
+    if tech_aug_max_changed_pixels_ratio_key not in labels_map:
+        labels_map[tech_aug_max_changed_pixels_ratio_key] = 'Changed pixels limit'
+    if tech_aug_max_changed_pixels_ratio_key not in descriptions:
+        descriptions[tech_aug_max_changed_pixels_ratio_key] = str(
+            t.get(
+                'tech_aug_max_changed_pixels_ratio_tip',
+                'Reject augmented masks that modify too many pixels relative to the reference topology.',
+            )
+        )
+    if tech_aug_max_foreground_ratio_delta_key not in labels_map:
+        labels_map[tech_aug_max_foreground_ratio_delta_key] = 'Foreground delta limit'
+    if tech_aug_max_foreground_ratio_delta_key not in descriptions:
+        descriptions[tech_aug_max_foreground_ratio_delta_key] = str(
+            t.get(
+                'tech_aug_max_foreground_ratio_delta_tip',
+                'Reject augmented masks when total metal fill changes too much.',
+            )
+        )
+    if tech_aug_global_width_probability_key not in labels_map:
+        labels_map[tech_aug_global_width_probability_key] = 'Width variation prob.'
+    if tech_aug_global_width_probability_key not in descriptions:
+        descriptions[tech_aug_global_width_probability_key] = str(
+            t.get(
+                'tech_aug_global_width_probability_tip',
+                'Probability of global dilation or erosion that changes line width.',
+            )
+        )
+    if tech_aug_scale_rethreshold_probability_key not in labels_map:
+        labels_map[tech_aug_scale_rethreshold_probability_key] = 'Scale/rethreshold prob.'
+    if tech_aug_scale_rethreshold_probability_key not in descriptions:
+        descriptions[tech_aug_scale_rethreshold_probability_key] = str(
+            t.get(
+                'tech_aug_scale_rethreshold_probability_tip',
+                'Probability of scale drift simulated via resize and rethreshold.',
+            )
+        )
+    if tech_aug_blur_threshold_probability_key not in labels_map:
+        labels_map[tech_aug_blur_threshold_probability_key] = 'Blur/rethreshold prob.'
+    if tech_aug_blur_threshold_probability_key not in descriptions:
+        descriptions[tech_aug_blur_threshold_probability_key] = str(
+            t.get(
+                'tech_aug_blur_threshold_probability_tip',
+                'Probability of edge smoothing followed by binary rethreshold.',
+            )
+        )
+    if tech_aug_boundary_aware_probability_key not in labels_map:
+        labels_map[tech_aug_boundary_aware_probability_key] = 'Boundary-aware prob.'
+    if tech_aug_boundary_aware_probability_key not in descriptions:
+        descriptions[tech_aug_boundary_aware_probability_key] = str(
+            t.get(
+                'tech_aug_boundary_aware_probability_tip',
+                'Probability of perturbing only a narrow band around polygon boundaries.',
+            )
+        )
+    if tech_aug_local_morphology_probability_key not in labels_map:
+        labels_map[tech_aug_local_morphology_probability_key] = 'Local morphology prob.'
+    if tech_aug_local_morphology_probability_key not in descriptions:
+        descriptions[tech_aug_local_morphology_probability_key] = str(
+            t.get(
+                'tech_aug_local_morphology_probability_tip',
+                'Probability of local dilation or erosion inside random regions of interest.',
+            )
+        )
+    if tech_aug_gap_variation_probability_key not in labels_map:
+        labels_map[tech_aug_gap_variation_probability_key] = 'Gap open/close prob.'
+    if tech_aug_gap_variation_probability_key not in descriptions:
+        descriptions[tech_aug_gap_variation_probability_key] = str(
+            t.get(
+                'tech_aug_gap_variation_probability_tip',
+                'Probability of closing narrow gaps or opening thin bridges.',
+            )
+        )
     if augmentation_gamma_strength_key not in labels_map:
         labels_map[augmentation_gamma_strength_key] = 'Gamma change'
     if augmentation_gamma_strength_key not in descriptions:
@@ -368,6 +479,81 @@ def apply_settings_panel_texts(panel: Any) -> None:
     if mixup_alpha_key not in descriptions:
         descriptions[mixup_alpha_key] = str(
             t.get('mixup_alpha_tip', 'Beta distribution alpha parameter used to sample mixup lambda.')
+        )
+    if pcb_defects_probability_key not in labels_map:
+        labels_map[pcb_defects_probability_key] = 'PCB defect probability'
+    if pcb_defects_probability_key not in descriptions:
+        descriptions[pcb_defects_probability_key] = str(
+            t.get(
+                'pcb_defects_probability_tip',
+                'Probability of injecting one or more synthetic PCB defects into a training sample.',
+            )
+        )
+    if pcb_defects_min_count_key not in labels_map:
+        labels_map[pcb_defects_min_count_key] = 'Min defect count'
+    if pcb_defects_min_count_key not in descriptions:
+        descriptions[pcb_defects_min_count_key] = str(
+            t.get(
+                'pcb_defects_min_count_tip',
+                'Minimum number of sequential PCB defects generated for one augmented sample.',
+            )
+        )
+    if pcb_defects_max_count_key not in labels_map:
+        labels_map[pcb_defects_max_count_key] = 'Max defect count'
+    if pcb_defects_max_count_key not in descriptions:
+        descriptions[pcb_defects_max_count_key] = str(
+            t.get(
+                'pcb_defects_max_count_tip',
+                'Maximum number of sequential PCB defects generated for one augmented sample.',
+            )
+        )
+    if pcb_break_weight_key not in labels_map:
+        labels_map[pcb_break_weight_key] = 'Break weight'
+    if pcb_break_weight_key not in descriptions:
+        descriptions[pcb_break_weight_key] = str(
+            t.get('pcb_break_weight_tip', 'Relative sampling weight for local conductor breaks.')
+        )
+    if pcb_short_weight_key not in labels_map:
+        labels_map[pcb_short_weight_key] = 'Short weight'
+    if pcb_short_weight_key not in descriptions:
+        descriptions[pcb_short_weight_key] = str(
+            t.get('pcb_short_weight_tip', 'Relative sampling weight for parasitic bridges between nearby traces.')
+        )
+    if pcb_missing_copper_weight_key not in labels_map:
+        labels_map[pcb_missing_copper_weight_key] = 'Missing copper weight'
+    if pcb_missing_copper_weight_key not in descriptions:
+        descriptions[pcb_missing_copper_weight_key] = str(
+            t.get('pcb_missing_copper_weight_tip', 'Relative sampling weight for local copper loss defects.')
+        )
+    if pcb_excess_copper_weight_key not in labels_map:
+        labels_map[pcb_excess_copper_weight_key] = 'Excess copper weight'
+    if pcb_excess_copper_weight_key not in descriptions:
+        descriptions[pcb_excess_copper_weight_key] = str(
+            t.get('pcb_excess_copper_weight_tip', 'Relative sampling weight for copper burrs and growths.')
+        )
+    if pcb_pinhole_weight_key not in labels_map:
+        labels_map[pcb_pinhole_weight_key] = 'Pinhole weight'
+    if pcb_pinhole_weight_key not in descriptions:
+        descriptions[pcb_pinhole_weight_key] = str(
+            t.get('pcb_pinhole_weight_tip', 'Relative sampling weight for small holes inside copper regions.')
+        )
+    if pcb_spurious_copper_weight_key not in labels_map:
+        labels_map[pcb_spurious_copper_weight_key] = 'Spurious copper weight'
+    if pcb_spurious_copper_weight_key not in descriptions:
+        descriptions[pcb_spurious_copper_weight_key] = str(
+            t.get('pcb_spurious_copper_weight_tip', 'Relative sampling weight for isolated parasitic copper islands.')
+        )
+    if pcb_via_weight_key not in labels_map:
+        labels_map[pcb_via_weight_key] = 'Via defect weight'
+    if pcb_via_weight_key not in descriptions:
+        descriptions[pcb_via_weight_key] = str(
+            t.get('pcb_via_weight_tip', 'Relative sampling weight for via shift, size, or partial-loss defects.')
+        )
+    if pcb_misalignment_weight_key not in labels_map:
+        labels_map[pcb_misalignment_weight_key] = 'Misalignment weight'
+    if pcb_misalignment_weight_key not in descriptions:
+        descriptions[pcb_misalignment_weight_key] = str(
+            t.get('pcb_misalignment_weight_tip', 'Relative sampling weight for local layer misregistration effects.')
         )
     if rare_patch_oversampling_factor_key not in labels_map:
         labels_map[rare_patch_oversampling_factor_key] = 'Rare patch oversampling factor'
@@ -477,6 +663,38 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
+    panel.tech_augmentation_check_box.setText(
+        str(
+            t.get(
+                'tech_augmentation',
+                'Technology variation augmentation',
+            )
+        )
+    )
+    panel.tech_augmentation_check_box.setToolTip(
+        str(
+            t.get(
+                'tech_augmentation_tip',
+                'Apply geometry-only process variations to binary metallization masks during training.',
+            )
+        )
+    )
+    panel.tech_augmentation_debug_pair_check_box.setText(
+        str(
+            t.get(
+                'tech_augmentation_debug_pair',
+                'Debug: return original and augmented mask',
+            )
+        )
+    )
+    panel.tech_augmentation_debug_pair_check_box.setToolTip(
+        str(
+            t.get(
+                'tech_augmentation_debug_pair_tip',
+                'Keep both the original and augmented mask for visual validation of synthetic process drift.',
+            )
+        )
+    )
     panel.cutout_check_box.setText(
         _read_text_from_mappings(
             (t, labels_map),
@@ -519,6 +737,42 @@ def apply_settings_panel_texts(panel: Any) -> None:
             'Mix pairs of training samples inside a batch using a random interpolation factor.',
         )
     )
+    panel.pcb_defects_check_box.setText(
+        _read_text_from_mappings(
+            (t, labels_map),
+            ('pcb_defects_enabled', 'pcb_defects_enable'),
+            'Enable synthetic PCB defects',
+        )
+    )
+    panel.pcb_defects_check_box.setToolTip(
+        _read_text_from_mappings(
+            (t, descriptions),
+            ('pcb_defects_tip', 'pcb_defects_enabled'),
+            'Inject realistic topology defects into training samples only.',
+        )
+    )
+    panel.pcb_defects_use_input_mask_check_box.setText(
+        str(t.get('pcb_defects_use_input_mask', 'Use provided PCB mask for defect placement'))
+    )
+    panel.pcb_defects_use_input_mask_check_box.setToolTip(
+        str(
+            t.get(
+                'pcb_defects_use_input_mask_tip',
+                'Use the input binary mask to place defects on valid copper structures when available.',
+            )
+        )
+    )
+    panel.pcb_defects_use_defect_mask_as_label_check_box.setText(
+        str(t.get('pcb_defects_use_defect_mask_as_label', 'Use defect mask as training label'))
+    )
+    panel.pcb_defects_use_defect_mask_as_label_check_box.setToolTip(
+        str(
+            t.get(
+                'pcb_defects_use_defect_mask_as_label_tip',
+                'Return the generated defect mask as the supervision target for synthetic-defect segmentation.',
+            )
+        )
+    )
     panel.augmentation_brightness_spinbox.setToolTip(str(t.get('extra_aug_brightness_tip', '')))
     panel.augmentation_contrast_spinbox.setToolTip(str(t.get('extra_aug_contrast_tip', '')))
     panel.augmentation_gamma_spinbox.setToolTip(str(t.get('extra_aug_gamma_tip', '')))
@@ -527,6 +781,32 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.augmentation_blur_probability_spinbox.setToolTip(str(t.get('extra_aug_blur_prob_tip', '')))
     panel.augmentation_blur_radius_spinbox.setToolTip(str(t.get('extra_aug_blur_radius_tip', '')))
     panel.scale_augmentation_strength_spinbox.setToolTip(str(t.get('scale_augmentation_strength_tip', '')))
+    panel.tech_aug_min_operations_spinbox.setToolTip(str(t.get('tech_aug_min_operations_tip', '')))
+    panel.tech_aug_max_operations_spinbox.setToolTip(str(t.get('tech_aug_max_operations_tip', '')))
+    panel.tech_aug_max_changed_pixels_ratio_spinbox.setToolTip(
+        str(t.get('tech_aug_max_changed_pixels_ratio_tip', ''))
+    )
+    panel.tech_aug_max_foreground_ratio_delta_spinbox.setToolTip(
+        str(t.get('tech_aug_max_foreground_ratio_delta_tip', ''))
+    )
+    panel.tech_aug_global_width_probability_spinbox.setToolTip(
+        str(t.get('tech_aug_global_width_probability_tip', ''))
+    )
+    panel.tech_aug_scale_rethreshold_probability_spinbox.setToolTip(
+        str(t.get('tech_aug_scale_rethreshold_probability_tip', ''))
+    )
+    panel.tech_aug_blur_threshold_probability_spinbox.setToolTip(
+        str(t.get('tech_aug_blur_threshold_probability_tip', ''))
+    )
+    panel.tech_aug_boundary_aware_probability_spinbox.setToolTip(
+        str(t.get('tech_aug_boundary_aware_probability_tip', ''))
+    )
+    panel.tech_aug_local_morphology_probability_spinbox.setToolTip(
+        str(t.get('tech_aug_local_morphology_probability_tip', ''))
+    )
+    panel.tech_aug_gap_variation_probability_spinbox.setToolTip(
+        str(t.get('tech_aug_gap_variation_probability_tip', ''))
+    )
     panel.cutout_probability_spinbox.setToolTip(str(t.get('cutout_probability_tip', '')))
     panel.cutout_holes_spinbox.setToolTip(str(t.get('cutout_holes_tip', '')))
     panel.cutout_size_ratio_spinbox.setToolTip(str(t.get('cutout_size_ratio_tip', '')))
@@ -535,6 +815,23 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.random_artifacts_size_ratio_spinbox.setToolTip(str(t.get('random_artifacts_size_ratio_tip', '')))
     panel.mixup_probability_spinbox.setToolTip(str(t.get('mixup_probability_tip', '')))
     panel.mixup_alpha_spinbox.setToolTip(str(t.get('mixup_alpha_tip', '')))
+    panel.pcb_defects_probability_spinbox.setToolTip(str(t.get('pcb_defects_probability_tip', '')))
+    panel.pcb_defects_min_count_spinbox.setToolTip(str(t.get('pcb_defects_min_count_tip', '')))
+    panel.pcb_defects_max_count_spinbox.setToolTip(str(t.get('pcb_defects_max_count_tip', '')))
+    panel.pcb_defects_groupbox.setToolTip(
+        str(t.get('pcb_defects_group_tip', 'Synthetic topology defects applied only during training.'))
+    )
+    for defect_name, text_key in (
+        ('break', 'pcb_break_weight_tip'),
+        ('short', 'pcb_short_weight_tip'),
+        ('missing_copper', 'pcb_missing_copper_weight_tip'),
+        ('excess_copper', 'pcb_excess_copper_weight_tip'),
+        ('pinhole', 'pcb_pinhole_weight_tip'),
+        ('spurious_copper', 'pcb_spurious_copper_weight_tip'),
+        ('via', 'pcb_via_weight_tip'),
+        ('misalignment', 'pcb_misalignment_weight_tip'),
+    ):
+        panel.pcb_defect_type_spinboxes[defect_name].setToolTip(str(t.get(text_key, '')))
     panel.shift_spinbox.setToolTip(str(t.get('shift_tip', '')))
     panel.validation_check_box.setText(str(t.get('validation', 'Use validation during training')))
     panel.validation_check_box.setToolTip(str(t.get('validation_tip', '')))
@@ -579,6 +876,7 @@ def apply_settings_panel_texts(panel: Any) -> None:
     )
     panel.general_groupbox.setTitle(str(t.get('general_group', 'Data and model')))
     panel.augmentation_groupbox.setTitle(str(t.get('augmentation_group', 'Augmentation and shift')))
+    panel.pcb_defects_groupbox.setTitle(str(t.get('pcb_defects_group', 'Synthetic PCB defects')))
     panel.validation_groupbox.setTitle(str(t.get('validation_group', 'Validation')))
     panel.sample_type_groupbox.setTitle(str(t.get('sample_group', 'Dataset mode')))
     panel.sample_type_groupbox.setToolTip(str(t.get('sample_group_tip', '')))

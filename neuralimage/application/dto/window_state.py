@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -122,3 +123,5 @@ class SettingsState:
     context_branch_channels: tuple[int, ...] = (16, 32, 64, 128)
     fusion_type: str = 'concat'
     use_context_branch: bool | None = None
+    tech_aug: dict[str, Any] = field(default_factory=dict)
+    pcb_defects: dict[str, Any] = field(default_factory=dict)

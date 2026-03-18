@@ -386,6 +386,14 @@ def _build_settings_state(
         multi_gpu_mode=multi_gpu_mode,
         torch_compile_enabled=read_bool('torch_compile_enabled', defaults.torch_compile_enabled),
         show_batch_preview=read_bool('show_batch_preview', defaults.show_batch_preview),
+        tech_aug=_coerce_json_object(
+            read_str('tech_aug_json', ''),
+            default=getattr(defaults, 'tech_aug', {}),
+        ),
+        pcb_defects=_coerce_json_object(
+            read_str('pcb_defects_json', ''),
+            default=getattr(defaults, 'pcb_defects', {}),
+        ),
     )
 
 
@@ -540,6 +548,16 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'multi_gpu_mode': multi_gpu_mode,
         'torch_compile_enabled': bool(state.torch_compile_enabled),
         'show_batch_preview': bool(state.show_batch_preview),
+        'tech_aug_json': json.dumps(
+            _jsonify_value(getattr(state, 'tech_aug', {})),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        'pcb_defects_json': json.dumps(
+            _jsonify_value(getattr(state, 'pcb_defects', {})),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
     }
 
 
@@ -575,6 +593,21 @@ def _coerce_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _coerce_json_object(value: Any, default: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    raw = _coerce_str(value, '')
+    if not raw.strip():
+        return dict(default)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return dict(default)
+    if not isinstance(payload, dict):
+        return dict(default)
+    return payload
 
 
 def _jsonify_value(value: Any) -> Any:

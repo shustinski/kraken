@@ -29,6 +29,18 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.crops_per_image_spinbox.valueChanged,
             panel.scale_augmentation_check_box.toggled,
             panel.scale_augmentation_strength_spinbox.valueChanged,
+            panel.tech_augmentation_check_box.toggled,
+            panel.tech_augmentation_debug_pair_check_box.toggled,
+            panel.tech_aug_min_operations_spinbox.valueChanged,
+            panel.tech_aug_max_operations_spinbox.valueChanged,
+            panel.tech_aug_max_changed_pixels_ratio_spinbox.valueChanged,
+            panel.tech_aug_max_foreground_ratio_delta_spinbox.valueChanged,
+            panel.tech_aug_global_width_probability_spinbox.valueChanged,
+            panel.tech_aug_scale_rethreshold_probability_spinbox.valueChanged,
+            panel.tech_aug_blur_threshold_probability_spinbox.valueChanged,
+            panel.tech_aug_boundary_aware_probability_spinbox.valueChanged,
+            panel.tech_aug_local_morphology_probability_spinbox.valueChanged,
+            panel.tech_aug_gap_variation_probability_spinbox.valueChanged,
             panel.cutout_check_box.toggled,
             panel.cutout_probability_spinbox.valueChanged,
             panel.cutout_holes_spinbox.valueChanged,
@@ -40,6 +52,12 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.mixup_check_box.toggled,
             panel.mixup_probability_spinbox.valueChanged,
             panel.mixup_alpha_spinbox.valueChanged,
+            panel.pcb_defects_check_box.toggled,
+            panel.pcb_defects_probability_spinbox.valueChanged,
+            panel.pcb_defects_min_count_spinbox.valueChanged,
+            panel.pcb_defects_max_count_spinbox.valueChanged,
+            panel.pcb_defects_use_input_mask_check_box.toggled,
+            panel.pcb_defects_use_defect_mask_as_label_check_box.toggled,
             panel.shuffle_frames_check_box.toggled,
             panel.shuffle_patches_in_frame_check_box.toggled,
             panel.augmentation_brightness_spinbox.valueChanged,
@@ -110,6 +128,10 @@ def connect_settings_panel_signals(panel: Any) -> None:
         ),
         panel.optimizer_settings_changed,
     )
+    _connect_emitters(
+        tuple(spinbox.valueChanged for spinbox in getattr(panel, 'pcb_defect_type_spinboxes', {}).values()),
+        panel.optimizer_settings_changed,
+    )
     for loss_name in getattr(panel, 'loss_term_checkboxes', {}):
         _connect_emitters(
             (
@@ -163,6 +185,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
     panel.random_crop_check_box.toggled.connect(
         lambda *_args, **_kwargs: panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
     )
+    panel.tech_augmentation_check_box.toggled.connect(panel._sync_tech_augmentation_controls)
     panel.cut_dataset_type.toggled.connect(
         lambda *_args, **_kwargs: panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
     )
@@ -175,6 +198,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
     panel.cutout_check_box.toggled.connect(panel._sync_training_augmentation_controls)
     panel.random_artifacts_check_box.toggled.connect(panel._sync_training_augmentation_controls)
     panel.mixup_check_box.toggled.connect(panel._sync_training_augmentation_controls)
+    panel.pcb_defects_check_box.toggled.connect(panel._sync_training_augmentation_controls)
     panel.cut_dataset_type.toggled.connect(panel._sync_rare_patch_oversampling_controls)
     panel.no_cut_dataset_type.toggled.connect(panel._sync_rare_patch_oversampling_controls)
     panel.recognition_binarize_output_check_box.toggled.connect(panel._sync_recognition_output_controls)

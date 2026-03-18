@@ -144,6 +144,11 @@ class IndexedDataset(Dataset):
             return str(describe_fn(int(index)))
         return f'sample_{int(index):06d}'
 
+    def set_epoch(self) -> None:
+        set_epoch_fn = getattr(self._base_dataset, 'set_epoch', None)
+        if callable(set_epoch_fn):
+            set_epoch_fn()
+
 
 class LossAwareSampler(Sampler[int]):
     MULTINOMIAL_MAX_CATEGORIES = 1 << 24
@@ -502,13 +507,39 @@ class GeneralNeuralHandler:
                 return None, None
 
         if self.tranining_parameters.cut_mode == SampleCutMode.disk:
-            train_dataset = CustomDataset(train_samples, self.tranining_parameters.generation.channels)
+            train_dataset = CustomDataset(
+                train_samples,
+                self.tranining_parameters.generation.channels,
+                pcb_defects=getattr(self.tranining_parameters, 'pcb_defects', None),
+                tech_aug=getattr(self.tranining_parameters.generation, 'tech_aug', None),
+                apply_train_only_transforms=True,
+            )
             val_dataset = (
-                CustomDataset(val_samples, self.tranining_parameters.generation.channels) if val_samples else None
+                CustomDataset(
+                    val_samples,
+                    self.tranining_parameters.generation.channels,
+                    pcb_defects=getattr(self.tranining_parameters, 'pcb_defects', None),
+                    tech_aug=getattr(self.tranining_parameters.generation, 'tech_aug', None),
+                    apply_train_only_transforms=False,
+                )
+                if val_samples
+                else None
             )
         else:
-            train_dataset = NoCutDataset(train_samples, self.tranining_parameters)
-            val_dataset = NoCutDataset(val_samples, self.tranining_parameters) if val_samples else None
+            train_dataset = NoCutDataset(
+                train_samples,
+                self.tranining_parameters,
+                apply_train_only_transforms=True,
+            )
+            val_dataset = (
+                NoCutDataset(
+                    val_samples,
+                    self.tranining_parameters,
+                    apply_train_only_transforms=False,
+                )
+                if val_samples
+                else None
+            )
 
         return train_dataset, val_dataset
 

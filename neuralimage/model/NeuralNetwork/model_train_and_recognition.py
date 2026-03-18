@@ -6,6 +6,7 @@ import sys
 import importlib.util
 import math
 import re
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,7 +30,7 @@ from torch.utils.data.distributed import DistributedSampler
 from PIL import Image, ImageDraw, ImageFont
 
 from lib import System
-from model.NeuralNetwork.dataset import CustomDataset
+from model.NeuralNetwork.dataset import CustomDataset, NoCutDataset
 from lib.data_interfaces import (
     CutoutParameters,
     RecognitionParameters,
@@ -85,6 +86,22 @@ _ARTIFACT_NAME_SANITIZE_PATTERN = re.compile(r'[^A-Za-z0-9._-]+')
 class _NoOpQueue:
     def put(self, item: Any) -> None:
         return
+
+
+class _RecordingQueue:
+    def __init__(self, queue: Any, log_lines: list[str]) -> None:
+        self._queue = queue
+        self._log_lines = log_lines
+
+    def put(self, item: Any) -> None:
+        try:
+            if isinstance(item, (list, tuple)) and len(item) >= 2 and str(item[0]) == 'logging':
+                timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                for line in str(item[1]).splitlines() or ['']:
+                    self._log_lines.append(f'[{timestamp}] {line}')
+        except Exception:
+            pass
+        self._queue.put(item)
 
 
 def _ddp_worker_entry(rank: int, trainer: 'TrainerProcess', world_size: int, master_port: int) -> None:
@@ -624,6 +641,8 @@ class TrainerProcess(mp.Process):
         self._val_iou_history: list[tuple[float, float]] = []
         self._val_dice_history: list[tuple[float, float]] = []
         self._batch_points_by_epoch: dict[int, list[tuple[float, float]]] = {}
+        self._training_log_lines: list[str] = []
+        self._bus = _RecordingQueue(message_bus, self._training_log_lines)
 
     @property
     def _base_model(self) -> nn.Module:
@@ -765,46 +784,109 @@ class TrainerProcess(mp.Process):
         save_path.parent.mkdir(parents=True, exist_ok=True)
         image.save(save_path)
 
+    @staticmethod
+    def _save_chart_csv(
+        *,
+        save_path: Path,
+        x_label: str,
+        series: list[tuple[str, list[tuple[float, float]], tuple[int, int, int]]],
+    ) -> None:
+        non_empty_series = [(label, points) for label, points, _color in series if points]
+        if not non_empty_series:
+            return
+
+        x_values = sorted({float(x_value) for _label, points in non_empty_series for x_value, _y_value in points})
+        series_lookup: dict[str, dict[float, float]] = {
+            str(label): {float(x_value): float(y_value) for x_value, y_value in points}
+            for label, points in non_empty_series
+        }
+
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        with save_path.open('w', encoding='utf-8', newline='') as csv_file:
+            writer = csv.writer(csv_file)
+            labels = [str(label) for label, _points in non_empty_series]
+            writer.writerow([str(x_label), *labels])
+            for x_value in x_values:
+                x_cell = int(x_value) if abs(x_value - round(x_value)) < 1e-9 else x_value
+                row: list[Any] = [x_cell]
+                for label in labels:
+                    row.append(series_lookup[label].get(float(x_value), ''))
+                writer.writerow(row)
+
     def _save_metric_charts(self) -> None:
         artifact_dir = self._save_path.parent
         if self._train_epoch_history or self._val_epoch_history:
+            loss_chart_series = [
+                ('Train Loss', list(self._train_epoch_history), (80, 186, 255)),
+                ('Val Loss', list(self._val_epoch_history), (255, 170, 92)),
+            ]
             self._render_chart_image(
                 save_path=artifact_dir / 'training_metrics_loss_by_epoch.png',
                 title='Loss vs Epoch',
                 x_label='Epoch',
                 y_label='Loss',
-                series=[
-                    ('Train Loss', list(self._train_epoch_history), (80, 186, 255)),
-                    ('Val Loss', list(self._val_epoch_history), (255, 170, 92)),
-                ],
+                series=loss_chart_series,
+            )
+            self._save_chart_csv(
+                save_path=artifact_dir / 'training_metrics_loss_by_epoch.csv',
+                x_label='Epoch',
+                series=loss_chart_series,
             )
         if self._val_iou_history or self._val_dice_history:
+            validation_quality_series = [
+                ('IoU', list(self._val_iou_history), (142, 210, 110)),
+                ('Dice', list(self._val_dice_history), (255, 111, 145)),
+            ]
             self._render_chart_image(
                 save_path=artifact_dir / 'training_metrics_validation_quality.png',
                 title='Validation IoU / Dice vs Epoch',
                 x_label='Epoch',
                 y_label='Score',
-                series=[
-                    ('IoU', list(self._val_iou_history), (142, 210, 110)),
-                    ('Dice', list(self._val_dice_history), (255, 111, 145)),
-                ],
+                series=validation_quality_series,
                 y_formatter=lambda value: f'{float(value) * 100.0:.1f}%',
+            )
+            self._save_chart_csv(
+                save_path=artifact_dir / 'training_metrics_validation_quality.csv',
+                x_label='Epoch',
+                series=validation_quality_series,
             )
         if self._batch_points_by_epoch:
             last_epoch = max(self._batch_points_by_epoch)
+            batch_chart_series = [
+                (
+                    'Train Loss',
+                    list(self._batch_points_by_epoch.get(last_epoch, [])),
+                    (137, 228, 125),
+                ),
+            ]
             self._render_chart_image(
                 save_path=artifact_dir / f'training_metrics_train_loss_epoch_{int(last_epoch):04d}.png',
                 title=f'Train Loss vs Batch (Epoch {int(last_epoch)})',
                 x_label='Batch',
                 y_label='Loss',
-                series=[
-                    (
-                        'Train Loss',
-                        list(self._batch_points_by_epoch.get(last_epoch, [])),
-                        (137, 228, 125),
-                    ),
-                ],
+                series=batch_chart_series,
             )
+            self._save_chart_csv(
+                save_path=artifact_dir / f'training_metrics_train_loss_epoch_{int(last_epoch):04d}.csv',
+                x_label='Batch',
+                series=batch_chart_series,
+            )
+
+    @staticmethod
+    def _format_elapsed_duration(seconds: float) -> str:
+        total_seconds = int(max(0.0, round(float(seconds))))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f'{hours:02d}:{minutes:02d}:{secs:02d}'
+
+    def _save_training_log(self) -> Path:
+        log_path = self._save_path.parent / 'training_log.txt'
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_text = '\n'.join(str(line) for line in self._training_log_lines)
+        if log_text and not log_text.endswith('\n'):
+            log_text += '\n'
+        log_path.write_text(log_text, encoding='utf-8')
+        return log_path
 
     @staticmethod
     def _find_free_port() -> int:
@@ -1570,6 +1652,65 @@ class TrainerProcess(mp.Process):
             return None
         return getattr(self._val_dataloader, 'dataset', None)
 
+    @staticmethod
+    def _unwrap_validation_dataset(dataset: Any) -> Any:
+        current = dataset
+        seen_ids: set[int] = set()
+        while current is not None and id(current) not in seen_ids:
+            seen_ids.add(id(current))
+            base_dataset = getattr(current, '_base_dataset', None)
+            if base_dataset is None:
+                return current
+            current = base_dataset
+        return current
+
+    def _resolve_validation_export_items(self) -> list[dict[str, Any]]:
+        dataset = self._resolve_validation_dataset()
+        base_dataset = self._unwrap_validation_dataset(dataset)
+        if isinstance(base_dataset, NoCutDataset):
+            cut_settings = getattr(base_dataset, '_cut_settings', None)
+            segment_size = tuple(getattr(cut_settings, 'segment_size', (0, 0)))
+            if len(segment_size) != 2:
+                return []
+            step = int(getattr(cut_settings, 'step', segment_size[0]))
+            overlap = max(0, int(segment_size[0]) - step)
+            channels = int(getattr(base_dataset, 'colors', 1))
+            return [
+                {
+                    'image_path': Path(image_path),
+                    'segment_shape': (channels, int(segment_size[0]), int(segment_size[1])),
+                    'overlap': overlap,
+                    'use_context_branch': bool(getattr(base_dataset, '_use_context_branch', False)),
+                    'context_crop_size': getattr(base_dataset, '_context_crop_size', None),
+                    'context_input_size': getattr(base_dataset, '_context_input_size', None),
+                }
+                for image_path, _label_path in getattr(base_dataset, 'samples', [])
+            ]
+
+        if isinstance(base_dataset, CustomDataset):
+            export_items: list[dict[str, Any]] = []
+            channels = int(getattr(base_dataset, 'channels', 1))
+            for image_path, _label_path in getattr(base_dataset, 'samples', []):
+                image_file = Path(image_path)
+                try:
+                    with Image.open(image_file) as source_image:
+                        width, height = source_image.size
+                except OSError:
+                    continue
+                export_items.append(
+                    {
+                        'image_path': image_file,
+                        'segment_shape': (channels, int(width), int(height)),
+                        'overlap': 0,
+                        'use_context_branch': False,
+                        'context_crop_size': None,
+                        'context_input_size': None,
+                    }
+                )
+            return export_items
+
+        return []
+
     def _describe_validation_sample(self, dataset: Any, sample_index: int, fallback_index: int) -> str:
         describe_fn = getattr(dataset, 'describe_sample', None)
         if callable(describe_fn):
@@ -1589,44 +1730,74 @@ class TrainerProcess(mp.Process):
     ) -> None:
         if (not self._save_validation_binary_images) or self._val_dataloader is None:
             return
-        dataset = self._resolve_validation_dataset()
-        if dataset is None:
-            return
 
         epoch_dir = self._save_path.parent / 'validation_binary_predictions' / f'epoch_{int(epoch + 1):04d}'
         epoch_dir.mkdir(parents=True, exist_ok=True)
         saved_images = 0
-        with torch.no_grad():
-            for batch in self._val_dataloader:
-                data, _target, sample_indices = self._split_batch(batch)
-                inputs = self._move_batch_input_to_device(data, device)
-                with autocast_ctx():
-                    outputs = self._forward_model(inputs)
-                probs = torch.sigmoid(self._sanitize_outputs_for_loss(outputs))
-                binary_predictions = (probs >= float(threshold)).detach().cpu()
+        export_items = self._resolve_validation_export_items()
+        batch_size = max(1, int(getattr(self._val_dataloader, 'batch_size', 1) or 1))
 
-                if torch.is_tensor(sample_indices):
-                    resolved_indices = sample_indices.detach().cpu().tolist()
-                elif sample_indices is None:
-                    resolved_indices = list(range(saved_images, saved_images + int(binary_predictions.shape[0])))
-                else:
-                    resolved_indices = list(sample_indices)
-
-                for batch_offset in range(int(binary_predictions.shape[0])):
-                    sample_index = int(resolved_indices[batch_offset]) if batch_offset < len(resolved_indices) else saved_images
-                    sample_name = self._describe_validation_sample(dataset, sample_index, saved_images)
-                    sample_path = epoch_dir / f'{saved_images:06d}_{sample_name}.png'
-                    sample_tensor = binary_predictions[batch_offset]
-                    if sample_tensor.ndim == 3:
-                        sample_tensor = sample_tensor[0]
-                    sample_array = sample_tensor.numpy().astype(np.uint8) * 255
-                    Image.fromarray(sample_array, mode='L').save(sample_path)
+        if export_items:
+            with torch.no_grad():
+                for export_item in export_items:
+                    predicted = _gpu_predict(
+                        _cut_image_prepare(
+                            Path(export_item['image_path']),
+                            tuple(export_item['segment_shape']),
+                            int(export_item['overlap']),
+                            use_context_branch=bool(export_item['use_context_branch']),
+                            context_crop_size=export_item['context_crop_size'],
+                            context_input_size=export_item['context_input_size'],
+                        ),
+                        self._model,
+                        device,
+                        batch_size,
+                    )
+                    _sew(
+                        epoch_dir,
+                        predicted,
+                        jpeg_quality=95,
+                        threshold=float(threshold),
+                        postprocess_kernel_size=0,
+                    )
                     saved_images += 1
+        else:
+            dataset = self._resolve_validation_dataset()
+            if dataset is None:
+                return
+            with torch.no_grad():
+                for batch in self._val_dataloader:
+                    data, _target, sample_indices = self._split_batch(batch)
+                    inputs = self._move_batch_input_to_device(data, device)
+                    with autocast_ctx():
+                        outputs = self._forward_model(inputs)
+                    probs = torch.sigmoid(self._sanitize_outputs_for_loss(outputs))
+                    binary_predictions = (probs >= float(threshold)).detach().cpu()
+
+                    if torch.is_tensor(sample_indices):
+                        resolved_indices = sample_indices.detach().cpu().tolist()
+                    elif sample_indices is None:
+                        resolved_indices = list(range(saved_images, saved_images + int(binary_predictions.shape[0])))
+                    else:
+                        resolved_indices = list(sample_indices)
+
+                    for batch_offset in range(int(binary_predictions.shape[0])):
+                        sample_index = (
+                            int(resolved_indices[batch_offset]) if batch_offset < len(resolved_indices) else saved_images
+                        )
+                        sample_name = self._describe_validation_sample(dataset, sample_index, saved_images)
+                        sample_path = epoch_dir / f'{saved_images:06d}_{sample_name}.png'
+                        sample_tensor = binary_predictions[batch_offset]
+                        if sample_tensor.ndim == 3:
+                            sample_tensor = sample_tensor[0]
+                        sample_array = sample_tensor.numpy().astype(np.uint8) * 255
+                        Image.fromarray(sample_array, mode='L').save(sample_path)
+                        saved_images += 1
 
         self._bus.put([
             'logging',
             (
-                f'Validation binary predictions saved: {saved_images} file(s) '
+                f'Validation predictions saved in recognition-style stitched form: {saved_images} file(s) '
                 f'in {epoch_dir}.'
             ),
         ])
@@ -3357,6 +3528,7 @@ class TrainerProcess(mp.Process):
         runtime_state: _TrainingRuntimeState,
     ) -> None:
         run_context = runtime_state.run_context
+        epoch_started_at = time.perf_counter()
         self._publish_epoch_start(epoch, run_context, distributed)
 
         train_stage_start = time.perf_counter()
@@ -3423,6 +3595,13 @@ class TrainerProcess(mp.Process):
                 validation_ms=validation_ms,
                 checkpoint_ms=checkpoint_ms,
             )
+            self._bus.put([
+                'logging',
+                (
+                    f'Epoch [{epoch + 1}/{self._epochs}] completed in '
+                    f'{self._format_elapsed_duration(time.perf_counter() - epoch_started_at)}.'
+                ),
+            ])
 
         return None
 
@@ -3476,6 +3655,12 @@ class TrainerProcess(mp.Process):
                 self._save_metric_charts()
             except Exception as error:
                 self._bus.put(['logging', f'Failed to save training metric charts: {error}'])
+            try:
+                log_path = self._save_path.parent / 'training_log.txt'
+                self._bus.put(['logging', f'Training log saved: {log_path}'])
+                self._save_training_log()
+            except Exception as error:
+                self._bus.put(['logging', f'Failed to save training log: {error}'])
         if self.callback is not None and is_main_process:
             self.callback()
         if is_main_process:

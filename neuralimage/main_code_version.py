@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from lib.data_interfaces import (
+    build_pcb_defect_parameters,
     CutoutParameters,
     EarlyStoppingParameters,
     HardMiningParameters,
@@ -80,6 +81,7 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
     cutout_raw = raw.get('cutout', {})
     random_artifacts_raw = raw.get('random_artifacts', {})
     mixup_raw = raw.get('mixup', {})
+    pcb_defects_raw = raw.get('pcb_defects', {})
     resolved_model_name = str(model_name or raw.get('model_name', '')).strip()
     default_context_branch = resolved_model_name in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}
     local_crop_size = _to_tuple2(
@@ -222,6 +224,7 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
         fusion_type=str(raw.get('fusion_type', 'concat')),
         use_context_branch=bool(raw.get('use_context_branch', default_context_branch)),
         dataloader_num_workers=int(raw.get('dataloader_num_workers', -1)),
+        pcb_defects=build_pcb_defect_parameters(pcb_defects_raw),
     )
 
 
@@ -383,6 +386,25 @@ def _config_template() -> dict[str, Any]:
                 'enabled': False,
                 'probability': 1.0,
                 'alpha': 0.2,
+            },
+            'pcb_defects': {
+                'enabled': False,
+                'defect_probability': 0.5,
+                'min_defects': 1,
+                'max_defects': 2,
+                'max_attempts_per_defect': 8,
+                'use_input_mask': True,
+                'use_defect_mask_as_label': True,
+                'defect_probabilities': {
+                    'break': 1.0,
+                    'short': 1.0,
+                    'missing_copper': 1.0,
+                    'excess_copper': 1.0,
+                    'pinhole': 1.0,
+                    'spurious_copper': 1.0,
+                    'via': 1.0,
+                    'misalignment': 1.0,
+                },
             },
             'skip_uniform_labels': False,
             'use_multi_gpu': True,

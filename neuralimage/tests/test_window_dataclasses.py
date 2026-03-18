@@ -58,4 +58,6 @@ def test_settings_state_defaults():
     assert state.rare_patch_oversampling_factor == 2
     assert state.torch_compile_enabled is True
     assert state.early_stopping_enabled is False
+    assert state.tech_aug == {}
+    assert state.pcb_defects == {}
 

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from lib.data_interfaces import (
+    PCBDefectParameters,
     WorkMode,
     ValidationSource,
     normalize_work_mode,
@@ -66,6 +67,7 @@ def test_dataclass_instantiation():
     assert train.validation_label_path is None
     assert train.save_validation_binary_images is False
     assert train.dataloader_num_workers == -1
+    assert train.generation.tech_aug.enabled is False
     assert rec.source_files == [Path('x')]
     assert rec.recognition_multiprocessing_enabled is True
 
@@ -108,4 +110,27 @@ def test_training_parameters_default_optimizer():
     assert train.mixup.enabled is False
     assert train.mixup.probability == 1.0
     assert train.mixup.alpha == 0.2
+    assert train.pcb_defects.enabled is False
+    assert train.pcb_defects.use_defect_mask_as_label is True
+
+
+def test_pcb_defect_parameters_defaults():
+    params = PCBDefectParameters()
+
+    assert params.enabled is False
+    assert params.defect_probability == 0.5
+    assert params.min_defects == 1
+    assert params.max_defects == 3
+    assert params.use_input_mask is True
+    assert params.use_defect_mask_as_label is True
+    assert set(params.defect_probabilities) == {
+        'break',
+        'short',
+        'missing_copper',
+        'excess_copper',
+        'pinhole',
+        'spurious_copper',
+        'via',
+        'misalignment',
+    }
 

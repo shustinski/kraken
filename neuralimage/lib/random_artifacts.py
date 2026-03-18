@@ -70,6 +70,11 @@ def _coordinate_grid(height: int, width: int, *, device: torch.device, dtype: to
     return yy, xx
 
 
+def _smoothstep01(value: torch.Tensor) -> torch.Tensor:
+    clamped = torch.clamp(value, min=0.0, max=1.0)
+    return clamped * clamped * (3.0 - (2.0 * clamped))
+
+
 def _fractal_noise(
     height: int,
     width: int,
@@ -236,21 +241,52 @@ def _sample_artifact_parameters(artifact_type: str, patch_scale: float) -> dict[
             'halo_sigma': (0.9, 1.6),
             'halo_alpha': (0.02, 0.06),
         }
-    return {
-        'n_blobs': np.random.randint(2, 5),
-        'radius_range': (max(5.0, 0.22 * patch_scale), max(10.0, 0.48 * patch_scale)),
-        'elongation': (0.8, 2.0),
-        'threshold': (0.24, 0.35),
-        'anisotropy': (1.0, 1.8),
-        'weights': (0.62, 0.16, 0.10, 0.12),
-        'angle_range': (-25.0, 25.0),
-        'intensity_range': (0.32, 0.80),
-        'alpha_scale': (0.40, 0.75),
-        'micro_shift': 0.10,
-        'max_microvoids': 3,
-        'halo_sigma': (1.0, 1.8),
-        'halo_alpha': (0.03, 0.08),
-    }
+    if artifact_type == 'flake':
+        return {
+            'n_blobs': np.random.randint(2, 5),
+            'radius_range': (max(5.0, 0.22 * patch_scale), max(10.0, 0.48 * patch_scale)),
+            'elongation': (0.8, 2.0),
+            'threshold': (0.24, 0.35),
+            'anisotropy': (1.0, 1.8),
+            'weights': (0.62, 0.16, 0.10, 0.12),
+            'angle_range': (-25.0, 25.0),
+            'intensity_range': (0.32, 0.80),
+            'alpha_scale': (0.40, 0.75),
+            'micro_shift': 0.10,
+            'max_microvoids': 3,
+            'halo_sigma': (1.0, 1.8),
+            'halo_alpha': (0.03, 0.08),
+        }
+    raise ValueError(f'Unsupported artifact type: {artifact_type}')
+
+
+def _edge_falloff_mask(
+    height: int,
+    width: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    yy, xx = _coordinate_grid(height, width, device=device, dtype=dtype)
+    distance_to_edge = torch.minimum(
+        torch.minimum(xx, (float(width) - 1.0) - xx),
+        torch.minimum(yy, (float(height) - 1.0) - yy),
+    )
+    patch_scale = float(max(height, width))
+    feather_px = min(
+        max(1.0, patch_scale * float(np.random.uniform(0.18, 0.30))),
+        max(1.0, patch_scale * 0.45),
+    )
+    edge_noise = _fractal_noise(
+        height,
+        width,
+        device=device,
+        dtype=dtype,
+        octaves=4,
+        persistence=0.60,
+    )
+    irregular_edge = distance_to_edge + ((edge_noise - 0.5) * feather_px * 0.7)
+    return _smoothstep01(irregular_edge / feather_px)
 
 
 def _apply_microvoids(mask: torch.Tensor, *, max_holes: int) -> torch.Tensor:
@@ -373,6 +409,8 @@ def generate_random_artifact_patch(
         max=1.0,
     )
     alpha = torch.clamp(alpha + (halo * float(np.random.uniform(*tuple(params['halo_alpha'])))), min=0.0, max=0.95)
+    alpha = alpha * _edge_falloff_mask(height, width, device=device, dtype=work_dtype)
+    alpha = torch.clamp(_gaussian_blur2d(alpha, sigma=0.8), min=0.0, max=0.95)
 
     overlay = texture.unsqueeze(0).repeat(max(1, int(channels)), 1, 1)
     if int(channels) >= 3:

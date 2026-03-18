@@ -2,6 +2,8 @@ from pathlib import Path
 
 from application.dto import MainWindowState, SettingsState
 from lib.data_interfaces import (
+    build_pcb_defect_parameters,
+    build_tech_augmentation_config,
     CutoutParameters,
     EarlyStoppingParameters,
     HardMiningParameters,
@@ -91,6 +93,7 @@ def build_workflow_parameters(
         crops_per_image=int(getattr(settings, 'crops_per_image', 64)),
         scale_augmentation=bool(getattr(settings, 'scale_augmentation', False)),
         scale_augmentation_strength=float(getattr(settings, 'scale_augmentation_strength', 0.2)),
+        tech_aug=build_tech_augmentation_config(getattr(settings, 'tech_aug', None)),
     )
 
     try:
@@ -232,6 +235,7 @@ def build_workflow_parameters(
         fusion_type=str(getattr(settings, 'fusion_type', 'concat')),
         use_context_branch=bool(requested_context_branch),
         dataloader_num_workers=int(getattr(settings, 'dataloader_num_workers', -1)),
+        pcb_defects=build_pcb_defect_parameters(getattr(settings, 'pcb_defects', None)),
     )
 
     recognition = RecognitionParameters(

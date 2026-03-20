@@ -50,6 +50,7 @@ class _ContextEncoder(nn.Module):
         return x
 
 
+@register_model('quasi_dual_scale_unet')
 @register_model('FrameUnet')
 class QuasiDualScaleUNet(nn.Module):
     """U-Net with a lightweight context encoder fused at the local bottleneck."""

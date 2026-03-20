@@ -35,6 +35,16 @@ datas = [
     ('resources/help_en.md', 'resources'),
 ]
 
+update_client_path = project_root / 'resources' / 'update_client.json'
+if update_client_path.exists():
+    datas.append((str(update_client_path), 'resources'))
+
+offline_timm_root = project_root / '_internal' / 'models' / 'timm'
+if offline_timm_root.exists():
+    for source_path in offline_timm_root.rglob('model.safetensors'):
+        relative_parent = source_path.parent.relative_to(project_root / '_internal')
+        datas.append((str(source_path), str(relative_parent)))
+
 if include_webui:
     # WebUI assets for optional --web mode.
     datas += collect_data_files('webui', includes=['templates/**/*.html', 'static/**/*'])

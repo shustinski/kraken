@@ -8,6 +8,7 @@ __pycache__/
 .tracecov*/
 build/
 dist/
+_internal/models/
 *.zip
 *.cif
 *.jpg

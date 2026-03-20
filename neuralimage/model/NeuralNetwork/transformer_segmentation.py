@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 from typing import Sequence
 
 import torch
@@ -8,12 +10,43 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+try:
+    import timm
+except Exception:  # pragma: no cover - dependency availability is validated by integration tests.
+    timm = None
+
 from .registrator import register_model
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = str(os.getenv(name, '1' if default else '0')).strip().lower()
     return raw in {'1', 'true', 'yes', 'on'}
+
+
+def _allow_pretrained_weights() -> bool:
+    return _env_flag('NEURALIMAGE_SWIN_PRETRAINED', False)
+
+
+def _resolve_project_root() -> Path:
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
+def _resolve_internal_timm_weights_dir() -> Path:
+    return _resolve_project_root() / '_internal' / 'models' / 'timm'
+
+
+def _resolve_local_swin_weight_file(model_name: str) -> Path:
+    return _resolve_internal_timm_weights_dir() / str(model_name).strip() / 'model.safetensors'
+
+
+def _group_norm_2d(channels: int, *, max_groups: int = 32) -> nn.GroupNorm:
+    resolved_channels = int(channels)
+    for groups in range(min(max_groups, resolved_channels), 0, -1):
+        if resolved_channels % groups == 0:
+            return nn.GroupNorm(groups, resolved_channels)
+    return nn.GroupNorm(1, resolved_channels)
 
 
 def _enable_grad_checkpointing_if_supported(backbone: nn.Module, enabled: bool) -> None:
@@ -174,23 +207,44 @@ class NativeHierarchicalBackbone(nn.Module):
         return [c1, c2, c3, c4]
 
 
-def _build_native_swin_backbone(backbone_name: str, input_channels: int) -> NativeHierarchicalBackbone:
+def _build_native_swin_backbone(backbone_name: str, input_channels: int) -> nn.Module:
+    if timm is None:
+        raise RuntimeError(
+            'Real Swin backbones require the "timm" package. Install it to use Swin UPerNet and Mask2Former Swin.'
+        )
+
     normalized_name = str(backbone_name).strip().lower()
-    if normalized_name in {'swin_base_patch4_window7_224', 'swin_b'}:
-        return NativeHierarchicalBackbone(
-            input_channels=int(input_channels),
-            feature_channels=(128, 256, 512, 1024),
-            stage_depths=(2, 2, 6, 2),
-            expected_input_hw=None,
-        )
-    if normalized_name in {'swin_large_patch4_window7_224', 'swin_l'}:
-        return NativeHierarchicalBackbone(
-            input_channels=int(input_channels),
-            feature_channels=(192, 384, 768, 1536),
-            stage_depths=(2, 2, 8, 2),
-            expected_input_hw=None,
-        )
-    raise ValueError(f'Unsupported native backbone name: {backbone_name!r}')
+    aliases = {
+        'swin_b': 'swin_base_patch4_window7_224',
+        'swin_base_patch4_window7_224': 'swin_base_patch4_window7_224',
+        'swin_l': 'swin_large_patch4_window7_224',
+        'swin_large_patch4_window7_224': 'swin_large_patch4_window7_224',
+    }
+    resolved_name = aliases.get(normalized_name)
+    if resolved_name is None:
+        raise ValueError(f'Unsupported Swin backbone name: {backbone_name!r}')
+
+    create_kwargs: dict[str, object] = {
+        'pretrained': False,
+        'in_chans': int(input_channels),
+        'features_only': True,
+        'out_indices': (0, 1, 2, 3),
+        'strict_img_size': False,
+    }
+    if _allow_pretrained_weights():
+        local_weight_file = _resolve_local_swin_weight_file(resolved_name)
+        if not local_weight_file.is_file():
+            raise FileNotFoundError(
+                'Offline Swin weights are enabled, but the local weight file is missing: '
+                f'{local_weight_file}. Download the bundled timm weights into the internal folder first.'
+            )
+        create_kwargs['pretrained'] = True
+        create_kwargs['pretrained_cfg_overlay'] = {'file': str(local_weight_file)}
+
+    return timm.create_model(
+        resolved_name,
+        **create_kwargs,
+    )
 
 
 class PyramidPoolingModule(nn.Module):
@@ -203,7 +257,7 @@ class PyramidPoolingModule(nn.Module):
                 nn.Sequential(
                     nn.AdaptiveAvgPool2d(scale),
                     nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-                    nn.BatchNorm2d(out_channels),
+                    _group_norm_2d(out_channels),
                     nn.GELU(),
                 )
                 for scale in pool_scales
@@ -212,7 +266,7 @@ class PyramidPoolingModule(nn.Module):
         merged_channels = in_channels + out_channels * len(pool_scales)
         self.bottleneck = nn.Sequential(
             nn.Conv2d(merged_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            _group_norm_2d(out_channels),
             nn.GELU(),
         )
 
@@ -246,7 +300,7 @@ class UPerNetHead(nn.Module):
             [
                 nn.Sequential(
                     nn.Conv2d(fpn_channels, fpn_channels, kernel_size=3, padding=1, bias=False),
-                    nn.BatchNorm2d(fpn_channels),
+                    _group_norm_2d(fpn_channels),
                     nn.GELU(),
                 )
                 for _ in range(3)
@@ -254,7 +308,7 @@ class UPerNetHead(nn.Module):
         )
         self.fuse = nn.Sequential(
             nn.Conv2d(fpn_channels * 4, fpn_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(fpn_channels),
+            _group_norm_2d(fpn_channels),
             nn.GELU(),
             nn.Dropout2d(p=0.1),
             nn.Conv2d(fpn_channels, out_channels, kernel_size=1),
@@ -285,7 +339,7 @@ class UPerNetHead(nn.Module):
 
 
 class SwinUPerNetBinary(nn.Module):
-    """Native PyTorch backbone + UPerNet decoder for binary segmentation."""
+    """Real Swin Transformer backbone + UPerNet decoder for binary segmentation."""
 
     def __init__(
         self,
@@ -327,7 +381,7 @@ class PixelDecoderFPN(nn.Module):
         self.proj1 = nn.Conv2d(c1, embed_dim, kernel_size=1, bias=False)
         self.conv = nn.Sequential(
             nn.Conv2d(embed_dim, embed_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(embed_dim),
+            _group_norm_2d(embed_dim),
             nn.GELU(),
         )
 
@@ -378,7 +432,7 @@ class Mask2FormerLikeHead(nn.Module):
 
 
 class Mask2FormerSwinBinary(nn.Module):
-    """Native PyTorch backbone + lightweight Mask2Former-style decoder."""
+    """Real Swin Transformer backbone + lightweight Mask2Former-style decoder."""
 
     def __init__(
         self,
@@ -389,7 +443,6 @@ class Mask2FormerSwinBinary(nn.Module):
         use_gradient_checkpointing: bool = True,
     ) -> None:
         super().__init__()
-        _ = _allow_pretrained_weights()
         self.backbone = _build_native_swin_backbone(backbone_name, int(input_channels))
         _enable_grad_checkpointing_if_supported(self.backbone, bool(use_gradient_checkpointing))
         _freeze_module(self.backbone, bool(freeze_backbone))

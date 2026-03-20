@@ -505,7 +505,7 @@ class Unet(nn.Module):
         self.d3 = ConvTransposeEncoder(128, 128, 64)
         self.d4 = ConvTransposeEncoder(64, 64, 64)
 
-        self.out_conv = ConvBlock(64, 1, norm='bn', act='leaky', pooling=False)
+        self.out_conv = nn.Conv2d(64, 1, kernel_size=1)
 
 
     def forward(self, x):
@@ -548,7 +548,7 @@ class Wellnet(nn.Module):
 
         self.finish_upsample = nn.Sequential(
             ConvTransposeEncoder(128, 0, 64),
-            ConvBlock(64, 1, norm='bn', act='leaky', droput=0.1, pooling=False)
+            nn.Conv2d(64, 1, kernel_size=1)
         )
 
 
@@ -607,7 +607,7 @@ class Wellnet2(nn.Module):
 
         self.finish_upsample = nn.Sequential(
             ConvTransposeEncoder(128, 0, 64, norm='bn', act='leaky', droput=0.1),
-            ConvBlock(64, 1, norm='bn', act='leaky', droput=0.1, pooling=False)
+            nn.Conv2d(64, 1, kernel_size=1)
         )
 
 
@@ -667,7 +667,7 @@ class Wellnet2Mini(nn.Module):
 
         self.finish_upsample = nn.Sequential(
             ConvTransposeEncoder(base_channels*2, 0, base_channels, norm='bn', act='leaky', droput=0.1),
-            ConvBlock(base_channels, 1, norm='bn', act='leaky', droput=0.1, pooling=False)
+            nn.Conv2d(base_channels, 1, kernel_size=1)
         )
 
 
@@ -846,63 +846,61 @@ class WellnetUltra(nn.Module):
 class MultiLayerFCNN(nn.Module):
     def __init__(self, input_channels, layers, start_filter, step_filter):
         super(MultiLayerFCNN, self).__init__()
+        encoder_filters = [int(start_filter) + int(step_filter) * idx for idx in range(int(layers) + 1)]
+        if not encoder_filters:
+            raise ValueError('MultiLayerFCNN requires at least one encoder stage.')
 
         self.encoders = nn.ModuleList()
-        self.decoders = nn.ModuleList()
-        current_filter = start_filter
+        self.pools = nn.ModuleList()
 
-        # Encoder layers
-        for i in range(layers + 1):
+        in_channels = int(input_channels)
+        for idx, out_channels in enumerate(encoder_filters):
             self.encoders.append(
                 nn.Sequential(
-                    nn.Conv2d(current_filter if i > 0 else input_channels, current_filter, kernel_size=3, padding=1),
-                    nn.BatchNorm2d(current_filter),
-                    nn.LeakyReLU(0.2)
+                    nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+                    nn.BatchNorm2d(out_channels),
+                    nn.LeakyReLU(0.2),
                 )
             )
-            if i != layers:
-                self.encoders.append(nn.MaxPool2d(kernel_size=2, stride=2, padding=0))
-            current_filter += step_filter
+            if idx < len(encoder_filters) - 1:
+                self.pools.append(nn.MaxPool2d(kernel_size=2, stride=2, padding=0))
+            in_channels = out_channels
 
-        # Bottleneck layer (without pooling)
+        bottleneck_channels = encoder_filters[-1] + int(step_filter)
         self.bottleneck = nn.Sequential(
-            nn.Conv2d(current_filter - step_filter, current_filter, kernel_size=3, padding=1),
-            nn.BatchNorm2d(current_filter),
-            nn.LeakyReLU(0.2)
+            nn.Conv2d(encoder_filters[-1], bottleneck_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(bottleneck_channels),
+            nn.LeakyReLU(0.2),
         )
 
-        # Decoder layers
-        for i in range(layers + 1):
-            current_filter -= step_filter
+        decoder_filters = list(reversed(encoder_filters[:-1]))
+        self.decoders = nn.ModuleList()
+        current_channels = bottleneck_channels
+        for out_channels in decoder_filters:
             self.decoders.append(
                 nn.Sequential(
-                    nn.Conv2d(current_filter + step_filter, current_filter, kernel_size=3, padding=1),
-                    nn.BatchNorm2d(current_filter),
-                    nn.LeakyReLU(0.2)
+                    nn.Upsample(scale_factor=2, mode='nearest'),
+                    nn.Conv2d(current_channels, out_channels, kernel_size=3, padding=1),
+                    nn.BatchNorm2d(out_channels),
+                    nn.LeakyReLU(0.2),
                 )
             )
-            if i != layers - 1:
-                self.decoders.append(nn.Upsample(scale_factor=2, mode='nearest'))
+            current_channels = out_channels
 
-        # Output layer
-        self.output_layer = nn.Conv2d(current_filter, 1, kernel_size=3, padding=1)
+        self.output_layer = nn.Conv2d(current_channels, 1, kernel_size=3, padding=1)
 
     def forward(self, x):
-        skip_connections = []
-
-        # Encoding path
-        for layer in self.encoders:
+        for idx, layer in enumerate(self.encoders):
             x = layer(x)
-            if isinstance(layer, nn.Sequential):
-                skip_connections.append(x)
+            if idx < len(self.pools):
+                x = self.pools[idx](x)
 
         x = self.bottleneck(x)
 
-        # Decoding path
         for layer in self.decoders:
             x = layer(x)
 
-        return x
+        return self.output_layer(x)
 
 class DepthwiseSeparableConv(nn.Module):
     """ EfficientNet-Style Depthwise Separable Convolution """
@@ -991,11 +989,14 @@ class UberModel(nn.Module):
         )
 
     def forward(self, x, tta=False):
+        if tta:
+            base = self.forward(x, tta=False)
+            vertical = self.forward(x.flip(2), tta=False).flip(2)
+            horizontal = self.forward(x.flip(3), tta=False).flip(3)
+            return (base + vertical + horizontal) / 3
+
         x = self.encoder(x)
         x = self.decoder(x)
-
-        if tta:
-            return (x + self.forward(x.flip(2)).flip(2) + self.forward(x.flip(3)).flip(3)) / 3
 
         return x
 
@@ -1186,6 +1187,7 @@ class ImageBinarizationTransformer(nn.Module):
         )
 
     def forward(self, x):
+        original_hw = x.shape[-2:]
         if x.shape[-2:] != (self.img_size, self.img_size):
             x = F.interpolate(x, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
 
@@ -1200,6 +1202,8 @@ class ImageBinarizationTransformer(nn.Module):
         x = F.interpolate(x, size=stem1.shape[-2:], mode='bilinear', align_corners=False)
         x = self.fuse_low(torch.cat([x, stem1], dim=1))
         x = self.out_head(x)
+        if x.shape[-2:] != original_hw:
+            x = F.interpolate(x, size=original_hw, mode='bilinear', align_corners=False)
         return x
 
 

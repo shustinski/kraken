@@ -2,6 +2,8 @@
 import multiprocessing as mp
 import gc
 import os
+import subprocess
+import webbrowser
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
@@ -40,6 +42,17 @@ from lib.loss_config import dominant_loss_function, resolve_loss_term_weights
 from lib.logging_policy import should_forward_log_event
 from lib.message_bus import MessageBus, AbstractMessageBus
 from lib.images import SampleWorker
+from lib.update_checker import (
+    UpdateInfo,
+    download_update_installer,
+    fetch_update_info,
+    load_last_notified_version,
+    load_update_manifest_url,
+    save_last_notified_version,
+    should_notify_version,
+    validate_downloaded_installer,
+)
+from lib.version import APP_VERSION
 from model.NeuralNetwork import get_registered_models
 from model.general_neural_handler import GeneralNeuralHandler
 from lib.ui_texts import get_ui_section
@@ -94,6 +107,8 @@ class MainPresenter(QObject):
         self._processing_session = ProcessingSession()
         self.neuaral_handler: GeneralNeuralHandlerThread | None = None
         self._rare_patch_editor_prepare_thread: RarePatchEditorPreparationThread | None = None
+        self._update_check_thread: AppUpdateCheckThread | None = None
+        self._update_download_thread: AppUpdateDownloadThread | None = None
 
         # --------------------- 1. Подписка на сигналы View --------------------- #
         self._conncet_to_message_bus()
@@ -103,6 +118,7 @@ class MainPresenter(QObject):
         # --------------------- 3. Инициализация UI из Config --------------------- #
         self._load_initial_state()
         self.view.show()
+        QtCore.QTimer.singleShot(0, self._start_update_check)
 
 
 
@@ -1260,6 +1276,136 @@ class MainPresenter(QObject):
         if handler is not None:
             handler.answer.emit(answer)
 
+    def _start_update_check(self) -> None:
+        manifest_url = load_update_manifest_url()
+        if not manifest_url or self._update_check_thread is not None:
+            return
+        self._update_check_thread = AppUpdateCheckThread(manifest_url=manifest_url)
+        self._update_check_thread.checked.connect(self._on_update_check_finished)
+        self._update_check_thread.finished.connect(self._clear_update_check_thread)
+        self._update_check_thread.start()
+
+    def _clear_update_check_thread(self) -> None:
+        self._update_check_thread = None
+
+    def _on_update_check_finished(self, update_info: object) -> None:
+        if not isinstance(update_info, UpdateInfo):
+            return
+        last_notified = load_last_notified_version()
+        if not should_notify_version(update_info.version, APP_VERSION, last_notified):
+            return
+        self._show_update_notification(update_info)
+        save_last_notified_version(update_info.version)
+
+    def _show_update_notification(self, update_info: UpdateInfo) -> None:
+        texts = get_ui_section('main_window')
+        title = str(texts.get('update_available_title', 'Доступна новая версия'))
+        body_template = str(
+            texts.get(
+                'update_available_text',
+                'Установлена версия {current_version}. Доступна версия {new_version}.',
+            )
+        )
+        body = body_template.format(
+            current_version=APP_VERSION,
+            new_version=update_info.version,
+        )
+        if update_info.release_notes:
+            body = f'{body}\n\n{update_info.release_notes}'
+        if update_info.download_url:
+            body = f'{body}\n\n{update_info.download_url}'
+
+        dialog = QMessageBox(self.view)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setWindowTitle(title)
+        dialog.setText(body)
+        open_button = None
+        install_button = None
+        if update_info.download_url:
+            install_button = dialog.addButton(
+                str(texts.get('update_download_install', 'Скачать и установить')),
+                QMessageBox.ButtonRole.AcceptRole,
+            )
+        if update_info.download_url:
+            open_button = dialog.addButton(
+                str(texts.get('update_open_download', 'Скачать')),
+                QMessageBox.ButtonRole.AcceptRole,
+            )
+        dialog.addButton(
+            str(texts.get('update_later', 'Позже')),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        dialog.exec()
+        if install_button is not None and dialog.clickedButton() is install_button:
+            self._start_update_download(update_info)
+            return
+        if open_button is not None and dialog.clickedButton() is open_button:
+            try:
+                webbrowser.open(update_info.download_url)
+            except Exception:
+                pass
+
+    def _start_update_download(self, update_info: UpdateInfo) -> None:
+        if self._update_download_thread is not None:
+            return
+        if self.neuaral_handler is not None and self.neuaral_handler.isRunning():
+            texts = get_ui_section('main_window')
+            self.view.show_warning.emit(
+                str(
+                    texts.get(
+                        'update_busy_message',
+                        'Сначала остановите активную задачу, затем повторите обновление.',
+                    )
+                )
+            )
+            return
+        self.message_bus.publish('logging', f'Загрузка обновления {update_info.version} запущена.')
+        self._update_download_thread = AppUpdateDownloadThread(update_info=update_info)
+        self._update_download_thread.finished_download.connect(self._on_update_download_finished)
+        self._update_download_thread.failed_download.connect(self._on_update_download_failed)
+        self._update_download_thread.finished.connect(self._clear_update_download_thread)
+        self._update_download_thread.start()
+
+    def _clear_update_download_thread(self) -> None:
+        self._update_download_thread = None
+
+    def _on_update_download_finished(self, installer_path: str, version: str) -> None:
+        texts = get_ui_section('main_window')
+        question = str(
+            texts.get(
+                'update_ready_to_install',
+                'Обновление {new_version} загружено. Приложение будет закрыто, затем запустится установщик.\nПродолжить?',
+            )
+        ).format(new_version=version)
+        reply = QMessageBox.question(
+            self.view,
+            str(texts.get('update_install_title', 'Установка обновления')),
+            question,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            subprocess.Popen([installer_path], close_fds=True)
+        except OSError as exc:
+            self._on_update_download_failed(str(exc))
+            return
+        self.message_bus.publish('logging', f'Запущен установщик обновления: {installer_path}.')
+        self._save_windows_to_qsettings()
+        self.view.allow_close()
+
+    def _on_update_download_failed(self, error_message: str) -> None:
+        texts = get_ui_section('main_window')
+        message = str(
+            texts.get(
+                'update_download_failed',
+                'Не удалось скачать или запустить обновление: {error}',
+            )
+        ).format(error=error_message)
+        self.view.show_warning.emit(message)
+        self.message_bus.publish('error', message)
+
 
 class RarePatchEditorPreparationThread(QThread):
     prepared = QtCore.pyqtSignal(str, str, str)
@@ -1344,4 +1490,34 @@ class GeneralNeuralHandlerThread(QThread):
     @QtCore.pyqtSlot(bool)
     def _store_answer(self, val: bool):
         self._last_answer = val
+
+
+class AppUpdateCheckThread(QThread):
+    checked = QtCore.pyqtSignal(object)
+
+    def __init__(self, *, manifest_url: str) -> None:
+        super().__init__()
+        self._manifest_url = str(manifest_url).strip()
+
+    def run(self) -> None:
+        self.checked.emit(fetch_update_info(self._manifest_url))
+
+
+class AppUpdateDownloadThread(QThread):
+    finished_download = QtCore.pyqtSignal(str, str)
+    failed_download = QtCore.pyqtSignal(str)
+
+    def __init__(self, *, update_info: UpdateInfo) -> None:
+        super().__init__()
+        self._update_info = update_info
+
+    def run(self) -> None:
+        try:
+            installer_path = download_update_installer(self._update_info)
+            if not validate_downloaded_installer(installer_path, self._update_info.sha256):
+                raise ValueError('Downloaded installer failed SHA-256 verification.')
+        except Exception as exc:
+            self.failed_download.emit(str(exc))
+            return
+        self.finished_download.emit(str(installer_path), self._update_info.version)
 

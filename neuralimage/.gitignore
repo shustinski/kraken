@@ -7,13 +7,13 @@ __pycache__/
 .codex*
 .tracecov*/
 build/
+tests/real_tests/
 dist/
 _internal/models/
 *.zip
 *.cif
 *.jpg
 *.png
-*.json
 .test_runtime/
 .tmp/
 build_tmp/

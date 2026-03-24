@@ -1,0 +1,20 @@
+{
+    "sample_type": "cif",
+    "source_path": "",
+    "result_path": "",
+    "use_ready_model": false,
+    "cr_samples_path": "",
+    "cif_sample_jpg_path": "",
+    "cif_sample_cif_path": "",
+    "delete_after_training": false,
+    "rotation_90": false,
+    "rotation_180": false,
+    "training_on_multiple_gpus": true,
+    "prediction_on_multiple_gpus": "parallel",
+    "shift": 10,
+    "model_type": "small",
+    "epochs": 30,
+    "sample_preparation_type": "no_cut",
+    "sample_height": 256,
+    "sample_wight": 256
+}

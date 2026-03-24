@@ -35,3 +35,4 @@ out/
 *.ckpt
 *.pt
 *.onnx
+*.sqlite3

@@ -75,6 +75,10 @@ def _normalize_mix_weight(raw: Any, *, default: float = 0.5) -> float:
     return float(min(max(value, 0.0), 1.0))
 
 
+def _finalize_loss_term_weight(value: float) -> float:
+    return round(float(value), 12)
+
+
 def loss_function_to_weights(
     value: Any,
     *,
@@ -114,22 +118,25 @@ def sanitize_loss_term_weights(weights: Mapping[str, Any] | None) -> dict[str, f
         if value is None:
             continue
         value = float(min(max(value, 0.0), MAX_LOSS_TERM_WEIGHT_SUM))
+        value = _finalize_loss_term_weight(value)
         if value <= 0.0:
             continue
         if loss_name in LOSS_TERM_NAMES:
-            sanitized[loss_name] = sanitized.get(loss_name, 0.0) + value
+            sanitized[loss_name] = _finalize_loss_term_weight(sanitized.get(loss_name, 0.0) + value)
             continue
         legacy_weights = loss_function_to_weights(loss_name)
         for normalized_name, coefficient in legacy_weights.items():
-            sanitized[normalized_name] = sanitized.get(normalized_name, 0.0) + (value * coefficient)
+            sanitized[normalized_name] = _finalize_loss_term_weight(
+                sanitized.get(normalized_name, 0.0) + (value * coefficient)
+            )
 
     total = sum(sanitized.values())
     if total > MAX_LOSS_TERM_WEIGHT_SUM and total > 0.0:
         scale = MAX_LOSS_TERM_WEIGHT_SUM / total
         sanitized = {
-            loss_name: (value * scale)
+            loss_name: _finalize_loss_term_weight(value * scale)
             for loss_name, value in sanitized.items()
-            if (value * scale) > 0.0
+            if _finalize_loss_term_weight(value * scale) > 0.0
         }
     return sanitized
 

@@ -3,13 +3,14 @@ import multiprocessing as mp
 import gc
 import os
 import subprocess
+import threading
 import webbrowser
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QObject, QThread
-from PyQt6.QtWidgets import QMessageBox, QFileDialog
+from PyQt6.QtWidgets import QMessageBox, QFileDialog, QInputDialog
 from PyQt6 import QtCore, QtWidgets
 
 from application.dto import MainWindowState, SettingsState
@@ -43,14 +44,16 @@ from lib.logging_policy import should_forward_log_event
 from lib.message_bus import MessageBus, AbstractMessageBus
 from lib.images import SampleWorker
 from lib.update_checker import (
+    ReleaseInfo,
     UpdateInfo,
+    collect_release_history,
     download_update_installer,
     fetch_update_info,
+    is_newer_version,
     load_last_notified_version,
     load_update_manifest_url,
     save_last_notified_version,
     should_notify_version,
-    validate_downloaded_installer,
 )
 from lib.version import APP_VERSION
 from model.NeuralNetwork import get_registered_models
@@ -81,6 +84,12 @@ def _tk_filedialog(kind: str, filetypes=None) -> str | None:
         path, _ = QFileDialog.getOpenFileName(None, 'Выберите файл', '', filter_str)
     return path if path else None
 
+
+class SampleCountSignals(QObject):
+    calculated = QtCore.pyqtSignal(int, str, object, int)
+    failed = QtCore.pyqtSignal(int, str)
+
+
 class MainPresenter(QObject):
     """
     Связывает View и Model. Содержит всю бизнес-логику
@@ -109,6 +118,21 @@ class MainPresenter(QObject):
         self._rare_patch_editor_prepare_thread: RarePatchEditorPreparationThread | None = None
         self._update_check_thread: AppUpdateCheckThread | None = None
         self._update_download_thread: AppUpdateDownloadThread | None = None
+        self._update_check_manual = False
+        self._sample_count_worker_thread: threading.Thread | None = None
+        self._sample_count_request_serial = 0
+        self._latest_sample_count_request_id = 0
+        self._debounced_sample_count_request: tuple[int, str, CutSettings] | None = None
+        self._pending_sample_count_request: tuple[int, str, CutSettings] | None = None
+        self._sample_count_cache_path: str | None = None
+        self._sample_count_cache_sizes: list[tuple[int, int]] | None = None
+        self._sample_count_signals = SampleCountSignals()
+        self._sample_count_signals.calculated.connect(self._on_sample_count_calculated)
+        self._sample_count_signals.failed.connect(self._on_sample_count_failed)
+        self._sample_count_debounce_timer = QtCore.QTimer(self)
+        self._sample_count_debounce_timer.setSingleShot(True)
+        self._sample_count_debounce_timer.setInterval(150)
+        self._sample_count_debounce_timer.timeout.connect(self._dispatch_sample_count_request)
 
         # --------------------- 1. Подписка на сигналы View --------------------- #
         self._conncet_to_message_bus()
@@ -117,7 +141,9 @@ class MainPresenter(QObject):
 
         # --------------------- 3. Инициализация UI из Config --------------------- #
         self._load_initial_state()
+        self._set_initial_sample_count_state()
         self.view.show()
+        QtCore.QTimer.singleShot(0, self._calculate_expected_samples)
         QtCore.QTimer.singleShot(0, self._start_update_check)
 
 
@@ -153,6 +179,7 @@ class MainPresenter(QObject):
         v.queue_properties_requested.connect(self._on_queue_properties_requested)
         v.batch_preview_visibility_changed.connect(self._on_batch_preview_visibility_changed)
         v.release_memory_requested.connect(self._on_release_memory_requested)
+        v.update_check_requested.connect(self._on_update_check_requested)
         v.ui_language_selected.connect(self._on_ui_language_selected)
         v.theme_selected.connect(self._on_theme_selected)
 
@@ -196,10 +223,18 @@ class MainPresenter(QObject):
 
     def _load_main_window_settings(self):
         self.main_window_state = self._state_store.load_main_window_state()
-        self.sample_calculator.set_path(Path(self.main_window_state.sample_folder))
+        sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
+        self.sample_calculator.set_path(Path(sample_folder) if sample_folder else None)
 
     def _load_settings_panel_settings(self):
         self.settings_state = self._state_store.load_settings_state()
+
+    def _set_initial_sample_count_state(self) -> None:
+        sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
+        if sample_folder and Path(sample_folder).is_dir():
+            self.settings_panel.set_samples_count_loading()
+            return
+        self.settings_panel.set_samples_count(0)
 
     # ------------------------------------------------------------------ #
     #   Обновление класса состояния окон
@@ -970,6 +1005,9 @@ class MainPresenter(QObject):
     def _on_theme_selected(self, theme: str):
         self.view.apply_theme(theme)
 
+    def _on_update_check_requested(self) -> None:
+        self._start_update_check(manual=True)
+
     def _on_queue_remove_requested(self):
         row = self.view.get_selected_queue_row()
         self._remove_queue_row(row)
@@ -1018,7 +1056,8 @@ class MainPresenter(QObject):
     ):
         self.main_window_state = replace(main_state)
         self.settings_state = replace(settings_state)
-        self.sample_calculator.set_path(Path(self.main_window_state.sample_folder))
+        sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
+        self.sample_calculator.set_path(Path(sample_folder) if sample_folder else None)
 
         self.view.restore_from_dataclass(self.main_window_state)
         self._apply_settings_to_panel()
@@ -1159,7 +1198,7 @@ class MainPresenter(QObject):
         self._update_settings_window_state()
         calculator_settings = self.get_cut_settings_from_window_state()
         self.sample_calculator.set_settings(calculator_settings)
-        self._set_sample_number()
+        self._set_sample_number(calculator_settings)
 
     def get_cut_settings_from_window_state(self) -> CutSettings:
         s = self.settings_state
@@ -1185,9 +1224,112 @@ class MainPresenter(QObject):
                            scale_augmentation_strength=float(getattr(s, 'scale_augmentation_strength', 0.2)),
                            )
 
-    def _set_sample_number(self):
-        total_samples = len(self.sample_calculator)
-        self.settings_panel.set_samples_count(total_samples)
+    def _set_sample_number(self, calculator_settings: CutSettings) -> None:
+        sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
+        if not sample_folder or not Path(sample_folder).is_dir():
+            self._invalidate_sample_count_requests()
+            self.settings_panel.set_samples_count(0)
+            return
+
+        self._sample_count_request_serial += 1
+        request_id = self._sample_count_request_serial
+        self._latest_sample_count_request_id = request_id
+        self._debounced_sample_count_request = (request_id, sample_folder, calculator_settings)
+        self.settings_panel.set_samples_count_loading()
+        self._sample_count_debounce_timer.start()
+
+    def _invalidate_sample_count_requests(self) -> None:
+        self._sample_count_request_serial += 1
+        self._latest_sample_count_request_id = self._sample_count_request_serial
+        self._debounced_sample_count_request = None
+        self._pending_sample_count_request = None
+        self._sample_count_debounce_timer.stop()
+
+    def _dispatch_sample_count_request(self) -> None:
+        request = self._debounced_sample_count_request
+        self._debounced_sample_count_request = None
+        if request is None:
+            return
+        if self._sample_count_worker_thread is not None and self._sample_count_worker_thread.is_alive():
+            self._pending_sample_count_request = request
+            return
+        self._start_sample_count_request(request)
+
+    def _start_sample_count_request(self, request: tuple[int, str, CutSettings]) -> None:
+        request_id, sample_folder, calculator_settings = request
+        cached_path = self._sample_count_cache_path
+        cached_sizes = list(self._sample_count_cache_sizes) if self._sample_count_cache_sizes is not None else None
+        worker_thread = threading.Thread(
+            target=self._run_sample_count_request,
+            args=(request_id, sample_folder, calculator_settings, cached_path, cached_sizes),
+            daemon=True,
+            name=f'sample-count-{request_id}',
+        )
+        self._sample_count_worker_thread = worker_thread
+        worker_thread.start()
+
+    def _run_sample_count_request(
+        self,
+        request_id: int,
+        sample_folder: str,
+        calculator_settings: CutSettings,
+        cached_path: str | None,
+        cached_sizes: list[tuple[int, int]] | None,
+    ) -> None:
+        try:
+            sample_path = Path(sample_folder)
+            normalized_path = self._normalize_sample_count_path(sample_path)
+            if not sample_path.is_dir():
+                self._sample_count_signals.calculated.emit(request_id, normalized_path, [], 0)
+                return
+
+            if normalized_path == cached_path and cached_sizes is not None:
+                image_sizes = list(cached_sizes)
+            else:
+                image_paths = SampleWorker.collect_image_paths(sample_path)
+                image_sizes = SampleWorker.collect_image_sizes(image_paths)
+
+            total_samples = SampleWorker.calculate_total_samples(image_sizes, calculator_settings)
+            self._sample_count_signals.calculated.emit(request_id, normalized_path, image_sizes, total_samples)
+        except Exception as exc:
+            self._sample_count_signals.failed.emit(request_id, str(exc))
+
+    @staticmethod
+    def _normalize_sample_count_path(path: Path | str) -> str:
+        return os.path.normcase(os.path.abspath(str(path)))
+
+    @QtCore.pyqtSlot(int, str, object, int)
+    def _on_sample_count_calculated(
+        self,
+        request_id: int,
+        normalized_path: str,
+        image_sizes: object,
+        total_samples: int,
+    ) -> None:
+        self._sample_count_worker_thread = None
+        if normalized_path:
+            self._sample_count_cache_path = normalized_path
+            self._sample_count_cache_sizes = list(image_sizes) if isinstance(image_sizes, list) else []
+        if request_id == self._latest_sample_count_request_id:
+            self.settings_panel.set_samples_count(total_samples)
+        self._start_pending_sample_count_request_if_needed()
+
+    @QtCore.pyqtSlot(int, str)
+    def _on_sample_count_failed(self, request_id: int, error_message: str) -> None:
+        self._sample_count_worker_thread = None
+        if request_id == self._latest_sample_count_request_id:
+            self.settings_panel.set_samples_count(0)
+            self.message_bus.publish('logging', f'Не удалось рассчитать количество кадров: {error_message}')
+        self._start_pending_sample_count_request_if_needed()
+
+    def _start_pending_sample_count_request_if_needed(self) -> None:
+        if self._debounced_sample_count_request is not None:
+            return
+        request = self._pending_sample_count_request
+        if request is None:
+            return
+        self._pending_sample_count_request = None
+        self._start_sample_count_request(request)
 
     def _set_max_shift(self):
         s = self.settings_panel
@@ -1276,9 +1418,24 @@ class MainPresenter(QObject):
         if handler is not None:
             handler.answer.emit(answer)
 
-    def _start_update_check(self) -> None:
+    def _start_update_check(self, *, manual: bool = False) -> None:
+        texts = get_ui_section('main_window')
         manifest_url = load_update_manifest_url()
-        if not manifest_url or self._update_check_thread is not None:
+        if not manifest_url:
+            if manual:
+                self.view.show_warning.emit(
+                    str(texts.get('update_check_not_configured', 'Источник обновлений не настроен.'))
+                )
+            return
+        if self._update_check_thread is not None:
+            if manual:
+                self.view.show_info.emit(
+                    str(texts.get('update_check_in_progress', 'Проверка обновлений уже выполняется.'))
+                )
+            return
+        self._update_check_manual = manual
+        self.message_bus.publish('logging', 'Запущена проверка обновлений.')
+        if not manifest_url:
             return
         self._update_check_thread = AppUpdateCheckThread(manifest_url=manifest_url)
         self._update_check_thread.checked.connect(self._on_update_check_finished)
@@ -1287,9 +1444,21 @@ class MainPresenter(QObject):
 
     def _clear_update_check_thread(self) -> None:
         self._update_check_thread = None
+        self._update_check_manual = False
 
     def _on_update_check_finished(self, update_info: object) -> None:
+        texts = get_ui_section('main_window')
+        manual = self._update_check_manual
         if not isinstance(update_info, UpdateInfo):
+            if manual:
+                self.view.show_warning.emit(
+                    str(texts.get('update_check_failed', 'Не удалось проверить наличие обновлений.'))
+                )
+            return
+        if manual:
+            self._show_release_selector(update_info)
+            return
+        if not is_newer_version(update_info.version, APP_VERSION):
             return
         last_notified = load_last_notified_version()
         if not should_notify_version(update_info.version, APP_VERSION, last_notified):
@@ -1310,8 +1479,10 @@ class MainPresenter(QObject):
             current_version=APP_VERSION,
             new_version=update_info.version,
         )
-        if update_info.release_notes:
-            body = f'{body}\n\n{update_info.release_notes}'
+        release_history = collect_release_history(update_info)
+        if release_history:
+            history_title = str(texts.get('update_release_history_title', 'История релизов:'))
+            body = f'{body}\n\n{history_title}\n{release_history}'
         if update_info.download_url:
             body = f'{body}\n\n{update_info.download_url}'
 
@@ -1321,10 +1492,16 @@ class MainPresenter(QObject):
         dialog.setText(body)
         open_button = None
         install_button = None
+        select_version_button = None
         if update_info.download_url:
             install_button = dialog.addButton(
                 str(texts.get('update_download_install', 'Скачать и установить')),
                 QMessageBox.ButtonRole.AcceptRole,
+            )
+        if update_info.releases:
+            select_version_button = dialog.addButton(
+                str(texts.get('update_select_version', 'Выбрать версию')),
+                QMessageBox.ButtonRole.ActionRole,
             )
         if update_info.download_url:
             open_button = dialog.addButton(
@@ -1337,7 +1514,10 @@ class MainPresenter(QObject):
         )
         dialog.exec()
         if install_button is not None and dialog.clickedButton() is install_button:
-            self._start_update_download(update_info)
+            self._start_update_download(self._resolve_latest_release(update_info))
+            return
+        if select_version_button is not None and dialog.clickedButton() is select_version_button:
+            self._show_release_selector(update_info)
             return
         if open_button is not None and dialog.clickedButton() is open_button:
             try:
@@ -1345,7 +1525,84 @@ class MainPresenter(QObject):
             except Exception:
                 pass
 
-    def _start_update_download(self, update_info: UpdateInfo) -> None:
+    def _show_release_selector(self, update_info: UpdateInfo) -> None:
+        texts = get_ui_section('main_window')
+        releases = tuple(update_info.releases)
+        if not releases:
+            self.view.show_warning.emit(
+                str(texts.get('update_check_failed', 'Не удалось проверить наличие обновлений.'))
+            )
+            return
+
+        labels: list[str] = []
+        initial_index = 0
+        for idx, release in enumerate(releases):
+            label = str(release.version)
+            if release.version == APP_VERSION:
+                label = f'{label} ({str(texts.get("update_current_version_label", "текущая"))})'
+                initial_index = idx
+            labels.append(label)
+
+        selected_label, accepted = QInputDialog.getItem(
+            self.view,
+            str(texts.get('update_select_title', 'Выбор версии')),
+            str(texts.get('update_select_label', 'Выберите версию для установки или отката:')),
+            labels,
+            initial_index,
+            False,
+        )
+        if not accepted:
+            return
+        selected_release = releases[labels.index(selected_label)]
+        self._confirm_release_install(selected_release)
+
+    def _confirm_release_install(self, release: ReleaseInfo) -> None:
+        texts = get_ui_section('main_window')
+        if not release.download_url:
+            self.view.show_warning.emit(
+                str(texts.get('update_missing_download', 'Для выбранной версии не задан путь к установщику.'))
+            )
+            return
+        if release.version == APP_VERSION:
+            self.view.show_info.emit(
+                str(texts.get('update_selected_current', 'Выбранная версия уже установлена.'))
+            )
+            return
+
+        question = str(
+            texts.get(
+                'update_confirm_selected',
+                'Установить версию {selected_version} поверх текущей {current_version}?',
+            )
+        ).format(
+            selected_version=release.version,
+            current_version=APP_VERSION,
+        )
+        if release.notes:
+            question = f'{question}\n\n{release.notes}'
+        reply = QMessageBox.question(
+            self.view,
+            str(texts.get('update_install_title', 'Установка обновления')),
+            question,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._start_update_download(release)
+
+    @staticmethod
+    def _resolve_latest_release(update_info: UpdateInfo) -> ReleaseInfo:
+        for release in update_info.releases:
+            if release.version == update_info.version:
+                return release
+        return ReleaseInfo(
+            version=update_info.version,
+            download_url=update_info.download_url,
+            notes=update_info.release_notes,
+        )
+
+    def _start_update_download(self, release: ReleaseInfo) -> None:
         if self._update_download_thread is not None:
             return
         if self.neuaral_handler is not None and self.neuaral_handler.isRunning():
@@ -1359,8 +1616,8 @@ class MainPresenter(QObject):
                 )
             )
             return
-        self.message_bus.publish('logging', f'Загрузка обновления {update_info.version} запущена.')
-        self._update_download_thread = AppUpdateDownloadThread(update_info=update_info)
+        self.message_bus.publish('logging', f'Загрузка версии {release.version} запущена.')
+        self._update_download_thread = AppUpdateDownloadThread(release=release)
         self._update_download_thread.finished_download.connect(self._on_update_download_finished)
         self._update_download_thread.failed_download.connect(self._on_update_download_failed)
         self._update_download_thread.finished.connect(self._clear_update_download_thread)
@@ -1507,17 +1764,15 @@ class AppUpdateDownloadThread(QThread):
     finished_download = QtCore.pyqtSignal(str, str)
     failed_download = QtCore.pyqtSignal(str)
 
-    def __init__(self, *, update_info: UpdateInfo) -> None:
+    def __init__(self, *, release: ReleaseInfo) -> None:
         super().__init__()
-        self._update_info = update_info
+        self._release = release
 
     def run(self) -> None:
         try:
-            installer_path = download_update_installer(self._update_info)
-            if not validate_downloaded_installer(installer_path, self._update_info.sha256):
-                raise ValueError('Downloaded installer failed SHA-256 verification.')
+            installer_path = download_update_installer(self._release)
         except Exception as exc:
             self.failed_download.emit(str(exc))
             return
-        self.finished_download.emit(str(installer_path), self._update_info.version)
+        self.finished_download.emit(str(installer_path), self._release.version)
 

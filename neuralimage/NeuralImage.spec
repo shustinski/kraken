@@ -74,8 +74,7 @@ a = Analysis(
     binaries=[],          # <-- torch DLLs / pyds
     datas=datas ,
     hiddenimports=hiddenimports,
-    # Disable local hook overrides (e.g., hooks/hook-torch.py) to use
-    # PyInstaller's built-in torch hook behavior.
+    # Disable local hook overrides and rely on PyInstaller's built-in torch hook behavior.
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['hooks/rth_set_workdir.py'],  # ensure relative resource paths resolve from exe dir

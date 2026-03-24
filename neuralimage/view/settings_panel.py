@@ -214,6 +214,7 @@ class SettingsPanel(QDockWidget):
         self._loss_terms_guard = False
 
         self._sample_count_value = 0
+        self._sample_count_pending = False
         self._tech_aug_config_payload: dict[str, Any] = {}
         self._pcb_defects_config_payload: dict[str, Any] = {}
         self.loss_term_checkboxes: dict[str, QCheckBox] = {}
@@ -1518,7 +1519,10 @@ class SettingsPanel(QDockWidget):
         self._texts = get_ui_section('settings_panel')
         self._apply_localized_texts()
         self._sync_validation_path_labels()
-        self.set_samples_count(self._sample_count_value)
+        if self._sample_count_pending:
+            self.set_samples_count_loading()
+        else:
+            self.set_samples_count(self._sample_count_value)
         self.ui_language_changed.emit(active_language)
 
     def get_validation_source_value(self) -> str:
@@ -1758,11 +1762,17 @@ class SettingsPanel(QDockWidget):
             self._sample_count_value = int(total_samples)
         except (TypeError, ValueError):
             self._sample_count_value = 0
+        self._sample_count_pending = False
         template = str(self._texts.get('samples_count_template', self._texts.get('samples_count', 'Кадров в выборке: {count}')))
         if '{count}' in template:
             text = template.format(count=self._sample_count_value)
         else:
             text = template
+        self.samples_number.setText(text)
+
+    def set_samples_count_loading(self) -> None:
+        self._sample_count_pending = True
+        text = str(self._texts.get('samples_count_loading', 'Идет расчет...'))
         self.samples_number.setText(text)
 
     def connect_internal_signals(self) -> None:

@@ -153,6 +153,28 @@ def test_sample_worker_random_crop_uses_crops_per_image_instead_of_step():
     assert large_step_worker.calculate_image_parts((64, 64)) == 7
 
 
+def test_sample_worker_path_and_settings_updates_are_lazy(monkeypatch, tmp_path):
+    worker = SampleWorker()
+
+    def _unexpected_scan(*_args, **_kwargs):
+        raise AssertionError('set_path/set_settings must not scan files synchronously')
+
+    monkeypatch.setattr('lib.images.filter_files', _unexpected_scan)
+
+    worker.set_path(tmp_path)
+    worker.set_settings(
+        CutSettings(
+            vertical_rotation=False,
+            horizontal_rotation=False,
+            step=16,
+            color_mode='RGB',
+            x_size=16,
+            y_size=16,
+            model='M 720k',
+        )
+    )
+
+
 def test_sample_fast_cutter_returns_original_and_augmented_pair():
     random.seed(7)
     np.random.seed(7)

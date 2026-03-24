@@ -80,6 +80,7 @@ class MainView(QMainWindow):
     batch_preview_visibility_changed: pyqtSignal = pyqtSignal(bool)
     release_memory_requested: pyqtSignal = pyqtSignal()
     open_tic_tac_toe_requested: pyqtSignal = pyqtSignal()
+    update_check_requested: pyqtSignal = pyqtSignal()
     ui_language_selected: pyqtSignal = pyqtSignal(str)
     theme_selected: pyqtSignal = pyqtSignal(str)
 
@@ -126,6 +127,7 @@ class MainView(QMainWindow):
         self._settings_toggle_action = None
         self._help_action = None
         self._changelog_action = None
+        self._check_updates_action = None
 
         self._setup_ui()
 
@@ -385,6 +387,9 @@ class MainView(QMainWindow):
         changelog_action.triggered.connect(lambda: show_changelog_dialog(self))
         info_menu.addAction(changelog_action)
         self._changelog_action = changelog_action
+        check_updates_action = QAction(t.get("menu_check_updates", "Проверить обновления"), self)
+        info_menu.addAction(check_updates_action)
+        self._check_updates_action = check_updates_action
         menu_action = info_menu.menuAction()
         if menu_action is not None:
             menu_action.setVisible(True)
@@ -484,6 +489,8 @@ class MainView(QMainWindow):
             self.release_memory_action.triggered.connect(self.release_memory_requested.emit)
         if hasattr(self, "open_tic_tac_toe_action"):
             self.open_tic_tac_toe_action.triggered.connect(self.open_tic_tac_toe_requested.emit)
+        if self._check_updates_action is not None:
+            self._check_updates_action.triggered.connect(self.update_check_requested.emit)
         if hasattr(self, "ui_language_ru_action"):
             self.ui_language_ru_action.triggered.connect(lambda: self._handle_ui_language_action("ru"))
         if hasattr(self, "ui_language_en_action"):
@@ -978,6 +985,8 @@ class MainView(QMainWindow):
             self._help_action.setText(t.get("menu_open_help", "Открыть справку"))
         if self._changelog_action is not None:
             self._changelog_action.setText(t.get("menu_open_changelog", "Список изменений"))
+        if self._check_updates_action is not None:
+            self._check_updates_action.setText(t.get("menu_check_updates", "Проверить обновления"))
         if hasattr(self, "ui_language_ru_action"):
             self.ui_language_ru_action.setText(t.get("lang_ru", "Русский"))
         if hasattr(self, "ui_language_en_action"):

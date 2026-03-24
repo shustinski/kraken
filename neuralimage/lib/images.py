@@ -33,34 +33,39 @@ def _resolve_crops_per_image(params: object) -> int:
 
 
 class SampleWorker:
+    VALID_EXTENSIONS = ('.jpg', '.png')
 
     def __init__(self, path=None, paramns: CutSettings | None = None):
-        self._path: str | None = path
-        self._img_paths: list | None = None
+        self._path: Path | None = Path(path) if path is not None else None
+        self._img_paths: list[Path] | None = None
         self._img_sizes: list[tuple[int, int]] | None = None
         self._params: CutSettings | None = paramns
         self._total_parts: int = 0
 
-    def set_path(self, path:Path):
-        if self._path == path:
+    def set_path(self, path: Path | None):
+        normalized_path = Path(path) if path is not None else None
+        if self._path == normalized_path:
             return
-        if not path.is_dir():
-            return
-        self._path = path
-        self._calculate_samples_from_path()
+        self._path = normalized_path
+        self._img_paths = None
+        self._img_sizes = None
+        self._total_parts = 0
 
     def set_settings(self, setting: CutSettings):
         if self._params == setting:
             return
         self._params = setting
-        self._calculate_len()
+        self._total_parts = 0
 
     def _calculate_len(self):
         if self._path is None:
+            self._total_parts = 0
             return
         if not os.path.isdir(self._path):
+            self._total_parts = 0
             return
         if self._params is None:
+            self._total_parts = 0
             return
         if self._img_sizes is None:
             self._calculate_samples_from_path()
@@ -79,34 +84,63 @@ class SampleWorker:
 
         """
 
-        valid_extensions = ('.jpg', '.png')
-
-        self._img_paths = filter_files(self._path, valid_extensions)
+        self._img_paths = self.collect_image_paths(self._path)
         if len(self._img_paths) == 0:
+            self._img_sizes = []
+            self._total_parts = 0
             return
 
-        self._get_image_sizes()
-
+        self._img_sizes = self.collect_image_sizes(self._img_paths)
         self.calculate_samples_amount()
 
-    def _get_image_sizes(self):
-        self._img_sizes = []
-        for image in self._img_paths:
+    @classmethod
+    def collect_image_paths(cls, path: Path) -> list[Path]:
+        if not path.is_dir():
+            return []
+        return filter_files(path, cls.VALID_EXTENSIONS)
+
+    @staticmethod
+    def collect_image_sizes(image_paths: list[Path]) -> list[tuple[int, int]]:
+        image_sizes: list[tuple[int, int]] = []
+        for image in image_paths:
             with Image.open(image) as img:
                 width, height = img.size
-            size = (height, width)
-            self._img_sizes.append(size)
+            image_sizes.append((height, width))
+        return image_sizes
+
+    def _get_image_sizes(self):
+        self._img_sizes = self.collect_image_sizes(self._img_paths or [])
 
     def calculate_samples_amount(self):
         if self._params is None or self._path is None:
+            self._total_parts = 0
             return 0
 
-        self._total_parts = 0
-        for image_size in self._img_sizes:
-            parts_in_one_image = self.calculate_image_parts(image_size)
-            self._total_parts += parts_in_one_image
+        self._total_parts = self.calculate_total_samples(self._img_sizes or [], self._params)
+        return self._total_parts
+
+    @classmethod
+    def calculate_total_samples(
+        cls,
+        image_sizes: list[tuple[int, int]],
+        params: CutSettings | None,
+    ) -> int:
+        if params is None:
+            return 0
+
+        total_parts = 0
+        for image_size in image_sizes:
+            total_parts += cls.calculate_image_parts_for_settings(image_size, params)
+        return total_parts
 
     def calculate_image_parts(self, image_size: tuple[int, int]) -> int:
+        return self.calculate_image_parts_for_settings(image_size, self._params)
+
+    @staticmethod
+    def calculate_image_parts_for_settings(
+        image_size: tuple[int, int],
+        params: CutSettings | None,
+    ) -> int:
         """
 
         Args:
@@ -117,13 +151,15 @@ class SampleWorker:
         """
 
         im_height, im_width = image_size
+        if params is None:
+            return 0
 
-        if getattr(self._params, 'random_crop', False):
-            frames_in_frame = _resolve_crops_per_image(self._params)
+        if getattr(params, 'random_crop', False):
+            frames_in_frame = _resolve_crops_per_image(params)
         else:
-            step = self._params.step
-            sample_x_size = self._params.x_size
-            sample_y_size = self._params.y_size
+            step = params.step
+            sample_x_size = params.x_size
+            sample_y_size = params.y_size
 
             width_steps = int((im_width - sample_x_size) / step) + 1
             height_steps = int((im_height - sample_y_size) / step) + 1
@@ -131,16 +167,16 @@ class SampleWorker:
 
         vertical_frames = horizontal_frames = 0
 
-        if self._params.vertical_rotation:
+        if params.vertical_rotation:
             vertical_frames = frames_in_frame
 
-        if self._params.horizontal_rotation:
+        if params.horizontal_rotation:
             horizontal_frames = 2 * frames_in_frame
 
         frames_in_frame += horizontal_frames + vertical_frames
-        if getattr(self._params, 'scale_augmentation', False):
+        if getattr(params, 'scale_augmentation', False):
             frames_in_frame *= 2
-        if getattr(self._params, 'additional_augmentation', False):
+        if getattr(params, 'additional_augmentation', False):
             frames_in_frame *= 2
 
         return frames_in_frame

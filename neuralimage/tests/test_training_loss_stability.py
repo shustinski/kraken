@@ -84,6 +84,7 @@ def _build_trainer(loss_mode: str) -> TrainerProcess:
     [
         'bce',
         'dice',
+        'cldice',
         'bce_dice',
         'iou',
         'bce_iou',
@@ -146,6 +147,44 @@ def test_compute_per_sample_loss_supports_weighted_sum_of_multiple_losses():
     combo_loss = combo_trainer._compute_per_sample_loss(outputs, labels, criterion)
 
     expected = (0.25 * bce_loss) + (0.75 * dice_loss)
+    assert float(combo_loss.item()) == pytest.approx(float(expected.item()))
+
+
+def test_cldice_loss_penalizes_missing_centerline_connectivity():
+    trainer = _build_trainer('cldice')
+    outputs = torch.full((1, 1, 9, 9), -10.0, dtype=torch.float32)
+    outputs[:, :, 4, 1:4] = 10.0
+    outputs[:, :, 4, 5:8] = 10.0
+    labels = torch.zeros((1, 1, 9, 9), dtype=torch.float32)
+    labels[:, :, 4, 1:8] = 1.0
+    criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
+
+    per_sample_loss = trainer._compute_per_sample_loss(outputs, labels, criterion)
+
+    assert float(per_sample_loss.item()) > 0.05
+
+
+def test_compute_per_sample_loss_supports_cldice_in_weighted_sum():
+    outputs = torch.tensor(
+        [[[[2.0, -2.0, -2.0], [2.0, -2.0, -2.0], [2.0, 2.0, 2.0]]]],
+        dtype=torch.float32,
+    )
+    labels = torch.tensor(
+        [[[[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 1.0]]]],
+        dtype=torch.float32,
+    )
+    criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
+
+    bce_trainer = _build_trainer('bce')
+    cldice_trainer = _build_trainer('cldice')
+    combo_trainer = _build_trainer('bce')
+    combo_trainer._loss_term_weights = {'bce': 0.4, 'cldice': 0.6}
+
+    bce_loss = bce_trainer._compute_per_sample_loss(outputs, labels, criterion)
+    cldice_loss = cldice_trainer._compute_per_sample_loss(outputs, labels, criterion)
+    combo_loss = combo_trainer._compute_per_sample_loss(outputs, labels, criterion)
+
+    expected = (0.4 * bce_loss) + (0.6 * cldice_loss)
     assert float(combo_loss.item()) == pytest.approx(float(expected.item()))
 
 

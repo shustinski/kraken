@@ -126,7 +126,10 @@ def fetch_update_info(manifest_url: str, timeout_seconds: float = 2.5) -> Update
         return None
     try:
         if _is_filesystem_source(url):
-            payload = json.loads(Path(url).read_text(encoding='utf-8-sig'))
+            manifest_path = Path(url)
+            if not manifest_path.is_file():
+                return None
+            payload = json.loads(manifest_path.read_text(encoding='utf-8-sig'))
         else:
             with request.urlopen(url, timeout=timeout_seconds) as response:
                 charset = response.headers.get_content_charset() or 'utf-8'

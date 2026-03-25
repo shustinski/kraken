@@ -155,6 +155,29 @@ def test_run_uses_parameter_flag_to_disable_multiprocessing(monkeypatch):
     assert calls["multi"] == 0
 
 
+def test_recognizer_indexes_source_files_inside_worker(tmp_path):
+    source_dir = tmp_path / "recognition_source"
+    source_dir.mkdir()
+    (source_dir / "frame_001.png").write_bytes(b"fake")
+    (source_dir / "frame_002.bmp").write_bytes(b"fake")
+
+    bus = _StubBus()
+    params = RecognitionParameters(
+        source_files=[],
+        source_folder=source_dir,
+        result_folder=tmp_path / "result",
+        model="dummy_model_path.pth",
+        part_size=(16, 16),
+        batch_size=4,
+        overlap=2,
+    )
+    recognizer = NeuralRecognizer(params, bus)
+
+    recognizer._ensure_source_files_indexed()
+
+    assert sorted(params.source_files) == sorted([source_dir / "frame_001.png", source_dir / "frame_002.bmp"])
+
+
 def test_prepare_model_resolves_recommended_threshold_from_artifact_metadata(monkeypatch):
     base_dir = make_test_dir("neural_rec_threshold_auto")
     bus = _StubBus()

@@ -232,6 +232,30 @@ def test_build_workflow_parameters_maps_recognition_output_parameters():
     assert recognition.postprocess_kernel_size == 5
 
 
+def test_build_workflow_parameters_defers_recognition_source_indexing():
+    source = make_test_dir("workflow_source_lazy_recognition")
+    result = make_test_dir("workflow_result_lazy_recognition")
+    sample = make_test_dir("workflow_sample_lazy_recognition")
+    label = make_test_dir("workflow_label_lazy_recognition")
+    (source / "frame_001.png").write_bytes(b"not-used")
+
+    main = MainWindowState(
+        work_mode='recognition_only',
+        source_folder=str(source),
+        result_folder=str(result),
+        model_path=str(result / "model.pth"),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState()
+
+    _, _, recognition = build_workflow_parameters(main, settings)
+
+    assert recognition.source_folder == source
+    assert recognition.source_files == []
+
+
 def test_build_workflow_parameters_maps_dataloader_num_workers():
     source = make_test_dir("workflow_source_dataloader_workers")
     result = make_test_dir("workflow_result_dataloader_workers")

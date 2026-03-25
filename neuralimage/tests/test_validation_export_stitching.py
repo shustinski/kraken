@@ -79,3 +79,67 @@ def test_validation_binary_export_uses_recognition_style_stitching(monkeypatch):
     assert all(call[0].name == 'epoch_0002' for call in sew_calls)
     assert all(call[2] == 0.65 for call in sew_calls)
     assert trainer._bus.messages
+
+
+def test_validation_binary_export_uses_cached_predictions_without_second_inference(monkeypatch):
+    root = make_test_dir('validation_export_cached')
+    trainer = target.TrainerProcess.__new__(target.TrainerProcess)
+    trainer._save_validation_binary_images = True
+    trainer._val_dataloader = SimpleNamespace(batch_size=2, dataset=object())
+    trainer._save_path = root / 'model.pth'
+    trainer._bus = _Bus()
+
+    frame_a = target._ValidationNoCutFrameExportCache(
+        frame_index=0,
+        image_path=root / 'frame_a.jpg',
+        baseim_size=(256, 256),
+        overlap=64,
+        parts_count=1,
+        part_lookup=None,
+        patches={0: torch.zeros((1, 256, 256), dtype=torch.float16).numpy()},
+    )
+    frame_b = target._ValidationNoCutFrameExportCache(
+        frame_index=1,
+        image_path=root / 'frame_b.jpg',
+        baseim_size=(256, 256),
+        overlap=64,
+        parts_count=1,
+        part_lookup=None,
+        patches={0: torch.ones((1, 256, 256), dtype=torch.float16).numpy()},
+    )
+    export_cache = target._ValidationExportCache(
+        mode='no_cut',
+        dataset=object(),
+        frame_predictions={0: frame_a, 1: frame_b},
+    )
+
+    monkeypatch.setattr(
+        target,
+        '_cut_image_prepare',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('unexpected second cut pass')),
+    )
+    monkeypatch.setattr(
+        target,
+        '_gpu_predict',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('unexpected second inference pass')),
+    )
+
+    sew_calls: list[tuple[Path, dict, float]] = []
+
+    def _fake_sew(output_dir, item, jpeg_quality=95, *, threshold=None, postprocess_kernel_size=0):
+        sew_calls.append((Path(output_dir), dict(item), float(threshold)))
+
+    monkeypatch.setattr(target, '_sew', _fake_sew)
+
+    trainer._save_validation_binary_predictions(
+        epoch=1,
+        device=torch.device('cpu'),
+        autocast_ctx=lambda: target.nullcontext(),
+        threshold=0.65,
+        export_cache=export_cache,
+    )
+
+    assert len(sew_calls) == 2
+    assert all(call[0].name == 'epoch_0002' for call in sew_calls)
+    assert sorted(call[1]['name'] for call in sew_calls) == ['frame_a.jpg', 'frame_b.jpg']
+    assert all(call[2] == 0.65 for call in sew_calls)

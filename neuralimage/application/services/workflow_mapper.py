@@ -28,7 +28,6 @@ from lib.data_interfaces import (
     normalize_validation_source,
     parse_work_mode,
 )
-from lib.file_func import filter_images
 from lib.loss_config import resolve_loss_term_weights
 
 
@@ -244,7 +243,12 @@ def build_workflow_parameters(
     )
 
     recognition = RecognitionParameters(
-        source_files=filter_images(Path(main_window.source_folder)),
+        source_files=[],
+        source_folder=(
+            Path(main_window.source_folder)
+            if str(main_window.source_folder).strip()
+            else None
+        ),
         result_folder=Path(main_window.result_folder),
         model=model,
         batch_size=recognition_batch_size,

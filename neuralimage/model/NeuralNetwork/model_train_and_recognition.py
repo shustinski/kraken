@@ -5,10 +5,12 @@ import socket
 import sys
 import importlib.util
 import math
+import random
 import re
 import csv
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty
 
 from collections.abc import Callable, Mapping, Sized
 from contextlib import nullcontext
@@ -30,7 +32,7 @@ from torch.utils.data.distributed import DistributedSampler
 from PIL import Image, ImageDraw, ImageFont
 
 from lib import System
-from model.NeuralNetwork.dataset import CustomDataset, NoCutDataset
+from model.NeuralNetwork.dataset import CustomDataset, NoCutDataset, index_in_list
 from lib.data_interfaces import (
     CutoutParameters,
     RecognitionParameters,
@@ -48,6 +50,7 @@ from lib.data_interfaces import (
 )
 from lib.file_func import filter_images
 from lib.func import get_input_channels
+from lib.images import ImagePreparator, SampleCalculator
 from lib.loss_config import format_loss_formula, resolve_loss_term_weights, sanitize_loss_term_weights
 from lib.message_bus import AbstractMessageBus
 from lib.random_artifacts import generate_random_artifact_patch
@@ -78,8 +81,10 @@ FOCAL_LOSS_GAMMA = 2.0
 FOCAL_TVERSKY_ALPHA = 0.3
 FOCAL_TVERSKY_BETA = 0.7
 BOUNDARY_LOSS_KERNEL_SIZE = 3
+CLDICE_SKELETON_ITERATIONS = 16
 VALIDATION_THRESHOLD_CANDIDATES: tuple[float, ...] = tuple(value / 100.0 for value in range(10, 95, 5))
 RECOGNITION_AUX_WORKERS_PER_GPU = 4
+VALIDATION_EXPORT_CACHE_MAX_BYTES = 512 * 1024 * 1024
 _ARTIFACT_NAME_SANITIZE_PATTERN = re.compile(r'[^A-Za-z0-9._-]+')
 
 
@@ -102,6 +107,66 @@ class _RecordingQueue:
         except Exception:
             pass
         self._queue.put(item)
+
+
+def _drain_process_queue(
+    queue: Any,
+    publish_message: Callable[[Any], None],
+) -> None:
+    get_nowait = getattr(queue, 'get_nowait', None)
+    if not callable(get_nowait):
+        empty_fn = getattr(queue, 'empty', None)
+        get_fn = getattr(queue, 'get', None)
+        if not callable(empty_fn) or not callable(get_fn):
+            return
+        while True:
+            try:
+                if bool(empty_fn()):
+                    break
+                queued_message = get_fn()
+            except Empty:
+                break
+            except (EOFError, OSError, ValueError):
+                break
+            publish_message(queued_message)
+        return
+    while True:
+        try:
+            queued_message = get_nowait()
+        except Empty:
+            break
+        except (EOFError, OSError, ValueError):
+            break
+        publish_message(queued_message)
+
+
+def _join_process_with_escalation(process: Any, *, join_timeout: float = 5.0) -> None:
+    if process is None:
+        return
+    try:
+        process.join(timeout=join_timeout)
+    except Exception:
+        return
+    if not process.is_alive():
+        return
+    try:
+        process.terminate()
+    except Exception:
+        pass
+    try:
+        process.join(timeout=join_timeout)
+    except Exception:
+        return
+    if not process.is_alive():
+        return
+    try:
+        process.kill()
+    except Exception:
+        pass
+    try:
+        process.join(timeout=join_timeout)
+    except Exception:
+        pass
 
 
 def _ddp_worker_entry(rank: int, trainer: 'TrainerProcess', world_size: int, master_port: int) -> None:
@@ -248,6 +313,25 @@ class _TrainingRuntimeState:
     early_stopping_state: _EarlyStoppingState
     early_stopping_config: _EarlyStoppingConfig
     active_profiler: _ActiveTrainProfiler | None
+
+
+@dataclass
+class _ValidationNoCutFrameExportCache:
+    frame_index: int
+    image_path: Path
+    baseim_size: tuple[int, int]
+    overlap: int
+    parts_count: int
+    part_lookup: list[int] | None
+    patches: dict[int, np.ndarray]
+
+
+@dataclass
+class _ValidationExportCache:
+    mode: str
+    dataset: Any
+    sample_predictions: dict[int, np.ndarray] | None = None
+    frame_predictions: dict[int, _ValidationNoCutFrameExportCache] | None = None
 
 
 def _release_torch_memory() -> None:
@@ -492,13 +576,13 @@ class ModelTrainer(threading.Thread):
         self._bus.publish(topic, payload)
 
     def _drain_training_queue(self, *, append_elapsed_suffix: bool, started_at: float) -> None:
-        while not self.message_queue.empty():
-            queued_message = self.message_queue.get()
+        def _publish(queued_message: Any) -> None:
             self._publish_training_message(
                 queued_message,
                 append_elapsed_suffix=append_elapsed_suffix,
                 started_at=started_at,
             )
+        _drain_process_queue(self.message_queue, _publish)
 
     def _finalize_training_result(self, training_process: Any) -> bool:
         if self._stop_event.is_set():
@@ -549,7 +633,7 @@ class ModelTrainer(threading.Thread):
             started_at = time.perf_counter()
             while training_process.is_alive():
                 if self._stop_event.is_set():
-                    training_process.kill()
+                    _join_process_with_escalation(training_process)
                     break
                 self._drain_training_queue(
                     append_elapsed_suffix=True,
@@ -557,13 +641,12 @@ class ModelTrainer(threading.Thread):
                 )
                 time.sleep(1)
 
-            training_process.join()
+            _join_process_with_escalation(training_process)
             self._drain_training_queue(append_elapsed_suffix=False, started_at=started_at)
             self._finalize_training_result(training_process)
         finally:
             if training_process is not None and training_process.is_alive():
-                training_process.kill()
-                training_process.join(timeout=5)
+                _join_process_with_escalation(training_process)
             try:
                 self.message_queue.close()
             except Exception:
@@ -1279,6 +1362,7 @@ class TrainerProcess(mp.Process):
         if self._loss_function in (
             'bce',
             'dice',
+            'cldice',
             'bce_dice',
             'iou',
             'bce_iou',
@@ -1315,7 +1399,7 @@ class TrainerProcess(mp.Process):
         return bool(getattr(params, 'pixel_enabled', False))
 
     def _loss_supports_hard_pixel_mining(self, loss_mode: str) -> bool:
-        return loss_mode not in ('dice', 'iou', 'boundary', 'focal_tversky')
+        return loss_mode not in ('dice', 'cldice', 'iou', 'boundary', 'focal_tversky')
 
     @staticmethod
     def _is_finite_tensor(tensor: torch.Tensor) -> bool:
@@ -1458,6 +1542,65 @@ class TrainerProcess(mp.Process):
         return torch.clamp(boundary_loss, min=0.0, max=50.0)
 
     @staticmethod
+    def _soft_erode(mask: torch.Tensor) -> torch.Tensor:
+        vertical = -F.max_pool2d(-mask, kernel_size=(3, 1), stride=1, padding=(1, 0))
+        horizontal = -F.max_pool2d(-mask, kernel_size=(1, 3), stride=1, padding=(0, 1))
+        eroded = torch.minimum(vertical, horizontal)
+        eroded = torch.nan_to_num(eroded, nan=0.0, posinf=1.0, neginf=0.0)
+        return torch.clamp(eroded, min=0.0, max=1.0)
+
+    @staticmethod
+    def _soft_dilate(mask: torch.Tensor) -> torch.Tensor:
+        dilated = F.max_pool2d(mask, kernel_size=3, stride=1, padding=1)
+        dilated = torch.nan_to_num(dilated, nan=0.0, posinf=1.0, neginf=0.0)
+        return torch.clamp(dilated, min=0.0, max=1.0)
+
+    def _soft_open(self, mask: torch.Tensor) -> torch.Tensor:
+        return self._soft_dilate(self._soft_erode(mask))
+
+    def _soft_skeletonize(
+        self,
+        mask: torch.Tensor,
+        *,
+        iterations: int = CLDICE_SKELETON_ITERATIONS,
+    ) -> torch.Tensor:
+        work = torch.clamp(torch.nan_to_num(mask, nan=0.0, posinf=1.0, neginf=0.0), min=0.0, max=1.0)
+        skeleton = F.relu(work - self._soft_open(work))
+        for _ in range(max(0, int(iterations))):
+            work = self._soft_erode(work)
+            delta = F.relu(work - self._soft_open(work))
+            skeleton = skeleton + F.relu(delta - (skeleton * delta))
+        skeleton = torch.nan_to_num(skeleton, nan=0.0, posinf=1.0, neginf=0.0)
+        return torch.clamp(skeleton, min=0.0, max=1.0)
+
+    def _compute_cldice_loss_per_sample(
+        self,
+        outputs: torch.Tensor,
+        label: torch.Tensor,
+    ) -> torch.Tensor:
+        probs = torch.sigmoid(outputs)
+        target = (label >= 0.5).to(dtype=probs.dtype)
+        pred_skeleton = self._soft_skeletonize(probs)
+        target_skeleton = self._soft_skeletonize(target)
+        pred_flat = probs.view(probs.shape[0], -1)
+        target_flat = target.view(target.shape[0], -1)
+        pred_skeleton_flat = pred_skeleton.view(pred_skeleton.shape[0], -1)
+        target_skeleton_flat = target_skeleton.view(target_skeleton.shape[0], -1)
+        eps = 1e-6
+        topology_precision = ((pred_skeleton_flat * target_flat).sum(dim=1) + eps) / (
+            pred_skeleton_flat.sum(dim=1) + eps
+        )
+        topology_sensitivity = ((target_skeleton_flat * pred_flat).sum(dim=1) + eps) / (
+            target_skeleton_flat.sum(dim=1) + eps
+        )
+        cldice = (2.0 * topology_precision * topology_sensitivity + eps) / (
+            topology_precision + topology_sensitivity + eps
+        )
+        cldice_loss = 1.0 - cldice
+        cldice_loss = torch.nan_to_num(cldice_loss, nan=1.0, posinf=50.0, neginf=0.0)
+        return torch.clamp(cldice_loss, min=0.0, max=50.0)
+
+    @staticmethod
     def _compute_focal_tversky_loss_per_sample(
         outputs: torch.Tensor,
         label: torch.Tensor,
@@ -1522,6 +1665,9 @@ class TrainerProcess(mp.Process):
 
         if loss_mode == 'boundary':
             return self._compute_boundary_loss_per_sample(outputs, label)
+
+        if loss_mode == 'cldice':
+            return self._compute_cldice_loss_per_sample(outputs, label)
 
         if loss_mode == 'focal_tversky':
             return self._compute_focal_tversky_loss_per_sample(outputs, label)
@@ -1716,6 +1862,285 @@ class TrainerProcess(mp.Process):
 
         return []
 
+    @staticmethod
+    def _resolve_validation_sample_indices(
+        sample_indices: Any,
+        *,
+        fallback_start: int,
+        batch_size: int,
+    ) -> list[int]:
+        if torch.is_tensor(sample_indices):
+            return [int(index) for index in sample_indices.detach().cpu().tolist()]
+        if sample_indices is None:
+            return list(range(int(fallback_start), int(fallback_start) + int(batch_size)))
+        return [int(index) for index in sample_indices]
+
+    @staticmethod
+    def _can_cache_no_cut_validation_export(base_dataset: NoCutDataset) -> bool:
+        cut_settings = getattr(base_dataset, '_cut_settings', None)
+        if bool(getattr(cut_settings, 'random_crop', False)):
+            return False
+        if bool(getattr(base_dataset, '_skip_uniform_labels', False)):
+            return False
+        if bool(getattr(base_dataset, '_rare_patch_oversampling_enabled', False)):
+            return False
+        return True
+
+    @staticmethod
+    def _decode_no_cut_export_item(base_dataset: NoCutDataset, item: int) -> tuple[int, int, int, int]:
+        cut_settings = getattr(base_dataset, '_cut_settings', None)
+        loc = int(item)
+        augmentation_variant = 0
+        if bool(getattr(cut_settings, 'additional_augmentation', False)):
+            loc, augmentation_variant = divmod(loc, 2)
+        scale_variant = 0
+        if bool(getattr(cut_settings, 'scale_augmentation', False)):
+            loc, scale_variant = divmod(loc, 2)
+
+        if bool(getattr(cut_settings, 'vertical_rotation', False)) and bool(getattr(cut_settings, 'horizontal_rotation', False)):
+            location = loc // 4
+            rotation_index = loc % 4
+        elif bool(getattr(cut_settings, 'horizontal_rotation', False)):
+            location = loc // 3
+            rotation_index = 2 - (loc % 3)
+        elif bool(getattr(cut_settings, 'vertical_rotation', False)):
+            location = loc // 2
+            rotation_index = 2 * (loc % 2)
+        else:
+            location = loc
+            rotation_index = 0
+        return int(location), int(rotation_index), int(scale_variant), int(augmentation_variant)
+
+    @staticmethod
+    def _build_no_cut_frame_part_lookup(
+        base_dataset: NoCutDataset,
+        *,
+        frame_index: int,
+        parts_count: int,
+    ) -> list[int] | None:
+        if not bool(getattr(base_dataset, 'shuffle_patches_in_frame', False)):
+            return None
+        parts = list(range(int(parts_count)))
+        randomizer = random.Random(int(getattr(base_dataset, '_frame_seed')(frame_index)))
+        randomizer.shuffle(parts)
+        return [int(item) for item in parts]
+
+    def _create_validation_export_cache(self) -> _ValidationExportCache | None:
+        if (not self._save_validation_binary_images) or self._val_dataloader is None:
+            return None
+
+        dataset = self._resolve_validation_dataset()
+        base_dataset = self._unwrap_validation_dataset(dataset)
+        if dataset is None or base_dataset is None:
+            return None
+
+        if isinstance(base_dataset, CustomDataset):
+            estimated_bytes = 0
+            for image_path, _label_path in getattr(base_dataset, 'samples', []):
+                image_file = Path(image_path)
+                try:
+                    with Image.open(image_file) as source_image:
+                        width, height = source_image.size
+                except OSError:
+                    return None
+                estimated_bytes += int(width) * int(height) * 2
+                if estimated_bytes > VALIDATION_EXPORT_CACHE_MAX_BYTES:
+                    return None
+            return _ValidationExportCache(
+                mode='custom',
+                dataset=dataset,
+                sample_predictions={},
+            )
+
+        if not isinstance(base_dataset, NoCutDataset):
+            return None
+        if not self._can_cache_no_cut_validation_export(base_dataset):
+            return None
+
+        cut_settings = getattr(base_dataset, '_cut_settings', None)
+        segment_size = tuple(getattr(cut_settings, 'segment_size', (0, 0)))
+        if len(segment_size) != 2:
+            return None
+
+        frame_predictions: dict[int, _ValidationNoCutFrameExportCache] = {}
+        estimated_bytes = 0
+        for frame_index, (image_path, _label_path) in enumerate(getattr(base_dataset, 'samples', [])):
+            prepared_size = ImagePreparator(Path(image_path), getattr(base_dataset, '_prep_settings')).size
+            if len(prepared_size) != 2:
+                return None
+            base_width, base_height = int(prepared_size[0]), int(prepared_size[1])
+            sample_calculator = SampleCalculator((base_height, base_width), cut_settings)
+            _ = len(sample_calculator)
+            width_steps, height_steps = sample_calculator.size
+            parts_count = max(0, int(width_steps * height_steps))
+            if parts_count <= 0:
+                continue
+
+            estimated_bytes += parts_count * int(segment_size[0]) * int(segment_size[1]) * 2
+            if estimated_bytes > VALIDATION_EXPORT_CACHE_MAX_BYTES:
+                return None
+
+            frame_length = int(getattr(base_dataset, '_frame_lengths', [parts_count])[frame_index])
+            frame_predictions[frame_index] = _ValidationNoCutFrameExportCache(
+                frame_index=int(frame_index),
+                image_path=Path(image_path),
+                baseim_size=(base_width, base_height),
+                overlap=max(0, int(segment_size[0]) - int(getattr(cut_settings, 'step', segment_size[0]))),
+                parts_count=int(parts_count),
+                part_lookup=self._build_no_cut_frame_part_lookup(
+                    base_dataset,
+                    frame_index=int(frame_index),
+                    parts_count=int(frame_length),
+                ),
+                patches={},
+            )
+
+        if not frame_predictions:
+            return None
+        return _ValidationExportCache(
+            mode='no_cut',
+            dataset=dataset,
+            frame_predictions=frame_predictions,
+        )
+
+    def _collect_validation_export_batch(
+        self,
+        export_cache: _ValidationExportCache | None,
+        *,
+        sample_indices: Any,
+        probs: torch.Tensor,
+        saved_images: int,
+    ) -> None:
+        if export_cache is None or probs.ndim < 4:
+            return
+
+        resolved_indices = self._resolve_validation_sample_indices(
+            sample_indices,
+            fallback_start=saved_images,
+            batch_size=int(probs.shape[0]),
+        )
+        if not resolved_indices:
+            return
+
+        cpu_probs = probs.detach().cpu().to(dtype=torch.float16).numpy()
+        if export_cache.mode == 'custom':
+            sample_predictions = export_cache.sample_predictions
+            if sample_predictions is None:
+                return
+            for batch_offset, sample_index in enumerate(resolved_indices):
+                if batch_offset >= int(cpu_probs.shape[0]):
+                    break
+                sample_predictions[int(sample_index)] = np.ascontiguousarray(cpu_probs[batch_offset])
+            return
+
+        if export_cache.mode != 'no_cut':
+            return
+
+        frame_predictions = export_cache.frame_predictions
+        base_dataset = self._unwrap_validation_dataset(export_cache.dataset)
+        if frame_predictions is None or not isinstance(base_dataset, NoCutDataset):
+            return
+
+        lookup_lengths = getattr(base_dataset, '_lookup_len_list', None)
+        if not lookup_lengths:
+            return
+
+        for batch_offset, sample_index in enumerate(resolved_indices):
+            if batch_offset >= int(cpu_probs.shape[0]):
+                break
+            try:
+                frame_index, local_part = index_in_list(int(sample_index), list(lookup_lengths))
+            except (IndexError, ValueError):
+                continue
+            frame_cache = frame_predictions.get(int(frame_index))
+            if frame_cache is None:
+                continue
+            actual_part = int(local_part)
+            if frame_cache.part_lookup is not None:
+                if actual_part < 0 or actual_part >= len(frame_cache.part_lookup):
+                    continue
+                actual_part = int(frame_cache.part_lookup[actual_part])
+            location, rotation_index, scale_variant, augmentation_variant = self._decode_no_cut_export_item(
+                base_dataset,
+                actual_part,
+            )
+            if rotation_index != 0 or scale_variant != 0 or augmentation_variant != 0:
+                continue
+            if location < 0 or location >= frame_cache.parts_count or location in frame_cache.patches:
+                continue
+            frame_cache.patches[int(location)] = np.ascontiguousarray(cpu_probs[batch_offset])
+
+    def _save_validation_binary_predictions_from_cache(
+        self,
+        *,
+        epoch_dir: Path,
+        threshold: float,
+        export_cache: _ValidationExportCache | None,
+    ) -> int | None:
+        if export_cache is None:
+            return None
+
+        dataset = export_cache.dataset
+        if export_cache.mode == 'custom':
+            sample_predictions = export_cache.sample_predictions or {}
+            if not sample_predictions:
+                return None
+            if isinstance(dataset, Sized) and len(sample_predictions) < int(len(dataset)):
+                return None
+
+            saved_images = 0
+            for sample_index in sorted(sample_predictions):
+                sample_name = self._describe_validation_sample(dataset, int(sample_index), saved_images)
+                sample_path = epoch_dir / f'{saved_images:06d}_{sample_name}.png'
+                sample_tensor = np.asarray(sample_predictions[int(sample_index)], dtype=np.float32)
+                if sample_tensor.ndim == 3:
+                    sample_tensor = sample_tensor[0]
+                sample_array = (sample_tensor >= float(threshold)).astype(np.uint8) * 255
+                Image.fromarray(sample_array, mode='L').save(sample_path)
+                saved_images += 1
+            return int(saved_images)
+
+        if export_cache.mode != 'no_cut':
+            return None
+
+        frame_predictions = export_cache.frame_predictions or {}
+        if not frame_predictions:
+            return None
+        for frame_cache in frame_predictions.values():
+            if len(frame_cache.patches) < int(frame_cache.parts_count):
+                return None
+
+        saved_images = 0
+        for frame_cache in frame_predictions.values():
+            sample_patch = next(iter(frame_cache.patches.values()), None)
+            if sample_patch is None:
+                continue
+            predicted = np.zeros(
+                (
+                    int(frame_cache.parts_count),
+                    int(sample_patch.shape[0]),
+                    int(sample_patch.shape[1]),
+                    int(sample_patch.shape[2]),
+                ),
+                dtype=np.float32,
+            )
+            for location, patch in frame_cache.patches.items():
+                predicted[int(location)] = np.asarray(patch, dtype=np.float32)
+            _sew(
+                epoch_dir,
+                {
+                    'name': frame_cache.image_path.name,
+                    'baseim_size': frame_cache.baseim_size,
+                    'overlap': int(frame_cache.overlap),
+                    'predicted_image': predicted,
+                },
+                jpeg_quality=95,
+                threshold=float(threshold),
+                postprocess_kernel_size=0,
+            )
+            saved_images += 1
+        return int(saved_images)
+
     def _describe_validation_sample(self, dataset: Any, sample_index: int, fallback_index: int) -> str:
         describe_fn = getattr(dataset, 'describe_sample', None)
         if callable(describe_fn):
@@ -1732,12 +2157,28 @@ class TrainerProcess(mp.Process):
         device: torch.device,
         autocast_ctx: Callable[[], ContextManager[Any]],
         threshold: float,
+        export_cache: _ValidationExportCache | None = None,
     ) -> None:
         if (not self._save_validation_binary_images) or self._val_dataloader is None:
             return
 
         epoch_dir = self._save_path.parent / 'validation_binary_predictions' / f'epoch_{int(epoch + 1):04d}'
         epoch_dir.mkdir(parents=True, exist_ok=True)
+        saved_images = self._save_validation_binary_predictions_from_cache(
+            epoch_dir=epoch_dir,
+            threshold=float(threshold),
+            export_cache=export_cache,
+        )
+        if saved_images is not None:
+            self._bus.put([
+                'logging',
+                (
+                    f'Validation predictions saved in recognition-style stitched form: {int(saved_images)} file(s) '
+                    f'in {epoch_dir}.'
+                ),
+            ])
+            return
+
         saved_images = 0
         export_items = self._resolve_validation_export_items()
         batch_size = max(1, int(getattr(self._val_dataloader, 'batch_size', 1) or 1))
@@ -1778,13 +2219,11 @@ class TrainerProcess(mp.Process):
                         outputs = self._forward_model(inputs)
                     probs = torch.sigmoid(self._sanitize_outputs_for_loss(outputs))
                     binary_predictions = (probs >= float(threshold)).detach().cpu()
-
-                    if torch.is_tensor(sample_indices):
-                        resolved_indices = sample_indices.detach().cpu().tolist()
-                    elif sample_indices is None:
-                        resolved_indices = list(range(saved_images, saved_images + int(binary_predictions.shape[0])))
-                    else:
-                        resolved_indices = list(sample_indices)
+                    resolved_indices = self._resolve_validation_sample_indices(
+                        sample_indices,
+                        fallback_start=saved_images,
+                        batch_size=int(binary_predictions.shape[0]),
+                    )
 
                     for batch_offset in range(int(binary_predictions.shape[0])):
                         sample_index = (
@@ -1839,6 +2278,8 @@ class TrainerProcess(mp.Process):
             for threshold in VALIDATION_THRESHOLD_CANDIDATES
         }
         skipped_non_finite_batches = 0
+        validation_export_cache = self._create_validation_export_cache()
+        export_saved_images = 0
         with torch.no_grad():
             for batch in self._val_dataloader:
                 data, target, _sample_indices = self._split_batch(batch)
@@ -1857,6 +2298,13 @@ class TrainerProcess(mp.Process):
                 val_loss += loss.item() * image.size(0)
                 val_loss_samples += int(image.size(0))
                 probs = torch.sigmoid(self._sanitize_outputs_for_loss(outputs))
+                self._collect_validation_export_batch(
+                    validation_export_cache,
+                    sample_indices=_sample_indices,
+                    probs=probs,
+                    saved_images=export_saved_images,
+                )
+                export_saved_images += int(probs.shape[0])
                 preds = probs >= 0.5
                 label_bin = self._sanitize_labels_for_loss(label) >= 0.5
                 correct += (preds == label_bin).sum().item()
@@ -1883,6 +2331,7 @@ class TrainerProcess(mp.Process):
                     f'skipped {skipped_non_finite_batches} batch(es) with non-finite loss.'
                 ),
             ])
+            validation_export_cache = None
         if val_loss_samples <= 0:
             self._bus.put(['logging', 'Validation warning: all batches were skipped due to non-finite loss.'])
             return None
@@ -1912,6 +2361,7 @@ class TrainerProcess(mp.Process):
             device=device,
             autocast_ctx=autocast_ctx,
             threshold=float(best_threshold),
+            export_cache=validation_export_cache,
         )
 
         return {
@@ -3728,11 +4178,8 @@ class NeuralRecognizer(threading.Thread):
         self._parameters = recognition_parameters
         self._bus = message_bus
         self.callback = callback
-        img_files = self._parameters.source_files
-        names = [img_file.name for img_file in img_files]
         result_folder = self._parameters.result_folder
         result_folder.mkdir(parents=True, exist_ok=True)
-        self._bus.publish('logging', f'Images queued for recognition: {len(names)}')
         self.colors = 1
         self.model:nn.Module|None = None
         self._thread_stop_event = threading.Event()
@@ -3742,8 +4189,24 @@ class NeuralRecognizer(threading.Thread):
         self._context_crop_size: tuple[int, int] | None = None
         self._context_input_size: tuple[int, int] | None = None
 
+    def _ensure_source_files_indexed(self) -> None:
+        if self._parameters.source_files:
+            self._bus.publish('logging', f'Images queued for recognition: {len(self._parameters.source_files)}')
+            return
+
+        source_folder = getattr(self._parameters, 'source_folder', None)
+        if source_folder is None or not str(source_folder).strip():
+            self._parameters.source_files = []
+            self._bus.publish('logging', 'Images queued for recognition: 0')
+            return
+
+        self._bus.publish('logging', 'Индексация файлов для распознавания...')
+        self._parameters.source_files = filter_images(Path(source_folder))
+        self._bus.publish('logging', f'Images queued for recognition: {len(self._parameters.source_files)}')
+
     def run(self, multithreading: bool | None = None):
         try:
+            self._ensure_source_files_indexed()
             self.prepare_model()
             if multithreading is None:
                 multithreading = bool(getattr(self._parameters, 'recognition_multiprocessing_enabled', True))
@@ -4132,13 +4595,13 @@ class ModelRecognizer(threading.Thread):
         self._bus.publish(topic, payload)
 
     def _drain_recognition_queue(self, *, append_elapsed_suffix: bool, started_at: float) -> None:
-        while not self.message_queue.empty():
-            queued_message = self.message_queue.get()
+        def _publish(queued_message: Any) -> None:
             self._publish_recognition_message(
                 queued_message,
                 append_elapsed_suffix=append_elapsed_suffix,
                 started_at=started_at,
             )
+        _drain_process_queue(self.message_queue, _publish)
 
     def _finalize_recognition_result(self, recognition_process: Any) -> bool:
         if self._stop_event.is_set():
@@ -4168,9 +4631,7 @@ class ModelRecognizer(threading.Thread):
             while recognition_process.is_alive():
                 if self._stop_event.is_set():
                     self._process_stop_event.set()
-                    recognition_process.join(timeout=5)
-                    if recognition_process.is_alive():
-                        recognition_process.kill()
+                    _join_process_with_escalation(recognition_process)
                     break
                 self._drain_recognition_queue(
                     append_elapsed_suffix=True,
@@ -4178,14 +4639,13 @@ class ModelRecognizer(threading.Thread):
                 )
                 time.sleep(1)
 
-            recognition_process.join()
+            _join_process_with_escalation(recognition_process)
             self._drain_recognition_queue(append_elapsed_suffix=False, started_at=started_at)
             self._finalize_recognition_result(recognition_process)
         finally:
             self._inline_recognizer = None
             if recognition_process is not None and recognition_process.is_alive():
-                recognition_process.kill()
-                recognition_process.join(timeout=5)
+                _join_process_with_escalation(recognition_process)
             try:
                 self.message_queue.close()
             except Exception:

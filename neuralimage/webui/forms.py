@@ -553,6 +553,7 @@ class SettingsForm(forms.Form):
         default_loss_labels = {
             'bce': 'BCE',
             'dice': 'Dice',
+            'cldice': 'clDice',
             'iou': 'IoU',
             'focal_bce': 'Focal BCE',
             'boundary': 'Boundary',

@@ -318,6 +318,7 @@ def test_settings_form_lists_new_loss_function_choices():
     form = SettingsForm()
     loss_choices = {value for value, _label in form.fields['loss_function'].choices}
 
+    assert 'cldice' in loss_choices
     assert 'boundary' in loss_choices
     assert 'focal_tversky' in loss_choices
     assert 'bce_dice' not in loss_choices

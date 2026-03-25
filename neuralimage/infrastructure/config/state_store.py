@@ -748,7 +748,6 @@ class QSettingsStateStore:
         settings = self._settings(MAIN_WINDOW_ORG, MAIN_WINDOW_APP)
         for key, value in _main_window_state_to_storage_dict(state).items():
             settings.setValue(key, value)
-        settings.sync()
 
     def load_settings_state(self) -> SettingsState:
         settings = self._settings(SETTINGS_ORG, SETTINGS_APP)
@@ -765,7 +764,6 @@ class QSettingsStateStore:
         settings = self._settings(SETTINGS_ORG, SETTINGS_APP)
         for key, value in _settings_state_to_storage_dict(state).items():
             settings.setValue(key, value)
-        settings.sync()
 
 
 class IniStateStore:

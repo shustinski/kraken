@@ -854,7 +854,9 @@ def sew_from_queue(
     threshold: float | None = None,
     postprocess_kernel_size: int = 0,
 ) -> None:
-    item = sew_queue.get()
+    item = _try_get_queue_item(sew_queue, timeout=0.2)
+    if item is _QUEUE_EMPTY:
+        return
     sew(
         output_dir,
         item,

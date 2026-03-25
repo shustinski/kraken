@@ -88,6 +88,11 @@ def test_fetch_update_info_supports_local_manifest_path(tmp_path) -> None:
     assert len(update_info.releases) == 2
 
 
+def test_fetch_update_info_returns_none_for_missing_manifest_path(tmp_path) -> None:
+    missing_manifest = tmp_path / 'missing-version.json'
+    assert fetch_update_info(str(missing_manifest)) is None
+
+
 def test_download_update_installer_supports_local_file_path(tmp_path) -> None:
     source_installer = tmp_path / 'NeuralImage-5.8.0.exe'
     source_installer.write_bytes(b'installer payload')

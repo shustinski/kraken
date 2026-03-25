@@ -3,6 +3,7 @@ import threading
 import os
 import sys
 import hashlib
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -207,6 +208,8 @@ class LossAwareSampler(Sampler[int]):
 class GeneralNeuralHandler:
     EXISTING_FOLDER_DEFAULT_ANSWER = False
     EXISTING_FOLDER_TIMEOUT_SECONDS = 15
+    STOP_JOIN_POLL_SECONDS = 0.2
+    STOP_JOIN_GRACE_SECONDS = 10.0
 
     def __init__(
         self,
@@ -448,7 +451,7 @@ class GeneralNeuralHandler:
             return
         self.current_thread = ConvertCifThread(source, result, message_bus=self.message_bus)
         self.current_thread.start()
-        self.current_thread.join()
+        self._wait_for_current_thread('cif conversion')
 
     def _start_cut(self, source: Path, result: Path):
         if self._check_folder_existance(result):
@@ -461,7 +464,7 @@ class GeneralNeuralHandler:
         )
         self.current_thread.daemon = False
         self.current_thread.start()
-        self.current_thread.join()
+        self._wait_for_current_thread('dataset cutting')
 
     def _create_dataset(
         self,
@@ -807,7 +810,7 @@ class GeneralNeuralHandler:
         )
         self.current_thread.daemon = False
         self.current_thread.start()
-        self.current_thread.join()
+        self._wait_for_current_thread('training')
         if not getattr(self.current_thread, 'succeeded', False):
             self._training_failed = True
             if getattr(self.current_thread, 'error_message', None) is None:
@@ -831,7 +834,7 @@ class GeneralNeuralHandler:
         )
         self.current_thread.daemon = False
         self.current_thread.start()
-        self.current_thread.join()
+        self._wait_for_current_thread('recognition')
         if not getattr(self.current_thread, 'succeeded', False):
             if (not self._need_stop) and getattr(self.current_thread, 'error_message', None) is None:
                 self.message_bus.publish('error', 'Распознавание завершилось с ошибкой.')
@@ -849,6 +852,37 @@ class GeneralNeuralHandler:
             return
         if hasattr(self.current_thread, 'stop'):
             self.current_thread.stop()
+
+    def _wait_for_current_thread(self, operation_name: str) -> None:
+        thread = self.current_thread
+        if thread is None:
+            return
+        join_fn = getattr(thread, 'join', None)
+        is_alive_fn = getattr(thread, 'is_alive', None)
+        if not callable(join_fn):
+            return
+        if not callable(is_alive_fn):
+            join_fn()
+            return
+        stop_wait_started_at: float | None = None
+        while is_alive_fn():
+            join_fn(timeout=self.STOP_JOIN_POLL_SECONDS)
+            if not self._need_stop:
+                continue
+            if stop_wait_started_at is None:
+                stop_wait_started_at = time.monotonic()
+                continue
+            waited_after_stop = time.monotonic() - stop_wait_started_at
+            if waited_after_stop < self.STOP_JOIN_GRACE_SECONDS:
+                continue
+            self.message_bus.publish(
+                'error',
+                (
+                    f'Не удалось корректно завершить {operation_name} в течение '
+                    f'{int(self.STOP_JOIN_GRACE_SECONDS)} сек. Операция переведена в аварийное завершение.'
+                ),
+            )
+            break
 
     def _check_folder_existance(self, folder: Path):
         answer = False

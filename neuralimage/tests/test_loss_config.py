@@ -41,3 +41,15 @@ def test_format_loss_formula_html_uses_math_like_markup():
     assert '<sub>BCE</sub>' in formula_html
     assert '<sub>Dice</sub>' in formula_html
     assert '&middot;' in formula_html
+
+
+def test_sanitize_loss_term_weights_accepts_cldice():
+    weights = sanitize_loss_term_weights({'cldice': 0.35, 'dice': 0.65})
+
+    assert weights == {'dice': 0.65, 'cldice': 0.35}
+
+
+def test_format_loss_formula_html_uses_cldice_display_name():
+    formula_html = format_loss_formula_html({'cldice': 1.0})
+
+    assert '<sub>clDice</sub>' in formula_html

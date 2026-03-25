@@ -1717,6 +1717,7 @@ class GeneralNeuralHandlerThread(QThread):
                  callback: Callable[..., None] | None = None):
         super().__init__()
         self._last_answer = False
+        self._waiting_for_answer = False
         self.main_logic = GeneralNeuralHandler(work_mode=work_mode,
                                                recogniton_parameters=recognition_parameters,
                                                tranining_parameters=tranining_parameters,
@@ -1728,20 +1729,32 @@ class GeneralNeuralHandlerThread(QThread):
         self.main_logic.start()
 
     def check(self, text, theme, default_answer: bool = False, timeout_seconds: int | None = None):
+        self._last_answer = bool(default_answer)
+        self._waiting_for_answer = True
         self.ask.emit(
             text,
             theme,
             bool(default_answer),
             max(0, int(timeout_seconds or 0)),
         )
-        # Ждем ответ в локальном event-loop
         loop = QtCore.QEventLoop()
-        self.answer.connect(loop.quit)
-        loop.exec()  # блокирует только этот метод
-        answer = self._last_answer
-        return answer
+        def _quit_loop(_value: bool) -> None:
+            if loop.isRunning():
+                loop.quit()
+        self.answer.connect(_quit_loop)
+        try:
+            loop.exec()
+            return self._last_answer
+        finally:
+            self._waiting_for_answer = False
+            try:
+                self.answer.disconnect(_quit_loop)
+            except TypeError:
+                pass
 
     def stop(self):
+        if self._waiting_for_answer:
+            self.answer.emit(False)
         self.main_logic.stop_execution()
 
     @QtCore.pyqtSlot(bool)

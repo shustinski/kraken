@@ -264,6 +264,7 @@ def test_settings_panel_syncs_recognition_output_controls(qapp):
 def test_settings_panel_lists_new_loss_functions(qapp):
     panel = SettingsPanel()
 
+    assert 'cldice' in panel.loss_term_checkboxes
     assert 'boundary' in panel.loss_term_checkboxes
     assert 'focal_tversky' in panel.loss_term_checkboxes
     assert 'bce_dice' not in panel.loss_term_checkboxes

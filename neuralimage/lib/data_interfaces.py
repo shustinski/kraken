@@ -855,6 +855,7 @@ class RecognitionParameters:
     part_size: tuple[int,int]
     batch_size: int
     overlap: int
+    source_folder: Path | None = None
     jpeg_quality: int = 95
     recognition_multiprocessing_enabled: bool = True
     binarize_output: bool = True

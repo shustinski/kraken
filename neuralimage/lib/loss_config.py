@@ -9,6 +9,7 @@ from typing import Any
 LOSS_TERM_NAMES: tuple[str, ...] = (
     'bce',
     'dice',
+    'cldice',
     'iou',
     'focal_bce',
     'boundary',
@@ -29,6 +30,7 @@ MAX_LOSS_TERM_WEIGHT_SUM = 1.0
 LOSS_TERM_DISPLAY_NAMES: dict[str, str] = {
     'bce': 'BCE',
     'dice': 'Dice',
+    'cldice': 'clDice',
     'bce_dice': 'BCE+Dice',
     'iou': 'IoU',
     'bce_iou': 'BCE+IoU',

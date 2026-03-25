@@ -12,6 +12,9 @@ from lib.file_func import filter_images
 from lib.message_bus import AbstractMessageBus
 
 
+_PROGRESS_LOG_STEP = 25
+
+
 class ConvertCifThread(threading.Thread):
     def __init__(
         self,
@@ -31,13 +34,17 @@ class ConvertCifThread(threading.Thread):
         self.bus.publish('logging', 'Начинаю преобразование cif в бинарные изображения')
         self.savepath.mkdir(parents=True, exist_ok=True)
 
-        for file in self.path.iterdir():
+        cif_files = [
+            file for file in self.path.iterdir()
+            if file.is_file() and file.suffix.lower() == '.cif'
+        ]
+        total_files = len(cif_files)
+        for index, file in enumerate(cif_files, start=1):
             if self._stop_event.is_set():
                 break
-            if not file.is_file() or file.suffix.lower() != '.cif':
-                continue
 
-            self.bus.publish('logging', f'Преобразую в jpg файл {file.stem}')
+            if index == 1 or index == total_files or index % _PROGRESS_LOG_STEP == 0:
+                self.bus.publish('logging', f'Преобразование CIF: {index}/{total_files} ({file.stem})')
             converted = backend.cif_to_jpg(file)
             if isinstance(converted, tuple) and converted[0] == 0:
                 self.bus.publish('logging', f'Ошибка в {file.name}: {converted[1]}')
@@ -72,11 +79,14 @@ class CutImageThread(threading.Thread):
 
     def run(self):
         self.bus.publish('logging', f'Начинаю производить нарезку кадров из {self.source}')
-        for file in sorted(filter_images(self.source)):
+        image_files = sorted(filter_images(self.source))
+        total_files = len(image_files)
+        for index, file in enumerate(image_files, start=1):
             if self._stop_event.is_set():
                 break
 
-            self.bus.publish('logging', f'Обрабатывается файл {file.stem}')
+            if index == 1 or index == total_files or index % _PROGRESS_LOG_STEP == 0:
+                self.bus.publish('logging', f'Нарезка кадров: {index}/{total_files} ({file.stem})')
             backend.frame_cut(
                 file,
                 self.target,

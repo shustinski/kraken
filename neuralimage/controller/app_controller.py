@@ -3,6 +3,8 @@ import importlib
 import os
 from pathlib import Path
 
+from lib.runtime_paths import resolve_internal_path
+
 
 _DLL_DIR_HANDLES: list[object] = []
 
@@ -136,7 +138,7 @@ def load_qss_from_resource() -> str:
     """Читает style.qss из Qt‑ресурса."""
     from PyQt6.QtCore import QFile, QIODevice, QTextStream
 
-    qfile = QFile("_internal/resources/dark_modern.qss")
+    qfile = QFile(str(resolve_internal_path('resources', 'dark_modern.qss')))
     # qfile = QFile("_internal/resources//style.qss")
     # qfile = QFile("_internal/resources//new_style.qss")
     # Открываем в режиме «только чтение» + «текстовый» (чтобы Qt

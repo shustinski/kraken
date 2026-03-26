@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
+from lib.runtime_paths import resources_root
 
-_UI_TEXTS_DIR = Path(__file__).resolve().parent.parent / 'resources'
+_UI_TEXTS_DIR = resources_root()
 _DEFAULT_LANGUAGE = 'ru'
 _current_language = _DEFAULT_LANGUAGE
 

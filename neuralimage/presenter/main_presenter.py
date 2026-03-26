@@ -43,6 +43,7 @@ from lib.file_func import filter_files
 from lib.loss_config import dominant_loss_function, resolve_loss_term_weights
 from lib.logging_policy import should_forward_log_event
 from lib.message_bus import MessageBus, AbstractMessageBus
+from lib.runtime_paths import resolve_resource_path
 from lib.images import SampleWorker
 from lib.update_checker import (
     ReleaseInfo,
@@ -93,9 +94,9 @@ class SampleCountSignals(QObject):
 
 class MainPresenter(QObject):
     SIMPLE_WORKFLOW_PRESETS = {
-        'conductors': Path('resources/conductors_workflow.json'),
-        'contacts': Path('resources/contacts_workflow.json'),
-        'memory': Path('resources/memory_workflow.json'),
+        'conductors': resolve_resource_path('conductors_workflow.json'),
+        'contacts': resolve_resource_path('contacts_workflow.json'),
+        'memory': resolve_resource_path('memory_workflow.json'),
     }
 
     """

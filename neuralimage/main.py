@@ -24,8 +24,6 @@ from typing import Sequence
 
 
 # _preload_windows_torch_dll()
-
-from controller import AppController
 from lib.version import get_app_title
 
 
@@ -70,6 +68,8 @@ def _run_web_ui(host: str, port: int) -> None:
 
 
 def _run_desktop_ui(*, ui_only: bool) -> None:
+    from controller import AppController
+
     controller = AppController(ui_only=ui_only)
     controller.exec()
 

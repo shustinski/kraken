@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from lib.runtime_paths import resolve_resource_path
 from lib.ui_texts import get_ui_section
 from lib.version import APP_VERSION
 
@@ -257,8 +258,10 @@ class HelpDialog(QDialog):
             return None
         md_path = Path(value)
         if not md_path.is_absolute():
-            root = Path(__file__).resolve().parent.parent
-            md_path = root / md_path
+            if md_path.parts and md_path.parts[0] == 'resources':
+                md_path = resolve_resource_path(*md_path.parts[1:])
+            else:
+                md_path = Path(__file__).resolve().parent.parent / md_path
         return md_path
 
     @staticmethod

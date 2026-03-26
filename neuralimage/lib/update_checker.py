@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib import error, request
 
+from lib.runtime_paths import resolve_resource_path
+
 
 _VERSION_PART_RE = re.compile(r'\d+')
 _URL_SCHEME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.-]*://')
@@ -67,7 +69,7 @@ def load_update_manifest_url() -> str:
     env_url = str(os.getenv('NEURALIMAGE_UPDATE_URL', '')).strip()
     if env_url:
         return env_url
-    config_path = Path(__file__).resolve().parent.parent / 'resources' / 'update_client.json'
+    config_path = resolve_resource_path('update_client.json')
     if not config_path.exists():
         return ''
     try:

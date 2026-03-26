@@ -31,6 +31,7 @@ from UI import ClickableLabel
 import numpy as np
 from lib.data_interfaces import WorkMode
 from lib.logging_policy import MAX_LOG_MESSAGES
+from lib.runtime_paths import resolve_internal_path
 from lib.ui_texts import get_ui_language, get_ui_section
 from lib.version import get_app_title
 from view.changelog_dialog import show_changelog_dialog
@@ -113,13 +114,10 @@ class MainView(QMainWindow):
     ui_mode_selected: pyqtSignal = pyqtSignal(str)
     simple_workflow_requested: pyqtSignal = pyqtSignal(str)
 
-    DARK_THEME_QSS_PATH = "_internal/resources/dark_modern.qss"
-    LIGHT_THEME_QSS_PATH = "_internal/resources/style.qss"
-
     def __init__(self, side_panel: QWidget | None = None):
         super().__init__()
         self.setWindowTitle(get_app_title())
-        self.setWindowIcon(QIcon("_internal/icon.png"))
+        self.setWindowIcon(QIcon(str(resolve_internal_path('icon.png'))))
         self.setGeometry(200, 200, 1200, 740)
         
 
@@ -969,8 +967,8 @@ class MainView(QMainWindow):
 
     def _theme_qss_path(self, theme: str) -> str:
         if theme == "light":
-            return self.LIGHT_THEME_QSS_PATH
-        return self.DARK_THEME_QSS_PATH
+            return str(resolve_internal_path('resources', 'style.qss'))
+        return str(resolve_internal_path('resources', 'dark_modern.qss'))
 
     def _sync_language_menu_checks(self) -> None:
         if hasattr(self, "ui_language_ru_action"):

@@ -365,3 +365,70 @@ def test_no_cut_dataset_length_uses_image_size_fast_path(monkeypatch):
 
     assert called['count'] == 0
     assert len(dataset) == 16
+
+
+def test_no_cut_dataset_set_epoch_recomputes_dynamic_frame_lengths(monkeypatch):
+    root = make_test_dir('no_cut_dataset_dynamic_epoch_length')
+    image_dir = root / 'images'
+    label_dir = root / 'labels'
+    image_dir.mkdir()
+    label_dir.mkdir()
+
+    image_path = image_dir / 'sample.png'
+    label_path = label_dir / 'sample.png'
+    payload = np.zeros((8, 8), dtype=np.uint8)
+    Image.fromarray(payload, mode='L').save(image_path)
+    Image.fromarray(payload, mode='L').save(label_path)
+
+    generation = SampleGenerationSettings(
+        step=2,
+        segment_size=(2, 2),
+        vertical_rotation=False,
+        horizontal_rotation=False,
+        channels=1,
+        shuffle_patches_in_frame=False,
+        random_crop=True,
+    )
+    settings = TrainingParameters(
+        image_path=image_dir,
+        label_path=label_dir,
+        shuffle=False,
+        validation=False,
+        validation_percent=0,
+        batch_size=1,
+        cut_mode=SampleCutMode.online,
+        colors=1,
+        epochs=1,
+        generation=generation,
+        prepare=SamplePrepareSettings(enable_crop=False, enable_resize=False),
+        skip_uniform_labels=True,
+    )
+    dataset = NoCutDataset([(image_path, label_path)], settings)
+
+    class _FakeCutter:
+        def __init__(self, length: int):
+            self._length = int(length)
+
+        def __len__(self):
+            return self._length
+
+        def __getitem__(self, index: int):
+            if index < 0 or index >= self._length:
+                raise IndexError('fake cutter index out of range')
+            image = np.zeros((1, 2, 2), dtype=np.float32)
+            label = np.zeros((1, 2, 2), dtype=np.float32)
+            return image, label
+
+    monkeypatch.setattr(
+        dataset,
+        '_build_frame_cutter',
+        lambda frame_index, *, shuffle: _FakeCutter(1 if dataset._epoch_index > 0 else 2),
+    )
+
+    dataset.set_epoch()
+
+    assert dataset._dynamic_frame_lengths is True
+    assert len(dataset) == 1
+    image_part, label_part = dataset[0]
+    assert image_part.shape == (1, 2, 2)
+    assert label_part.shape == (1, 2, 2)

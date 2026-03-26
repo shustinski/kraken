@@ -67,6 +67,7 @@ class PCBDefectAugmentor:
         self._weighted_defect_names = tuple(names)
         self._weighted_defect_probabilities = np.asarray(weights, dtype=np.float64)
         self._weighted_defect_probabilities /= self._weighted_defect_probabilities.sum()
+        self._enabled_defect_count = int(len(self._weighted_defect_names))
 
     def __call__(
         self,
@@ -127,25 +128,31 @@ class PCBDefectAugmentor:
             rng.integers(int(self.config.min_defects), int(self.config.max_defects) + 1)
         )
         applied_count = 0
-        max_attempts = max(1, int(self.config.max_attempts_per_defect)) * max(1, target_count)
+        max_attempts = (
+            max(1, int(self.config.max_attempts_per_defect))
+            * max(1, target_count)
+            * max(1, self._enabled_defect_count)
+        )
         attempts = 0
 
         while applied_count < target_count and attempts < max_attempts:
-            attempts += 1
-            defect_name = str(
-                rng.choice(
-                    self._weighted_defect_names,
-                    p=self._weighted_defect_probabilities,
-                )
-            )
-            handler = self._defect_handlers[defect_name]
-            updated = handler(augmented_copper, rng)
-            if updated is None:
-                continue
-            if np.array_equal(updated, augmented_copper):
-                continue
-            augmented_copper = updated
-            applied_count += 1
+            cycle_applied = False
+            for defect_name in self._iter_defect_attempt_order(rng):
+                if attempts >= max_attempts:
+                    break
+                attempts += 1
+                handler = self._defect_handlers[defect_name]
+                updated = handler(augmented_copper, rng)
+                if updated is None:
+                    continue
+                if np.array_equal(updated, augmented_copper):
+                    continue
+                augmented_copper = updated
+                applied_count += 1
+                cycle_applied = True
+                break
+            if not cycle_applied:
+                break
 
         defect_mask = cv2.absdiff(original_copper_u8, augmented_copper)
         if np.count_nonzero(defect_mask) == 0:
@@ -300,6 +307,17 @@ class PCBDefectAugmentor:
         if return_debug:
             return restored_original, restored_augmented, restored_mask
         return restored_augmented, restored_mask
+
+    def _iter_defect_attempt_order(self, rng: np.random.Generator) -> tuple[str, ...]:
+        if self._enabled_defect_count <= 1:
+            return self._weighted_defect_names
+        ordered = rng.choice(
+            self._weighted_defect_names,
+            size=self._enabled_defect_count,
+            replace=False,
+            p=self._weighted_defect_probabilities,
+        )
+        return tuple(str(item) for item in ordered.tolist())
 
     def _resolve_copper_mask(
         self,

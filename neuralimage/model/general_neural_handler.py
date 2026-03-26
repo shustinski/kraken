@@ -179,6 +179,26 @@ class LossAwareSampler(Sampler[int]):
     def __len__(self) -> int:
         return self.size
 
+    def resize(self, size: int, *, reset: bool = False) -> None:
+        resolved_size = max(0, int(size))
+        if resolved_size == self.size and not reset:
+            return
+
+        self.size = resolved_size
+        if reset or resolved_size <= 0:
+            self._difficulty = torch.ones(self.size, dtype=torch.float32)
+            self._weights = torch.ones(self.size, dtype=torch.float32)
+            return
+
+        new_difficulty = torch.ones(self.size, dtype=torch.float32)
+        new_weights = torch.ones(self.size, dtype=torch.float32)
+        shared = min(len(self._difficulty), self.size)
+        if shared > 0:
+            new_difficulty[:shared] = self._difficulty[:shared]
+            new_weights[:shared] = self._weights[:shared]
+        self._difficulty = new_difficulty
+        self._weights = new_weights
+
     def update_batch_losses(self, sample_indices: torch.Tensor, sample_losses: torch.Tensor) -> None:
         if self.size <= 0:
             return

@@ -56,11 +56,13 @@ def test_state_store_roundtrip_main_window(monkeypatch):
         label_folder='l',
         sample_folder='p',
         epochs=7,
+        ui_mode='simple',
     )
     save_main_window_state(state)
     loaded = load_main_window_state()
     assert loaded.work_mode == 'train_only'
     assert loaded.epochs == 7
+    assert loaded.ui_mode == 'simple'
 
 
 def test_state_store_roundtrip_settings(monkeypatch):
@@ -235,6 +237,7 @@ def test_state_store_roundtrip_main_window_ini_backend(monkeypatch):
         label_folder='labels',
         sample_folder='samples',
         epochs=11,
+        ui_mode='simple',
     )
     save_main_window_state(state)
     loaded = load_main_window_state()
@@ -242,6 +245,7 @@ def test_state_store_roundtrip_main_window_ini_backend(monkeypatch):
     assert loaded.work_mode == 'train_only'
     assert loaded.source_folder == 'source'
     assert loaded.epochs == 11
+    assert loaded.ui_mode == 'simple'
 
 
 def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
@@ -505,3 +509,12 @@ def test_load_workflow_snapshot_rejects_invalid_payload(payload):
 
     with pytest.raises(ValueError):
         load_workflow_snapshot(snapshot_path)
+
+
+def test_load_main_window_state_defaults_to_simple_ui_mode(monkeypatch):
+    settings_dir = make_test_dir("qsettings_main_default_ui_mode")
+    monkeypatch.setenv("NEURALIMAGE_SETTINGS_DIR", str(settings_dir))
+
+    loaded = load_main_window_state()
+
+    assert loaded.ui_mode == 'simple'

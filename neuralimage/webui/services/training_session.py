@@ -100,6 +100,7 @@ class TrainingSessionService:
                     'epoch': float(epoch),
                     'batch_index': float(payload.get('batch_index', 0.0)),
                     'data_wait_ms': float(payload.get('data_wait_ms', 0.0)),
+                    'augmentation_ms': float(payload.get('augmentation_ms', 0.0)),
                     'forward_ms': float(payload.get('forward_ms', 0.0)),
                     'backward_ms': float(payload.get('backward_ms', 0.0)),
                     'optimizer_ms': float(payload.get('optimizer_ms', 0.0)),
@@ -110,6 +111,7 @@ class TrainingSessionService:
                 self._train_perf = {
                     'epoch': float(epoch),
                     'data_wait_ms': float(payload.get('data_wait_ms', 0.0)),
+                    'augmentation_ms': float(payload.get('augmentation_ms', 0.0)),
                     'forward_ms': float(payload.get('forward_ms', 0.0)),
                     'backward_ms': float(payload.get('backward_ms', 0.0)),
                     'optimizer_ms': float(payload.get('optimizer_ms', 0.0)),

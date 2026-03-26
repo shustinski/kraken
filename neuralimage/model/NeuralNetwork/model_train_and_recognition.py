@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty
 
+from collections import deque
 from collections.abc import Callable, Mapping, Sized
 from contextlib import nullcontext
 from typing import Any, ContextManager, Protocol, cast
@@ -86,6 +87,9 @@ VALIDATION_THRESHOLD_CANDIDATES: tuple[float, ...] = tuple(value / 100.0 for val
 RECOGNITION_AUX_WORKERS_PER_GPU = 4
 VALIDATION_EXPORT_CACHE_MAX_BYTES = 512 * 1024 * 1024
 _ARTIFACT_NAME_SANITIZE_PATTERN = re.compile(r'[^A-Za-z0-9._-]+')
+_RANDOM_ARTIFACT_BANK_TARGET_PER_BUCKET = 4
+_RANDOM_ARTIFACT_BANK_BUCKET_GRANULARITY = 8
+_RANDOM_ARTIFACT_BANK_READY_TIMEOUT_SEC = 0.25
 
 
 class _NoOpQueue:
@@ -113,26 +117,40 @@ def _drain_process_queue(
     queue: Any,
     publish_message: Callable[[Any], None],
 ) -> None:
-    get_nowait = getattr(queue, 'get_nowait', None)
-    if not callable(get_nowait):
-        empty_fn = getattr(queue, 'empty', None)
-        get_fn = getattr(queue, 'get', None)
-        if not callable(empty_fn) or not callable(get_fn):
-            return
+    if queue is None:
+        return
+    reader = getattr(queue, '_reader', None)
+    poll_fn = getattr(reader, 'poll', None)
+    get_fn = getattr(queue, 'get', None)
+    if callable(poll_fn) and callable(get_fn):
         while True:
             try:
-                if bool(empty_fn()):
+                if not bool(poll_fn(0)):
                     break
                 queued_message = get_fn()
+            except (Empty, EOFError, OSError, ValueError):
+                break
+            publish_message(queued_message)
+        return
+    get_nowait = getattr(queue, 'get_nowait', None)
+    if callable(get_nowait):
+        while True:
+            try:
+                queued_message = get_nowait()
             except Empty:
                 break
             except (EOFError, OSError, ValueError):
                 break
             publish_message(queued_message)
         return
+    empty_fn = getattr(queue, 'empty', None)
+    if not callable(empty_fn) or not callable(get_fn):
+        return
     while True:
         try:
-            queued_message = get_nowait()
+            if bool(empty_fn()):
+                break
+            queued_message = get_fn()
         except Empty:
             break
         except (EOFError, OSError, ValueError):
@@ -185,6 +203,9 @@ class _SupportsLossAwareSampling(Protocol):
     def update_batch_losses(self, sample_indices: torch.Tensor, sample_losses: torch.Tensor) -> None:
         ...
 
+    def resize(self, size: int, *, reset: bool = False) -> None:
+        ...
+
 
 @dataclass(frozen=True)
 class _TrainLoopStrides:
@@ -196,11 +217,12 @@ class _TrainLoopStrides:
 
 @dataclass
 class _EpochStats:
-    train_loss: float = 0.0
+    train_loss_sum: torch.Tensor | None = None
     train_samples_count: int = 0
     skipped_uniform_count: int = 0
     skipped_non_finite_count: int = 0
     data_wait_ms: float = 0.0
+    augmentation_ms: float = 0.0
     forward_ms: float = 0.0
     backward_ms: float = 0.0
     optimizer_ms: float = 0.0
@@ -210,16 +232,23 @@ class _EpochStats:
         self,
         *,
         batch_samples: int,
-        batch_loss: float,
+        batch_loss: torch.Tensor | float,
         data_wait_ms: float,
+        augmentation_ms: float,
         forward_ms: float,
         backward_ms: float,
         optimizer_ms: float,
         total_ms: float,
     ) -> None:
-        self.train_loss += batch_loss * batch_samples
+        if torch.is_tensor(batch_loss):
+            detached_loss = batch_loss.detach().to(dtype=torch.float32)
+        else:
+            detached_loss = torch.tensor(float(batch_loss), dtype=torch.float32)
+        scaled_loss = detached_loss * float(batch_samples)
+        self.train_loss_sum = scaled_loss if self.train_loss_sum is None else (self.train_loss_sum + scaled_loss)
         self.train_samples_count += int(batch_samples)
         self.data_wait_ms += data_wait_ms
+        self.augmentation_ms += augmentation_ms
         self.forward_ms += forward_ms
         self.backward_ms += backward_ms
         self.optimizer_ms += optimizer_ms
@@ -292,17 +321,27 @@ class _PreparedTrainBatch:
     label: torch.Tensor
     batch_start: float
     data_wait_ms: float
+    augmentation_ms: float = 0.0
 
 
 @dataclass
 class _TrainStepResult:
     outputs: torch.Tensor
     per_sample_loss: torch.Tensor
-    batch_loss: float
-    batch_samples: int
-    forward_ms: float
-    backward_ms: float
-    optimizer_ms: float
+    metric_loss: torch.Tensor | float | None = None
+    batch_loss: torch.Tensor | float | None = None
+    batch_samples: int = 0
+    forward_ms: float = 0.0
+    backward_ms: float = 0.0
+    optimizer_ms: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.metric_loss is None and self.batch_loss is None:
+            raise ValueError('Train step result requires metric_loss or batch_loss.')
+        if self.metric_loss is None:
+            self.metric_loss = self.batch_loss
+        if self.batch_loss is None:
+            self.batch_loss = self.metric_loss
 
 
 @dataclass(frozen=True)
@@ -313,6 +352,178 @@ class _TrainingRuntimeState:
     early_stopping_state: _EarlyStoppingState
     early_stopping_config: _EarlyStoppingConfig
     active_profiler: _ActiveTrainProfiler | None
+
+
+class _RandomArtifactBank:
+    def __init__(
+        self,
+        *,
+        channels: int,
+        artifact_types: tuple[str, ...],
+        target_per_bucket: int = _RANDOM_ARTIFACT_BANK_TARGET_PER_BUCKET,
+        bucket_granularity: int = _RANDOM_ARTIFACT_BANK_BUCKET_GRANULARITY,
+        base_seed: int | None = None,
+    ) -> None:
+        self._channels = max(1, int(channels))
+        self._artifact_types = tuple(artifact_types)
+        self._target_per_bucket = max(1, int(target_per_bucket))
+        self._bucket_granularity = max(1, int(bucket_granularity))
+        self._base_seed = int(base_seed if base_seed is not None else (torch.initial_seed() & 0x7FFFFFFF))
+        self._seed_counter = 0
+        self._cache: dict[tuple[int, int], deque[tuple[torch.Tensor, torch.Tensor]]] = {}
+        self._pending_requests: dict[tuple[int, int], int] = {}
+        self._request_queue: deque[tuple[int, int]] = deque()
+        self._condition = threading.Condition()
+        self._ready_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def channels(self) -> int:
+        return int(self._channels)
+
+    @property
+    def artifact_types(self) -> tuple[str, ...]:
+        return tuple(self._artifact_types)
+
+    def matches(self, *, channels: int, artifact_types: tuple[str, ...]) -> bool:
+        return int(channels) == int(self._channels) and tuple(artifact_types) == tuple(self._artifact_types)
+
+    def start(self, prewarm_buckets: list[tuple[int, int]] | tuple[tuple[int, int], ...] = ()) -> None:
+        with self._condition:
+            if self._thread is not None:
+                return
+            self._thread = threading.Thread(
+                target=self._worker_loop,
+                name='random-artifact-bank',
+                daemon=True,
+            )
+            self._thread.start()
+            for bucket in prewarm_buckets:
+                self._ensure_bucket_target_locked(self._normalize_bucket(*bucket))
+            self._condition.notify_all()
+
+    def stop(self, *, join_timeout: float = 1.0) -> None:
+        self._stop_event.set()
+        with self._condition:
+            self._condition.notify_all()
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(0.0, float(join_timeout)))
+        with self._condition:
+            self._thread = None
+            self._cache.clear()
+            self._pending_requests.clear()
+            self._request_queue.clear()
+
+    def wait_until_ready(self, timeout: float) -> bool:
+        return bool(self._ready_event.wait(timeout=max(0.0, float(timeout))))
+
+    def acquire(self, *, height: int, width: int) -> tuple[torch.Tensor, torch.Tensor]:
+        requested_height = max(1, int(height))
+        requested_width = max(1, int(width))
+        requested_bucket = self._normalize_bucket(requested_height, requested_width)
+        entry, source_bucket = self._try_take_entry(requested_bucket)
+        if entry is None:
+            self.wait_until_ready(timeout=_RANDOM_ARTIFACT_BANK_READY_TIMEOUT_SEC)
+            entry, source_bucket = self._try_take_entry(requested_bucket)
+        if entry is None:
+            source_bucket = requested_bucket
+            entry = self._generate_bucket_entry(requested_bucket)
+        overlay, alpha = entry
+        with self._condition:
+            self._ensure_bucket_target_locked(requested_bucket)
+            if source_bucket is not None:
+                self._ensure_bucket_target_locked(source_bucket)
+            self._condition.notify_all()
+        if overlay.shape[-2:] != (requested_height, requested_width):
+            overlay = F.interpolate(
+                overlay.unsqueeze(0),
+                size=(requested_height, requested_width),
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(0)
+            alpha = F.interpolate(
+                alpha.unsqueeze(0),
+                size=(requested_height, requested_width),
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(0)
+            alpha = torch.clamp(alpha, min=0.0, max=1.0)
+        return overlay, alpha
+
+    def _next_seed(self) -> int:
+        with self._condition:
+            seed = (self._base_seed + self._seed_counter) & 0x7FFFFFFF
+            self._seed_counter += 1
+        return int(seed)
+
+    def _normalize_bucket(self, height: int, width: int) -> tuple[int, int]:
+        granularity = int(self._bucket_granularity)
+        bucket_height = max(granularity, int(math.ceil(max(1, int(height)) / granularity) * granularity))
+        bucket_width = max(granularity, int(math.ceil(max(1, int(width)) / granularity) * granularity))
+        return int(bucket_height), int(bucket_width)
+
+    def _ensure_bucket_target_locked(self, bucket: tuple[int, int]) -> None:
+        cache = self._cache.setdefault(bucket, deque())
+        pending = int(self._pending_requests.get(bucket, 0))
+        required = max(0, int(self._target_per_bucket) - (len(cache) + pending))
+        for _ in range(required):
+            self._request_queue.append(bucket)
+            pending += 1
+        self._pending_requests[bucket] = pending
+
+    def _try_take_entry(
+        self,
+        requested_bucket: tuple[int, int],
+    ) -> tuple[tuple[torch.Tensor, torch.Tensor] | None, tuple[int, int] | None]:
+        with self._condition:
+            self._ensure_bucket_target_locked(requested_bucket)
+            exact_cache = self._cache.get(requested_bucket)
+            if exact_cache:
+                entry = exact_cache.popleft()
+                return entry, requested_bucket
+            nearest_bucket: tuple[int, int] | None = None
+            nearest_distance: int | None = None
+            for bucket, cache in self._cache.items():
+                if not cache:
+                    continue
+                distance = abs(int(bucket[0]) - int(requested_bucket[0])) + abs(int(bucket[1]) - int(requested_bucket[1]))
+                if nearest_distance is None or distance < nearest_distance:
+                    nearest_distance = distance
+                    nearest_bucket = bucket
+            if nearest_bucket is None:
+                return None, None
+            entry = self._cache[nearest_bucket].popleft()
+            return entry, nearest_bucket
+
+    def _generate_bucket_entry(self, bucket: tuple[int, int]) -> tuple[torch.Tensor, torch.Tensor]:
+        return generate_random_artifact_patch(
+            channels=int(self._channels),
+            height=int(bucket[0]),
+            width=int(bucket[1]),
+            device=torch.device('cpu'),
+            dtype=torch.float32,
+            artifact_types=self._artifact_types,
+            seed=self._next_seed(),
+        )
+
+    def _worker_loop(self) -> None:
+        while not self._stop_event.is_set():
+            with self._condition:
+                while not self._stop_event.is_set() and not self._request_queue:
+                    self._condition.wait(timeout=0.1)
+                if self._stop_event.is_set():
+                    return
+                bucket = self._request_queue.popleft()
+                self._pending_requests[bucket] = max(0, int(self._pending_requests.get(bucket, 0)) - 1)
+            entry = self._generate_bucket_entry(bucket)
+            with self._condition:
+                if self._stop_event.is_set():
+                    return
+                self._cache.setdefault(bucket, deque()).append(entry)
+                self._ready_event.set()
+                self._condition.notify_all()
 
 
 @dataclass
@@ -726,6 +937,7 @@ class TrainerProcess(mp.Process):
         self._batch_points_by_epoch: dict[int, list[tuple[float, float]]] = {}
         self._training_log_lines: list[str] = []
         self._bus = _RecordingQueue(message_bus, self._training_log_lines)
+        self._random_artifact_bank: _RandomArtifactBank | None = None
 
     @property
     def _base_model(self) -> nn.Module:
@@ -1442,6 +1654,100 @@ class TrainerProcess(mp.Process):
         size_ratio = float(min(max(size_ratio, 0.0), 1.0))
         return enabled, probability, count, size_ratio, artifact_types
 
+    @staticmethod
+    def _random_artifact_size_bounds(
+        *,
+        image_height: int,
+        image_width: int,
+        size_ratio: float,
+    ) -> tuple[int, int, int, int]:
+        max_artifact_height = max(1, min(int(image_height), int(round(int(image_height) * float(size_ratio)))))
+        max_artifact_width = max(1, min(int(image_width), int(round(int(image_width) * float(size_ratio)))))
+        min_artifact_height = 1 if max_artifact_height <= 2 else max(2, int(round(max_artifact_height * 0.35)))
+        min_artifact_width = 1 if max_artifact_width <= 2 else max(2, int(round(max_artifact_width * 0.35)))
+        min_artifact_height = min(max_artifact_height, min_artifact_height)
+        min_artifact_width = min(max_artifact_width, min_artifact_width)
+        return (
+            int(min_artifact_height),
+            int(max_artifact_height),
+            int(min_artifact_width),
+            int(max_artifact_width),
+        )
+
+    def _resolve_random_artifact_prewarm_buckets(
+        self,
+        *,
+        image_height: int,
+        image_width: int,
+        size_ratio: float,
+    ) -> list[tuple[int, int]]:
+        min_h, max_h, min_w, max_w = self._random_artifact_size_bounds(
+            image_height=image_height,
+            image_width=image_width,
+            size_ratio=size_ratio,
+        )
+        levels_h = [min_h, max_h]
+        levels_w = [min_w, max_w]
+        if max_h > min_h:
+            levels_h.extend([
+                int(round(min_h + ((max_h - min_h) / 3.0))),
+                int(round(min_h + (((max_h - min_h) * 2.0) / 3.0))),
+            ])
+        if max_w > min_w:
+            levels_w.extend([
+                int(round(min_w + ((max_w - min_w) / 3.0))),
+                int(round(min_w + (((max_w - min_w) * 2.0) / 3.0))),
+            ])
+        buckets: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for bucket in zip(sorted(set(levels_h)), sorted(set(levels_w))):
+            normalized = (
+                max(1, int(bucket[0])),
+                max(1, int(bucket[1])),
+            )
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            buckets.append(normalized)
+        return buckets
+
+    def _ensure_random_artifact_bank(
+        self,
+        *,
+        image: torch.Tensor,
+        artifact_types: tuple[str, ...],
+    ) -> _RandomArtifactBank | None:
+        if not artifact_types:
+            return None
+        if not hasattr(self, '_random_artifact_bank'):
+            return None
+        channels = int(image.shape[1])
+        bank = getattr(self, '_random_artifact_bank', None)
+        if bank is not None and bank.matches(channels=channels, artifact_types=artifact_types):
+            return bank
+        self._stop_random_artifact_bank()
+        _enabled, _probability, count, size_ratio, _artifact_types = self._resolved_random_artifact_parameters()
+        bank = _RandomArtifactBank(
+            channels=channels,
+            artifact_types=artifact_types,
+            target_per_bucket=max(_RANDOM_ARTIFACT_BANK_TARGET_PER_BUCKET, int(count) * 2),
+        )
+        prewarm_buckets = self._resolve_random_artifact_prewarm_buckets(
+            image_height=int(image.shape[2]),
+            image_width=int(image.shape[3]),
+            size_ratio=size_ratio,
+        )
+        bank.start(prewarm_buckets=prewarm_buckets)
+        bank.wait_until_ready(timeout=_RANDOM_ARTIFACT_BANK_READY_TIMEOUT_SEC)
+        self._random_artifact_bank = bank
+        return bank
+
+    def _stop_random_artifact_bank(self) -> None:
+        bank = getattr(self, '_random_artifact_bank', None)
+        self._random_artifact_bank = None
+        if bank is not None:
+            bank.stop()
+
     def _resolved_mixup_parameters(self) -> tuple[bool, float, float]:
         params = getattr(self, '_mixup_params', None)
         enabled = bool(getattr(params, 'enabled', False))
@@ -1450,6 +1756,23 @@ class TrainerProcess(mp.Process):
         probability = float(min(max(probability, 0.0), 1.0))
         alpha = float(max(alpha, 0.0))
         return enabled, probability, alpha
+
+    def _has_training_batch_augmentations(self) -> bool:
+        mixup_enabled, mixup_probability, mixup_alpha = self._resolved_mixup_parameters()
+        if mixup_enabled and mixup_probability > 0.0 and mixup_alpha > 0.0:
+            return True
+        cutout_enabled, cutout_probability, _cutout_holes, cutout_size_ratio = self._resolved_cutout_parameters()
+        if cutout_enabled and cutout_probability > 0.0 and cutout_size_ratio > 0.0:
+            return True
+        artifacts_enabled, artifacts_probability, _artifacts_count, artifacts_size_ratio, artifact_types = (
+            self._resolved_random_artifact_parameters()
+        )
+        return bool(
+            artifacts_enabled
+            and artifacts_probability > 0.0
+            and artifacts_size_ratio > 0.0
+            and artifact_types
+        )
 
     @staticmethod
     def _resolved_ignore_index() -> int:
@@ -3100,6 +3423,28 @@ class TrainerProcess(mp.Process):
         raise TypeError(f'Unsupported batch input type: {type(data)!r}')
 
     @staticmethod
+    def _create_cuda_timing_events(device: torch.device, count: int) -> tuple[Any, ...] | None:
+        if device.type != 'cuda':
+            return None
+        return tuple(torch.cuda.Event(enable_timing=True) for _ in range(max(0, int(count))))
+
+    @staticmethod
+    def _record_cuda_timing_event(event: Any, device: torch.device) -> None:
+        if event is None or device.type != 'cuda':
+            return
+        event.record(torch.cuda.current_stream(device=device))
+
+    @staticmethod
+    def _elapsed_cuda_event_ms(start_event: Any, end_event: Any) -> float:
+        return float(start_event.elapsed_time(end_event))
+
+    @staticmethod
+    def _loss_value_to_float(loss: torch.Tensor | float) -> float:
+        if torch.is_tensor(loss):
+            return float(loss.detach().to(device='cpu', dtype=torch.float32).item())
+        return float(loss)
+
+    @staticmethod
     def _extract_local_image(data: Any) -> torch.Tensor:
         if isinstance(data, Mapping):
             local_image = data.get('local_image')
@@ -3256,16 +3601,17 @@ class TrainerProcess(mp.Process):
             return image
 
         batch_size, channels, height, width = image.shape
-        max_artifact_height = max(1, min(height, int(round(height * size_ratio))))
-        max_artifact_width = max(1, min(width, int(round(width * size_ratio))))
+        min_artifact_height, max_artifact_height, min_artifact_width, max_artifact_width = (
+            self._random_artifact_size_bounds(
+                image_height=int(height),
+                image_width=int(width),
+                size_ratio=size_ratio,
+            )
+        )
         if max_artifact_height <= 0 or max_artifact_width <= 0:
             return image
 
-        min_artifact_height = 1 if max_artifact_height <= 2 else max(2, int(round(max_artifact_height * 0.35)))
-        min_artifact_width = 1 if max_artifact_width <= 2 else max(2, int(round(max_artifact_width * 0.35)))
-        min_artifact_height = min(max_artifact_height, min_artifact_height)
-        min_artifact_width = min(max_artifact_width, min_artifact_width)
-
+        artifact_bank = self._ensure_random_artifact_bank(image=image, artifact_types=artifact_types)
         artifact_image = image.clone()
         for sample_index in range(batch_size):
             if float(np.random.random()) > probability:
@@ -3274,40 +3620,34 @@ class TrainerProcess(mp.Process):
                 artifact_height = (
                     int(min_artifact_height)
                     if max_artifact_height == min_artifact_height
-                    else int(
-                        torch.randint(
-                            min_artifact_height,
-                            max_artifact_height + 1,
-                            (1,),
-                            device=image.device,
-                        ).item()
-                    )
+                    else int(np.random.randint(min_artifact_height, max_artifact_height + 1))
                 )
                 artifact_width = (
                     int(min_artifact_width)
                     if max_artifact_width == min_artifact_width
-                    else int(
-                        torch.randint(
-                            min_artifact_width,
-                            max_artifact_width + 1,
-                            (1,),
-                            device=image.device,
-                        ).item()
-                    )
+                    else int(np.random.randint(min_artifact_width, max_artifact_width + 1))
                 )
                 max_top = max(0, height - artifact_height)
                 max_left = max(0, width - artifact_width)
-                top = 0 if max_top == 0 else int(torch.randint(0, max_top + 1, (1,), device=image.device).item())
-                left = 0 if max_left == 0 else int(torch.randint(0, max_left + 1, (1,), device=image.device).item())
+                top = 0 if max_top == 0 else int(np.random.randint(0, max_top + 1))
+                left = 0 if max_left == 0 else int(np.random.randint(0, max_left + 1))
 
-                overlay, alpha = generate_random_artifact_patch(
-                    int(channels),
-                    int(artifact_height),
-                    int(artifact_width),
-                    device=image.device,
-                    dtype=image.dtype,
-                    artifact_types=artifact_types,
-                )
+                if artifact_bank is not None:
+                    overlay, alpha = artifact_bank.acquire(
+                        height=int(artifact_height),
+                        width=int(artifact_width),
+                    )
+                else:
+                    overlay, alpha = generate_random_artifact_patch(
+                        int(channels),
+                        int(artifact_height),
+                        int(artifact_width),
+                        device=torch.device('cpu'),
+                        dtype=torch.float32,
+                        artifact_types=artifact_types,
+                    )
+                overlay = overlay.to(device=image.device, dtype=image.dtype, non_blocking=True)
+                alpha = alpha.to(device=image.device, dtype=image.dtype, non_blocking=True)
                 patch = artifact_image[sample_index, :, top:top + artifact_height, left:left + artifact_width]
                 artifact_image[sample_index, :, top:top + artifact_height, left:left + artifact_width] = torch.clamp(
                     (patch * (1.0 - alpha)) + (overlay * alpha),
@@ -3452,11 +3792,26 @@ class TrainerProcess(mp.Process):
         data_wait_ms = (time.perf_counter() - data_wait_started_at) * 1000.0
         if not has_valid_samples:
             return None, skipped_here
+        has_batch_augmentations = self._has_training_batch_augmentations()
+        augmentation_ms = 0.0
+        augmentation_events = None
+        if has_batch_augmentations:
+            augmentation_start = time.perf_counter()
+            augmentation_events = self._create_cuda_timing_events(device, 2)
+            if augmentation_events is not None:
+                augmentation_start_event, augmentation_end_event = augmentation_events
+                self._record_cuda_timing_event(augmentation_start_event, device)
         inputs, label, mixup_pair_indices, mixup_lambdas = self._apply_training_batch_augmentations(
             inputs,
             label,
             sample_indices,
         )
+        if augmentation_events is not None:
+            self._record_cuda_timing_event(augmentation_end_event, device)
+            augmentation_end_event.synchronize()
+            augmentation_ms = self._elapsed_cuda_event_ms(augmentation_start_event, augmentation_end_event)
+        elif has_batch_augmentations:
+            augmentation_ms = (time.perf_counter() - augmentation_start) * 1000.0
         image = self._extract_local_image(inputs)
         context_image = self._extract_context_image(inputs)
         return (
@@ -3472,6 +3827,7 @@ class TrainerProcess(mp.Process):
                 label=label,
                 batch_start=batch_start,
                 data_wait_ms=data_wait_ms,
+                augmentation_ms=augmentation_ms,
             ),
             skipped_here,
         )
@@ -3484,7 +3840,12 @@ class TrainerProcess(mp.Process):
     ) -> _TrainStepResult | None:
         run_context.optimizer.zero_grad(set_to_none=True)
 
+        step_device = batch.image.device
         forward_start = time.perf_counter()
+        step_events = self._create_cuda_timing_events(step_device, 4)
+        if step_events is not None:
+            forward_start_event, forward_end_event, backward_end_event, optimizer_end_event = step_events
+            self._record_cuda_timing_event(forward_start_event, step_device)
         backward_denominator = float(max(1, int(batch.image.size(0))))
         with run_context.autocast_ctx():
             outputs = self._sanitize_outputs_for_loss(self._forward_model(batch.inputs))
@@ -3520,7 +3881,11 @@ class TrainerProcess(mp.Process):
                 self._bus.put(['logging', 'Training warning: non-finite loss detected, batch skipped.'])
                 run_context.optimizer.zero_grad(set_to_none=True)
                 return None
-        forward_ms = (time.perf_counter() - forward_start) * 1000.0
+        if step_events is not None:
+            self._record_cuda_timing_event(forward_end_event, step_device)
+            forward_ms = 0.0
+        else:
+            forward_ms = (time.perf_counter() - forward_start) * 1000.0
 
         backward_start = time.perf_counter()
         run_context.scaler.scale(loss).backward()
@@ -3529,28 +3894,46 @@ class TrainerProcess(mp.Process):
             self._bus.put(['logging', 'Training warning: non-finite gradients detected, optimizer step skipped.'])
             run_context.optimizer.zero_grad(set_to_none=True)
             run_context.scaler.update()
+            if step_events is not None:
+                self._record_cuda_timing_event(backward_end_event, step_device)
+                backward_end_event.synchronize()
+                forward_ms = self._elapsed_cuda_event_ms(forward_start_event, forward_end_event)
+                backward_ms = self._elapsed_cuda_event_ms(forward_end_event, backward_end_event)
+            else:
+                backward_ms = (time.perf_counter() - backward_start) * 1000.0
             return _TrainStepResult(
                 outputs=outputs,
                 per_sample_loss=per_sample_loss,
-                batch_loss=float(metric_loss.item()),
+                metric_loss=metric_loss.detach(),
                 batch_samples=int(batch.image.size(0)),
                 forward_ms=forward_ms,
-                backward_ms=(time.perf_counter() - backward_start) * 1000.0,
+                backward_ms=backward_ms,
                 optimizer_ms=0.0,
             )
         torch.nn.utils.clip_grad_norm_(self._model.parameters(), 1.0)
-        backward_ms = (time.perf_counter() - backward_start) * 1000.0
+        if step_events is not None:
+            self._record_cuda_timing_event(backward_end_event, step_device)
+            backward_ms = 0.0
+        else:
+            backward_ms = (time.perf_counter() - backward_start) * 1000.0
 
         optimizer_start = time.perf_counter()
         run_context.scaler.step(run_context.optimizer)
         run_context.scaler.update()
         self._step_batch_schedulers(run_context)
-        optimizer_ms = (time.perf_counter() - optimizer_start) * 1000.0
+        if step_events is not None:
+            self._record_cuda_timing_event(optimizer_end_event, step_device)
+            optimizer_end_event.synchronize()
+            forward_ms = self._elapsed_cuda_event_ms(forward_start_event, forward_end_event)
+            backward_ms = self._elapsed_cuda_event_ms(forward_end_event, backward_end_event)
+            optimizer_ms = self._elapsed_cuda_event_ms(backward_end_event, optimizer_end_event)
+        else:
+            optimizer_ms = (time.perf_counter() - optimizer_start) * 1000.0
 
         return _TrainStepResult(
             outputs=outputs,
             per_sample_loss=per_sample_loss,
-            batch_loss=float(metric_loss.item()),
+            metric_loss=metric_loss.detach(),
             batch_samples=int(batch.image.size(0)),
             forward_ms=forward_ms,
             backward_ms=backward_ms,
@@ -3578,15 +3961,16 @@ class TrainerProcess(mp.Process):
         )
 
         if (batch_index % run_context.strides.metric == 0) or (batch_index == run_context.train_size - 1):
+            batch_loss = self._loss_value_to_float(cast(torch.Tensor | float, step_result.metric_loss))
             epoch_points = self._batch_points_by_epoch.setdefault(int(epoch + 1), [])
-            epoch_points.append((float(batch_index + 1), float(step_result.batch_loss)))
+            epoch_points.append((float(batch_index + 1), batch_loss))
             self._bus.put([
                 'metrics',
                 {
                     'type': 'train_batch',
                     'epoch': epoch + 1,
                     'batch_index': batch_index + 1,
-                    'loss': step_result.batch_loss,
+                    'loss': batch_loss,
                 },
             ])
             self._bus.put([
@@ -3596,6 +3980,7 @@ class TrainerProcess(mp.Process):
                     'epoch': epoch + 1,
                     'batch_index': batch_index + 1,
                     'data_wait_ms': float(batch.data_wait_ms),
+                    'augmentation_ms': float(batch.augmentation_ms),
                     'forward_ms': float(step_result.forward_ms),
                     'backward_ms': float(step_result.backward_ms),
                     'optimizer_ms': float(step_result.optimizer_ms),
@@ -3625,6 +4010,17 @@ class TrainerProcess(mp.Process):
         train_dataset = self._train_dataloader.dataset
         if hasattr(train_dataset, 'set_epoch'):
             cast(_SupportsSetEpoch, train_dataset).set_epoch()
+        train_sampler = getattr(self._train_dataloader, 'sampler', None)
+        if hasattr(train_sampler, 'resize'):
+            base_dataset = getattr(train_dataset, '_base_dataset', train_dataset)
+            reset_sampling_state = bool(
+                getattr(base_dataset, 'shuffle_frames', False)
+                or getattr(base_dataset, '_dynamic_frame_lengths', False)
+            )
+            cast(_SupportsLossAwareSampling, train_sampler).resize(
+                len(train_dataset),
+                reset=reset_sampling_state,
+            )
 
         train_iterator = iter(self._train_dataloader)
         batch_index = 0
@@ -3657,8 +4053,9 @@ class TrainerProcess(mp.Process):
 
             epoch_stats.add_batch(
                 batch_samples=step_result.batch_samples,
-                batch_loss=step_result.batch_loss,
+                batch_loss=step_result.metric_loss,
                 data_wait_ms=prepared_batch.data_wait_ms,
+                augmentation_ms=prepared_batch.augmentation_ms,
                 forward_ms=step_result.forward_ms,
                 backward_ms=step_result.backward_ms,
                 optimizer_ms=step_result.optimizer_ms,
@@ -3691,15 +4088,18 @@ class TrainerProcess(mp.Process):
         distributed: bool,
         device: torch.device,
     ) -> tuple[float, float]:
+        loss_sum_tensor = epoch_stats.train_loss_sum
         if distributed:
-            reduce_tensor = torch.tensor(
-                [epoch_stats.train_loss, float(epoch_stats.train_samples_count)],
-                dtype=torch.float64,
-                device=device,
-            )
+            reduce_tensor = torch.zeros(2, dtype=torch.float64, device=device)
+            if loss_sum_tensor is not None:
+                reduce_tensor[0] = loss_sum_tensor.detach().to(device=device, dtype=torch.float64)
+            reduce_tensor[1] = float(epoch_stats.train_samples_count)
             dist.all_reduce(reduce_tensor, op=dist.ReduceOp.SUM)
             return float(reduce_tensor[0].item()), max(1.0, float(reduce_tensor[1].item()))
-        return float(epoch_stats.train_loss), float(max(1, epoch_stats.train_samples_count))
+        local_loss_sum = 0.0
+        if loss_sum_tensor is not None:
+            local_loss_sum = float(loss_sum_tensor.detach().to(device='cpu', dtype=torch.float64).item())
+        return local_loss_sum, float(max(1, epoch_stats.train_samples_count))
 
     def _publish_epoch_train_metrics(
         self,
@@ -3722,6 +4122,7 @@ class TrainerProcess(mp.Process):
                 'type': 'train_perf_epoch',
                 'epoch': epoch + 1,
                 'data_wait_ms': float(epoch_stats.data_wait_ms / avg_denom),
+                'augmentation_ms': float(epoch_stats.augmentation_ms / avg_denom),
                 'forward_ms': float(epoch_stats.forward_ms / avg_denom),
                 'backward_ms': float(epoch_stats.backward_ms / avg_denom),
                 'optimizer_ms': float(epoch_stats.optimizer_ms / avg_denom),
@@ -3754,6 +4155,7 @@ class TrainerProcess(mp.Process):
         total_epoch_ms = max(1e-6, float(train_stage_ms + validation_ms + checkpoint_ms))
         parts: list[tuple[str, float]] = [
             ('data_wait', float(epoch_stats.data_wait_ms)),
+            ('augmentation', float(epoch_stats.augmentation_ms)),
             ('forward', float(epoch_stats.forward_ms)),
             ('backward', float(epoch_stats.backward_ms)),
             ('optimizer', float(epoch_stats.optimizer_ms)),
@@ -3779,6 +4181,7 @@ class TrainerProcess(mp.Process):
                 'epoch': int(epoch + 1),
                 'train_total_ms': float(train_stage_ms),
                 'data_wait_ms': float(epoch_stats.data_wait_ms),
+                'augmentation_ms': float(epoch_stats.augmentation_ms),
                 'forward_ms': float(epoch_stats.forward_ms),
                 'backward_ms': float(epoch_stats.backward_ms),
                 'optimizer_ms': float(epoch_stats.optimizer_ms),
@@ -4153,6 +4556,7 @@ class TrainerProcess(mp.Process):
                 if distributed:
                     dist.barrier()
         finally:
+            self._stop_random_artifact_bank()
             self._stop_training_profiler(runtime_state.active_profiler)
 
         self._finalize_training_success(is_main_process=runtime_state.is_main_process)

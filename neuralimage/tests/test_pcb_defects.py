@@ -62,6 +62,60 @@ def test_pcb_defect_augmentor_generates_debug_output_and_non_empty_mask():
     assert not np.array_equal(augmented, patch)
 
 
+def test_pcb_defect_augmentor_tries_all_enabled_defect_types_before_giving_up(monkeypatch):
+    patch = _make_trace_patch()
+    augmentor = PCBDefectAugmentor(
+        {
+            'enabled': True,
+            'defect_probability': 1.0,
+            'min_defects': 1,
+            'max_defects': 1,
+            'max_attempts_per_defect': 1,
+            'defect_probabilities': {
+                'break': 1.0,
+                'short': 1.0,
+                'missing_copper': 1.0,
+                'excess_copper': 0.0,
+                'pinhole': 0.0,
+                'spurious_copper': 0.0,
+                'via': 0.0,
+                'misalignment': 0.0,
+            },
+        }
+    )
+
+    attempted: list[str] = []
+
+    def _fail(_mask, _rng):
+        attempted.append('break')
+        return None
+
+    def _no_change(mask, _rng):
+        attempted.append('short')
+        return mask
+
+    def _succeed(mask, _rng):
+        attempted.append('missing_copper')
+        updated = mask.copy()
+        updated[0, 0] = 255 if updated[0, 0] == 0 else 0
+        return updated
+
+    monkeypatch.setitem(augmentor._defect_handlers, 'break', _fail)
+    monkeypatch.setitem(augmentor._defect_handlers, 'short', _no_change)
+    monkeypatch.setitem(augmentor._defect_handlers, 'missing_copper', _succeed)
+    monkeypatch.setattr(
+        augmentor,
+        '_iter_defect_attempt_order',
+        lambda _rng: ('break', 'short', 'missing_copper'),
+    )
+
+    augmented, defect_mask = augmentor(patch, patch, seed=11)
+
+    assert attempted == ['break', 'short', 'missing_copper']
+    assert np.count_nonzero(defect_mask) > 0
+    assert not np.array_equal(augmented, patch)
+
+
 def test_no_cut_dataset_uses_defect_mask_only_for_train(tmp_path: Path):
     image_patch = _make_trace_patch()
     label_patch = image_patch.copy()

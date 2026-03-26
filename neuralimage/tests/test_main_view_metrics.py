@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 import numpy as np
 
 pytest.importorskip('PyQt6')
@@ -208,3 +209,52 @@ def test_main_view_queue_context_menu_emits_properties_signal(qapp, monkeypatch)
     view._show_queue_context_menu(position)
 
     assert captured_rows == [0]
+
+
+def test_main_view_simple_mode_hides_docks_and_shows_presets(qapp):
+    view = MainView(QWidget())
+    view.connect_internal_signals()
+    view.show()
+    qapp.processEvents()
+
+    view.apply_ui_mode('simple')
+    qapp.processEvents()
+
+    assert view.current_ui_mode() == 'simple'
+    assert view.simple_workflows_group.isVisible()
+    assert view.metrics_panel.isHidden()
+    assert view.log_dock.isHidden()
+    assert not view.model_path.isHidden()
+    assert view.le_epochs.isHidden()
+    assert view.simple_workflow_label.text()
+
+    view.btn_simple_contacts.click()
+    assert view.btn_simple_contacts.text() in view.simple_workflow_label.text()
+
+    view.apply_ui_mode('advanced')
+    qapp.processEvents()
+
+    assert view.current_ui_mode() == 'advanced'
+    assert not view.simple_workflows_group.isVisible()
+    assert not view.metrics_panel.isHidden()
+    assert not view.log_dock.isHidden()
+    assert not view.model_path.isHidden()
+    assert not view.le_epochs.isHidden()
+
+
+def test_main_view_restores_ui_mode_from_persisted_settings(qapp, monkeypatch):
+    settings_dir = Path('d:/PyCharm/neuralimage-feature-no_cut_dataset/.test_runtime/ui_mode_persist')
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_file = settings_dir / 'NeuralImage_MainWindow.ini'
+    if settings_file.exists():
+        settings_file.unlink()
+    monkeypatch.setenv('NEURALIMAGE_SETTINGS_DIR', str(settings_dir))
+
+    first_view = MainView(QWidget())
+    first_view.apply_ui_mode('advanced')
+    assert first_view.current_ui_mode() == 'advanced'
+    first_view.close()
+
+    second_view = MainView(QWidget())
+    assert second_view.current_ui_mode() == 'advanced'
+    second_view.close()

@@ -33,6 +33,9 @@ datas = [
     ('resources/changelog_en.md', 'resources'),
     ('resources/help_ru.md', 'resources'),
     ('resources/help_en.md', 'resources'),
+    ('resources/conductors_workflow.json', 'resources'),
+    ('resources/contacts_workflow.json', 'resources'),
+    ('resources/memory_workflow.json', 'resources'),
 ]
 
 update_client_path = project_root / 'resources' / 'update_client.json'

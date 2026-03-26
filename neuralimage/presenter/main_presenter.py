@@ -19,6 +19,7 @@ from application.services import (
     ActiveTaskMutationError,
     ProcessingSession,
     QueuedTask,
+    build_processing_start_error_message,
     build_workflow_parameters,
     can_start_processing,
 )
@@ -91,6 +92,12 @@ class SampleCountSignals(QObject):
 
 
 class MainPresenter(QObject):
+    SIMPLE_WORKFLOW_PRESETS = {
+        'conductors': Path('resources/conductors_workflow.json'),
+        'contacts': Path('resources/contacts_workflow.json'),
+        'memory': Path('resources/memory_workflow.json'),
+    }
+
     """
     Связывает View и Model. Содержит всю бизнес-логику
     (валидацию, формирование параметров, запуск/остановку потока).
@@ -182,6 +189,8 @@ class MainPresenter(QObject):
         v.update_check_requested.connect(self._on_update_check_requested)
         v.ui_language_selected.connect(self._on_ui_language_selected)
         v.theme_selected.connect(self._on_theme_selected)
+        v.ui_mode_selected.connect(self._on_ui_mode_selected)
+        v.simple_workflow_requested.connect(self._on_simple_workflow_requested)
 
         v.request_close.connect(self._on_close_requested)
 
@@ -214,6 +223,8 @@ class MainPresenter(QObject):
         self.view.set_batch_preview_enabled(self.settings_state.show_batch_preview)
         self.settings_panel.set_model(self.settings_state.model)
         self._restore_work_mode_ui()
+        self.view.apply_ui_mode(getattr(self.main_window_state, 'ui_mode', 'simple'))
+        self.view.set_simple_workflow_profile(None)
 
         self.settings_panel.connect_internal_signals()
         self.view.connect_internal_signals()
@@ -260,7 +271,8 @@ class MainPresenter(QObject):
                                                  label_folder=label_path,
                                                  sample_folder=sample_path,
                                                  model_path=model_path,
-                                                 epochs=epochs)
+                                                 epochs=epochs,
+                                                 ui_mode=self.view.current_ui_mode())
 
     def _restore_work_mode_ui(self):
         mode = normalize_work_mode(getattr(self.main_window_state, 'work_mode', ''))
@@ -975,8 +987,10 @@ class MainPresenter(QObject):
         self._save_windows_to_qsettings()
         self._update_main_window_state()
         self._update_settings_window_state()
-        if not can_start_processing(self.main_window_state, self.settings_state):
-            self.message_bus.publish('logging', 'Задача не добавлена. Проверьте обязательные поля.')
+        validation_error = build_processing_start_error_message(self.main_window_state, self.settings_state)
+        if validation_error:
+            self.view.show_warning.emit(validation_error)
+            self.message_bus.publish('logging', validation_error.replace('\n', ' | '))
             return
 
         task = self._processing_session.enqueue_task(
@@ -1004,6 +1018,42 @@ class MainPresenter(QObject):
 
     def _on_theme_selected(self, theme: str):
         self.view.apply_theme(theme)
+
+    def _on_ui_mode_selected(self, mode: str):
+        normalized_mode = 'advanced' if mode == 'advanced' else 'simple'
+        self.view.apply_ui_mode(normalized_mode)
+        self.main_window_state.ui_mode = normalized_mode
+        self._save_main_window_to_qsettings()
+
+    def _on_simple_workflow_requested(self, preset_name: str):
+        preset_path = self.SIMPLE_WORKFLOW_PRESETS.get(str(preset_name))
+        if preset_path is None:
+            self.view.show_warning.emit('Неизвестный простой профиль.')
+            return
+        try:
+            main_state, settings_state = load_workflow_snapshot(preset_path)
+        except (OSError, ValueError) as error:
+            self.view.show_warning.emit(f'Не удалось загрузить профиль: {error}')
+            return
+
+        restored_main_state = replace(
+            main_state,
+            work_mode=self.main_window_state.work_mode,
+            source_folder=self.main_window_state.source_folder,
+            result_folder=self.main_window_state.result_folder,
+            label_folder=self.main_window_state.label_folder,
+            sample_folder=self.main_window_state.sample_folder,
+            model_path=self.main_window_state.model_path,
+            epochs=self.main_window_state.epochs,
+            ui_mode='simple',
+        )
+        self._restore_task_state_to_ui(
+            restored_main_state,
+            settings_state,
+            log_message=f'Загружен простой профиль: {preset_path.name}.',
+        )
+        self.view.set_simple_workflow_profile(str(preset_name))
+        self._save_windows_to_qsettings()
 
     def _on_update_check_requested(self) -> None:
         self._start_update_check(manual=True)
@@ -1062,7 +1112,9 @@ class MainPresenter(QObject):
         self.view.restore_from_dataclass(self.main_window_state)
         self._apply_settings_to_panel()
         self._restore_work_mode_ui()
-        if hasattr(self.view, 'show_settings_dock'):
+        self.view.apply_ui_mode(getattr(self.main_window_state, 'ui_mode', 'simple'))
+        self.view.set_simple_workflow_profile(None)
+        if getattr(self.main_window_state, 'ui_mode', 'simple') != 'simple' and hasattr(self.view, 'show_settings_dock'):
             self.view.show_settings_dock()
 
         self._update_main_window_state()

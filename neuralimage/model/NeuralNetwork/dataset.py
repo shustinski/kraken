@@ -131,6 +131,7 @@ class NoCutDataset(Dataset):
         self.shuffle_patches_in_frame = bool(
             getattr(self._cut_settings, 'shuffle_patches_in_frame', self.shuffle_frames)
         )
+        self._dynamic_frame_lengths = self._resolve_dynamic_frame_lengths()
         self._samples_amount: int = 0
         self._frame_lengths: list[int] = []
         self._lookup_len_list: list[int] = []
@@ -148,6 +149,9 @@ class NoCutDataset(Dataset):
         self._epoch_index += 1
         if self.shuffle_frames:
             self._shuffle_samples_and_lengths()
+        if self._dynamic_frame_lengths:
+            self._refresh_frame_lengths()
+        elif self.shuffle_frames:
             self._rebuild_lookup()
         self._current_frame_index = None
         self._current_image_cutter = None
@@ -198,6 +202,21 @@ class NoCutDataset(Dataset):
             len_list.append(self._calculate_frame_len(frame_index))
 
         self._frame_lengths = len_list
+        self._rebuild_lookup()
+
+    def _resolve_dynamic_frame_lengths(self) -> bool:
+        if not (self._skip_uniform_labels or self._rare_patch_oversampling_enabled):
+            return False
+        return bool(
+            getattr(self._cut_settings, 'random_crop', False)
+            or getattr(self._cut_settings, 'scale_augmentation', False)
+        )
+
+    def _refresh_frame_lengths(self) -> None:
+        self._frame_lengths = [
+            self._calculate_frame_len(frame_index)
+            for frame_index in range(len(self.samples))
+        ]
         self._rebuild_lookup()
 
     def _rebuild_lookup(self):

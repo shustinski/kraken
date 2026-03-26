@@ -11,6 +11,7 @@ class MainWindowState:
     label_folder: str = ''
     sample_folder: str = ''
     epochs: int = 20
+    ui_mode: str = 'simple'
 
 
 @dataclass

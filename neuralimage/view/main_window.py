@@ -2,8 +2,9 @@
 import os
 import math
 import time
+from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSettings
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -38,6 +39,32 @@ from view.metrics_panel import TrainingMetricsDock
 from view.settings_panel import create_spinbox
 from view.tic_tac_toe_dialog import TicTacToeDialog
 
+
+
+
+def _main_window_qsettings() -> QSettings:
+    root = os.getenv('NEURALIMAGE_SETTINGS_DIR')
+    if root:
+        settings_root = Path(root)
+        settings_root.mkdir(parents=True, exist_ok=True)
+        return QSettings(
+            str(settings_root / 'NeuralImage_MainWindow.ini'),
+            QSettings.Format.IniFormat,
+        )
+    return QSettings('NeuralImage', 'MainWindow')
+
+
+def _load_persisted_ui_mode() -> str:
+    settings = _main_window_qsettings()
+    value = settings.value('ui_mode', 'simple', type=str)
+    settings.sync()
+    return 'advanced' if value == 'advanced' else 'simple'
+
+
+def _save_persisted_ui_mode(mode: str) -> None:
+    settings = _main_window_qsettings()
+    settings.setValue('ui_mode', 'advanced' if mode == 'advanced' else 'simple')
+    settings.sync()
 
 def load_qss_from_resource(qss_path: str):
     if not qss_path:
@@ -83,6 +110,8 @@ class MainView(QMainWindow):
     update_check_requested: pyqtSignal = pyqtSignal()
     ui_language_selected: pyqtSignal = pyqtSignal(str)
     theme_selected: pyqtSignal = pyqtSignal(str)
+    ui_mode_selected: pyqtSignal = pyqtSignal(str)
+    simple_workflow_requested: pyqtSignal = pyqtSignal(str)
 
     DARK_THEME_QSS_PATH = "_internal/resources/dark_modern.qss"
     LIGHT_THEME_QSS_PATH = "_internal/resources/style.qss"
@@ -128,6 +157,11 @@ class MainView(QMainWindow):
         self._help_action = None
         self._changelog_action = None
         self._check_updates_action = None
+        self._ui_mode_menu = None
+        self._ui_mode_simple_action = None
+        self._ui_mode_advanced_action = None
+        self._ui_mode = _load_persisted_ui_mode()
+        self._selected_simple_workflow: str | None = None
 
         self._setup_ui()
 
@@ -199,12 +233,39 @@ class MainView(QMainWindow):
         buttons_layout = QHBoxLayout(self.buttons_row)
         buttons_layout.setContentsMargins(0, 0, 0, 0)
         self.btn_start = QPushButton(t["start"])
-        self.btn_start.setEnabled(False)
+        self.btn_start.setEnabled(True)
+        self.btn_start.setStyleSheet(
+            """background-color: #C62828; color: white; padding: 8px 20px;
+               border: none; border-radius: 5px;"""
+        )
         self.btn_stop = QPushButton(t["stop"])
         self.btn_stop.setVisible(False)
         buttons_layout.addWidget(self.btn_start)
         buttons_layout.addWidget(self.btn_stop)
         self.main_grid.addWidget(self.buttons_row, row, 0, 1, 2)
+
+        row += 1
+        self.simple_workflows_group = QGroupBox(t.get("simple_workflows_group", "Simple workflows"))
+        simple_workflows_root_layout = QVBoxLayout(self.simple_workflows_group)
+        simple_workflows_layout = QHBoxLayout()
+        self.btn_simple_conductors = QPushButton(
+            t.get("simple_workflow_conductors", "Conductor recognition")
+        )
+        self.btn_simple_contacts = QPushButton(
+            t.get("simple_workflow_contacts", "Contact recognition")
+        )
+        self.btn_simple_memory = QPushButton(
+            t.get("simple_workflow_memory", "Memory recognition")
+        )
+        simple_workflows_layout.addWidget(self.btn_simple_conductors)
+        simple_workflows_layout.addWidget(self.btn_simple_contacts)
+        simple_workflows_layout.addWidget(self.btn_simple_memory)
+        simple_workflows_root_layout.addLayout(simple_workflows_layout)
+        self.simple_workflow_label = QLabel()
+        simple_workflows_root_layout.addWidget(self.simple_workflow_label)
+        self.main_grid.addWidget(self.simple_workflows_group, row, 0, 1, 2)
+        self.simple_workflows_group.setVisible(False)
+        self._update_simple_workflow_label()
 
         row += 1
         self.queue_group = QGroupBox(t["queue"])
@@ -377,8 +438,22 @@ class MainView(QMainWindow):
         self.theme_light_action.setData("light")
         theme_group.addAction(self.theme_light_action)
         self._theme_menu.addAction(self.theme_light_action)
+        self._ui_mode_menu = view_menu.addMenu(t.get("menu_ui_mode", "Interface mode"))
+        ui_mode_group = QActionGroup(self)
+        ui_mode_group.setExclusive(True)
+        self._ui_mode_simple_action = QAction(t.get("menu_ui_mode_simple", "Simple"), self)
+        self._ui_mode_simple_action.setCheckable(True)
+        self._ui_mode_simple_action.setData("simple")
+        ui_mode_group.addAction(self._ui_mode_simple_action)
+        self._ui_mode_menu.addAction(self._ui_mode_simple_action)
+        self._ui_mode_advanced_action = QAction(t.get("menu_ui_mode_advanced", "Advanced"), self)
+        self._ui_mode_advanced_action.setCheckable(True)
+        self._ui_mode_advanced_action.setData("advanced")
+        ui_mode_group.addAction(self._ui_mode_advanced_action)
+        self._ui_mode_menu.addAction(self._ui_mode_advanced_action)
         self._sync_language_menu_checks()
         self._sync_theme_menu_checks()
+        self._sync_ui_mode_menu_checks()
         help_action = QAction(t["menu_open_help"], self)
         help_action.triggered.connect(lambda: show_help_dialog(self))
         info_menu.addAction(help_action)
@@ -499,6 +574,13 @@ class MainView(QMainWindow):
             self.theme_dark_action.triggered.connect(lambda: self._handle_theme_action("dark"))
         if hasattr(self, "theme_light_action"):
             self.theme_light_action.triggered.connect(lambda: self._handle_theme_action("light"))
+        if self._ui_mode_simple_action is not None:
+            self._ui_mode_simple_action.triggered.connect(lambda: self._handle_ui_mode_action("simple"))
+        if self._ui_mode_advanced_action is not None:
+            self._ui_mode_advanced_action.triggered.connect(lambda: self._handle_ui_mode_action("advanced"))
+        self.btn_simple_conductors.clicked.connect(lambda: self._handle_simple_workflow_click("conductors"))
+        self.btn_simple_contacts.clicked.connect(lambda: self._handle_simple_workflow_click("contacts"))
+        self.btn_simple_memory.clicked.connect(lambda: self._handle_simple_workflow_click("memory"))
         self.open_tic_tac_toe_requested.connect(self._open_tic_tac_toe_dialog)
 
         self.log_message.connect(self._append_log)
@@ -561,6 +643,7 @@ class MainView(QMainWindow):
     def _format_performance_text(
         self,
         data_wait_ms: float,
+        augmentation_ms: float,
         forward_ms: float,
         backward_ms: float,
         optimizer_ms: float,
@@ -570,12 +653,14 @@ class MainView(QMainWindow):
         template = str(
             t.get(
                 "performance_label_template",
-                "Batch timing | data: {data_wait_ms:.1f} ms | forward: {forward_ms:.1f} ms | "
+                "Batch timing | data: {data_wait_ms:.1f} ms | aug: {augmentation_ms:.1f} ms | "
+                "forward: {forward_ms:.1f} ms | "
                 "backward: {backward_ms:.1f} ms | optimizer: {optimizer_ms:.1f} ms | total: {total_ms:.1f} ms",
             )
         )
         return template.format(
             data_wait_ms=float(data_wait_ms),
+            augmentation_ms=float(augmentation_ms),
             forward_ms=float(forward_ms),
             backward_ms=float(backward_ms),
             optimizer_ms=float(optimizer_ms),
@@ -681,12 +766,14 @@ class MainView(QMainWindow):
 
         if metric_type in ("train_perf", "train_perf_epoch"):
             data_wait_ms = float(data.get("data_wait_ms", 0.0))
+            augmentation_ms = float(data.get("augmentation_ms", 0.0))
             forward_ms = float(data.get("forward_ms", 0.0))
             backward_ms = float(data.get("backward_ms", 0.0))
             optimizer_ms = float(data.get("optimizer_ms", 0.0))
             total_ms = float(data.get("total_ms", 0.0))
             self._last_performance_metrics = {
                 "data_wait_ms": data_wait_ms,
+                "augmentation_ms": augmentation_ms,
                 "forward_ms": forward_ms,
                 "backward_ms": backward_ms,
                 "optimizer_ms": optimizer_ms,
@@ -695,6 +782,7 @@ class MainView(QMainWindow):
             self.performance_label.setText(
                 self._format_performance_text(
                     data_wait_ms,
+                    augmentation_ms,
                     forward_ms,
                     backward_ms,
                     optimizer_ms,
@@ -829,12 +917,14 @@ class MainView(QMainWindow):
         widget.setPixmap(pix)
 
     def _set_start_enabled(self, ok: bool):
-        self.btn_start.setEnabled(ok)
+        self.btn_start.setEnabled(True)
+        self.btn_start.setToolTip('' if ok else 'Нажмите кнопку, чтобы увидеть причину невозможности запуска.')
         self.btn_start.setStyleSheet(
             """background-color: #4CAF50; color: white; padding: 8px 20px;
                border: none; border-radius: 5px;"""
             if ok
-            else """background-color: rgb(217,217,217);"""
+            else """background-color: #C62828; color: white; padding: 8px 20px;
+               border: none; border-radius: 5px;"""
         )
 
     def _switch_start_stop(self, show_stop: bool):
@@ -894,6 +984,12 @@ class MainView(QMainWindow):
         if hasattr(self, "theme_light_action"):
             self.theme_light_action.setChecked(self._theme == "light")
 
+    def _sync_ui_mode_menu_checks(self) -> None:
+        if self._ui_mode_simple_action is not None:
+            self._ui_mode_simple_action.setChecked(self._ui_mode == "simple")
+        if self._ui_mode_advanced_action is not None:
+            self._ui_mode_advanced_action.setChecked(self._ui_mode == "advanced")
+
     def _apply_theme(self, theme: str) -> None:
         self._theme = "light" if theme == "light" else "dark"
         qss_path = self._theme_qss_path(self._theme)
@@ -906,6 +1002,58 @@ class MainView(QMainWindow):
     def _handle_theme_action(self, theme: str) -> None:
         self._apply_theme(theme)
         self.theme_selected.emit(self._theme)
+
+    def _handle_ui_mode_action(self, mode: str) -> None:
+        self.apply_ui_mode(mode)
+        self.ui_mode_selected.emit(self._ui_mode)
+
+    def apply_ui_mode(self, mode: str) -> None:
+        normalized_mode = "simple" if mode == "simple" else "advanced"
+        self._ui_mode = normalized_mode
+        is_simple = normalized_mode == "simple"
+        self.simple_workflows_group.setVisible(is_simple)
+        self.epochs_title_label.setVisible(not is_simple)
+        self.le_epochs.setVisible(not is_simple)
+        self.log_dock.setVisible(not is_simple)
+        self.metrics_panel.setVisible(not is_simple)
+        if self.settings_dock is not None:
+            self.settings_dock.setVisible(not is_simple)
+        if self._metrics_toggle_action is not None:
+            self._metrics_toggle_action.setVisible(not is_simple)
+        if self._log_toggle_action is not None:
+            self._log_toggle_action.setVisible(not is_simple)
+        if self._settings_toggle_action is not None:
+            self._settings_toggle_action.setVisible(not is_simple)
+        if self._settings_menu is not None:
+            self._settings_menu.menuAction().setVisible(not is_simple)
+        self._sync_ui_mode_menu_checks()
+        _save_persisted_ui_mode(self._ui_mode)
+
+    def current_ui_mode(self) -> str:
+        return self._ui_mode
+
+    def _handle_simple_workflow_click(self, profile_key: str) -> None:
+        self.set_simple_workflow_profile(profile_key)
+        self.simple_workflow_requested.emit(profile_key)
+
+    def set_simple_workflow_profile(self, profile_key: str | None) -> None:
+        self._selected_simple_workflow = str(profile_key) if profile_key else None
+        self._update_simple_workflow_label()
+
+    def _simple_workflow_display_name(self, profile_key: str | None) -> str:
+        mapping = {
+            'conductors': self.btn_simple_conductors.text(),
+            'contacts': self.btn_simple_contacts.text(),
+            'memory': self.btn_simple_memory.text(),
+        }
+        return mapping.get(str(profile_key), self._main_texts().get('simple_workflow_none', 'Not selected'))
+
+    def _update_simple_workflow_label(self) -> None:
+        t = self._main_texts()
+        template = str(t.get('simple_workflow_selected_template', 'Current profile: {profile}'))
+        self.simple_workflow_label.setText(
+            template.format(profile=self._simple_workflow_display_name(self._selected_simple_workflow))
+        )
 
     def apply_ui_language(self, language: str) -> None:
         self._ui_language = "en" if language == "en" else "ru"
@@ -932,6 +1080,11 @@ class MainView(QMainWindow):
         self.queue_group.setTitle(t["queue"])
         self.btn_queue_remove.setText(t["queue_remove"])
         self.btn_queue_pause_toggle.setText(t["queue_pause"])
+        self.simple_workflows_group.setTitle(t.get("simple_workflows_group", "Simple workflows"))
+        self.btn_simple_conductors.setText(t.get("simple_workflow_conductors", "Conductor recognition"))
+        self.btn_simple_contacts.setText(t.get("simple_workflow_contacts", "Contact recognition"))
+        self.btn_simple_memory.setText(t.get("simple_workflow_memory", "Memory recognition"))
+        self._update_simple_workflow_label()
         self.progress_group.setTitle(t["progress_group"])
         if self.progress_epochs_title_label is not None:
             self.progress_epochs_title_label.setText(t["progress_epochs"])
@@ -961,6 +1114,8 @@ class MainView(QMainWindow):
             self._language_menu.setTitle(t.get("menu_language", "Язык"))
         if self._theme_menu is not None:
             self._theme_menu.setTitle(t.get("menu_theme", "Тема"))
+        if self._ui_mode_menu is not None:
+            self._ui_mode_menu.setTitle(t.get("menu_ui_mode", "Interface mode"))
         if self._settings_sample_action is not None:
             self._settings_sample_action.setText(t.get("menu_sample", "Выборка"))
         if self._settings_train_action is not None:
@@ -995,6 +1150,10 @@ class MainView(QMainWindow):
             self.theme_dark_action.setText(t.get("theme_dark", "Темная"))
         if hasattr(self, "theme_light_action"):
             self.theme_light_action.setText(t.get("theme_light", "Светлая"))
+        if self._ui_mode_simple_action is not None:
+            self._ui_mode_simple_action.setText(t.get("menu_ui_mode_simple", "Simple"))
+        if self._ui_mode_advanced_action is not None:
+            self._ui_mode_advanced_action.setText(t.get("menu_ui_mode_advanced", "Advanced"))
         self.log_dock.setWindowTitle(t.get("log_dock_title", "Лог"))
         if self.settings_dock is not None:
             self.settings_dock.setWindowTitle(t.get("settings_dock_title", "Настройки"))

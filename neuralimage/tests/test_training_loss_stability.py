@@ -447,8 +447,9 @@ def test_prepare_train_batch_applies_random_artifacts_only_to_image(monkeypatch)
 
     randint_values = iter((2, 3, 1, 0))
 
-    def _fake_randint(_low, _high, _size, device=None):
-        return torch.tensor([next(randint_values)], device=device)
+    def _fake_np_randint(_low, _high=None, size=None):
+        del size
+        return int(next(randint_values))
 
     def _fake_generate_random_artifact_patch(channels, height, width, *, device, dtype, artifact_types=None):
         assert channels == 3
@@ -468,7 +469,7 @@ def test_prepare_train_batch_applies_random_artifacts_only_to_image(monkeypatch)
         return overlay, alpha
 
     monkeypatch.setattr(target.np.random, 'random', lambda: 0.0)
-    monkeypatch.setattr(target.torch, 'randint', _fake_randint)
+    monkeypatch.setattr(target.np.random, 'randint', _fake_np_randint)
     monkeypatch.setattr(target, 'generate_random_artifact_patch', _fake_generate_random_artifact_patch)
 
     image = torch.zeros((1, 3, 4, 4), dtype=torch.float32)

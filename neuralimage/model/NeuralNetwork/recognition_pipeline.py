@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import multiprocessing as mp
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty
@@ -73,9 +74,10 @@ class PipelineQueues:
     predict: mp.Queue
     sew: mp.Queue
     sewed: mp.Queue
+    errors: mp.Queue
 
     def close(self) -> None:
-        for queue in (self.cut, self.predict, self.sew, self.sewed):
+        for queue in (self.cut, self.predict, self.sew, self.sewed, self.errors):
             try:
                 queue.close()
             except Exception:
@@ -127,6 +129,8 @@ class ProgressReporter:
 
 def _try_get_queue_item(queue: Any, *, timeout: float) -> Any:
     """Poll a multiprocessing queue without surfacing Empty in debuggers."""
+    if queue is None:
+        return _QUEUE_EMPTY
     reader = getattr(queue, '_reader', None)
     if reader is not None:
         try:
@@ -144,6 +148,115 @@ def _try_get_queue_item(queue: Any, *, timeout: float) -> Any:
         return _QUEUE_EMPTY
 
 
+def _report_worker_exception(error_queue: mp.Queue | None, worker_name: str) -> None:
+    if error_queue is None:
+        return
+    try:
+        error_queue.put(
+            {
+                'worker': str(worker_name),
+                'pid': int(os.getpid()),
+                'traceback': traceback.format_exc(),
+            }
+        )
+    except Exception:
+        pass
+
+
+def _run_cut_worker(
+    error_queue: mp.Queue,
+    cut_queue: mp.Queue,
+    cutted_queue: mp.Queue,
+    size: tuple[int, int, int],
+    overlap: int,
+    stop_event: MpEvent,
+    use_context_branch: bool = False,
+    context_crop_size: tuple[int, int] | None = None,
+    context_input_size: tuple[int, int] | None = None,
+    stop_token: str = '__STOP__',
+) -> None:
+    try:
+        cut_image_process(
+            cut_queue,
+            cutted_queue,
+            size,
+            overlap,
+            stop_event,
+            use_context_branch,
+            context_crop_size,
+            context_input_size,
+            stop_token,
+        )
+    except Exception:
+        _report_worker_exception(error_queue, 'cut')
+        raise
+
+
+def _run_predict_worker(
+    error_queue: mp.Queue,
+    prediction_queue: mp.Queue,
+    predicted_queue: mp.Queue,
+    model_path: str | Path,
+    gpu: torch.device,
+    batch_size: int,
+    stop_event: MpEvent,
+    stop_token: str = '__STOP__',
+) -> None:
+    try:
+        imgpredict(
+            prediction_queue,
+            predicted_queue,
+            model_path,
+            gpu,
+            batch_size,
+            stop_event,
+            stop_token,
+        )
+    except Exception:
+        _report_worker_exception(error_queue, 'predict')
+        raise
+
+
+def _run_sew_worker(
+    error_queue: mp.Queue,
+    output_dir: Path | str,
+    sew_queue: mp.Queue,
+    sewed_queue: mp.Queue,
+    jpeg_quality: int,
+    stop_event: MpEvent,
+    threshold: float | None = None,
+    postprocess_kernel_size: int = 0,
+    stop_token: str = '__STOP__',
+) -> None:
+    try:
+        imgsew(
+            output_dir,
+            sew_queue,
+            sewed_queue,
+            jpeg_quality,
+            stop_event,
+            threshold,
+            postprocess_kernel_size,
+            stop_token,
+        )
+    except Exception:
+        _report_worker_exception(error_queue, 'sew')
+        raise
+
+
+def _try_get_worker_error_message(error_queue: mp.Queue | None) -> str | None:
+    payload = _try_get_queue_item(error_queue, timeout=0.0)
+    if payload is _QUEUE_EMPTY or not isinstance(payload, dict):
+        return None
+    worker_name = str(payload.get('worker', 'worker'))
+    pid = payload.get('pid')
+    traceback_text = str(payload.get('traceback', '')).strip()
+    base_message = f'Child process failed. worker={worker_name}, pid={pid}.'
+    if not traceback_text:
+        return base_message
+    return f'{base_message}\n{traceback_text}'
+
+
 class MultiprocessingRecognitionRunner:
     def __init__(
         self,
@@ -159,6 +272,7 @@ class MultiprocessingRecognitionRunner:
 
     def run(self) -> None:
         queues = self._create_queues()
+        self._errors_queue_ref = getattr(queues, 'errors', None)
         groups = WorkerGroups(cut=[], predict=[], sew=[])
         predict_stopped = False
         sew_stopped = False
@@ -199,6 +313,7 @@ class MultiprocessingRecognitionRunner:
             predict=mp.Queue(maxsize=predict_queue_size),
             sew=mp.Queue(maxsize=predict_queue_size),
             sewed=mp.Queue(),
+            errors=mp.Queue(),
         )
 
     def _prime_cut_queue(self, queues: PipelineQueues) -> None:
@@ -222,8 +337,9 @@ class MultiprocessingRecognitionRunner:
         processes: list[mp.Process] = []
         for _ in range(self._config.worker_counts.cut):
             process = mp.Process(
-                target=cut_image_process,
+                target=_run_cut_worker,
                 args=(
+                    queues.errors,
                     queues.cut,
                     queues.predict,
                     self._config.workload.segment_shape,
@@ -245,8 +361,9 @@ class MultiprocessingRecognitionRunner:
         for worker_index in range(self._config.worker_counts.predict):
             device = self._resolve_worker_device(worker_index)
             process = mp.Process(
-                target=imgpredict,
+                target=_run_predict_worker,
                 args=(
+                    queues.errors,
                     queues.predict,
                     queues.sew,
                     self._config.workload.model_source,
@@ -265,8 +382,9 @@ class MultiprocessingRecognitionRunner:
         processes: list[mp.Process] = []
         for _ in range(self._config.worker_counts.sew):
             process = mp.Process(
-                target=imgsew,
+                target=_run_sew_worker,
                 args=(
+                    queues.errors,
                     self._config.workload.result_folder,
                     queues.sew,
                     queues.sewed,
@@ -344,6 +462,10 @@ class MultiprocessingRecognitionRunner:
         return updated
 
     def _get_failed_process_message(self, groups: WorkerGroups) -> str | None:
+        detailed_error = _try_get_worker_error_message(getattr(self, '_errors_queue_ref', None))
+        if detailed_error is not None:
+            self._publish('logging', detailed_error)
+            return detailed_error
         for process in groups.all():
             if process.exitcode in (None, 0):
                 continue

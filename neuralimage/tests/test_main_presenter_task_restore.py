@@ -284,3 +284,20 @@ def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, 
 
     presenter.view.allow_close()
     presenter.view.close()
+
+
+def test_main_presenter_keeps_selected_simple_profile_label_after_preset_load(qapp, monkeypatch):
+    module = _import_main_presenter_with_stubs(monkeypatch)
+    presenter = module.MainPresenter(_FakeStateStore())
+
+    restored_main = MainWindowState(work_mode='recognition_only', ui_mode='simple')
+    restored_settings = SettingsState()
+    monkeypatch.setattr(module, 'load_workflow_snapshot', lambda *_args, **_kwargs: (restored_main, restored_settings))
+
+    presenter._on_simple_workflow_requested('contacts')
+    qapp.processEvents()
+
+    assert presenter.view.btn_simple_contacts.text() in presenter.view.simple_workflow_label.text()
+
+    presenter.view.allow_close()
+    presenter.view.close()

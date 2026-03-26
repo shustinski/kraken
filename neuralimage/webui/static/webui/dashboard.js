@@ -25,6 +25,7 @@
     const valDiceNode = document.getElementById('val-dice-value');
     const valF1Node = document.getElementById('val-f1-value');
     const perfDataWaitNode = document.getElementById('perf-data-wait');
+    const perfAugmentationNode = document.getElementById('perf-augmentation');
     const perfForwardNode = document.getElementById('perf-forward');
     const perfBackwardNode = document.getElementById('perf-backward');
     const perfOptimizerNode = document.getElementById('perf-optimizer');
@@ -474,6 +475,7 @@
         if (valDiceNode) valDiceNode.textContent = formatPercent(dice);
         if (valF1Node) valF1Node.textContent = formatPercent(f1);
         if (perfDataWaitNode) perfDataWaitNode.textContent = formatMs(perf.data_wait_ms);
+        if (perfAugmentationNode) perfAugmentationNode.textContent = formatMs(perf.augmentation_ms);
         if (perfForwardNode) perfForwardNode.textContent = formatMs(perf.forward_ms);
         if (perfBackwardNode) perfBackwardNode.textContent = formatMs(perf.backward_ms);
         if (perfOptimizerNode) perfOptimizerNode.textContent = formatMs(perf.optimizer_ms);

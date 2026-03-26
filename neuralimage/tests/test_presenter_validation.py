@@ -1,5 +1,9 @@
 from application.dto import MainWindowState, SettingsState
-from application.services.validation import can_start_processing
+from application.services.validation import (
+    build_processing_start_error_message,
+    can_start_processing,
+    get_processing_start_blockers,
+)
 from tests.helpers import make_test_dir
 
 
@@ -71,3 +75,30 @@ def test_can_start_processing_external_validation_requires_validation_paths():
     settings.validation_image_folder = str(validation_images)
     settings.validation_label_folder = str(validation_labels)
     assert can_start_processing(state, settings) is True
+
+
+def test_get_processing_start_blockers_returns_specific_messages():
+    state = MainWindowState(
+        work_mode='recognition_only',
+        source_folder='',
+        result_folder='',
+        model_path='',
+        epochs=0,
+    )
+
+    blockers = get_processing_start_blockers(state)
+
+    assert 'Укажите число эпох больше нуля.' in blockers
+    assert 'Выберите существующую папку с исходными изображениями.' in blockers
+    assert 'Выберите существующую папку для результатов.' in blockers
+    assert 'Выберите существующий файл модели.' in blockers
+
+
+def test_build_processing_start_error_message_formats_blockers_for_dialog():
+    state = MainWindowState(work_mode='', epochs=0)
+
+    message = build_processing_start_error_message(state)
+
+    assert message.startswith('Запуск невозможен:\n- ')
+    assert 'Укажите число эпох больше нуля.' in message
+    assert 'Выберите корректный режим работы.' in message

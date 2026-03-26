@@ -39,3 +39,17 @@ def test_loss_aware_sampler_uses_multinomial_within_limit(monkeypatch):
     indices = list(iter(sampler))
     assert called['value'] is True
     assert indices == [3, 2, 1, 0]
+
+
+def test_loss_aware_sampler_resize_resets_sampling_state():
+    sampler = LossAwareSampler(size=4, replacement=True)
+    sampler.update_batch_losses(
+        torch.tensor([0, 1], dtype=torch.long),
+        torch.tensor([3.0, 5.0], dtype=torch.float32),
+    )
+
+    sampler.resize(6, reset=True)
+
+    assert sampler.size == 6
+    assert torch.equal(sampler._difficulty, torch.ones(6, dtype=torch.float32))
+    assert torch.equal(sampler._weights, torch.ones(6, dtype=torch.float32))

@@ -54,6 +54,7 @@ def _build_main_window_state(
         label_folder=read_str('label_path', defaults.label_folder),
         sample_folder=read_str('sample_path', defaults.sample_folder),
         epochs=read_int('epochs', defaults.epochs),
+        ui_mode=read_str('ui_mode', defaults.ui_mode),
     )
 
 
@@ -66,6 +67,7 @@ def _main_window_state_to_storage_dict(state: MainWindowState) -> dict[str, str 
         'label_path': state.label_folder,
         'sample_path': state.sample_folder,
         'epochs': int(state.epochs),
+        'ui_mode': str(getattr(state, 'ui_mode', 'simple') or 'simple'),
     }
 
 
@@ -748,6 +750,7 @@ class QSettingsStateStore:
         settings = self._settings(MAIN_WINDOW_ORG, MAIN_WINDOW_APP)
         for key, value in _main_window_state_to_storage_dict(state).items():
             settings.setValue(key, value)
+        settings.sync()
 
     def load_settings_state(self) -> SettingsState:
         settings = self._settings(SETTINGS_ORG, SETTINGS_APP)
@@ -764,6 +767,7 @@ class QSettingsStateStore:
         settings = self._settings(SETTINGS_ORG, SETTINGS_APP)
         for key, value in _settings_state_to_storage_dict(state).items():
             settings.setValue(key, value)
+        settings.sync()
 
 
 class IniStateStore:

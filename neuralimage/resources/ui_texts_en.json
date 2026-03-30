@@ -96,7 +96,9 @@
     "simple_workflow_contacts": "Contact recognition",
     "simple_workflow_memory": "Memory recognition",
     "simple_workflow_selected_template": "Current profile: {profile}",
-    "simple_workflow_none": "not selected"
+    "simple_workflow_none": "not selected",
+    "menu_plugins": "Widgets",
+    "menu_open_validation_gradient": "Open Validation gradient"
   },
   "task_properties_dialog": {
     "window_title": "Task Properties",

@@ -65,6 +65,32 @@ from view import MainView, SettingsPanel
 from view.task_properties_dialog import TaskPropertiesDialog
 
 
+class _ValidationGradientPluginWindow(QtWidgets.QMainWindow):
+    """Host one lite plugin widget as a standalone child window."""
+
+    def __init__(self, plugin, widget, title: str, on_closed: Callable[[], None], parent=None):
+        super().__init__(parent)
+        self._plugin = plugin
+        self._on_closed = on_closed
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setWindowTitle(str(title))
+        self.setCentralWidget(widget)
+        self.resize(1400, 900)
+
+    def closeEvent(self, event) -> None:
+        try:
+            if self._plugin is not None:
+                self._plugin.shutdown()
+        finally:
+            self._plugin = None
+            try:
+                self._on_closed()
+            finally:
+                super().closeEvent(event)
+
+
+
+
 def _format_auto_answer_button_text(text: str, seconds_left: int) -> str:
     if seconds_left <= 0:
         return text
@@ -126,6 +152,8 @@ class MainPresenter(QObject):
         self._rare_patch_editor_prepare_thread: RarePatchEditorPreparationThread | None = None
         self._update_check_thread: AppUpdateCheckThread | None = None
         self._update_download_thread: AppUpdateDownloadThread | None = None
+        self._validation_gradient_plugin = None
+        self._validation_gradient_window: _ValidationGradientPluginWindow | None = None
         self._update_check_manual = False
         self._sample_count_worker_thread: threading.Thread | None = None
         self._sample_count_request_serial = 0
@@ -187,6 +215,7 @@ class MainPresenter(QObject):
         v.queue_properties_requested.connect(self._on_queue_properties_requested)
         v.batch_preview_visibility_changed.connect(self._on_batch_preview_visibility_changed)
         v.release_memory_requested.connect(self._on_release_memory_requested)
+        v.open_validation_gradient_requested.connect(self._on_open_validation_gradient_requested)
         v.update_check_requested.connect(self._on_update_check_requested)
         v.ui_language_selected.connect(self._on_ui_language_selected)
         v.theme_selected.connect(self._on_theme_selected)
@@ -1230,6 +1259,55 @@ class MainPresenter(QObject):
         self.neuaral_handler = None
         self._refresh_queue_view()
         self._start_next_task_if_possible()
+    def _clear_validation_gradient_window_refs(self) -> None:
+        self._validation_gradient_window = None
+        self._validation_gradient_plugin = None
+
+    def _on_open_validation_gradient_requested(self) -> None:
+        window = self._validation_gradient_window
+        if window is not None:
+            window.show()
+            window.raise_()
+            window.activateWindow()
+            return
+
+        from Validation_gradient_widget_lite import ValidationGradientLitePlugin
+
+        plugin = ValidationGradientLitePlugin()
+        try:
+            widget = plugin.create_widget(parent=None)
+        except Exception as exc:
+            self.view.show_warning.emit(f'Failed to open Validation Gradient Lite: {exc}')
+            return
+
+        title = getattr(plugin, 'display_name', 'Validation Gradient Widget Lite')
+        window = _ValidationGradientPluginWindow(
+            plugin=plugin,
+            widget=widget,
+            title=str(title),
+            on_closed=self._clear_validation_gradient_window_refs,
+            parent=self.view,
+        )
+        self._validation_gradient_plugin = plugin
+        self._validation_gradient_window = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def _shutdown_validation_gradient_plugin(self) -> None:
+        window = self._validation_gradient_window
+        plugin = self._validation_gradient_plugin
+        if window is not None:
+            self._validation_gradient_window = None
+            self._validation_gradient_plugin = None
+            window.close()
+            return
+        if plugin is not None:
+            try:
+                plugin.shutdown()
+            finally:
+                self._validation_gradient_plugin = None
+
     def _on_close_requested(self):
         ui_texts = get_ui_section('main_window')
         reply = QMessageBox.question(
@@ -1241,6 +1319,7 @@ class MainPresenter(QObject):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._save_windows_to_qsettings()
+            self._shutdown_validation_gradient_plugin()
             self.view.allow_close()
 
     # ------------------------------------------------------------------ #

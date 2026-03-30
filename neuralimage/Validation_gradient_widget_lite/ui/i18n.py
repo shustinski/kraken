@@ -1,0 +1,253 @@
+﻿"""Provide a small ru/en translator for the lite mismatch-only widget."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from PyQt6.QtCore import QLocale
+
+
+def _normalize_language(language: str | None) -> str:
+    value = str(language or "").lower()
+    return "ru" if value.startswith("ru") else "en"
+
+
+_CURRENT_LANGUAGE = _normalize_language(QLocale.system().name())
+
+
+def set_current_language(language: str | None) -> None:
+    global _CURRENT_LANGUAGE
+    _CURRENT_LANGUAGE = _normalize_language(language)
+
+
+@dataclass(slots=True)
+class Translator:
+    """Translate lite-widget UI keys using a compact in-package dictionary."""
+
+    language: str | None = None
+
+    def __post_init__(self) -> None:
+        self.language = _normalize_language(self.language or _CURRENT_LANGUAGE)
+
+    def set_language(self, language: str | None) -> None:
+        self.language = _normalize_language(language)
+        set_current_language(self.language)
+
+    def tr(self, key: str, **kwargs) -> str:
+        dictionary = _TRANSLATIONS.get(self.language or "en", _TRANSLATIONS["en"])
+        text = dictionary.get(key) or _TRANSLATIONS["en"].get(key) or key
+        if kwargs:
+            try:
+                return text.format(**kwargs)
+            except Exception:
+                return text
+        return text
+
+
+_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "en": {
+        "window.title": "Validation Gradient Widget Lite",
+        "menu.settings": "Settings",
+        "menu.matrix": "Matrix",
+        "menu.error_view": "Error view",
+        "menu.language": "Language",
+        "language.label": "Interface language",
+        "language.en": "English",
+        "language.ru": "Russian",
+        "language.toggle_tooltip": "Switch interface language",
+        "folders.group": "Result folders",
+        "folders.info": "Load folders, mark exactly two for comparison, then build the matrix and compute mismatch only.",
+        "folders.add": "Add folder",
+        "folders.clear_all": "Clear all folders",
+        "folders.set_base": "Set base layer",
+        "folders.clear_base": "Clear base layer",
+        "folders.build": "Build matrix",
+        "folders.compute_mismatch": "Compute mismatches",
+        "folders.cancel_build": "Cancel build",
+        "folders.use_compare": "Use this folder in comparison",
+        "folders.remove": "Remove folder",
+        "folders.move_up": "Move up",
+        "folders.move_down": "Move down",
+        "mode.first_minus_second": "First - second",
+        "mode.second_minus_first": "Second - first",
+        "mode.disagreement": "Disagreement",
+        "mode.grayscale_diff": "Grayscale difference",
+        "matrix.pixel_size": "Matrix pixel size",
+        "matrix.layout_mode": "Matrix layout",
+        "matrix.layout_mode.indexed": "Indexed grid",
+        "matrix.layout_mode.manual": "Custom rows x columns",
+        "matrix.total_frames": "Max frame index",
+        "matrix.frames_per_row": "Max column index in row",
+        "matrix.rows": "Row count",
+        "matrix.columns": "Column count",
+        "matrix.total_frames.tooltip": "Indexed layout only. Maximum frame index. File frame indices are zero-based, so 34 means valid indices 0..34.",
+        "matrix.frames_per_row.tooltip": "Indexed layout only. Maximum column index in a row. Zero-based, so 134 means 135 cells per row.",
+        "matrix.rows.tooltip": "Custom layout only. Number of matrix rows.",
+        "matrix.columns.tooltip": "Custom layout only. Number of matrix columns.",
+        "matrix.score_view": "Mismatch view",
+        "matrix.score_view.relative": "Relative mismatch",
+        "matrix.score_view.absolute": "Absolute mismatch",
+        "matrix.gradient": "Gradient",
+        "matrix.error_window": "Error window",
+        "matrix.low": "Low",
+        "matrix.high": "High",
+        "matrix.no_matrix": "No matrix",
+        "matrix.absolute_mismatch": "Absolute mismatch",
+        "matrix.relative_mismatch": "Relative mismatch",
+        "matrix.reference_frame": "Reference frame",
+        "matrix.reference_short": "reference",
+        "matrix.absolute_short": "absolute",
+        "matrix.relative_short": "relative",
+        "matrix.mismatch_not_computed": "Mismatch not computed",
+        "matrix.operation": "Binary operation",
+        "matrix.preview.group": "Selected frame",
+        "matrix.preview.frame": "Frame",
+        "matrix.preview.absolute": "Absolute mismatch",
+        "matrix.preview.relative": "Relative mismatch",
+        "matrix.not_computed": "not computed",
+        "dialog.select_result_folder": "Select result folder",
+        "dialog.select_base_folder": "Select base layer folder",
+        "dialog.info_title": "Validation Gradient Widget Lite",
+        "dialog.warning_title": "Validation Gradient Widget Lite",
+        "message.max_two": "Exactly two folders can be marked for comparison at the same time.",
+        "message.mark_exactly_two": "Mark exactly two folders with checkboxes for comparison.",
+        "message.build_failed": "Build failed.",
+        "context.open_details": "Open frame details",
+        "progress.starting": "Building matrix...",
+        "progress.indexing": "Loading frame matrix...",
+        "progress.building": "Building matrix: {current}/{total}",
+        "progress.computing_start": "Computing mismatches...",
+        "progress.computing": "Computing mismatches: {current}/{total}",
+        "progress.cancelling": "Cancelling build...",
+        "errors.layout": "Invalid matrix layout",
+        "details.window_title": "Frame details: {name}",
+        "details.reset_view": "Reset view",
+        "details.operations": "Operations",
+        "details.layer_view": "Layer view",
+        "details.layer_view.binary": "Binary masks",
+        "details.layer_view.source": "Source JPG",
+        "details.operation": "Operation",
+        "details.frame_info": "Frame info",
+        "details.frame_id": "Frame ID",
+        "details.base_id": "Base ID",
+        "details.tile_x": "Matrix X",
+        "details.tile_y": "Matrix Y",
+        "details.original_layer": "Original layer",
+        "details.original_layer.not_set": "not set",
+        "details.mismatch_info": "Mismatch",
+        "details.absolute_mismatch": "Absolute mismatch",
+        "details.relative_mismatch": "Relative mismatch",
+        "details.layers": "Layers",
+        "details.visible": "Visible",
+        "details.opacity": "Opacity",
+        "details.color": "Color",
+        "details.base": "Base",
+        "details.first": "A",
+        "details.second": "B",
+        "details.operation_result": "Operation result",
+        "details.color_dialog_title": "Select layer color",
+        "details.color_button_tooltip": "Select layer color",
+    },
+    "ru": {
+        "window.title": "Validation Gradient Widget Lite",
+        "menu.settings": "Настройки",
+        "menu.matrix": "Матрица",
+        "menu.error_view": "Вид расхождений",
+        "menu.language": "Язык",
+        "language.label": "Язык интерфейса",
+        "language.en": "English",
+        "language.ru": "Русский",
+        "language.toggle_tooltip": "Переключить язык интерфейса",
+        "folders.group": "Папки результатов",
+        "folders.info": "Загрузите папки, отметьте ровно две для сравнения, постройте матрицу и посчитайте только mismatch.",
+        "folders.add": "Добавить папку",
+        "folders.clear_all": "Очистить все папки",
+        "folders.set_base": "Задать base layer",
+        "folders.clear_base": "Сбросить base layer",
+        "folders.build": "Построить матрицу",
+        "folders.compute_mismatch": "Посчитать mismatch",
+        "folders.cancel_build": "Отменить построение",
+        "folders.use_compare": "Использовать папку в сравнении",
+        "folders.remove": "Удалить папку",
+        "folders.move_up": "Вверх",
+        "folders.move_down": "Вниз",
+        "mode.first_minus_second": "Первый - второй",
+        "mode.second_minus_first": "Второй - первый",
+        "mode.disagreement": "Расхождение",
+        "mode.grayscale_diff": "Разница grayscale",
+        "matrix.pixel_size": "Размер пикселя матрицы",
+        "matrix.layout_mode": "Разметка матрицы",
+        "matrix.layout_mode.indexed": "Индексная сетка",
+        "matrix.layout_mode.manual": "Произвольные строки x столбцы",
+        "matrix.total_frames": "Макс. индекс кадра",
+        "matrix.frames_per_row": "Макс. индекс столбца в строке",
+        "matrix.rows": "Количество строк",
+        "matrix.columns": "Количество столбцов",
+        "matrix.total_frames.tooltip": "Только для индексной разметки. Максимальный индекс кадра. Индексы в файлах нумеруются с нуля, поэтому 34 означает диапазон 0..34.",
+        "matrix.frames_per_row.tooltip": "Только для индексной разметки. Максимальный индекс столбца в строке. Индекс с нуля, поэтому 134 означает 135 ячеек в строке.",
+        "matrix.rows.tooltip": "Только для произвольной разметки. Количество строк матрицы.",
+        "matrix.columns.tooltip": "Только для произвольной разметки. Количество столбцов матрицы.",
+        "matrix.score_view": "Вид mismatch",
+        "matrix.score_view.relative": "Относительный mismatch",
+        "matrix.score_view.absolute": "Абсолютный mismatch",
+        "matrix.gradient": "Градиент",
+        "matrix.error_window": "Окно расхождений",
+        "matrix.low": "Низ",
+        "matrix.high": "Верх",
+        "matrix.no_matrix": "Матрица не построена",
+        "matrix.absolute_mismatch": "Абсолютный mismatch",
+        "matrix.relative_mismatch": "Относительный mismatch",
+        "matrix.reference_frame": "Эталонный кадр",
+        "matrix.reference_short": "эталон",
+        "matrix.absolute_short": "абс",
+        "matrix.relative_short": "отн",
+        "matrix.mismatch_not_computed": "Mismatch не посчитан",
+        "matrix.operation": "Бинарная операция",
+        "matrix.preview.group": "Выбранный кадр",
+        "matrix.preview.frame": "Кадр",
+        "matrix.preview.absolute": "Абсолютный mismatch",
+        "matrix.preview.relative": "Относительный mismatch",
+        "matrix.not_computed": "не посчитано",
+        "dialog.select_result_folder": "Выбрать папку с результатами",
+        "dialog.select_base_folder": "Выбрать папку base layer",
+        "dialog.info_title": "Validation Gradient Widget Lite",
+        "dialog.warning_title": "Validation Gradient Widget Lite",
+        "message.max_two": "Одновременно можно отметить ровно две папки для сравнения.",
+        "message.mark_exactly_two": "Отметьте ровно две папки флажками для сравнения.",
+        "message.build_failed": "Ошибка построения.",
+        "context.open_details": "Открыть детали кадра",
+        "progress.starting": "Построение матрицы...",
+        "progress.indexing": "Загрузка матрицы кадров...",
+        "progress.building": "Построение матрицы: {current}/{total}",
+        "progress.computing_start": "Расчет mismatch...",
+        "progress.computing": "Расчет mismatch: {current}/{total}",
+        "progress.cancelling": "Отмена построения...",
+        "errors.layout": "Некорректная разметка матрицы",
+        "details.window_title": "Детали кадра: {name}",
+        "details.reset_view": "Сбросить вид",
+        "details.operations": "Операции",
+        "details.layer_view": "Вид слоев",
+        "details.layer_view.binary": "Бинарные маски",
+        "details.layer_view.source": "Исходные JPG",
+        "details.operation": "Операция",
+        "details.frame_info": "Информация о кадре",
+        "details.frame_id": "Frame ID",
+        "details.base_id": "Base ID",
+        "details.tile_x": "Матрица X",
+        "details.tile_y": "Матрица Y",
+        "details.original_layer": "Оригинальный слой",
+        "details.original_layer.not_set": "не задан",
+        "details.mismatch_info": "Mismatch",
+        "details.absolute_mismatch": "Абсолютное расхождение",
+        "details.relative_mismatch": "Относительное расхождение",
+        "details.layers": "Слои",
+        "details.visible": "Видимость",
+        "details.opacity": "Непрозрачность",
+        "details.color": "Цвет",
+        "details.base": "Base",
+        "details.first": "A",
+        "details.second": "B",
+        "details.operation_result": "Результат операции",
+        "details.color_dialog_title": "Выбор цвета слоя",
+        "details.color_button_tooltip": "Выбрать цвет слоя",
+    },
+}

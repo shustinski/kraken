@@ -108,6 +108,7 @@ class MainView(QMainWindow):
     batch_preview_visibility_changed: pyqtSignal = pyqtSignal(bool)
     release_memory_requested: pyqtSignal = pyqtSignal()
     open_tic_tac_toe_requested: pyqtSignal = pyqtSignal()
+    open_validation_gradient_requested: pyqtSignal = pyqtSignal()
     update_check_requested: pyqtSignal = pyqtSignal()
     ui_language_selected: pyqtSignal = pyqtSignal(str)
     theme_selected: pyqtSignal = pyqtSignal(str)
@@ -142,6 +143,7 @@ class MainView(QMainWindow):
         self._file_menu = None
         self._settings_menu = None
         self._view_menu = None
+        self._plugins_menu = None
         self._info_menu = None
         self._language_menu = None
         self._theme_menu = None
@@ -155,6 +157,7 @@ class MainView(QMainWindow):
         self._help_action = None
         self._changelog_action = None
         self._check_updates_action = None
+        self._open_validation_gradient_action = None
         self._ui_mode_menu = None
         self._ui_mode_simple_action = None
         self._ui_mode_advanced_action = None
@@ -367,11 +370,13 @@ class MainView(QMainWindow):
         settings_menu = menubar.addMenu(t["menu_settings"])
         self._view_menu = menubar.addMenu(t["menu_view"])
         view_menu = self._view_menu
+        self._plugins_menu = menubar.addMenu(t.get("menu_plugins", "Plugins"))
+        plugins_menu = self._plugins_menu
         info_menu = menubar.addMenu(t["menu_help"])
         self._file_menu = file_menu
         self._settings_menu = settings_menu
         self._info_menu = info_menu
-        if file_menu is None or settings_menu is None or view_menu is None or info_menu is None:
+        if file_menu is None or settings_menu is None or view_menu is None or plugins_menu is None or info_menu is None:
             return
 
         self._open_config_action = QAction(t.get("menu_open_config", "Открыть"), self)
@@ -409,6 +414,11 @@ class MainView(QMainWindow):
             self,
         )
         view_menu.addAction(self.open_tic_tac_toe_action)
+        self._open_validation_gradient_action = QAction(
+            t.get("menu_open_validation_gradient", "Open Validation gradient"),
+            self,
+        )
+        plugins_menu.addAction(self._open_validation_gradient_action)
         view_menu.addSeparator()
         self._language_menu = view_menu.addMenu(t.get("menu_language", "Язык"))
         language_group = QActionGroup(self)
@@ -562,6 +572,8 @@ class MainView(QMainWindow):
             self.release_memory_action.triggered.connect(self.release_memory_requested.emit)
         if hasattr(self, "open_tic_tac_toe_action"):
             self.open_tic_tac_toe_action.triggered.connect(self.open_tic_tac_toe_requested.emit)
+        if self._open_validation_gradient_action is not None:
+            self._open_validation_gradient_action.triggered.connect(self.open_validation_gradient_requested.emit)
         if self._check_updates_action is not None:
             self._check_updates_action.triggered.connect(self.update_check_requested.emit)
         if hasattr(self, "ui_language_ru_action"):
@@ -1106,6 +1118,8 @@ class MainView(QMainWindow):
             self._view_menu.setTitle(t["menu_view"])
         if self._info_menu is not None:
             self._info_menu.setTitle(t["menu_help"])
+        if self._plugins_menu is not None:
+            self._plugins_menu.setTitle(t.get("menu_plugins", "Plugins"))
         if self._open_config_action is not None:
             self._open_config_action.setText(t.get("menu_open_config", "Открыть"))
         if self._language_menu is not None:
@@ -1133,6 +1147,10 @@ class MainView(QMainWindow):
         if hasattr(self, "open_tic_tac_toe_action"):
             self.open_tic_tac_toe_action.setText(
                 t.get("menu_open_tic_tac_toe", "Крестики-нолики (нейросеть)")
+            )
+        if self._open_validation_gradient_action is not None:
+            self._open_validation_gradient_action.setText(
+                t.get("menu_open_validation_gradient", "Open Validation gradient")
             )
         if self._help_action is not None:
             self._help_action.setText(t.get("menu_open_help", "Открыть справку"))

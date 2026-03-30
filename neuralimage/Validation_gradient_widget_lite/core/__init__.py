@@ -1,0 +1,1 @@
+﻿"""Lite widget package."""

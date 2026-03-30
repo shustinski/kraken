@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip('PyQt6')
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from application.dto import MainWindowState, SettingsState
 from tests.helpers import make_test_dir
@@ -298,6 +298,57 @@ def test_main_presenter_keeps_selected_simple_profile_label_after_preset_load(qa
     qapp.processEvents()
 
     assert presenter.view.btn_simple_contacts.text() in presenter.view.simple_workflow_label.text()
+
+    presenter.view.allow_close()
+    presenter.view.close()
+
+
+class _FakeValidationGradientLitePlugin:
+    instances: list["_FakeValidationGradientLitePlugin"] = []
+
+    plugin_id = "validation_gradient_widget_lite"
+    display_name = "Validation Gradient Widget Lite"
+
+    def __init__(self) -> None:
+        self.shutdown_called = False
+        self.widget = None
+        type(self).instances.append(self)
+
+    def create_widget(self, host=None, parent=None):
+        self.widget = QWidget(parent)
+        return self.widget
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+
+def test_main_presenter_opens_validation_gradient_plugin_window(qapp, monkeypatch):
+    module = _import_main_presenter_with_stubs(monkeypatch)
+    import Validation_gradient_widget_lite as lite_pkg
+
+    monkeypatch.setattr(lite_pkg, 'ValidationGradientLitePlugin', _FakeValidationGradientLitePlugin)
+    presenter = module.MainPresenter(_FakeStateStore())
+
+    presenter._on_open_validation_gradient_requested()
+    qapp.processEvents()
+
+    window = presenter._validation_gradient_window
+    assert window is not None
+    assert window.isVisible() is True
+    assert isinstance(presenter._validation_gradient_plugin, _FakeValidationGradientLitePlugin)
+
+    first_plugin = presenter._validation_gradient_plugin
+    presenter._on_open_validation_gradient_requested()
+    qapp.processEvents()
+
+    assert presenter._validation_gradient_plugin is first_plugin
+
+    window.close()
+    qapp.processEvents()
+
+    assert first_plugin.shutdown_called is True
+    assert presenter._validation_gradient_window is None
+    assert presenter._validation_gradient_plugin is None
 
     presenter.view.allow_close()
     presenter.view.close()

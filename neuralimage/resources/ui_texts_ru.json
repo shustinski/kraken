@@ -96,7 +96,9 @@
     "simple_workflow_contacts": "Распознавание контактов",
     "simple_workflow_memory": "Распознавание памяти",
     "simple_workflow_selected_template": "Текущий профиль: {profile}",
-    "simple_workflow_none": "не выбран"
+    "simple_workflow_none": "не выбран",
+    "menu_plugins": "Виджеты",
+    "menu_open_validation_gradient": "Открыть Validation gradient"
   },
   "task_properties_dialog": {
     "window_title": "Свойства задачи",

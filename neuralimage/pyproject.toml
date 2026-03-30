@@ -13,8 +13,6 @@ dependencies = [
     "PyQt6>=6.6",
     "pyqtgraph>=0.13",
     "opencv-python>=4.8",
-    "torch>=2.2",
-    "torchvision>=0.17",
     "timm>=1.0",
 ]
 

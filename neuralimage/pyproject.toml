@@ -1,0 +1,110 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuralimage"
+dynamic = ["version"]
+description = "Desktop and web tooling for neural IC image segmentation, training, and recognition."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "Pillow>=10.0",
+    "PyQt6>=6.6",
+    "pyqtgraph>=0.13",
+    "opencv-python>=4.8",
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "timm>=1.0",
+]
+
+[project.optional-dependencies]
+web = [
+    "django>=5.1",
+]
+monitoring = [
+    "psutil>=5.9",
+]
+build = [
+    "Cython>=3.0",
+    "huggingface_hub>=0.30",
+    "networkx>=3.2",
+    "pyinstaller>=6.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "django>=5.1",
+    "psutil>=5.9",
+    "Cython>=3.0",
+    "huggingface_hub>=0.30",
+    "networkx>=3.2",
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+neuralimage = "main:main"
+neuralimage-manage = "manage:main"
+neuralimage-config = "main_code_version:main"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["main", "manage", "main_code_version"]
+
+[tool.setuptools.dynamic]
+version = { attr = "lib.version.APP_VERSION" }
+
+[tool.setuptools.packages.find]
+include = [
+    "application",
+    "application.*",
+    "augmentations",
+    "augmentations.*",
+    "bootstrap",
+    "bootstrap.*",
+    "controller",
+    "controller.*",
+    "infrastructure",
+    "infrastructure.*",
+    "lib",
+    "lib.*",
+    "model",
+    "model.*",
+    "presenter",
+    "presenter.*",
+    "UI",
+    "UI.*",
+    "view",
+    "view.*",
+    "webui",
+    "webui.*",
+    "webui_project",
+    "webui_project.*",
+]
+exclude = [
+    "tests",
+    "tests.*",
+]
+
+[tool.setuptools.package-data]
+webui = [
+    "templates/**/*.html",
+    "static/**/*",
+]
+
+[tool.setuptools.data-files]
+"resources" = [
+    "resources/*.json",
+    "resources/*.md",
+]
+"_internal" = [
+    "_internal/icon.ico",
+    "_internal/icon.png",
+    "_internal/settings_icon.png",
+]
+"_internal/resources" = [
+    "_internal/resources/*.qss",
+]
+"_internal/resources/icons" = [
+    "_internal/resources/icons/*.svg",
+]

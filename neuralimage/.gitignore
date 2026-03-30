@@ -10,6 +10,7 @@ build/
 tests/real_tests/
 dist/
 _internal/models/
+
 *.zip
 *.cif
 *.jpg
@@ -28,6 +29,8 @@ Package-*
 private/
 _build/
 !cmake/**/user.cmake
+!_internal/icon.png
+!_internal/settings_icon.png
 cmake/**/.generated/*
 cmake/**/CMake*
 out/

@@ -1,10 +1,13 @@
 import json
+from pathlib import Path
 
+import lib.update_checker as update_checker
 from lib.update_checker import (
     collect_release_history,
     compare_versions,
     download_update_installer,
     fetch_update_info,
+    launch_update_installer,
     parse_update_payload,
     parse_version_parts,
     UpdateInfo,
@@ -93,7 +96,8 @@ def test_fetch_update_info_returns_none_for_missing_manifest_path(tmp_path) -> N
     assert fetch_update_info(str(missing_manifest)) is None
 
 
-def test_download_update_installer_supports_local_file_path(tmp_path) -> None:
+def test_download_update_installer_supports_local_file_path(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(update_checker.tempfile, 'gettempdir', lambda: str(tmp_path))
     source_installer = tmp_path / 'NeuralImage-5.8.0.exe'
     source_installer.write_bytes(b'installer payload')
     downloaded_path = download_update_installer(
@@ -105,6 +109,43 @@ def test_download_update_installer_supports_local_file_path(tmp_path) -> None:
     assert downloaded_path.exists()
     assert downloaded_path.read_bytes() == b'installer payload'
     assert downloaded_path.name == 'NeuralImage-5.8.0.exe'
+
+
+def test_launch_update_installer_creates_cleanup_launcher(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(update_checker.tempfile, 'gettempdir', lambda: str(tmp_path))
+    installer_dir = tmp_path / 'NeuralImageUpdater'
+    installer_dir.mkdir()
+    installer_path = installer_dir / 'NeuralImage-5.8.0.exe'
+    installer_path.write_bytes(b'installer payload')
+
+    captured: dict[str, object] = {}
+
+    def fake_popen(args, **kwargs):
+        captured['args'] = args
+        captured['kwargs'] = kwargs
+
+        class DummyProcess:
+            pass
+
+        return DummyProcess()
+
+    monkeypatch.setattr(update_checker.subprocess, 'Popen', fake_popen)
+
+    launch_update_installer(installer_path)
+
+    command = captured['args']
+    assert isinstance(command, list)
+    assert command[:3] == ['cmd.exe', '/d', '/c']
+    assert command[4] == str(installer_path)
+    assert command[5] == str(installer_dir)
+
+    launcher_path = Path(command[3])
+    assert launcher_path.exists()
+    launcher_body = launcher_path.read_text(encoding='ascii')
+    assert '"%~1"' in launcher_body
+    assert 'rmdir /s /q "%~2"' in launcher_body
+    assert 'goto retry_cleanup' in launcher_body
+    launcher_path.unlink(missing_ok=True)
 
 
 def test_collect_release_history_returns_all_server_releases() -> None:

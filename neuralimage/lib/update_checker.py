@@ -4,7 +4,9 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,9 @@ _URL_SCHEME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.-]*://')
 _UPDATE_SETTINGS_ORG = 'NeuralImage'
 _UPDATE_SETTINGS_APP = 'Updater'
 _UPDATE_SETTINGS_KEY = 'last_notified_version'
+_UPDATE_STAGING_DIR_NAME = 'NeuralImageUpdater'
+_UPDATE_CLEANUP_MAX_RETRIES = 300
+_UPDATE_CLEANUP_DELAY_SECONDS = 2
 
 
 @dataclass(frozen=True)
@@ -170,7 +175,7 @@ def save_last_notified_version(version: str) -> None:
 def download_update_installer(release_info: ReleaseInfo | UpdateInfo) -> Path:
     if not release_info.download_url:
         raise ValueError('Update manifest does not contain download_url.')
-    target_dir = Path(tempfile.gettempdir()) / 'NeuralImageUpdater'
+    target_dir = get_update_staging_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     source = str(release_info.download_url).strip()
     target_path = target_dir / _resolve_installer_name(release_info, source)
@@ -188,6 +193,26 @@ def download_update_installer(release_info: ReleaseInfo | UpdateInfo) -> Path:
                     break
                 file.write(chunk)
     return target_path
+
+
+def get_update_staging_dir() -> Path:
+    return Path(tempfile.gettempdir()) / _UPDATE_STAGING_DIR_NAME
+
+
+def launch_update_installer(installer_path: str | Path) -> None:
+    installer = Path(installer_path)
+    if os.name != 'nt':
+        subprocess.Popen([str(installer)], close_fds=True)
+        return
+    launcher_path = _write_update_launcher_script()
+    creationflags = int(getattr(subprocess, 'DETACHED_PROCESS', 0)) | int(
+        getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+    )
+    subprocess.Popen(
+        ['cmd.exe', '/d', '/c', str(launcher_path), str(installer), str(installer.parent)],
+        close_fds=True,
+        creationflags=creationflags,
+    )
 
 
 def collect_release_history(update_info: UpdateInfo) -> str:
@@ -234,6 +259,32 @@ def _parse_release_entries(raw_value: Any) -> tuple[ReleaseInfo, ...]:
         notes = str(item.get('notes', item.get('release_notes', item.get('changes', '')))).strip()
         entries.append(ReleaseInfo(version=version, download_url=download_url, notes=notes))
     return tuple(entries)
+
+
+def _write_update_launcher_script() -> Path:
+    launcher_path = Path(tempfile.gettempdir()) / f'neuralimage_update_cleanup_{uuid.uuid4().hex}.cmd'
+    launcher_path.write_text(
+        '\n'.join(
+            (
+                '@echo off',
+                'setlocal',
+                '"%~1"',
+                'set /a RETRIES=0',
+                ':retry_cleanup',
+                'rmdir /s /q "%~2" >nul 2>&1',
+                'if exist "%~2" (',
+                '    set /a RETRIES+=1',
+                f'    if %RETRIES% LSS {_UPDATE_CLEANUP_MAX_RETRIES} (',
+                f'        timeout /t {_UPDATE_CLEANUP_DELAY_SECONDS} /nobreak >nul',
+                '        goto retry_cleanup',
+                '    )',
+                ')',
+                '(goto) 2>nul & del "%~f0"',
+            )
+        ),
+        encoding='ascii',
+    )
+    return launcher_path
 
 
 def _create_settings(qsettings_cls):

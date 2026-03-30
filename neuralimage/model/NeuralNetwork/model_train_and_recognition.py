@@ -1,3 +1,4 @@
+import importlib
 import os
 import datetime
 import time
@@ -2798,20 +2799,31 @@ class TrainerProcess(mp.Process):
             adamw_kwargs.pop('fused', None)
             return optim.AdamW(self._model.parameters(), **adamw_kwargs)
 
+    @staticmethod
+    def _load_optional_attribute(module_name: str, attribute_name: str) -> Any | None:
+        try:
+            module_spec = importlib.util.find_spec(module_name)
+        except (AttributeError, ImportError, ModuleNotFoundError, ValueError):
+            return None
+        if module_spec is None:
+            return None
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            return None
+        return getattr(module, attribute_name, None)
+
     def _create_adamw_muon_optimizer(self, params: OptimizerParameters):
         """
         Prepared hook for Muon integration.
         Tries to use optional Muon package; if unavailable falls back to AdamW.
         """
-        muon_cls = None
-        for module_name in ('muon', 'optimizers.muon', 'torch_optimizer'):
-            try:
-                module = __import__(module_name, fromlist=['Muon'])
-                muon_cls = getattr(module, 'Muon', None)
+        muon_cls = getattr(optim, 'Muon', None)
+        if muon_cls is None:
+            for module_name in ('muon', 'optimizers.muon', 'torch_optimizer'):
+                muon_cls = self._load_optional_attribute(module_name, 'Muon')
                 if muon_cls is not None:
                     break
-            except Exception:
-                continue
 
         if muon_cls is None:
             self._bus.put([
@@ -2820,7 +2832,18 @@ class TrainerProcess(mp.Process):
             ])
             return self._create_adamw_optimizer(params)
 
-        return muon_cls(self._model.parameters(), lr=params.learning_rate, weight_decay=params.weight_decay)
+        try:
+            return muon_cls(
+                self._model.parameters(),
+                lr=params.learning_rate,
+                weight_decay=params.weight_decay,
+            )
+        except Exception as error:
+            self._bus.put([
+                'logging',
+                f'Muon optimizer initialization failed ({error}). Using AdamW.',
+            ])
+            return self._create_adamw_optimizer(params)
 
     @staticmethod
     def _tensor_to_preview_array(tensor: torch.Tensor) -> np.ndarray:

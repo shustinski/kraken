@@ -597,18 +597,20 @@ class GeneralNeuralHandler:
         shuffle = self.tranining_parameters.shuffle if self.tranining_parameters.cut_mode == SampleCutMode.disk else False
         workers = self._resolve_dataloader_workers()
         pin_memory = bool(torch.cuda.is_available())
+        train_persistent_workers = workers > 0 and not self._dataset_requires_worker_restart(train_dataset)
+        val_persistent_workers = workers > 0 and not self._dataset_requires_worker_restart(val_dataset)
         train_loader_kwargs = {
             'batch_size': self.tranining_parameters.batch_size,
             'num_workers': workers,
             'pin_memory': pin_memory,
-            'persistent_workers': workers > 0,
+            'persistent_workers': train_persistent_workers,
         }
         val_loader_kwargs = {
             'batch_size': self.tranining_parameters.batch_size,
             'shuffle': False,
             'num_workers': workers,
             'pin_memory': pin_memory,
-            'persistent_workers': workers > 0,
+            'persistent_workers': val_persistent_workers,
         }
         if workers > 0:
             train_loader_kwargs['prefetch_factor'] = 2
@@ -706,6 +708,12 @@ class GeneralNeuralHandler:
         if self.tranining_parameters.batch_size <= 4:
             workers = min(workers, 2)
         return workers
+
+    @staticmethod
+    def _dataset_requires_worker_restart(dataset) -> bool:
+        if dataset is None:
+            return False
+        return callable(getattr(dataset, 'set_epoch', None))
 
     def _collect_matched_samples(
         self,

@@ -4,7 +4,8 @@ import pytest
 
 torch = pytest.importorskip('torch')
 
-from lib.data_interfaces import SchedulerName, SchedulerParameters, WarmupParameters
+from lib.data_interfaces import OptimizerName, OptimizerParameters, SchedulerName, SchedulerParameters, WarmupParameters
+import model.NeuralNetwork.model_train_and_recognition as target
 from model.NeuralNetwork.model_train_and_recognition import TrainerProcess, _RunContext, _TrainLoopStrides
 
 
@@ -28,10 +29,14 @@ class _FakeScheduler:
 
 def _build_trainer(
     *,
+    model: torch.nn.Module | None = None,
+    optimizer_params: OptimizerParameters | None = None,
     scheduler_params: SchedulerParameters | None = None,
     warmup_params: WarmupParameters | None = None,
 ) -> TrainerProcess:
     trainer = TrainerProcess.__new__(TrainerProcess)
+    trainer._model = model or torch.nn.Linear(4, 2)
+    trainer._optimizer_params = optimizer_params or OptimizerParameters()
     trainer._scheduler_params = scheduler_params or SchedulerParameters()
     trainer._warmup_params = warmup_params or WarmupParameters()
     trainer._epochs = 5
@@ -148,3 +153,55 @@ def test_step_epoch_scheduler_uses_validation_loss_then_train_loss_fallback():
     )
 
     assert plateau_scheduler.calls == [0.4, 0.9]
+
+
+def test_create_adamw_muon_optimizer_falls_back_when_module_lookup_raises(monkeypatch):
+    trainer = _build_trainer(
+        optimizer_params=OptimizerParameters(
+            name=OptimizerName.adamw_muon,
+            learning_rate=3e-4,
+            weight_decay=2e-2,
+        ),
+    )
+
+    def _raise_missing_spec(module_name):
+        raise ModuleNotFoundError(f"No module named '{module_name}'")
+
+    monkeypatch.setattr(target.optim, 'Muon', None, raising=False)
+    monkeypatch.setattr(target.importlib.util, 'find_spec', _raise_missing_spec)
+
+    optimizer = trainer._create_optimizer()
+
+    assert isinstance(optimizer, torch.optim.AdamW)
+    assert any('Muon optimizer is unavailable. Using AdamW.' in str(message[1]) for message in trainer._bus.messages)
+
+
+def test_create_adamw_muon_optimizer_prefers_native_torch_muon():
+    trainer = _build_trainer(
+        model=torch.nn.Linear(4, 2, bias=False),
+        optimizer_params=OptimizerParameters(
+            name=OptimizerName.adamw_muon,
+            learning_rate=3e-4,
+            weight_decay=2e-2,
+        ),
+    )
+
+    optimizer = trainer._create_optimizer()
+
+    assert isinstance(optimizer, torch.optim.Muon)
+
+
+def test_create_adamw_muon_optimizer_falls_back_for_non_2d_model_params():
+    trainer = _build_trainer(
+        model=torch.nn.Conv2d(3, 8, 3),
+        optimizer_params=OptimizerParameters(
+            name=OptimizerName.adamw_muon,
+            learning_rate=3e-4,
+            weight_decay=2e-2,
+        ),
+    )
+
+    optimizer = trainer._create_optimizer()
+
+    assert isinstance(optimizer, torch.optim.AdamW)
+    assert any('Muon optimizer initialization failed (Muon only supports 2D parameters' in str(message[1]) for message in trainer._bus.messages)

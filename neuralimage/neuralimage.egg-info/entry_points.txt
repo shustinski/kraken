@@ -1,0 +1,4 @@
+[console_scripts]
+neuralimage = main:main
+neuralimage-config = main_code_version:main
+neuralimage-manage = manage:main

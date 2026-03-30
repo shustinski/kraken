@@ -2,7 +2,6 @@
 import multiprocessing as mp
 import gc
 import os
-import subprocess
 import threading
 import webbrowser
 from dataclasses import replace
@@ -52,6 +51,7 @@ from lib.update_checker import (
     download_update_installer,
     fetch_update_info,
     is_newer_version,
+    launch_update_installer,
     load_last_notified_version,
     load_update_manifest_url,
     save_last_notified_version,
@@ -1697,7 +1697,7 @@ class MainPresenter(QObject):
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
-            subprocess.Popen([installer_path], close_fds=True)
+            launch_update_installer(installer_path)
         except OSError as exc:
             self._on_update_download_failed(str(exc))
             return

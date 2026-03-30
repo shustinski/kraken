@@ -62,7 +62,7 @@ def _sample_artifact_parameters(artifact_type: str, patch_scale: float) -> dict[
         return {
             'n_blobs': (3, 7),
             'n_blobs_range': (3, 7),
-            'radius_range': _scaled_range(patch_scale, 7.0, 20.0, min_low=2.0, min_high=4.0),
+            'radius_range': _scaled_range(patch_scale, 10.0, 28.0, min_low=3.0, min_high=6.0),
             'elongation': (0.7, 1.3),
             'threshold': (0.23, 0.33),
             'threshold_range': (0.23, 0.33),
@@ -158,7 +158,7 @@ def _sample_artifact_parameters(artifact_type: str, patch_scale: float) -> dict[
         return {
             'n_blobs': (2, 5),
             'n_blobs_range': (2, 5),
-            'radius_range': _scaled_range(patch_scale, 14.0, 40.0, min_low=5.0, min_high=10.0),
+            'radius_range': _scaled_range(patch_scale, 18.0, 54.0, min_low=7.0, min_high=14.0),
             'elongation': (0.8, 2.0),
             'threshold': (0.24, 0.35),
             'threshold_range': (0.24, 0.35),

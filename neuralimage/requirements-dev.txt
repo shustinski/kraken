@@ -1,6 +1,7 @@
 ﻿# Runtime dependencies used across source modules
 numpy>=1.26
 Pillow>=10.0
+opencv-python>=4.8
 sympy>=1.12
 PyQt6>=6.6
 pyqtgraph>=0.13

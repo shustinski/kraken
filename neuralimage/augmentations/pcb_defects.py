@@ -76,21 +76,29 @@ class PCBDefectAugmentor:
         *,
         seed: int | None = None,
         return_debug: bool = False,
+        return_augmented_mask: bool = False,
     ):
         """Apply one or more PCB defects."""
 
         normalized_image, image_format = self._prepare_image(image)
         normalized_mask, mask_format = self._prepare_mask(mask)
+        source_mask_u8 = self._resolve_source_mask_u8(
+            normalized_image,
+            normalized_mask,
+            mask_format=mask_format,
+        )
 
         if not self.config.enabled:
-            empty_mask = np.zeros(normalized_image.shape[:2], dtype=np.uint8)
+            empty_mask = np.zeros_like(source_mask_u8, dtype=np.uint8)
             return self._finalize_outputs(
                 normalized_image,
                 normalized_image.copy(),
                 empty_mask,
+                source_mask_u8,
                 image_format=image_format,
                 mask_format=mask_format,
                 return_debug=return_debug,
+                return_augmented_mask=return_augmented_mask,
             )
 
         if cv2 is None:
@@ -108,9 +116,11 @@ class PCBDefectAugmentor:
                 normalized_image,
                 normalized_image.copy(),
                 np.zeros_like(original_copper_u8, dtype=np.uint8),
+                original_copper_u8,
                 image_format=image_format,
                 mask_format=mask_format,
                 return_debug=return_debug,
+                return_augmented_mask=return_augmented_mask,
             )
 
         if float(rng.random()) >= float(self.config.defect_probability):
@@ -118,9 +128,11 @@ class PCBDefectAugmentor:
                 normalized_image,
                 normalized_image.copy(),
                 np.zeros_like(original_copper_u8, dtype=np.uint8),
+                original_copper_u8,
                 image_format=image_format,
                 mask_format=mask_format,
                 return_debug=return_debug,
+                return_augmented_mask=return_augmented_mask,
             )
 
         augmented_copper = original_copper_u8.copy()
@@ -169,10 +181,48 @@ class PCBDefectAugmentor:
             normalized_image,
             augmented_image,
             defect_mask,
+            augmented_copper,
             image_format=image_format,
             mask_format=mask_format,
             return_debug=return_debug,
+            return_augmented_mask=return_augmented_mask,
         )
+
+    def _severity_for(self, defect_name: str) -> float:
+        return float(
+            min(
+                max(float(self.config.defect_severities.get(defect_name, 0.5)), 0.0),
+                1.0,
+            )
+        )
+
+    def _scaled_int_value(self, value_range: tuple[int, int], severity: float, *, minimum: int = 1) -> int:
+        low = max(int(minimum), int(value_range[0]))
+        high = max(low, int(value_range[1]))
+        if high <= low:
+            return low
+        resolved = low + int(round((high - low) * float(severity)))
+        return max(low, min(high, resolved))
+
+    def _scaled_float_value(self, value_range: tuple[float, float], severity: float, *, minimum: float = 0.0) -> float:
+        low = max(float(minimum), float(value_range[0]))
+        high = max(low, float(value_range[1]))
+        if high <= low:
+            return low
+        return low + ((high - low) * float(severity))
+
+    def _resolve_source_mask_u8(
+        self,
+        image_hwc: np.ndarray,
+        mask_hwc: np.ndarray | None,
+        *,
+        mask_format: _ArrayFormat | None,
+    ) -> np.ndarray:
+        if mask_hwc is not None:
+            return self._to_u8_mask(np.max(mask_hwc, axis=2) > 0.5)
+        if cv2 is None:
+            return np.zeros(image_hwc.shape[:2], dtype=np.uint8)
+        return self._to_u8_mask(self._resolve_copper_mask(image_hwc, None))
 
     @staticmethod
     def _prepare_image(image: np.ndarray) -> tuple[np.ndarray, _ArrayFormat]:
@@ -292,10 +342,12 @@ class PCBDefectAugmentor:
         original_image: np.ndarray,
         augmented_image: np.ndarray,
         defect_mask_u8: np.ndarray,
+        augmented_mask_u8: np.ndarray,
         *,
         image_format: _ArrayFormat,
         mask_format: _ArrayFormat | None,
         return_debug: bool,
+        return_augmented_mask: bool,
     ):
         restored_original = self._restore_image(original_image, image_format)
         restored_augmented = self._restore_image(augmented_image, image_format)
@@ -304,8 +356,17 @@ class PCBDefectAugmentor:
             image_format=image_format,
             mask_format=mask_format,
         )
+        restored_augmented_mask = self._restore_mask(
+            augmented_mask_u8,
+            image_format=image_format,
+            mask_format=mask_format,
+        )
         if return_debug:
+            if return_augmented_mask:
+                return restored_original, restored_augmented, restored_mask, restored_augmented_mask
             return restored_original, restored_augmented, restored_mask
+        if return_augmented_mask:
+            return restored_augmented, restored_mask, restored_augmented_mask
         return restored_augmented, restored_mask
 
     def _iter_defect_attempt_order(self, rng: np.random.Generator) -> tuple[str, ...]:
@@ -455,6 +516,7 @@ class PCBDefectAugmentor:
         mask_u8: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray | None:
+        severity = self._severity_for('break')
         distance = cv2.distanceTransform(mask_u8, cv2.DIST_L2, 3)
         candidate = (mask_u8 > 0) & (distance >= 1.0)
         point = self._random_coordinate(candidate, rng)
@@ -467,12 +529,7 @@ class PCBDefectAugmentor:
             point,
             radius=max(4, int(round(local_half_width * 3.0))),
         )
-        gap_width = int(
-            rng.integers(
-                int(self.config.break_width_range[0]),
-                int(self.config.break_width_range[1]) + 1,
-            )
-        )
+        gap_width = self._scaled_int_value(self.config.break_width_range, severity)
         remove_mask = np.zeros_like(mask_u8)
         self._draw_rotated_rectangle(
             remove_mask,
@@ -490,66 +547,83 @@ class PCBDefectAugmentor:
         mask_u8: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray | None:
+        severity = self._severity_for('short')
         component_count, labels = cv2.connectedComponents(mask_u8, connectivity=8)
         if component_count <= 2:
             return None
-        max_distance = int(self.config.short_bridge_distance_range[1])
-        min_distance = int(self.config.short_bridge_distance_range[0])
-        background_distance = cv2.distanceTransform((mask_u8 == 0).astype(np.uint8), cv2.DIST_L2, 3)
-        candidate = (
-            (mask_u8 == 0)
-            & (background_distance >= max(1, min_distance // 2))
-            & (background_distance <= max_distance)
-        )
-        for _ in range(max(6, int(self.config.max_attempts_per_defect))):
-            point = self._random_coordinate(candidate, rng)
-            if point is None:
-                return None
-            center_x, center_y = point
-            x1 = max(0, center_x - max_distance - 1)
-            y1 = max(0, center_y - max_distance - 1)
-            x2 = min(mask_u8.shape[1], center_x + max_distance + 2)
-            y2 = min(mask_u8.shape[0], center_y + max_distance + 2)
-            local_labels = labels[y1:y2, x1:x2]
-            unique_components = np.unique(local_labels[local_labels > 0])
-            if unique_components.size < 2:
-                continue
+        min_distance = max(1, int(self.config.short_bridge_distance_range[0]))
+        max_distance = self._scaled_int_value(self.config.short_bridge_distance_range, severity, minimum=min_distance)
+        bridge_points = self._find_short_bridge_points(labels, min_distance=min_distance, max_distance=max_distance)
+        if bridge_points is None:
+            return None
+        (first_x, first_y), (second_x, second_y) = bridge_points
+        bridge = np.zeros_like(mask_u8)
+        thickness = max(1, 1 + int(round(severity * 3.0)))
+        cv2.line(bridge, (first_x, first_y), (second_x, second_y), 255, thickness=thickness)
+        updated = cv2.bitwise_or(mask_u8, bridge)
+        if np.count_nonzero(updated != mask_u8) > 0:
+            return updated
+        return None
 
-            endpoints: list[tuple[float, int, int, int]] = []
-            for component_id in unique_components:
-                coords = np.argwhere(local_labels == component_id)
-                if coords.size == 0:
-                    continue
-                global_coords = coords + np.asarray([[y1, x1]], dtype=np.int32)
-                distances = (
-                    (global_coords[:, 0] - center_y) ** 2
-                    + (global_coords[:, 1] - center_x) ** 2
-                )
-                nearest_index = int(np.argmin(distances))
-                nearest_y = int(global_coords[nearest_index, 0])
-                nearest_x = int(global_coords[nearest_index, 1])
-                endpoints.append((
-                    float(math.sqrt(float(distances[nearest_index]))),
-                    int(component_id),
-                    nearest_x,
-                    nearest_y,
-                ))
+    def _find_short_bridge_points(
+        self,
+        labels: np.ndarray,
+        *,
+        min_distance: int,
+        max_distance: int,
+    ) -> tuple[tuple[int, int], tuple[int, int]] | None:
+        component_ids = [int(component_id) for component_id in np.unique(labels) if int(component_id) > 0]
+        if len(component_ids) < 2:
+            return None
+        edge_mask = self._edge_mask(np.where(labels > 0, 255, 0).astype(np.uint8))
+        component_points: dict[int, np.ndarray] = {}
+        centroids: dict[int, tuple[float, float]] = {}
+        for component_id in component_ids:
+            component_mask = labels == component_id
+            coords = np.argwhere(component_mask & edge_mask)
+            if coords.shape[0] < 1:
+                coords = np.argwhere(component_mask)
+            if coords.shape[0] < 1:
+                continue
+            if coords.shape[0] > 192:
+                step = max(1, coords.shape[0] // 192)
+                coords = coords[::step]
+            component_points[component_id] = coords.astype(np.int32, copy=False)
+            centroids[component_id] = (
+                float(coords[:, 1].mean()),
+                float(coords[:, 0].mean()),
+            )
+        if len(component_points) < 2:
+            return None
 
-            if len(endpoints) < 2:
+        pair_order: list[tuple[float, int, int]] = []
+        valid_ids = list(component_points.keys())
+        for index, first_id in enumerate(valid_ids):
+            first_cx, first_cy = centroids[first_id]
+            for second_id in valid_ids[index + 1:]:
+                second_cx, second_cy = centroids[second_id]
+                centroid_distance = math.hypot(first_cx - second_cx, first_cy - second_cy)
+                pair_order.append((centroid_distance, first_id, second_id))
+        pair_order.sort(key=lambda item: item[0])
+
+        max_distance_sq = float(max_distance * max_distance)
+        min_distance_sq = float(min_distance * min_distance)
+        for _centroid_distance, first_id, second_id in pair_order[: max(1, min(24, len(pair_order)))]:
+            first_points = component_points[first_id].astype(np.float32, copy=False)
+            second_points = component_points[second_id].astype(np.float32, copy=False)
+            delta = first_points[:, None, :] - second_points[None, :, :]
+            distance_sq = np.sum(delta * delta, axis=2)
+            valid_mask = (distance_sq >= min_distance_sq) & (distance_sq <= max_distance_sq)
+            if not np.any(valid_mask):
                 continue
-            endpoints.sort(key=lambda item: item[0])
-            (_, first_id, first_x, first_y), (_, second_id, second_x, second_y) = endpoints[:2]
-            if first_id == second_id:
-                continue
-            endpoint_distance = math.hypot(float(first_x - second_x), float(first_y - second_y))
-            if endpoint_distance < float(min_distance) or endpoint_distance > float(max_distance * 1.5):
-                continue
-            bridge = np.zeros_like(mask_u8)
-            thickness = int(rng.integers(1, 4))
-            cv2.line(bridge, (first_x, first_y), (second_x, second_y), 255, thickness=thickness)
-            updated = cv2.bitwise_or(mask_u8, bridge)
-            if np.count_nonzero(updated != mask_u8) > 0:
-                return updated
+            valid_indices = np.argwhere(valid_mask)
+            best_index = valid_indices[int(np.argmin(distance_sq[valid_mask]))]
+            first_point = first_points[int(best_index[0])]
+            second_point = second_points[int(best_index[1])]
+            return (
+                (int(first_point[1]), int(first_point[0])),
+                (int(second_point[1]), int(second_point[0])),
+            )
         return None
 
     def _apply_missing_copper_defect(
@@ -557,18 +631,14 @@ class PCBDefectAugmentor:
         mask_u8: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray | None:
+        severity = self._severity_for('missing_copper')
         edge = self._edge_mask(mask_u8)
         point = self._random_coordinate(edge, rng)
         if point is None:
             return None
         tangent_angle = self._estimate_local_orientation(mask_u8, point, radius=7)
         remove = np.zeros_like(mask_u8)
-        radius_x = int(
-            rng.integers(
-                int(self.config.missing_copper_radius_range[0]),
-                int(self.config.missing_copper_radius_range[1]) + 1,
-            )
-        )
+        radius_x = self._scaled_int_value(self.config.missing_copper_radius_range, severity)
         radius_y = max(1, int(round(radius_x * float(rng.uniform(0.5, 1.2)))))
         self._draw_irregular_blob(
             remove,
@@ -587,18 +657,14 @@ class PCBDefectAugmentor:
         mask_u8: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray | None:
+        severity = self._severity_for('excess_copper')
         edge = self._edge_mask(mask_u8)
         point = self._random_coordinate(edge, rng)
         if point is None:
             return None
         tangent_angle = self._estimate_local_orientation(mask_u8, point, radius=7)
         add = np.zeros_like(mask_u8)
-        radius_x = int(
-            rng.integers(
-                int(self.config.excess_copper_radius_range[0]),
-                int(self.config.excess_copper_radius_range[1]) + 1,
-            )
-        )
+        radius_x = self._scaled_int_value(self.config.excess_copper_radius_range, severity)
         radius_y = max(1, int(round(radius_x * float(rng.uniform(0.5, 1.1)))))
         self._draw_irregular_blob(
             add,
@@ -616,6 +682,7 @@ class PCBDefectAugmentor:
         mask_u8: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray | None:
+        severity = self._severity_for('pinhole')
         distance = cv2.distanceTransform(mask_u8, cv2.DIST_L2, 3)
         candidate = mask_u8 > 0
         point = self._random_coordinate(candidate, rng)
@@ -629,7 +696,8 @@ class PCBDefectAugmentor:
         min_radius = min(int(self.config.pinhole_radius_range[0]), max_radius)
         if max_radius < 1:
             return None
-        radius = int(rng.integers(max(1, min_radius), max_radius + 1))
+        requested_radius = self._scaled_int_value(self.config.pinhole_radius_range, severity)
+        radius = int(min(max_radius, max(max(1, min_radius), requested_radius)))
         updated = mask_u8.copy()
         cv2.circle(updated, point, radius, 0, thickness=-1)
         return updated if np.count_nonzero(updated != mask_u8) > 0 else None
@@ -639,19 +707,15 @@ class PCBDefectAugmentor:
         mask_u8: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray | None:
+        severity = self._severity_for('spurious_copper')
         background_distance = cv2.distanceTransform((mask_u8 == 0).astype(np.uint8), cv2.DIST_L2, 3)
-        min_sep = max(2, int(self.config.spurious_copper_radius_range[1]) + 1)
-        max_sep = min_sep + 6
+        radius = self._scaled_int_value(self.config.spurious_copper_radius_range, severity)
+        min_sep = max(2, radius + 1)
+        max_sep = min_sep + max(2, int(round(2.0 + (severity * 10.0))))
         candidate = (mask_u8 == 0) & (background_distance >= min_sep) & (background_distance <= max_sep)
         point = self._random_coordinate(candidate, rng)
         if point is None:
             return None
-        radius = int(
-            rng.integers(
-                int(self.config.spurious_copper_radius_range[0]),
-                int(self.config.spurious_copper_radius_range[1]) + 1,
-            )
-        )
         add = np.zeros_like(mask_u8)
         self._draw_irregular_blob(
             add,
@@ -672,6 +736,7 @@ class PCBDefectAugmentor:
         mask_u8: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray | None:
+        severity = self._severity_for('via')
         via_candidates = self._detect_via_holes(mask_u8)
         if not via_candidates:
             return None
@@ -680,9 +745,9 @@ class PCBDefectAugmentor:
         updated = mask_u8.copy()
 
         if mode == 'shift':
-            shift_min, shift_max = self.config.via_shift_range
-            dx = int(rng.integers(int(shift_min), int(shift_max) + 1))
-            dy = int(rng.integers(int(shift_min), int(shift_max) + 1))
+            shift_value = self._scaled_int_value(self.config.via_shift_range, severity)
+            dx = int(rng.integers(1, shift_value + 1))
+            dy = int(rng.integers(1, shift_value + 1))
             if rng.random() < 0.5:
                 dx *= -1
             if rng.random() < 0.5:
@@ -696,8 +761,7 @@ class PCBDefectAugmentor:
             )
             cv2.circle(updated, shifted_center, radius, 0, thickness=-1)
         elif mode == 'resize':
-            delta_min, delta_max = self.config.via_size_delta_range
-            delta = int(rng.integers(int(delta_min), int(delta_max) + 1))
+            delta = self._scaled_int_value(self.config.via_size_delta_range, severity)
             if rng.random() < 0.5:
                 delta *= -1
             updated[component_mask] = 255
@@ -722,23 +786,24 @@ class PCBDefectAugmentor:
         mask_u8: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray | None:
+        severity = self._severity_for('misalignment')
         foreground = mask_u8 > 0
         point = self._random_coordinate(foreground, rng)
         if point is None:
             return None
         image_h, image_w = mask_u8.shape
-        scale_min, scale_max = self.config.misalignment_roi_scale_range
-        roi_w = max(12, int(round(image_w * float(rng.uniform(scale_min, scale_max)))))
-        roi_h = max(12, int(round(image_h * float(rng.uniform(scale_min, scale_max)))))
+        roi_scale = self._scaled_float_value(self.config.misalignment_roi_scale_range, severity, minimum=0.05)
+        roi_w = max(12, int(round(image_w * roi_scale)))
+        roi_h = max(12, int(round(image_h * roi_scale)))
         center_x, center_y = point
         x1 = int(np.clip(center_x - roi_w // 2, 0, max(0, image_w - roi_w)))
         y1 = int(np.clip(center_y - roi_h // 2, 0, max(0, image_h - roi_h)))
         x2 = min(image_w, x1 + roi_w)
         y2 = min(image_h, y1 + roi_h)
 
-        shift_min, shift_max = self.config.misalignment_shift_range
-        dx = int(rng.integers(int(shift_min), int(shift_max) + 1))
-        dy = int(rng.integers(int(shift_min), int(shift_max) + 1))
+        shift_value = self._scaled_int_value(self.config.misalignment_shift_range, severity)
+        dx = int(rng.integers(1, shift_value + 1))
+        dy = int(rng.integers(1, shift_value + 1))
         if rng.random() < 0.5:
             dx *= -1
         if rng.random() < 0.5:

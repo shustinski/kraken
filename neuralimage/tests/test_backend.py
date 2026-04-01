@@ -39,6 +39,16 @@ def test_convert_polygon_to_polygon():
     assert status == 1
     assert polygon == [(1, 2), (3, 4)]
 
+    status, polygon = convert_polygon_to_polygon(['1', '2', '3', '1204;\n'])
+    assert status == 1
+    assert polygon == [(1, 2), (3, 1204)]
+
+
+def test_check_and_get_size_accepts_trailing_markers():
+    ok, size = check_and_get_size(['DS', 'S', '10', '20;\n'])
+    assert ok is True
+    assert size == (10, 20)
+
 
 def test_convert_box_to_polygon_and_ellipse():
     status, polygon = convert_box_to_polygon(['4', '2', '10', '20;;'])

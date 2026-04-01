@@ -16,9 +16,11 @@ import torch.nn.functional as F
 from multiprocessing.synchronize import Event as MpEvent
 from PIL import Image
 
+from lib.file_retry import retry_file_read
 from lib.image_processing import cut_image, sew_image
 from model.NeuralNetwork.model_io import load_model_artifact
 from model.NeuralNetwork.context_utils import build_context_batch
+from model.NeuralNetwork.blocks import extract_confidence_output, extract_mask_outputs
 
 
 Publisher = Callable[[str, Any], None]
@@ -39,6 +41,9 @@ class RecognitionWorkload:
     threshold: float | None
     postprocess_enabled: bool
     postprocess_kernel_size: int
+    recognition_tta_enabled: bool
+    confidence_tta_enabled: bool
+    confidence_save_mode: str
     devices: list[torch.device]
     model_source: str | Path
     use_context_branch: bool = False
@@ -200,6 +205,8 @@ def _run_predict_worker(
     gpu: torch.device,
     batch_size: int,
     stop_event: MpEvent,
+    recognition_tta_enabled: bool = False,
+    confidence_tta_enabled: bool = False,
     stop_token: str = '__STOP__',
 ) -> None:
     try:
@@ -210,6 +217,8 @@ def _run_predict_worker(
             gpu,
             batch_size,
             stop_event,
+            recognition_tta_enabled,
+            confidence_tta_enabled,
             stop_token,
         )
     except Exception:
@@ -226,6 +235,7 @@ def _run_sew_worker(
     stop_event: MpEvent,
     threshold: float | None = None,
     postprocess_kernel_size: int = 0,
+    confidence_save_mode: str = 'off',
     stop_token: str = '__STOP__',
 ) -> None:
     try:
@@ -237,6 +247,7 @@ def _run_sew_worker(
             stop_event,
             threshold,
             postprocess_kernel_size,
+            confidence_save_mode,
             stop_token,
         )
     except Exception:
@@ -370,6 +381,8 @@ class MultiprocessingRecognitionRunner:
                     device,
                     self._config.workload.batch_size,
                     self._stop_event,
+                    self._config.workload.recognition_tta_enabled,
+                    self._config.workload.confidence_tta_enabled,
                     self._config.stop_token,
                 ),
             )
@@ -396,6 +409,7 @@ class MultiprocessingRecognitionRunner:
                         if self._config.workload.threshold is not None and self._config.workload.postprocess_enabled
                         else 0
                     ),
+                    self._config.workload.confidence_save_mode,
                     self._config.stop_token,
                 ),
             )
@@ -457,6 +471,13 @@ class MultiprocessingRecognitionRunner:
         completed_item = _try_get_queue_item(queues.sewed, timeout=0.2)
         if completed_item is _QUEUE_EMPTY:
             return completed
+        if isinstance(completed_item, dict):
+            _publish_recognition_preview(
+                publish=self._publish,
+                source_path=completed_item.get('source_path'),
+                output_path=completed_item.get('output_path'),
+                frame_name=str(completed_item.get('name', '')).strip(),
+            )
         updated = completed + 1
         self._reporter.publish_frame(updated)
         return updated
@@ -534,6 +555,9 @@ def run_single_thread_recognition(
     threshold: float | None = None,
     postprocess_enabled: bool = False,
     postprocess_kernel_size: int = 3,
+    recognition_tta_enabled: bool = False,
+    confidence_tta_enabled: bool = False,
+    confidence_save_mode: str = 'off',
     use_context_branch: bool = False,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
@@ -559,7 +583,14 @@ def run_single_thread_recognition(
             context_crop_size=context_crop_size,
             context_input_size=context_input_size,
         )
-        predicted = gpu_predict(prepared, model, device, batch_size)
+        predicted = gpu_predict(
+            prepared,
+            model,
+            device,
+            batch_size,
+            recognition_tta_enabled=recognition_tta_enabled,
+            confidence_tta_enabled=confidence_tta_enabled,
+        )
         # Some torch.compile configurations can produce degenerate outputs on inference.
         if (not compile_fallback_checked) and hasattr(model, '_orig_mod'):
             compile_fallback_checked = True
@@ -580,7 +611,14 @@ def run_single_thread_recognition(
                 )
                 original_model.eval()
                 original_model.to(device)
-                fallback_predicted = gpu_predict(prepared, original_model, device, batch_size)
+                fallback_predicted = gpu_predict(
+                    prepared,
+                    original_model,
+                    device,
+                    batch_size,
+                    recognition_tta_enabled=recognition_tta_enabled,
+                    confidence_tta_enabled=confidence_tta_enabled,
+                )
                 fallback_stats = fallback_predicted.get('_prediction_stats')
                 fallback_max = (
                     float(fallback_stats.get('max', 0.0))
@@ -622,12 +660,19 @@ def run_single_thread_recognition(
                         '(max <= 0.05), resulting masks can look black.'
                     ),
                 )
-        sew(
+        output_path = sew(
             result_folder,
             predicted,
             jpeg_quality=jpeg_quality,
             threshold=(float(threshold) if binarize_output and threshold is not None else None),
             postprocess_kernel_size=(int(postprocess_kernel_size) if postprocess_enabled else 0),
+            confidence_save_mode=confidence_save_mode,
+        )
+        _publish_recognition_preview(
+            publish=publish,
+            source_path=image_path,
+            output_path=output_path,
+            frame_name=image_path.name,
         )
         reporter.publish_frame(index)
         _publish_memory_metrics(publish=publish, collect_memory_metrics=collect_memory_metrics)
@@ -689,11 +734,12 @@ def cut_image_prepare(
         'cutted_image': None,
         'context_image': None,
         'name': img_path.name,
+        'source_path': img_path,
     }
 
     Image.MAX_IMAGE_PIXELS = None
     channels = segment_size[0]
-    with Image.open(img_path) as source_image:
+    with retry_file_read(lambda: Image.open(img_path), path=img_path) as source_image:
         if source_image.mode != 'L' and channels == 1:
             source_image = source_image.convert('L')
         payload['baseim_size'] = source_image.size
@@ -717,7 +763,7 @@ def cut_image_prepare(
 
 def get_array_from_image(path: Path | str, channels: int) -> np.ndarray:
     Image.MAX_IMAGE_PIXELS = None
-    with Image.open(path) as source_image:
+    with retry_file_read(lambda: Image.open(path), path=path) as source_image:
         work_image = np.array(source_image).astype('float32')
     return _to_channel_first(work_image, channels=channels)
 
@@ -758,6 +804,8 @@ def imgpredict(
     gpu: torch.device,
     batch_size: int,
     stop_event: MpEvent,
+    recognition_tta_enabled: bool = False,
+    confidence_tta_enabled: bool = False,
     stop_token: str = '__STOP__',
 ) -> None:
     model = load_model_artifact(model_path, map_location='cpu')
@@ -774,15 +822,32 @@ def imgpredict(
             break
         restored = _restore_payload_array_from_multiprocessing(item, 'cutted_image')
         restored = _restore_payload_array_from_multiprocessing(restored, 'context_image')
-        predicted = gpu_predict(restored, model, gpu, batch_size)
+        predicted = gpu_predict(
+            restored,
+            model,
+            gpu,
+            batch_size,
+            recognition_tta_enabled=recognition_tta_enabled,
+            confidence_tta_enabled=confidence_tta_enabled,
+        )
         predicted.pop('cutted_image', None)
         predicted.pop('context_image', None)
         _store_payload_array_for_multiprocessing(predicted, 'predicted_image')
+        _store_payload_array_for_multiprocessing(predicted, 'confidence_image')
         predicted_queue.put(predicted)
 
 
-def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, batch_size: int) -> dict[str, Any]:
+def gpu_predict(
+    img: dict[str, Any],
+    model: nn.Module,
+    device: torch.device,
+    batch_size: int,
+    *,
+    recognition_tta_enabled: bool = False,
+    confidence_tta_enabled: bool = False,
+) -> dict[str, Any]:
     predicted_image = np.empty_like(img['cutted_image'])
+    confidence_image = np.empty_like(img['cutted_image'])
     parts_in_image = len(img['cutted_image'])
 
     source_batches = img['cutted_image']
@@ -810,7 +875,7 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
     processed_batches = 0
     non_finite_values = 0
     fp32_retries = 0
-    tta_flip = str(os.getenv('NEURALIMAGE_TTA_FLIP', '0')).strip().lower() in {'1', 'true', 'yes', 'on'}
+    tta_flip = bool(recognition_tta_enabled or confidence_tta_enabled)
     multiscale_values = str(os.getenv('NEURALIMAGE_MS_SCALES', '1.0')).strip()
     ms_scales: list[float] = []
     for token in multiscale_values.split(','):
@@ -827,23 +892,36 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
     if not ms_scales:
         ms_scales = [1.0]
 
-    def _predict_once(batch_tensor: torch.Tensor, context_batch_tensor: torch.Tensor | None = None) -> torch.Tensor:
+    def _extract_prediction_tensors(outputs: Any) -> tuple[torch.Tensor, torch.Tensor | None]:
+        mask_outputs = extract_mask_outputs(outputs)
+        if torch.is_tensor(mask_outputs):
+            primary = mask_outputs
+        elif isinstance(mask_outputs, (list, tuple)) and mask_outputs and torch.is_tensor(mask_outputs[0]):
+            primary = cast(torch.Tensor, mask_outputs[0])
+        else:
+            raise TypeError('Recognition model must return a tensor or a non-empty sequence of tensors.')
+        confidence = extract_confidence_output(outputs)
+        return primary, confidence
+
+    def _predict_once(
+        batch_tensor: torch.Tensor,
+        context_batch_tensor: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
             if context_batch_tensor is None:
-                return model(batch_tensor)
-            return model({'local_image': batch_tensor, 'context_image': context_batch_tensor})
+                return _extract_prediction_tensors(model(batch_tensor))
+            return _extract_prediction_tensors(model({'local_image': batch_tensor, 'context_image': context_batch_tensor}))
 
     def _predict_with_multi_scale_and_tta(
         batch_tensor: torch.Tensor,
         context_batch_tensor: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         base_h, base_w = int(batch_tensor.shape[-2]), int(batch_tensor.shape[-1])
-        logits_acc = torch.zeros(
-            (batch_tensor.shape[0], 1, base_h, base_w),
-            dtype=batch_tensor.dtype,
-            device=batch_tensor.device,
-        )
-        weight = 0.0
+        mask_acc = None
+        confidence_acc: torch.Tensor | None = None
+        confidence_from_mask_acc: torch.Tensor | None = None
+        mask_weight = 0.0
+        confidence_weight = 0.0
         for scale in ms_scales:
             if abs(scale - 1.0) < 1e-8:
                 scaled = batch_tensor
@@ -856,22 +934,69 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
                     mode='bilinear',
                     align_corners=False,
                 )
-            logits = _predict_once(scaled, context_batch_tensor)
+            logits, confidence_logits = _predict_once(scaled, context_batch_tensor)
             if logits.shape[-2:] != (base_h, base_w):
                 logits = F.interpolate(logits, size=(base_h, base_w), mode='bilinear', align_corners=False)
-            logits_acc += logits
-            weight += 1.0
+            if mask_acc is None:
+                mask_acc = torch.zeros_like(logits)
+            mask_acc += logits
+            mask_weight += 1.0
+            if confidence_logits is not None and confidence_logits.shape[-2:] != (base_h, base_w):
+                confidence_logits = F.interpolate(
+                    confidence_logits,
+                    size=(base_h, base_w),
+                    mode='bilinear',
+                    align_corners=False,
+                )
+            if confidence_logits is not None:
+                if confidence_acc is None:
+                    confidence_acc = torch.zeros_like(logits)
+                confidence_acc += confidence_logits
+            else:
+                if confidence_from_mask_acc is None:
+                    confidence_from_mask_acc = torch.zeros_like(logits)
+                confidence_from_mask_acc += logits
+            confidence_weight += 1.0
             if tta_flip:
                 flipped_context = None
                 if context_batch_tensor is not None:
                     flipped_context = torch.flip(context_batch_tensor, dims=[-1])
-                logits_h = _predict_once(torch.flip(scaled, dims=[-1]), flipped_context)
+                logits_h, confidence_h = _predict_once(torch.flip(scaled, dims=[-1]), flipped_context)
                 logits_h = torch.flip(logits_h, dims=[-1])
                 if logits_h.shape[-2:] != (base_h, base_w):
                     logits_h = F.interpolate(logits_h, size=(base_h, base_w), mode='bilinear', align_corners=False)
-                logits_acc += logits_h
-                weight += 1.0
-        return logits_acc / max(weight, 1.0)
+                if bool(recognition_tta_enabled):
+                    mask_acc += logits_h
+                    mask_weight += 1.0
+                if confidence_h is not None:
+                    confidence_h = torch.flip(confidence_h, dims=[-1])
+                    if confidence_h.shape[-2:] != (base_h, base_w):
+                        confidence_h = F.interpolate(
+                            confidence_h,
+                            size=(base_h, base_w),
+                            mode='bilinear',
+                            align_corners=False,
+                        )
+                if bool(confidence_tta_enabled):
+                    if confidence_h is not None:
+                        if confidence_acc is None:
+                            confidence_acc = torch.zeros_like(logits_h)
+                        confidence_acc += confidence_h
+                    else:
+                        if confidence_from_mask_acc is None:
+                            confidence_from_mask_acc = torch.zeros_like(logits_h)
+                        confidence_from_mask_acc += logits_h
+                    confidence_weight += 1.0
+        if mask_acc is None:
+            raise RuntimeError('Recognition TTA accumulator is empty.')
+        averaged_mask = mask_acc / max(mask_weight, 1.0)
+        if confidence_acc is not None:
+            averaged_confidence = confidence_acc / max(confidence_weight, 1.0)
+        elif confidence_from_mask_acc is not None:
+            averaged_confidence = confidence_from_mask_acc / max(confidence_weight, 1.0)
+        else:
+            averaged_confidence = None
+        return averaged_mask, averaged_confidence
 
     with torch.inference_mode():
         for batch_index, start in enumerate(range(0, parts_in_image, batch_size)):
@@ -880,18 +1005,20 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
             context_batch = None
             if context_tensor_data is not None:
                 context_batch = context_tensor_data[start:end].to(device, non_blocking=use_amp)
-            outputs = _predict_with_multi_scale_and_tta(batch, context_batch)
+            outputs, confidence_outputs = _predict_with_multi_scale_and_tta(batch, context_batch)
 
             if not bool(torch.isfinite(outputs).all()):
                 fp32_retries += 1
                 if context_batch is None:
-                    outputs = model(batch.float())
+                    outputs, confidence_outputs = _extract_prediction_tensors(model(batch.float()))
                 else:
-                    outputs = model(
-                        {
-                            'local_image': batch.float(),
-                            'context_image': context_batch.float(),
-                        }
+                    outputs, confidence_outputs = _extract_prediction_tensors(
+                        model(
+                            {
+                                'local_image': batch.float(),
+                                'context_image': context_batch.float(),
+                            }
+                        )
                     )
 
             finite_mask = torch.isfinite(outputs)
@@ -904,8 +1031,16 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
                 finite_after_sigmoid = torch.isfinite(outputs)
                 non_finite_values += int((~finite_after_sigmoid).sum().item())
                 outputs = torch.nan_to_num(outputs, nan=0.0, posinf=1.0, neginf=0.0)
+            if confidence_outputs is None:
+                confidence_outputs = 1.0 - (torch.abs(outputs - 0.5) * 2.0)
+            else:
+                confidence_outputs = torch.sigmoid(confidence_outputs)
+            if not bool(torch.isfinite(confidence_outputs).all()):
+                confidence_outputs = torch.nan_to_num(confidence_outputs, nan=0.0, posinf=1.0, neginf=0.0)
+            confidence_outputs = torch.clamp(confidence_outputs, min=0.0, max=1.0)
 
             predictions = outputs.detach().cpu().numpy()
+            confidence_predictions = confidence_outputs.detach().cpu().numpy()
             batch_min = float(np.min(predictions))
             batch_max = float(np.max(predictions))
             batch_mean = float(np.mean(predictions))
@@ -914,8 +1049,10 @@ def gpu_predict(img: dict[str, Any], model: nn.Module, device: torch.device, bat
             mean_acc += batch_mean
             processed_batches += 1
             predicted_image[start:end] = predictions[: end - start]
+            confidence_image[start:end] = confidence_predictions[: end - start]
 
     img['predicted_image'] = predicted_image
+    img['confidence_image'] = confidence_image
     if processed_batches > 0:
         img['_prediction_stats'] = {
             'min': float(min_prob),
@@ -949,6 +1086,7 @@ def imgsew(
     stop_event: MpEvent,
     threshold: float | None = None,
     postprocess_kernel_size: int = 0,
+    confidence_save_mode: str = 'off',
     stop_token: str = '__STOP__',
 ) -> None:
     while not stop_event.is_set():
@@ -958,14 +1096,22 @@ def imgsew(
         if item == stop_token:
             break
         restored_item = _restore_payload_array_from_multiprocessing(item, 'predicted_image')
-        sew(
+        restored_item = _restore_payload_array_from_multiprocessing(restored_item, 'confidence_image')
+        output_path = sew(
             output_dir,
             restored_item,
             jpeg_quality=jpeg_quality,
             threshold=threshold,
             postprocess_kernel_size=postprocess_kernel_size,
+            confidence_save_mode=confidence_save_mode,
         )
-        sewed_queue.put(restored_item['name'])
+        sewed_queue.put(
+            {
+                'name': restored_item['name'],
+                'source_path': restored_item.get('source_path'),
+                'output_path': output_path,
+            }
+        )
 
 
 def sew_from_queue(
@@ -975,18 +1121,26 @@ def sew_from_queue(
     jpeg_quality: int = 95,
     threshold: float | None = None,
     postprocess_kernel_size: int = 0,
+    confidence_save_mode: str = 'off',
 ) -> None:
     item = _try_get_queue_item(sew_queue, timeout=0.2)
     if item is _QUEUE_EMPTY:
         return
-    sew(
+    output_path = sew(
         output_dir,
         item,
         jpeg_quality=jpeg_quality,
         threshold=threshold,
         postprocess_kernel_size=postprocess_kernel_size,
+        confidence_save_mode=confidence_save_mode,
     )
-    sewed_queue.put(item['name'])
+    sewed_queue.put(
+        {
+            'name': item['name'],
+            'source_path': item.get('source_path'),
+            'output_path': output_path,
+        }
+    )
 
 
 def sew(
@@ -996,7 +1150,8 @@ def sew(
     *,
     threshold: float | None = None,
     postprocess_kernel_size: int = 0,
-) -> None:
+    confidence_save_mode: str = 'off',
+) -> Path:
     output_name = '.'.join(item['name'].split('.')[:-1]) + '.jpg'
     output_path = os.path.join(str(save_dir), output_name)
     image = cast(
@@ -1011,6 +1166,71 @@ def sew(
     )
     quality = max(1, min(100, int(jpeg_quality)))
     image.save(output_path, format='JPEG', quality=quality)
+    if str(confidence_save_mode).strip().lower() != 'separate_grayscale':
+        return Path(output_path)
+    confidence_predictions = item.get('confidence_image')
+    if confidence_predictions is None:
+        return Path(output_path)
+    confidence_name = '.'.join(item['name'].split('.')[:-1]) + '_confidence.jpg'
+    confidence_path = os.path.join(str(save_dir), confidence_name)
+    confidence_image = cast(
+        Image.Image,
+        sew_image(
+            base_image=item['baseim_size'],
+            predictions=confidence_predictions,
+            overlap=item['overlap'],
+            threshold=None,
+            postprocess_kernel_size=0,
+        ),
+    )
+    confidence_image.save(confidence_path, format='JPEG', quality=quality)
+    return Path(output_path)
+
+
+def _load_preview_array(path: Path | str | None) -> np.ndarray | None:
+    if path is None:
+        return None
+    try:
+        with retry_file_read(lambda: Image.open(path), path=path) as source_image:
+            if source_image.mode == 'L':
+                preview_image = source_image.copy()
+            elif source_image.mode == 'RGB':
+                preview_image = source_image.copy()
+            else:
+                preview_image = source_image.convert('RGB')
+    except Exception:
+        return None
+
+    preview_array = np.asarray(preview_image)
+    if preview_array.ndim == 2:
+        return np.ascontiguousarray(preview_array.astype(np.uint8, copy=False))
+    if preview_array.ndim == 3 and preview_array.shape[2] >= 3:
+        if preview_array.shape[2] != 3:
+            preview_array = preview_array[:, :, :3]
+        return np.ascontiguousarray(preview_array.astype(np.uint8, copy=False))
+    return None
+
+
+def _publish_recognition_preview(
+    *,
+    publish: Publisher,
+    source_path: Path | str | None,
+    output_path: Path | str | None,
+    frame_name: str,
+) -> None:
+    original_image = _load_preview_array(source_path)
+    output_image = _load_preview_array(output_path)
+    if original_image is None and output_image is None:
+        return
+    publish(
+        'metrics',
+        {
+            'type': 'recognition_preview',
+            'sample_name': str(frame_name).strip(),
+            'image': original_image,
+            'outputs': output_image,
+        },
+    )
 
 
 def _store_payload_array_for_multiprocessing(payload: dict[str, Any], key: str) -> None:

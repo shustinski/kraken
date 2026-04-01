@@ -93,6 +93,8 @@ class CutImageThread(threading.Thread):
                 self.setting.segment_size,
                 self.setting.horizontal_rotation,
                 self.setting.vertical_rotation,
+                bool(getattr(self.setting, 'flip_x', False)),
+                bool(getattr(self.setting, 'flip_y', False)),
                 self.setting.step,
             )
 

@@ -19,6 +19,8 @@ class SettingsState:
     step: int = 100
     vertical_rotation: bool = True
     horizontal_rotation: bool = True
+    flip_x: bool = False
+    flip_y: bool = False
     additional_augmentation: bool = False
     augmentation_brightness_strength: float = 0.1
     augmentation_contrast_strength: float = 0.1
@@ -59,6 +61,9 @@ class SettingsState:
     recognition_threshold: float = 0.5
     recognition_postprocess: bool = False
     recognition_postprocess_kernel_size: int = 3
+    recognition_tta_enabled: bool = False
+    confidence_tta_enabled: bool = False
+    confidence_save_mode: str = 'off'
     crop_enabled: bool = False
     resize_enabled: bool = False
     edge_cut_size: int = 0
@@ -129,5 +134,7 @@ class SettingsState:
     context_branch_channels: tuple[int, ...] = (16, 32, 64, 128)
     fusion_type: str = 'concat'
     use_context_branch: bool | None = None
+    deep_supervision: bool = True
+    synthetic_defect_generator: dict[str, Any] = field(default_factory=dict)
     tech_aug: dict[str, Any] = field(default_factory=dict)
     pcb_defects: dict[str, Any] = field(default_factory=dict)

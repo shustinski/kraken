@@ -3,7 +3,9 @@ from pathlib import Path
 from application.dto import MainWindowState, SettingsState
 from lib.data_interfaces import (
     build_pcb_defect_parameters,
+    build_synthetic_defect_generator_parameters,
     build_tech_augmentation_config,
+    normalize_confidence_save_mode,
     CutoutParameters,
     EarlyStoppingParameters,
     HardMiningParameters,
@@ -77,6 +79,8 @@ def build_workflow_parameters(
         vertical_rotation=settings.vertical_rotation,
         horizontal_rotation=settings.horizontal_rotation,
         channels=channels,
+        flip_x=bool(getattr(settings, 'flip_x', False)),
+        flip_y=bool(getattr(settings, 'flip_y', False)),
         additional_augmentation=settings.additional_augmentation,
         augmentation_brightness_strength=settings.augmentation_brightness_strength,
         augmentation_contrast_strength=settings.augmentation_contrast_strength,
@@ -93,6 +97,12 @@ def build_workflow_parameters(
         scale_augmentation=bool(getattr(settings, 'scale_augmentation', False)),
         scale_augmentation_strength=float(getattr(settings, 'scale_augmentation_strength', 0.2)),
         tech_aug=build_tech_augmentation_config(getattr(settings, 'tech_aug', None)),
+    )
+    raw_synthetic_defect_generator = getattr(settings, 'synthetic_defect_generator', None)
+    if not raw_synthetic_defect_generator:
+        raw_synthetic_defect_generator = getattr(settings, 'pcb_defects', None)
+    synthetic_defect_generator = build_synthetic_defect_generator_parameters(
+        raw_synthetic_defect_generator
     )
 
     try:
@@ -113,6 +123,11 @@ def build_workflow_parameters(
         getattr(settings, 'multi_gpu_mode', ''),
         use_multi_gpu_fallback=bool(getattr(settings, 'use_multi_gpu', False)),
     )
+
+    pcb_defects = build_pcb_defect_parameters(
+        getattr(settings, 'pcb_defects', None) or synthetic_defect_generator.pcb_defects
+    )
+    pcb_defects.use_defect_mask_as_label = False
 
     training = TrainingParameters(
         image_path=Path(main_window.sample_folder),
@@ -238,8 +253,10 @@ def build_workflow_parameters(
         context_branch_channels=tuple(getattr(settings, 'context_branch_channels', (16, 32, 64, 128))),
         fusion_type=str(getattr(settings, 'fusion_type', 'concat')),
         use_context_branch=bool(requested_context_branch),
+        deep_supervision=bool(getattr(settings, 'deep_supervision', True)),
         dataloader_num_workers=int(getattr(settings, 'dataloader_num_workers', -1)),
-        pcb_defects=build_pcb_defect_parameters(getattr(settings, 'pcb_defects', None)),
+        pcb_defects=pcb_defects,
+        synthetic_defect_generator=synthetic_defect_generator,
     )
 
     recognition = RecognitionParameters(
@@ -265,6 +282,11 @@ def build_workflow_parameters(
         postprocess_kernel_size=max(
             1,
             int(getattr(settings, 'recognition_postprocess_kernel_size', 3)),
+        ),
+        recognition_tta_enabled=bool(getattr(settings, 'recognition_tta_enabled', False)),
+        confidence_tta_enabled=bool(getattr(settings, 'confidence_tta_enabled', False)),
+        confidence_save_mode=normalize_confidence_save_mode(
+            getattr(settings, 'confidence_save_mode', 'off')
         ),
         use_context_branch=(
             bool(requested_context_branch)

@@ -6,15 +6,35 @@ build-backend = "setuptools.build_meta"
 name = "neuralimage"
 dynamic = ["version"]
 description = "Desktop and web tooling for neural IC image segmentation, training, and recognition."
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "numpy>=1.26",
     "Pillow>=10.0",
     "PyQt6>=6.6",
     "pyqtgraph>=0.13",
     "opencv-python>=4.8",
+    "torch==2.8.0+cu128",
+    "torchvision==0.23.0+cu128",
     "timm>=1.0",
 ]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[tool.uv]
+ environments = [
+     "sys_platform == 'win32' or sys_platform == 'linux'",
+ ]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [project.optional-dependencies]
 web = [

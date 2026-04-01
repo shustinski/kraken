@@ -7,8 +7,13 @@ from typing import Iterable
 import numpy as np
 from PIL import Image, ImageDraw
 
+ERROR_CIF_SIZE_NOT_FOUND = 'Не могу найти строку с размером кадра в cif файле'
+ERROR_CIF_PARSE = 'Ошибка в cif файле'
+
 
 def make_lines_splitted(lines: list[str], sep: str) -> list[list[str]]:
+    if sep.isspace() or sep == ' ':
+        return [line.split() for line in lines]
     return [line.split(sep) for line in lines]
 
 
@@ -27,7 +32,7 @@ def cif_to_jpg(cif_file) -> Image.Image | tuple[int, str]:
     cif_splitted = make_lines_splitted(cif_lines, ' ')
     is_size_line_contains, size = find_size(cif_splitted)
     if not is_size_line_contains:
-        return 0, 'Не могу найти строку с размером кадра в cif файле'
+        return 0, ERROR_CIF_SIZE_NOT_FOUND
 
     x_size, y_size = size
     image = Image.new('1', size, 0)
@@ -60,7 +65,7 @@ def cif_to_jpg(cif_file) -> Image.Image | tuple[int, str]:
 
 def check_and_get_size(cif_line: list[str]) -> tuple[bool, tuple[int, int] | list[int]]:
     size = [0, 0]
-    if len(cif_line) < 5:
+    if len(cif_line) < 4:
         return False, size
     if 'S' not in cif_line:
         return False, size
@@ -69,13 +74,11 @@ def check_and_get_size(cif_line: list[str]) -> tuple[bool, tuple[int, int] | lis
     if len(cif_line) < size_index + 3:
         return False, size
 
-    if not cif_line[size_index + 1].isdigit():
+    try:
+        x_size = _parse_cif_int(cif_line[size_index + 1])
+        y_size = _parse_cif_int(cif_line[size_index + 2])
+    except (TypeError, ValueError):
         return False, size
-    if not cif_line[size_index + 2].isdigit():
-        return False, size
-
-    x_size = int(cif_line[size_index + 1])
-    y_size = int(cif_line[size_index + 2])
     return True, (x_size, y_size)
 
 
@@ -83,38 +86,32 @@ def _strip_trailing_markers(value: str) -> str:
     return value.rstrip(';\n\r\t ')
 
 
+def _parse_cif_int(value: str) -> int:
+    normalized = _strip_trailing_markers(str(value or ''))
+    if not normalized:
+        raise ValueError('empty CIF integer token')
+    return int(normalized)
+
+
 def convert_polygon_to_polygon(polygon):
     image_polygon = []
     for i in range(0, len(polygon), 2):
-        x_coord = None
-        y_coord = None
         try:
-            x_coord = int(polygon[i])
-            y_coord = int(polygon[i + 1])
-        except ValueError:
-            try:
-                y_coord = int(_strip_trailing_markers(polygon[i + 1]))
-            except Exception:
-                return 0, 'Ошибка в cif файле'
-        except IndexError:
-            return 0, 'Ошибка в cif файле'
-        except TypeError:
-            return 1, image_polygon
-
-        if x_coord is not None and y_coord is not None:
-            image_polygon.append((x_coord, y_coord))
-        else:
-            return 0, 'Ошибка в cif файле'
+            x_coord = _parse_cif_int(polygon[i])
+            y_coord = _parse_cif_int(polygon[i + 1])
+        except (TypeError, ValueError, IndexError):
+            return 0, ERROR_CIF_PARSE
+        image_polygon.append((x_coord, y_coord))
 
     return 1, image_polygon
 
 
 def convert_box_to_polygon(box):
     try:
-        x_box_size = int(box[0])
-        y_box_size = int(box[1])
-        x_box_coord = int(box[2])
-        y_box_coord = int(_strip_trailing_markers(box[3]))
+        x_box_size = _parse_cif_int(box[0])
+        y_box_size = _parse_cif_int(box[1])
+        x_box_coord = _parse_cif_int(box[2])
+        y_box_coord = _parse_cif_int(box[3])
         box_polygon = [
             (x_box_coord, y_box_coord),
             (x_box_coord + x_box_size, y_box_coord),
@@ -123,15 +120,15 @@ def convert_box_to_polygon(box):
         ]
         return 1, box_polygon
     except (TypeError, IndexError, ValueError):
-        return 0, 'Ошибка в cif файле'
+        return 0, ERROR_CIF_PARSE
 
 
 def convert_box_to_ellipse(box, y_size):
     try:
-        x_box_size = int(box[0])
-        y_box_size = int(box[1])
-        x_box_coord = int(box[2])
-        y_box_coord = int(_strip_trailing_markers(box[3]))
+        x_box_size = _parse_cif_int(box[0])
+        y_box_size = _parse_cif_int(box[1])
+        x_box_coord = _parse_cif_int(box[2])
+        y_box_coord = _parse_cif_int(box[3])
         box_polygon = (
             int(x_box_coord - x_box_size / 2),
             y_size - int(y_box_coord + y_box_size / 2),
@@ -140,7 +137,7 @@ def convert_box_to_ellipse(box, y_size):
         )
         return 1, box_polygon
     except (TypeError, IndexError, ValueError):
-        return 0, 'Ошибка в cif файле'
+        return 0, ERROR_CIF_PARSE
 
 
 def frame_cut(
@@ -149,6 +146,8 @@ def frame_cut(
     segment_dimension: tuple[int, int],
     horizontal_rotation: bool,
     vertical_rotation: bool,
+    flip_x: bool,
+    flip_y: bool,
     cut_step: int,
 ):
     save_path = Path(save_path)
@@ -201,6 +200,16 @@ def frame_cut(
                     cropped_im.rotate(270).save(save_path / f'{file_name}_R270.jpg', 'JPEG')
                 if vertical_rotation:
                     cropped_im.rotate(180).save(save_path / f'{file_name}_R180.jpg', 'JPEG')
+                if flip_x:
+                    cropped_im.transpose(Image.Transpose.FLIP_TOP_BOTTOM).save(
+                        save_path / f'{file_name}_FX.jpg',
+                        'JPEG',
+                    )
+                if flip_y:
+                    cropped_im.transpose(Image.Transpose.FLIP_LEFT_RIGHT).save(
+                        save_path / f'{file_name}_FY.jpg',
+                        'JPEG',
+                    )
             col = 0
             row += 1
 
@@ -237,7 +246,15 @@ def create_json():
             json.dump(data, f, indent=4, ensure_ascii=False)
 
 
-def calculate_image_parts(path, crop_size, step, enable_vertical_rotation=False, enable_horizontal_rotation=False):
+def calculate_image_parts(
+    path,
+    crop_size,
+    step,
+    enable_vertical_rotation=False,
+    enable_horizontal_rotation=False,
+    enable_flip_x=False,
+    enable_flip_y=False,
+):
     frames_total = 0
     path = Path(path)
     files = [p for p in path.iterdir() if p.is_file()]
@@ -251,9 +268,16 @@ def calculate_image_parts(path, crop_size, step, enable_vertical_rotation=False,
         height_steps = int(im_height / crop_size[1]) + 1
         frames_in_frame = width_steps * height_steps
 
-        vertical_frames = frames_in_frame if enable_vertical_rotation else 0
-        horizontal_frames = 2 * frames_in_frame if enable_horizontal_rotation else 0
-        frames_in_frame += horizontal_frames + vertical_frames
+        transform_multiplier = 1
+        if enable_vertical_rotation:
+            transform_multiplier += 1
+        if enable_horizontal_rotation and int(crop_size[0]) == int(crop_size[1]):
+            transform_multiplier += 2
+        if enable_flip_x:
+            transform_multiplier += 1
+        if enable_flip_y:
+            transform_multiplier += 1
+        frames_in_frame *= transform_multiplier
 
         frames_by_frame[i] = frames_in_frame
         frames_total += frames_in_frame

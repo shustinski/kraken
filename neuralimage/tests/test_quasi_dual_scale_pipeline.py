@@ -59,7 +59,8 @@ def test_quasi_dual_scale_unet_forward_returns_local_mask_shape():
         }
     )
 
-    assert tuple(outputs.shape) == (2, 1, 64, 64)
+    assert tuple(outputs['mask'].shape) == (2, 1, 64, 64)
+    assert tuple(outputs['confidence'].shape) == (2, 1, 64, 64)
 
 
 def test_no_cut_dataset_returns_context_input_when_enabled():
@@ -180,6 +181,7 @@ def test_gpu_predict_uses_context_batch_when_present():
     assert payload['context_image'] is not None
     assert payload['context_image'].shape == payload['cutted_image'].shape
     assert predicted['predicted_image'].shape == payload['cutted_image'].shape
+    assert predicted['confidence_image'].shape == payload['cutted_image'].shape
     assert model.seen_batches
     assert model.seen_batches[0][0][-2:] == (4, 4)
     assert model.seen_batches[0][1][-2:] == (4, 4)

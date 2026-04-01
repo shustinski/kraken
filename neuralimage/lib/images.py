@@ -9,6 +9,41 @@ import random
 
 from lib.data_interfaces import CutSettings, SampleGenerationSettings, SamplePrepareSettings
 from lib.file_func import filter_files
+from lib.file_retry import retry_file_read
+
+
+def _build_enabled_transform_variants(
+    *,
+    enable_rotate_180: bool,
+    enable_rotate_90: bool,
+    enable_flip_x: bool,
+    enable_flip_y: bool,
+    square_patch: bool,
+) -> tuple[str, ...]:
+    variants: list[str] = ['identity']
+    if bool(enable_rotate_180):
+        variants.append('rotate_180')
+    if bool(enable_rotate_90) and bool(square_patch):
+        variants.extend(('rotate_90', 'rotate_270'))
+    if bool(enable_flip_x):
+        variants.append('flip_x')
+    if bool(enable_flip_y):
+        variants.append('flip_y')
+    return tuple(variants)
+
+
+def _apply_transform_variant(patch: np.ndarray, variant: str) -> np.ndarray:
+    if variant == 'rotate_180':
+        return patch[:, ::-1, ::-1].copy()
+    if variant == 'rotate_90':
+        return np.rot90(patch, k=1, axes=(1, 2)).copy()
+    if variant == 'rotate_270':
+        return np.rot90(patch, k=-1, axes=(1, 2)).copy()
+    if variant == 'flip_x':
+        return patch[:, ::-1, :].copy()
+    if variant == 'flip_y':
+        return patch[:, :, ::-1].copy()
+    return patch
 
 def _load_sample_fast_cutter_getitem():
     try:
@@ -103,7 +138,7 @@ class SampleWorker:
     def collect_image_sizes(image_paths: list[Path]) -> list[tuple[int, int]]:
         image_sizes: list[tuple[int, int]] = []
         for image in image_paths:
-            with Image.open(image) as img:
+            with retry_file_read(lambda: Image.open(image), path=image) as img:
                 width, height = img.size
             image_sizes.append((height, width))
         return image_sizes
@@ -165,15 +200,14 @@ class SampleWorker:
             height_steps = int((im_height - sample_y_size) / step) + 1
             frames_in_frame = width_steps * height_steps
 
-        vertical_frames = horizontal_frames = 0
-
-        if params.vertical_rotation:
-            vertical_frames = frames_in_frame
-
-        if params.horizontal_rotation:
-            horizontal_frames = 2 * frames_in_frame
-
-        frames_in_frame += horizontal_frames + vertical_frames
+        transform_variants = _build_enabled_transform_variants(
+            enable_rotate_180=bool(getattr(params, 'vertical_rotation', False)),
+            enable_rotate_90=bool(getattr(params, 'horizontal_rotation', False)),
+            enable_flip_x=bool(getattr(params, 'flip_x', False)),
+            enable_flip_y=bool(getattr(params, 'flip_y', False)),
+            square_patch=int(params.x_size) == int(params.y_size),
+        )
+        frames_in_frame *= len(transform_variants)
         if getattr(params, 'scale_augmentation', False):
             frames_in_frame *= 2
         if getattr(params, 'additional_augmentation', False):
@@ -191,7 +225,7 @@ class SampleCalculator:
 
     @classmethod
     def from_path(cls, path:str, params:SampleGenerationSettings):
-        with Image.open(path) as image:
+        with retry_file_read(lambda: Image.open(path), path=path) as image:
             width, height = image.size
         return cls((height, width), params)
 
@@ -217,15 +251,15 @@ class SampleCalculator:
             self._height_steps = int((im_height - sample_y_size) / step) + 1
             frames_in_frame = self._width_steps * self._height_steps
 
-        vertical_frames = horizontal_frames = 0
-
-        if self._params.vertical_rotation:
-            vertical_frames = frames_in_frame
-
-        if self._params.horizontal_rotation:
-            horizontal_frames = 2 * frames_in_frame
-
-        frames_in_frame += horizontal_frames + vertical_frames
+        transform_variants = _build_enabled_transform_variants(
+            enable_rotate_180=bool(getattr(self._params, 'vertical_rotation', False)),
+            enable_rotate_90=bool(getattr(self._params, 'horizontal_rotation', False)),
+            enable_flip_x=bool(getattr(self._params, 'flip_x', False)),
+            enable_flip_y=bool(getattr(self._params, 'flip_y', False)),
+            square_patch=tuple(getattr(self._params, 'segment_size', (0, 0)))[0]
+            == tuple(getattr(self._params, 'segment_size', (0, 0)))[1],
+        )
+        frames_in_frame *= len(transform_variants)
         if self._params.scale_augmentation:
             frames_in_frame *= 2
         if self._params.additional_augmentation:
@@ -253,7 +287,7 @@ class ImagePreparator:
     def _lazy_size(self):
         if self._params.enable_resize and self._params.target_size is not None:
             return self._params.target_size
-        with Image.open(self._path) as img:
+        with retry_file_read(lambda: Image.open(self._path), path=self._path) as img:
             size = img.size
         if not self._params.enable_crop or self._params.edge_cut is None:
             return size
@@ -266,7 +300,7 @@ class ImagePreparator:
         return width, height
 
     def _prepare(self):
-        with Image.open(self._path) as img:
+        with retry_file_read(lambda: Image.open(self._path), path=self._path) as img:
             img.load()
             self._image = img.copy()
         self._size = img.size
@@ -319,6 +353,8 @@ class SampleFastCutter:
         self._square_patch = self._sample_x == self._sample_y
         self._vertical_rotation = bool(parameters.vertical_rotation)
         self._horizontal_rotation = bool(parameters.horizontal_rotation)
+        self._flip_x = bool(getattr(parameters, 'flip_x', False))
+        self._flip_y = bool(getattr(parameters, 'flip_y', False))
         self._skip_uniform_labels = bool(skip_uniform_labels)
         self._rare_patch_oversampling_factor = max(1, int(rare_patch_oversampling_factor))
         self._random_crop = bool(getattr(parameters, 'random_crop', False))
@@ -352,7 +388,13 @@ class SampleFastCutter:
         parts = len(self.sample)
         self._width_steps, self._height_steps = self.sample.size
         self._base_locations = max(0, self._width_steps * self._height_steps)
-        self._rotation_variants = self._get_rotation_variants_count()
+        self._transform_variants = _build_enabled_transform_variants(
+            enable_rotate_180=self._vertical_rotation,
+            enable_rotate_90=self._horizontal_rotation,
+            enable_flip_x=self._flip_x,
+            enable_flip_y=self._flip_y,
+            square_patch=self._square_patch,
+        )
         self._scale_variants = 2 if self._scale_augmentation else 1
         self._base_crop_specs = (
             self._build_base_crop_specs()
@@ -401,15 +443,6 @@ class SampleFastCutter:
             rare_patch_oversampling_factor=rare_patch_oversampling_factor,
         )
 
-    def _get_rotation_variants_count(self) -> int:
-        if self._vertical_rotation and self._horizontal_rotation:
-            return 4
-        if self._horizontal_rotation:
-            return 3
-        if self._vertical_rotation:
-            return 2
-        return 1
-
     def _build_parts_list(self, parts: int) -> list[int]:
         needs_custom_parts = (
             self._skip_uniform_labels
@@ -423,8 +456,8 @@ class SampleFastCutter:
 
         parts_list: list[int] = []
         for location in range(self._base_locations):
-            for variant_index in range(self._rotation_variants):
-                base_variant = (location * self._rotation_variants) + variant_index
+            for variant_index in range(len(self._transform_variants)):
+                base_variant = (location * len(self._transform_variants)) + variant_index
                 for scale_variant in range(self._scale_variants):
                     if self._skip_uniform_labels and self._is_uniform_label_location(
                         location,
@@ -527,7 +560,7 @@ class SampleFastCutter:
             patch = self._resize_patch_tensor(patch, (self._sample_x, self._sample_y), resample=resample)
         return patch
 
-    def _decode_part_index(self, item: int) -> tuple[int, int, int, int]:
+    def _decode_part_index(self, item: int) -> tuple[int, str, int, int]:
         """Decode an item index into location and augmentation variants."""
 
         loc = self._parts_list[item]
@@ -538,24 +571,14 @@ class SampleFastCutter:
         if self._scale_augmentation:
             loc, scale_variant = divmod(loc, 2)
 
-        if self._vertical_rotation and self._horizontal_rotation:
-            location = loc // 4
-            rotation_index = loc % 4
-        elif self._horizontal_rotation:
-            location = loc // 3
-            rotation_index = 2 - (loc % 3)
-        elif self._vertical_rotation:
-            location = loc // 2
-            rotation_index = 2 * (loc % 2)
-        else:
-            location = loc
-            rotation_index = 0
-        return int(location), int(rotation_index), int(scale_variant), int(augmentation_variant)
+        transform_count = max(1, len(self._transform_variants))
+        location, transform_index = divmod(int(loc), transform_count)
+        return int(location), str(self._transform_variants[int(transform_index)]), int(scale_variant), int(augmentation_variant)
 
     def resolve_part_coordinates(self, item: int) -> tuple[int, int, int, int]:
         """Resolve source-image crop coordinates for an item index."""
 
-        location, _rotation_index, scale_variant, _augmentation_variant = self._decode_part_index(item)
+        location, _transform_variant, scale_variant, _augmentation_variant = self._decode_part_index(item)
         return self._resolve_crop_coordinates(location, scale_variant=scale_variant)
 
     def _is_uniform_label_location(self, location: int, *, scale_variant: int = 0) -> bool:
@@ -603,22 +626,14 @@ class SampleFastCutter:
         #         # Disable accelerator for this instance after first failure.
         #         self._use_accelerator = False
 
-        location, rotation_index, scale_variant, augmentation_variant = self._decode_part_index(item)
+        location, transform_variant, scale_variant, augmentation_variant = self._decode_part_index(item)
 
         image = self._extract_patch(self.image_matrix, location, scale_variant=scale_variant)
         label = self._extract_patch(self.label_matrix, location, is_label=True, scale_variant=scale_variant)
 
-        if rotation_index != 0:
-            if rotation_index == 2:
-                image = image[:, ::-1, ::-1].copy()
-                label = label[:, ::-1, ::-1].copy()
-            elif self._square_patch:
-                if rotation_index == 1:
-                    image = np.rot90(image, k=1, axes=(1, 2)).copy()
-                    label = np.rot90(label, k=1, axes=(1, 2)).copy()
-                else:
-                    image = np.rot90(image, k=-1, axes=(1, 2)).copy()
-                    label = np.rot90(label, k=-1, axes=(1, 2)).copy()
+        if transform_variant != 'identity':
+            image = _apply_transform_variant(image, transform_variant)
+            label = _apply_transform_variant(label, transform_variant)
 
         if self._additional_augmentation and augmentation_variant == 1:
             image = self._apply_additional_augmentation(image)
@@ -740,20 +755,16 @@ class SampleFastCutter:
         для вертикального вращения формула 2*(part_number % 2) дает возможные варианты (0,2),
         что соотвутствует вращению на (0,180)
         """
-        if self._params.vertical_rotation and self._params.horizontal_rotation:
-            location =  part_number // 4
-            rotation_index = part_number % 4
-        elif self._params.horizontal_rotation:
-            location = part_number // 3
-            rotation_index = 2 - part_number % 3
-        elif self._params.vertical_rotation:
-            location = part_number // 2
-            rotation_index = 2*(part_number % 2)
-        else:
-            location = part_number
-            rotation_index = 0
-
-        return location,rotation_index
+        transform_variants = _build_enabled_transform_variants(
+            enable_rotate_180=bool(getattr(self._params, 'vertical_rotation', False)),
+            enable_rotate_90=bool(getattr(self._params, 'horizontal_rotation', False)),
+            enable_flip_x=bool(getattr(self._params, 'flip_x', False)),
+            enable_flip_y=bool(getattr(self._params, 'flip_y', False)),
+            square_patch=bool(self._params.x_size == self._params.y_size),
+        )
+        transform_count = max(1, len(transform_variants))
+        location, transform_index = divmod(int(part_number), transform_count)
+        return location, int(transform_index)
 
 
 def save_color(channel, color, path, image_type='JPEG', quality=95):

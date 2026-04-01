@@ -10,6 +10,7 @@ pytest.importorskip('PyQt6')
 def _import_main_presenter_with_stubs():
     nn_stub = types.ModuleType('model.NeuralNetwork')
     nn_stub.get_registered_models = lambda: {}
+    nn_stub.get_registered_model_names_by_type = lambda: {}
     handler_stub = types.ModuleType('model.general_neural_handler')
     handler_stub.GeneralNeuralHandler = object
     images_stub = types.ModuleType('lib.images')

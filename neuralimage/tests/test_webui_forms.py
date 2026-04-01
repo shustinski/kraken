@@ -66,6 +66,9 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
         "batch_size": "8",
         "dataloader_num_workers": "6",
         "overlap": "16",
+        "recognition_tta_enabled": "on",
+        "confidence_tta_enabled": "on",
+        "confidence_save_mode": "separate_grayscale",
         "log_update_frequency": "40",
         "crop_enabled": "on",
         "resize_enabled": "on",
@@ -79,6 +82,7 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
         "iou_loss_weight": "0.3",
         "learning_rate": "0.0005",
         "weight_decay": "0.01",
+        "deep_supervision": "on",
         "warmup_enabled": "on",
         "warmup_epochs": "3",
         "warmup_start_factor": "0.1",
@@ -127,8 +131,12 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
     assert state.augmentation_noise_sigma == pytest.approx(0.02)
     assert state.crop_enabled is True
     assert state.resize_enabled is True
+    assert state.recognition_tta_enabled is True
+    assert state.confidence_tta_enabled is True
+    assert state.confidence_save_mode == "separate_grayscale"
     assert state.log_update_frequency == 40
     assert state.dataloader_num_workers == 6
+    assert state.deep_supervision is True
     assert state.torch_compile_enabled is True
     assert state.hard_pixel_mining_enabled is True
     assert state.hard_pixel_mining_ratio == pytest.approx(0.2)
@@ -186,7 +194,11 @@ def test_defaults_from_settings_state_exposes_new_keys():
         validation_image_folder=r"D:\data\validation\images",
         validation_label_folder=r"D:\data\validation\labels",
         save_validation_binary_images=True,
+        recognition_tta_enabled=True,
+        confidence_tta_enabled=True,
+        confidence_save_mode='separate_grayscale',
         dataloader_num_workers=4,
+        deep_supervision=False,
         scheduler_name='reduce_on_plateau',
         scheduler_plateau_factor=0.4,
         scheduler_plateau_patience=6,
@@ -224,7 +236,11 @@ def test_defaults_from_settings_state_exposes_new_keys():
     assert defaults["validation_image_folder"] == r"D:\data\validation\images"
     assert defaults["validation_label_folder"] == r"D:\data\validation\labels"
     assert defaults["save_validation_binary_images"] is True
+    assert defaults["recognition_tta_enabled"] is True
+    assert defaults["confidence_tta_enabled"] is True
+    assert defaults["confidence_save_mode"] == 'separate_grayscale'
     assert defaults["dataloader_num_workers"] == 4
+    assert defaults["deep_supervision"] is False
     assert defaults["scheduler_name"] == 'reduce_on_plateau'
     assert defaults["scheduler_plateau_factor"] == pytest.approx(0.4)
     assert defaults["scheduler_plateau_patience"] == 6
@@ -266,6 +282,10 @@ def test_settings_form_defaults_optional_disabled_fields():
     assert state.scheduler_plateau_factor == defaults.scheduler_plateau_factor
     assert state.scheduler_step_lr_gamma == defaults.scheduler_step_lr_gamma
     assert state.edge_cut_size == defaults.edge_cut_size
+    assert state.recognition_tta_enabled == defaults.recognition_tta_enabled
+    assert state.confidence_tta_enabled == defaults.confidence_tta_enabled
+    assert state.confidence_save_mode == defaults.confidence_save_mode
+    assert state.deep_supervision == defaults.deep_supervision
     assert state.target_size == defaults.target_size
     assert state.dice_loss_weight == defaults.dice_loss_weight
     assert state.iou_loss_weight == defaults.iou_loss_weight

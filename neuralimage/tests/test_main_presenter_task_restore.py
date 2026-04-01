@@ -88,6 +88,7 @@ def qapp():
 def _import_main_presenter_with_stubs(monkeypatch):
     nn_stub = types.ModuleType('model.NeuralNetwork')
     nn_stub.get_registered_models = lambda: {'M 720k': object()}
+    nn_stub.get_registered_model_names_by_type = lambda: {'stable': ['M 720k']}
     handler_stub = types.ModuleType('model.general_neural_handler')
     handler_stub.GeneralNeuralHandler = _FakeGeneralNeuralHandler
     images_stub = types.ModuleType('lib.images')
@@ -125,6 +126,10 @@ def test_main_presenter_restores_task_state_to_main_window_and_settings(qapp, mo
         overlap=12,
         recognition_jpeg_quality=91,
         recognition_multiprocessing_enabled=False,
+        recognition_tta_enabled=True,
+        confidence_tta_enabled=True,
+        confidence_save_mode='separate_grayscale',
+        deep_supervision=False,
         show_batch_preview=False,
         random_crop=True,
     )
@@ -151,6 +156,10 @@ def test_main_presenter_restores_task_state_to_main_window_and_settings(qapp, mo
     assert presenter.settings_panel.overlap_spinbox.value() == 12
     assert presenter.settings_panel.recognition_jpeg_quality_spinbox.value() == 91
     assert presenter.settings_panel.recognition_multiprocessing_check_box.isChecked() is False
+    assert presenter.settings_panel.recognition_tta_check_box.isChecked() is True
+    assert presenter.settings_panel.confidence_tta_check_box.isChecked() is True
+    assert presenter.settings_panel.get_confidence_save_mode_value() == 'separate_grayscale'
+    assert presenter.settings_panel.deep_supervision_check_box.isChecked() is False
     assert presenter.view.is_batch_preview_enabled() is False
 
     presenter.view.allow_close()
@@ -180,6 +189,10 @@ def test_main_presenter_can_restore_ui_from_workflow_snapshot_file(qapp, monkeyp
         batch_size=7,
         recognition_threshold=0.62,
         recognition_use_auto_threshold=False,
+        recognition_tta_enabled=True,
+        confidence_tta_enabled=False,
+        confidence_save_mode='separate_grayscale',
+        deep_supervision=False,
     )
     monkeypatch.setattr(module, '_tk_filedialog', lambda *_args, **_kwargs: 'workflow.json')
     monkeypatch.setattr(module, 'load_workflow_snapshot', lambda *_args, **_kwargs: (restored_main, restored_settings))
@@ -199,6 +212,10 @@ def test_main_presenter_can_restore_ui_from_workflow_snapshot_file(qapp, monkeyp
     assert presenter.settings_panel.recognition_batch_spinbox.value() == 3
     assert presenter.settings_panel.recognition_threshold_spinbox.value() == pytest.approx(0.62)
     assert presenter.settings_panel.recognition_use_auto_threshold_check_box.isChecked() is False
+    assert presenter.settings_panel.recognition_tta_check_box.isChecked() is True
+    assert presenter.settings_panel.confidence_tta_check_box.isChecked() is False
+    assert presenter.settings_panel.get_confidence_save_mode_value() == 'separate_grayscale'
+    assert presenter.settings_panel.deep_supervision_check_box.isChecked() is False
     assert state_store.saved_main_state is not None
     assert state_store.saved_settings_state is not None
 

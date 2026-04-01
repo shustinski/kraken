@@ -67,9 +67,13 @@ def test_dataclass_instantiation():
     assert train.validation_label_path is None
     assert train.save_validation_binary_images is False
     assert train.dataloader_num_workers == -1
+    assert train.deep_supervision is True
     assert train.generation.tech_aug.enabled is False
     assert rec.source_files == [Path('x')]
     assert rec.recognition_multiprocessing_enabled is True
+    assert rec.recognition_tta_enabled is False
+    assert rec.confidence_tta_enabled is False
+    assert rec.confidence_save_mode == 'off'
 
 
 def test_training_parameters_default_optimizer():
@@ -111,7 +115,7 @@ def test_training_parameters_default_optimizer():
     assert train.mixup.probability == 1.0
     assert train.mixup.alpha == 0.2
     assert train.pcb_defects.enabled is False
-    assert train.pcb_defects.use_defect_mask_as_label is True
+    assert train.pcb_defects.use_defect_mask_as_label is False
 
 
 def test_pcb_defect_parameters_defaults():
@@ -122,7 +126,7 @@ def test_pcb_defect_parameters_defaults():
     assert params.min_defects == 1
     assert params.max_defects == 3
     assert params.use_input_mask is True
-    assert params.use_defect_mask_as_label is True
+    assert params.use_defect_mask_as_label is False
     assert set(params.defect_probabilities) == {
         'break',
         'short',
@@ -133,4 +137,17 @@ def test_pcb_defect_parameters_defaults():
         'via',
         'misalignment',
     }
+
+
+def test_tech_augmentation_defaults_are_visibly_stronger():
+    gen = SampleGenerationSettings(1, (16, 16), True, False, 1)
+
+    assert gen.tech_aug.max_changed_pixels_ratio == 0.32
+    assert gen.tech_aug.max_foreground_ratio_delta == 0.2
+    assert gen.tech_aug.global_width.kernel_size_range == (2, 3)
+    assert gen.tech_aug.scale_rethreshold.scale_range == (0.82, 1.18)
+    assert gen.tech_aug.blur_threshold.blur_radius_range == (0.6, 1.8)
+    assert gen.tech_aug.boundary_aware.band_width_range == (2, 4)
+    assert gen.tech_aug.local_morphology.kernel_size_range == (2, 3)
+    assert gen.tech_aug.gap_variation.kernel_size_range == (2, 3)
 

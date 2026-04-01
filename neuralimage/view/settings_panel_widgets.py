@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QRect
+from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt
 from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QScrollArea,
+    QSlider,
     QSizePolicy,
     QSpinBox,
     QWidget,
@@ -92,6 +93,11 @@ class NoWheelDoubleSpinBox(QDoubleSpinBox):
         event.ignore()
 
 
+class NoWheelSlider(QSlider):
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
 def get_text_index_in_qcombobox(combobox: QComboBox, text: str) -> int:
     """Return the index of an exact text match in a combobox or `-1`."""
     if not isinstance(combobox, QComboBox):
@@ -171,3 +177,45 @@ def create_size_widget(x_size: QWidget, y_size: QWidget) -> QWidget:
     row_layout.addWidget(QLabel('X'))
     row_layout.addWidget(y_size)
     return size_widget
+
+
+def create_min_max_widget(
+    min_widget: QWidget,
+    max_widget: QWidget,
+    *,
+    min_text: str = 'Min',
+    max_text: str = 'Max',
+) -> QWidget:
+    """Compose two controls into a single `Min / Max` range widget row."""
+    if not isinstance(min_widget, QWidget) or not isinstance(max_widget, QWidget):
+        raise TypeError('min_widget and max_widget must be QWidget instances')
+    range_widget = QWidget()
+    row_layout = QHBoxLayout(range_widget)
+    row_layout.setContentsMargins(0, 0, 0, 0)
+    row_layout.setSpacing(SIZE_WIDGET_SPACING)
+    row_layout.addWidget(QLabel(str(min_text)))
+    row_layout.addWidget(min_widget)
+    row_layout.addWidget(QLabel(str(max_text)))
+    row_layout.addWidget(max_widget)
+    return range_widget
+
+
+def create_slider(
+    slider_range: tuple[int, int],
+    *,
+    default_value: int,
+) -> QSlider:
+    if len(slider_range) != 2:
+        raise ValueError('slider_range must contain exactly two values')
+    min_value, max_value = slider_range
+    if min_value > max_value:
+        raise ValueError('slider_range min value must be <= max value')
+    if not (min_value <= default_value <= max_value):
+        raise ValueError('default_value must be inside slider_range')
+    slider = NoWheelSlider()
+    slider.setOrientation(Qt.Orientation.Horizontal)
+    slider.setRange(int(min_value), int(max_value))
+    slider.setValue(int(default_value))
+    slider.setSingleStep(1)
+    slider.setPageStep(max(1, (int(max_value) - int(min_value)) // 10))
+    return slider

@@ -8,12 +8,14 @@ from django.core.exceptions import ValidationError
 
 from application.dto import MainWindowState, SettingsState
 from lib.data_interfaces import (
+    ConfidenceSaveMode,
     OptimizerName,
     MixedPrecisionMode,
     SampleCutMode,
     SchedulerName,
     ValidationSource,
     WorkMode,
+    normalize_confidence_save_mode,
     normalize_scheduler_name,
     normalize_validation_source,
     normalize_work_mode,
@@ -282,6 +284,13 @@ class SettingsForm(forms.Form):
     batch_size = forms.IntegerField(label='Batch size', min_value=1, max_value=512)
     dataloader_num_workers = forms.IntegerField(label='DataLoader workers', min_value=-1, max_value=64, required=False)
     overlap = forms.IntegerField(label='Overlap', min_value=0, max_value=256)
+    recognition_tta_enabled = forms.BooleanField(label='Use TTA for recognition', required=False)
+    confidence_tta_enabled = forms.BooleanField(label='Use TTA for confidence map', required=False)
+    confidence_save_mode = forms.ChoiceField(
+        label='Confidence map mode',
+        choices=[(mode.value, mode.value) for mode in ConfidenceSaveMode],
+        required=False,
+    )
     log_update_frequency = forms.IntegerField(label='Log update frequency', min_value=0, max_value=5000)
     crop_enabled = forms.BooleanField(label='Enable edge crop', required=False)
     resize_enabled = forms.BooleanField(label='Enable resize', required=False)
@@ -309,6 +318,7 @@ class SettingsForm(forms.Form):
     iou_loss_weight = forms.FloatField(label='IoU loss weight', min_value=0.0, max_value=1.0, required=False)
     learning_rate = forms.FloatField(label='Learning rate', min_value=1e-8, max_value=10)
     weight_decay = forms.FloatField(label='Weight decay', min_value=0.0, max_value=10)
+    deep_supervision = forms.BooleanField(label='Enable deep supervision', required=False)
     warmup_enabled = forms.BooleanField(label='Enable warmup', required=False)
     warmup_epochs = forms.IntegerField(label='Warmup epochs', min_value=1, max_value=2000)
     warmup_start_factor = forms.FloatField(label='Warmup start factor', min_value=0.0, max_value=1.0)
@@ -549,6 +559,12 @@ class SettingsForm(forms.Form):
             ('linear', _read_text(anneal_strategy_choices, 'linear', 'linear')),
         ]
 
+        confidence_save_choices = _copy_dict(choices.get('confidence_save_mode', {}))
+        self.fields['confidence_save_mode'].choices = [
+            (mode.value, _read_text(confidence_save_choices, mode.value, mode.value))
+            for mode in ConfidenceSaveMode
+        ]
+
         loss_function_choices = _copy_dict(choices.get('loss_function', {}))
         default_loss_labels = {
             'bce': 'BCE',
@@ -632,6 +648,9 @@ class SettingsForm(forms.Form):
             batch_size=cleaned['batch_size'],
             dataloader_num_workers=_with_default('dataloader_num_workers'),
             overlap=cleaned['overlap'],
+            recognition_tta_enabled=cleaned.get('recognition_tta_enabled', False),
+            confidence_tta_enabled=cleaned.get('confidence_tta_enabled', False),
+            confidence_save_mode=normalize_confidence_save_mode(cleaned.get('confidence_save_mode')),
             log_update_frequency=cleaned['log_update_frequency'],
             crop_enabled=cleaned.get('crop_enabled', False),
             resize_enabled=cleaned.get('resize_enabled', False),
@@ -651,6 +670,7 @@ class SettingsForm(forms.Form):
             iou_loss_weight=_with_default('iou_loss_weight'),
             learning_rate=cleaned['learning_rate'],
             weight_decay=cleaned['weight_decay'],
+            deep_supervision=cleaned.get('deep_supervision', True),
             warmup_enabled=cleaned.get('warmup_enabled', False),
             warmup_epochs=cleaned['warmup_epochs'],
             warmup_start_factor=cleaned['warmup_start_factor'],
@@ -747,6 +767,9 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'batch_size': state.batch_size,
         'dataloader_num_workers': getattr(state, 'dataloader_num_workers', -1),
         'overlap': state.overlap,
+        'recognition_tta_enabled': getattr(state, 'recognition_tta_enabled', False),
+        'confidence_tta_enabled': getattr(state, 'confidence_tta_enabled', False),
+        'confidence_save_mode': getattr(state, 'confidence_save_mode', ConfidenceSaveMode.off.value),
         'log_update_frequency': state.log_update_frequency,
         'crop_enabled': state.crop_enabled,
         'resize_enabled': state.resize_enabled,
@@ -763,6 +786,7 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'iou_loss_weight': state.iou_loss_weight,
         'learning_rate': state.learning_rate,
         'weight_decay': state.weight_decay,
+        'deep_supervision': getattr(state, 'deep_supervision', True),
         'warmup_enabled': state.warmup_enabled,
         'warmup_epochs': state.warmup_epochs,
         'warmup_start_factor': state.warmup_start_factor,

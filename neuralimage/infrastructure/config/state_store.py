@@ -14,6 +14,7 @@ from application.ports import StateStore
 from application.services.workflow_mapper import build_workflow_parameters
 from lib.data_interfaces import (
     WorkMode,
+    normalize_confidence_save_mode,
     normalize_multi_gpu_mode,
     normalize_patch_batch_sync_mode,
     normalize_scheduler_name,
@@ -123,6 +124,8 @@ def _build_settings_state(
         step=read_int('cut_step', defaults.step),
         vertical_rotation=read_bool('vertical_rotation', defaults.vertical_rotation),
         horizontal_rotation=read_bool('horizontal_rotation', defaults.horizontal_rotation),
+        flip_x=read_bool('flip_x', getattr(defaults, 'flip_x', False)),
+        flip_y=read_bool('flip_y', getattr(defaults, 'flip_y', False)),
         additional_augmentation=read_bool('additional_augmentation', defaults.additional_augmentation),
         augmentation_brightness_strength=read_float(
             'augmentation_brightness_strength', defaults.augmentation_brightness_strength
@@ -217,6 +220,14 @@ def _build_settings_state(
             'recognition_threshold',
             getattr(defaults, 'recognition_threshold', 0.5),
         ),
+        recognition_tta_enabled=read_bool(
+            'recognition_tta_enabled',
+            getattr(defaults, 'recognition_tta_enabled', False),
+        ),
+        confidence_tta_enabled=read_bool(
+            'confidence_tta_enabled',
+            getattr(defaults, 'confidence_tta_enabled', False),
+        ),
         recognition_postprocess=read_bool(
             'recognition_postprocess',
             getattr(defaults, 'recognition_postprocess', False),
@@ -227,6 +238,12 @@ def _build_settings_state(
                 'recognition_postprocess_kernel_size',
                 getattr(defaults, 'recognition_postprocess_kernel_size', 3),
             ),
+        ),
+        confidence_save_mode=normalize_confidence_save_mode(
+            read_str(
+                'confidence_save_mode',
+                getattr(defaults, 'confidence_save_mode', 'off'),
+            )
         ),
         log_update_frequency=read_int('log_update_frequency', defaults.log_update_frequency),
         crop_enabled=read_bool('crop_enabled', legacy_additional_processing),
@@ -252,6 +269,10 @@ def _build_settings_state(
             'early_stopping_restore_best_weights', defaults.early_stopping_restore_best_weights
         ),
         warmup_enabled=read_bool('warmup_enabled', defaults.warmup_enabled),
+        deep_supervision=read_bool(
+            'deep_supervision',
+            getattr(defaults, 'deep_supervision', True),
+        ),
         warmup_epochs=read_int('warmup_epochs', defaults.warmup_epochs),
         warmup_start_factor=read_float('warmup_start_factor', defaults.warmup_start_factor),
         scheduler_name=normalize_scheduler_name(
@@ -408,6 +429,13 @@ def _build_settings_state(
         multi_gpu_mode=multi_gpu_mode,
         torch_compile_enabled=read_bool('torch_compile_enabled', defaults.torch_compile_enabled),
         show_batch_preview=read_bool('show_batch_preview', defaults.show_batch_preview),
+        synthetic_defect_generator=_coerce_json_object(
+            read_str(
+                'synthetic_defect_generator_json',
+                read_str('pcb_defects_json', ''),
+            ),
+            default=getattr(defaults, 'synthetic_defect_generator', {}),
+        ),
         tech_aug=_coerce_json_object(
             read_str('tech_aug_json', ''),
             default=getattr(defaults, 'tech_aug', {}),
@@ -446,6 +474,8 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'cut_step': int(state.step),
         'horizontal_rotation': bool(state.horizontal_rotation),
         'vertical_rotation': bool(state.vertical_rotation),
+        'flip_x': bool(getattr(state, 'flip_x', False)),
+        'flip_y': bool(getattr(state, 'flip_y', False)),
         'additional_augmentation': bool(state.additional_augmentation),
         'augmentation_brightness_strength': float(state.augmentation_brightness_strength),
         'augmentation_contrast_strength': float(state.augmentation_contrast_strength),
@@ -487,9 +517,14 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'recognition_binarize_output': bool(getattr(state, 'recognition_binarize_output', True)),
         'recognition_use_auto_threshold': bool(getattr(state, 'recognition_use_auto_threshold', True)),
         'recognition_threshold': float(getattr(state, 'recognition_threshold', 0.5)),
+        'recognition_tta_enabled': bool(getattr(state, 'recognition_tta_enabled', False)),
+        'confidence_tta_enabled': bool(getattr(state, 'confidence_tta_enabled', False)),
         'recognition_postprocess': bool(getattr(state, 'recognition_postprocess', False)),
         'recognition_postprocess_kernel_size': int(
             max(1, int(getattr(state, 'recognition_postprocess_kernel_size', 3)))
+        ),
+        'confidence_save_mode': normalize_confidence_save_mode(
+            getattr(state, 'confidence_save_mode', 'off')
         ),
         'log_update_frequency': int(state.log_update_frequency),
         'crop_enabled': bool(state.crop_enabled),
@@ -521,6 +556,7 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'early_stopping_min_delta': float(state.early_stopping_min_delta),
         'early_stopping_restore_best_weights': bool(state.early_stopping_restore_best_weights),
         'warmup_enabled': bool(state.warmup_enabled),
+        'deep_supervision': bool(getattr(state, 'deep_supervision', True)),
         'warmup_epochs': int(state.warmup_epochs),
         'warmup_start_factor': float(state.warmup_start_factor),
         'scheduler_name': normalize_scheduler_name(getattr(state, 'scheduler_name', 'off')),
@@ -581,6 +617,11 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'multi_gpu_mode': multi_gpu_mode,
         'torch_compile_enabled': bool(state.torch_compile_enabled),
         'show_batch_preview': bool(state.show_batch_preview),
+        'synthetic_defect_generator_json': json.dumps(
+            _jsonify_value(getattr(state, 'synthetic_defect_generator', {})),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
         'tech_aug_json': json.dumps(
             _jsonify_value(getattr(state, 'tech_aug', {})),
             ensure_ascii=False,
@@ -657,6 +698,14 @@ def _jsonify_value(value: Any) -> Any:
     return value
 
 
+def _sanitize_workflow_snapshot_payload(training: Any, recognition: Any) -> tuple[Any, Any]:
+    serialized_training = _jsonify_value(training)
+    serialized_recognition = _jsonify_value(recognition)
+    if isinstance(serialized_recognition, dict):
+        serialized_recognition.pop('source_files', None)
+    return serialized_training, serialized_recognition
+
+
 def resolve_workflow_snapshot_path(main_state: MainWindowState) -> Path:
     sample_folder = Path(main_state.sample_folder)
     label_folder = Path(main_state.label_folder)
@@ -675,6 +724,7 @@ def create_workflow_snapshot_payload(
     workflow_snapshot: tuple[WorkMode | None, Any, Any] | None = None,
 ) -> dict[str, Any]:
     work_mode, training, recognition = workflow_snapshot or build_workflow_parameters(main_state, settings_state)
+    serialized_training, serialized_recognition = _sanitize_workflow_snapshot_payload(training, recognition)
     return {
         'format_version': WORKFLOW_SNAPSHOT_FORMAT_VERSION,
         'saved_at': datetime.now(timezone.utc).isoformat(),
@@ -682,8 +732,8 @@ def create_workflow_snapshot_payload(
         'settings_state': _settings_state_to_storage_dict(settings_state),
         'workflow': {
             'work_mode': work_mode.value if work_mode is not None else None,
-            'training': _jsonify_value(training),
-            'recognition': _jsonify_value(recognition),
+            'training': serialized_training,
+            'recognition': serialized_recognition,
         },
     }
 

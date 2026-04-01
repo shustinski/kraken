@@ -15,7 +15,7 @@ try:
 except Exception:  # pragma: no cover - dependency availability is validated by integration tests.
     timm = None
 
-from .registrator import register_model
+from .registrator import ModelType, register_model
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -314,7 +314,7 @@ class UPerNetHead(nn.Module):
             nn.Conv2d(fpn_channels, out_channels, kernel_size=1),
         )
 
-    def forward(self, features: Sequence[torch.Tensor]) -> torch.Tensor:
+    def forward_features(self, features: Sequence[torch.Tensor]) -> torch.Tensor:
         c1, c2, c3, c4 = features
         p4 = self.ppm(c4)
         laterals = [self.lateral_convs[0](c1), self.lateral_convs[1](c2), self.lateral_convs[2](c3), p4]
@@ -335,7 +335,11 @@ class UPerNetHead(nn.Module):
             ],
             dim=1,
         )
-        return self.fuse(fused)
+        return self.fuse[:-1](fused)
+
+    def forward(self, features: Sequence[torch.Tensor]) -> torch.Tensor:
+        fused = self.forward_features(features)
+        return self.fuse[-1](fused)
 
 
 class SwinUPerNetBinary(nn.Module):
@@ -358,15 +362,20 @@ class SwinUPerNetBinary(nn.Module):
             raise RuntimeError('Backbone does not expose feature_info required by UPerNet head.')
         self._feature_channels = list(feature_info.channels())
         self.decode_head = UPerNetHead(in_channels=self._feature_channels, fpn_channels=256, out_channels=1)
+        self.confidence_head = nn.Conv2d(256, 1, kernel_size=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         input_hw = x.shape[-2:]
         features = _normalize_backbone_features(
             _run_backbone_with_adaptive_input(self.backbone, x),
             self._feature_channels,
         )
-        logits = self.decode_head(features)
-        return F.interpolate(logits, size=input_hw, mode='bilinear', align_corners=False)
+        decoded = self.decode_head.forward_features(features)
+        logits = self.decode_head.fuse[-1](decoded)
+        logits = F.interpolate(logits, size=input_hw, mode='bilinear', align_corners=False)
+        confidence = self.confidence_head(decoded)
+        confidence = F.interpolate(confidence, size=input_hw, mode='bilinear', align_corners=False)
+        return {'mask': logits, 'confidence': confidence}
 
 
 class PixelDecoderFPN(nn.Module):
@@ -416,8 +425,10 @@ class Mask2FormerLikeHead(nn.Module):
         self.class_embed = nn.Linear(embed_dim, 2)  # foreground / no-object
         self.mask_embed = nn.Linear(embed_dim, embed_dim)
 
-    def forward(self, features: Sequence[torch.Tensor]) -> torch.Tensor:
-        mask_features = self.pixel_decoder(features)  # [B, C, H, W]
+    def forward_features(self, features: Sequence[torch.Tensor]) -> torch.Tensor:
+        return self.pixel_decoder(features)
+
+    def decode_logits(self, mask_features: torch.Tensor) -> torch.Tensor:
         b, c, h, w = mask_features.shape
         memory = mask_features.flatten(2).transpose(1, 2)  # [B, HW, C]
         query = self.query_embed.weight.unsqueeze(0).expand(b, -1, -1)  # [B, Q, C]
@@ -429,6 +440,9 @@ class Mask2FormerLikeHead(nn.Module):
         class_prob = torch.softmax(class_logits, dim=-1)[..., 0]  # foreground score per query
         fused = torch.einsum('bq,bqhw->bhw', class_prob, mask_logits).unsqueeze(1)  # [B,1,H,W]
         return fused
+
+    def forward(self, features: Sequence[torch.Tensor]) -> torch.Tensor:
+        return self.decode_logits(self.forward_features(features))
 
 
 class Mask2FormerSwinBinary(nn.Module):
@@ -451,18 +465,23 @@ class Mask2FormerSwinBinary(nn.Module):
             raise RuntimeError('Backbone does not expose feature_info required by Mask2Former head.')
         self._feature_channels = list(feature_info.channels())
         self.decode_head = Mask2FormerLikeHead(in_channels=self._feature_channels, embed_dim=256, num_queries=100)
+        self.confidence_head = nn.Conv2d(256, 1, kernel_size=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         input_hw = x.shape[-2:]
         features = _normalize_backbone_features(
             _run_backbone_with_adaptive_input(self.backbone, x),
             self._feature_channels,
         )
-        logits = self.decode_head(features)
-        return F.interpolate(logits, size=input_hw, mode='bilinear', align_corners=False)
+        decoded = self.decode_head.forward_features(features)
+        logits = self.decode_head.decode_logits(decoded)
+        logits = F.interpolate(logits, size=input_hw, mode='bilinear', align_corners=False)
+        confidence = self.confidence_head(decoded)
+        confidence = F.interpolate(confidence, size=input_hw, mode='bilinear', align_corners=False)
+        return {'mask': logits, 'confidence': confidence}
 
 
-@register_model(name='Swin UPerNet B')
+@register_model(name='Swin UPerNet B', model_type=ModelType.experimental)
 class SwinUPerNetB(SwinUPerNetBinary):
     """Swin-Base + UPerNet (binary segmentation logits)."""
 
@@ -473,7 +492,7 @@ class SwinUPerNetB(SwinUPerNetBinary):
         super().__init__(input_channels=input_channels, **kwargs)
 
 
-@register_model(name='Swin UPerNet L')
+@register_model(name='Swin UPerNet L', model_type=ModelType.experimental)
 class SwinUPerNetL(SwinUPerNetBinary):
     """Swin-Large + UPerNet (binary segmentation logits)."""
 
@@ -484,7 +503,7 @@ class SwinUPerNetL(SwinUPerNetBinary):
         super().__init__(input_channels=input_channels, **kwargs)
 
 
-@register_model(name='Mask2Former Swin B')
+@register_model(name='Mask2Former Swin B', model_type=ModelType.experimental)
 class Mask2FormerSwinB(Mask2FormerSwinBinary):
     """Swin-Base + Mask2Former-like decoder (binary segmentation logits)."""
 
@@ -495,7 +514,7 @@ class Mask2FormerSwinB(Mask2FormerSwinBinary):
         super().__init__(input_channels=input_channels, **kwargs)
 
 
-@register_model(name='Mask2Former Swin L')
+@register_model(name='Mask2Former Swin L', model_type=ModelType.experimental)
 class Mask2FormerSwinL(Mask2FormerSwinBinary):
     """Swin-Large + Mask2Former-like decoder (binary segmentation logits)."""
 

@@ -91,6 +91,7 @@ def test_state_store_roundtrip_settings(monkeypatch):
         iou_loss_weight=0.4,
         learning_rate=0.0002,
         weight_decay=0.01,
+        deep_supervision=False,
         warmup_enabled=True,
         warmup_epochs=5,
         warmup_start_factor=0.25,
@@ -108,8 +109,11 @@ def test_state_store_roundtrip_settings(monkeypatch):
         recognition_binarize_output=False,
         recognition_use_auto_threshold=False,
         recognition_threshold=0.63,
+        recognition_tta_enabled=True,
+        confidence_tta_enabled=True,
         recognition_postprocess=True,
         recognition_postprocess_kernel_size=5,
+        confidence_save_mode='separate_grayscale',
         crop_enabled=True,
         resize_enabled=False,
         hard_mining_enabled=True,
@@ -170,6 +174,7 @@ def test_state_store_roundtrip_settings(monkeypatch):
     assert loaded.iou_loss_weight == 0.4
     assert loaded.learning_rate == 0.0002
     assert loaded.weight_decay == 0.01
+    assert loaded.deep_supervision is False
     assert loaded.warmup_enabled is True
     assert loaded.warmup_epochs == 5
     assert loaded.warmup_start_factor == 0.25
@@ -187,8 +192,11 @@ def test_state_store_roundtrip_settings(monkeypatch):
     assert loaded.recognition_binarize_output is False
     assert loaded.recognition_use_auto_threshold is False
     assert loaded.recognition_threshold == pytest.approx(0.63)
+    assert loaded.recognition_tta_enabled is True
+    assert loaded.confidence_tta_enabled is True
     assert loaded.recognition_postprocess is True
     assert loaded.recognition_postprocess_kernel_size == 5
+    assert loaded.confidence_save_mode == 'separate_grayscale'
     assert loaded.crop_enabled is True
     assert loaded.resize_enabled is False
     assert loaded.hard_mining_enabled is True
@@ -279,6 +287,7 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
         iou_loss_weight=0.3,
         learning_rate=0.0003,
         weight_decay=0.02,
+        deep_supervision=False,
         warmup_enabled=True,
         warmup_epochs=3,
         warmup_start_factor=0.1,
@@ -296,8 +305,11 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
         recognition_binarize_output=True,
         recognition_use_auto_threshold=False,
         recognition_threshold=0.58,
+        recognition_tta_enabled=True,
+        confidence_tta_enabled=False,
         recognition_postprocess=True,
         recognition_postprocess_kernel_size=7,
+        confidence_save_mode='separate_grayscale',
         crop_enabled=False,
         resize_enabled=True,
         hard_mining_enabled=True,
@@ -360,6 +372,7 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
     assert loaded.iou_loss_weight == 0.3
     assert loaded.learning_rate == 0.0003
     assert loaded.weight_decay == 0.02
+    assert loaded.deep_supervision is False
     assert loaded.warmup_enabled is True
     assert loaded.warmup_epochs == 3
     assert loaded.warmup_start_factor == 0.1
@@ -377,8 +390,11 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
     assert loaded.recognition_binarize_output is True
     assert loaded.recognition_use_auto_threshold is False
     assert loaded.recognition_threshold == pytest.approx(0.58)
+    assert loaded.recognition_tta_enabled is True
+    assert loaded.confidence_tta_enabled is False
     assert loaded.recognition_postprocess is True
     assert loaded.recognition_postprocess_kernel_size == 7
+    assert loaded.confidence_save_mode == 'separate_grayscale'
     assert loaded.crop_enabled is False
     assert loaded.resize_enabled is True
     assert loaded.hard_mining_enabled is True
@@ -439,6 +455,9 @@ def test_workflow_snapshot_roundtrip_and_payload():
         batch_size=9,
         overlap=14,
         recognition_jpeg_quality=88,
+        recognition_tta_enabled=True,
+        confidence_tta_enabled=True,
+        confidence_save_mode='separate_grayscale',
         mixed_precision='fp16',
     )
 
@@ -458,12 +477,16 @@ def test_workflow_snapshot_roundtrip_and_payload():
     assert restored_settings.train_batch_size == 9
     assert restored_settings.recognition_batch_size == 5
     assert restored_settings.recognition_jpeg_quality == 88
+    assert restored_settings.recognition_tta_enabled is True
+    assert restored_settings.confidence_tta_enabled is True
+    assert restored_settings.confidence_save_mode == 'separate_grayscale'
     assert payload["format_version"] == 1
     assert payload["main_window_state"]["sample_path"] == str(sample)
     assert payload["settings_state"]["train_patch_x_size"] == 128
     assert payload["workflow"]["work_mode"] == "train_and_recognition"
     assert payload["workflow"]["training"]["image_path"] == str(sample)
     assert payload["workflow"]["recognition"]["result_folder"] == str(result)
+    assert "source_files" not in payload["workflow"]["recognition"]
 
 
 def test_resolve_workflow_snapshot_path_uses_common_parent():

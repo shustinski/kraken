@@ -4,6 +4,7 @@ import os
 import sys
 import hashlib
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,15 +17,18 @@ from lib.data_interfaces import (
     RecognitionParameters,
     TrainingParameters,
     SampleCutMode,
+    build_pcb_defect_parameters,
+    build_synthetic_defect_generator_parameters,
+    build_tech_augmentation_config,
     normalize_multi_gpu_mode,
     normalize_validation_source,
 )
 from lib.file_func import filter_files, filter_images
 from lib.func import get_input_channels
 from lib.message_bus import AbstractMessageBus
-from model.NeuralNetwork import create_model
+from model.NeuralNetwork import create_model, model_supports_init_kwarg
 from model.NeuralNetwork.context_utils import normalize_size_pair
-from model.NeuralNetwork.dataset import CustomDataset, NoCutDataset
+from model.NeuralNetwork.dataset import CustomDataset, NoCutDataset, SyntheticDefectDataset
 from model.NeuralNetwork.model_io import load_model_artifact
 from model.NeuralNetwork.model_train_and_recognition import ModelRecognizer, ModelTrainer
 from model.image_workers import ConvertCifThread, CutImageThread
@@ -32,8 +36,6 @@ from model.image_workers import ConvertCifThread, CutImageThread
 
 _VALIDATION_SPLIT_SEED = 1337
 _VALIDATION_FOREGROUND_BUCKETS: tuple[float, ...] = (0.0, 0.001, 0.01, 0.05, 0.2, 1.0)
-
-
 def _is_debugger_attached() -> bool:
     gettrace = getattr(sys, 'gettrace', None)
     if not callable(gettrace):
@@ -149,6 +151,47 @@ class IndexedDataset(Dataset):
         set_epoch_fn = getattr(self._base_dataset, 'set_epoch', None)
         if callable(set_epoch_fn):
             set_epoch_fn()
+
+
+class CompositeDataset(Dataset):
+    def __init__(self, *datasets: Dataset):
+        self._datasets = [dataset for dataset in datasets if dataset is not None]
+        self._lengths = [int(len(dataset)) for dataset in self._datasets]
+        self._offsets: list[int] = []
+        total = 0
+        for length in self._lengths:
+            self._offsets.append(total)
+            total += int(length)
+        self._total_length = total
+
+    def __len__(self) -> int:
+        return self._total_length
+
+    def __getitem__(self, index: int):
+        if index < 0 or index >= self._total_length:
+            raise IndexError('dataset index out of range')
+        for dataset, offset, length in zip(self._datasets, self._offsets, self._lengths):
+            if index < offset + length:
+                return dataset[index - offset]
+        raise IndexError('dataset index out of range')
+
+    def describe_sample(self, index: int) -> str:
+        if index < 0 or index >= self._total_length:
+            raise IndexError('dataset index out of range')
+        for dataset, offset, length in zip(self._datasets, self._offsets, self._lengths):
+            if index >= offset + length:
+                continue
+            describe_fn = getattr(dataset, 'describe_sample', None)
+            if callable(describe_fn):
+                return str(describe_fn(index - offset))
+            return f'sample_{int(index):06d}'
+        return f'sample_{int(index):06d}'
+
+    def set_epoch(self) -> None:
+        for dataset in self._datasets:
+            set_epoch_fn = getattr(dataset, 'set_epoch', None)
+            if callable(set_epoch_fn):
+                set_epoch_fn()
 
 
 class LossAwareSampler(Sampler[int]):
@@ -362,6 +405,7 @@ class GeneralNeuralHandler:
 
     def _resolve_model_creation_kwargs(self, model_name: str) -> dict[str, Any]:
         resolved_name = str(model_name)
+        model_kwargs: dict[str, Any] = {}
         if resolved_name == 'Transformer':
             patch_size = self.tranining_parameters.generation.segment_size
             img_size = max(1, int(patch_size[0]))
@@ -373,44 +417,49 @@ class GeneralNeuralHandler:
                         f'Using img_size={img_size} derived from patch size {tuple(patch_size)}.'
                     ),
                 )
-            return {'img_size': img_size}
+            model_kwargs['img_size'] = img_size
+            return model_kwargs
 
-        if resolved_name not in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}:
-            return {}
+        if resolved_name in {'quasi_dual_scale_unet', 'FrameUnet', 'UNetWithContextBranch'}:
+            requested_context_branch = getattr(self.tranining_parameters, 'use_context_branch', None)
+            if requested_context_branch is None:
+                requested_context_branch = True
+            if bool(requested_context_branch) and self.tranining_parameters.cut_mode != SampleCutMode.online:
+                raise ValueError(
+                    'Context branch requires online patch generation (cut_mode=online) because '
+                    'the dataset must build context crops from the full prepared frame.'
+                )
 
-        requested_context_branch = getattr(self.tranining_parameters, 'use_context_branch', None)
-        if requested_context_branch is None:
-            requested_context_branch = True
-        if bool(requested_context_branch) and self.tranining_parameters.cut_mode != SampleCutMode.online:
-            raise ValueError(
-                'Context branch requires online patch generation (cut_mode=online) because '
-                'the dataset must build context crops from the full prepared frame.'
+            local_crop_size = normalize_size_pair(
+                getattr(self.tranining_parameters, 'local_crop_size', None),
+                fallback=tuple(self.tranining_parameters.generation.segment_size),
+            )
+            context_crop_size = normalize_size_pair(
+                getattr(self.tranining_parameters, 'context_crop_size', None),
+                fallback=(local_crop_size[0] * 2, local_crop_size[1] * 2),
+            )
+            context_input_size = normalize_size_pair(
+                getattr(self.tranining_parameters, 'context_input_size', None),
+                fallback=local_crop_size,
+            )
+            context_branch_channels = tuple(
+                int(channel)
+                for channel in getattr(self.tranining_parameters, 'context_branch_channels', (16, 32, 64, 128))
+            )
+            model_kwargs.update(
+                {
+                    'local_crop_size': local_crop_size,
+                    'context_crop_size': context_crop_size,
+                    'context_input_size': context_input_size,
+                    'context_branch_channels': context_branch_channels,
+                    'fusion_type': str(getattr(self.tranining_parameters, 'fusion_type', 'concat')),
+                    'use_context_branch': bool(requested_context_branch),
+                }
             )
 
-        local_crop_size = normalize_size_pair(
-            getattr(self.tranining_parameters, 'local_crop_size', None),
-            fallback=tuple(self.tranining_parameters.generation.segment_size),
-        )
-        context_crop_size = normalize_size_pair(
-            getattr(self.tranining_parameters, 'context_crop_size', None),
-            fallback=(local_crop_size[0] * 2, local_crop_size[1] * 2),
-        )
-        context_input_size = normalize_size_pair(
-            getattr(self.tranining_parameters, 'context_input_size', None),
-            fallback=local_crop_size,
-        )
-        context_branch_channels = tuple(
-            int(channel)
-            for channel in getattr(self.tranining_parameters, 'context_branch_channels', (16, 32, 64, 128))
-        )
-        return {
-            'local_crop_size': local_crop_size,
-            'context_crop_size': context_crop_size,
-            'context_input_size': context_input_size,
-            'context_branch_channels': context_branch_channels,
-            'fusion_type': str(getattr(self.tranining_parameters, 'fusion_type', 'concat')),
-            'use_context_branch': bool(requested_context_branch),
-        }
+        if model_supports_init_kwarg(resolved_name, 'deep_supervision'):
+            model_kwargs['deep_supervision'] = bool(getattr(self.tranining_parameters, 'deep_supervision', True))
+        return model_kwargs
 
     def _resolve_training_model(self):
         artifact_dir = self._resolve_training_artifact_dir()
@@ -425,6 +474,15 @@ class GeneralNeuralHandler:
         else:
             model = load_model_artifact(self.recognition_parameters.model, map_location='cpu')
             self._validate_loaded_model_input_channels(model)
+            if self.work_mode == WorkMode.further_training and hasattr(model, 'deep_supervision'):
+                deep_supervision_enabled = bool(getattr(self.tranining_parameters, 'deep_supervision', True))
+                setattr(model, 'deep_supervision', deep_supervision_enabled)
+                model_kwargs = getattr(model, '_neuralimage_model_kwargs', {})
+                if not isinstance(model_kwargs, dict):
+                    model_kwargs = {}
+                model_kwargs = dict(model_kwargs)
+                model_kwargs['deep_supervision'] = deep_supervision_enabled
+                setattr(model, '_neuralimage_model_kwargs', model_kwargs)
             model_save_path = artifact_dir / Path(self.recognition_parameters.model).name
         return model, model_save_path
 
@@ -529,20 +587,32 @@ class GeneralNeuralHandler:
             if self._need_stop:
                 return None, None
 
+        training_without_tech_aug = replace(
+            self.tranining_parameters,
+            generation=replace(
+                self.tranining_parameters.generation,
+                tech_aug=build_tech_augmentation_config(None),
+            ),
+            pcb_defects=build_pcb_defect_parameters(None),
+        )
+        synthetic_generator = build_synthetic_defect_generator_parameters(
+            getattr(self.tranining_parameters, 'synthetic_defect_generator', None)
+        )
+
         if self.tranining_parameters.cut_mode == SampleCutMode.disk:
             train_dataset = CustomDataset(
                 train_samples,
                 self.tranining_parameters.generation.channels,
-                pcb_defects=getattr(self.tranining_parameters, 'pcb_defects', None),
-                tech_aug=getattr(self.tranining_parameters.generation, 'tech_aug', None),
+                pcb_defects=None,
+                tech_aug=None,
                 apply_train_only_transforms=True,
             )
             val_dataset = (
                 CustomDataset(
                     val_samples,
                     self.tranining_parameters.generation.channels,
-                    pcb_defects=getattr(self.tranining_parameters, 'pcb_defects', None),
-                    tech_aug=getattr(self.tranining_parameters.generation, 'tech_aug', None),
+                    pcb_defects=None,
+                    tech_aug=None,
                     apply_train_only_transforms=False,
                 )
                 if val_samples
@@ -551,17 +621,46 @@ class GeneralNeuralHandler:
         else:
             train_dataset = NoCutDataset(
                 train_samples,
-                self.tranining_parameters,
+                training_without_tech_aug,
                 apply_train_only_transforms=True,
             )
             val_dataset = (
                 NoCutDataset(
                     val_samples,
-                    self.tranining_parameters,
+                    training_without_tech_aug,
                     apply_train_only_transforms=False,
                 )
                 if val_samples
                 else None
+            )
+
+        if (
+            synthetic_generator.enabled
+            and float(synthetic_generator.epoch_size_factor) > 0.0
+            and train_dataset is not None
+            and bool(len(train_samples))
+        ):
+            synthetic_frame_count = max(
+                1,
+                int(round(len(train_samples) * float(synthetic_generator.epoch_size_factor))),
+            )
+            synthetic_settings = replace(
+                training_without_tech_aug,
+                synthetic_defect_generator=synthetic_generator,
+            )
+            synthetic_dataset = SyntheticDefectDataset(
+                synthetic_frame_count,
+                synthetic_settings,
+                apply_train_only_transforms=True,
+            )
+            train_dataset = CompositeDataset(train_dataset, synthetic_dataset)
+            self.message_bus.publish(
+                'logging',
+                (
+                    'Synthetic defect dataset generator enabled '
+                    f'(real_frames={len(train_samples)}, synthetic_frames={synthetic_frame_count}, '
+                    f'synthetic_samples={len(synthetic_dataset)}).'
+                ),
             )
 
         return train_dataset, val_dataset
@@ -788,6 +887,8 @@ class GeneralNeuralHandler:
         model_name += f'_shift_{generation.step}_'
         model_name += 'r90_' if generation.horizontal_rotation else ''
         model_name += 'r180_' if generation.vertical_rotation else ''
+        model_name += 'fx_' if bool(getattr(generation, 'flip_x', False)) else ''
+        model_name += 'fy_' if bool(getattr(generation, 'flip_y', False)) else ''
         model_name += f'epoch{self.tranining_parameters.epochs}'
         model_name += '.pth'
 

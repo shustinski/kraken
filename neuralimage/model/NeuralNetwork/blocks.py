@@ -1,16 +1,170 @@
+from collections.abc import Sequence
+from typing import Any
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def extract_mask_outputs(outputs: Any) -> Any:
+    if isinstance(outputs, dict):
+        if 'mask' not in outputs:
+            raise KeyError('Structured model outputs must contain a "mask" entry.')
+        return outputs['mask']
+    return outputs
+
+
+def extract_confidence_output(outputs: Any) -> torch.Tensor | None:
+    if not isinstance(outputs, dict):
+        return None
+    confidence = outputs.get('confidence')
+    if confidence is None:
+        return None
+    if not torch.is_tensor(confidence):
+        raise TypeError('Structured model confidence output must be a tensor.')
+    return confidence
+
+
+def resolve_group_norm_groups(channels: int, max_groups: int = 8) -> int:
+    resolved_channels = max(1, int(channels))
+    resolved_max_groups = max(1, min(int(max_groups), resolved_channels))
+    for groups in range(resolved_max_groups, 0, -1):
+        if resolved_channels % groups == 0:
+            return groups
+    return 1
+
+
+def build_norm_2d(
+    num_channels: int,
+    *,
+    norm: str = 'bn',
+    gn_groups: int = 8,
+) -> nn.Module:
+    normalized = str(norm or 'bn').strip().lower()
+    if normalized == 'bn':
+        return nn.BatchNorm2d(num_channels)
+    if normalized == 'gn':
+        return nn.GroupNorm(resolve_group_norm_groups(num_channels, max_groups=gn_groups), num_channels)
+    return nn.InstanceNorm2d(num_channels, affine=True)
+
+
+def build_activation(act: str = 'gelu') -> nn.Module:
+    normalized = str(act or 'gelu').strip().lower()
+    if normalized == 'gelu':
+        return nn.GELU()
+    if normalized == 'silu':
+        return nn.SiLU()
+    return nn.LeakyReLU(0.2, inplace=True)
+
+
+def build_conv_sequence(
+    layer_specs: Sequence[tuple[int, int, float, bool]],
+    *,
+    norm: str = 'bn',
+    act: str = 'gelu',
+    gn_groups: int = 8,
+) -> nn.Sequential:
+    return nn.Sequential(
+        *[
+            ConvBlock(
+                in_ch,
+                out_ch,
+                norm=norm,
+                act=act,
+                droput=dropout,
+                pooling=pooling,
+                gn_groups=gn_groups,
+            )
+            for in_ch, out_ch, dropout, pooling in layer_specs
+        ]
+    )
+
+
+class DeepSupervisionMixin:
+    def _init_deep_supervision(self, deep_supervision=False):
+        self.deep_supervision = bool(deep_supervision)
+
+    def _merge_deep_supervision_outputs(self, primary, auxiliary_outputs):
+        if (not getattr(self, 'deep_supervision', False)) or (not self.training):
+            return primary
+
+        merged = [primary]
+        target_size = primary.shape[-2:]
+        for aux_output in auxiliary_outputs:
+            if aux_output is None:
+                continue
+            if aux_output.shape[-2:] != target_size:
+                aux_output = F.interpolate(aux_output, size=target_size, mode='bilinear', align_corners=False)
+            merged.append(aux_output)
+        return tuple(merged)
+
+    def _build_model_outputs(self, primary, auxiliary_outputs=(), confidence=None):
+        mask_outputs = self._merge_deep_supervision_outputs(primary, auxiliary_outputs)
+        if confidence is None:
+            return mask_outputs
+        target_size = primary.shape[-2:]
+        if confidence.shape[-2:] != target_size:
+            confidence = F.interpolate(confidence, size=target_size, mode='bilinear', align_corners=False)
+        return {
+            'mask': mask_outputs,
+            'confidence': confidence,
+        }
+
+
+class SegmentationHeadBundle(nn.Module):
+    def __init__(
+        self,
+        primary_channels: int,
+        *,
+        aux_channels: Sequence[int] = (),
+        primary_kernel_size: int = 1,
+        confidence_kernel_size: int | None = None,
+        aux_kernel_size: int = 1,
+    ) -> None:
+        super().__init__()
+        confidence_kernel = int(confidence_kernel_size or primary_kernel_size)
+        self.primary = nn.Conv2d(
+            primary_channels,
+            1,
+            kernel_size=int(primary_kernel_size),
+            padding=int(primary_kernel_size) // 2,
+        )
+        self.confidence = nn.Conv2d(
+            primary_channels,
+            1,
+            kernel_size=confidence_kernel,
+            padding=confidence_kernel // 2,
+        )
+        self.auxiliary = nn.ModuleList(
+            nn.Conv2d(
+                int(channels),
+                1,
+                kernel_size=int(aux_kernel_size),
+                padding=int(aux_kernel_size) // 2,
+            )
+            for channels in aux_channels
+        )
+
+    def forward(
+        self,
+        primary_features: torch.Tensor,
+        auxiliary_features: Sequence[torch.Tensor] = (),
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...]]:
+        primary = self.primary(primary_features)
+        confidence = self.confidence(primary_features)
+        auxiliary_outputs = tuple(
+            head(feature)
+            for head, feature in zip(self.auxiliary, auxiliary_features)
+        )
+        return primary, confidence, auxiliary_outputs
 
 class DSConv(nn.Module):
     def __init__(self, in_ch, out_ch,k=3, s=1,p=1,gn_groups=8):
         super().__init__()
         self.dw = nn.Conv2d(in_ch, in_ch, kernel_size=k, stride=s, padding=p, bias=False)
         self.pw = nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False)
-        g = min(gn_groups,out_ch)
-        self.norm = nn.GroupNorm(g, out_ch)
-
-        self.act =  nn.SiLU(inplace=True)
+        self.norm = build_norm_2d(out_ch, norm='gn', gn_groups=gn_groups)
+        self.act = build_activation('silu')
 
     def forward(self, x):
         x = self.dw(x)
@@ -72,18 +226,12 @@ class ConvBlock(nn.Module):
                  act='gelu',
                  droput:float=0,
                  stride=1,
-                 pooling:bool=False):
+                 pooling:bool=False,
+                 gn_groups: int = 8):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=stride, padding=1, bias=False)
-        if norm == 'bn':
-            self.norm = nn.BatchNorm2d(out_ch)
-        elif norm == 'gn':
-            self.norm = nn.GroupNorm(num_groups=8, num_channels=out_ch)
-        else:
-            self.norm = nn.InstanceNorm2d(out_ch, affine=True)
-
-        self.act =  nn.GELU() if act == 'gelu' else (
-                    nn.SiLU()) if act == 'silu' else nn.LeakyReLU(0.2, inplace=True)
+        self.norm = build_norm_2d(out_ch, norm=norm, gn_groups=gn_groups)
+        self.act = build_activation(act)
 
         self.use_dropout = bool(droput)
         self.dropout = nn.Dropout2d(p=droput)
@@ -110,13 +258,30 @@ class ConvTransposeEncoder(nn.Module):
                  norm='bn',
                  act='gelu',
                  droput: float = 0,
-                 stride=1
+                 stride=1,
+                 gn_groups: int = 8,
                  ):
         super().__init__()
         self.conv_transpose = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=3,
                                                  stride=2, padding=1, output_padding=1)
-        self.conv1 = ConvBlock(out_channels + skip_channels,out_channels, norm=norm, act=act, droput=droput, pooling=False)
-        self.conv2 = ConvBlock(out_channels, out_channels, norm=norm, act=act, droput=droput, pooling=False)
+        self.conv1 = ConvBlock(
+            out_channels + skip_channels,
+            out_channels,
+            norm=norm,
+            act=act,
+            droput=droput,
+            pooling=False,
+            gn_groups=gn_groups,
+        )
+        self.conv2 = ConvBlock(
+            out_channels,
+            out_channels,
+            norm=norm,
+            act=act,
+            droput=droput,
+            pooling=False,
+            gn_groups=gn_groups,
+        )
 
     def forward(self, x, skip=None):
         # Transpose convolution
@@ -134,12 +299,29 @@ class ConvUpsampleEncoder(nn.Module):
                  norm='bn',
                  act='gelu',
                  droput: float = 0,
-                 stride=1
+                 stride=1,
+                 gn_groups: int = 8,
                  ):
         super().__init__()
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
-        self.conv1 = ConvBlock(out_channels + skip_channels,out_channels, norm=norm, act=act, droput=droput, pooling=False)
-        self.conv2 = ConvBlock(out_channels, out_channels, norm=norm, act=act, droput=droput, pooling=False)
+        self.conv1 = ConvBlock(
+            out_channels + skip_channels,
+            out_channels,
+            norm=norm,
+            act=act,
+            droput=droput,
+            pooling=False,
+            gn_groups=gn_groups,
+        )
+        self.conv2 = ConvBlock(
+            out_channels,
+            out_channels,
+            norm=norm,
+            act=act,
+            droput=droput,
+            pooling=False,
+            gn_groups=gn_groups,
+        )
 
     def forward(self, x, skip=None):
         # Transpose convolution
@@ -154,11 +336,11 @@ class ConvUpsampleEncoder(nn.Module):
 
 class Bottleneck(nn.Module):
 
-    def __init__(self, in_ch: int):
+    def __init__(self, in_ch: int, *, norm: str = 'bn', act: str = 'leaky', dropout: float = 0.3, gn_groups: int = 8):
         super().__init__()
         self.block = nn.Sequential(
-            ConvBlock(in_ch, in_ch*2, norm='bn', act='leaky', droput=0.3, pooling=False),
-            ConvBlock(in_ch*2, in_ch*2, norm='bn', act='leaky', droput=0.3, pooling=False),
+            ConvBlock(in_ch, in_ch*2, norm=norm, act=act, droput=dropout, pooling=False, gn_groups=gn_groups),
+            ConvBlock(in_ch*2, in_ch*2, norm=norm, act=act, droput=dropout, pooling=False, gn_groups=gn_groups),
         )
 
     def forward(self, x):

@@ -4,8 +4,9 @@ import numpy as np
 
 pytest.importorskip('PyQt6')
 
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QSizePolicy, QWidget
 
+from UI.clickable_label import ClickableLabel
 from lib.logging_policy import MAX_LOG_MESSAGES
 from view.main_window import MainView
 
@@ -50,6 +51,7 @@ def test_main_view_metrics_are_collected_without_capping(qapp):
     view.metrics_message.emit(
         {
             'type': 'train_batch_preview',
+            'sample_name': 'frame_001.png',
             'image': np.full((32, 32), 128, dtype=np.uint8),
             'label': np.full((32, 32), 255, dtype=np.uint8),
         }
@@ -75,6 +77,65 @@ def test_main_view_metrics_are_collected_without_capping(qapp):
     assert "33.33 batch/s" in view.memory_usage_label.text()
     assert view.preview_image_label.pixmap() is not None
     assert view.preview_label_label.pixmap() is not None
+    assert "frame_001.png" in view.preview_frame_name_label.text()
+    assert view.preview_image_title_label.text()
+    assert view.preview_label_title_label.text()
+    assert view.preview_output_title_label.text()
+
+
+def test_main_view_recognition_preview_uses_two_columns(qapp):
+    view = MainView(QWidget())
+    view.connect_internal_signals()
+
+    view.metrics_message.emit(
+        {
+            'type': 'recognition_preview',
+            'sample_name': 'recognized_frame_007.png',
+            'image': np.full((40, 40), 96, dtype=np.uint8),
+            'outputs': np.full((40, 40), 255, dtype=np.uint8),
+        }
+    )
+
+    assert view.preview_image_label.pixmap() is not None
+    assert view.preview_output_label.pixmap() is not None
+    assert "recognized_frame_007.png" in view.preview_frame_name_label.text()
+    assert view.preview_label_column_widget.isHidden()
+
+    view.metrics_message.emit(
+        {
+            'type': 'train_batch_preview',
+            'sample_name': 'train_frame_001.png',
+            'image': np.full((40, 40), 32, dtype=np.uint8),
+            'label': np.full((40, 40), 128, dtype=np.uint8),
+            'outputs': np.full((40, 40), 224, dtype=np.uint8),
+        }
+    )
+
+    assert not view.preview_label_column_widget.isHidden()
+    assert view.preview_label_label.pixmap() is not None
+
+
+def test_main_view_shows_sample_count_at_top(qapp):
+    view = MainView(QWidget())
+
+    view.set_samples_count_loading()
+    assert view.sample_count_top_label.text().strip()
+
+    view.set_samples_count(42)
+    assert "42" in view.sample_count_top_label.text()
+
+    view.apply_ui_language('en')
+    assert "42" in view.sample_count_top_label.text()
+
+
+def test_clickable_label_does_not_force_window_width(qapp):
+    label = ClickableLabel()
+    full_path = r'D:\very\long\folder\structure\with\many\nested\directories\and\file_name_that_should_not_define_window_minimum_width.ext'
+    label.setText(full_path)
+
+    assert label.text() == full_path
+    assert label.minimumSizeHint().width() == 0
+    assert label.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Ignored
 
 
 def test_main_view_batch_points_are_sparsified_after_1000(qapp):
@@ -113,6 +174,15 @@ def test_main_view_log_history_is_capped(qapp):
     first_widget = first_item.widget() if first_item is not None else None
     assert first_widget is not None
     assert first_widget.text() == "log message 25"
+
+
+def test_main_view_status_bar_shows_last_log_message(qapp):
+    view = MainView(QWidget())
+    view.connect_internal_signals()
+
+    view.log_message.emit("background indexing started")
+
+    assert view.statusBar().currentMessage() == "background indexing started"
 
 
 def test_main_view_recognition_speed_label_updates_and_resets(qapp, monkeypatch):

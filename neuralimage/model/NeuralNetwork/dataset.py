@@ -9,9 +9,20 @@ from PIL import Image
 from torch.utils.data import Dataset, get_worker_info
 from torchvision.transforms import ToTensor
 
-from augmentations import PCBDefectAugmentor, TechVariationAugmentor
+from augmentations import (
+    ICDefectAugmentor,
+    PCBDefectAugmentor,
+    SyntheticTopologyGenerator,
+    SyntheticTopologyParameters,
+    TechVariationAugmentor,
+)
 from lib.data_interfaces import TrainingParameters, SampleGenerationSettings, SamplePrepareSettings
-from lib.data_interfaces import build_pcb_defect_parameters, build_tech_augmentation_config
+from lib.data_interfaces import (
+    build_pcb_defect_parameters,
+    build_synthetic_defect_generator_parameters,
+    build_tech_augmentation_config,
+)
+from lib.file_retry import retry_file_read
 from lib.images import ImagePreparator, SampleCalculator, SampleFastCutter
 from lib.rare_patch_masks import resolve_rare_patch_mask_path
 from model.NeuralNetwork.context_utils import PatchWindow, extract_centered_crop, normalize_size_pair
@@ -21,6 +32,40 @@ def _unwrap_tech_augmented_mask(result: np.ndarray | tuple[np.ndarray, np.ndarra
     if isinstance(result, tuple):
         return np.asarray(result[1])
     return np.asarray(result)
+
+
+def _extract_binary_single_channel(image: np.ndarray, *, binary_tolerance: float) -> np.ndarray | None:
+    array = np.asarray(image, dtype=np.float32)
+    if array.ndim == 2:
+        if not _is_binary_like_plane(array, tolerance=binary_tolerance):
+            return None
+        return array[None, :, :].astype(np.float32, copy=False)
+    if array.ndim != 3 or array.shape[0] <= 0:
+        return None
+    single_channel = array[:1]
+    if array.shape[0] > 1 and not np.allclose(
+        array,
+        np.repeat(single_channel, array.shape[0], axis=0),
+        atol=1e-6,
+    ):
+        return None
+    if not _is_binary_like_plane(single_channel[0], tolerance=binary_tolerance):
+        return None
+    return single_channel.astype(np.float32, copy=False)
+
+
+def _broadcast_augmented_mask(template: np.ndarray, augmented_mask: np.ndarray) -> np.ndarray:
+    template_array = np.asarray(template, dtype=np.float32)
+    augmented = np.asarray(augmented_mask, dtype=np.float32)
+    if augmented.ndim == 2:
+        augmented = augmented[None, :, :]
+    if template_array.ndim == 2:
+        return augmented[0].astype(np.float32, copy=False)
+    if template_array.ndim != 3:
+        return augmented.astype(np.float32, copy=False)
+    if template_array.shape[0] <= 1:
+        return augmented[:1].astype(np.float32, copy=False)
+    return np.repeat(augmented[:1], template_array.shape[0], axis=0).astype(np.float32, copy=False)
 
 
 def _is_binary_like_plane(plane: np.ndarray, tolerance: float) -> bool:
@@ -56,6 +101,32 @@ def _apply_binary_tech_augmentation(
     return np.repeat(augmented[:1], image.shape[0], axis=0).astype(np.float32, copy=False)
 
 
+def _apply_binary_tech_augmentation_to_pair(
+    image: np.ndarray,
+    label: np.ndarray,
+    augmentor: TechVariationAugmentor | None,
+    *,
+    binary_tolerance: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    image_array = np.asarray(image, dtype=np.float32)
+    label_array = np.asarray(label, dtype=np.float32)
+    if augmentor is None:
+        return image_array.astype(np.float32, copy=False), label_array.astype(np.float32, copy=False)
+
+    source_mask = _extract_binary_single_channel(label_array, binary_tolerance=binary_tolerance)
+    if source_mask is None:
+        source_mask = _extract_binary_single_channel(image_array, binary_tolerance=binary_tolerance)
+    if source_mask is None:
+        return image_array.astype(np.float32, copy=False), label_array.astype(np.float32, copy=False)
+
+    augmented_mask = _unwrap_tech_augmented_mask(augmentor(source_mask.astype(np.float32, copy=False)))
+    augmented_label = _broadcast_augmented_mask(label_array, augmented_mask)
+    if _extract_binary_single_channel(image_array, binary_tolerance=binary_tolerance) is None:
+        return image_array.astype(np.float32, copy=False), augmented_label
+    augmented_image = _broadcast_augmented_mask(image_array, augmented_mask)
+    return augmented_image, augmented_label
+
+
 def _apply_binary_tech_augmentation_with_seed(
     image: np.ndarray,
     augmentor: TechVariationAugmentor | None,
@@ -72,6 +143,35 @@ def _apply_binary_tech_augmentation_with_seed(
     try:
         return _apply_binary_tech_augmentation(
             image,
+            augmentor,
+            binary_tolerance=binary_tolerance,
+        )
+    finally:
+        random.setstate(random_state)
+        np.random.set_state(np_random_state)
+
+
+def _apply_binary_tech_augmentation_to_pair_with_seed(
+    image: np.ndarray,
+    label: np.ndarray,
+    augmentor: TechVariationAugmentor | None,
+    *,
+    binary_tolerance: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if augmentor is None:
+        return (
+            np.asarray(image, dtype=np.float32).astype(np.float32, copy=False),
+            np.asarray(label, dtype=np.float32).astype(np.float32, copy=False),
+        )
+    random_state = random.getstate()
+    np_random_state = np.random.get_state()
+    random.seed(int(seed))
+    np.random.seed(int(seed))
+    try:
+        return _apply_binary_tech_augmentation_to_pair(
+            image,
+            label,
             augmentor,
             binary_tolerance=binary_tolerance,
         )
@@ -257,12 +357,13 @@ class NoCutDataset(Dataset):
         try:
             np.random.seed(self._frame_seed(frame_index))
             image_matrix = SampleFastCutter.get_matrix_from_image(prepared_image, self.colors)
-            image_matrix = _apply_binary_tech_augmentation(
+            label_matrix = SampleFastCutter.get_matrix_from_image(prepared_label, 1)
+            image_matrix, label_matrix = _apply_binary_tech_augmentation_to_pair(
                 image_matrix,
+                label_matrix,
                 self._tech_augmentor,
                 binary_tolerance=self._tech_aug_binary_tolerance,
             )
-            label_matrix = SampleFastCutter.get_matrix_from_image(prepared_label, 1)
             rare_mask_matrix = None
             if prepared_rare_mask is not None:
                 rare_mask_matrix = SampleFastCutter.get_matrix_from_image(prepared_rare_mask, 1)
@@ -348,12 +449,13 @@ class NoCutDataset(Dataset):
         if self._defect_augmentor is None:
             return image, label, None
         seed = self._sample_seed(frame, part)
-        augmented_image, defect_mask = self._defect_augmentor(
+        augmented_image, defect_mask, augmented_mask = self._defect_augmentor(
             image,
             label,
             seed=seed,
+            return_augmented_mask=True,
         )
-        updated_label = defect_mask if self._use_defect_mask_as_label else label
+        updated_label = defect_mask if self._use_defect_mask_as_label else augmented_mask
         return augmented_image, updated_label, augmented_image
 
     def _sample_seed(self, frame: int, part: int) -> int:
@@ -386,6 +488,229 @@ class NoCutDataset(Dataset):
         right = min(context_copy.shape[2], left + target_w)
         context_copy[:, top:bottom, left:right] = resized_local[:, :bottom - top, :right - left]
         return context_copy
+
+
+class SyntheticDefectDataset(Dataset):
+    """Generate full synthetic frames and cut them into patches like real images."""
+
+    def __init__(
+        self,
+        sample_count: int,
+        settings: TrainingParameters,
+        *,
+        apply_train_only_transforms: bool = True,
+    ) -> None:
+        self.colors = int(settings.colors)
+        self._generation = settings.generation
+        self._config = build_synthetic_defect_generator_parameters(
+            getattr(settings, 'synthetic_defect_generator', None)
+        )
+        self._apply_train_only_transforms = bool(apply_train_only_transforms)
+        self.shuffle_frames = bool(getattr(settings, 'shuffle', True))
+        self.shuffle_patches_in_frame = bool(
+            getattr(self._generation, 'shuffle_patches_in_frame', self.shuffle_frames)
+        )
+        self._use_context_branch = bool(getattr(settings, 'use_context_branch', False))
+        self._local_crop_size = normalize_size_pair(
+            getattr(settings, 'local_crop_size', None),
+            fallback=tuple(settings.generation.segment_size),
+        )
+        self._context_crop_size = normalize_size_pair(
+            getattr(settings, 'context_crop_size', None),
+            fallback=(self._local_crop_size[0] * 2, self._local_crop_size[1] * 2),
+        )
+        self._context_input_size = normalize_size_pair(
+            getattr(settings, 'context_input_size', None),
+            fallback=self._local_crop_size,
+        )
+        self._frame_size_xy = (
+            max(int(self._local_crop_size[0]), int(self._config.image_size_xy[0])),
+            max(int(self._local_crop_size[1]), int(self._config.image_size_xy[1])),
+        )
+        self._frame_count = max(0, int(sample_count))
+        self._parts_per_frame = max(
+            0,
+            int(
+                len(
+                    SampleCalculator(
+                        (int(self._frame_size_xy[1]), int(self._frame_size_xy[0])),
+                        self._generation,
+                    )
+                )
+            ),
+        )
+        self._sample_count = int(self._frame_count * self._parts_per_frame)
+        self._epoch_index = 0
+        self._frame_order = list(range(self._frame_count))
+        self._current_frame_index: int | None = None
+        self._current_frame_cutter: SampleFastCutter | None = None
+        self._frame_cache: OrderedDict[tuple[int, int, bool], SampleFastCutter] = OrderedDict()
+        self._frame_cache_limit = 2
+        defect_augmentor_cls = ICDefectAugmentor if self._config.topology_domain == 'ic' else PCBDefectAugmentor
+        self._defect_augmentor = (
+            defect_augmentor_cls(self._config.defects)
+            if self._apply_train_only_transforms and self._config.enabled and self._config.defects.enabled
+            else None
+        )
+
+    def __len__(self) -> int:
+        return self._sample_count
+
+    def set_epoch(self) -> None:
+        self._epoch_index += 1
+        if self.shuffle_frames:
+            random.shuffle(self._frame_order)
+        self._current_frame_index = None
+        self._current_frame_cutter = None
+        self._frame_cache.clear()
+
+    def describe_sample(self, idx: int) -> str:
+        frame, part = self._resolve_index(int(idx))
+        return f'synthetic_frame_{int(frame):06d}__part_{int(part):06d}'
+
+    def __getitem__(self, idx: int):
+        if idx < 0 or idx >= self._sample_count:
+            raise IndexError('dataset index out of range')
+        frame, part = self._resolve_index(int(idx))
+        if self._current_frame_index != frame:
+            self._current_frame_index = frame
+            self._current_frame_cutter = self._get_frame_cutter(
+                frame,
+                shuffle=self.shuffle_patches_in_frame,
+            )
+        if self._current_frame_cutter is None:
+            raise RuntimeError('Synthetic frame cutter is not initialized')
+        image, label = self._current_frame_cutter[part]
+        image_tensor = torch.from_numpy(np.ascontiguousarray(image)).float()
+        label_tensor = torch.from_numpy(np.ascontiguousarray(label)).float()
+
+        if not self._use_context_branch:
+            return image_tensor, label_tensor
+
+        context_image = self._build_context_crop(self._current_frame_cutter, part)
+        return {
+            'local_image': image_tensor,
+            'context_image': torch.from_numpy(np.ascontiguousarray(context_image)).float(),
+        }, label_tensor
+
+    def _resolve_index(self, idx: int) -> tuple[int, int]:
+        if self._parts_per_frame <= 0:
+            raise IndexError('synthetic dataset contains no patches')
+        frame = int(idx) // int(self._parts_per_frame)
+        part = int(idx) % int(self._parts_per_frame)
+        return frame, part
+
+    def _resolve_frame_id(self, frame_index: int) -> int:
+        if frame_index < 0 or frame_index >= len(self._frame_order):
+            raise IndexError('synthetic frame index out of range')
+        return int(self._frame_order[frame_index])
+
+    def _build_frame_cutter(self, frame_index: int, *, shuffle: bool) -> SampleFastCutter:
+        resolved_frame = self._resolve_frame_id(int(frame_index))
+        topology_generator = SyntheticTopologyGenerator(self._sample_topology_parameters(resolved_frame))
+        base_image, base_label = topology_generator.generate(
+            size_hw=(int(self._frame_size_xy[1]), int(self._frame_size_xy[0])),
+            channels=self.colors,
+            seed=self._sample_seed(resolved_frame, salt=0),
+        )
+        augmented_image, augmented_label = self._apply_defects(
+            base_image,
+            base_label,
+            seed=self._sample_seed(resolved_frame, salt=1),
+        )
+        random_state = random.getstate()
+        np_random_state = np.random.get_state()
+        frame_seed = self._sample_seed(resolved_frame, salt=2)
+        random.seed(frame_seed)
+        np.random.seed(frame_seed)
+        try:
+            return SampleFastCutter(
+                (
+                    np.asarray(augmented_image, dtype=np.float32).astype(np.float32, copy=False),
+                    np.asarray(augmented_label, dtype=np.float32).astype(np.float32, copy=False),
+                ),
+                self._generation,
+                shuffle=shuffle,
+            )
+        finally:
+            random.setstate(random_state)
+            np.random.set_state(np_random_state)
+
+    def _get_frame_cutter(self, frame_index: int, *, shuffle: bool) -> SampleFastCutter:
+        cache_key = (self._epoch_index, int(frame_index), bool(shuffle))
+        cached = self._frame_cache.get(cache_key)
+        if cached is not None:
+            self._frame_cache.move_to_end(cache_key)
+            return cached
+        cutter = self._build_frame_cutter(frame_index, shuffle=shuffle)
+        self._frame_cache[cache_key] = cutter
+        self._frame_cache.move_to_end(cache_key)
+        while len(self._frame_cache) > self._frame_cache_limit:
+            self._frame_cache.popitem(last=False)
+        return cutter
+
+    def _build_context_crop(self, cutter: SampleFastCutter, part: int) -> np.ndarray:
+        left, top, right, bottom = cutter.resolve_part_coordinates(part)
+        window = PatchWindow(
+            left=int(left),
+            top=int(top),
+            width=max(1, int(right - left)),
+            height=max(1, int(bottom - top)),
+        )
+        return extract_centered_crop(
+            cutter.image_matrix,
+            center_x=window.center_x,
+            center_y=window.center_y,
+            crop_size_xy=self._context_crop_size,
+            output_size_xy=self._context_input_size,
+            interpolation_mode='bilinear',
+        )
+
+    def _apply_defects(
+        self,
+        image: np.ndarray,
+        label: np.ndarray,
+        *,
+        seed: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        image_array = np.asarray(image, dtype=np.float32).astype(np.float32, copy=False)
+        label_array = np.asarray(label, dtype=np.float32).astype(np.float32, copy=False)
+        if self._defect_augmentor is None:
+            return image_array, label_array
+        augmented_image, _defect_mask, _augmented_mask = self._defect_augmentor(
+            image_array,
+            label_array,
+            seed=seed,
+            return_augmented_mask=True,
+        )
+        return (
+            np.asarray(augmented_image, dtype=np.float32).astype(np.float32, copy=False),
+            label_array,
+        )
+
+    def _sample_topology_parameters(self, idx: int) -> SyntheticTopologyParameters:
+        rng = np.random.default_rng(int(self._sample_seed(idx, salt=17)))
+        trace_count_range = tuple(self._config.trace_count_range)
+        background_noise_sigma_range = tuple(self._config.background_noise_sigma_range)
+        trace_noise_sigma_range = tuple(self._config.trace_noise_sigma_range)
+        return SyntheticTopologyParameters(
+            trace_count=int(rng.integers(int(trace_count_range[0]), int(trace_count_range[1]) + 1)),
+            segment_count_range=tuple(self._config.segment_count_range),
+            trace_half_width_range=tuple(self._config.trace_half_width_range),
+            margin=int(self._config.margin),
+            topology_domain=str(self._config.topology_domain),
+            topology_family=str(self._config.topology_family),
+            via_count_range=(1, max(1, min(6, int(round(float(trace_count_range[1]) / 3.0))))),
+            background_noise_sigma=float(
+                rng.uniform(float(background_noise_sigma_range[0]), float(background_noise_sigma_range[1]))
+            ),
+            trace_noise_sigma=float(
+                rng.uniform(float(trace_noise_sigma_range[0]), float(trace_noise_sigma_range[1]))
+            ),
+        )
+
+    def _sample_seed(self, idx: int, *, salt: int) -> int:
+        return hash((self._epoch_index, int(idx), self._frame_count, int(salt), 18679)) & 0xFFFFFFFF
 
 
 def summarise_list(datalist: list[int]):
@@ -460,54 +785,74 @@ class CustomDataset(Dataset):
 
     def __getitem__(self, idx):
         if self._defect_augmentor is not None:
-            image_pil = Image.open(self.samples[idx][0]).convert("RGB" if self.channels == 3 else "L")
-            label_pil = Image.open(self.samples[idx][1]).convert("L")
+            image_path = self.samples[idx][0]
+            label_path = self.samples[idx][1]
+            image_pil = retry_file_read(
+                lambda: Image.open(image_path).convert("RGB" if self.channels == 3 else "L"),
+                path=image_path,
+            )
+            label_pil = retry_file_read(
+                lambda: Image.open(label_path).convert("L"),
+                path=label_path,
+            )
             image_array = np.asarray(image_pil, dtype=np.float32)
             if self.channels == 1:
                 image_array = (image_array / 255.0)[None, :, :]
             else:
                 image_array = np.transpose(image_array, (2, 0, 1)) / 255.0
-            image_array = _apply_binary_tech_augmentation_with_seed(
+            label_array = (np.asarray(label_pil, dtype=np.float32) / 255.0)[None, :, :]
+            image_array, label_array = _apply_binary_tech_augmentation_to_pair_with_seed(
                 image_array,
+                label_array,
                 self._tech_augmentor,
                 binary_tolerance=self._tech_aug_binary_tolerance,
                 seed=self._sample_seed(idx),
             )
-            label_array = (np.asarray(label_pil, dtype=np.float32) / 255.0)[None, :, :]
-            augmented_image, defect_mask = self._defect_augmentor(
+            augmented_image, defect_mask, augmented_mask = self._defect_augmentor(
                 image_array,
                 label_array,
                 seed=self._sample_seed(idx),
+                return_augmented_mask=True,
             )
-            target_array = defect_mask if self._use_defect_mask_as_label else label_array
+            target_array = defect_mask if self._use_defect_mask_as_label else augmented_mask
             return (
                 torch.from_numpy(np.asarray(augmented_image, dtype=np.float32)).float(),
                 torch.from_numpy(np.asarray(target_array, dtype=np.float32)).float(),
             )
 
-        image = Image.open(self.samples[idx][0]).convert("RGB" if self.channels == 3 else "L")
+        image_path = self.samples[idx][0]
+        label_path = self.samples[idx][1]
+        image = retry_file_read(
+            lambda: Image.open(image_path).convert("RGB" if self.channels == 3 else "L"),
+            path=image_path,
+        )
 
         # Convert to tensor and normalize to [0., 1.]
         image_tensor = ToTensor()(image)
 
         # If needed, ensure the data type is float32
         image_tensor = image_tensor.float()
-        if self._tech_augmentor is not None:
-            augmented_image = _apply_binary_tech_augmentation_with_seed(
-                image_tensor.numpy(),
-                self._tech_augmentor,
-                binary_tolerance=self._tech_aug_binary_tolerance,
-                seed=self._sample_seed(idx),
-            )
-            image_tensor = torch.from_numpy(np.ascontiguousarray(augmented_image)).float()
 
-        label = Image.open(self.samples[idx][1]).convert("L")
+        label = retry_file_read(
+            lambda: Image.open(label_path).convert("L"),
+            path=label_path,
+        )
 
         # Convert to tensor and normalize to [0., 1.]
         label_tensor = ToTensor()(label)
 
         # If needed, ensure the data type is float32
         label_tensor = label_tensor.float()
+        if self._tech_augmentor is not None:
+            augmented_image, augmented_label = _apply_binary_tech_augmentation_to_pair_with_seed(
+                image_tensor.numpy(),
+                label_tensor.numpy(),
+                self._tech_augmentor,
+                binary_tolerance=self._tech_aug_binary_tolerance,
+                seed=self._sample_seed(idx),
+            )
+            image_tensor = torch.from_numpy(np.ascontiguousarray(augmented_image)).float()
+            label_tensor = torch.from_numpy(np.ascontiguousarray(augmented_label)).float()
 
         # if self.transform:
         #     image = self.transform(image)

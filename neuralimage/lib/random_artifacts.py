@@ -73,7 +73,9 @@ def _sample_artifact_parameters(artifact_type: str, patch_scale: float) -> dict[
             'postprocess': 'close_open_3',
             'microvoid_range': (0, 3),
             'alpha_out_scale': _scaled_range(patch_scale, 1.2, 2.4, min_low=0.7, min_high=1.0),
-            'alpha_in_depth': 0.18,
+            'alpha_in_depth': 0.04,
+            'alpha_noise_range': (0.94, 1.00),
+            'alpha_scale_range': (0.92, 1.00),
             'intensity_range_255': (150.0, 235.0),
             'intensity_mix': (0.42, 0.28, 0.18, 0.12),
             'edge_delta': (-18.0, -8.0),
@@ -98,6 +100,8 @@ def _sample_artifact_parameters(artifact_type: str, patch_scale: float) -> dict[
             'microvoid_range': (1, 5),
             'alpha_out_scale': _scaled_range(patch_scale, 2.2, 4.0, min_low=1.0, min_high=1.6),
             'alpha_in_depth': 0.35,
+            'alpha_noise_range': (0.72, 1.00),
+            'alpha_scale_range': (0.45, 1.00),
             'intensity_range_255': (105.0, 195.0),
             'intensity_mix': (0.22, 0.24, 0.18, 0.36),
             'edge_delta': (6.0, 16.0),
@@ -122,6 +126,8 @@ def _sample_artifact_parameters(artifact_type: str, patch_scale: float) -> dict[
             'microvoid_range': (1, 6),
             'alpha_out_scale': _scaled_range(patch_scale, 1.5, 2.8, min_low=0.8, min_high=1.1),
             'alpha_in_depth': 0.22,
+            'alpha_noise_range': (0.72, 1.00),
+            'alpha_scale_range': (0.45, 1.00),
             'intensity_range_255': (60.0, 145.0),
             'intensity_mix': (0.34, 0.18, 0.18, 0.30),
             'edge_delta': (6.0, 16.0),
@@ -146,6 +152,8 @@ def _sample_artifact_parameters(artifact_type: str, patch_scale: float) -> dict[
             'microvoid_range': (0, 2),
             'alpha_out_scale': _scaled_range(patch_scale, 1.0, 2.0, min_low=0.6, min_high=0.9),
             'alpha_in_depth': 0.14,
+            'alpha_noise_range': (0.72, 1.00),
+            'alpha_scale_range': (0.45, 1.00),
             'intensity_range_255': (55.0, 135.0),
             'intensity_mix': (0.55, 0.22, 0.15, 0.08),
             'edge_delta': (-18.0, -8.0),
@@ -169,7 +177,9 @@ def _sample_artifact_parameters(artifact_type: str, patch_scale: float) -> dict[
             'postprocess': 'close_5',
             'microvoid_range': (0, 4),
             'alpha_out_scale': _scaled_range(patch_scale, 1.0, 1.8, min_low=0.6, min_high=0.9),
-            'alpha_in_depth': 0.10,
+            'alpha_in_depth': 0.02,
+            'alpha_noise_range': (0.96, 1.00),
+            'alpha_scale_range': (0.95, 1.00),
             'intensity_range_255': (175.0, 248.0),
             'intensity_mix': (0.58, 0.20, 0.14, 0.08),
             'edge_delta': (-18.0, -8.0),
@@ -420,7 +430,8 @@ def alpha_from_mask(mask: np.ndarray, defect_type: str = 'dust', seed: int | Non
     alpha[inside] *= 1.0 - in_depth * _stable_exp_decay(dist_in[inside], edge_falloff)
 
     noise = fractal_noise(mask.shape, octaves=5, persistence=0.56, seed=_spawn_subseed(rng))
-    alpha *= 0.72 + (0.28 * noise)
+    noise_low, noise_high = tuple(params.get('alpha_noise_range', (0.72, 1.00)))
+    alpha *= float(noise_low) + ((float(noise_high) - float(noise_low)) * noise)
     alpha = cv2.GaussianBlur(alpha, (0, 0), _scale_value(float(max(mask.shape)), 0.8, minimum=0.4))
     return np.clip(alpha, 0.0, 1.0)
 
@@ -634,7 +645,7 @@ def generate_random_artifact_patch(
     edge_falloff = _edge_falloff_mask((int(height), int(width)), seed=int(rng.integers(0, 2**31 - 1)))
     params = _sample_artifact_parameters(artifact_type, float(max(height, width)))
     gray_level = float(rng.uniform(*tuple(params.get('gray_level_range', (0.35, 0.92)))))
-    alpha_scale = float(rng.uniform(0.45, 1.0))
+    alpha_scale = float(rng.uniform(*tuple(params.get('alpha_scale_range', (0.45, 1.0)))))
     intensity *= gray_level
     alpha *= edge_falloff ** 1.5
     alpha *= alpha_scale

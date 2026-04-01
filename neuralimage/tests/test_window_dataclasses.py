@@ -28,10 +28,14 @@ def test_settings_state_defaults():
     assert state.recognition_binarize_output is True
     assert state.recognition_use_auto_threshold is True
     assert state.recognition_threshold == 0.5
+    assert state.recognition_tta_enabled is False
+    assert state.confidence_tta_enabled is False
     assert state.recognition_postprocess is False
     assert state.recognition_postprocess_kernel_size == 3
+    assert state.confidence_save_mode == 'off'
     assert state.dice_loss_weight == 0.5
     assert state.iou_loss_weight == 0.5
+    assert state.deep_supervision is True
     assert state.warmup_enabled is False
     assert state.scheduler_name == 'off'
     assert state.scheduler_plateau_factor == 0.5

@@ -21,14 +21,35 @@ def connect_settings_panel_signals(panel: Any) -> None:
     _connect_noarg(panel.horizontal_rotation.clicked, panel.horisontal_rotate_clicked.emit)
     _connect_noarg(panel.vertical_rotation.clicked, panel.vertical_rotate_clicked.emit)
     _connect_noarg(panel.nn_model_type.currentIndexChanged, panel.model_changed.emit)
+    _connect_noarg(panel.deprecated_model_type.currentIndexChanged, panel.model_changed.emit)
+    _connect_noarg(panel.experimental_model_type.currentIndexChanged, panel.model_changed.emit)
 
     _connect_emitters(
         (
             panel.additional_augmentation_check_box.toggled,
+            panel.flip_x.toggled,
+            panel.flip_y.toggled,
             panel.random_crop_check_box.toggled,
             panel.crops_per_image_spinbox.valueChanged,
             panel.scale_augmentation_check_box.toggled,
             panel.scale_augmentation_strength_spinbox.valueChanged,
+            panel.synthetic_defect_generator_check_box.toggled,
+            panel.synthetic_topology_domain_combo.currentIndexChanged,
+            panel.pcb_topology_family_combo.currentIndexChanged,
+            panel.ic_topology_family_combo.currentIndexChanged,
+            panel.synthetic_dataset_factor_spinbox.valueChanged,
+            panel.synthetic_image_width_spinbox.valueChanged,
+            panel.synthetic_image_height_spinbox.valueChanged,
+            panel.synthetic_trace_count_min_spinbox.valueChanged,
+            panel.synthetic_trace_count_max_spinbox.valueChanged,
+            panel.synthetic_segment_count_min_spinbox.valueChanged,
+            panel.synthetic_segment_count_max_spinbox.valueChanged,
+            panel.synthetic_trace_half_width_min_spinbox.valueChanged,
+            panel.synthetic_trace_half_width_max_spinbox.valueChanged,
+            panel.synthetic_background_noise_sigma_min_spinbox.valueChanged,
+            panel.synthetic_background_noise_sigma_max_spinbox.valueChanged,
+            panel.synthetic_trace_noise_sigma_min_spinbox.valueChanged,
+            panel.synthetic_trace_noise_sigma_max_spinbox.valueChanged,
             panel.tech_augmentation_check_box.toggled,
             panel.tech_augmentation_debug_pair_check_box.toggled,
             panel.tech_aug_min_operations_spinbox.valueChanged,
@@ -73,6 +94,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.learning_rate_spinbox.valueChanged,
             panel.weight_decay_spinbox.valueChanged,
             panel.mixed_precision_type.currentIndexChanged,
+            panel.deep_supervision_check_box.toggled,
             panel.train_batch_spinbox.valueChanged,
             panel.dataloader_num_workers_spinbox.valueChanged,
             panel.recognition_batch_spinbox.valueChanged,
@@ -81,6 +103,9 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.recognition_binarize_output_check_box.toggled,
             panel.recognition_use_auto_threshold_check_box.toggled,
             panel.recognition_threshold_spinbox.valueChanged,
+            panel.recognition_tta_check_box.toggled,
+            panel.confidence_tta_check_box.toggled,
+            panel.confidence_save_mode_combo.currentIndexChanged,
             panel.recognition_postprocess_check_box.toggled,
             panel.recognition_postprocess_kernel_size_spinbox.valueChanged,
             panel.multi_gpu_mode_combo.currentIndexChanged,
@@ -133,6 +158,10 @@ def connect_settings_panel_signals(panel: Any) -> None:
         tuple(spinbox.valueChanged for spinbox in getattr(panel, 'pcb_defect_type_spinboxes', {}).values()),
         panel.optimizer_settings_changed,
     )
+    _connect_emitters(
+        tuple(spinbox.valueChanged for spinbox in getattr(panel, 'ic_defect_type_spinboxes', {}).values()),
+        panel.optimizer_settings_changed,
+    )
     for loss_name in getattr(panel, 'loss_term_checkboxes', {}):
         _connect_emitters(
             (
@@ -144,9 +173,14 @@ def connect_settings_panel_signals(panel: Any) -> None:
     _connect_emitters(
         (
             panel.additional_augmentation_check_box.toggled,
+            panel.flip_x.toggled,
+            panel.flip_y.toggled,
             panel.random_crop_check_box.toggled,
             panel.crops_per_image_spinbox.valueChanged,
             panel.scale_augmentation_check_box.toggled,
+            panel.synthetic_defect_generator_check_box.toggled,
+            panel.synthetic_image_width_spinbox.valueChanged,
+            panel.synthetic_image_height_spinbox.valueChanged,
             panel.cut_dataset_type.toggled,
             panel.no_cut_dataset_type.toggled,
             panel.shift_spinbox.valueChanged,
@@ -172,6 +206,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
     _connect_noarg(panel.validation_image_path_label.clicked, panel.validation_image_path_requested.emit)
     _connect_noarg(panel.validation_label_path_label.clicked, panel.validation_label_path_requested.emit)
     _connect_noarg(panel.reset_defaults_button.clicked, panel.reset_defaults_requested.emit)
+    _connect_noarg(panel.augmentation_preview_button.clicked, panel.augmentation_preview_requested.emit)
     _connect_noarg(panel.edit_rare_regions_button.clicked, panel.rare_patch_editor_requested.emit)
 
     panel.train_patch_x_size.valueChanged.connect(panel._sync_patch_size_controls)
@@ -186,7 +221,8 @@ def connect_settings_panel_signals(panel: Any) -> None:
     panel.random_crop_check_box.toggled.connect(
         lambda *_args, **_kwargs: panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
     )
-    panel.tech_augmentation_check_box.toggled.connect(panel._sync_tech_augmentation_controls)
+    panel.synthetic_defect_generator_check_box.toggled.connect(panel._sync_synthetic_defect_generator_controls)
+    panel.synthetic_topology_domain_combo.currentIndexChanged.connect(panel._sync_synthetic_domain_controls)
     panel.cut_dataset_type.toggled.connect(
         lambda *_args, **_kwargs: panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
     )
@@ -199,7 +235,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
     panel.cutout_check_box.toggled.connect(panel._sync_training_augmentation_controls)
     panel.random_artifacts_check_box.toggled.connect(panel._sync_training_augmentation_controls)
     panel.mixup_check_box.toggled.connect(panel._sync_training_augmentation_controls)
-    panel.pcb_defects_check_box.toggled.connect(panel._sync_training_augmentation_controls)
+    panel.synthetic_defect_generator_check_box.toggled.connect(panel._sync_training_augmentation_controls)
     panel.cut_dataset_type.toggled.connect(panel._sync_rare_patch_oversampling_controls)
     panel.no_cut_dataset_type.toggled.connect(panel._sync_rare_patch_oversampling_controls)
     panel.recognition_binarize_output_check_box.toggled.connect(panel._sync_recognition_output_controls)

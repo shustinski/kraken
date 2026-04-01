@@ -11,6 +11,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+from lib.file_retry import retry_file_read
 from . import CNN_Models, blocks, transformer_segmentation
 from .registrator import create_model, get_registered_models
 
@@ -113,14 +114,23 @@ def _torch_load_with_safe_globals(
     add_safe_globals = getattr(serialization, 'add_safe_globals', None) if serialization is not None else None
     if callable(safe_globals_ctx) and allowed_globals:
         with safe_globals_ctx(allowed_globals):
-            return torch.load(path, map_location=map_location, weights_only=True)
+            return retry_file_read(
+                lambda: torch.load(path, map_location=map_location, weights_only=True),
+                path=path,
+            )
 
     if callable(add_safe_globals) and allowed_globals:
         add_safe_globals(allowed_globals)
-        return torch.load(path, map_location=map_location, weights_only=True)
+        return retry_file_read(
+            lambda: torch.load(path, map_location=map_location, weights_only=True),
+            path=path,
+        )
 
     with nullcontext():
-        return torch.load(path, map_location=map_location, weights_only=True)
+        return retry_file_read(
+            lambda: torch.load(path, map_location=map_location, weights_only=True),
+            path=path,
+        )
 
 
 def _load_torch_safe_weights_only(
@@ -236,7 +246,19 @@ def _build_model_from_state_dict(
 
     normalized_model_kwargs = _coerce_model_kwargs(model_kwargs)
     model = create_model(str(model_name), int(resolved_channels), **normalized_model_kwargs)
-    model.load_state_dict(state_dict)
+    load_result = model.load_state_dict(state_dict, strict=False)
+    allowed_missing_prefixes = ('confidence_head.',)
+    missing_keys = [
+        str(key)
+        for key in getattr(load_result, 'missing_keys', [])
+        if not any(str(key).startswith(prefix) for prefix in allowed_missing_prefixes)
+    ]
+    unexpected_keys = [str(key) for key in getattr(load_result, 'unexpected_keys', [])]
+    if missing_keys or unexpected_keys:
+        raise RuntimeError(
+            'Model state_dict is incompatible with the requested architecture. '
+            f'missing_keys={missing_keys}, unexpected_keys={unexpected_keys}'
+        )
     return _attach_model_metadata(
         model,
         model_name=str(model_name),
@@ -354,7 +376,10 @@ def load_model_artifact(
             f'Set {_UNSAFE_MODEL_LOAD_ENV}=1 only for trusted legacy models.{extra}'
         )
 
-    legacy_payload = torch.load(path, map_location=map_location, weights_only=False)
+    legacy_payload = retry_file_read(
+        lambda: torch.load(path, map_location=map_location, weights_only=False),
+        path=path,
+    )
     legacy_model = _load_model_from_safe_payload(
         legacy_payload,
         model_name_fallback=model_name_fallback,

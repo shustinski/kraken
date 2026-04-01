@@ -120,6 +120,7 @@ def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
     assert training.early_stopping.patience == 7
     assert training.early_stopping.min_delta == 0.005
     assert training.early_stopping.restore_best_weights is False
+    assert training.deep_supervision is True
 
 
 def test_build_workflow_parameters_maps_separate_crop_and_resize_flags():
@@ -196,6 +197,34 @@ def test_build_workflow_parameters_maps_frame_and_patch_shuffle_flags_separately
     assert training.generation.crops_per_image == 17
 
 
+def test_build_workflow_parameters_maps_flip_flags():
+    source = make_test_dir("workflow_source_flips")
+    result = make_test_dir("workflow_result_flips")
+    sample = make_test_dir("workflow_sample_flips")
+    label = make_test_dir("workflow_label_flips")
+
+    main = MainWindowState(
+        work_mode='train_only',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(
+        flip_x=True,
+        flip_y=True,
+        horizontal_rotation=False,
+        vertical_rotation=True,
+    )
+
+    _, training, _ = build_workflow_parameters(main, settings)
+
+    assert training.generation.flip_x is True
+    assert training.generation.flip_y is True
+    assert training.generation.vertical_rotation is True
+
+
 def test_build_workflow_parameters_maps_recognition_output_parameters():
     source = make_test_dir("workflow_source_jpeg_quality")
     result = make_test_dir("workflow_result_jpeg_quality")
@@ -217,8 +246,11 @@ def test_build_workflow_parameters_maps_recognition_output_parameters():
         recognition_binarize_output=False,
         recognition_use_auto_threshold=False,
         recognition_threshold=0.61,
+        recognition_tta_enabled=True,
+        confidence_tta_enabled=True,
         recognition_postprocess=True,
         recognition_postprocess_kernel_size=5,
+        confidence_save_mode='separate_grayscale',
     )
 
     _, _, recognition = build_workflow_parameters(main, settings)
@@ -228,8 +260,11 @@ def test_build_workflow_parameters_maps_recognition_output_parameters():
     assert recognition.binarize_output is False
     assert recognition.use_auto_threshold is False
     assert recognition.threshold == 0.61
+    assert recognition.recognition_tta_enabled is True
+    assert recognition.confidence_tta_enabled is True
     assert recognition.postprocess_enabled is True
     assert recognition.postprocess_kernel_size == 5
+    assert recognition.confidence_save_mode == 'separate_grayscale'
 
 
 def test_build_workflow_parameters_defers_recognition_source_indexing():
@@ -388,7 +423,7 @@ def test_build_workflow_parameters_keeps_recognition_patch_size_when_sync_disabl
     assert recognition.part_size == (320, 224)
 
 
-def test_build_workflow_parameters_maps_pcb_defects():
+def test_build_workflow_parameters_migrates_legacy_pcb_defects_into_synthetic_generator():
     source = make_test_dir("workflow_source_pcb_defects")
     result = make_test_dir("workflow_result_pcb_defects")
     sample = make_test_dir("workflow_sample_pcb_defects")
@@ -424,6 +459,10 @@ def test_build_workflow_parameters_maps_pcb_defects():
     assert training.pcb_defects.min_defects == 2
     assert training.pcb_defects.max_defects == 4
     assert training.pcb_defects.use_input_mask is True
-    assert training.pcb_defects.use_defect_mask_as_label is True
+    assert training.pcb_defects.use_defect_mask_as_label is False
     assert training.pcb_defects.defect_probabilities['break'] == 1.0
     assert training.pcb_defects.defect_probabilities['short'] == 0.0
+    assert training.synthetic_defect_generator.enabled is True
+    assert training.synthetic_defect_generator.defects.defect_probability == 0.8
+    assert training.synthetic_defect_generator.defects.min_defects == 2
+    assert training.synthetic_defect_generator.defects.max_defects == 4

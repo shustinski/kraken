@@ -223,6 +223,7 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
         context_branch_channels=tuple(int(value) for value in raw.get('context_branch_channels', [16, 32, 64, 128])),
         fusion_type=str(raw.get('fusion_type', 'concat')),
         use_context_branch=bool(raw.get('use_context_branch', default_context_branch)),
+        deep_supervision=bool(raw.get('deep_supervision', True)),
         dataloader_num_workers=int(raw.get('dataloader_num_workers', -1)),
         pcb_defects=build_pcb_defect_parameters(pcb_defects_raw),
     )
@@ -303,6 +304,7 @@ def _config_template() -> dict[str, Any]:
             'context_branch_channels': [16, 32, 64, 128],
             'fusion_type': 'concat',
             'use_context_branch': True,
+            'deep_supervision': True,
             'generation': {
                 'step': 128,
                 'segment_size': [256, 256],

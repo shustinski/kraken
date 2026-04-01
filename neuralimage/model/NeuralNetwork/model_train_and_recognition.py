@@ -16,7 +16,7 @@ from queue import Empty
 from collections import deque
 from collections.abc import Callable, Mapping, Sized
 from contextlib import nullcontext
-from typing import Any, ContextManager, Protocol, cast
+from typing import Any, ContextManager, Iterator, Protocol, cast
 
 import multiprocessing as mp
 import threading
@@ -50,12 +50,15 @@ from lib.data_interfaces import (
     HardMiningParameters,
     normalize_multi_gpu_mode,
 )
+from lib.file_retry import retry_file_read
 from lib.file_func import filter_images
 from lib.func import get_input_channels
 from lib.images import ImagePreparator, SampleCalculator
+from lib.images import _build_enabled_transform_variants
 from lib.loss_config import format_loss_formula, resolve_loss_term_weights, sanitize_loss_term_weights
 from lib.message_bus import AbstractMessageBus
 from lib.random_artifacts import generate_random_artifact_patch
+from model.NeuralNetwork.blocks import extract_confidence_output, extract_mask_outputs
 from model.NeuralNetwork.context_utils import normalize_size_pair
 from model.NeuralNetwork.model_io import load_model_artifact, save_model_artifact
 from model.NeuralNetwork.recognition_pipeline import (
@@ -85,6 +88,8 @@ FOCAL_TVERSKY_BETA = 0.7
 BOUNDARY_LOSS_KERNEL_SIZE = 3
 CLDICE_SKELETON_ITERATIONS = 16
 VALIDATION_THRESHOLD_CANDIDATES: tuple[float, ...] = tuple(value / 100.0 for value in range(10, 95, 5))
+DEEP_SUPERVISION_DECAY = 0.5
+CONFIDENCE_LOSS_WEIGHT = 0.2
 RECOGNITION_AUX_WORKERS_PER_GPU = 4
 VALIDATION_EXPORT_CACHE_MAX_BYTES = 512 * 1024 * 1024
 _ARTIFACT_NAME_SANITIZE_PATTERN = re.compile(r'[^A-Za-z0-9._-]+')
@@ -327,7 +332,7 @@ class _PreparedTrainBatch:
 
 @dataclass
 class _TrainStepResult:
-    outputs: torch.Tensor
+    outputs: Any
     per_sample_loss: torch.Tensor
     metric_loss: torch.Tensor | float | None = None
     batch_loss: torch.Tensor | float | None = None
@@ -1156,14 +1161,14 @@ class TrainerProcess(mp.Process):
                 ),
             ]
             self._render_chart_image(
-                save_path=artifact_dir / f'training_metrics_train_loss_epoch_{int(last_epoch):04d}.png',
+                save_path=artifact_dir / 'training_metrics_train_loss_by_batch.png',
                 title=f'Train Loss vs Batch (Epoch {int(last_epoch)})',
                 x_label='Batch',
                 y_label='Loss',
                 series=batch_chart_series,
             )
             self._save_chart_csv(
-                save_path=artifact_dir / f'training_metrics_train_loss_epoch_{int(last_epoch):04d}.csv',
+                save_path=artifact_dir / 'training_metrics_train_loss_by_batch.csv',
                 x_label='Batch',
                 series=batch_chart_series,
             )
@@ -1381,7 +1386,10 @@ class TrainerProcess(mp.Process):
             return 0, {}
 
         try:
-            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+            checkpoint = retry_file_read(
+                lambda: torch.load(checkpoint_path, map_location='cpu', weights_only=True),
+                path=checkpoint_path,
+            )
             model_state = checkpoint.get('model_state_dict')
             optimizer_state = checkpoint.get('optimizer_state_dict')
             scaler_state = checkpoint.get('scaler_state_dict')
@@ -1619,8 +1627,56 @@ class TrainerProcess(mp.Process):
         return bool(torch.isfinite(tensor).all())
 
     @staticmethod
-    def _sanitize_outputs_for_loss(outputs: torch.Tensor) -> torch.Tensor:
+    def _extract_primary_output_tensor(outputs: Any) -> torch.Tensor:
+        outputs = extract_mask_outputs(outputs)
+        if torch.is_tensor(outputs):
+            return outputs
+        if isinstance(outputs, (list, tuple)) and outputs:
+            primary = outputs[0]
+            if torch.is_tensor(primary):
+                return primary
+        raise TypeError('Model must return a tensor or a non-empty sequence of tensors.')
+
+    @staticmethod
+    def _deep_supervision_weights(count: int) -> tuple[float, ...]:
+        resolved_count = max(1, int(count))
+        weights = [DEEP_SUPERVISION_DECAY ** index for index in range(resolved_count)]
+        total = sum(weights)
+        if total <= 0.0:
+            return tuple(1.0 / float(resolved_count) for _ in range(resolved_count))
+        return tuple(float(weight / total) for weight in weights)
+
+    def _iter_supervised_output_tensors(self, outputs: Any) -> tuple[torch.Tensor, ...]:
+        outputs = extract_mask_outputs(outputs)
+        if torch.is_tensor(outputs):
+            return (self._sanitize_outputs_for_loss(outputs),)
+        if not isinstance(outputs, (list, tuple)) or not outputs:
+            raise TypeError('Model must return a tensor or a non-empty sequence of tensors.')
+
+        sanitized_outputs: list[torch.Tensor] = []
+        for output in outputs:
+            if not torch.is_tensor(output):
+                raise TypeError('All deep supervision outputs must be tensors.')
+            sanitized_outputs.append(self._sanitize_outputs_for_loss(output))
+        return tuple(sanitized_outputs)
+
+    def _resize_output_like_label(self, outputs: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
+        if outputs.shape[-2:] == label.shape[-2:]:
+            return outputs
+        return F.interpolate(outputs, size=label.shape[-2:], mode='bilinear', align_corners=False)
+
+    def _sanitize_outputs_for_loss(self, outputs: Any) -> torch.Tensor:
+        outputs = self._extract_primary_output_tensor(outputs)
         sanitized = torch.where(torch.isnan(outputs), torch.zeros_like(outputs), outputs)
+        sanitized = torch.where(torch.isposinf(sanitized), torch.full_like(sanitized, 20.0), sanitized)
+        sanitized = torch.where(torch.isneginf(sanitized), torch.full_like(sanitized, -20.0), sanitized)
+        return torch.clamp(sanitized, min=-20.0, max=20.0)
+
+    def _extract_confidence_output_tensor(self, outputs: Any) -> torch.Tensor | None:
+        confidence = extract_confidence_output(outputs)
+        if confidence is None:
+            return None
+        sanitized = torch.where(torch.isnan(confidence), torch.zeros_like(confidence), confidence)
         sanitized = torch.where(torch.isposinf(sanitized), torch.full_like(sanitized, 20.0), sanitized)
         sanitized = torch.where(torch.isneginf(sanitized), torch.full_like(sanitized, -20.0), sanitized)
         return torch.clamp(sanitized, min=-20.0, max=20.0)
@@ -1860,8 +1916,16 @@ class TrainerProcess(mp.Process):
         target_boundary_flat = target_boundary.view(target_boundary.shape[0], -1)
         eps = 1e-6
         intersection = (pred_boundary_flat * target_boundary_flat).sum(dim=1)
-        denom = pred_boundary_flat.sum(dim=1) + target_boundary_flat.sum(dim=1)
+        pred_boundary_mass = pred_boundary_flat.sum(dim=1)
+        target_boundary_mass = target_boundary_flat.sum(dim=1)
+        denom = pred_boundary_mass + target_boundary_mass
         boundary_loss = 1.0 - ((2.0 * intersection + eps) / (denom + eps))
+        empty_target_mask = target_boundary_mass <= eps
+        if bool(empty_target_mask.any()):
+            pixel_count = max(1, int(pred_boundary_flat.shape[1]))
+            empty_target_penalty = pred_boundary_mass / float(pixel_count)
+            empty_target_penalty = torch.clamp(empty_target_penalty, min=0.0, max=1.0)
+            boundary_loss = torch.where(empty_target_mask, empty_target_penalty, boundary_loss)
         boundary_loss = torch.nan_to_num(boundary_loss, nan=1.0, posinf=50.0, neginf=0.0)
         return torch.clamp(boundary_loss, min=0.0, max=50.0)
 
@@ -1943,8 +2007,48 @@ class TrainerProcess(mp.Process):
             + eps
         )
         focal_tversky_loss = torch.pow(1.0 - tversky, FOCAL_LOSS_GAMMA)
+        empty_target_mask = label_flat.sum(dim=1) <= eps
+        if bool(empty_target_mask.any()):
+            pixel_count = max(1, int(probs_flat.shape[1]))
+            empty_target_penalty = false_positive / float(pixel_count)
+            empty_target_penalty = torch.clamp(empty_target_penalty, min=0.0, max=1.0)
+            focal_tversky_loss = torch.where(empty_target_mask, empty_target_penalty, focal_tversky_loss)
         focal_tversky_loss = torch.nan_to_num(focal_tversky_loss, nan=1.0, posinf=50.0, neginf=0.0)
         return torch.clamp(focal_tversky_loss, min=0.0, max=50.0)
+
+    @staticmethod
+    def _compute_soft_overlap_losses_per_sample(
+        probs_flat: torch.Tensor,
+        label_flat: torch.Tensor,
+        *,
+        eps: float = 1e-6,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        intersection = (probs_flat * label_flat).sum(dim=1)
+        pred_mass = probs_flat.sum(dim=1)
+        target_mass = label_flat.sum(dim=1)
+
+        dice_denom = pred_mass + target_mass
+        dice = (2.0 * intersection + eps) / (dice_denom + eps)
+        dice_per_sample = 1.0 - dice
+
+        union = pred_mass + target_mass - intersection
+        iou = (intersection + eps) / (union + eps)
+        iou_per_sample = 1.0 - iou
+
+        empty_target_mask = target_mass <= eps
+        if bool(empty_target_mask.any()):
+            pixel_count = max(1, int(probs_flat.shape[1]))
+            empty_target_penalty = pred_mass / float(pixel_count)
+            empty_target_penalty = torch.clamp(empty_target_penalty, min=0.0, max=1.0)
+            dice_per_sample = torch.where(empty_target_mask, empty_target_penalty, dice_per_sample)
+            iou_per_sample = torch.where(empty_target_mask, empty_target_penalty, iou_per_sample)
+
+        dice_per_sample = torch.nan_to_num(dice_per_sample, nan=1.0, posinf=50.0, neginf=0.0)
+        iou_per_sample = torch.nan_to_num(iou_per_sample, nan=1.0, posinf=50.0, neginf=0.0)
+        return (
+            torch.clamp(dice_per_sample, min=0.0, max=50.0),
+            torch.clamp(iou_per_sample, min=0.0, max=50.0),
+        )
 
     def _compute_single_per_sample_loss(
         self,
@@ -1978,10 +2082,10 @@ class TrainerProcess(mp.Process):
             valid_flat = valid_mask.view(valid_mask.shape[0], -1)
             probs_flat = probs_flat * valid_flat
             label_flat = label_flat * valid_flat
-            eps = 1e-6
-            intersection = (probs_flat * label_flat).sum(dim=1)
-            denom = probs_flat.sum(dim=1) + label_flat.sum(dim=1)
-            dice_per_sample = 1.0 - ((2.0 * intersection + eps) / (denom + eps))
+            dice_per_sample, _ = self._compute_soft_overlap_losses_per_sample(
+                probs_flat,
+                label_flat,
+            )
             dice_weight = self._resolved_dice_weight()
             mixed = ((1.0 - dice_weight) * ce_per_sample) + (dice_weight * dice_per_sample)
             mixed = torch.nan_to_num(mixed, nan=1.0, posinf=50.0, neginf=0.0)
@@ -2012,18 +2116,14 @@ class TrainerProcess(mp.Process):
         probs = torch.sigmoid(outputs)
         probs_flat = probs.view(probs.shape[0], -1)
         label_flat = label.view(label.shape[0], -1)
-        eps = 1e-6
-        intersection = (probs_flat * label_flat).sum(dim=1)
-        denom = probs_flat.sum(dim=1) + label_flat.sum(dim=1)
-        dice = (2.0 * intersection + eps) / (denom + eps)
-        dice_per_sample = 1.0 - dice
-        union = probs_flat.sum(dim=1) + label_flat.sum(dim=1) - intersection
-        iou = (intersection + eps) / (union + eps)
-        iou_per_sample = 1.0 - iou
+        dice_per_sample, iou_per_sample = self._compute_soft_overlap_losses_per_sample(
+            probs_flat,
+            label_flat,
+        )
         if loss_mode == 'dice':
             return dice_per_sample
         if loss_mode == 'iou':
-            return torch.clamp(torch.nan_to_num(iou_per_sample, nan=1.0, posinf=50.0, neginf=0.0), min=0.0, max=50.0)
+            return iou_per_sample
 
         if loss_mode in ('bce_dice', 'focal_dice'):
             dice_weight = self._resolved_dice_weight()
@@ -2036,7 +2136,7 @@ class TrainerProcess(mp.Process):
         mixed = torch.nan_to_num(mixed, nan=1.0, posinf=50.0, neginf=0.0)
         return torch.clamp(mixed, min=0.0, max=50.0)
 
-    def _compute_per_sample_loss(
+    def _compute_per_sample_loss_for_logits(
         self,
         outputs: torch.Tensor,
         label: torch.Tensor,
@@ -2068,6 +2168,78 @@ class TrainerProcess(mp.Process):
             return torch.clamp(torch.nan_to_num(fallback_loss, nan=1.0, posinf=50.0, neginf=0.0), min=0.0, max=50.0)
         combined_loss = torch.nan_to_num(combined_loss, nan=1.0, posinf=50.0, neginf=0.0)
         return torch.clamp(combined_loss, min=0.0, max=50.0)
+
+    def _compute_per_sample_loss(
+        self,
+        outputs: Any,
+        label: torch.Tensor,
+        bce_criterion: nn.Module,
+        *,
+        apply_pixel_mining: bool = False,
+    ) -> torch.Tensor:
+        label = self._sanitize_labels_for_loss(label)
+        supervised_outputs = self._iter_supervised_output_tensors(outputs)
+        primary_output = self._resize_output_like_label(supervised_outputs[0], label)
+        if len(supervised_outputs) == 1:
+            combined_loss = self._compute_per_sample_loss_for_logits(
+                supervised_outputs[0],
+                label,
+                bce_criterion,
+                apply_pixel_mining=apply_pixel_mining,
+            )
+        else:
+            combined_loss: torch.Tensor | None = None
+            for output_weight, output_tensor in zip(
+                self._deep_supervision_weights(len(supervised_outputs)),
+                supervised_outputs,
+            ):
+                resized_output = self._resize_output_like_label(output_tensor, label)
+                output_loss = self._compute_per_sample_loss_for_logits(
+                    resized_output,
+                    label,
+                    bce_criterion,
+                    apply_pixel_mining=apply_pixel_mining,
+                )
+                weighted_loss = output_loss * float(output_weight)
+                combined_loss = weighted_loss if combined_loss is None else (combined_loss + weighted_loss)
+
+            if combined_loss is None:
+                raise RuntimeError('Deep supervision loss aggregation produced no supervised outputs.')
+            combined_loss = torch.nan_to_num(combined_loss, nan=1.0, posinf=50.0, neginf=0.0)
+            combined_loss = torch.clamp(combined_loss, min=0.0, max=50.0)
+
+        confidence_output = self._extract_confidence_output_tensor(outputs)
+        if confidence_output is None:
+            return combined_loss
+        confidence_output = self._resize_output_like_label(confidence_output, label)
+        confidence_target = 1.0 - torch.abs(torch.sigmoid(primary_output).detach() - label)
+        confidence_target = torch.clamp(
+            torch.nan_to_num(confidence_target, nan=0.0, posinf=1.0, neginf=0.0),
+            min=0.0,
+            max=1.0,
+        )
+        confidence_loss_map = F.binary_cross_entropy_with_logits(
+            confidence_output,
+            confidence_target,
+            reduction='none',
+        )
+        confidence_loss_per_sample = self._reduce_loss_map_per_sample(
+            confidence_loss_map,
+            loss_mode='confidence',
+            apply_pixel_mining=False,
+        )
+        confidence_loss_per_sample = torch.nan_to_num(
+            confidence_loss_per_sample,
+            nan=1.0,
+            posinf=50.0,
+            neginf=0.0,
+        )
+        confidence_loss_per_sample = torch.clamp(confidence_loss_per_sample, min=0.0, max=50.0)
+        return torch.clamp(
+            combined_loss + (confidence_loss_per_sample * float(CONFIDENCE_LOSS_WEIGHT)),
+            min=0.0,
+            max=50.0,
+        )
 
     @staticmethod
     def _compute_binary_metrics(
@@ -2168,7 +2340,7 @@ class TrainerProcess(mp.Process):
             for image_path, _label_path in getattr(base_dataset, 'samples', []):
                 image_file = Path(image_path)
                 try:
-                    with Image.open(image_file) as source_image:
+                    with retry_file_read(lambda: Image.open(image_file), path=image_file) as source_image:
                         width, height = source_image.size
                 except OSError:
                     continue
@@ -2220,20 +2392,16 @@ class TrainerProcess(mp.Process):
         scale_variant = 0
         if bool(getattr(cut_settings, 'scale_augmentation', False)):
             loc, scale_variant = divmod(loc, 2)
-
-        if bool(getattr(cut_settings, 'vertical_rotation', False)) and bool(getattr(cut_settings, 'horizontal_rotation', False)):
-            location = loc // 4
-            rotation_index = loc % 4
-        elif bool(getattr(cut_settings, 'horizontal_rotation', False)):
-            location = loc // 3
-            rotation_index = 2 - (loc % 3)
-        elif bool(getattr(cut_settings, 'vertical_rotation', False)):
-            location = loc // 2
-            rotation_index = 2 * (loc % 2)
-        else:
-            location = loc
-            rotation_index = 0
-        return int(location), int(rotation_index), int(scale_variant), int(augmentation_variant)
+        transform_variants = _build_enabled_transform_variants(
+            enable_rotate_180=bool(getattr(cut_settings, 'vertical_rotation', False)),
+            enable_rotate_90=bool(getattr(cut_settings, 'horizontal_rotation', False)),
+            enable_flip_x=bool(getattr(cut_settings, 'flip_x', False)),
+            enable_flip_y=bool(getattr(cut_settings, 'flip_y', False)),
+            square_patch=bool(getattr(base_dataset, '_sample_x', 0) == getattr(base_dataset, '_sample_y', 0)),
+        )
+        transform_count = max(1, len(transform_variants))
+        location, transform_index = divmod(int(loc), transform_count)
+        return int(location), int(transform_index), int(scale_variant), int(augmentation_variant)
 
     @staticmethod
     def _build_no_cut_frame_part_lookup(
@@ -2263,7 +2431,7 @@ class TrainerProcess(mp.Process):
             for image_path, _label_path in getattr(base_dataset, 'samples', []):
                 image_file = Path(image_path)
                 try:
-                    with Image.open(image_file) as source_image:
+                    with retry_file_read(lambda: Image.open(image_file), path=image_file) as source_image:
                         width, height = source_image.size
                 except OSError:
                     return None
@@ -2473,6 +2641,22 @@ class TrainerProcess(mp.Process):
             except Exception:
                 pass
         return f'sample_{int(fallback_index):06d}'
+
+    def _describe_train_preview_sample(self, sample_indices: Any, fallback_batch_index: int) -> str:
+        resolved_indices = self._resolve_validation_sample_indices(sample_indices)
+        if resolved_indices:
+            sample_index = int(resolved_indices[0])
+            dataset = getattr(getattr(self, '_train_dataloader', None), 'dataset', None)
+            describe_fn = getattr(dataset, 'describe_sample', None)
+            if callable(describe_fn):
+                try:
+                    sample_name = str(describe_fn(sample_index)).strip()
+                    if sample_name:
+                        return Path(sample_name).name
+                except Exception:
+                    pass
+            return f'sample_{sample_index:06d}'
+        return f'batch_{int(fallback_batch_index) + 1:06d}'
 
     def _save_validation_binary_predictions(
         self,
@@ -2937,7 +3121,7 @@ class TrainerProcess(mp.Process):
         self._bus.put(['logging', f'torch.compile disabled at runtime (fallback): {error}'])
         return True
 
-    def _forward_model(self, image: Any) -> torch.Tensor:
+    def _forward_model(self, image: Any) -> Any:
         try:
             return self._model(image)
         except Exception as error:
@@ -3722,8 +3906,9 @@ class TrainerProcess(mp.Process):
         train_size: int,
         data: Any,
         target: Any,
-        outputs: torch.Tensor,
+        outputs: Any,
         preview_stride: int,
+        sample_indices: Any = None,
     ) -> None:
         if not self._show_batch_preview:
             return
@@ -3731,13 +3916,15 @@ class TrainerProcess(mp.Process):
             return
         preview_image = self._tensor_to_preview_array(data[0])
         preview_label = self._tensor_to_preview_array(target[0])
-        preview_outputs = self._tensor_to_preview_array(torch.sigmoid(outputs[0].detach()))
+        primary_outputs = self._sanitize_outputs_for_loss(outputs)
+        preview_outputs = self._tensor_to_preview_array(torch.sigmoid(primary_outputs[0].detach()))
         self._bus.put([
             'metrics',
             {
                 'type': 'train_batch_preview',
                 'epoch': int(epoch + 1),
                 'batch_index': int(batch_index + 1),
+                'sample_name': self._describe_train_preview_sample(sample_indices, batch_index),
                 'image': preview_image,
                 'label': preview_label,
                 'outputs': preview_outputs,
@@ -3787,14 +3974,127 @@ class TrainerProcess(mp.Process):
         sampler.update_batch_losses(sample_idx_tensor, sample_loss_tensor * lambda_tensor)
         sampler.update_batch_losses(pair_idx_tensor, sample_loss_tensor * (1.0 - lambda_tensor))
 
-    def _has_non_finite_gradients(self) -> bool:
-        for param in self._model.parameters():
+    @staticmethod
+    def _format_tensor_debug_stats(tensor: torch.Tensor) -> str:
+        detached = tensor.detach()
+        shape = tuple(int(dim) for dim in detached.shape)
+        dtype = str(detached.dtype)
+        device = str(detached.device)
+        finite_mask = torch.isfinite(detached)
+        finite_count = int(finite_mask.sum().item())
+        total_count = int(detached.numel())
+        nan_count = int(torch.isnan(detached).sum().item())
+        posinf_count = int(torch.isposinf(detached).sum().item())
+        neginf_count = int(torch.isneginf(detached).sum().item())
+        stats = (
+            f'shape={shape}, dtype={dtype}, device={device}, '
+            f'finite={finite_count}/{total_count}, nan={nan_count}, +inf={posinf_count}, -inf={neginf_count}'
+        )
+        if finite_count <= 0:
+            return stats
+        finite_values = detached[finite_mask].to(dtype=torch.float32)
+        min_value = float(finite_values.min().item())
+        max_value = float(finite_values.max().item())
+        mean_value = float(finite_values.mean().item())
+        return f'{stats}, min={min_value:.6g}, max={max_value:.6g}, mean={mean_value:.6g}'
+
+    def _iter_named_input_tensors(self, data: Any, *, prefix: str = 'inputs') -> Iterator[tuple[str, torch.Tensor]]:
+        if torch.is_tensor(data):
+            yield prefix, data
+            return
+        if isinstance(data, Mapping):
+            for key, value in data.items():
+                child_prefix = f'{prefix}.{key}'
+                if torch.is_tensor(value):
+                    yield child_prefix, value
+                elif isinstance(value, Mapping):
+                    yield from self._iter_named_input_tensors(value, prefix=child_prefix)
+
+    def _find_first_non_finite_input_tensor(self, data: Any) -> tuple[str, torch.Tensor] | None:
+        for name, tensor in self._iter_named_input_tensors(data):
+            if not self._is_finite_tensor(tensor):
+                return name, tensor
+        return None
+
+    def _find_first_non_finite_parameter(self) -> tuple[str, torch.Tensor] | None:
+        for name, param in self._model.named_parameters():
+            if not self._is_finite_tensor(param):
+                return name, param
+        return None
+
+    def _find_first_non_finite_buffer(self) -> tuple[str, torch.Tensor] | None:
+        for name, buffer in self._model.named_buffers():
+            if not self._is_finite_tensor(buffer):
+                return name, buffer
+        return None
+
+    def _find_first_non_finite_gradient(self) -> tuple[str, torch.Tensor] | None:
+        for name, param in self._model.named_parameters():
             gradient = param.grad
             if gradient is None:
                 continue
             if not self._is_finite_tensor(gradient):
-                return True
-        return False
+                return name, gradient
+        return None
+
+    def _log_non_finite_training_state(self, *, stage: str, batch: _PreparedTrainBatch, outputs: Any = None) -> None:
+        input_issue = self._find_first_non_finite_input_tensor(batch.inputs)
+        if input_issue is not None:
+            input_name, input_tensor = input_issue
+            self._bus.put([
+                'logging',
+                f'Training debug [{stage}]: first non-finite input tensor "{input_name}": '
+                f'{self._format_tensor_debug_stats(input_tensor)}',
+            ])
+        label_issue = None if self._is_finite_tensor(batch.label) else batch.label
+        if label_issue is not None:
+            self._bus.put([
+                'logging',
+                f'Training debug [{stage}]: label tensor is non-finite: '
+                f'{self._format_tensor_debug_stats(label_issue)}',
+            ])
+        if outputs is not None:
+            primary_output = self._extract_primary_output_tensor(outputs)
+            if not self._is_finite_tensor(primary_output):
+                self._bus.put([
+                    'logging',
+                    f'Training debug [{stage}]: primary model output is non-finite: '
+                    f'{self._format_tensor_debug_stats(primary_output)}',
+                ])
+            confidence_output = self._extract_confidence_output_tensor(outputs)
+            if confidence_output is not None and not self._is_finite_tensor(confidence_output):
+                self._bus.put([
+                    'logging',
+                    f'Training debug [{stage}]: confidence output is non-finite: '
+                    f'{self._format_tensor_debug_stats(confidence_output)}',
+                ])
+        parameter_issue = self._find_first_non_finite_parameter()
+        if parameter_issue is not None:
+            param_name, param_tensor = parameter_issue
+            self._bus.put([
+                'logging',
+                f'Training debug [{stage}]: first non-finite parameter "{param_name}": '
+                f'{self._format_tensor_debug_stats(param_tensor)}',
+            ])
+        buffer_issue = self._find_first_non_finite_buffer()
+        if buffer_issue is not None:
+            buffer_name, buffer_tensor = buffer_issue
+            self._bus.put([
+                'logging',
+                f'Training debug [{stage}]: first non-finite buffer "{buffer_name}": '
+                f'{self._format_tensor_debug_stats(buffer_tensor)}',
+            ])
+        gradient_issue = self._find_first_non_finite_gradient()
+        if gradient_issue is not None:
+            grad_name, grad_tensor = gradient_issue
+            self._bus.put([
+                'logging',
+                f'Training debug [{stage}]: first non-finite gradient "{grad_name}": '
+                f'{self._format_tensor_debug_stats(grad_tensor)}',
+            ])
+
+    def _has_non_finite_gradients(self) -> bool:
+        return self._find_first_non_finite_gradient() is not None
 
     def _prepare_train_batch(
         self,
@@ -3862,6 +4162,9 @@ class TrainerProcess(mp.Process):
         batch: _PreparedTrainBatch,
     ) -> _TrainStepResult | None:
         run_context.optimizer.zero_grad(set_to_none=True)
+        input_issue = self._find_first_non_finite_input_tensor(batch.inputs)
+        if input_issue is not None or not self._is_finite_tensor(batch.label):
+            self._log_non_finite_training_state(stage='pre_forward', batch=batch)
 
         step_device = batch.image.device
         forward_start = time.perf_counter()
@@ -3871,7 +4174,7 @@ class TrainerProcess(mp.Process):
             self._record_cuda_timing_event(forward_start_event, step_device)
         backward_denominator = float(max(1, int(batch.image.size(0))))
         with run_context.autocast_ctx():
-            outputs = self._sanitize_outputs_for_loss(self._forward_model(batch.inputs))
+            outputs = self._forward_model(batch.inputs)
             per_sample_loss = self._compute_per_sample_loss(
                 outputs,
                 batch.label,
@@ -3891,7 +4194,7 @@ class TrainerProcess(mp.Process):
                         for key, value in batch.inputs.items()
                     }
                 )
-                outputs = self._sanitize_outputs_for_loss(self._forward_model(retry_inputs))
+                outputs = self._forward_model(retry_inputs)
                 per_sample_loss = self._compute_per_sample_loss(
                     outputs,
                     batch.label,
@@ -3902,6 +4205,7 @@ class TrainerProcess(mp.Process):
                 loss = per_sample_loss.sum() / backward_denominator
             if (not self._is_finite_tensor(loss)) or (not self._is_finite_tensor(metric_loss)):
                 self._bus.put(['logging', 'Training warning: non-finite loss detected, batch skipped.'])
+                self._log_non_finite_training_state(stage='non_finite_loss', batch=batch, outputs=outputs)
                 run_context.optimizer.zero_grad(set_to_none=True)
                 return None
         if step_events is not None:
@@ -3915,6 +4219,7 @@ class TrainerProcess(mp.Process):
         run_context.scaler.unscale_(run_context.optimizer)
         if self._has_non_finite_gradients():
             self._bus.put(['logging', 'Training warning: non-finite gradients detected, optimizer step skipped.'])
+            self._log_non_finite_training_state(stage='non_finite_gradients', batch=batch, outputs=outputs)
             run_context.optimizer.zero_grad(set_to_none=True)
             run_context.scaler.update()
             if step_events is not None:
@@ -3981,6 +4286,7 @@ class TrainerProcess(mp.Process):
             target=batch.label,
             outputs=step_result.outputs,
             preview_stride=run_context.strides.preview,
+            sample_indices=batch.sample_indices,
         )
 
         if (batch_index % run_context.strides.metric == 0) or (batch_index == run_context.train_size - 1):
@@ -4470,6 +4776,10 @@ class TrainerProcess(mp.Process):
         checkpoint_ms = (time.perf_counter() - checkpoint_start) * 1000.0
 
         if runtime_state.is_main_process:
+            try:
+                self._save_metric_charts()
+            except Exception as error:
+                self._bus.put(['logging', f'Failed to save training metric charts after epoch {epoch + 1}: {error}'])
             self._publish_epoch_load_breakdown(
                 epoch=epoch,
                 epoch_stats=epoch_stats,
@@ -4627,7 +4937,7 @@ class NeuralRecognizer(threading.Thread):
             self._bus.publish('logging', 'Images queued for recognition: 0')
             return
 
-        self._bus.publish('logging', 'Индексация файлов для распознавания...')
+        self._bus.publish('logging', 'Индексация файлов для распознавания выполняется в отдельном потоке...')
         self._parameters.source_files = filter_images(Path(source_folder))
         self._bus.publish('logging', f'Images queued for recognition: {len(self._parameters.source_files)}')
 
@@ -4879,6 +5189,9 @@ class NeuralRecognizer(threading.Thread):
             threshold=self._resolved_output_threshold,
             postprocess_enabled=bool(getattr(self._parameters, 'postprocess_enabled', False)),
             postprocess_kernel_size=max(1, int(getattr(self._parameters, 'postprocess_kernel_size', 3))),
+            recognition_tta_enabled=bool(getattr(self._parameters, 'recognition_tta_enabled', False)),
+            confidence_tta_enabled=bool(getattr(self._parameters, 'confidence_tta_enabled', False)),
+            confidence_save_mode=str(getattr(self._parameters, 'confidence_save_mode', 'off') or 'off'),
             devices=list(self.devices_list),
             model_source=cast(str | Path, self._parameters.model),
             use_context_branch=bool(self._use_context_branch),
@@ -4921,6 +5234,9 @@ class NeuralRecognizer(threading.Thread):
             threshold=self._resolved_output_threshold,
             postprocess_enabled=bool(getattr(self._parameters, 'postprocess_enabled', False)),
             postprocess_kernel_size=max(1, int(getattr(self._parameters, 'postprocess_kernel_size', 3))),
+            recognition_tta_enabled=bool(getattr(self._parameters, 'recognition_tta_enabled', False)),
+            confidence_tta_enabled=bool(getattr(self._parameters, 'confidence_tta_enabled', False)),
+            confidence_save_mode=str(getattr(self._parameters, 'confidence_save_mode', 'off') or 'off'),
             use_context_branch=bool(self._use_context_branch),
             context_crop_size=self._context_crop_size,
             context_input_size=self._context_input_size,
@@ -5138,7 +5454,16 @@ def get_array_from_image(path, channels):
     return _get_array_from_image(path, channels)
 
 
-def imgpredict(prediction_queue, predicted_queue, model_path, gpu, batch_size, stop_event):
+def imgpredict(
+    prediction_queue,
+    predicted_queue,
+    model_path,
+    gpu,
+    batch_size,
+    stop_event,
+    recognition_tta_enabled=False,
+    confidence_tta_enabled=False,
+):
     return _imgpredict(
         prediction_queue,
         predicted_queue,
@@ -5146,12 +5471,29 @@ def imgpredict(prediction_queue, predicted_queue, model_path, gpu, batch_size, s
         gpu,
         batch_size,
         stop_event,
+        recognition_tta_enabled=recognition_tta_enabled,
+        confidence_tta_enabled=confidence_tta_enabled,
         stop_token=STOP_TOKEN,
     )
 
 
-def gpu_predict(img, model, device, batch_size):
-    return _gpu_predict(img, model, device, batch_size)
+def gpu_predict(
+    img,
+    model,
+    device,
+    batch_size,
+    *,
+    recognition_tta_enabled=False,
+    confidence_tta_enabled=False,
+):
+    return _gpu_predict(
+        img,
+        model,
+        device,
+        batch_size,
+        recognition_tta_enabled=recognition_tta_enabled,
+        confidence_tta_enabled=confidence_tta_enabled,
+    )
 
 
 def create_batches(tensor_data, batch_size):
@@ -5166,6 +5508,7 @@ def imgsew(
     jpeg_quality=95,
     threshold=None,
     postprocess_kernel_size=0,
+    confidence_save_mode='off',
 ):
     return _imgsew(
         outputDir,
@@ -5175,6 +5518,7 @@ def imgsew(
         stop_event,
         threshold=threshold,
         postprocess_kernel_size=postprocess_kernel_size,
+        confidence_save_mode=confidence_save_mode,
         stop_token=STOP_TOKEN,
     )
 
@@ -5186,6 +5530,7 @@ def sew_from_queue(
     jpeg_quality=95,
     threshold=None,
     postprocess_kernel_size=0,
+    confidence_save_mode='off',
 ):
     return _sew_from_queue(
         output_dir,
@@ -5194,14 +5539,16 @@ def sew_from_queue(
         jpeg_quality=jpeg_quality,
         threshold=threshold,
         postprocess_kernel_size=postprocess_kernel_size,
+        confidence_save_mode=confidence_save_mode,
     )
 
 
-def sew(save_dir, item, jpeg_quality=95, *, threshold=None, postprocess_kernel_size=0):
+def sew(save_dir, item, jpeg_quality=95, *, threshold=None, postprocess_kernel_size=0, confidence_save_mode='off'):
     return _sew(
         save_dir,
         item,
         jpeg_quality=jpeg_quality,
         threshold=threshold,
         postprocess_kernel_size=postprocess_kernel_size,
+        confidence_save_mode=confidence_save_mode,
     )

@@ -133,6 +133,11 @@ class MainView(QMainWindow):
         self._vram_reserved_mb: float | None = None
         self._train_speed_batches_per_sec: float | None = None
         self._recognition_speed_images_per_sec: float | None = None
+        self._sample_count_value = 0
+        self._sample_count_pending = False
+        self._current_preview_sample_name = ""
+        self._current_preview_mode = "train"
+        self._last_status_message = ""
         self._recognition_started_at: float | None = None
         self._recognition_last_current = 0
         self._recognition_last_total = 0
@@ -176,6 +181,11 @@ class MainView(QMainWindow):
         row = 0
         self.main_grid.setColumnStretch(0, 1)
         self.main_grid.setColumnStretch(1, 10)
+        self.sample_count_top_label = QLabel(t.get("samples_count", "Кадров в выборке: 0"))
+        self.sample_count_top_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.main_grid.addWidget(self.sample_count_top_label, row, 0, 1, 2)
+
+        row += 1
         self.work_mode_group = QGroupBox(t["mode"])
         sample_type_layout = QHBoxLayout(self.work_mode_group)
 
@@ -313,17 +323,41 @@ class MainView(QMainWindow):
 
         row += 1
         self.preview_group = QGroupBox(t["preview_group"])
-        preview_layout = QHBoxLayout(self.preview_group)
-        self.preview_image_label = QLabel(t["preview_image"])
-        self.preview_label_label = QLabel(t["preview_label"])
-        self.preview_output_label = QLabel(t["preview_output"])
+        preview_layout = QVBoxLayout(self.preview_group)
+        self.preview_frame_name_label = QLabel(t.get("preview_current_frame_default", "Кадр: —"))
+        self.preview_frame_name_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        preview_layout.addWidget(self.preview_frame_name_label)
+
+        preview_row = QHBoxLayout()
+        preview_row.setContentsMargins(0, 0, 0, 0)
+        preview_row.setSpacing(8)
+
+        self.preview_image_title_label = QLabel(t["preview_image"])
+        self.preview_label_title_label = QLabel(t["preview_label"])
+        self.preview_output_title_label = QLabel(t["preview_output"])
+        self.preview_image_label = QLabel()
+        self.preview_label_label = QLabel()
+        self.preview_output_label = QLabel()
         for preview in (self.preview_image_label, self.preview_label_label, self.preview_output_label):
             preview.setFixedSize(220, 220)
             preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
             preview.setStyleSheet("border: 1px solid #666; background: #111;")
-        preview_layout.addWidget(self.preview_image_label)
-        preview_layout.addWidget(self.preview_label_label)
-        preview_layout.addWidget(self.preview_output_label)
+        for title in (self.preview_image_title_label, self.preview_label_title_label, self.preview_output_title_label):
+            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for attr_prefix, title, preview in (
+            ("preview_image", self.preview_image_title_label, self.preview_image_label),
+            ("preview_label", self.preview_label_title_label, self.preview_label_label),
+            ("preview_output", self.preview_output_title_label, self.preview_output_label),
+        ):
+            column_widget = QWidget()
+            column_layout = QVBoxLayout(column_widget)
+            column_layout.setContentsMargins(0, 0, 0, 0)
+            column_layout.setSpacing(4)
+            column_layout.addWidget(title)
+            column_layout.addWidget(preview)
+            setattr(self, f"{attr_prefix}_column_widget", column_widget)
+            preview_row.addWidget(column_widget)
+        preview_layout.addLayout(preview_row)
         self.main_grid.addWidget(self.preview_group, row, 0, 1, 2)
 
         row += 1
@@ -344,6 +378,7 @@ class MainView(QMainWindow):
         self.main_grid.setRowStretch(row, 10)
 
         self.setCentralWidget(central)
+        self.statusBar().showMessage("")
 
         self.metrics_panel = TrainingMetricsDock(self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.metrics_panel)
@@ -679,8 +714,11 @@ class MainView(QMainWindow):
 
     def _append_log(self, data):
         layout: QVBoxLayout = self.log_layout
-        new_label = QLabel(data)
+        message_text = str(data)
+        new_label = QLabel(message_text)
         layout.addWidget(new_label)
+        self._last_status_message = message_text
+        self.statusBar().showMessage(message_text)
         while layout.count() > MAX_LOG_MESSAGES:
             item = layout.takeAt(0)
             old_widget = item.widget() if item is not None else None
@@ -759,9 +797,23 @@ class MainView(QMainWindow):
             image = data.get("image")
             label = data.get("label")
             outputs = data.get("outputs", data.get("output"))
+            sample_name = str(data.get("sample_name", data.get("frame_name", ""))).strip()
+            self._set_preview_mode("train")
             self._set_preview_image(self.preview_image_label, image)
             self._set_preview_image(self.preview_label_label, label)
             self._set_preview_image(self.preview_output_label, outputs)
+            self._set_preview_frame_name(sample_name)
+            return
+
+        if metric_type == "recognition_preview":
+            image = data.get("image")
+            outputs = data.get("outputs", data.get("output", data.get("result")))
+            sample_name = str(data.get("sample_name", data.get("frame_name", ""))).strip()
+            self._set_preview_mode("recognition")
+            self.preview_label_label.clear()
+            self._set_preview_image(self.preview_image_label, image)
+            self._set_preview_image(self.preview_output_label, outputs)
+            self._set_preview_frame_name(sample_name)
             return
 
         if metric_type == "system_memory":
@@ -879,6 +931,26 @@ class MainView(QMainWindow):
             f"{label}: {self._recognition_speed_images_per_sec:.2f} {unit}"
         )
 
+    def _set_preview_frame_name(self, sample_name: str) -> None:
+        self._current_preview_sample_name = str(sample_name).strip()
+        if self._current_preview_sample_name:
+            template = str(self._main_texts().get("preview_current_frame", "Frame: {name}"))
+            self.preview_frame_name_label.setText(template.format(name=self._current_preview_sample_name))
+            return
+        self.preview_frame_name_label.setText(
+            str(self._main_texts().get("preview_current_frame_default", "Frame: —"))
+        )
+
+    def _set_preview_mode(self, mode: str) -> None:
+        resolved_mode = "recognition" if str(mode).strip().lower() == "recognition" else "train"
+        self._current_preview_mode = resolved_mode
+        preview_label_column = getattr(self, "preview_label_column_widget", None)
+        if preview_label_column is not None:
+            preview_label_column.setVisible(resolved_mode != "recognition")
+        self.preview_image_title_label.setText(self._main_texts()["preview_image"])
+        self.preview_label_title_label.setText(self._main_texts()["preview_label"])
+        self.preview_output_title_label.setText(self._main_texts()["preview_output"])
+
     def _reset_runtime_metrics(self) -> None:
         self._ram_mb = None
         self._vram_alloc_mb = None
@@ -924,6 +996,7 @@ class MainView(QMainWindow):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        widget.setText("")
         widget.setPixmap(pix)
 
     def _set_start_enabled(self, ok: bool):
@@ -951,9 +1024,8 @@ class MainView(QMainWindow):
             self.preview_image_label.clear()
             self.preview_label_label.clear()
             self.preview_output_label.clear()
-            self.preview_image_label.setText(get_ui_section("main_window")["preview_image"])
-            self.preview_label_label.setText(get_ui_section("main_window")["preview_label"])
-            self.preview_output_label.setText(get_ui_section("main_window")["preview_output"])
+            self._set_preview_mode("train")
+            self._set_preview_frame_name("")
             self._update_memory_runtime_label()
             self.validation_quality_label.setText(get_ui_section("main_window")["validation_quality_default"])
             self.performance_label.setText(get_ui_section("main_window")["performance_label_default"])
@@ -1069,6 +1141,10 @@ class MainView(QMainWindow):
         self._ui_language = "en" if language == "en" else "ru"
         t = get_ui_section("main_window")
         self._texts = t
+        if self._sample_count_pending:
+            self.set_samples_count_loading()
+        else:
+            self.set_samples_count(self._sample_count_value)
         self.work_mode_group.setTitle(t["mode"])
         self.rb_train_and_recognition.setText(t["mode_train_and_rec"])
         self.rb_further_train_model.setText(t["mode_ft_and_rec"])
@@ -1104,12 +1180,9 @@ class MainView(QMainWindow):
             self.progress_recognition_title_label.setText(t["progress_recognition"])
         self._update_recognition_speed_label()
         self.preview_group.setTitle(t["preview_group"])
-        if self.preview_image_label.pixmap() is None:
-            self.preview_image_label.setText(t["preview_image"])
-        if self.preview_label_label.pixmap() is None:
-            self.preview_label_label.setText(t["preview_label"])
-        if self.preview_output_label.pixmap() is None:
-            self.preview_output_label.setText(t["preview_output"])
+        self._set_preview_frame_name(self._current_preview_sample_name)
+        self._set_preview_mode(self._current_preview_mode)
+        self.statusBar().showMessage(self._last_status_message)
         if self._settings_menu is not None:
             self._settings_menu.setTitle(t["menu_settings"])
         if self._file_menu is not None:
@@ -1199,6 +1272,25 @@ class MainView(QMainWindow):
 
     def set_result_path(self, path: str):
         self.lbl_result.setText(path)
+
+    def set_samples_count(self, total_samples: int) -> None:
+        try:
+            self._sample_count_value = int(total_samples)
+        except (TypeError, ValueError):
+            self._sample_count_value = 0
+        self._sample_count_pending = False
+        template = str(
+            self._texts.get("samples_count_template", self._texts.get("samples_count", "Кадров в выборке: {count}"))
+        )
+        if "{count}" in template:
+            text = template.format(count=self._sample_count_value)
+        else:
+            text = template
+        self.sample_count_top_label.setText(text)
+
+    def set_samples_count_loading(self) -> None:
+        self._sample_count_pending = True
+        self.sample_count_top_label.setText(str(self._texts.get("samples_count_loading", "Идет расчет...")))
 
     def set_label_path(self, path: str):
         self.label_path.setText(path)

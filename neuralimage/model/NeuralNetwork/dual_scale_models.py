@@ -7,9 +7,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .blocks import Down, ResDSBlock, Up
+from .blocks import DeepSupervisionMixin, Down, ResDSBlock, Up
 from .context_utils import normalize_channel_sequence, normalize_size_pair
-from .registrator import register_model
+from .registrator import ModelType, register_model
 
 
 def _resolve_group_norm_groups(channels: int, max_groups: int = 8) -> int:
@@ -50,9 +50,8 @@ class _ContextEncoder(nn.Module):
         return x
 
 
-@register_model('quasi_dual_scale_unet')
-@register_model('FrameUnet')
-class QuasiDualScaleUNet(nn.Module):
+@register_model('FrameUnet', model_type=ModelType.experimental)
+class QuasiDualScaleUNet(DeepSupervisionMixin, nn.Module):
     """U-Net with a lightweight context encoder fused at the local bottleneck."""
 
     def __init__(
@@ -65,6 +64,7 @@ class QuasiDualScaleUNet(nn.Module):
         context_branch_channels: tuple[int, ...] | int | None = (16, 32, 64, 128),
         fusion_type: str = 'concat',
         use_context_branch: bool = True,
+        deep_supervision: bool = False,
         local_base_channels: int = 32,
         dropout_stem: float = 0.0,
         dropout_down: float = 0.08,
@@ -72,6 +72,7 @@ class QuasiDualScaleUNet(nn.Module):
         dropout_up: float = 0.03,
     ) -> None:
         super().__init__()
+        self._init_deep_supervision(deep_supervision)
         base_size = normalize_size_pair(local_crop_size, fallback=(256, 256))
         self.local_crop_size = base_size
         self.context_crop_size = normalize_size_pair(
@@ -128,6 +129,10 @@ class QuasiDualScaleUNet(nn.Module):
         self.up2 = Up(c3, c2, c2, gn_groups=_resolve_group_norm_groups(c2), dropout=dropout_up)
         self.up1 = Up(c2, c1, c1, gn_groups=_resolve_group_norm_groups(c1), dropout=dropout_up)
         self.head = nn.Conv2d(c1, 1, kernel_size=1)
+        self.confidence_head = nn.Conv2d(c1, 1, kernel_size=1)
+        self.ds_up2_head = nn.Conv2d(c2, 1, kernel_size=1)
+        self.ds_up3_head = nn.Conv2d(c3, 1, kernel_size=1)
+        self.ds_up4_head = nn.Conv2d(c4, 1, kernel_size=1)
 
     @staticmethod
     def _extract_inputs(
@@ -169,14 +174,20 @@ class QuasiDualScaleUNet(nn.Module):
             bottleneck = self.fusion(torch.cat([bottleneck, context_features], dim=1))
 
         x = self.up4(bottleneck, s4)
+        u4 = x
         x = self.up3(x, s3)
+        u3 = x
         x = self.up2(x, s2)
+        u2 = x
         x = self.up1(x, s1)
-        return self.head(x)
-
-
-@register_model('UNetWithContextBranch')
-class UNetWithContextBranch(QuasiDualScaleUNet):
-    """Alias for QuasiDualScaleUNet used by older or descriptive configs."""
-
-    pass
+        primary = self.head(x)
+        confidence = self.confidence_head(x)
+        return self._build_model_outputs(
+            primary,
+            auxiliary_outputs=(
+                self.ds_up2_head(u2),
+                self.ds_up3_head(u3),
+                self.ds_up4_head(u4),
+            ),
+            confidence=confidence,
+        )

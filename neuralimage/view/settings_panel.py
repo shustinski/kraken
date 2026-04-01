@@ -22,9 +22,13 @@ from PyQt6.QtWidgets import (
 
 from UI import ClickableLabel
 from lib.data_interfaces import (
+    IC_TOPOLOGY_FAMILIES,
+    PCB_TOPOLOGY_FAMILIES,
     RANDOM_ARTIFACT_TYPES,
     SampleCutMode,
+    build_ic_defect_parameters,
     build_pcb_defect_parameters,
+    build_synthetic_defect_generator_parameters,
     build_tech_augmentation_config,
     normalize_scheduler_name,
 )
@@ -47,6 +51,8 @@ from view.settings_panel_widgets import (
     NoWheelComboBox,
     SlidingPanel,
     create_double_spinbox,
+    create_min_max_widget,
+    create_slider,
     create_size_widget,
     create_spinbox,
 )
@@ -137,6 +143,20 @@ MIN_RANDOM_ARTIFACTS_COUNT = 1
 MAX_RANDOM_ARTIFACTS_COUNT = 16
 MIN_AUGMENTATION_PROBABILITY = 0.0
 MAX_AUGMENTATION_PROBABILITY = 1.0
+MIN_SYNTHETIC_DATASET_FACTOR = 0.0
+MAX_SYNTHETIC_DATASET_FACTOR = 10.0
+MIN_SYNTHETIC_IMAGE_SIZE = 64
+MAX_SYNTHETIC_IMAGE_SIZE = 8192
+MIN_SYNTHETIC_TRACE_COUNT = 1
+MAX_SYNTHETIC_TRACE_COUNT = 200
+MIN_SYNTHETIC_SEGMENT_COUNT = 1
+MAX_SYNTHETIC_SEGMENT_COUNT = 24
+MIN_SYNTHETIC_TRACE_HALF_WIDTH = 1
+MAX_SYNTHETIC_TRACE_HALF_WIDTH = 50
+MIN_SYNTHETIC_BACKGROUND_NOISE_SIGMA = 0.0
+MAX_SYNTHETIC_BACKGROUND_NOISE_SIGMA = 0.2
+MIN_SYNTHETIC_TRACE_NOISE_SIGMA = 0.0
+MAX_SYNTHETIC_TRACE_NOISE_SIGMA = 0.2
 MIN_TECH_AUG_OPERATIONS = 1
 MAX_TECH_AUG_OPERATIONS = 6
 MIN_MIXUP_ALPHA = 0.0
@@ -155,20 +175,35 @@ LOSS_FUNCTIONS = LOSS_SELECTION_NAMES
 MULTI_GPU_MODES = ('off', 'dataparallel', 'distributeddataparallel')
 SCHEDULER_NAMES = ('off', 'reduce_on_plateau', 'cosine_annealing', 'one_cycle', 'step_lr')
 ONE_CYCLE_ANNEAL_STRATEGIES = ('cos', 'linear')
+CONFIDENCE_SAVE_MODES = ('off', 'separate_grayscale')
 OPTIMIZER_PRESETS = (
     ('Adam', 'adam', 1e-3, 0.0),
     ('AdamW', 'adamw', 5e-4, 1e-2),
     ('AdamW + Muon', 'adamw_muon', 3e-4, 2e-2),
 )
+LOSS_PRESET_WEIGHTS = {
+    'conductors': {'bce': 0.5, 'dice': 0.5},
+    'contacts': {'bce': 0.5, 'focal_tversky': 0.5},
+}
 PCB_DEFECT_WEIGHT_FIELDS = (
-    ('break', 'pcb_break_weight'),
-    ('short', 'pcb_short_weight'),
-    ('missing_copper', 'pcb_missing_copper_weight'),
-    ('excess_copper', 'pcb_excess_copper_weight'),
-    ('pinhole', 'pcb_pinhole_weight'),
-    ('spurious_copper', 'pcb_spurious_copper_weight'),
-    ('via', 'pcb_via_weight'),
-    ('misalignment', 'pcb_misalignment_weight'),
+    ('break', 'pcb_break_severity'),
+    ('short', 'pcb_short_severity'),
+    ('missing_copper', 'pcb_missing_copper_severity'),
+    ('excess_copper', 'pcb_excess_copper_severity'),
+    ('pinhole', 'pcb_pinhole_severity'),
+    ('spurious_copper', 'pcb_spurious_copper_severity'),
+    ('via', 'pcb_via_severity'),
+    ('misalignment', 'pcb_misalignment_severity'),
+)
+IC_DEFECT_WEIGHT_FIELDS = (
+    ('line_break', 'ic_line_break_severity'),
+    ('bridge', 'ic_bridge_severity'),
+    ('necking', 'ic_necking_severity'),
+    ('missing_metal', 'ic_missing_metal_severity'),
+    ('spur', 'ic_spur_severity'),
+    ('pinhole', 'ic_pinhole_severity'),
+    ('via_open', 'ic_via_open_severity'),
+    ('line_shift', 'ic_line_shift_severity'),
 )
 
 
@@ -184,6 +219,7 @@ class SettingsPanel(QDockWidget):
     validation_image_path_requested: pyqtSignal = pyqtSignal()
     validation_label_path_requested: pyqtSignal = pyqtSignal()
     reset_defaults_requested: pyqtSignal = pyqtSignal()
+    augmentation_preview_requested: pyqtSignal = pyqtSignal()
     ui_language_changed: pyqtSignal = pyqtSignal(str)
     rare_patch_editor_requested: pyqtSignal = pyqtSignal()
 
@@ -202,6 +238,8 @@ class SettingsPanel(QDockWidget):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
         self.models: list[str] = []
+        self.deprecated_models: list[str] = []
+        self.experimental_models: list[str] = []
         self._page_indexes: dict[str, int] = {}
         self.size_policy = QSizePolicy()
         self._desc_labels: dict[str, QLabel] = {}
@@ -212,20 +250,26 @@ class SettingsPanel(QDockWidget):
         self._model_selector_applicable = True
         self._patch_batch_sync_guard = False
         self._loss_terms_guard = False
+        self._model_combo_guard = False
 
         self._sample_count_value = 0
         self._sample_count_pending = False
+        self._synthetic_defect_generator_payload: dict[str, Any] = {}
         self._tech_aug_config_payload: dict[str, Any] = {}
         self._pcb_defects_config_payload: dict[str, Any] = {}
         self.loss_term_checkboxes: dict[str, QCheckBox] = {}
         self.loss_term_spinboxes: dict[str, Any] = {}
         self.loss_term_labels: dict[str, QLabel] = {}
+        self.loss_preset_buttons: dict[str, QPushButton] = {}
 
         self.horizontal_rotation = QCheckBox('')
         self.vertical_rotation = QCheckBox('')
+        self.flip_x = QCheckBox('')
+        self.flip_y = QCheckBox('')
         self.additional_augmentation_check_box = QCheckBox('')
         self.random_crop_check_box = QCheckBox('')
         self.scale_augmentation_check_box = QCheckBox('')
+        self.synthetic_defect_generator_check_box = QCheckBox('')
         self.tech_augmentation_check_box = QCheckBox('')
         self.tech_augmentation_debug_pair_check_box = QCheckBox('')
         self.cutout_check_box = QCheckBox('')
@@ -242,6 +286,7 @@ class SettingsPanel(QDockWidget):
         self.validation_check_box = QCheckBox('')
         self.save_validation_binary_images_check_box = QCheckBox('')
         self.samples_number = QLabel('')
+        self.augmentation_preview_button = QPushButton('')
         self.shuffle_frames_check_box = QCheckBox('')
         self.shuffle_patches_in_frame_check_box = QCheckBox('')
         self.shuffle_frames_check_box.setChecked(True)
@@ -251,6 +296,17 @@ class SettingsPanel(QDockWidget):
 
         self.nn_model_type = NoWheelComboBox()
         self.nn_model_type.setSizePolicy(self.size_policy)
+        self.deprecated_model_type = NoWheelComboBox()
+        self.deprecated_model_type.setSizePolicy(self.size_policy)
+        self.experimental_model_type = NoWheelComboBox()
+        self.experimental_model_type.setSizePolicy(self.size_policy)
+        self.nn_model_type.currentIndexChanged.connect(lambda *_args: self._sync_model_selection(self.nn_model_type))
+        self.deprecated_model_type.currentIndexChanged.connect(
+            lambda *_args: self._sync_model_selection(self.deprecated_model_type)
+        )
+        self.experimental_model_type.currentIndexChanged.connect(
+            lambda *_args: self._sync_model_selection(self.experimental_model_type)
+        )
 
         self.shift_spinbox = create_spinbox((SHIFT_RANGE_MIN, SHIFT_RANGE_MAX), default_value=100, step=10)
         self.crops_per_image_spinbox = create_spinbox(
@@ -306,6 +362,109 @@ class SettingsPanel(QDockWidget):
             default_value=0.2,
             decimals=2,
         )
+        self.synthetic_dataset_factor_spinbox = create_double_spinbox(
+            (MIN_SYNTHETIC_DATASET_FACTOR, MAX_SYNTHETIC_DATASET_FACTOR),
+            step=0.25,
+            default_value=1.0,
+            decimals=2,
+        )
+        self.synthetic_image_width_spinbox = create_spinbox(
+            (MIN_SYNTHETIC_IMAGE_SIZE, MAX_SYNTHETIC_IMAGE_SIZE),
+            default_value=1024,
+            step=32,
+        )
+        self.synthetic_image_height_spinbox = create_spinbox(
+            (MIN_SYNTHETIC_IMAGE_SIZE, MAX_SYNTHETIC_IMAGE_SIZE),
+            default_value=1024,
+            step=32,
+        )
+        self.synthetic_image_size_widget = create_size_widget(
+            self.synthetic_image_width_spinbox,
+            self.synthetic_image_height_spinbox,
+        )
+        self.synthetic_trace_count_min_spinbox = create_spinbox(
+            (MIN_SYNTHETIC_TRACE_COUNT, MAX_SYNTHETIC_TRACE_COUNT),
+            default_value=5,
+            step=1,
+        )
+        self.synthetic_trace_count_max_spinbox = create_spinbox(
+            (MIN_SYNTHETIC_TRACE_COUNT, MAX_SYNTHETIC_TRACE_COUNT),
+            default_value=5,
+            step=1,
+        )
+        self.synthetic_trace_count_range_widget = create_min_max_widget(
+            self.synthetic_trace_count_min_spinbox,
+            self.synthetic_trace_count_max_spinbox,
+        )
+        self.synthetic_segment_count_min_spinbox = create_spinbox(
+            (MIN_SYNTHETIC_SEGMENT_COUNT, MAX_SYNTHETIC_SEGMENT_COUNT),
+            default_value=4,
+            step=1,
+        )
+        self.synthetic_segment_count_max_spinbox = create_spinbox(
+            (MIN_SYNTHETIC_SEGMENT_COUNT, MAX_SYNTHETIC_SEGMENT_COUNT),
+            default_value=4,
+            step=1,
+        )
+        self.synthetic_segment_count_range_widget = create_min_max_widget(
+            self.synthetic_segment_count_min_spinbox,
+            self.synthetic_segment_count_max_spinbox,
+        )
+        self.synthetic_trace_half_width_min_spinbox = create_spinbox(
+            (MIN_SYNTHETIC_TRACE_HALF_WIDTH, MAX_SYNTHETIC_TRACE_HALF_WIDTH),
+            default_value=2,
+            step=1,
+        )
+        self.synthetic_trace_half_width_max_spinbox = create_spinbox(
+            (MIN_SYNTHETIC_TRACE_HALF_WIDTH, MAX_SYNTHETIC_TRACE_HALF_WIDTH),
+            default_value=2,
+            step=1,
+        )
+        self.synthetic_trace_half_width_range_widget = create_min_max_widget(
+            self.synthetic_trace_half_width_min_spinbox,
+            self.synthetic_trace_half_width_max_spinbox,
+        )
+        self.synthetic_background_noise_sigma_min_spinbox = create_double_spinbox(
+            (MIN_SYNTHETIC_BACKGROUND_NOISE_SIGMA, MAX_SYNTHETIC_BACKGROUND_NOISE_SIGMA),
+            step=0.005,
+            default_value=0.02,
+            decimals=3,
+        )
+        self.synthetic_background_noise_sigma_max_spinbox = create_double_spinbox(
+            (MIN_SYNTHETIC_BACKGROUND_NOISE_SIGMA, MAX_SYNTHETIC_BACKGROUND_NOISE_SIGMA),
+            step=0.005,
+            default_value=0.02,
+            decimals=3,
+        )
+        self.synthetic_background_noise_sigma_range_widget = create_min_max_widget(
+            self.synthetic_background_noise_sigma_min_spinbox,
+            self.synthetic_background_noise_sigma_max_spinbox,
+        )
+        self.synthetic_trace_noise_sigma_min_spinbox = create_double_spinbox(
+            (MIN_SYNTHETIC_TRACE_NOISE_SIGMA, MAX_SYNTHETIC_TRACE_NOISE_SIGMA),
+            step=0.005,
+            default_value=0.01,
+            decimals=3,
+        )
+        self.synthetic_trace_noise_sigma_max_spinbox = create_double_spinbox(
+            (MIN_SYNTHETIC_TRACE_NOISE_SIGMA, MAX_SYNTHETIC_TRACE_NOISE_SIGMA),
+            step=0.005,
+            default_value=0.01,
+            decimals=3,
+        )
+        self.synthetic_trace_noise_sigma_range_widget = create_min_max_widget(
+            self.synthetic_trace_noise_sigma_min_spinbox,
+            self.synthetic_trace_noise_sigma_max_spinbox,
+        )
+        self.synthetic_topology_domain_combo = NoWheelComboBox()
+        self.synthetic_topology_domain_combo.addItem('PCB', 'pcb')
+        self.synthetic_topology_domain_combo.addItem('IC', 'ic')
+        self.pcb_topology_family_combo = NoWheelComboBox()
+        for family in PCB_TOPOLOGY_FAMILIES:
+            self.pcb_topology_family_combo.addItem(family, family)
+        self.ic_topology_family_combo = NoWheelComboBox()
+        for family in IC_TOPOLOGY_FAMILIES:
+            self.ic_topology_family_combo.addItem(family, family)
         self.tech_aug_min_operations_spinbox = create_spinbox(
             (MIN_TECH_AUG_OPERATIONS, MAX_TECH_AUG_OPERATIONS),
             default_value=1,
@@ -427,14 +586,25 @@ class SettingsPanel(QDockWidget):
             step=1,
         )
         self.pcb_defect_type_spinboxes: dict[str, Any] = {
-            defect_name: create_double_spinbox(
-                (MIN_PCB_DEFECT_WEIGHT, MAX_PCB_DEFECT_WEIGHT),
-                step=0.25,
-                default_value=1.0,
-                decimals=2,
-            )
+            defect_name: create_slider((0, 100), default_value=50)
             for defect_name, _label_key in PCB_DEFECT_WEIGHT_FIELDS
         }
+        self.pcb_defect_type_checkboxes: dict[str, QCheckBox] = {
+            defect_name: QCheckBox('')
+            for defect_name, _label_key in PCB_DEFECT_WEIGHT_FIELDS
+        }
+        for checkbox in self.pcb_defect_type_checkboxes.values():
+            checkbox.setChecked(True)
+        self.ic_defect_type_spinboxes: dict[str, Any] = {
+            defect_name: create_slider((0, 100), default_value=50)
+            for defect_name, _label_key in IC_DEFECT_WEIGHT_FIELDS
+        }
+        self.ic_defect_type_checkboxes: dict[str, QCheckBox] = {
+            defect_name: QCheckBox('')
+            for defect_name, _label_key in IC_DEFECT_WEIGHT_FIELDS
+        }
+        for checkbox in self.ic_defect_type_checkboxes.values():
+            checkbox.setChecked(True)
 
         self.train_patch_x_size = create_spinbox((SAMPLE_SIZE_MIN, SAMPLE_SIZE_MAX), default_value=256, step=10)
         self.train_patch_y_size = create_spinbox((SAMPLE_SIZE_MIN, SAMPLE_SIZE_MAX), default_value=256, step=10)
@@ -503,6 +673,18 @@ class SettingsPanel(QDockWidget):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
+
+        self.loss_presets_widget = QWidget()
+        self.loss_presets_layout = QHBoxLayout(self.loss_presets_widget)
+        self.loss_presets_layout.setContentsMargins(0, 0, 0, 0)
+        self.loss_presets_layout.setSpacing(8)
+        for preset_name in ('conductors', 'contacts'):
+            button = QPushButton('')
+            button.clicked.connect(lambda _checked=False, name=preset_name: self._apply_loss_preset(name))
+            self.loss_presets_layout.addWidget(button)
+            self.loss_preset_buttons[preset_name] = button
+        self.loss_presets_layout.addStretch(1)
+        layout.addWidget(self.loss_presets_widget)
 
         for loss_name in LOSS_FUNCTIONS:
             checkbox = QCheckBox('')
@@ -611,6 +793,13 @@ class SettingsPanel(QDockWidget):
             self._loss_terms_guard = False
         self._sync_loss_controls()
 
+    def _apply_loss_preset(self, preset_name: str) -> None:
+        weights = LOSS_PRESET_WEIGHTS.get(str(preset_name))
+        if weights is None:
+            return
+        self.set_loss_term_weights(dict(weights))
+        self.optimizer_settings_changed.emit()
+
     def _set_field_enabled(self, field: QWidget, enabled: bool) -> None:
         row_widget = self._field_rows.get(field)
         if row_widget is not None:
@@ -662,7 +851,15 @@ class SettingsPanel(QDockWidget):
             (self.shuffle_frames_check_box, self.shuffle_patches_in_frame_check_box),
             training_applicable,
         )
-        self._set_fields_enabled((self.nn_model_type,), model_selector_applicable)
+        self._set_widgets_enabled((self.model_variants_groupbox,), model_selector_applicable)
+        self._set_fields_enabled(
+            (
+                self.nn_model_type,
+                self.deprecated_model_type,
+                self.experimental_model_type,
+            ),
+            model_selector_applicable,
+        )
         self._set_fields_enabled((self.color_type,), training_applicable)
         self._set_fields_enabled((self.train_patch_size_widget,), batch_related)
         self._set_fields_enabled((self.sync_patch_sizes_check_box,), recognition_applicable)
@@ -672,11 +869,16 @@ class SettingsPanel(QDockWidget):
         self._set_widgets_enabled(
             (
                 self.augmentation_groupbox,
+                self.shuffle_groupbox,
                 self.horizontal_rotation,
                 self.vertical_rotation,
+                self.flip_x,
+                self.flip_y,
                 self.additional_augmentation_check_box,
                 self.random_crop_check_box,
                 self.scale_augmentation_check_box,
+                self.synthetic_defect_generator_groupbox,
+                self.synthetic_defect_generator_check_box,
                 self.tech_augmentation_check_box,
                 self.tech_augmentation_debug_pair_check_box,
                 self.cutout_check_box,
@@ -689,6 +891,7 @@ class SettingsPanel(QDockWidget):
                 self.pcb_defects_use_defect_mask_as_label_check_box,
                 self.validation_groupbox,
                 self.validation_check_box,
+                self.augmentation_preview_button,
                 self.sample_type_groupbox,
                 self.cut_dataset_type,
                 self.no_cut_dataset_type,
@@ -701,6 +904,7 @@ class SettingsPanel(QDockWidget):
         self._set_fields_enabled((self.shift_spinbox,), training_applicable)
         self._sync_augmentation_controls(self.additional_augmentation_check_box.isChecked())
         self._sync_tech_augmentation_controls(self.tech_augmentation_check_box.isChecked())
+        self._sync_synthetic_defect_generator_controls(self.synthetic_defect_generator_check_box.isChecked())
         self._sync_validation_controls(self.validation_check_box.isChecked())
         self._sync_preprocess_controls()
 
@@ -791,7 +995,6 @@ class SettingsPanel(QDockWidget):
         self._set_settings_page_visible('base', True)
         self._set_settings_page_visible('training', training_applicable)
         self._set_settings_page_visible('recognition', recognition_applicable)
-        self._set_settings_page_visible('expert', training_applicable or recognition_applicable)
         self._ensure_visible_settings_page_selected()
 
     @staticmethod
@@ -938,6 +1141,8 @@ class SettingsPanel(QDockWidget):
         self.optimizer_type.addItems(list(OPTIMIZERS))
         self.mixed_precision_type = NoWheelComboBox()
         self.mixed_precision_type.addItems(list(MIXED_PRECISION_MODES))
+        self.deep_supervision_check_box = QCheckBox('')
+        self.deep_supervision_check_box.setChecked(True)
         self.loss_function_type = NoWheelComboBox()
         self.loss_function_type.addItems(list(LOSS_FUNCTIONS))
         self.dice_loss_weight_spinbox = create_double_spinbox((0.0, 1.0), step=0.05, default_value=0.5, decimals=2)
@@ -987,6 +1192,13 @@ class SettingsPanel(QDockWidget):
             default_value=0.5,
             decimals=2,
         )
+        self.recognition_tta_check_box = QCheckBox('')
+        self.recognition_tta_check_box.setChecked(False)
+        self.confidence_tta_check_box = QCheckBox('')
+        self.confidence_tta_check_box.setChecked(False)
+        self.confidence_save_mode_combo = NoWheelComboBox()
+        for value in CONFIDENCE_SAVE_MODES:
+            self.confidence_save_mode_combo.addItem(value, value)
         self.recognition_postprocess_check_box = QCheckBox('')
         self.recognition_postprocess_kernel_size_spinbox = create_spinbox(
             (MIN_POSTPROCESS_KERNEL_SIZE, MAX_POSTPROCESS_KERNEL_SIZE),
@@ -1137,6 +1349,7 @@ class SettingsPanel(QDockWidget):
 
         self.optimizer_groupbox, self.optimizer_form = _build_subgroup()
         self.precision_loss_groupbox, self.precision_loss_form = _build_subgroup()
+        self.rare_patch_groupbox, self.rare_patch_form = _build_subgroup()
         self.recognition_groupbox, self.recognition_form = _build_subgroup()
         self.runtime_groupbox, self.runtime_form = _build_subgroup()
         self.warmup_groupbox, self.warmup_form = _build_subgroup()
@@ -1153,10 +1366,17 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.optimizer_form, self.weight_decay_spinbox, 'weight_decay')
         self._add_labeled_row(self.optimizer_form, self.train_batch_spinbox, 'train_batch_size')
         self._add_labeled_row(self.optimizer_form, self.dataloader_num_workers_spinbox, 'dataloader_num_workers')
-        self._add_labeled_row(self.optimizer_form, self.log_update_frequency_spinbox, 'log_update_frequency')
 
-        self._add_labeled_row(self.precision_loss_form, self.mixed_precision_type, 'mixed_precision')
+        self.precision_loss_form.addRow(self.deep_supervision_check_box)
         self.precision_loss_form.addRow(self.loss_terms_groupbox)
+
+        self.rare_patch_form.addRow(self.rare_patch_oversampling_check_box)
+        self._add_labeled_row(
+            self.rare_patch_form,
+            self.rare_patch_oversampling_factor_spinbox,
+            'rare_patch_oversampling_factor',
+        )
+        self.rare_patch_form.addRow(self.edit_rare_regions_button)
 
         self._add_labeled_row(self.recognition_form, self.recognition_batch_spinbox, 'recognition_batch_size')
         self._add_labeled_row(self.recognition_form, self.overlap_spinbox, 'overlap')
@@ -1165,6 +1385,9 @@ class SettingsPanel(QDockWidget):
         self.recognition_form.addRow(self.recognition_binarize_output_check_box)
         self.recognition_form.addRow(self.recognition_use_auto_threshold_check_box)
         self._add_labeled_row(self.recognition_form, self.recognition_threshold_spinbox, 'recognition_threshold')
+        self.recognition_form.addRow(self.recognition_tta_check_box)
+        self.recognition_form.addRow(self.confidence_tta_check_box)
+        self._add_labeled_row(self.recognition_form, self.confidence_save_mode_combo, 'confidence_save_mode')
         self.recognition_form.addRow(self.recognition_postprocess_check_box)
         self._add_labeled_row(
             self.recognition_form,
@@ -1172,15 +1395,10 @@ class SettingsPanel(QDockWidget):
             'recognition_postprocess_kernel_size',
         )
         self._add_labeled_row(self.runtime_form, self.multi_gpu_mode_combo, 'multi_gpu')
+        self._add_labeled_row(self.runtime_form, self.mixed_precision_type, 'mixed_precision')
+        self._add_labeled_row(self.runtime_form, self.log_update_frequency_spinbox, 'log_update_frequency')
         self.runtime_form.addRow(self.torch_compile_check_box)
         self.runtime_form.addRow(self.skip_uniform_labels_check_box)
-        self.runtime_form.addRow(self.rare_patch_oversampling_check_box)
-        self._add_labeled_row(
-            self.runtime_form,
-            self.rare_patch_oversampling_factor_spinbox,
-            'rare_patch_oversampling_factor',
-        )
-        self.runtime_form.addRow(self.edit_rare_regions_button)
 
         self.warmup_form.addRow(self.warmup_check_box)
         self._add_labeled_row(self.warmup_form, self.warmup_epochs_spinbox, 'warmup_epochs')
@@ -1248,6 +1466,7 @@ class SettingsPanel(QDockWidget):
 
         nn_sections_layout.addWidget(self.optimizer_groupbox)
         nn_sections_layout.addWidget(self.precision_loss_groupbox)
+        nn_sections_layout.addWidget(self.rare_patch_groupbox)
         nn_sections_layout.addWidget(self.warmup_groupbox)
         nn_sections_layout.addWidget(self.scheduler_groupbox)
         nn_sections_layout.addWidget(self.hard_mining_groupbox)
@@ -1286,8 +1505,6 @@ class SettingsPanel(QDockWidget):
         self.general_form = self._create_form_layout()
         self.general_groupbox.setLayout(self.general_form)
         self.general_form.addRow(self.samples_number)
-        self.general_form.addRow(self.shuffle_frames_check_box)
-        self.general_form.addRow(self.shuffle_patches_in_frame_check_box)
         self._add_labeled_row(self.general_form, self.nn_model_type, 'model')
         self._add_labeled_row(self.general_form, self.color_type, 'image_format')
         self.sync_patch_sizes_check_box = QCheckBox('')
@@ -1295,137 +1512,208 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.general_form, self.sync_patch_sizes_check_box, 'sync_patch_sizes')
         self._add_labeled_row(self.general_form, self.train_patch_size_widget, 'train_patch_size')
         self._add_labeled_row(self.general_form, self.recognition_patch_size_widget, 'recognition_patch_size')
+        self.model_variants_groupbox = QGroupBox('')
+        self.model_variants_form = self._create_form_layout()
+        self.model_variants_groupbox.setLayout(self.model_variants_form)
+        self._add_labeled_row(self.model_variants_form, self.deprecated_model_type, 'deprecated_models')
+        self._add_labeled_row(self.model_variants_form, self.experimental_model_type, 'experimental_models')
 
         self.augmentation_groupbox = QGroupBox('')
         self.augmentation_form = self._create_form_layout()
         self.augmentation_groupbox.setLayout(self.augmentation_form)
-        self.augmentation_form.addRow(self.vertical_rotation)
-        self.augmentation_form.addRow(self.horizontal_rotation)
+        self.shuffle_groupbox = QGroupBox('')
+        self.shuffle_form = self._create_form_layout()
+        self.shuffle_groupbox.setLayout(self.shuffle_form)
+        self.shuffle_form.addRow(self.shuffle_frames_check_box)
+        self.shuffle_form.addRow(self.shuffle_patches_in_frame_check_box)
+        self.spatial_groupbox = QGroupBox('')
+        self.spatial_form = self._create_form_layout()
+        self.spatial_groupbox.setLayout(self.spatial_form)
+        self.spatial_form.addRow(self.vertical_rotation)
+        self.spatial_form.addRow(self.horizontal_rotation)
+        self.spatial_form.addRow(self.flip_x)
+        self.spatial_form.addRow(self.flip_y)
+        self.spatial_form.addRow(self.random_crop_check_box)
+        self.spatial_sampling_row_widget = QWidget()
+        self.spatial_sampling_row_layout = QHBoxLayout(self.spatial_sampling_row_widget)
+        self.spatial_sampling_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.spatial_sampling_row_layout.setSpacing(FIELD_DESCRIPTION_ROW_SPACING)
+        self.spatial_sampling_row_layout.addWidget(self._field_with_description(self.shift_spinbox, 'shift'), 1)
+        self.spatial_sampling_row_layout.addWidget(
+            self._field_with_description(self.crops_per_image_spinbox, 'crops_per_image'),
+            1,
+        )
+        self.spatial_form.addRow(self.spatial_sampling_row_widget)
+        self.spatial_form.addRow(self.scale_augmentation_check_box)
+        self._add_labeled_row(self.spatial_form, self.scale_augmentation_strength_spinbox, 'scale_augmentation_strength')
+        self.augmentation_form.addRow(self.spatial_groupbox)
+
         self.augmentation_form.addRow(self.additional_augmentation_check_box)
-        self.augmentation_form.addRow(self.random_crop_check_box)
-        self.augmentation_form.addRow(self.scale_augmentation_check_box)
-        self.augmentation_form.addRow(self.tech_augmentation_check_box)
-        self.augmentation_form.addRow(self.tech_augmentation_debug_pair_check_box)
-        self._add_labeled_row(self.augmentation_form, self.tech_aug_min_operations_spinbox, 'tech_aug_min_operations')
-        self._add_labeled_row(self.augmentation_form, self.tech_aug_max_operations_spinbox, 'tech_aug_max_operations')
+        self.photometric_groupbox = QGroupBox('')
+        self.photometric_form = self._create_form_layout()
+        self.photometric_groupbox.setLayout(self.photometric_form)
+        self._add_labeled_row(self.photometric_form, self.augmentation_brightness_spinbox, 'augmentation_brightness_strength')
+        self._add_labeled_row(self.photometric_form, self.augmentation_contrast_spinbox, 'augmentation_contrast_strength')
+        self._add_labeled_row(self.photometric_form, self.augmentation_gamma_spinbox, 'augmentation_gamma_strength')
+        self._add_labeled_row(self.photometric_form, self.augmentation_noise_probability_spinbox, 'augmentation_noise_probability')
+        self._add_labeled_row(self.photometric_form, self.augmentation_noise_sigma_spinbox, 'augmentation_noise_sigma')
+        self._add_labeled_row(self.photometric_form, self.augmentation_blur_probability_spinbox, 'augmentation_blur_probability')
+        self._add_labeled_row(self.photometric_form, self.augmentation_blur_radius_spinbox, 'augmentation_blur_radius')
+        self.augmentation_form.addRow(self.photometric_groupbox)
+
+        self.augmentation_form.addRow(self.synthetic_defect_generator_check_box)
+        self.synthetic_defect_generator_groupbox = QGroupBox('')
+        self.synthetic_defect_generator_form = self._create_form_layout()
+        self.synthetic_defect_generator_groupbox.setLayout(self.synthetic_defect_generator_form)
         self._add_labeled_row(
-            self.augmentation_form,
-            self.tech_aug_max_changed_pixels_ratio_spinbox,
-            'tech_aug_max_changed_pixels_ratio',
+            self.synthetic_defect_generator_form,
+            self.synthetic_topology_domain_combo,
+            'synthetic_topology_domain',
         )
         self._add_labeled_row(
-            self.augmentation_form,
-            self.tech_aug_max_foreground_ratio_delta_spinbox,
-            'tech_aug_max_foreground_ratio_delta',
+            self.synthetic_defect_generator_form,
+            self.pcb_topology_family_combo,
+            'pcb_topology_family',
         )
         self._add_labeled_row(
-            self.augmentation_form,
-            self.tech_aug_global_width_probability_spinbox,
-            'tech_aug_global_width_probability',
+            self.synthetic_defect_generator_form,
+            self.ic_topology_family_combo,
+            'ic_topology_family',
         )
         self._add_labeled_row(
-            self.augmentation_form,
-            self.tech_aug_scale_rethreshold_probability_spinbox,
-            'tech_aug_scale_rethreshold_probability',
+            self.synthetic_defect_generator_form,
+            self.synthetic_dataset_factor_spinbox,
+            'synthetic_dataset_factor',
         )
         self._add_labeled_row(
-            self.augmentation_form,
-            self.tech_aug_blur_threshold_probability_spinbox,
-            'tech_aug_blur_threshold_probability',
+            self.synthetic_defect_generator_form,
+            self.synthetic_image_size_widget,
+            'synthetic_image_size',
         )
         self._add_labeled_row(
-            self.augmentation_form,
-            self.tech_aug_boundary_aware_probability_spinbox,
-            'tech_aug_boundary_aware_probability',
+            self.synthetic_defect_generator_form,
+            self.synthetic_trace_count_range_widget,
+            'synthetic_trace_count',
         )
         self._add_labeled_row(
-            self.augmentation_form,
-            self.tech_aug_local_morphology_probability_spinbox,
-            'tech_aug_local_morphology_probability',
+            self.synthetic_defect_generator_form,
+            self.synthetic_segment_count_range_widget,
+            'synthetic_segment_count',
         )
         self._add_labeled_row(
-            self.augmentation_form,
-            self.tech_aug_gap_variation_probability_spinbox,
-            'tech_aug_gap_variation_probability',
-        )
-        self.augmentation_form.addRow(self.cutout_check_box)
-        self._add_labeled_row(self.augmentation_form, self.cutout_probability_spinbox, 'cutout_probability')
-        self._add_labeled_row(self.augmentation_form, self.cutout_holes_spinbox, 'cutout_holes')
-        self._add_labeled_row(self.augmentation_form, self.cutout_size_ratio_spinbox, 'cutout_size_ratio')
-        self.augmentation_form.addRow(self.random_artifacts_check_box)
-        for artifact_name in RANDOM_ARTIFACT_TYPES:
-            self.augmentation_form.addRow(self.random_artifact_type_checkboxes[artifact_name])
-        self._add_labeled_row(
-            self.augmentation_form,
-            self.random_artifacts_probability_spinbox,
-            'random_artifacts_probability',
+            self.synthetic_defect_generator_form,
+            self.synthetic_trace_half_width_range_widget,
+            'synthetic_trace_half_width',
         )
         self._add_labeled_row(
-            self.augmentation_form,
-            self.random_artifacts_count_spinbox,
-            'random_artifacts_count',
+            self.synthetic_defect_generator_form,
+            self.synthetic_background_noise_sigma_range_widget,
+            'synthetic_background_noise_sigma',
         )
         self._add_labeled_row(
-            self.augmentation_form,
-            self.random_artifacts_size_ratio_spinbox,
-            'random_artifacts_size_ratio',
+            self.synthetic_defect_generator_form,
+            self.synthetic_trace_noise_sigma_range_widget,
+            'synthetic_trace_noise_sigma',
         )
-        self.augmentation_form.addRow(self.mixup_check_box)
-        self._add_labeled_row(self.augmentation_form, self.mixup_probability_spinbox, 'mixup_probability')
-        self._add_labeled_row(self.augmentation_form, self.mixup_alpha_spinbox, 'mixup_alpha')
-        self.pcb_defects_groupbox = QGroupBox('')
-        self.pcb_defects_form = self._create_form_layout()
-        self.pcb_defects_groupbox.setLayout(self.pcb_defects_form)
-        self.pcb_defects_form.addRow(self.pcb_defects_check_box)
         self._add_labeled_row(
-            self.pcb_defects_form,
+            self.synthetic_defect_generator_form,
             self.pcb_defects_probability_spinbox,
             'pcb_defects_probability',
         )
         self._add_labeled_row(
-            self.pcb_defects_form,
+            self.synthetic_defect_generator_form,
             self.pcb_defects_min_count_spinbox,
             'pcb_defects_min_count',
         )
         self._add_labeled_row(
-            self.pcb_defects_form,
+            self.synthetic_defect_generator_form,
             self.pcb_defects_max_count_spinbox,
             'pcb_defects_max_count',
         )
-        self.pcb_defects_form.addRow(self.pcb_defects_use_input_mask_check_box)
-        self.pcb_defects_form.addRow(self.pcb_defects_use_defect_mask_as_label_check_box)
         for defect_name, label_key in PCB_DEFECT_WEIGHT_FIELDS:
             self._add_labeled_row(
-                self.pcb_defects_form,
+                self.synthetic_defect_generator_form,
+                self.pcb_defect_type_checkboxes[defect_name],
+                f'pcb_{defect_name}',
+            )
+            self._add_labeled_row(
+                self.synthetic_defect_generator_form,
                 self.pcb_defect_type_spinboxes[defect_name],
                 label_key,
             )
-        self.augmentation_form.addRow(self.pcb_defects_groupbox)
-        self._add_labeled_row(self.augmentation_form, self.crops_per_image_spinbox, 'crops_per_image')
-        self._add_labeled_row(self.augmentation_form, self.scale_augmentation_strength_spinbox, 'scale_augmentation_strength')
-        self._add_labeled_row(self.augmentation_form, self.augmentation_brightness_spinbox, 'augmentation_brightness_strength')
-        self._add_labeled_row(self.augmentation_form, self.augmentation_contrast_spinbox, 'augmentation_contrast_strength')
-        self._add_labeled_row(self.augmentation_form, self.augmentation_gamma_spinbox, 'augmentation_gamma_strength')
-        self._add_labeled_row(self.augmentation_form, self.augmentation_noise_probability_spinbox, 'augmentation_noise_probability')
-        self._add_labeled_row(self.augmentation_form, self.augmentation_noise_sigma_spinbox, 'augmentation_noise_sigma')
-        self._add_labeled_row(self.augmentation_form, self.augmentation_blur_probability_spinbox, 'augmentation_blur_probability')
-        self._add_labeled_row(self.augmentation_form, self.augmentation_blur_radius_spinbox, 'augmentation_blur_radius')
-        self._add_labeled_row(self.augmentation_form, self.shift_spinbox, 'shift')
+        for defect_name, label_key in IC_DEFECT_WEIGHT_FIELDS:
+            self._add_labeled_row(
+                self.synthetic_defect_generator_form,
+                self.ic_defect_type_checkboxes[defect_name],
+                f'ic_{defect_name}',
+            )
+            self._add_labeled_row(
+                self.synthetic_defect_generator_form,
+                self.ic_defect_type_spinboxes[defect_name],
+                label_key,
+            )
+        self.augmentation_form.addRow(self.synthetic_defect_generator_groupbox)
+        self.augmentation_form.addRow(self.cutout_check_box)
+        self.cutout_groupbox = QGroupBox('')
+        self.cutout_form = self._create_form_layout()
+        self.cutout_groupbox.setLayout(self.cutout_form)
+        self._add_labeled_row(self.cutout_form, self.cutout_probability_spinbox, 'cutout_probability')
+        self._add_labeled_row(self.cutout_form, self.cutout_holes_spinbox, 'cutout_holes')
+        self._add_labeled_row(self.cutout_form, self.cutout_size_ratio_spinbox, 'cutout_size_ratio')
+        self.augmentation_form.addRow(self.cutout_groupbox)
+        self.augmentation_form.addRow(self.random_artifacts_check_box)
+        self.random_artifacts_groupbox = QGroupBox('')
+        self.random_artifacts_form = self._create_form_layout()
+        self.random_artifacts_groupbox.setLayout(self.random_artifacts_form)
+        for artifact_name in RANDOM_ARTIFACT_TYPES:
+            self.random_artifacts_form.addRow(self.random_artifact_type_checkboxes[artifact_name])
+        self._add_labeled_row(
+            self.random_artifacts_form,
+            self.random_artifacts_probability_spinbox,
+            'random_artifacts_probability',
+        )
+        self._add_labeled_row(
+            self.random_artifacts_form,
+            self.random_artifacts_count_spinbox,
+            'random_artifacts_count',
+        )
+        self._add_labeled_row(
+            self.random_artifacts_form,
+            self.random_artifacts_size_ratio_spinbox,
+            'random_artifacts_size_ratio',
+        )
+        self.augmentation_form.addRow(self.random_artifacts_groupbox)
+        self.augmentation_form.addRow(self.mixup_check_box)
+        self.mixup_groupbox = QGroupBox('')
+        self.mixup_form = self._create_form_layout()
+        self.mixup_groupbox.setLayout(self.mixup_form)
+        self._add_labeled_row(self.mixup_form, self.mixup_probability_spinbox, 'mixup_probability')
+        self._add_labeled_row(self.mixup_form, self.mixup_alpha_spinbox, 'mixup_alpha')
+        self.augmentation_form.addRow(self.mixup_groupbox)
+        self.pcb_defects_groupbox = QGroupBox('')
+        self.pcb_defects_form = self._create_form_layout()
+        self.pcb_defects_groupbox.setLayout(self.pcb_defects_form)
+        self.augmentation_form.addRow(self.augmentation_preview_button)
         self.additional_augmentation_check_box.toggled.connect(self._sync_augmentation_controls)
-        self.tech_augmentation_check_box.toggled.connect(self._sync_tech_augmentation_controls)
         self.cutout_check_box.toggled.connect(self._sync_training_augmentation_controls)
         self.random_artifacts_check_box.toggled.connect(self._sync_training_augmentation_controls)
         for checkbox in self.random_artifact_type_checkboxes.values():
             checkbox.toggled.connect(self._sync_training_augmentation_controls)
         self.mixup_check_box.toggled.connect(self._sync_training_augmentation_controls)
-        self.pcb_defects_check_box.toggled.connect(self._sync_training_augmentation_controls)
+        self.synthetic_defect_generator_check_box.toggled.connect(self._sync_synthetic_defect_generator_controls)
+        self.synthetic_topology_domain_combo.currentIndexChanged.connect(self._sync_synthetic_domain_controls)
         self.pcb_defects_min_count_spinbox.valueChanged.connect(self._sync_pcb_defect_count_bounds)
         self.pcb_defects_max_count_spinbox.valueChanged.connect(self._sync_pcb_defect_count_bounds)
+        for checkbox in self.pcb_defect_type_checkboxes.values():
+            checkbox.toggled.connect(self._sync_synthetic_defect_generator_controls)
+        for checkbox in self.ic_defect_type_checkboxes.values():
+            checkbox.toggled.connect(self._sync_synthetic_defect_generator_controls)
         self.augmentation_blur_probability_spinbox.valueChanged.connect(
             lambda *_args, **_kwargs: self._sync_augmentation_controls(self.additional_augmentation_check_box.isChecked())
         )
+        self._sync_synthetic_domain_controls()
         self._sync_augmentation_controls(self.additional_augmentation_check_box.isChecked())
-        self._sync_tech_augmentation_controls(self.tech_augmentation_check_box.isChecked())
+        self._sync_synthetic_defect_generator_controls(self.synthetic_defect_generator_check_box.isChecked())
         self._sync_training_augmentation_controls()
 
         self.validation_groupbox = QGroupBox('')
@@ -1459,8 +1747,28 @@ class SettingsPanel(QDockWidget):
         self.training_page_layout.setContentsMargins(0, 0, 0, 0)
         self.training_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
         self.training_page_layout.addWidget(self.augmentation_groupbox)
+        self.training_page_layout.addWidget(self.shuffle_groupbox)
+        self.training_page_layout.addWidget(self.rare_patch_groupbox)
+        self.training_page_layout.addWidget(self.warmup_groupbox)
         self.training_page_layout.addWidget(self.optimizer_groupbox)
         self.training_page_layout.addWidget(self.precision_loss_groupbox)
+        self.expert_groupbox = QGroupBox('')
+        self.expert_groupbox.setCheckable(True)
+        self.expert_groupbox.setChecked(False)
+        self.expert_groupbox_layout = QVBoxLayout(self.expert_groupbox)
+        self.expert_groupbox_layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
+        self.expert_groupbox_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        self.expert_content_widget = QWidget()
+        self.expert_content_layout = QVBoxLayout(self.expert_content_widget)
+        self.expert_content_layout.setContentsMargins(0, 0, 0, 0)
+        self.expert_content_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        self.expert_content_layout.addWidget(self.model_variants_groupbox)
+        self.expert_content_layout.addWidget(self.scheduler_groupbox)
+        self.expert_content_layout.addWidget(self.hard_mining_groupbox)
+        self.expert_content_layout.addWidget(self.early_stopping_groupbox)
+        self.expert_content_layout.addWidget(self.runtime_groupbox)
+        self.expert_groupbox_layout.addWidget(self.expert_content_widget)
+        self.training_page_layout.addWidget(self.expert_groupbox)
         self.training_page_layout.addStretch(1)
 
         self.recognition_page = QWidget()
@@ -1470,22 +1778,10 @@ class SettingsPanel(QDockWidget):
         self.recognition_page_layout.addWidget(self.recognition_groupbox)
         self.recognition_page_layout.addStretch(1)
 
-        self.expert_page = QWidget()
-        self.expert_page_layout = QVBoxLayout(self.expert_page)
-        self.expert_page_layout.setContentsMargins(0, 0, 0, 0)
-        self.expert_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
-        self.expert_page_layout.addWidget(self.warmup_groupbox)
-        self.expert_page_layout.addWidget(self.scheduler_groupbox)
-        self.expert_page_layout.addWidget(self.hard_mining_groupbox)
-        self.expert_page_layout.addWidget(self.early_stopping_groupbox)
-        self.expert_page_layout.addWidget(self.runtime_groupbox)
-        self.expert_page_layout.addStretch(1)
-
         self._page_indexes = {
             'base': self.settings_tabs.addTab(self.base_page, ''),
             'training': self.settings_tabs.addTab(self.training_page, ''),
             'recognition': self.settings_tabs.addTab(self.recognition_page, ''),
-            'expert': self.settings_tabs.addTab(self.expert_page, ''),
         }
 
         layout = QVBoxLayout()
@@ -1502,12 +1798,16 @@ class SettingsPanel(QDockWidget):
 
         self.general_form.setAlignment(self.nn_model_type, Qt.AlignmentFlag.AlignRight)
         self.general_form.setAlignment(self.color_type, Qt.AlignmentFlag.AlignRight)
+        self.model_variants_form.setAlignment(self.deprecated_model_type, Qt.AlignmentFlag.AlignRight)
+        self.model_variants_form.setAlignment(self.experimental_model_type, Qt.AlignmentFlag.AlignRight)
         self.augmentation_form.setAlignment(self.shift_spinbox, Qt.AlignmentFlag.AlignRight)
         self.validation_form.setAlignment(self.validation_mode_combo, Qt.AlignmentFlag.AlignRight)
         self.validation_form.setAlignment(self.validation_spinbox, Qt.AlignmentFlag.AlignRight)
         self.recognition_form.setAlignment(self.recognition_batch_spinbox, Qt.AlignmentFlag.AlignRight)
         self.recognition_form.setAlignment(self.overlap_spinbox, Qt.AlignmentFlag.AlignRight)
         self.recognition_form.setAlignment(self.recognition_jpeg_quality_spinbox, Qt.AlignmentFlag.AlignRight)
+        self.expert_groupbox.toggled.connect(self._sync_expert_groupbox_controls)
+        self._sync_expert_groupbox_controls(self.expert_groupbox.isChecked())
 
         self._content_widget.setLayout(layout)
 
@@ -1606,6 +1906,341 @@ class SettingsPanel(QDockWidget):
                 parent.pop(key, None)
             else:
                 break
+
+    def set_synthetic_defect_generator_config(self, config: Any) -> None:
+        self._synthetic_defect_generator_payload = (
+            self._clone_plain_payload(config) if config is not None else {}
+        )
+        resolved = build_synthetic_defect_generator_parameters(config)
+        self.synthetic_defect_generator_check_box.setChecked(bool(resolved.enabled))
+        self.synthetic_dataset_factor_spinbox.setValue(float(resolved.epoch_size_factor))
+        self.synthetic_image_width_spinbox.setValue(int(resolved.image_size_xy[0]))
+        self.synthetic_image_height_spinbox.setValue(int(resolved.image_size_xy[1]))
+        self.synthetic_trace_count_min_spinbox.setValue(int(resolved.trace_count_range[0]))
+        self.synthetic_trace_count_max_spinbox.setValue(int(resolved.trace_count_range[1]))
+        self.synthetic_segment_count_min_spinbox.setValue(int(resolved.segment_count_range[0]))
+        self.synthetic_segment_count_max_spinbox.setValue(int(resolved.segment_count_range[1]))
+        self.synthetic_trace_half_width_min_spinbox.setValue(int(resolved.trace_half_width_range[0]))
+        self.synthetic_trace_half_width_max_spinbox.setValue(int(resolved.trace_half_width_range[1]))
+        self.synthetic_background_noise_sigma_min_spinbox.setValue(float(resolved.background_noise_sigma_range[0]))
+        self.synthetic_background_noise_sigma_max_spinbox.setValue(float(resolved.background_noise_sigma_range[1]))
+        self.synthetic_trace_noise_sigma_min_spinbox.setValue(float(resolved.trace_noise_sigma_range[0]))
+        self.synthetic_trace_noise_sigma_max_spinbox.setValue(float(resolved.trace_noise_sigma_range[1]))
+        self.set_synthetic_topology_domain_value(str(resolved.topology_domain))
+        payload = self._synthetic_defect_generator_payload if isinstance(self._synthetic_defect_generator_payload, dict) else {}
+        self.set_combo_value(
+            self.pcb_topology_family_combo,
+            str(
+                payload.get(
+                    'pcb_topology_family',
+                    resolved.topology_family if resolved.topology_domain == 'pcb' else PCB_TOPOLOGY_FAMILIES[0],
+                )
+            ),
+        )
+        self.set_combo_value(
+            self.ic_topology_family_combo,
+            str(
+                payload.get(
+                    'ic_topology_family',
+                    resolved.topology_family if resolved.topology_domain == 'ic' else IC_TOPOLOGY_FAMILIES[0],
+                )
+            ),
+        )
+        active_defects = resolved.ic_defects if resolved.topology_domain == 'ic' else resolved.pcb_defects
+        self.pcb_defects_probability_spinbox.setValue(float(active_defects.defect_probability))
+        self.pcb_defects_min_count_spinbox.setValue(int(active_defects.min_defects))
+        self.pcb_defects_max_count_spinbox.setValue(int(active_defects.max_defects))
+        for defect_name, _label_key in PCB_DEFECT_WEIGHT_FIELDS:
+            self.pcb_defect_type_checkboxes[defect_name].setChecked(
+                float(resolved.pcb_defects.defect_probabilities.get(defect_name, 1.0)) > 0.0
+            )
+            self.pcb_defect_type_spinboxes[defect_name].setValue(
+                int(round(float(resolved.pcb_defects.defect_severities.get(defect_name, 0.5)) * 100.0))
+            )
+        for defect_name, _label_key in IC_DEFECT_WEIGHT_FIELDS:
+            self.ic_defect_type_checkboxes[defect_name].setChecked(
+                float(resolved.ic_defects.defect_probabilities.get(defect_name, 1.0)) > 0.0
+            )
+            self.ic_defect_type_spinboxes[defect_name].setValue(
+                int(round(float(resolved.ic_defects.defect_severities.get(defect_name, 0.5)) * 100.0))
+            )
+        self._sync_synthetic_domain_controls()
+        self._sync_synthetic_defect_generator_controls(self.synthetic_defect_generator_check_box.isChecked())
+
+    def get_synthetic_defect_generator_config(self) -> dict[str, Any]:
+        defaults = build_synthetic_defect_generator_parameters(None)
+        payload = self._clone_plain_payload(self._synthetic_defect_generator_payload)
+        if not isinstance(payload, dict):
+            payload = {}
+
+        self._set_optional_config_value(
+            payload,
+            ('enabled',),
+            bool(self.synthetic_defect_generator_check_box.isChecked()),
+            bool(defaults.enabled),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('epoch_size_factor',),
+            float(self.synthetic_dataset_factor_spinbox.value()),
+            float(defaults.epoch_size_factor),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('image_size_xy',),
+            [
+                int(self.synthetic_image_width_spinbox.value()),
+                int(self.synthetic_image_height_spinbox.value()),
+            ],
+            list(defaults.image_size_xy),
+        )
+        topology_domain = self.get_synthetic_topology_domain_value()
+        pcb_topology_family = self.get_combo_value(self.pcb_topology_family_combo)
+        ic_topology_family = self.get_combo_value(self.ic_topology_family_combo)
+        active_defaults = defaults.ic_defects if topology_domain == 'ic' else defaults.pcb_defects
+        active_fields = IC_DEFECT_WEIGHT_FIELDS if topology_domain == 'ic' else PCB_DEFECT_WEIGHT_FIELDS
+        active_sliders = self.ic_defect_type_spinboxes if topology_domain == 'ic' else self.pcb_defect_type_spinboxes
+        active_checkboxes = self.ic_defect_type_checkboxes if topology_domain == 'ic' else self.pcb_defect_type_checkboxes
+
+        self._set_optional_config_value(
+            payload,
+            ('topology_domain',),
+            topology_domain,
+            str(defaults.topology_domain),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('pcb_topology_family',),
+            pcb_topology_family,
+            PCB_TOPOLOGY_FAMILIES[0],
+        )
+        self._set_optional_config_value(
+            payload,
+            ('ic_topology_family',),
+            ic_topology_family,
+            IC_TOPOLOGY_FAMILIES[0],
+        )
+        self._set_optional_config_value(
+            payload,
+            ('topology_family',),
+            ic_topology_family if topology_domain == 'ic' else pcb_topology_family,
+            str(defaults.topology_family),
+        )
+        trace_count_min = int(self.synthetic_trace_count_min_spinbox.value())
+        trace_count_max = int(self.synthetic_trace_count_max_spinbox.value())
+        if trace_count_min > trace_count_max:
+            trace_count_min, trace_count_max = trace_count_max, trace_count_min
+        segment_count_min = int(self.synthetic_segment_count_min_spinbox.value())
+        segment_count_max = int(self.synthetic_segment_count_max_spinbox.value())
+        if segment_count_min > segment_count_max:
+            segment_count_min, segment_count_max = segment_count_max, segment_count_min
+        trace_half_width_min = int(self.synthetic_trace_half_width_min_spinbox.value())
+        trace_half_width_max = int(self.synthetic_trace_half_width_max_spinbox.value())
+        if trace_half_width_min > trace_half_width_max:
+            trace_half_width_min, trace_half_width_max = trace_half_width_max, trace_half_width_min
+        background_noise_sigma_min = float(self.synthetic_background_noise_sigma_min_spinbox.value())
+        background_noise_sigma_max = float(self.synthetic_background_noise_sigma_max_spinbox.value())
+        if background_noise_sigma_min > background_noise_sigma_max:
+            background_noise_sigma_min, background_noise_sigma_max = background_noise_sigma_max, background_noise_sigma_min
+        trace_noise_sigma_min = float(self.synthetic_trace_noise_sigma_min_spinbox.value())
+        trace_noise_sigma_max = float(self.synthetic_trace_noise_sigma_max_spinbox.value())
+        if trace_noise_sigma_min > trace_noise_sigma_max:
+            trace_noise_sigma_min, trace_noise_sigma_max = trace_noise_sigma_max, trace_noise_sigma_min
+        self._set_optional_config_value(
+            payload,
+            ('trace_count_range',),
+            [trace_count_min, trace_count_max],
+            list(defaults.trace_count_range),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('trace_count',),
+            trace_count_max,
+            int(defaults.trace_count),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('segment_count_range',),
+            [segment_count_min, segment_count_max],
+            list(defaults.segment_count_range),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('segment_count',),
+            segment_count_max,
+            int(defaults.segment_count),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('trace_half_width_range',),
+            [trace_half_width_min, trace_half_width_max],
+            list(defaults.trace_half_width_range),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('trace_half_width',),
+            trace_half_width_max,
+            int(defaults.trace_half_width),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('background_noise_sigma_range',),
+            [background_noise_sigma_min, background_noise_sigma_max],
+            list(defaults.background_noise_sigma_range),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('background_noise_sigma',),
+            background_noise_sigma_max,
+            float(defaults.background_noise_sigma),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('trace_noise_sigma_range',),
+            [trace_noise_sigma_min, trace_noise_sigma_max],
+            list(defaults.trace_noise_sigma_range),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('trace_noise_sigma',),
+            trace_noise_sigma_max,
+            float(defaults.trace_noise_sigma),
+        )
+        min_defects = int(self.pcb_defects_min_count_spinbox.value())
+        max_defects = int(self.pcb_defects_max_count_spinbox.value())
+        if min_defects > max_defects:
+            min_defects, max_defects = max_defects, min_defects
+        for group_name, group_defaults, field_defs, slider_map, checkbox_map in (
+            ('pcb_defects', defaults.pcb_defects, PCB_DEFECT_WEIGHT_FIELDS, self.pcb_defect_type_spinboxes, self.pcb_defect_type_checkboxes),
+            ('ic_defects', defaults.ic_defects, IC_DEFECT_WEIGHT_FIELDS, self.ic_defect_type_spinboxes, self.ic_defect_type_checkboxes),
+        ):
+            existing_group_payload = payload.get(group_name, {}) if isinstance(payload.get(group_name), dict) else {}
+            existing_active_payload = payload.get('defects', {}) if isinstance(payload.get('defects'), dict) else {}
+            self._set_optional_config_value(
+                payload,
+                (group_name, 'enabled'),
+                bool(self.synthetic_defect_generator_check_box.isChecked()),
+                bool(group_defaults.enabled),
+            )
+            self._set_optional_config_value(
+                payload,
+                (group_name, 'defect_probability'),
+                float(self.pcb_defects_probability_spinbox.value()),
+                float(group_defaults.defect_probability),
+            )
+            self._set_optional_config_value(
+                payload,
+                (group_name, 'min_defects'),
+                min_defects,
+                int(group_defaults.min_defects),
+            )
+            self._set_optional_config_value(
+                payload,
+                (group_name, 'max_defects'),
+                max_defects,
+                int(group_defaults.max_defects),
+            )
+            self._set_optional_config_value(
+                payload,
+                (group_name, 'use_input_mask'),
+                True,
+                bool(group_defaults.use_input_mask),
+            )
+            self._set_optional_config_value(
+                payload,
+                (group_name, 'use_defect_mask_as_label'),
+                False,
+                bool(group_defaults.use_defect_mask_as_label),
+            )
+            self._set_optional_config_value(
+                payload,
+                (group_name, 'max_attempts_per_defect'),
+                int(existing_group_payload.get('max_attempts_per_defect', existing_active_payload.get('max_attempts_per_defect', group_defaults.max_attempts_per_defect))),
+                int(group_defaults.max_attempts_per_defect),
+            )
+            self._set_optional_config_value(
+                payload,
+                (group_name, 'min_component_area'),
+                int(existing_group_payload.get('min_component_area', existing_active_payload.get('min_component_area', group_defaults.min_component_area))),
+                int(group_defaults.min_component_area),
+            )
+            for defect_name, _label_key in field_defs:
+                self._set_optional_config_value(
+                    payload,
+                    (group_name, 'defect_probabilities', defect_name),
+                    1.0 if bool(checkbox_map[defect_name].isChecked()) else 0.0,
+                    float(group_defaults.defect_probabilities.get(defect_name, 1.0)),
+                )
+                self._set_optional_config_value(
+                    payload,
+                    (group_name, 'defect_severities', defect_name),
+                    float(slider_map[defect_name].value()) / 100.0,
+                    float(group_defaults.defect_severities.get(defect_name, 0.5)),
+                )
+        self._set_optional_config_value(
+            payload,
+            ('defects', 'enabled'),
+            bool(self.synthetic_defect_generator_check_box.isChecked()),
+            bool(active_defaults.enabled),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('defects', 'defect_probability'),
+            float(self.pcb_defects_probability_spinbox.value()),
+            float(active_defaults.defect_probability),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('defects', 'min_defects'),
+            min_defects,
+            int(active_defaults.min_defects),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('defects', 'max_defects'),
+            max_defects,
+            int(active_defaults.max_defects),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('defects', 'use_input_mask'),
+            True,
+            bool(active_defaults.use_input_mask),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('defects', 'use_defect_mask_as_label'),
+            False,
+            bool(active_defaults.use_defect_mask_as_label),
+        )
+        existing_active_payload = payload.get('defects', {}) if isinstance(payload.get('defects'), dict) else {}
+        self._set_optional_config_value(
+            payload,
+            ('defects', 'max_attempts_per_defect'),
+            int(existing_active_payload.get('max_attempts_per_defect', active_defaults.max_attempts_per_defect)),
+            int(active_defaults.max_attempts_per_defect),
+        )
+        self._set_optional_config_value(
+            payload,
+            ('defects', 'min_component_area'),
+            int(existing_active_payload.get('min_component_area', active_defaults.min_component_area)),
+            int(active_defaults.min_component_area),
+        )
+        for defect_name, _label_key in active_fields:
+            self._set_optional_config_value(
+                payload,
+                ('defects', 'defect_probabilities', defect_name),
+                1.0 if bool(active_checkboxes[defect_name].isChecked()) else 0.0,
+                float(active_defaults.defect_probabilities.get(defect_name, 1.0)),
+            )
+            self._set_optional_config_value(
+                payload,
+                ('defects', 'defect_severities', defect_name),
+                float(active_sliders[defect_name].value()) / 100.0,
+                float(active_defaults.defect_severities.get(defect_name, 0.5)),
+            )
+        self._synthetic_defect_generator_payload = self._clone_plain_payload(payload)
+        return payload
 
     def set_tech_aug_config(self, config: Any) -> None:
         self._tech_aug_config_payload = self._clone_plain_payload(config) if config is not None else {}
@@ -1712,7 +2347,7 @@ class SettingsPanel(QDockWidget):
         self.pcb_defects_use_defect_mask_as_label_check_box.setChecked(bool(resolved.use_defect_mask_as_label))
         for defect_name, _label_key in PCB_DEFECT_WEIGHT_FIELDS:
             self.pcb_defect_type_spinboxes[defect_name].setValue(
-                float(resolved.defect_probabilities.get(defect_name, 1.0))
+                int(round(float(resolved.defect_severities.get(defect_name, 0.5)) * 100.0))
             )
         self._sync_training_augmentation_controls()
 
@@ -1751,8 +2386,14 @@ class SettingsPanel(QDockWidget):
             self._set_optional_config_value(
                 payload,
                 ('defect_probabilities', defect_name),
-                float(self.pcb_defect_type_spinboxes[defect_name].value()),
+                1.0 if bool(self.pcb_defects_check_box.isChecked()) else 0.0,
                 float(defaults.defect_probabilities.get(defect_name, 1.0)),
+            )
+            self._set_optional_config_value(
+                payload,
+                ('defect_severities', defect_name),
+                float(self.pcb_defect_type_spinboxes[defect_name].value()) / 100.0,
+                float(defaults.defect_severities.get(defect_name, 0.5)),
             )
         self._pcb_defects_config_payload = self._clone_plain_payload(payload)
         return payload
@@ -1795,13 +2436,17 @@ class SettingsPanel(QDockWidget):
         current_index = self.settings_tabs.currentIndex()
         if hasattr(self.settings_tabs, 'isTabVisible') and self.settings_tabs.isTabVisible(current_index):
             return
-        for page_key in ('base', 'training', 'recognition', 'expert'):
+        for page_key in ('base', 'training', 'recognition'):
             index = self._page_indexes.get(page_key)
             if index is None:
                 continue
             if hasattr(self.settings_tabs, 'isTabVisible') and self.settings_tabs.isTabVisible(index):
                 self.settings_tabs.setCurrentIndex(index)
                 return
+
+    def _sync_expert_groupbox_controls(self, expanded: bool) -> None:
+        visible = bool(expanded)
+        self.expert_content_widget.setVisible(visible)
 
     def _apply_optimizer_preset(self, optimizer_name: str, learning_rate: float, weight_decay: float) -> None:
         if optimizer_name not in OPTIMIZERS:
@@ -1958,6 +2603,9 @@ class SettingsPanel(QDockWidget):
         control_enabled = self._training_controls_applicable and bool(enabled)
         online_mode_enabled = self._training_controls_applicable and bool(self.no_cut_dataset_type.isChecked())
         random_crop_enabled = online_mode_enabled and bool(self.random_crop_check_box.isChecked())
+        self.spatial_groupbox.setEnabled(self._training_controls_applicable)
+        self.photometric_groupbox.setEnabled(self._training_controls_applicable)
+        self.photometric_groupbox.setVisible(control_enabled)
         self._set_field_enabled(self.augmentation_brightness_spinbox, control_enabled)
         self._set_field_enabled(self.augmentation_contrast_spinbox, control_enabled)
         self._set_field_enabled(self.augmentation_gamma_spinbox, control_enabled)
@@ -1980,6 +2628,7 @@ class SettingsPanel(QDockWidget):
             online_mode_enabled and bool(self.scale_augmentation_check_box.isChecked()),
         )
         self._sync_tech_augmentation_controls(self.tech_augmentation_check_box.isChecked())
+        self._sync_synthetic_defect_generator_controls(self.synthetic_defect_generator_check_box.isChecked())
         self._sync_training_augmentation_controls()
 
     def _sync_tech_augmentation_controls(self, _enabled: bool | None = None) -> None:
@@ -1998,6 +2647,63 @@ class SettingsPanel(QDockWidget):
         self._set_field_enabled(self.tech_aug_local_morphology_probability_spinbox, tech_enabled)
         self._set_field_enabled(self.tech_aug_gap_variation_probability_spinbox, tech_enabled)
 
+    def _sync_synthetic_defect_generator_controls(self, _enabled: bool | None = None) -> None:
+        training_enabled = self._training_controls_applicable
+        synthetic_enabled = training_enabled and bool(self.synthetic_defect_generator_check_box.isChecked())
+        current_domain = self.get_synthetic_topology_domain_value()
+        self.synthetic_defect_generator_groupbox.setEnabled(training_enabled)
+        self.synthetic_defect_generator_groupbox.setVisible(synthetic_enabled)
+        self.synthetic_defect_generator_check_box.setEnabled(training_enabled)
+        self._set_field_enabled(self.synthetic_topology_domain_combo, synthetic_enabled)
+        self._set_field_enabled(
+            self.pcb_topology_family_combo,
+            synthetic_enabled and current_domain == 'pcb',
+        )
+        self._set_field_enabled(
+            self.ic_topology_family_combo,
+            synthetic_enabled and current_domain == 'ic',
+        )
+        self._set_field_enabled(self.synthetic_dataset_factor_spinbox, synthetic_enabled)
+        self._set_field_enabled(self.synthetic_image_size_widget, synthetic_enabled)
+        self._set_field_enabled(self.synthetic_trace_count_range_widget, synthetic_enabled)
+        self._set_field_enabled(self.synthetic_segment_count_range_widget, synthetic_enabled)
+        self._set_field_enabled(self.synthetic_trace_half_width_range_widget, synthetic_enabled)
+        self._set_field_enabled(self.synthetic_background_noise_sigma_range_widget, synthetic_enabled)
+        self._set_field_enabled(self.synthetic_trace_noise_sigma_range_widget, synthetic_enabled)
+        self._set_field_enabled(self.pcb_defects_probability_spinbox, synthetic_enabled)
+        self._set_field_enabled(self.pcb_defects_min_count_spinbox, synthetic_enabled)
+        self._set_field_enabled(self.pcb_defects_max_count_spinbox, synthetic_enabled)
+        for defect_name, _label_key in PCB_DEFECT_WEIGHT_FIELDS:
+            self._set_field_enabled(
+                self.pcb_defect_type_checkboxes[defect_name],
+                synthetic_enabled and current_domain == 'pcb',
+            )
+            self._set_field_enabled(
+                self.pcb_defect_type_spinboxes[defect_name],
+                synthetic_enabled and current_domain == 'pcb' and bool(self.pcb_defect_type_checkboxes[defect_name].isChecked()),
+            )
+        for defect_name, _label_key in IC_DEFECT_WEIGHT_FIELDS:
+            self._set_field_enabled(
+                self.ic_defect_type_checkboxes[defect_name],
+                synthetic_enabled and current_domain == 'ic',
+            )
+            self._set_field_enabled(
+                self.ic_defect_type_spinboxes[defect_name],
+                synthetic_enabled and current_domain == 'ic' and bool(self.ic_defect_type_checkboxes[defect_name].isChecked()),
+            )
+        self._sync_synthetic_domain_controls()
+
+    def _sync_synthetic_domain_controls(self, _enabled: bool | None = None) -> None:
+        is_ic = self.get_synthetic_topology_domain_value() == 'ic'
+        self._set_field_visible(self.pcb_topology_family_combo, not is_ic)
+        self._set_field_visible(self.ic_topology_family_combo, is_ic)
+        for defect_name, _label_key in PCB_DEFECT_WEIGHT_FIELDS:
+            self._set_field_visible(self.pcb_defect_type_checkboxes[defect_name], not is_ic)
+            self._set_field_visible(self.pcb_defect_type_spinboxes[defect_name], not is_ic)
+        for defect_name, _label_key in IC_DEFECT_WEIGHT_FIELDS:
+            self._set_field_visible(self.ic_defect_type_checkboxes[defect_name], is_ic)
+            self._set_field_visible(self.ic_defect_type_spinboxes[defect_name], is_ic)
+
     def _sync_recognition_output_controls(self, _enabled: bool | None = None) -> None:
         recognition_enabled = self._recognition_controls_applicable
         binarize_output = recognition_enabled and bool(self.recognition_binarize_output_check_box.isChecked())
@@ -2008,8 +2714,43 @@ class SettingsPanel(QDockWidget):
         self.recognition_binarize_output_check_box.setEnabled(recognition_enabled)
         self.recognition_use_auto_threshold_check_box.setEnabled(binarize_output)
         self._set_field_enabled(self.recognition_threshold_spinbox, binarize_output and not auto_threshold)
+        self.recognition_tta_check_box.setEnabled(recognition_enabled)
+        self.confidence_tta_check_box.setEnabled(recognition_enabled)
+        self._set_field_enabled(self.confidence_save_mode_combo, recognition_enabled)
         self.recognition_postprocess_check_box.setEnabled(binarize_output)
         self._set_field_enabled(self.recognition_postprocess_kernel_size_spinbox, postprocess_enabled)
+
+    def get_confidence_save_mode_value(self) -> str:
+        return str(self.confidence_save_mode_combo.currentData() or self.confidence_save_mode_combo.currentText() or 'off')
+
+    def set_confidence_save_mode_value(self, value: str) -> None:
+        normalized = str(value or 'off').strip().lower()
+        index = self.confidence_save_mode_combo.findData(normalized)
+        if index < 0:
+            index = self.confidence_save_mode_combo.findText(normalized)
+        if index < 0:
+            index = 0
+        self.confidence_save_mode_combo.setCurrentIndex(index)
+
+    @staticmethod
+    def get_combo_value(combo: NoWheelComboBox) -> str:
+        return str(combo.currentData() or combo.currentText() or '')
+
+    @staticmethod
+    def set_combo_value(combo: NoWheelComboBox, value: str) -> None:
+        normalized = str(value or '').strip().lower()
+        index = combo.findData(normalized)
+        if index < 0:
+            index = combo.findText(normalized)
+        if index < 0:
+            index = 0
+        combo.setCurrentIndex(index)
+
+    def get_synthetic_topology_domain_value(self) -> str:
+        return self.get_combo_value(self.synthetic_topology_domain_combo) or 'pcb'
+
+    def set_synthetic_topology_domain_value(self, value: str) -> None:
+        self.set_combo_value(self.synthetic_topology_domain_combo, value)
 
     def _sync_pcb_defect_count_bounds(self, _value: int | None = None) -> None:
         min_defects = int(self.pcb_defects_min_count_spinbox.value())
@@ -2025,10 +2766,16 @@ class SettingsPanel(QDockWidget):
         training_enabled = self._training_controls_applicable
         self.cutout_check_box.setEnabled(training_enabled)
         self.random_artifacts_check_box.setEnabled(training_enabled)
+        self.cutout_groupbox.setEnabled(training_enabled)
+        self.cutout_groupbox.setVisible(training_enabled and bool(self.cutout_check_box.isChecked()))
         random_artifacts_enabled = training_enabled and bool(self.random_artifacts_check_box.isChecked())
+        self.random_artifacts_groupbox.setEnabled(training_enabled)
+        self.random_artifacts_groupbox.setVisible(random_artifacts_enabled)
         for checkbox in self.random_artifact_type_checkboxes.values():
             checkbox.setEnabled(random_artifacts_enabled)
         self.mixup_check_box.setEnabled(training_enabled)
+        self.mixup_groupbox.setEnabled(training_enabled)
+        self.mixup_groupbox.setVisible(training_enabled and bool(self.mixup_check_box.isChecked()))
         pcb_defects_enabled = training_enabled and bool(self.pcb_defects_check_box.isChecked())
         self.pcb_defects_groupbox.setEnabled(training_enabled)
         self.pcb_defects_check_box.setEnabled(training_enabled)
@@ -2071,6 +2818,7 @@ class SettingsPanel(QDockWidget):
         self._set_field_enabled(self.pcb_defects_max_count_spinbox, pcb_defects_enabled)
         for defect_name, _label_key in PCB_DEFECT_WEIGHT_FIELDS:
             self._set_field_enabled(self.pcb_defect_type_spinboxes[defect_name], pcb_defects_enabled)
+        self._sync_synthetic_defect_generator_controls(self.synthetic_defect_generator_check_box.isChecked())
 
     def _sync_patch_size_controls(self, _index: int | None = None) -> None:
         if getattr(self, '_patch_size_sync_guard', False):
@@ -2092,32 +2840,143 @@ class SettingsPanel(QDockWidget):
         finally:
             self._patch_size_sync_guard = False
 
-    def model_type_init(self, models: Iterable[str] | None) -> None:
-        """Populate the model selector with available model names."""
-        if models is None:
-            normalized_models: list[str] = []
-        elif isinstance(models, str):
-            normalized_models = [models]
-        else:
-            try:
-                normalized_models = [str(name) for name in models]
-            except TypeError:
-                normalized_models = []
+    @staticmethod
+    def _normalize_model_group(values: Iterable[str] | str | None) -> list[str]:
+        if values is None:
+            return []
+        if isinstance(values, str):
+            return [values]
+        try:
+            return [str(name) for name in values]
+        except TypeError:
+            return []
 
-        self.models = list(normalized_models)
-        self.nn_model_type.clear()
-        if self.models:
-            self.nn_model_type.addItems(self.models)
+    def _populate_model_combo(
+        self,
+        combo: NoWheelComboBox,
+        models: list[str],
+        *,
+        select_first_model: bool = False,
+    ) -> None:
+        combo.clear()
+        combo.addItem('-', '')
+        for model_name in models:
+            combo.addItem(model_name, model_name)
+        if select_first_model and len(models) > 0:
+            combo.setCurrentIndex(1)
+        else:
+            combo.setCurrentIndex(0)
+
+    def _clear_model_combos(self, *, keep: NoWheelComboBox | None = None) -> None:
+        for combo in (self.nn_model_type, self.deprecated_model_type, self.experimental_model_type):
+            if combo is keep:
+                continue
+            if combo.count() > 0:
+                combo.setCurrentIndex(0)
+
+    @staticmethod
+    def _combo_selected_model(combo: NoWheelComboBox, *, allow_placeholder: bool = False) -> str:
+        current_data = combo.currentData()
+        if current_data is not None:
+            resolved = str(current_data).strip()
+            if resolved or allow_placeholder:
+                return resolved
+        if not allow_placeholder and combo.currentIndex() <= 0:
+            return ''
+        return str(combo.currentText() or '').strip()
+
+    def _sync_model_selection(self, source: NoWheelComboBox) -> None:
+        if self._model_combo_guard:
+            return
+        self._model_combo_guard = True
+        try:
+            if source is self.nn_model_type:
+                if self._combo_selected_model(source):
+                    self._clear_model_combos(keep=source)
+            elif source in {self.deprecated_model_type, self.experimental_model_type}:
+                selected_model = self._combo_selected_model(source)
+                if selected_model:
+                    self._clear_model_combos(keep=source)
+        finally:
+            self._model_combo_guard = False
+
+    def get_selected_model(self) -> str:
+        deprecated_model = self._combo_selected_model(self.deprecated_model_type)
+        if deprecated_model:
+            return deprecated_model
+        experimental_model = self._combo_selected_model(self.experimental_model_type)
+        if experimental_model:
+            return experimental_model
+        return self._combo_selected_model(self.nn_model_type, allow_placeholder=True)
+
+    def model_type_init(self, models: Iterable[str] | Mapping[str, Iterable[str]] | None) -> None:
+        """Populate stable, deprecated, and experimental model selectors."""
+        stable_models: list[str]
+        deprecated_models: list[str]
+        experimental_models: list[str]
+        if isinstance(models, Mapping):
+            stable_models = self._normalize_model_group(
+                models.get('stable') or models.get('ModelType.stable') or models.get(None)
+            )
+            deprecated_models = self._normalize_model_group(models.get('deprecated'))
+            experimental_models = self._normalize_model_group(models.get('experimental'))
+            for key, values in models.items():
+                key_name = str(getattr(key, 'value', key))
+                if key_name == 'stable':
+                    stable_models = self._normalize_model_group(values)
+                elif key_name == 'deprecated':
+                    deprecated_models = self._normalize_model_group(values)
+                elif key_name == 'experimental':
+                    experimental_models = self._normalize_model_group(values)
+        else:
+            stable_models = self._normalize_model_group(models)
+            deprecated_models = []
+            experimental_models = []
+
+        self.models = list(stable_models)
+        self.deprecated_models = list(deprecated_models)
+        self.experimental_models = list(experimental_models)
+        self._populate_model_combo(self.nn_model_type, self.models, select_first_model=bool(self.models))
+        self._populate_model_combo(self.deprecated_model_type, self.deprecated_models)
+        self._populate_model_combo(self.experimental_model_type, self.experimental_models)
 
     def set_model(self, model: str) -> None:
-        """Select the current model if it exists in the loaded model list."""
+        """Select the current model across stable, deprecated, and experimental selectors."""
         if not isinstance(model, str):
             return
-        try:
-            index = self.models.index(model)
-        except ValueError:
+        if model in self.models:
+            self._model_combo_guard = True
+            try:
+                self.nn_model_type.setCurrentText(model)
+                self._clear_model_combos(keep=self.nn_model_type)
+            finally:
+                self._model_combo_guard = False
             return
-        self.nn_model_type.setCurrentIndex(index)
+        if model in self.deprecated_models:
+            self._model_combo_guard = True
+            try:
+                self.deprecated_model_type.setCurrentText(model)
+                self._clear_model_combos(keep=self.deprecated_model_type)
+            finally:
+                self._model_combo_guard = False
+            return
+        if model in self.experimental_models:
+            self._model_combo_guard = True
+            try:
+                self.experimental_model_type.setCurrentText(model)
+                self._clear_model_combos(keep=self.experimental_model_type)
+            finally:
+                self._model_combo_guard = False
+            return
+        if model and model not in self.models:
+            self.models.append(model)
+            self.nn_model_type.addItem(model, model)
+        self._model_combo_guard = True
+        try:
+            self.nn_model_type.setCurrentText(model)
+            self._clear_model_combos(keep=self.nn_model_type)
+        finally:
+            self._model_combo_guard = False
 
     def restore_cut_mode(self, mode: Any) -> None:
         """Restore sample cut mode radio button selection from persisted value."""

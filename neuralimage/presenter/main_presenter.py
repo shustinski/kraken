@@ -34,6 +34,8 @@ from lib.data_interfaces import (
     WorkMode,
     TrainingParameters,
     RecognitionParameters,
+    build_synthetic_defect_generator_parameters,
+    build_tech_augmentation_config,
     normalize_work_mode,
     normalize_multi_gpu_mode,
     normalize_validation_source,
@@ -58,7 +60,7 @@ from lib.update_checker import (
     should_notify_version,
 )
 from lib.version import APP_VERSION
-from model.NeuralNetwork import get_registered_models
+from model.NeuralNetwork import get_registered_model_names_by_type, get_registered_models
 from model.general_neural_handler import GeneralNeuralHandler
 from lib.ui_texts import get_ui_section
 from view import MainView, SettingsPanel
@@ -141,7 +143,7 @@ class MainPresenter(QObject):
 
         # Получаем список активных моделей нейросетей
         self.active_nn_models = get_registered_models()
-        self.settings_panel.model_type_init(list(self.active_nn_models.keys()))
+        self.settings_panel.model_type_init(get_registered_model_names_by_type())
 
         # Инициализируем главное окно
         self.view = MainView(side_panel=self.settings_panel)
@@ -150,6 +152,7 @@ class MainPresenter(QObject):
         self._processing_session = ProcessingSession()
         self.neuaral_handler: GeneralNeuralHandlerThread | None = None
         self._rare_patch_editor_prepare_thread: RarePatchEditorPreparationThread | None = None
+        self._augmentation_preview_dialog = None
         self._update_check_thread: AppUpdateCheckThread | None = None
         self._update_download_thread: AppUpdateDownloadThread | None = None
         self._validation_gradient_plugin = None
@@ -158,8 +161,8 @@ class MainPresenter(QObject):
         self._sample_count_worker_thread: threading.Thread | None = None
         self._sample_count_request_serial = 0
         self._latest_sample_count_request_id = 0
-        self._debounced_sample_count_request: tuple[int, str, CutSettings] | None = None
-        self._pending_sample_count_request: tuple[int, str, CutSettings] | None = None
+        self._debounced_sample_count_request: tuple[int, str, CutSettings, object] | None = None
+        self._pending_sample_count_request: tuple[int, str, CutSettings, object] | None = None
         self._sample_count_cache_path: str | None = None
         self._sample_count_cache_sizes: list[tuple[int, int]] | None = None
         self._sample_count_signals = SampleCountSignals()
@@ -236,8 +239,19 @@ class MainPresenter(QObject):
         v.validation_image_path_requested.connect(self._choose_validation_image_folder)
         v.validation_label_path_requested.connect(self._choose_validation_label_folder)
         v.reset_defaults_requested.connect(self._reset_settings_to_defaults)
+        v.augmentation_preview_requested.connect(self._open_augmentation_preview)
         v.ui_language_changed.connect(self.view.apply_ui_language)
         v.rare_patch_editor_requested.connect(self._open_rare_patch_editor)
+
+    def _publish_log_message(self, message: str) -> None:
+        state_dict = object.__getattribute__(self, '__dict__')
+        bus = state_dict.get('message_bus')
+        if bus is None:
+            return
+        try:
+            bus.publish('logging', str(message))
+        except Exception:
+            return
 
     # ------------------------------------------------------------------ #
     #   Инициализация UI
@@ -274,8 +288,12 @@ class MainPresenter(QObject):
         sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
         if sample_folder and Path(sample_folder).is_dir():
             self.settings_panel.set_samples_count_loading()
+            if hasattr(self.view, 'set_samples_count_loading'):
+                self.view.set_samples_count_loading()
             return
         self.settings_panel.set_samples_count(0)
+        if hasattr(self.view, 'set_samples_count'):
+            self.view.set_samples_count(0)
 
     # ------------------------------------------------------------------ #
     #   Обновление класса состояния окон
@@ -355,6 +373,8 @@ class MainPresenter(QObject):
         # 3.1 Check-box (bool)
         s.horizontal_rotation.setChecked(state.horizontal_rotation)
         s.vertical_rotation.setChecked(state.vertical_rotation)
+        s.flip_x.setChecked(bool(getattr(state, 'flip_x', False)))
+        s.flip_y.setChecked(bool(getattr(state, 'flip_y', False)))
         s.additional_augmentation_check_box.setChecked(state.additional_augmentation)
         s.augmentation_brightness_spinbox.setValue(state.augmentation_brightness_strength)
         s.augmentation_contrast_spinbox.setValue(state.augmentation_contrast_strength)
@@ -377,7 +397,7 @@ class MainPresenter(QObject):
 
         # 3.3 Combo-box (str - используем setCurrentText, который выбирает
         #      entry if it exists, otherwise it will add a new entry.)
-        s.nn_model_type.setCurrentText(state.model)
+        s.set_model(state.model)
         if hasattr(s, 'set_color_mode_value'):
             s.set_color_mode_value(state.color_mode)
         else:
@@ -390,8 +410,8 @@ class MainPresenter(QObject):
         s.crops_per_image_spinbox.setValue(int(getattr(state, 'crops_per_image', 64)))
         s.scale_augmentation_check_box.setChecked(bool(getattr(state, 'scale_augmentation', False)))
         s.scale_augmentation_strength_spinbox.setValue(float(getattr(state, 'scale_augmentation_strength', 0.2)))
-        if hasattr(s, 'set_tech_aug_config'):
-            s.set_tech_aug_config(getattr(state, 'tech_aug', {}))
+        if hasattr(s, 'set_synthetic_defect_generator_config'):
+            s.set_synthetic_defect_generator_config(getattr(state, 'synthetic_defect_generator', {}))
         s.cutout_check_box.setChecked(bool(getattr(state, 'cutout_enabled', False)))
         s.cutout_probability_spinbox.setValue(float(getattr(state, 'cutout_probability', 1.0)))
         s.cutout_holes_spinbox.setValue(int(getattr(state, 'cutout_holes', 1)))
@@ -407,8 +427,6 @@ class MainPresenter(QObject):
         s.mixup_check_box.setChecked(bool(getattr(state, 'mixup_enabled', False)))
         s.mixup_probability_spinbox.setValue(float(getattr(state, 'mixup_probability', 1.0)))
         s.mixup_alpha_spinbox.setValue(float(getattr(state, 'mixup_alpha', 0.2)))
-        if hasattr(s, 'set_pcb_defects_config'):
-            s.set_pcb_defects_config(getattr(state, 'pcb_defects', {}))
 
         # 3.4  Validation controls
         s.validation_check_box.setChecked(state.use_validation)
@@ -446,13 +464,18 @@ class MainPresenter(QObject):
             bool(getattr(state, 'recognition_use_auto_threshold', True))
         )
         s.recognition_threshold_spinbox.setValue(float(getattr(state, 'recognition_threshold', 0.5)))
+        s.recognition_tta_check_box.setChecked(bool(getattr(state, 'recognition_tta_enabled', False)))
+        s.confidence_tta_check_box.setChecked(bool(getattr(state, 'confidence_tta_enabled', False)))
         s.recognition_postprocess_check_box.setChecked(bool(getattr(state, 'recognition_postprocess', False)))
         s.recognition_postprocess_kernel_size_spinbox.setValue(
             int(getattr(state, 'recognition_postprocess_kernel_size', 3))
         )
+        if hasattr(s, 'set_confidence_save_mode_value'):
+            s.set_confidence_save_mode_value(str(getattr(state, 'confidence_save_mode', 'off')))
         s.log_update_frequency_spinbox.setValue(state.log_update_frequency)
         s.optimizer_type.setCurrentText(state.optimizer_name)
         s.mixed_precision_type.setCurrentText(state.mixed_precision)
+        s.deep_supervision_check_box.setChecked(bool(getattr(state, 'deep_supervision', True)))
         if hasattr(s, 'set_loss_term_weights'):
             s.set_loss_term_weights(
                 resolve_loss_term_weights(
@@ -561,6 +584,8 @@ class MainPresenter(QObject):
 
         h = s.horizontal_rotation.isChecked()
         v = s.vertical_rotation.isChecked()
+        flip_x = s.flip_x.isChecked()
+        flip_y = s.flip_y.isChecked()
         additional_augmentation = s.additional_augmentation_check_box.isChecked()
         augmentation_brightness_strength = s.augmentation_brightness_spinbox.value()
         augmentation_contrast_strength = s.augmentation_contrast_spinbox.value()
@@ -572,7 +597,7 @@ class MainPresenter(QObject):
         step = s.shift_spinbox.value()
         train_patch_size = (s.train_patch_x_size.value(), s.train_patch_y_size.value())
         recognition_patch_size = (s.recognition_patch_x_size.value(), s.recognition_patch_y_size.value())
-        model = s.nn_model_type.currentText()
+        model = s.get_selected_model()
         color_mode = s.get_color_mode_value() if hasattr(s, 'get_color_mode_value') else s.color_type.currentText()
         shuffle_frames = s.shuffle_frames_check_box.isChecked()
         shuffle_patches_in_frame = s.shuffle_patches_in_frame_check_box.isChecked()
@@ -580,7 +605,11 @@ class MainPresenter(QObject):
         crops_per_image = s.crops_per_image_spinbox.value()
         scale_augmentation = s.scale_augmentation_check_box.isChecked()
         scale_augmentation_strength = s.scale_augmentation_strength_spinbox.value()
-        tech_aug = s.get_tech_aug_config() if hasattr(s, 'get_tech_aug_config') else {}
+        synthetic_defect_generator = (
+            s.get_synthetic_defect_generator_config()
+            if hasattr(s, 'get_synthetic_defect_generator_config')
+            else {}
+        )
         cutout_enabled = s.cutout_check_box.isChecked()
         cutout_probability = s.cutout_probability_spinbox.value()
         cutout_holes = s.cutout_holes_spinbox.value()
@@ -596,7 +625,6 @@ class MainPresenter(QObject):
         mixup_enabled = s.mixup_check_box.isChecked()
         mixup_probability = s.mixup_probability_spinbox.value()
         mixup_alpha = s.mixup_alpha_spinbox.value()
-        pcb_defects = s.get_pcb_defects_config() if hasattr(s, 'get_pcb_defects_config') else {}
         validation = s.validation_check_box.isChecked()
         validation_percent = s.validation_spinbox.value()
         validation_source = normalize_validation_source(s.get_validation_source_value())
@@ -616,11 +644,19 @@ class MainPresenter(QObject):
         recognition_binarize_output = s.recognition_binarize_output_check_box.isChecked()
         recognition_use_auto_threshold = s.recognition_use_auto_threshold_check_box.isChecked()
         recognition_threshold = s.recognition_threshold_spinbox.value()
+        recognition_tta_enabled = s.recognition_tta_check_box.isChecked()
+        confidence_tta_enabled = s.confidence_tta_check_box.isChecked()
         recognition_postprocess = s.recognition_postprocess_check_box.isChecked()
         recognition_postprocess_kernel_size = s.recognition_postprocess_kernel_size_spinbox.value()
+        confidence_save_mode = (
+            s.get_confidence_save_mode_value()
+            if hasattr(s, 'get_confidence_save_mode_value')
+            else 'off'
+        )
         log_update_frequency = s.log_update_frequency_spinbox.value()
         optimizer_name = s.optimizer_type.currentText()
         mixed_precision = s.mixed_precision_type.currentText()
+        deep_supervision = s.deep_supervision_check_box.isChecked()
         current_state = getattr(self, 'settings_state', SettingsState())
         loss_term_weights = (
             s.get_loss_term_weights()
@@ -676,6 +712,8 @@ class MainPresenter(QObject):
         target_size = (s.target_x_size.value(), s.target_y_size.value())
 
         state = SettingsState(step=step, vertical_rotation=v, horizontal_rotation=h,
+                              flip_x=flip_x,
+                              flip_y=flip_y,
                               additional_augmentation=additional_augmentation,
                               augmentation_brightness_strength=augmentation_brightness_strength,
                               augmentation_contrast_strength=augmentation_contrast_strength,
@@ -695,7 +733,7 @@ class MainPresenter(QObject):
                               crops_per_image=crops_per_image,
                               scale_augmentation=scale_augmentation,
                               scale_augmentation_strength=scale_augmentation_strength,
-                              tech_aug=tech_aug,
+                              synthetic_defect_generator=synthetic_defect_generator,
                               cutout_enabled=cutout_enabled,
                               cutout_probability=cutout_probability,
                               cutout_holes=cutout_holes,
@@ -720,7 +758,6 @@ class MainPresenter(QObject):
                               mixup_enabled=mixup_enabled,
                               mixup_probability=mixup_probability,
                               mixup_alpha=mixup_alpha,
-                              pcb_defects=pcb_defects,
                               use_validation=validation,
                               validation_percent=validation_percent,
                               validation_source=validation_source,
@@ -740,12 +777,16 @@ class MainPresenter(QObject):
                               recognition_binarize_output=recognition_binarize_output,
                               recognition_use_auto_threshold=recognition_use_auto_threshold,
                               recognition_threshold=recognition_threshold,
+                              recognition_tta_enabled=recognition_tta_enabled,
+                              confidence_tta_enabled=confidence_tta_enabled,
                               recognition_postprocess=recognition_postprocess,
                               recognition_postprocess_kernel_size=recognition_postprocess_kernel_size,
+                              confidence_save_mode=confidence_save_mode,
                               crop_enabled=crop_enabled, resize_enabled=resize_enabled, edge_cut_size=edge_cut_size,
                               target_size=target_size,
                               optimizer_name=optimizer_name,
                               mixed_precision=mixed_precision,
+                              deep_supervision=deep_supervision,
                               loss_function=loss_function,
                               loss_term_weights=loss_term_weights,
                               dice_loss_weight=dice_loss_weight,
@@ -793,6 +834,112 @@ class MainPresenter(QObject):
 
     def _on_batch_preview_visibility_changed(self, enabled: bool):
         self.settings_state.show_batch_preview = bool(enabled)
+
+    def _open_augmentation_preview(self):
+        self._update_main_window_state()
+        self._update_settings_window_state()
+        _work_mode, training_parameters, _recognition_parameters = build_workflow_parameters(
+            self.main_window_state,
+            self.settings_state,
+        )
+        training_parameters = replace(
+            training_parameters,
+            generation=replace(
+                training_parameters.generation,
+                tech_aug=build_tech_augmentation_config(None),
+            ),
+        )
+        if training_parameters.label_path.is_dir() and filter_files(training_parameters.label_path, ('.cif',)):
+            from lib.rare_patch_masks import prepare_label_folder_for_rare_patch_editor
+
+            message_bus = self.__dict__.get('message_bus')
+            try:
+                resolved_label_folder, error_message = prepare_label_folder_for_rare_patch_editor(
+                    training_parameters.label_path,
+                    log_callback=(
+                        (lambda message: message_bus.publish('logging', message))
+                        if message_bus is not None
+                        else None
+                    ),
+                )
+            except Exception as exc:
+                self.view.show_warning.emit(
+                    f'Не удалось подготовить CIF-маски для предпросмотра аугментаций: {exc}'
+                )
+                return
+            if error_message is not None:
+                self.view.show_warning.emit(str(error_message))
+                return
+            training_parameters = replace(training_parameters, label_path=resolved_label_folder)
+
+        from view.augmentation_preview_dialog import AugmentationPreviewDialog
+
+        existing_dialog = getattr(self, '_augmentation_preview_dialog', None)
+        if existing_dialog is not None:
+            try:
+                existing_dialog.close()
+            finally:
+                self._augmentation_preview_dialog = None
+
+        dialog = AugmentationPreviewDialog(training_parameters, self.view)
+        dialog.apply_to_main_requested.connect(self._apply_augmentation_preview_settings)
+        dialog.destroyed.connect(lambda *_args: setattr(self, '_augmentation_preview_dialog', None))
+        self._augmentation_preview_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _apply_augmentation_preview_settings(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        panel = self.__dict__.get('settings_panel')
+        if panel is None:
+            return
+
+        panel.horizontal_rotation.setChecked(bool(payload.get('horizontal_rotation', False)))
+        panel.vertical_rotation.setChecked(bool(payload.get('vertical_rotation', False)))
+        panel.flip_x.setChecked(bool(payload.get('flip_x', False)))
+        panel.flip_y.setChecked(bool(payload.get('flip_y', False)))
+        panel.random_crop_check_box.setChecked(bool(payload.get('random_crop', False)))
+        panel.crops_per_image_spinbox.setValue(int(payload.get('crops_per_image', 64)))
+        panel.scale_augmentation_check_box.setChecked(bool(payload.get('scale_augmentation', False)))
+        panel.scale_augmentation_strength_spinbox.setValue(float(payload.get('scale_augmentation_strength', 0.2)))
+        panel.additional_augmentation_check_box.setChecked(bool(payload.get('additional_augmentation', False)))
+        panel.augmentation_brightness_spinbox.setValue(float(payload.get('augmentation_brightness_strength', 0.0)))
+        panel.augmentation_contrast_spinbox.setValue(float(payload.get('augmentation_contrast_strength', 0.0)))
+        panel.augmentation_gamma_spinbox.setValue(float(payload.get('augmentation_gamma_strength', 0.0)))
+        panel.augmentation_noise_probability_spinbox.setValue(float(payload.get('augmentation_noise_probability', 0.0)))
+        panel.augmentation_noise_sigma_spinbox.setValue(float(payload.get('augmentation_noise_sigma', 0.0)))
+        panel.augmentation_blur_probability_spinbox.setValue(float(payload.get('augmentation_blur_probability', 0.0)))
+        panel.augmentation_blur_radius_spinbox.setValue(float(payload.get('augmentation_blur_radius', 0.0)))
+        if hasattr(panel, 'set_synthetic_defect_generator_config'):
+            panel.set_synthetic_defect_generator_config(payload.get('synthetic_defect_generator', {}))
+
+        panel.cutout_check_box.setChecked(bool(payload.get('cutout_enabled', False)))
+        panel.cutout_probability_spinbox.setValue(float(payload.get('cutout_probability', 1.0)))
+        panel.cutout_holes_spinbox.setValue(int(payload.get('cutout_holes', 1)))
+        panel.cutout_size_ratio_spinbox.setValue(float(payload.get('cutout_size_ratio', 0.25)))
+
+        panel.random_artifacts_check_box.setChecked(bool(payload.get('random_artifacts_enabled', False)))
+        panel.random_artifacts_probability_spinbox.setValue(float(payload.get('random_artifacts_probability', 1.0)))
+        panel.random_artifacts_count_spinbox.setValue(int(payload.get('random_artifacts_count', 1)))
+        panel.random_artifacts_size_ratio_spinbox.setValue(float(payload.get('random_artifacts_size_ratio', 0.25)))
+        for artifact_name, checkbox in getattr(panel, 'random_artifact_type_checkboxes', {}).items():
+            checkbox.setChecked(bool(payload.get(f'random_artifacts_{artifact_name}_enabled', True)))
+
+        panel.mixup_check_box.setChecked(bool(payload.get('mixup_enabled', False)))
+        panel.mixup_probability_spinbox.setValue(float(payload.get('mixup_probability', 1.0)))
+        panel.mixup_alpha_spinbox.setValue(float(payload.get('mixup_alpha', 0.2)))
+        if hasattr(panel, '_sync_augmentation_controls'):
+            panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
+        if hasattr(panel, '_sync_training_augmentation_controls'):
+            panel._sync_training_augmentation_controls()
+
+        update_settings = self.__dict__.get('_update_settings_window_state')
+        if callable(update_settings):
+            update_settings()
+            return
+        type(self)._update_settings_window_state(self)
 
     def _open_rare_patch_editor(self):
         self._update_main_window_state()
@@ -1341,6 +1488,8 @@ class MainPresenter(QObject):
                            y_size=train_patch_size[1],
                            vertical_rotation=s.vertical_rotation,
                            horizontal_rotation=s.horizontal_rotation,
+                           flip_x=bool(getattr(s, 'flip_x', False)),
+                           flip_y=bool(getattr(s, 'flip_y', False)),
                            color_mode=s.color_mode,
                            model=s.model,
                            additional_augmentation=s.additional_augmentation,
@@ -1361,13 +1510,22 @@ class MainPresenter(QObject):
         if not sample_folder or not Path(sample_folder).is_dir():
             self._invalidate_sample_count_requests()
             self.settings_panel.set_samples_count(0)
+            if hasattr(self.view, 'set_samples_count'):
+                self.view.set_samples_count(0)
             return
 
         self._sample_count_request_serial += 1
         request_id = self._sample_count_request_serial
         self._latest_sample_count_request_id = request_id
-        self._debounced_sample_count_request = (request_id, sample_folder, calculator_settings)
+        self._debounced_sample_count_request = (
+            request_id,
+            sample_folder,
+            calculator_settings,
+            getattr(self.settings_state, 'synthetic_defect_generator', None),
+        )
         self.settings_panel.set_samples_count_loading()
+        if hasattr(self.view, 'set_samples_count_loading'):
+            self.view.set_samples_count_loading()
         self._sample_count_debounce_timer.start()
 
     def _invalidate_sample_count_requests(self) -> None:
@@ -1387,13 +1545,22 @@ class MainPresenter(QObject):
             return
         self._start_sample_count_request(request)
 
-    def _start_sample_count_request(self, request: tuple[int, str, CutSettings]) -> None:
-        request_id, sample_folder, calculator_settings = request
+    def _start_sample_count_request(self, request: tuple[int, str, CutSettings, object]) -> None:
+        request_id, sample_folder, calculator_settings, synthetic_config = request
         cached_path = self._sample_count_cache_path
         cached_sizes = list(self._sample_count_cache_sizes) if self._sample_count_cache_sizes is not None else None
+        if normalized_path := self._normalize_sample_count_path(sample_folder):
+            if normalized_path != cached_path or cached_sizes is None:
+                self._publish_log_message(
+                    f'Индексация файлов выборки запущена в отдельном потоке: {sample_folder}'
+                )
+            else:
+                self._publish_log_message(
+                    f'Пересчет количества кадров запущен в отдельном потоке: {sample_folder}'
+                )
         worker_thread = threading.Thread(
             target=self._run_sample_count_request,
-            args=(request_id, sample_folder, calculator_settings, cached_path, cached_sizes),
+            args=(request_id, sample_folder, calculator_settings, synthetic_config, cached_path, cached_sizes),
             daemon=True,
             name=f'sample-count-{request_id}',
         )
@@ -1405,6 +1572,7 @@ class MainPresenter(QObject):
         request_id: int,
         sample_folder: str,
         calculator_settings: CutSettings,
+        synthetic_config: object,
         cached_path: str | None,
         cached_sizes: list[tuple[int, int]] | None,
     ) -> None:
@@ -1418,10 +1586,30 @@ class MainPresenter(QObject):
             if normalized_path == cached_path and cached_sizes is not None:
                 image_sizes = list(cached_sizes)
             else:
+                self._publish_log_message(
+                    f'Выполняется индексация списка файлов выборки: {sample_folder}'
+                )
                 image_paths = SampleWorker.collect_image_paths(sample_path)
                 image_sizes = SampleWorker.collect_image_sizes(image_paths)
 
             total_samples = SampleWorker.calculate_total_samples(image_sizes, calculator_settings)
+            synthetic_generator = build_synthetic_defect_generator_parameters(synthetic_config)
+            if synthetic_generator.enabled and float(synthetic_generator.epoch_size_factor) > 0.0 and image_sizes:
+                synthetic_frame_count = max(
+                    1,
+                    int(round(len(image_sizes) * float(synthetic_generator.epoch_size_factor))),
+                )
+                synthetic_size_xy = (
+                    max(int(calculator_settings.x_size), int(synthetic_generator.image_size_xy[0])),
+                    max(int(calculator_settings.y_size), int(synthetic_generator.image_size_xy[1])),
+                )
+                total_samples += (
+                    synthetic_frame_count
+                    * SampleWorker.calculate_image_parts_for_settings(
+                        (int(synthetic_size_xy[1]), int(synthetic_size_xy[0])),
+                        calculator_settings,
+                    )
+                )
             self._sample_count_signals.calculated.emit(request_id, normalized_path, image_sizes, total_samples)
         except Exception as exc:
             self._sample_count_signals.failed.emit(request_id, str(exc))
@@ -1444,6 +1632,9 @@ class MainPresenter(QObject):
             self._sample_count_cache_sizes = list(image_sizes) if isinstance(image_sizes, list) else []
         if request_id == self._latest_sample_count_request_id:
             self.settings_panel.set_samples_count(total_samples)
+            if hasattr(self.view, 'set_samples_count'):
+                self.view.set_samples_count(total_samples)
+            self._publish_log_message(f'Количество кадров в выборке пересчитано: {total_samples}')
         self._start_pending_sample_count_request_if_needed()
 
     @QtCore.pyqtSlot(int, str)
@@ -1451,6 +1642,8 @@ class MainPresenter(QObject):
         self._sample_count_worker_thread = None
         if request_id == self._latest_sample_count_request_id:
             self.settings_panel.set_samples_count(0)
+            if hasattr(self.view, 'set_samples_count'):
+                self.view.set_samples_count(0)
             self.message_bus.publish('logging', f'Не удалось рассчитать количество кадров: {error_message}')
         self._start_pending_sample_count_request_if_needed()
 

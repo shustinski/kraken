@@ -176,6 +176,11 @@ def test_recognizer_indexes_source_files_inside_worker(tmp_path):
     recognizer._ensure_source_files_indexed()
 
     assert sorted(params.source_files) == sorted([source_dir / "frame_001.png", source_dir / "frame_002.bmp"])
+    assert any(
+        "отдельном потоке" in str(payload)
+        for topic, payload in bus.messages
+        if topic == "logging"
+    )
 
 
 def test_prepare_model_resolves_recommended_threshold_from_artifact_metadata(monkeypatch):
@@ -211,6 +216,9 @@ def test_prepare_model_uses_manual_threshold_and_postprocess_settings(monkeypatc
     params.threshold = 0.64
     params.postprocess_enabled = True
     params.postprocess_kernel_size = 5
+    params.recognition_tta_enabled = True
+    params.confidence_tta_enabled = True
+    params.confidence_save_mode = 'separate_grayscale'
     recognizer = NeuralRecognizer(params, bus)
 
     captured: dict[str, object] = {}
@@ -226,8 +234,11 @@ def test_prepare_model_uses_manual_threshold_and_postprocess_settings(monkeypatc
 
     assert recognizer._resolved_output_threshold == pytest.approx(0.64)
     assert captured["threshold"] == pytest.approx(0.64)
+    assert captured["recognition_tta_enabled"] is True
+    assert captured["confidence_tta_enabled"] is True
     assert captured["postprocess_enabled"] is True
     assert captured["postprocess_kernel_size"] == 5
+    assert captured["confidence_save_mode"] == 'separate_grayscale'
 
 
 def test_prepare_model_disables_threshold_when_binarization_is_off(monkeypatch):
@@ -262,6 +273,9 @@ def test_run_multiprocessing_propagates_disabled_binarization_as_none_threshold(
     bus = _StubBus()
     params = _build_params(base_dir, model="dummy_model_path.pth")
     params.binarize_output = False
+    params.recognition_tta_enabled = True
+    params.confidence_tta_enabled = False
+    params.confidence_save_mode = 'separate_grayscale'
     recognizer = NeuralRecognizer(params, bus)
     recognizer.devices_list = [torch.device("cpu")]
     recognizer._resolved_output_threshold = None
@@ -278,6 +292,9 @@ def test_run_multiprocessing_propagates_disabled_binarization_as_none_threshold(
     workload = captured["workload"]
     assert workload.binarize_output is False
     assert workload.threshold is None
+    assert workload.recognition_tta_enabled is True
+    assert workload.confidence_tta_enabled is False
+    assert workload.confidence_save_mode == 'separate_grayscale'
 
 
 def test_model_recognizer_does_not_disable_process_mode_under_debugger(monkeypatch):

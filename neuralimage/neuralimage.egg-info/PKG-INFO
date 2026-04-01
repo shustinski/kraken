@@ -2,14 +2,14 @@ Metadata-Version: 2.4
 Name: neuralimage
 Version: 5.9.1
 Summary: Desktop and web tooling for neural IC image segmentation, training, and recognition.
-Requires-Python: >=3.11
+Requires-Python: >=3.13
 Requires-Dist: numpy>=1.26
 Requires-Dist: Pillow>=10.0
 Requires-Dist: PyQt6>=6.6
 Requires-Dist: pyqtgraph>=0.13
 Requires-Dist: opencv-python>=4.8
-Requires-Dist: torch>=2.2
-Requires-Dist: torchvision>=0.17
+Requires-Dist: torch==2.8.0+cu128
+Requires-Dist: torchvision==0.23.0+cu128
 Requires-Dist: timm>=1.0
 Provides-Extra: web
 Requires-Dist: django>=5.1; extra == "web"

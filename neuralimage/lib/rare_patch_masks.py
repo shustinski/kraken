@@ -57,6 +57,8 @@ def prepare_label_folder_for_rare_patch_editor(
 def collect_matching_sample_label_pairs(
     sample_folder: str | Path,
     label_folder: str | Path,
+    *,
+    strict: bool = True,
 ) -> tuple[list[tuple[Path, Path]], str | None]:
     sample_root = Path(sample_folder)
     label_root = Path(label_folder)
@@ -83,7 +85,7 @@ def collect_matching_sample_label_pairs(
     label_stems = set(label_map.keys())
     missing_labels = sorted(sample_stems - label_stems)
     missing_samples = sorted(label_stems - sample_stems)
-    if missing_labels or missing_samples:
+    if strict and (missing_labels or missing_samples):
         missing_labels_preview = ', '.join(missing_labels[:10]) if missing_labels else '-'
         missing_samples_preview = ', '.join(missing_samples[:10]) if missing_samples else '-'
         return (
@@ -95,7 +97,8 @@ def collect_matching_sample_label_pairs(
             ),
         )
 
-    pairs = [(sample_map[stem], label_map[stem]) for stem in sorted(sample_stems)]
+    matched_stems = sorted(sample_stems & label_stems)
+    pairs = [(sample_map[stem], label_map[stem]) for stem in matched_stems]
     if not pairs:
         return [], 'No matched sample/label pairs were found.'
     return pairs, None

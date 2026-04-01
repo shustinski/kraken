@@ -76,6 +76,15 @@ def apply_settings_panel_texts(panel: Any) -> None:
     sync_patch_sizes_key = 'sync_patch_sizes'
     crops_per_image_key = 'crops_per_image'
     scale_augmentation_strength_key = 'scale_augmentation_strength'
+    synthetic_dataset_factor_key = 'synthetic_dataset_factor'
+    synthetic_topology_domain_key = 'synthetic_topology_domain'
+    pcb_topology_family_key = 'pcb_topology_family'
+    ic_topology_family_key = 'ic_topology_family'
+    synthetic_trace_count_key = 'synthetic_trace_count'
+    synthetic_segment_count_key = 'synthetic_segment_count'
+    synthetic_trace_half_width_key = 'synthetic_trace_half_width'
+    synthetic_background_noise_sigma_key = 'synthetic_background_noise_sigma'
+    synthetic_trace_noise_sigma_key = 'synthetic_trace_noise_sigma'
     tech_aug_min_operations_key = 'tech_aug_min_operations'
     tech_aug_max_operations_key = 'tech_aug_max_operations'
     tech_aug_max_changed_pixels_ratio_key = 'tech_aug_max_changed_pixels_ratio'
@@ -100,16 +109,73 @@ def apply_settings_panel_texts(panel: Any) -> None:
     pcb_defects_probability_key = 'pcb_defects_probability'
     pcb_defects_min_count_key = 'pcb_defects_min_count'
     pcb_defects_max_count_key = 'pcb_defects_max_count'
-    pcb_break_weight_key = 'pcb_break_weight'
-    pcb_short_weight_key = 'pcb_short_weight'
-    pcb_missing_copper_weight_key = 'pcb_missing_copper_weight'
-    pcb_excess_copper_weight_key = 'pcb_excess_copper_weight'
-    pcb_pinhole_weight_key = 'pcb_pinhole_weight'
-    pcb_spurious_copper_weight_key = 'pcb_spurious_copper_weight'
-    pcb_via_weight_key = 'pcb_via_weight'
-    pcb_misalignment_weight_key = 'pcb_misalignment_weight'
+    pcb_break_weight_key = 'pcb_break_severity'
+    pcb_short_weight_key = 'pcb_short_severity'
+    pcb_missing_copper_weight_key = 'pcb_missing_copper_severity'
+    pcb_excess_copper_weight_key = 'pcb_excess_copper_severity'
+    pcb_pinhole_weight_key = 'pcb_pinhole_severity'
+    pcb_spurious_copper_weight_key = 'pcb_spurious_copper_severity'
+    pcb_via_weight_key = 'pcb_via_severity'
+    pcb_misalignment_weight_key = 'pcb_misalignment_severity'
+    ic_line_break_weight_key = 'ic_line_break_severity'
+    ic_bridge_weight_key = 'ic_bridge_severity'
+    ic_necking_weight_key = 'ic_necking_severity'
+    ic_missing_metal_weight_key = 'ic_missing_metal_severity'
+    ic_spur_weight_key = 'ic_spur_severity'
+    ic_pinhole_weight_key = 'ic_pinhole_severity'
+    ic_via_open_weight_key = 'ic_via_open_severity'
+    ic_line_shift_weight_key = 'ic_line_shift_severity'
+    pcb_break_toggle_key = 'pcb_break'
+    pcb_short_toggle_key = 'pcb_short'
+    pcb_missing_copper_toggle_key = 'pcb_missing_copper'
+    pcb_excess_copper_toggle_key = 'pcb_excess_copper'
+    pcb_pinhole_toggle_key = 'pcb_pinhole'
+    pcb_spurious_copper_toggle_key = 'pcb_spurious_copper'
+    pcb_via_toggle_key = 'pcb_via'
+    pcb_misalignment_toggle_key = 'pcb_misalignment'
+    ic_line_break_toggle_key = 'ic_line_break'
+    ic_bridge_toggle_key = 'ic_bridge'
+    ic_necking_toggle_key = 'ic_necking'
+    ic_missing_metal_toggle_key = 'ic_missing_metal'
+    ic_spur_toggle_key = 'ic_spur'
+    ic_pinhole_toggle_key = 'ic_pinhole'
+    ic_via_open_toggle_key = 'ic_via_open'
+    ic_line_shift_toggle_key = 'ic_line_shift'
+    labels_map.setdefault(synthetic_topology_domain_key, str(t.get('synthetic_topology_domain', 'Synthetic domain')))
+    labels_map.setdefault(pcb_topology_family_key, str(t.get('pcb_topology_family', 'PCB topology family')))
+    labels_map.setdefault(ic_topology_family_key, str(t.get('ic_topology_family', 'IC topology family')))
+    labels_map.setdefault(ic_line_break_weight_key, str(t.get('ic_line_break_severity_label', t.get('ic_line_break', 'Line break'))))
+    labels_map.setdefault(ic_bridge_weight_key, str(t.get('ic_bridge_severity_label', t.get('ic_bridge', 'Bridge'))))
+    labels_map.setdefault(ic_necking_weight_key, str(t.get('ic_necking_severity_label', t.get('ic_necking', 'Necking'))))
+    labels_map.setdefault(ic_missing_metal_weight_key, str(t.get('ic_missing_metal_severity_label', t.get('ic_missing_metal', 'Missing metal'))))
+    labels_map.setdefault(ic_spur_weight_key, str(t.get('ic_spur_severity_label', t.get('ic_spur', 'Spur'))))
+    labels_map.setdefault(ic_pinhole_weight_key, str(t.get('ic_pinhole_severity_label', t.get('ic_pinhole', 'Pinhole'))))
+    labels_map.setdefault(ic_via_open_weight_key, str(t.get('ic_via_open_severity_label', t.get('ic_via_open', 'Via open'))))
+    labels_map.setdefault(ic_line_shift_weight_key, str(t.get('ic_line_shift_severity_label', t.get('ic_line_shift', 'Line shift'))))
+    labels_map.setdefault(pcb_break_toggle_key, str(t.get('pcb_break', labels_map.get(pcb_break_weight_key, 'Break'))))
+    labels_map.setdefault(pcb_short_toggle_key, str(t.get('pcb_short', labels_map.get(pcb_short_weight_key, 'Short'))))
+    labels_map.setdefault(pcb_missing_copper_toggle_key, str(t.get('pcb_missing_copper', labels_map.get(pcb_missing_copper_weight_key, 'Missing copper'))))
+    labels_map.setdefault(pcb_excess_copper_toggle_key, str(t.get('pcb_excess_copper', labels_map.get(pcb_excess_copper_weight_key, 'Excess copper'))))
+    labels_map.setdefault(pcb_pinhole_toggle_key, str(t.get('pcb_pinhole', labels_map.get(pcb_pinhole_weight_key, 'Pinhole'))))
+    labels_map.setdefault(pcb_spurious_copper_toggle_key, str(t.get('pcb_spurious_copper', labels_map.get(pcb_spurious_copper_weight_key, 'Spurious copper'))))
+    labels_map.setdefault(pcb_via_toggle_key, str(t.get('pcb_via', labels_map.get(pcb_via_weight_key, 'Via defect'))))
+    labels_map.setdefault(pcb_misalignment_toggle_key, str(t.get('pcb_misalignment', labels_map.get(pcb_misalignment_weight_key, 'Misalignment'))))
+    labels_map.setdefault(ic_line_break_toggle_key, str(t.get('ic_line_break', labels_map.get(ic_line_break_weight_key, 'Line break'))))
+    labels_map.setdefault(ic_bridge_toggle_key, str(t.get('ic_bridge', labels_map.get(ic_bridge_weight_key, 'Bridge'))))
+    labels_map.setdefault(ic_necking_toggle_key, str(t.get('ic_necking', labels_map.get(ic_necking_weight_key, 'Necking'))))
+    labels_map.setdefault(ic_missing_metal_toggle_key, str(t.get('ic_missing_metal', labels_map.get(ic_missing_metal_weight_key, 'Missing metal'))))
+    labels_map.setdefault(ic_spur_toggle_key, str(t.get('ic_spur', labels_map.get(ic_spur_weight_key, 'Spur'))))
+    labels_map.setdefault(ic_pinhole_toggle_key, str(t.get('ic_pinhole', labels_map.get(ic_pinhole_weight_key, 'Pinhole'))))
+    labels_map.setdefault(ic_via_open_toggle_key, str(t.get('ic_via_open', labels_map.get(ic_via_open_weight_key, 'Via open'))))
+    labels_map.setdefault(ic_line_shift_toggle_key, str(t.get('ic_line_shift', labels_map.get(ic_line_shift_weight_key, 'Line shift'))))
     rare_patch_oversampling_factor_key = 'rare_patch_oversampling_factor'
     recognition_threshold_key = 'recognition_threshold'
+    deprecated_models_key = 'deprecated_models'
+    experimental_models_key = 'experimental_models'
+    recognition_tta_key = 'recognition_tta'
+    confidence_tta_key = 'confidence_tta'
+    confidence_save_mode_key = 'confidence_save_mode'
+    deep_supervision_key = 'deep_supervision'
     recognition_postprocess_kernel_size_key = 'recognition_postprocess_kernel_size'
     validation_source_key = 'validation_source'
     validation_image_path_key = 'validation_image_path'
@@ -129,11 +195,119 @@ def apply_settings_panel_texts(panel: Any) -> None:
                 'If enabled, recognition patch size follows training patch size.',
             )
         )
+    if synthetic_dataset_factor_key not in labels_map:
+        labels_map[synthetic_dataset_factor_key] = str(t.get('synthetic_dataset_factor', 'Synthetic epoch factor'))
+    if synthetic_dataset_factor_key not in descriptions:
+        descriptions[synthetic_dataset_factor_key] = str(
+            t.get(
+                'synthetic_dataset_factor_tip',
+                'How many synthetic samples to generate per epoch relative to the real train dataset size.',
+            )
+        )
+    if synthetic_trace_count_key not in labels_map:
+        labels_map[synthetic_trace_count_key] = str(t.get('synthetic_trace_count', 'Trace count'))
+    if synthetic_trace_count_key not in descriptions:
+        descriptions[synthetic_trace_count_key] = str(
+            t.get(
+                'synthetic_trace_count_tip',
+                'Number of conductive traces generated in one synthetic sample.',
+            )
+        )
+    if synthetic_segment_count_key not in labels_map:
+        labels_map[synthetic_segment_count_key] = str(t.get('synthetic_segment_count', 'Segments per trace'))
+    if synthetic_segment_count_key not in descriptions:
+        descriptions[synthetic_segment_count_key] = str(
+            t.get(
+                'synthetic_segment_count_tip',
+                'Number of Manhattan segments used to build each synthetic trace.',
+            )
+        )
+    if synthetic_trace_half_width_key not in labels_map:
+        labels_map[synthetic_trace_half_width_key] = str(t.get('synthetic_trace_half_width', 'Trace half-width'))
+    if synthetic_trace_half_width_key not in descriptions:
+        descriptions[synthetic_trace_half_width_key] = str(
+            t.get(
+                'synthetic_trace_half_width_tip',
+                'Half-width of the generated copper traces in pixels.',
+            )
+        )
+    if synthetic_background_noise_sigma_key not in labels_map:
+        labels_map[synthetic_background_noise_sigma_key] = str(t.get('synthetic_background_noise_sigma', 'Background noise sigma'))
+    if synthetic_background_noise_sigma_key not in descriptions:
+        descriptions[synthetic_background_noise_sigma_key] = str(
+            t.get(
+                'synthetic_background_noise_sigma_tip',
+                'Standard deviation of the low-level grayscale noise in synthetic images.',
+            )
+        )
+    if synthetic_trace_noise_sigma_key not in labels_map:
+        labels_map[synthetic_trace_noise_sigma_key] = str(t.get('synthetic_trace_noise_sigma', 'Trace noise sigma'))
+    if synthetic_trace_noise_sigma_key not in descriptions:
+        descriptions[synthetic_trace_noise_sigma_key] = str(
+            t.get(
+                'synthetic_trace_noise_sigma_tip',
+                'Standard deviation of the grayscale noise applied only inside synthetic traces.',
+            )
+        )
     if jpeg_quality_key not in labels_map:
         labels_map[jpeg_quality_key] = 'JPEG quality'
     if jpeg_quality_key not in descriptions:
         descriptions[jpeg_quality_key] = str(
             t.get('recognition_jpeg_quality_tip', 'JPEG quality for recognition output (1..100).')
+        )
+    if deprecated_models_key not in labels_map:
+        labels_map[deprecated_models_key] = str(t.get('deprecated_models', 'Deprecated models'))
+    if deprecated_models_key not in descriptions:
+        descriptions[deprecated_models_key] = str(
+            t.get(
+                'deprecated_models_tip',
+                'Older architectures kept only for backward compatibility and comparison runs.',
+            )
+        )
+    if experimental_models_key not in labels_map:
+        labels_map[experimental_models_key] = str(t.get('experimental_models', 'Experimental models'))
+    if experimental_models_key not in descriptions:
+        descriptions[experimental_models_key] = str(
+            t.get(
+                'experimental_models_tip',
+                'Architectures under evaluation that may require extra validation before production use.',
+            )
+        )
+    if confidence_save_mode_key not in labels_map:
+        labels_map[confidence_save_mode_key] = str(t.get('confidence_save_mode_label', 'Confidence map'))
+    if confidence_save_mode_key not in descriptions:
+        descriptions[confidence_save_mode_key] = str(
+            t.get(
+                'confidence_save_mode_tip',
+                'Choose whether to save a separate confidence map next to the main recognition mask.',
+            )
+        )
+    if recognition_tta_key not in labels_map:
+        labels_map[recognition_tta_key] = str(t.get('recognition_tta', 'Use TTA for recognition'))
+    if recognition_tta_key not in descriptions:
+        descriptions[recognition_tta_key] = str(
+            t.get(
+                'recognition_tta_tip',
+                'Apply test-time augmentation to the main recognition mask during inference.',
+            )
+        )
+    if confidence_tta_key not in labels_map:
+        labels_map[confidence_tta_key] = str(t.get('confidence_tta', 'Use TTA for confidence map'))
+    if confidence_tta_key not in descriptions:
+        descriptions[confidence_tta_key] = str(
+            t.get(
+                'confidence_tta_tip',
+                'Apply test-time augmentation when forming the confidence map during inference.',
+            )
+        )
+    if deep_supervision_key not in labels_map:
+        labels_map[deep_supervision_key] = str(t.get('deep_supervision', 'Enable deep supervision'))
+    if deep_supervision_key not in descriptions:
+        descriptions[deep_supervision_key] = str(
+            t.get(
+                'deep_supervision_tip',
+                'Train convolutional segmentation models with auxiliary decoder heads.',
+            )
         )
     if dataloader_workers_key not in labels_map:
         labels_map[dataloader_workers_key] = str(t.get('dataloader_num_workers_label', 'DataLoader workers'))
@@ -508,52 +682,52 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     if pcb_break_weight_key not in labels_map:
-        labels_map[pcb_break_weight_key] = 'Break weight'
+        labels_map[pcb_break_weight_key] = str(t.get('pcb_break_severity_label', t.get('pcb_break', 'Break')))
     if pcb_break_weight_key not in descriptions:
         descriptions[pcb_break_weight_key] = str(
-            t.get('pcb_break_weight_tip', 'Relative sampling weight for local conductor breaks.')
+            t.get('pcb_break_severity_tip', 'At minimum creates small local breaks; at maximum produces larger conductor gaps.')
         )
     if pcb_short_weight_key not in labels_map:
-        labels_map[pcb_short_weight_key] = 'Short weight'
+        labels_map[pcb_short_weight_key] = str(t.get('pcb_short_severity_label', t.get('pcb_short', 'Short')))
     if pcb_short_weight_key not in descriptions:
         descriptions[pcb_short_weight_key] = str(
-            t.get('pcb_short_weight_tip', 'Relative sampling weight for parasitic bridges between nearby traces.')
+            t.get('pcb_short_severity_tip', 'At minimum bridges only the nearest traces; at maximum can short more distant traces.')
         )
     if pcb_missing_copper_weight_key not in labels_map:
-        labels_map[pcb_missing_copper_weight_key] = 'Missing copper weight'
+        labels_map[pcb_missing_copper_weight_key] = str(t.get('pcb_missing_copper_severity_label', t.get('pcb_missing_copper', 'Missing copper')))
     if pcb_missing_copper_weight_key not in descriptions:
         descriptions[pcb_missing_copper_weight_key] = str(
-            t.get('pcb_missing_copper_weight_tip', 'Relative sampling weight for local copper loss defects.')
+            t.get('pcb_missing_copper_severity_tip', 'Controls how much copper is removed in one synthetic missing-copper defect.')
         )
     if pcb_excess_copper_weight_key not in labels_map:
-        labels_map[pcb_excess_copper_weight_key] = 'Excess copper weight'
+        labels_map[pcb_excess_copper_weight_key] = str(t.get('pcb_excess_copper_severity_label', t.get('pcb_excess_copper', 'Excess copper')))
     if pcb_excess_copper_weight_key not in descriptions:
         descriptions[pcb_excess_copper_weight_key] = str(
-            t.get('pcb_excess_copper_weight_tip', 'Relative sampling weight for copper burrs and growths.')
+            t.get('pcb_excess_copper_severity_tip', 'Controls how large synthetic copper growths and burrs become.')
         )
     if pcb_pinhole_weight_key not in labels_map:
-        labels_map[pcb_pinhole_weight_key] = 'Pinhole weight'
+        labels_map[pcb_pinhole_weight_key] = str(t.get('pcb_pinhole_severity_label', t.get('pcb_pinhole', 'Pinhole')))
     if pcb_pinhole_weight_key not in descriptions:
         descriptions[pcb_pinhole_weight_key] = str(
-            t.get('pcb_pinhole_weight_tip', 'Relative sampling weight for small holes inside copper regions.')
+            t.get('pcb_pinhole_severity_tip', 'Controls the size of synthetic pinholes inside copper regions.')
         )
     if pcb_spurious_copper_weight_key not in labels_map:
-        labels_map[pcb_spurious_copper_weight_key] = 'Spurious copper weight'
+        labels_map[pcb_spurious_copper_weight_key] = str(t.get('pcb_spurious_copper_severity_label', t.get('pcb_spurious_copper', 'Spurious copper')))
     if pcb_spurious_copper_weight_key not in descriptions:
         descriptions[pcb_spurious_copper_weight_key] = str(
-            t.get('pcb_spurious_copper_weight_tip', 'Relative sampling weight for isolated parasitic copper islands.')
+            t.get('pcb_spurious_copper_severity_tip', 'Controls the size and reach of isolated synthetic copper islands.')
         )
     if pcb_via_weight_key not in labels_map:
-        labels_map[pcb_via_weight_key] = 'Via defect weight'
+        labels_map[pcb_via_weight_key] = str(t.get('pcb_via_severity_label', t.get('pcb_via', 'Via defect')))
     if pcb_via_weight_key not in descriptions:
         descriptions[pcb_via_weight_key] = str(
-            t.get('pcb_via_weight_tip', 'Relative sampling weight for via shift, size, or partial-loss defects.')
+            t.get('pcb_via_severity_tip', 'Controls the amount of synthetic via shift, resize, and partial loss.')
         )
     if pcb_misalignment_weight_key not in labels_map:
-        labels_map[pcb_misalignment_weight_key] = 'Misalignment weight'
+        labels_map[pcb_misalignment_weight_key] = str(t.get('pcb_misalignment_severity_label', t.get('pcb_misalignment', 'Misalignment')))
     if pcb_misalignment_weight_key not in descriptions:
         descriptions[pcb_misalignment_weight_key] = str(
-            t.get('pcb_misalignment_weight_tip', 'Relative sampling weight for local layer misregistration effects.')
+            t.get('pcb_misalignment_severity_tip', 'Controls the scale of local synthetic layer misregistration.')
         )
     if rare_patch_oversampling_factor_key not in labels_map:
         labels_map[rare_patch_oversampling_factor_key] = 'Rare patch oversampling factor'
@@ -641,10 +815,16 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.vertical_rotation.setToolTip(str(t.get('rotate_180_tip', '')))
     panel.horizontal_rotation.setText(str(t.get('rotate_90', 'Rotate frame by 90 degrees')))
     panel.horizontal_rotation.setToolTip(str(t.get('rotate_90_tip', '')))
+    panel.flip_x.setText(str(t.get('flip_x', 'Flip across X axis')))
+    panel.flip_x.setToolTip(str(t.get('flip_x_tip', 'Mirror frames relative to the X axis.')))
+    panel.flip_y.setText(str(t.get('flip_y', 'Flip across Y axis')))
+    panel.flip_y.setToolTip(str(t.get('flip_y_tip', 'Mirror frames relative to the Y axis.')))
     panel.additional_augmentation_check_box.setText(
-        str(t.get('extra_aug', 'Additional sample augmentation'))
+        str(t.get('photometric_augmentation_toggle', t.get('extra_aug', 'Photometric augmentation')))
     )
-    panel.additional_augmentation_check_box.setToolTip(str(t.get('extra_aug_tip', '')))
+    panel.additional_augmentation_check_box.setToolTip(
+        str(t.get('photometric_augmentation_toggle_tip', t.get('extra_aug_tip', '')))
+    )
     panel.random_crop_check_box.setText(str(t.get('random_crop', 'Random crop in online mode')))
     panel.random_crop_check_box.setToolTip(
         str(
@@ -663,35 +843,19 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
-    panel.tech_augmentation_check_box.setText(
+    panel.synthetic_defect_generator_check_box.setText(
         str(
             t.get(
-                'tech_augmentation',
-                'Technology variation augmentation',
+                'synthetic_defect_generator_enabled',
+                'Enable synthetic topology generator',
             )
         )
     )
-    panel.tech_augmentation_check_box.setToolTip(
+    panel.synthetic_defect_generator_check_box.setToolTip(
         str(
             t.get(
-                'tech_augmentation_tip',
-                'Apply geometry-only process variations to binary metallization masks during training.',
-            )
-        )
-    )
-    panel.tech_augmentation_debug_pair_check_box.setText(
-        str(
-            t.get(
-                'tech_augmentation_debug_pair',
-                'Debug: return original and augmented mask',
-            )
-        )
-    )
-    panel.tech_augmentation_debug_pair_check_box.setToolTip(
-        str(
-            t.get(
-                'tech_augmentation_debug_pair_tip',
-                'Keep both the original and augmented mask for visual validation of synthetic process drift.',
+                'synthetic_defect_generator_enabled_tip',
+                'Generate synthetic image/mask pairs with non-intersecting procedural traces and optional image-only synthetic defects.',
             )
         )
     )
@@ -754,42 +918,6 @@ def apply_settings_panel_texts(panel: Any) -> None:
             'Mix pairs of training samples inside a batch using a random interpolation factor.',
         )
     )
-    panel.pcb_defects_check_box.setText(
-        _read_text_from_mappings(
-            (t, labels_map),
-            ('pcb_defects_enabled', 'pcb_defects_enable'),
-            'Enable synthetic PCB defects',
-        )
-    )
-    panel.pcb_defects_check_box.setToolTip(
-        _read_text_from_mappings(
-            (t, descriptions),
-            ('pcb_defects_tip', 'pcb_defects_enabled'),
-            'Inject realistic topology defects into training samples only.',
-        )
-    )
-    panel.pcb_defects_use_input_mask_check_box.setText(
-        str(t.get('pcb_defects_use_input_mask', 'Use provided PCB mask for defect placement'))
-    )
-    panel.pcb_defects_use_input_mask_check_box.setToolTip(
-        str(
-            t.get(
-                'pcb_defects_use_input_mask_tip',
-                'Use the input binary mask to place defects on valid copper structures when available.',
-            )
-        )
-    )
-    panel.pcb_defects_use_defect_mask_as_label_check_box.setText(
-        str(t.get('pcb_defects_use_defect_mask_as_label', 'Use defect mask as training label'))
-    )
-    panel.pcb_defects_use_defect_mask_as_label_check_box.setToolTip(
-        str(
-            t.get(
-                'pcb_defects_use_defect_mask_as_label_tip',
-                'Return the generated defect mask as the supervision target for synthetic-defect segmentation.',
-            )
-        )
-    )
     panel.augmentation_brightness_spinbox.setToolTip(str(t.get('extra_aug_brightness_tip', '')))
     panel.augmentation_contrast_spinbox.setToolTip(str(t.get('extra_aug_contrast_tip', '')))
     panel.augmentation_gamma_spinbox.setToolTip(str(t.get('extra_aug_gamma_tip', '')))
@@ -798,32 +926,29 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.augmentation_blur_probability_spinbox.setToolTip(str(t.get('extra_aug_blur_prob_tip', '')))
     panel.augmentation_blur_radius_spinbox.setToolTip(str(t.get('extra_aug_blur_radius_tip', '')))
     panel.scale_augmentation_strength_spinbox.setToolTip(str(t.get('scale_augmentation_strength_tip', '')))
-    panel.tech_aug_min_operations_spinbox.setToolTip(str(t.get('tech_aug_min_operations_tip', '')))
-    panel.tech_aug_max_operations_spinbox.setToolTip(str(t.get('tech_aug_max_operations_tip', '')))
-    panel.tech_aug_max_changed_pixels_ratio_spinbox.setToolTip(
-        str(t.get('tech_aug_max_changed_pixels_ratio_tip', ''))
+    panel.synthetic_dataset_factor_spinbox.setToolTip(str(t.get('synthetic_dataset_factor_tip', '')))
+    panel.synthetic_image_size_widget.setToolTip(str(t.get('synthetic_image_size_tip', '')))
+    panel.synthetic_topology_domain_combo.setToolTip(str(t.get('synthetic_topology_domain_tip', '')))
+    panel.pcb_topology_family_combo.setToolTip(str(t.get('pcb_topology_family_tip', '')))
+    panel.ic_topology_family_combo.setToolTip(str(t.get('ic_topology_family_tip', '')))
+    if panel.synthetic_topology_domain_combo.count() >= 2:
+        panel.synthetic_topology_domain_combo.setItemText(0, str(t.get('synthetic_topology_domain_pcb', 'PCB')))
+        panel.synthetic_topology_domain_combo.setItemText(1, str(t.get('synthetic_topology_domain_ic', 'IC')))
+    if panel.pcb_topology_family_combo.count() >= 3:
+        panel.pcb_topology_family_combo.setItemText(0, str(t.get('pcb_topology_family_parallel', 'Parallel traces')))
+        panel.pcb_topology_family_combo.setItemText(1, str(t.get('pcb_topology_family_independent', 'Independent traces')))
+        panel.pcb_topology_family_combo.setItemText(2, str(t.get('pcb_topology_family_fanout', 'Fanout tree')))
+    if panel.ic_topology_family_combo.count() >= 3:
+        panel.ic_topology_family_combo.setItemText(0, str(t.get('ic_topology_family_channels', 'Routing channels')))
+        panel.ic_topology_family_combo.setItemText(1, str(t.get('ic_topology_family_cell_array', 'Cell array')))
+        panel.ic_topology_family_combo.setItemText(2, str(t.get('ic_topology_family_tree', 'Tree routing')))
+    panel.synthetic_trace_count_range_widget.setToolTip(str(t.get('synthetic_trace_count_tip', '')))
+    panel.synthetic_segment_count_range_widget.setToolTip(str(t.get('synthetic_segment_count_tip', '')))
+    panel.synthetic_trace_half_width_range_widget.setToolTip(str(t.get('synthetic_trace_half_width_tip', '')))
+    panel.synthetic_background_noise_sigma_range_widget.setToolTip(
+        str(t.get('synthetic_background_noise_sigma_tip', ''))
     )
-    panel.tech_aug_max_foreground_ratio_delta_spinbox.setToolTip(
-        str(t.get('tech_aug_max_foreground_ratio_delta_tip', ''))
-    )
-    panel.tech_aug_global_width_probability_spinbox.setToolTip(
-        str(t.get('tech_aug_global_width_probability_tip', ''))
-    )
-    panel.tech_aug_scale_rethreshold_probability_spinbox.setToolTip(
-        str(t.get('tech_aug_scale_rethreshold_probability_tip', ''))
-    )
-    panel.tech_aug_blur_threshold_probability_spinbox.setToolTip(
-        str(t.get('tech_aug_blur_threshold_probability_tip', ''))
-    )
-    panel.tech_aug_boundary_aware_probability_spinbox.setToolTip(
-        str(t.get('tech_aug_boundary_aware_probability_tip', ''))
-    )
-    panel.tech_aug_local_morphology_probability_spinbox.setToolTip(
-        str(t.get('tech_aug_local_morphology_probability_tip', ''))
-    )
-    panel.tech_aug_gap_variation_probability_spinbox.setToolTip(
-        str(t.get('tech_aug_gap_variation_probability_tip', ''))
-    )
+    panel.synthetic_trace_noise_sigma_range_widget.setToolTip(str(t.get('synthetic_trace_noise_sigma_tip', '')))
     panel.cutout_probability_spinbox.setToolTip(str(t.get('cutout_probability_tip', '')))
     panel.cutout_holes_spinbox.setToolTip(str(t.get('cutout_holes_tip', '')))
     panel.cutout_size_ratio_spinbox.setToolTip(str(t.get('cutout_size_ratio_tip', '')))
@@ -835,20 +960,36 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.pcb_defects_probability_spinbox.setToolTip(str(t.get('pcb_defects_probability_tip', '')))
     panel.pcb_defects_min_count_spinbox.setToolTip(str(t.get('pcb_defects_min_count_tip', '')))
     panel.pcb_defects_max_count_spinbox.setToolTip(str(t.get('pcb_defects_max_count_tip', '')))
-    panel.pcb_defects_groupbox.setToolTip(
-        str(t.get('pcb_defects_group_tip', 'Synthetic topology defects applied only during training.'))
+    panel.synthetic_defect_generator_groupbox.setToolTip(
+        str(
+            t.get(
+                'synthetic_defect_generator_group_tip',
+                'Generate additional fully synthetic topology samples and image-only synthetic defects for training.',
+            )
+        )
     )
     for defect_name, text_key in (
-        ('break', 'pcb_break_weight_tip'),
-        ('short', 'pcb_short_weight_tip'),
-        ('missing_copper', 'pcb_missing_copper_weight_tip'),
-        ('excess_copper', 'pcb_excess_copper_weight_tip'),
-        ('pinhole', 'pcb_pinhole_weight_tip'),
-        ('spurious_copper', 'pcb_spurious_copper_weight_tip'),
-        ('via', 'pcb_via_weight_tip'),
-        ('misalignment', 'pcb_misalignment_weight_tip'),
+        ('break', 'pcb_break_severity_tip'),
+        ('short', 'pcb_short_severity_tip'),
+        ('missing_copper', 'pcb_missing_copper_severity_tip'),
+        ('excess_copper', 'pcb_excess_copper_severity_tip'),
+        ('pinhole', 'pcb_pinhole_severity_tip'),
+        ('spurious_copper', 'pcb_spurious_copper_severity_tip'),
+        ('via', 'pcb_via_severity_tip'),
+        ('misalignment', 'pcb_misalignment_severity_tip'),
     ):
         panel.pcb_defect_type_spinboxes[defect_name].setToolTip(str(t.get(text_key, '')))
+    for defect_name, text_key in (
+        ('line_break', 'ic_line_break_severity_tip'),
+        ('bridge', 'ic_bridge_severity_tip'),
+        ('necking', 'ic_necking_severity_tip'),
+        ('missing_metal', 'ic_missing_metal_severity_tip'),
+        ('spur', 'ic_spur_severity_tip'),
+        ('pinhole', 'ic_pinhole_severity_tip'),
+        ('via_open', 'ic_via_open_severity_tip'),
+        ('line_shift', 'ic_line_shift_severity_tip'),
+    ):
+        panel.ic_defect_type_spinboxes[defect_name].setToolTip(str(t.get(text_key, '')))
     panel.shift_spinbox.setToolTip(str(t.get('shift_tip', '')))
     panel.validation_check_box.setText(str(t.get('validation', 'Use validation during training')))
     panel.validation_check_box.setToolTip(str(t.get('validation_tip', '')))
@@ -893,7 +1034,26 @@ def apply_settings_panel_texts(panel: Any) -> None:
     )
     panel.general_groupbox.setTitle(str(t.get('general_group', 'Data and model')))
     panel.augmentation_groupbox.setTitle(str(t.get('augmentation_group', 'Augmentation and shift')))
-    panel.pcb_defects_groupbox.setTitle(str(t.get('pcb_defects_group', 'Synthetic PCB defects')))
+    panel.shuffle_groupbox.setTitle(str(t.get('shuffle_group', 'Shuffle order')))
+    panel.spatial_groupbox.setTitle(str(t.get('spatial_group', 'Spatial augmentations')))
+    panel.photometric_groupbox.setTitle(str(t.get('photometric_group', 'Photometric augmentations')))
+    panel.cutout_groupbox.setTitle(str(t.get('cutout', 'Cutout')))
+    panel.random_artifacts_groupbox.setTitle(str(t.get('random_artifacts', 'Random artifacts')))
+    panel.mixup_groupbox.setTitle(str(t.get('mixup', 'Mixup')))
+    panel.synthetic_defect_generator_groupbox.setTitle(
+        str(t.get('synthetic_defect_generator_group', 'Synthetic topology'))
+    )
+    panel.augmentation_preview_button.setText(
+        str(t.get('augmentation_preview_button', 'Open augmentation preview'))
+    )
+    panel.augmentation_preview_button.setToolTip(
+        str(
+            t.get(
+                'augmentation_preview_button_tip',
+                'Open a preview window that applies the selected training augmentations to dataset samples.',
+            )
+        )
+    )
     panel.validation_groupbox.setTitle(str(t.get('validation_group', 'Validation')))
     panel.sample_type_groupbox.setTitle(str(t.get('sample_group', 'Dataset mode')))
     panel.sample_type_groupbox.setToolTip(str(t.get('sample_group_tip', '')))
@@ -904,7 +1064,10 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.enable_resize_processing.setText(str(t.get('preprocess_resize_enable', 'Enable resize')))
     panel.nn_auxilary_settings_groupbox.setTitle(str(t.get('aux_group', 'Additional settings')))
     panel.optimizer_groupbox.setTitle(str(t.get('optimizer_group', 'Optimizer and batch')))
-    panel.precision_loss_groupbox.setTitle(str(t.get('loss_precision_group', 'Loss and mixed precision')))
+    panel.precision_loss_groupbox.setTitle(str(t.get('loss_precision_group', 'Loss function')))
+    panel.rare_patch_groupbox.setTitle(str(t.get('rare_patch_group', 'Rare patch oversampling')))
+    panel.expert_groupbox.setTitle(str(t.get('expert_group', 'Expert settings')))
+    panel.model_variants_groupbox.setTitle(str(t.get('model_variants_group', 'Additional model families')))
     panel.recognition_groupbox.setTitle(str(t.get('recognition_group', 'Recognition')))
     panel.runtime_groupbox.setTitle(str(t.get('runtime_group', 'Runtime and filtering')))
     panel.warmup_groupbox.setTitle(str(t.get('warmup_group', 'Warmup')))
@@ -918,7 +1081,6 @@ def apply_settings_panel_texts(panel: Any) -> None:
             panel._page_indexes.get('recognition', 2),
             str(t.get('tab_recognition', 'Распознавание')),
         )
-        panel.settings_tabs.setTabText(panel._page_indexes.get('expert', 3), str(t.get('tab_expert', 'Эксперт')))
     panel.optimizer_type.setToolTip(str(t.get('optimizer_tip', '')))
     panel.learning_rate_spinbox.setToolTip(str(t.get('lr_tip', '')))
     panel.weight_decay_spinbox.setToolTip(str(t.get('wd_tip', '')))
@@ -1015,6 +1177,44 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
+    panel.recognition_tta_check_box.setText(
+        str(t.get('recognition_tta', 'Use TTA for recognition'))
+    )
+    panel.recognition_tta_check_box.setToolTip(
+        str(
+            t.get(
+                'recognition_tta_tip',
+                'Apply test-time augmentation to the main recognition mask during inference.',
+            )
+        )
+    )
+    panel.confidence_tta_check_box.setText(
+        str(t.get('confidence_tta', 'Use TTA for confidence map'))
+    )
+    panel.confidence_tta_check_box.setToolTip(
+        str(
+            t.get(
+                'confidence_tta_tip',
+                'Apply test-time augmentation when forming the confidence map during inference.',
+            )
+        )
+    )
+    panel.confidence_save_mode_combo.setToolTip(
+        str(
+            t.get(
+                'confidence_save_mode_tip',
+                'Choose whether to save a separate confidence map next to the main recognition mask.',
+            )
+        )
+    )
+    panel.confidence_save_mode_combo.setItemText(
+        0,
+        str(t.get('confidence_save_mode_off', 'Do not save')),
+    )
+    panel.confidence_save_mode_combo.setItemText(
+        1,
+        str(t.get('confidence_save_mode_separate_grayscale', 'Save separate grayscale map')),
+    )
     panel.recognition_postprocess_check_box.setText(
         str(t.get('recognition_postprocess', 'Postprocess binary mask'))
     )
@@ -1033,12 +1233,43 @@ def apply_settings_panel_texts(panel: Any) -> None:
         str(t.get('log_update_frequency_tip', 'Log update frequency in batches (0 = auto).'))
     )
     panel.mixed_precision_type.setToolTip(str(t.get('mixed_precision_tip', '')))
+    panel.deep_supervision_check_box.setText(str(t.get('deep_supervision', 'Enable deep supervision')))
+    panel.deep_supervision_check_box.setToolTip(
+        str(
+            t.get(
+                'deep_supervision_tip',
+                'Train convolutional segmentation models with auxiliary decoder heads.',
+            )
+        )
+    )
     loss_tip = str(t.get('loss_function_tip', ''))
     loss_group_title = str(labels_map.get('loss_function', t.get('loss_function', 'Loss terms')))
     panel.loss_terms_groupbox.setTitle(loss_group_title)
     panel.loss_terms_groupbox.setToolTip(loss_tip)
     panel.loss_terms_widget.setToolTip(loss_tip)
     panel.loss_formula_label.setToolTip(loss_tip)
+    if 'conductors' in getattr(panel, 'loss_preset_buttons', {}):
+        panel.loss_preset_buttons['conductors'].setText(str(t.get('loss_preset_conductors', 'Conductors')))
+        panel.loss_preset_buttons['conductors'].setToolTip(
+            str(
+                t.get(
+                    'loss_preset_conductors_tip',
+                    'Preset: 0.5 BCE + 0.5 Dice.',
+                )
+            )
+        )
+    if 'contacts' in getattr(panel, 'loss_preset_buttons', {}):
+        panel.loss_preset_buttons['contacts'].setText(str(t.get('loss_preset_contacts', 'Contacts')))
+        panel.loss_preset_buttons['contacts'].setToolTip(
+            str(
+                t.get(
+                    'loss_preset_contacts_tip',
+                    'Preset: 0.5 BCE + 0.5 Focal Tversky.',
+                )
+            )
+        )
+    if hasattr(panel, 'loss_presets_widget'):
+        panel.loss_presets_widget.setToolTip(loss_tip)
     for loss_name in getattr(panel, 'loss_term_checkboxes', {}):
         panel.loss_term_checkboxes[loss_name].setToolTip(loss_tip)
         panel.loss_term_spinboxes[loss_name].setToolTip(loss_tip)

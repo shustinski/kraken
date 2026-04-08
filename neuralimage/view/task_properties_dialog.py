@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from application.dto import MainWindowState, SettingsState
+from application.dto import MainWindowState, SettingsState, clone_main_window_state
 from lib.data_interfaces import normalize_multi_gpu_mode, normalize_patch_batch_sync_mode, normalize_work_mode
 from lib.ui_texts import get_ui_section
 
@@ -49,7 +49,7 @@ class TaskPropertiesDialog(QDialog):
         self._task_id = int(task_id)
         self._status = str(status)
         self._paused = bool(paused)
-        self._main_window_state = replace(main_window_state)
+        self._main_window_state = clone_main_window_state(main_window_state)
         self._settings_state = replace(settings_state)
         self._texts = get_ui_section('task_properties_dialog')
         webui_texts = get_ui_section('webui')
@@ -163,6 +163,8 @@ class TaskPropertiesDialog(QDialog):
     ) -> None:
         section = self._create_section(title)
         for field in fields(state):
+            if state_name == 'main' and field.name == 'mode_state':
+                continue
             raw_value = getattr(state, field.name)
             label = str(labels.get(field.name, _fallback_field_label(field.name)))
             tooltip = str(tooltips.get(field.name, ''))
@@ -255,7 +257,7 @@ class TaskPropertiesDialog(QDialog):
 
     def _on_restore_clicked(self) -> None:
         self.restore_requested.emit(
-            replace(self._main_window_state),
+            clone_main_window_state(self._main_window_state),
             replace(self._settings_state),
         )
         self.accept()

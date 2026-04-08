@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QPushButton, QTextEdit, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QDialog, QPushButton, QTextBrowser, QVBoxLayout, QWidget
 
 from lib.runtime_paths import resolve_resource_path
 from lib.ui_texts import get_ui_section
@@ -20,13 +20,12 @@ class ChangelogDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        text = QTextEdit(self)
+        text = QTextBrowser(self)
         text.setReadOnly(True)
-        text.setAcceptRichText(False)
-        text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        text.setOpenExternalLinks(True)
         content = self._resolve_content(str(texts.get('content', '')))
         version_template = str(texts.get('version_template', 'Текущая версия: {version}'))
-        text.setPlainText(f'{version_template.format(version=APP_VERSION)}\n\n{content}')
+        text.setMarkdown(f'# {version_template.format(version=APP_VERSION)}\n\n{content}'.strip())
         text.moveCursor(text.textCursor().MoveOperation.Start)
         layout.addWidget(text)
 

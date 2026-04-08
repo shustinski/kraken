@@ -110,6 +110,7 @@ class MainView(QMainWindow):
     open_tic_tac_toe_requested: pyqtSignal = pyqtSignal()
     open_validation_gradient_requested: pyqtSignal = pyqtSignal()
     update_check_requested: pyqtSignal = pyqtSignal()
+    update_channel_selected: pyqtSignal = pyqtSignal(str)
     ui_language_selected: pyqtSignal = pyqtSignal(str)
     theme_selected: pyqtSignal = pyqtSignal(str)
     ui_mode_selected: pyqtSignal = pyqtSignal(str)
@@ -162,11 +163,17 @@ class MainView(QMainWindow):
         self._help_action = None
         self._changelog_action = None
         self._check_updates_action = None
+        self._update_channel_menu = None
+        self._update_channel_action_group = None
+        self._update_channel_actions: dict[str, QAction] = {}
+        self._available_update_channels: list[str] = []
+        self._selected_update_channel = 'stable'
         self._open_validation_gradient_action = None
         self._ui_mode_menu = None
         self._ui_mode_simple_action = None
         self._ui_mode_advanced_action = None
         self._ui_mode = _load_persisted_ui_mode()
+        self._current_work_mode = ''
         self._selected_simple_workflow: str | None = None
 
         self._setup_ui()
@@ -508,9 +515,62 @@ class MainView(QMainWindow):
         check_updates_action = QAction(t.get("menu_check_updates", "Проверить обновления"), self)
         info_menu.addAction(check_updates_action)
         self._check_updates_action = check_updates_action
+        self._update_channel_menu = info_menu.addMenu(t.get("menu_update_channel", "Канал обновлений"))
+        self.configure_update_channels(self._available_update_channels or ['stable'], self._selected_update_channel)
         menu_action = info_menu.menuAction()
         if menu_action is not None:
             menu_action.setVisible(True)
+
+    def configure_update_channels(self, channels: list[str] | tuple[str, ...], selected_channel: str) -> None:
+        normalized_channels: list[str] = []
+        for channel in channels:
+            value = str(channel or '').strip().lower()
+            if value and value not in normalized_channels:
+                normalized_channels.append(value)
+        if not normalized_channels:
+            normalized_channels = ['stable']
+        self._available_update_channels = list(normalized_channels)
+        normalized_selected = str(selected_channel or '').strip().lower()
+        if normalized_selected not in self._available_update_channels:
+            normalized_selected = self._available_update_channels[0]
+        self._selected_update_channel = normalized_selected
+        menu = self._update_channel_menu
+        if menu is None:
+            return
+        menu.clear()
+        self._update_channel_actions = {}
+        self._update_channel_action_group = QActionGroup(self)
+        self._update_channel_action_group.setExclusive(True)
+        for channel in self._available_update_channels:
+            action = QAction(self._format_update_channel_label(channel), self)
+            action.setCheckable(True)
+            action.setData(channel)
+            action.triggered.connect(lambda _checked=False, value=channel: self._handle_update_channel_action(value))
+            self._update_channel_action_group.addAction(action)
+            menu.addAction(action)
+            self._update_channel_actions[channel] = action
+        self._sync_update_channel_menu_checks()
+
+    def _format_update_channel_label(self, channel: str) -> str:
+        normalized = str(channel or '').strip().lower()
+        t = self._main_texts()
+        if normalized == 'stable':
+            return str(t.get('update_channel_stable', 'Stable'))
+        if normalized == 'beta':
+            return str(t.get('update_channel_beta', 'Beta'))
+        return normalized or str(t.get('update_channel_unknown', 'Unknown'))
+
+    def _handle_update_channel_action(self, channel: str) -> None:
+        normalized = str(channel or '').strip().lower()
+        if not normalized:
+            return
+        self._selected_update_channel = normalized
+        self._sync_update_channel_menu_checks()
+        self.update_channel_selected.emit(normalized)
+
+    def _sync_update_channel_menu_checks(self) -> None:
+        for channel, action in self._update_channel_actions.items():
+            action.setChecked(channel == self._selected_update_channel)
 
     def set_batch_preview_enabled(self, enabled: bool) -> None:
         action = getattr(self, "batch_preview_action", None)
@@ -562,6 +622,41 @@ class MainView(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         return
+
+    def apply_work_mode(self, mode: str) -> None:
+        self._current_work_mode = str(mode or '').strip()
+        resolved_mode = self._current_work_mode
+        training_only = resolved_mode == WorkMode.train_only.value
+        recognition_only = resolved_mode == WorkMode.recognition_only.value
+        uses_model = resolved_mode in {
+            WorkMode.recognition_only.value,
+            WorkMode.further_training.value,
+        }
+        uses_epochs = resolved_mode in {
+            WorkMode.train_only.value,
+            WorkMode.train_and_recognition.value,
+            WorkMode.further_training.value,
+        }
+
+        if not resolved_mode:
+            self.lbl_source.setEnabled(True)
+            self.lbl_result.setEnabled(True)
+            self.sample_path_group.setEnabled(True)
+            self.sample_path_group.setVisible(True)
+            self.model_path.setEnabled(True)
+        else:
+            self.lbl_source.setEnabled(not training_only)
+            self.lbl_result.setEnabled(not training_only)
+            self.sample_path_group.setEnabled(not recognition_only)
+            self.sample_path_group.setVisible(not recognition_only)
+            self.model_path.setEnabled(uses_model)
+
+        show_model = True if not resolved_mode else uses_model
+        show_epochs = (self._ui_mode != 'simple') and (uses_epochs if resolved_mode else True)
+        self.model_title_label.setVisible(show_model)
+        self.model_path.setVisible(show_model)
+        self.epochs_title_label.setVisible(show_epochs)
+        self.le_epochs.setVisible(show_epochs)
 
     def connect_internal_signals(self):
         self.rb_train_and_recognition.clicked.connect(
@@ -1094,8 +1189,6 @@ class MainView(QMainWindow):
         self._ui_mode = normalized_mode
         is_simple = normalized_mode == "simple"
         self.simple_workflows_group.setVisible(is_simple)
-        self.epochs_title_label.setVisible(not is_simple)
-        self.le_epochs.setVisible(not is_simple)
         self.log_dock.setVisible(not is_simple)
         self.metrics_panel.setVisible(not is_simple)
         if self.settings_dock is not None:
@@ -1108,6 +1201,7 @@ class MainView(QMainWindow):
             self._settings_toggle_action.setVisible(not is_simple)
         if self._settings_menu is not None:
             self._settings_menu.menuAction().setVisible(not is_simple)
+        self.apply_work_mode(self._current_work_mode)
         self._sync_ui_mode_menu_checks()
         _save_persisted_ui_mode(self._ui_mode)
 
@@ -1193,6 +1287,8 @@ class MainView(QMainWindow):
             self._info_menu.setTitle(t["menu_help"])
         if self._plugins_menu is not None:
             self._plugins_menu.setTitle(t.get("menu_plugins", "Plugins"))
+        if self._update_channel_menu is not None:
+            self._update_channel_menu.setTitle(t.get("menu_update_channel", "Update channel"))
         if self._open_config_action is not None:
             self._open_config_action.setText(t.get("menu_open_config", "Открыть"))
         if self._language_menu is not None:
@@ -1231,6 +1327,8 @@ class MainView(QMainWindow):
             self._changelog_action.setText(t.get("menu_open_changelog", "Список изменений"))
         if self._check_updates_action is not None:
             self._check_updates_action.setText(t.get("menu_check_updates", "Проверить обновления"))
+        for channel, action in self._update_channel_actions.items():
+            action.setText(self._format_update_channel_label(channel))
         if hasattr(self, "ui_language_ru_action"):
             self.ui_language_ru_action.setText(t.get("lang_ru", "Русский"))
         if hasattr(self, "ui_language_en_action"):

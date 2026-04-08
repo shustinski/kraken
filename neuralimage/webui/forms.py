@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 
 from django import forms
@@ -729,7 +728,15 @@ class SettingsForm(forms.Form):
 
 
 def defaults_from_main_state(state: MainWindowState) -> dict:
-    return asdict(state)
+    return {
+        'work_mode': state.work_mode,
+        'source_folder': state.source_folder,
+        'result_folder': state.result_folder,
+        'model_path': state.model_path,
+        'label_folder': state.label_folder,
+        'sample_folder': state.sample_folder,
+        'epochs': state.epochs,
+    }
 
 
 def defaults_from_settings_state(state: SettingsState) -> dict:

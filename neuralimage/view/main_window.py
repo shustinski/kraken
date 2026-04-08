@@ -34,6 +34,7 @@ from lib.logging_policy import MAX_LOG_MESSAGES
 from lib.runtime_paths import resolve_internal_path
 from lib.ui_texts import get_ui_language, get_ui_section
 from lib.version import get_app_title
+from polygon_widget import PolygonExtractionWidget
 from view.changelog_dialog import show_changelog_dialog
 from view.help_dialog import show_help_dialog
 from view.metrics_panel import TrainingMetricsDock
@@ -74,6 +75,28 @@ def load_qss_from_resource(qss_path: str):
         return ""
     with open(qss_path, "r", encoding="utf-8") as file:
         return file.read()
+
+
+class _PolygonExtractorWindow(QMainWindow):
+    def __init__(
+        self,
+        widget: PolygonExtractionWidget,
+        title: str,
+        on_closed,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._on_closed = on_closed
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setWindowTitle(title)
+        self.setCentralWidget(widget)
+        self.resize(1600, 900)
+
+    def closeEvent(self, event) -> None:
+        try:
+            self._on_closed()
+        finally:
+            super().closeEvent(event)
 
 
 class MainView(QMainWindow):
@@ -163,11 +186,16 @@ class MainView(QMainWindow):
         self._changelog_action = None
         self._check_updates_action = None
         self._open_validation_gradient_action = None
+        self._open_polygon_extractor_action = None
         self._ui_mode_menu = None
         self._ui_mode_simple_action = None
         self._ui_mode_advanced_action = None
         self._ui_mode = _load_persisted_ui_mode()
         self._selected_simple_workflow: str | None = None
+        self.polygon_extraction_widget: PolygonExtractionWidget | None = None
+        self.polygon_extraction_window: _PolygonExtractorWindow | None = None
+        self._pending_polygon_input_dir: str = ""
+        self._pending_polygon_output_dir: str = ""
 
         self._setup_ui()
 
@@ -449,6 +477,11 @@ class MainView(QMainWindow):
             self,
         )
         view_menu.addAction(self.open_tic_tac_toe_action)
+        self._open_polygon_extractor_action = QAction(
+            self._polygon_menu_text(),
+            self,
+        )
+        plugins_menu.addAction(self._open_polygon_extractor_action)
         self._open_validation_gradient_action = QAction(
             t.get("menu_open_validation_gradient", "Open Validation gradient"),
             self,
@@ -511,6 +544,69 @@ class MainView(QMainWindow):
         menu_action = info_menu.menuAction()
         if menu_action is not None:
             menu_action.setVisible(True)
+
+    @staticmethod
+    def _normalize_polygon_directory(path: str) -> str:
+        text = str(path or "").strip()
+        if not text:
+            return ""
+        candidate = Path(text)
+        if candidate.exists() and candidate.is_file():
+            return str(candidate.parent)
+        return text
+
+    def _queue_polygon_widget_path_sync(self) -> None:
+        self._pending_polygon_input_dir = self._normalize_polygon_directory(self.lbl_source.text())
+        self._pending_polygon_output_dir = self._normalize_polygon_directory(self.lbl_result.text())
+        if self.polygon_extraction_window is not None and self.polygon_extraction_window.isVisible():
+            self._sync_polygon_widget_paths(refresh_input=True)
+        else:
+            self._sync_polygon_widget_paths(refresh_input=False)
+
+    def _sync_polygon_widget_paths(self, refresh_input: bool) -> None:
+        if self.polygon_extraction_widget is None:
+            return
+        if self._pending_polygon_output_dir:
+            self.polygon_extraction_widget.set_output_directory(self._pending_polygon_output_dir)
+        if refresh_input and self._pending_polygon_input_dir:
+            self.polygon_extraction_widget.set_input_directory(self._pending_polygon_input_dir)
+
+    def _forward_polygon_widget_log(self, message: str) -> None:
+        self.log_message.emit(f"[Polygon] {message}")
+
+    def _polygon_menu_text(self) -> str:
+        fallback = "Polygon extractor" if self._ui_language == "en" else "Редактор полигонов"
+        return str(self._texts.get("menu_open_polygon_extractor", fallback))
+
+    def _polygon_window_title(self) -> str:
+        return self._polygon_menu_text()
+
+    def _reset_polygon_extraction_window_refs(self) -> None:
+        self.polygon_extraction_window = None
+        self.polygon_extraction_widget = None
+
+    def _ensure_polygon_extraction_window(self) -> None:
+        if self.polygon_extraction_window is not None and self.polygon_extraction_widget is not None:
+            return
+        self.polygon_extraction_widget = PolygonExtractionWidget(self)
+        if hasattr(self.polygon_extraction_widget, "set_ui_language"):
+            self.polygon_extraction_widget.set_ui_language(self._ui_language)
+        self.polygon_extraction_widget.logMessage.connect(self._forward_polygon_widget_log)
+        self.polygon_extraction_window = _PolygonExtractorWindow(
+            widget=self.polygon_extraction_widget,
+            title=self._polygon_window_title(),
+            on_closed=self._reset_polygon_extraction_window_refs,
+            parent=self,
+        )
+
+    def show_polygon_extraction_window(self) -> None:
+        self._ensure_polygon_extraction_window()
+        self._sync_polygon_widget_paths(refresh_input=True)
+        if self.polygon_extraction_window is None:
+            return
+        self.polygon_extraction_window.show()
+        self.polygon_extraction_window.raise_()
+        self.polygon_extraction_window.activateWindow()
 
     def set_batch_preview_enabled(self, enabled: bool) -> None:
         action = getattr(self, "batch_preview_action", None)
@@ -607,6 +703,8 @@ class MainView(QMainWindow):
             self.release_memory_action.triggered.connect(self.release_memory_requested.emit)
         if hasattr(self, "open_tic_tac_toe_action"):
             self.open_tic_tac_toe_action.triggered.connect(self.open_tic_tac_toe_requested.emit)
+        if self._open_polygon_extractor_action is not None:
+            self._open_polygon_extractor_action.triggered.connect(self.show_polygon_extraction_window)
         if self._open_validation_gradient_action is not None:
             self._open_validation_gradient_action.triggered.connect(self.open_validation_gradient_requested.emit)
         if self._check_updates_action is not None:
@@ -1221,6 +1319,12 @@ class MainView(QMainWindow):
             self.open_tic_tac_toe_action.setText(
                 t.get("menu_open_tic_tac_toe", "Крестики-нолики (нейросеть)")
             )
+        if self._open_polygon_extractor_action is not None:
+            self._open_polygon_extractor_action.setText(self._polygon_menu_text())
+        if self.polygon_extraction_window is not None:
+            self.polygon_extraction_window.setWindowTitle(self._polygon_window_title())
+        if self.polygon_extraction_widget is not None and hasattr(self.polygon_extraction_widget, "set_ui_language"):
+            self.polygon_extraction_widget.set_ui_language(self._ui_language)
         if self._open_validation_gradient_action is not None:
             self._open_validation_gradient_action.setText(
                 t.get("menu_open_validation_gradient", "Open Validation gradient")
@@ -1269,9 +1373,11 @@ class MainView(QMainWindow):
 
     def set_source_path(self, path: str):
         self.lbl_source.setText(path)
+        self._queue_polygon_widget_path_sync()
 
     def set_result_path(self, path: str):
         self.lbl_result.setText(path)
+        self._queue_polygon_widget_path_sync()
 
     def set_samples_count(self, total_samples: int) -> None:
         try:

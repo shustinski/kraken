@@ -65,6 +65,11 @@ class _LoaderWithDataset:
         return iter(self._batches)
 
 
+class _DatasetWithDescribeSample:
+    def describe_sample(self, sample_index: int) -> str:
+        return f'frame_{int(sample_index):03d}.png'
+
+
 def _build_trainer(loss_mode: str) -> TrainerProcess:
     trainer = TrainerProcess.__new__(TrainerProcess)
     trainer._loss_function = str(loss_mode)
@@ -269,6 +274,24 @@ def test_filter_uniform_batch_samples_skips_binary_uniform_labels_scaled_as_255_
     assert filtered_image.shape[0] == 1
     assert filtered_label.shape[0] == 1
     assert bool(torch.equal(filtered_indices, torch.tensor([12], dtype=torch.long)))
+
+
+def test_describe_train_preview_sample_uses_dataset_sample_name():
+    trainer = _build_trainer('bce')
+    trainer._train_dataloader = _LoaderWithDataset(_DatasetWithDescribeSample(), [])
+
+    sample_name = trainer._describe_train_preview_sample(torch.tensor([7], dtype=torch.long), 3)
+
+    assert sample_name == 'frame_007.png'
+
+
+def test_describe_train_preview_sample_falls_back_to_batch_name_without_indices():
+    trainer = _build_trainer('bce')
+    trainer._train_dataloader = _LoaderWithDataset(_DatasetWithDescribeSample(), [])
+
+    sample_name = trainer._describe_train_preview_sample(None, 3)
+
+    assert sample_name == 'batch_000004'
 
 
 def test_publish_train_batch_runtime_preview_uses_filtered_batch_tensors():

@@ -2643,7 +2643,13 @@ class TrainerProcess(mp.Process):
         return f'sample_{int(fallback_index):06d}'
 
     def _describe_train_preview_sample(self, sample_indices: Any, fallback_batch_index: int) -> str:
-        resolved_indices = self._resolve_validation_sample_indices(sample_indices)
+        if sample_indices is None:
+            return f'batch_{int(fallback_batch_index) + 1:06d}'
+        resolved_indices = self._resolve_validation_sample_indices(
+            sample_indices,
+            fallback_start=int(fallback_batch_index),
+            batch_size=1,
+        )
         if resolved_indices:
             sample_index = int(resolved_indices[0])
             dataset = getattr(getattr(self, '_train_dataloader', None), 'dataset', None)

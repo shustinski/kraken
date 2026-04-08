@@ -64,6 +64,7 @@ dev = [
 neuralimage = "main:main"
 neuralimage-manage = "manage:main"
 neuralimage-config = "main_code_version:main"
+polygon-widget = "polygon_widget.app:main"
 
 [tool.setuptools]
 include-package-data = true
@@ -88,6 +89,8 @@ include = [
     "lib.*",
     "model",
     "model.*",
+    "polygon_widget",
+    "polygon_widget.*",
     "presenter",
     "presenter.*",
     "UI",

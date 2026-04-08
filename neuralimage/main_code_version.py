@@ -83,7 +83,7 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
     mixup_raw = raw.get('mixup', {})
     pcb_defects_raw = raw.get('pcb_defects', {})
     resolved_model_name = str(model_name or raw.get('model_name', '')).strip()
-    default_context_branch = resolved_model_name in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}
+    default_context_branch = resolved_model_name == 'FrameUnet'
     local_crop_size = _to_tuple2(
         raw.get('local_crop_size', generation_raw.get('segment_size', [256, 256])),
         'tranining_parameters.local_crop_size',
@@ -279,7 +279,7 @@ def _config_template() -> dict[str, Any]:
         'recogniton_parameters': {
             'source_files': ['D:/data/inference/source_1.jpg'],
             'result_folder': 'D:/data/inference/results',
-            'model_name': 'quasi_dual_scale_unet',
+            'model_name': 'FrameUnet',
             'local_crop_size': [256, 256],
             'context_crop_size': [512, 512],
             'context_input_size': [256, 256],

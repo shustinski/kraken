@@ -40,9 +40,9 @@ def _save_grayscale(path: Path, matrix: np.ndarray) -> None:
     Image.fromarray(matrix.astype(np.uint8), mode='L').save(path)
 
 
-def test_quasi_dual_scale_unet_forward_returns_local_mask_shape():
+def test_frame_unet_forward_returns_local_mask_shape():
     model = create_model(
-        'quasi_dual_scale_unet',
+        'FrameUnet',
         1,
         local_crop_size=(64, 64),
         context_crop_size=(128, 128),
@@ -64,7 +64,7 @@ def test_quasi_dual_scale_unet_forward_returns_local_mask_shape():
 
 
 def test_no_cut_dataset_returns_context_input_when_enabled():
-    root = make_test_dir('quasi_dual_scale_dataset')
+    root = make_test_dir('frame_unet_dataset')
     image_path = root / 'frame.png'
     label_path = root / 'frame_mask.png'
     _save_grayscale(image_path, np.full((6, 6), 255, dtype=np.uint8))
@@ -105,7 +105,45 @@ def test_no_cut_dataset_returns_context_input_when_enabled():
     assert float(batch_input['context_image'].min()) < float(batch_input['local_image'].min())
 
 
-def test_general_handler_passes_quasi_dual_scale_model_kwargs(monkeypatch):
+def test_no_cut_dataset_applies_same_geometric_transform_to_context_input():
+    root = make_test_dir('frame_unet_rotated_context')
+    image_path = root / 'frame.png'
+    label_path = root / 'frame_mask.png'
+    _save_grayscale(image_path, np.arange(36, dtype=np.uint8).reshape(6, 6))
+    _save_grayscale(label_path, np.full((6, 6), 255, dtype=np.uint8))
+
+    generation = SampleGenerationSettings(
+        step=4,
+        segment_size=(4, 4),
+        vertical_rotation=False,
+        horizontal_rotation=True,
+        channels=1,
+    )
+    settings = TrainingParameters(
+        image_path=root,
+        label_path=root,
+        shuffle=False,
+        validation=False,
+        validation_percent=0,
+        batch_size=1,
+        cut_mode=SampleCutMode.online,
+        colors=1,
+        epochs=1,
+        generation=generation,
+        prepare=SamplePrepareSettings(),
+        local_crop_size=(4, 4),
+        context_crop_size=(4, 4),
+        context_input_size=(4, 4),
+        use_context_branch=True,
+    )
+
+    dataset = NoCutDataset([(image_path, label_path)], settings)
+    batch_input, _label = dataset[1]
+
+    assert np.allclose(batch_input['context_image'], batch_input['local_image'])
+
+
+def test_general_handler_passes_frame_unet_model_kwargs(monkeypatch):
     import model.general_neural_handler as target
 
     captured: dict[str, object] = {}
@@ -124,7 +162,7 @@ def test_general_handler_passes_quasi_dual_scale_model_kwargs(monkeypatch):
     handler = GeneralNeuralHandler.__new__(GeneralNeuralHandler)
     handler.work_mode = WorkMode.train_only
     handler.message_bus = _Bus()
-    handler.recognition_parameters = SimpleNamespace(model='quasi_dual_scale_unet')
+    handler.recognition_parameters = SimpleNamespace(model='FrameUnet')
     handler.tranining_parameters = SimpleNamespace(
         colors=1,
         epochs=1,
@@ -147,7 +185,7 @@ def test_general_handler_passes_quasi_dual_scale_model_kwargs(monkeypatch):
     model, _save_path = target.GeneralNeuralHandler._resolve_training_model(handler)
 
     assert captured == {
-        'model_name': 'quasi_dual_scale_unet',
+        'model_name': 'FrameUnet',
         'input_channels': 1,
         'kwargs': {
             'local_crop_size': (256, 256),
@@ -156,13 +194,14 @@ def test_general_handler_passes_quasi_dual_scale_model_kwargs(monkeypatch):
             'context_branch_channels': (16, 32, 64, 128),
             'fusion_type': 'concat',
             'use_context_branch': True,
+            'deep_supervision': True,
         },
     }
     assert getattr(model, '_neuralimage_model_kwargs') == captured['kwargs']
 
 
 def test_gpu_predict_uses_context_batch_when_present():
-    root = make_test_dir('quasi_dual_scale_predict')
+    root = make_test_dir('frame_unet_predict')
     image_path = root / 'frame.png'
     _save_grayscale(image_path, np.arange(12 * 12, dtype=np.uint8).reshape(12, 12))
 
@@ -185,3 +224,57 @@ def test_gpu_predict_uses_context_batch_when_present():
     assert model.seen_batches
     assert model.seen_batches[0][0][-2:] == (4, 4)
     assert model.seen_batches[0][1][-2:] == (4, 4)
+
+
+def test_gpu_predict_multiscale_keeps_context_and_local_shapes_aligned(monkeypatch):
+    root = make_test_dir('frame_unet_predict_multiscale')
+    image_path = root / 'frame.png'
+    _save_grayscale(image_path, np.arange(64 * 64, dtype=np.uint8).reshape(64, 64))
+
+    payload = cut_image_prepare(
+        image_path,
+        segment_size=(1, 32, 32),
+        overlap=0,
+        use_context_branch=True,
+        context_crop_size=(48, 48),
+        context_input_size=(32, 32),
+    )
+    model = _ContextAwareModel()
+    monkeypatch.setenv('NEURALIMAGE_MS_SCALES', '1.0,0.5')
+
+    gpu_predict(payload, model, torch.device('cpu'), batch_size=2)
+
+    assert model.seen_batches
+    assert all(local[-2:] == context[-2:] for local, context in model.seen_batches)
+
+
+def test_frame_unet_requires_context_input_when_enabled():
+    model = create_model(
+        'FrameUnet',
+        1,
+        local_crop_size=(64, 64),
+        context_crop_size=(128, 128),
+        context_input_size=(64, 64),
+        use_context_branch=True,
+    )
+
+    with pytest.raises(ValueError, match='context_image'):
+        model(torch.randn(1, 1, 64, 64))
+
+
+def test_context_injection_uses_actual_source_crop_size():
+    dataset = NoCutDataset.__new__(NoCutDataset)
+    dataset._local_crop_size = (4, 4)
+    dataset._context_crop_size = (8, 8)
+    dataset._context_input_size = (4, 4)
+
+    context_image = np.zeros((1, 4, 4), dtype=np.float32)
+    local_image = np.ones((1, 4, 4), dtype=np.float32)
+
+    injected = dataset._inject_local_patch_into_context(
+        context_image,
+        local_image,
+        source_crop_size_xy=(2, 2),
+    )
+
+    assert int(np.count_nonzero(injected)) == 1

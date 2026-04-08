@@ -25,7 +25,7 @@ from lib.data_interfaces import (
 from lib.file_retry import retry_file_read
 from lib.images import ImagePreparator, SampleCalculator, SampleFastCutter
 from lib.rare_patch_masks import resolve_rare_patch_mask_path
-from model.NeuralNetwork.context_utils import PatchWindow, extract_centered_crop, normalize_size_pair
+from model.NeuralNetwork.context_utils import PatchWindow, extract_centered_crop, normalize_size_pair, resize_chw_image
 
 
 def _unwrap_tech_augmented_mask(result: np.ndarray | tuple[np.ndarray, np.ndarray]) -> np.ndarray:
@@ -278,9 +278,11 @@ class NoCutDataset(Dataset):
             return image, label
         context_image = self._build_context_crop(self._current_image_cutter, part)
         if augmented_local_image is not None:
+            left, top, right, bottom = self._current_image_cutter.resolve_part_coordinates(part)
             context_image = self._inject_local_patch_into_context(
                 context_image,
                 augmented_local_image,
+                source_crop_size_xy=(max(1, int(right - left)), max(1, int(bottom - top))),
             )
         return {'local_image': image, 'context_image': context_image}, label
 
@@ -429,11 +431,17 @@ class NoCutDataset(Dataset):
             width=max(1, int(right - left)),
             height=max(1, int(bottom - top)),
         )
-        return extract_centered_crop(
+        context_image = extract_centered_crop(
             cutter.image_matrix,
             center_x=window.center_x,
             center_y=window.center_y,
             crop_size_xy=self._context_crop_size,
+            output_size_xy=self._context_crop_size,
+            interpolation_mode='bilinear',
+        )
+        context_image = cutter.transform_patch_for_part(context_image, part)
+        return resize_chw_image(
+            context_image,
             output_size_xy=self._context_input_size,
             interpolation_mode='bilinear',
         )
@@ -465,17 +473,20 @@ class NoCutDataset(Dataset):
         self,
         context_image: np.ndarray,
         local_image: np.ndarray,
+        *,
+        source_crop_size_xy: tuple[int, int] | None = None,
     ) -> np.ndarray:
         if context_image.ndim != 3 or local_image.ndim != 3:
             return context_image
         context_copy = context_image.copy()
+        source_crop_size = source_crop_size_xy or self._local_crop_size
         target_w = max(
             1,
-            int(round((self._local_crop_size[0] / max(1, self._context_crop_size[0])) * self._context_input_size[0])),
+            int(round((source_crop_size[0] / max(1, self._context_crop_size[0])) * self._context_input_size[0])),
         )
         target_h = max(
             1,
-            int(round((self._local_crop_size[1] / max(1, self._context_crop_size[1])) * self._context_input_size[1])),
+            int(round((source_crop_size[1] / max(1, self._context_crop_size[1])) * self._context_input_size[1])),
         )
         resized_local = SampleFastCutter._resize_patch_tensor(
             local_image,
@@ -657,11 +668,17 @@ class SyntheticDefectDataset(Dataset):
             width=max(1, int(right - left)),
             height=max(1, int(bottom - top)),
         )
-        return extract_centered_crop(
+        context_image = extract_centered_crop(
             cutter.image_matrix,
             center_x=window.center_x,
             center_y=window.center_y,
             crop_size_xy=self._context_crop_size,
+            output_size_xy=self._context_crop_size,
+            interpolation_mode='bilinear',
+        )
+        context_image = cutter.transform_patch_for_part(context_image, part)
+        return resize_chw_image(
+            context_image,
             output_size_xy=self._context_input_size,
             interpolation_mode='bilinear',
         )

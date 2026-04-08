@@ -925,6 +925,7 @@ def gpu_predict(
         for scale in ms_scales:
             if abs(scale - 1.0) < 1e-8:
                 scaled = batch_tensor
+                scaled_context = context_batch_tensor
             else:
                 scaled_h = max(8, int(round(base_h * scale)))
                 scaled_w = max(8, int(round(base_w * scale)))
@@ -934,7 +935,18 @@ def gpu_predict(
                     mode='bilinear',
                     align_corners=False,
                 )
-            logits, confidence_logits = _predict_once(scaled, context_batch_tensor)
+                scaled_context = None
+                if context_batch_tensor is not None:
+                    context_h, context_w = int(context_batch_tensor.shape[-2]), int(context_batch_tensor.shape[-1])
+                    scaled_context_h = max(8, int(round(context_h * scale)))
+                    scaled_context_w = max(8, int(round(context_w * scale)))
+                    scaled_context = F.interpolate(
+                        context_batch_tensor,
+                        size=(scaled_context_h, scaled_context_w),
+                        mode='bilinear',
+                        align_corners=False,
+                    )
+            logits, confidence_logits = _predict_once(scaled, scaled_context)
             if logits.shape[-2:] != (base_h, base_w):
                 logits = F.interpolate(logits, size=(base_h, base_w), mode='bilinear', align_corners=False)
             if mask_acc is None:
@@ -959,8 +971,8 @@ def gpu_predict(
             confidence_weight += 1.0
             if tta_flip:
                 flipped_context = None
-                if context_batch_tensor is not None:
-                    flipped_context = torch.flip(context_batch_tensor, dims=[-1])
+                if scaled_context is not None:
+                    flipped_context = torch.flip(scaled_context, dims=[-1])
                 logits_h, confidence_h = _predict_once(torch.flip(scaled, dims=[-1]), flipped_context)
                 logits_h = torch.flip(logits_h, dims=[-1])
                 if logits_h.shape[-2:] != (base_h, base_w):

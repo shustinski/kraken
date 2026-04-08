@@ -581,6 +581,20 @@ class SampleFastCutter:
         location, _transform_variant, scale_variant, _augmentation_variant = self._decode_part_index(item)
         return self._resolve_crop_coordinates(location, scale_variant=scale_variant)
 
+    def resolve_part_transform_variant(self, item: int) -> str:
+        """Return the geometric transform variant used for a patch index."""
+
+        _location, transform_variant, _scale_variant, _augmentation_variant = self._decode_part_index(item)
+        return str(transform_variant)
+
+    def transform_patch_for_part(self, patch: np.ndarray, item: int) -> np.ndarray:
+        """Apply the part's geometric transform to an arbitrary CHW patch."""
+
+        transform_variant = self.resolve_part_transform_variant(item)
+        if transform_variant == 'identity':
+            return np.ascontiguousarray(patch)
+        return _apply_transform_variant(patch, transform_variant)
+
     def _is_uniform_label_location(self, location: int, *, scale_variant: int = 0) -> bool:
         label_patch = self._extract_patch(
             self.label_matrix,

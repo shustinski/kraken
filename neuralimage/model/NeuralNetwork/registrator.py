@@ -26,7 +26,7 @@ def _normalize_model_type(value: ModelType | str | None) -> ModelType:
     for model_type in ModelType:
         if normalized == model_type.value:
             return model_type
-    raise ValueError(f'Неизвестный тип модели: {value!r}')
+    raise ValueError(f'Unknown model type: {value!r}')
 
 
 def register_model(
@@ -38,10 +38,10 @@ def register_model(
 
     def decorator(cls: Type[nn.Module]) -> Type[nn.Module]:
         if not issubclass(cls, nn.Module):
-            raise TypeError('Только подклассы torch.nn.Module могут быть зарегистрированы')
+            raise TypeError('Only torch.nn.Module subclasses can be registered.')
         model_name = name or cls.__name__
         if model_name in _MODEL_REGISTRY:
-            raise KeyError(f'Модель с именем {model_name!r} уже зарегистрирована')
+            raise KeyError(f'Model {model_name!r} is already registered.')
         _MODEL_REGISTRY[model_name] = {
             'model_class': cls,
             'model_type': _normalize_model_type(model_type),
@@ -94,5 +94,6 @@ def create_model(name: str, *args, **kwargs) -> nn.Module:
     try:
         model_cls = _MODEL_REGISTRY[name]['model_class']
     except KeyError as exc:
-        raise ValueError(f'Неизвестная модель {name!r}. Доступные: {list(_MODEL_REGISTRY)}') from exc
+        available_models = list(_MODEL_REGISTRY)
+        raise ValueError(f'Unknown model {name!r}. Available: {available_models}') from exc
     return model_cls(*args, **kwargs)

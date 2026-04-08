@@ -59,7 +59,7 @@ def build_workflow_parameters(
     context_input_size = getattr(settings, 'context_input_size', None)
     requested_context_branch = getattr(settings, 'use_context_branch', None)
     if requested_context_branch is None:
-        requested_context_branch = settings.model in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}
+        requested_context_branch = settings.model == 'FrameUnet'
     model = (
         settings.model
         if work_mode in (WorkMode.train_only, WorkMode.train_and_recognition)

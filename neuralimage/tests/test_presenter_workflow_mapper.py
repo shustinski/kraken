@@ -423,6 +423,28 @@ def test_build_workflow_parameters_keeps_recognition_patch_size_when_sync_disabl
     assert recognition.part_size == (320, 224)
 
 
+def test_build_workflow_parameters_enables_context_branch_for_frame_unet_by_default():
+    source = make_test_dir("workflow_source_frame_unet_context")
+    result = make_test_dir("workflow_result_frame_unet_context")
+    sample = make_test_dir("workflow_sample_frame_unet_context")
+    label = make_test_dir("workflow_label_frame_unet_context")
+
+    main = MainWindowState(
+        work_mode='train_and_recognition',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(model='FrameUnet')
+
+    _, training, recognition = build_workflow_parameters(main, settings)
+
+    assert training.use_context_branch is True
+    assert recognition.use_context_branch is None
+
+
 def test_build_workflow_parameters_migrates_legacy_pcb_defects_into_synthetic_generator():
     source = make_test_dir("workflow_source_pcb_defects")
     result = make_test_dir("workflow_result_pcb_defects")

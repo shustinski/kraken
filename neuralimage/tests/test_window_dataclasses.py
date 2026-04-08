@@ -6,6 +6,7 @@ def test_main_window_state_defaults():
     assert state.epochs == 20
     assert state.work_mode == ''
     assert state.ui_mode == 'simple'
+    assert state.mode_state == {}
 
 
 def test_settings_state_defaults():

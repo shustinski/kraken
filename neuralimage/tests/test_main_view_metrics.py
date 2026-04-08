@@ -312,6 +312,30 @@ def test_main_view_simple_mode_hides_docks_and_shows_presets(qapp):
     assert not view.le_epochs.isHidden()
 
 
+def test_main_view_work_mode_visibility_tracks_model_and_epochs(qapp):
+    view = MainView(QWidget())
+    view.show()
+    qapp.processEvents()
+
+    view.apply_work_mode('train_only')
+    qapp.processEvents()
+    assert view.model_path.isHidden()
+    assert not view.le_epochs.isHidden()
+    assert not view.sample_path_group.isHidden()
+
+    view.apply_work_mode('recognition_only')
+    qapp.processEvents()
+    assert not view.model_path.isHidden()
+    assert view.le_epochs.isHidden()
+    assert view.sample_path_group.isHidden()
+
+    view.apply_work_mode('further_training')
+    qapp.processEvents()
+    assert not view.model_path.isHidden()
+    assert not view.le_epochs.isHidden()
+    assert not view.sample_path_group.isHidden()
+
+
 def test_main_view_restores_ui_mode_from_persisted_settings(qapp, monkeypatch):
     settings_dir = Path('d:/PyCharm/neuralimage-feature-no_cut_dataset/.test_runtime/ui_mode_persist')
     settings_dir.mkdir(parents=True, exist_ok=True)

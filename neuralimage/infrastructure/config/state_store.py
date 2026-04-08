@@ -9,7 +9,7 @@ from typing import Any
 
 from PyQt6.QtCore import QSettings
 
-from application.dto import MainWindowState, SettingsState
+from application.dto import MainWindowState, SettingsState, normalize_main_window_mode_state
 from application.ports import StateStore
 from application.services.workflow_mapper import build_workflow_parameters
 from lib.data_interfaces import (
@@ -47,6 +47,7 @@ def _build_main_window_state(
     read_int,
 ) -> MainWindowState:
     defaults = MainWindowState()
+    mode_state = _coerce_json_object(read_str('mode_state_json', ''), default={})
     return MainWindowState(
         work_mode=normalize_work_mode(read_str('work_mode', defaults.work_mode)),
         source_folder=read_str('source_path', defaults.source_folder),
@@ -56,6 +57,7 @@ def _build_main_window_state(
         sample_folder=read_str('sample_path', defaults.sample_folder),
         epochs=read_int('epochs', defaults.epochs),
         ui_mode=read_str('ui_mode', defaults.ui_mode),
+        mode_state=normalize_main_window_mode_state(mode_state),
     )
 
 
@@ -69,6 +71,11 @@ def _main_window_state_to_storage_dict(state: MainWindowState) -> dict[str, str 
         'sample_path': state.sample_folder,
         'epochs': int(state.epochs),
         'ui_mode': str(getattr(state, 'ui_mode', 'simple') or 'simple'),
+        'mode_state_json': json.dumps(
+            normalize_main_window_mode_state(getattr(state, 'mode_state', {})),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
     }
 
 

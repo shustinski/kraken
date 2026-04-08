@@ -57,12 +57,32 @@ def test_state_store_roundtrip_main_window(monkeypatch):
         sample_folder='p',
         epochs=7,
         ui_mode='simple',
+        mode_state={
+            'train_only': {
+                'source_folder': '',
+                'result_folder': '',
+                'model_path': '',
+                'label_folder': 'labels-train',
+                'sample_folder': 'samples-train',
+                'epochs': 7,
+            },
+            'recognition_only': {
+                'source_folder': 'src-rec',
+                'result_folder': 'res-rec',
+                'model_path': 'model-rec.pth',
+                'label_folder': '',
+                'sample_folder': '',
+                'epochs': 0,
+            },
+        },
     )
     save_main_window_state(state)
     loaded = load_main_window_state()
     assert loaded.work_mode == 'train_only'
     assert loaded.epochs == 7
     assert loaded.ui_mode == 'simple'
+    assert loaded.mode_state['train_only']['sample_folder'] == 'samples-train'
+    assert loaded.mode_state['recognition_only']['model_path'] == 'model-rec.pth'
 
 
 def test_state_store_roundtrip_settings(monkeypatch):

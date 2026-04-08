@@ -133,6 +133,7 @@ class MainView(QMainWindow):
     open_tic_tac_toe_requested: pyqtSignal = pyqtSignal()
     open_validation_gradient_requested: pyqtSignal = pyqtSignal()
     update_check_requested: pyqtSignal = pyqtSignal()
+    update_channel_selected: pyqtSignal = pyqtSignal(str)
     ui_language_selected: pyqtSignal = pyqtSignal(str)
     theme_selected: pyqtSignal = pyqtSignal(str)
     ui_mode_selected: pyqtSignal = pyqtSignal(str)
@@ -185,12 +186,18 @@ class MainView(QMainWindow):
         self._help_action = None
         self._changelog_action = None
         self._check_updates_action = None
+        self._update_channel_menu = None
+        self._update_channel_action_group = None
+        self._update_channel_actions: dict[str, QAction] = {}
+        self._available_update_channels: list[str] = []
+        self._selected_update_channel = 'stable'
         self._open_validation_gradient_action = None
         self._open_polygon_extractor_action = None
         self._ui_mode_menu = None
         self._ui_mode_simple_action = None
         self._ui_mode_advanced_action = None
         self._ui_mode = _load_persisted_ui_mode()
+        self._current_work_mode = ''
         self._selected_simple_workflow: str | None = None
         self.polygon_extraction_widget: PolygonExtractionWidget | None = None
         self.polygon_extraction_window: _PolygonExtractorWindow | None = None
@@ -541,72 +548,11 @@ class MainView(QMainWindow):
         check_updates_action = QAction(t.get("menu_check_updates", "Проверить обновления"), self)
         info_menu.addAction(check_updates_action)
         self._check_updates_action = check_updates_action
+        self._update_channel_menu = info_menu.addMenu(t.get("menu_update_channel", "Канал обновлений"))
+        self.configure_update_channels(self._available_update_channels or ['stable'], self._selected_update_channel)
         menu_action = info_menu.menuAction()
         if menu_action is not None:
             menu_action.setVisible(True)
-
-    @staticmethod
-    def _normalize_polygon_directory(path: str) -> str:
-        text = str(path or "").strip()
-        if not text:
-            return ""
-        candidate = Path(text)
-        if candidate.exists() and candidate.is_file():
-            return str(candidate.parent)
-        return text
-
-    def _queue_polygon_widget_path_sync(self) -> None:
-        self._pending_polygon_input_dir = self._normalize_polygon_directory(self.lbl_source.text())
-        self._pending_polygon_output_dir = self._normalize_polygon_directory(self.lbl_result.text())
-        if self.polygon_extraction_window is not None and self.polygon_extraction_window.isVisible():
-            self._sync_polygon_widget_paths(refresh_input=True)
-        else:
-            self._sync_polygon_widget_paths(refresh_input=False)
-
-    def _sync_polygon_widget_paths(self, refresh_input: bool) -> None:
-        if self.polygon_extraction_widget is None:
-            return
-        if self._pending_polygon_output_dir:
-            self.polygon_extraction_widget.set_output_directory(self._pending_polygon_output_dir)
-        if refresh_input and self._pending_polygon_input_dir:
-            self.polygon_extraction_widget.set_input_directory(self._pending_polygon_input_dir)
-
-    def _forward_polygon_widget_log(self, message: str) -> None:
-        self.log_message.emit(f"[Polygon] {message}")
-
-    def _polygon_menu_text(self) -> str:
-        fallback = "Polygon extractor" if self._ui_language == "en" else "Редактор полигонов"
-        return str(self._texts.get("menu_open_polygon_extractor", fallback))
-
-    def _polygon_window_title(self) -> str:
-        return self._polygon_menu_text()
-
-    def _reset_polygon_extraction_window_refs(self) -> None:
-        self.polygon_extraction_window = None
-        self.polygon_extraction_widget = None
-
-    def _ensure_polygon_extraction_window(self) -> None:
-        if self.polygon_extraction_window is not None and self.polygon_extraction_widget is not None:
-            return
-        self.polygon_extraction_widget = PolygonExtractionWidget(self)
-        if hasattr(self.polygon_extraction_widget, "set_ui_language"):
-            self.polygon_extraction_widget.set_ui_language(self._ui_language)
-        self.polygon_extraction_widget.logMessage.connect(self._forward_polygon_widget_log)
-        self.polygon_extraction_window = _PolygonExtractorWindow(
-            widget=self.polygon_extraction_widget,
-            title=self._polygon_window_title(),
-            on_closed=self._reset_polygon_extraction_window_refs,
-            parent=self,
-        )
-
-    def show_polygon_extraction_window(self) -> None:
-        self._ensure_polygon_extraction_window()
-        self._sync_polygon_widget_paths(refresh_input=True)
-        if self.polygon_extraction_window is None:
-            return
-        self.polygon_extraction_window.show()
-        self.polygon_extraction_window.raise_()
-        self.polygon_extraction_window.activateWindow()
 
     def set_batch_preview_enabled(self, enabled: bool) -> None:
         action = getattr(self, "batch_preview_action", None)
@@ -658,6 +604,41 @@ class MainView(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         return
+
+    def apply_work_mode(self, mode: str) -> None:
+        self._current_work_mode = str(mode or '').strip()
+        resolved_mode = self._current_work_mode
+        training_only = resolved_mode == WorkMode.train_only.value
+        recognition_only = resolved_mode == WorkMode.recognition_only.value
+        uses_model = resolved_mode in {
+            WorkMode.recognition_only.value,
+            WorkMode.further_training.value,
+        }
+        uses_epochs = resolved_mode in {
+            WorkMode.train_only.value,
+            WorkMode.train_and_recognition.value,
+            WorkMode.further_training.value,
+        }
+
+        if not resolved_mode:
+            self.lbl_source.setEnabled(True)
+            self.lbl_result.setEnabled(True)
+            self.sample_path_group.setEnabled(True)
+            self.sample_path_group.setVisible(True)
+            self.model_path.setEnabled(True)
+        else:
+            self.lbl_source.setEnabled(not training_only)
+            self.lbl_result.setEnabled(not training_only)
+            self.sample_path_group.setEnabled(not recognition_only)
+            self.sample_path_group.setVisible(not recognition_only)
+            self.model_path.setEnabled(uses_model)
+
+        show_model = True if not resolved_mode else uses_model
+        show_epochs = (self._ui_mode != 'simple') and (uses_epochs if resolved_mode else True)
+        self.model_title_label.setVisible(show_model)
+        self.model_path.setVisible(show_model)
+        self.epochs_title_label.setVisible(show_epochs)
+        self.le_epochs.setVisible(show_epochs)
 
     def connect_internal_signals(self):
         self.rb_train_and_recognition.clicked.connect(
@@ -1192,8 +1173,6 @@ class MainView(QMainWindow):
         self._ui_mode = normalized_mode
         is_simple = normalized_mode == "simple"
         self.simple_workflows_group.setVisible(is_simple)
-        self.epochs_title_label.setVisible(not is_simple)
-        self.le_epochs.setVisible(not is_simple)
         self.log_dock.setVisible(not is_simple)
         self.metrics_panel.setVisible(not is_simple)
         if self.settings_dock is not None:
@@ -1206,6 +1185,7 @@ class MainView(QMainWindow):
             self._settings_toggle_action.setVisible(not is_simple)
         if self._settings_menu is not None:
             self._settings_menu.menuAction().setVisible(not is_simple)
+        self.apply_work_mode(self._current_work_mode)
         self._sync_ui_mode_menu_checks()
         _save_persisted_ui_mode(self._ui_mode)
 
@@ -1291,6 +1271,8 @@ class MainView(QMainWindow):
             self._info_menu.setTitle(t["menu_help"])
         if self._plugins_menu is not None:
             self._plugins_menu.setTitle(t.get("menu_plugins", "Plugins"))
+        if self._update_channel_menu is not None:
+            self._update_channel_menu.setTitle(t.get("menu_update_channel", "Update channel"))
         if self._open_config_action is not None:
             self._open_config_action.setText(t.get("menu_open_config", "Открыть"))
         if self._language_menu is not None:
@@ -1335,6 +1317,8 @@ class MainView(QMainWindow):
             self._changelog_action.setText(t.get("menu_open_changelog", "Список изменений"))
         if self._check_updates_action is not None:
             self._check_updates_action.setText(t.get("menu_check_updates", "Проверить обновления"))
+        for channel, action in self._update_channel_actions.items():
+            action.setText(self._format_update_channel_label(channel))
         if hasattr(self, "ui_language_ru_action"):
             self.ui_language_ru_action.setText(t.get("lang_ru", "Русский"))
         if hasattr(self, "ui_language_en_action"):

@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 import lib.update_checker as update_checker
 from lib.update_checker import (
     collect_release_history,
@@ -8,6 +10,8 @@ from lib.update_checker import (
     download_update_installer,
     fetch_update_info,
     launch_update_installer,
+    load_selected_update_channel,
+    load_update_client_config,
     parse_update_payload,
     parse_version_parts,
     UpdateInfo,
@@ -30,6 +34,7 @@ def test_parse_update_payload_requires_version() -> None:
     parsed = parse_update_payload(
         {
             'version': '5.8.0',
+            'channel': 'stable',
             'download_url': 'http://localhost/setup-latest.exe',
             'mandatory': True,
             'releases': [
@@ -37,11 +42,13 @@ def test_parse_update_payload_requires_version() -> None:
                     'version': '5.8.0',
                     'download_url': 'http://localhost/setup-5.8.0.exe',
                     'notes': 'Latest release.',
+                    'channel': 'stable',
                 },
                 {
                     'version': '5.7.0',
                     'download_url': 'http://localhost/setup-5.7.0.exe',
                     'notes': 'Previous release.',
+                    'channel': 'stable',
                 },
             ],
         }
@@ -49,6 +56,7 @@ def test_parse_update_payload_requires_version() -> None:
     assert parsed is not None
     assert parsed.download_url == 'http://localhost/setup-latest.exe'
     assert parsed.mandatory is True
+    assert parsed.channel == 'stable'
     assert parsed.releases[0].download_url == 'http://localhost/setup-5.8.0.exe'
     assert parsed.releases[1].notes == 'Previous release.'
 
@@ -60,12 +68,47 @@ def test_should_notify_version_respects_current_and_last_notified() -> None:
     assert should_notify_version('5.9.0', '5.7.0', '5.8.0') is True
 
 
+def test_load_update_client_config_supports_channels(monkeypatch, tmp_path) -> None:
+    config_path = tmp_path / 'update_client.json'
+    config_path.write_text(
+        json.dumps(
+            {
+                'default_channel': 'stable',
+                'channels': {
+                    'stable': str(tmp_path / 'stable' / 'version.json'),
+                    'beta': str(tmp_path / 'beta' / 'version.json'),
+                },
+            }
+        ),
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(update_checker, 'resolve_resource_path', lambda _name: config_path)
+
+    config = load_update_client_config()
+
+    assert config.default_channel == 'stable'
+    assert config.available_channels == ('stable', 'beta')
+    assert config.get_manifest_url('beta').endswith('beta\\version.json')
+
+
+def test_load_selected_update_channel_falls_back_to_available(monkeypatch, tmp_path) -> None:
+    pytest.importorskip('PyQt6')
+    monkeypatch.setenv("NEURALIMAGE_SETTINGS_DIR", str(tmp_path))
+
+    load_selected_update_channel()
+    update_checker.save_selected_update_channel('beta')
+
+    assert load_selected_update_channel('stable', available_channels=('stable', 'beta')) == 'beta'
+    assert load_selected_update_channel('stable', available_channels=('stable',)) == 'stable'
+
+
 def test_fetch_update_info_supports_local_manifest_path(tmp_path) -> None:
     manifest_path = tmp_path / 'version.json'
     manifest_path.write_text(
         json.dumps(
             {
                 'version': '5.8.0',
+                'channel': 'stable',
                 'download_url': str(tmp_path / 'NeuralImage-5.8.0.exe'),
                 'release_notes': 'Local share update.',
                 'releases': [
@@ -89,6 +132,53 @@ def test_fetch_update_info_supports_local_manifest_path(tmp_path) -> None:
     assert update_info.version == '5.8.0'
     assert update_info.release_notes == 'Local share update.'
     assert len(update_info.releases) == 2
+
+
+def test_fetch_update_info_loads_markdown_release_notes_from_relative_file(tmp_path) -> None:
+    notes_path = tmp_path / 'notes.md'
+    notes_path.write_text('# Changes\n\n- Added beta channel\n- Fixed updater UI\n', encoding='utf-8')
+    manifest_path = tmp_path / 'version.json'
+    manifest_path.write_text(
+        json.dumps(
+            {
+                'version': '6.1.0-beta1',
+                'channel': 'beta',
+                'download_url': str(tmp_path / 'NeuralImage-6.1.0-beta1.exe'),
+                'release_notes': 'notes.md',
+                'releases': [
+                    {
+                        'version': '6.1.0-beta1',
+                        'download_url': str(tmp_path / 'NeuralImage-6.1.0-beta1.exe'),
+                        'notes': 'notes.md',
+                        'channel': 'beta',
+                    }
+                ],
+            }
+        ),
+        encoding='utf-8',
+    )
+
+    update_info = fetch_update_info(str(manifest_path), expected_channel='beta')
+
+    assert update_info is not None
+    assert '# Changes' in update_info.release_notes
+    assert 'Added beta channel' in update_info.releases[0].notes
+
+
+def test_fetch_update_info_rejects_mismatched_channel(tmp_path) -> None:
+    manifest_path = tmp_path / 'version.json'
+    manifest_path.write_text(
+        json.dumps(
+            {
+                'version': '6.1.0-beta1',
+                'channel': 'beta',
+                'download_url': str(tmp_path / 'NeuralImage-6.1.0-beta1.exe'),
+            }
+        ),
+        encoding='utf-8',
+    )
+
+    assert fetch_update_info(str(manifest_path), expected_channel='stable') is None
 
 
 def test_fetch_update_info_returns_none_for_missing_manifest_path(tmp_path) -> None:

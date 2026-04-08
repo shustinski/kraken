@@ -12,7 +12,15 @@ from PyQt6.QtCore import QObject, QThread
 from PyQt6.QtWidgets import QMessageBox, QFileDialog, QInputDialog
 from PyQt6 import QtCore, QtWidgets
 
-from application.dto import MainWindowState, SettingsState
+from application.dto import (
+    MainWindowState,
+    SettingsState,
+    build_main_window_mode_state_entry,
+    build_main_window_mode_state_entry_from_state,
+    clone_main_window_state,
+    normalize_main_window_mode_state,
+    resolve_main_window_mode_state_entry,
+)
 from application.ports import StateStore
 from application.services import (
     ActiveTaskMutationError,
@@ -54,9 +62,12 @@ from lib.update_checker import (
     fetch_update_info,
     is_newer_version,
     launch_update_installer,
+    load_selected_update_channel,
+    load_update_client_config,
     load_last_notified_version,
     load_update_manifest_url,
     save_last_notified_version,
+    save_selected_update_channel,
     should_notify_version,
 )
 from lib.version import APP_VERSION
@@ -145,8 +156,18 @@ class MainPresenter(QObject):
         self.active_nn_models = get_registered_models()
         self.settings_panel.model_type_init(get_registered_model_names_by_type())
 
+        self._update_client_config = load_update_client_config()
+        self._selected_update_channel = load_selected_update_channel(
+            self._update_client_config.default_channel,
+            available_channels=self._update_client_config.available_channels,
+        )
+
         # Инициализируем главное окно
         self.view = MainView(side_panel=self.settings_panel)
+        self.view.configure_update_channels(
+            self._update_client_config.available_channels,
+            self._selected_update_channel,
+        )
 
         self.stop_event = mp.Event()
         self._processing_session = ProcessingSession()
@@ -220,6 +241,7 @@ class MainPresenter(QObject):
         v.release_memory_requested.connect(self._on_release_memory_requested)
         v.open_validation_gradient_requested.connect(self._on_open_validation_gradient_requested)
         v.update_check_requested.connect(self._on_update_check_requested)
+        v.update_channel_selected.connect(self._on_update_channel_selected)
         v.ui_language_selected.connect(self._on_ui_language_selected)
         v.theme_selected.connect(self._on_theme_selected)
         v.ui_mode_selected.connect(self._on_ui_mode_selected)
@@ -278,6 +300,15 @@ class MainPresenter(QObject):
 
     def _load_main_window_settings(self):
         self.main_window_state = self._state_store.load_main_window_state()
+        self.main_window_state.mode_state = normalize_main_window_mode_state(
+            getattr(self.main_window_state, 'mode_state', {})
+        )
+        current_mode = normalize_work_mode(getattr(self.main_window_state, 'work_mode', ''))
+        if current_mode:
+            mode_state = dict(self.main_window_state.mode_state)
+            if current_mode not in mode_state:
+                mode_state[current_mode] = build_main_window_mode_state_entry_from_state(self.main_window_state)
+                self.main_window_state.mode_state = mode_state
         sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
         self.sample_calculator.set_path(Path(sample_folder) if sample_folder else None)
 
@@ -299,28 +330,61 @@ class MainPresenter(QObject):
     #   Обновление класса состояния окон
     # ------------------------------------------------------------------ #
 
+    def _current_view_main_window_mode_entry(self) -> dict[str, object]:
+        v = self.view
+        return build_main_window_mode_state_entry(
+            source_folder=v.lbl_source.text(),
+            result_folder=v.lbl_result.text(),
+            model_path=v.model_path.text(),
+            label_folder=v.label_path.text(),
+            sample_folder=v.sample_path.text(),
+            epochs=v.le_epochs.value(),
+        )
+
+    def _store_view_state_for_mode(self, mode: str) -> None:
+        normalized_mode = normalize_work_mode(mode)
+        if not normalized_mode:
+            return
+        mode_state = normalize_main_window_mode_state(getattr(self.main_window_state, 'mode_state', {}))
+        mode_state[normalized_mode] = self._current_view_main_window_mode_entry()
+        self.main_window_state.mode_state = mode_state
+
+    def _restore_mode_state_to_view(self, mode: str) -> None:
+        entry = resolve_main_window_mode_state_entry(self.main_window_state, mode)
+        self.view.set_source_path(str(entry.get('source_folder', '')))
+        self.view.set_result_path(str(entry.get('result_folder', '')))
+        self.view.set_label_path(str(entry.get('label_folder', '')))
+        self.view.set_jpg_path(str(entry.get('sample_folder', '')))
+        self.view.model_path.setText(str(entry.get('model_path', '')))
+        try:
+            epochs = int(entry.get('epochs', MainWindowState().epochs))
+        except (TypeError, ValueError):
+            epochs = MainWindowState().epochs
+        self.view.le_epochs.setValue(epochs)
+        self.main_window_state.source_folder = str(entry.get('source_folder', ''))
+        self.main_window_state.result_folder = str(entry.get('result_folder', ''))
+        self.main_window_state.label_folder = str(entry.get('label_folder', ''))
+        self.main_window_state.sample_folder = str(entry.get('sample_folder', ''))
+        self.main_window_state.model_path = str(entry.get('model_path', ''))
+        self.main_window_state.epochs = epochs
+        sample_folder = str(entry.get('sample_folder', '') or '').strip()
+        self.sample_calculator.set_path(Path(sample_folder) if sample_folder else None)
+
     def _update_main_window_state(self):
         v = self.view
         work_mode = self._update_work_mode()
-
-        source_path = v.lbl_source.text()
-        result_path = v.lbl_result.text()
-
-        # Радиокнопка: сохраняем строковое значение, а не bool-состояние
-        label_path = v.label_path.text()
-        sample_path = v.sample_path.text()
-
-        model_path = v.model_path.text()
-        epochs = v.le_epochs.value()
-
-        self.main_window_state = MainWindowState(work_mode=work_mode,
-                                                 source_folder=source_path,
-                                                 result_folder=result_path,
-                                                 label_folder=label_path,
-                                                 sample_folder=sample_path,
-                                                 model_path=model_path,
-                                                 epochs=epochs,
-                                                 ui_mode=self.view.current_ui_mode())
+        mode_state = normalize_main_window_mode_state(getattr(self.main_window_state, 'mode_state', {}))
+        if work_mode:
+            mode_state[work_mode] = self._current_view_main_window_mode_entry()
+        self.main_window_state.work_mode = work_mode
+        self.main_window_state.source_folder = v.lbl_source.text()
+        self.main_window_state.result_folder = v.lbl_result.text()
+        self.main_window_state.label_folder = v.label_path.text()
+        self.main_window_state.sample_folder = v.sample_path.text()
+        self.main_window_state.model_path = v.model_path.text()
+        self.main_window_state.epochs = v.le_epochs.value()
+        self.main_window_state.ui_mode = self.view.current_ui_mode()
+        self.main_window_state.mode_state = mode_state
 
     def _restore_work_mode_ui(self):
         mode = normalize_work_mode(getattr(self.main_window_state, 'work_mode', ''))
@@ -1139,25 +1203,16 @@ class MainPresenter(QObject):
 
     def _on_sample_type_changed(self, typ: str):
         """typ = ''train_and_recognition'', 'recognition_only', further_training."""
-        v = self.view
-
-        v.lbl_source.setEnabled(True)
-        v.lbl_result.setEnabled(True)
-        v.sample_path_group.setEnabled(True)
-        v.model_path.setEnabled(True)
-
-        match typ:
-            case WorkMode.train_and_recognition.value:
-                v.model_path.setEnabled(False)
-            case WorkMode.recognition_only.value:
-                v.sample_path_group.setEnabled(False)
-            case WorkMode.train_only.value:
-                v.lbl_source.setEnabled(False)
-                v.lbl_result.setEnabled(False)
-                v.model_path.setEnabled(False)
-        self.main_window_state.work_mode = typ
+        mode = normalize_work_mode(typ)
+        previous_mode = normalize_work_mode(getattr(self.main_window_state, 'work_mode', ''))
+        if previous_mode:
+            self._store_view_state_for_mode(previous_mode)
+        self.main_window_state.work_mode = mode
+        self._restore_mode_state_to_view(mode)
+        self.view.apply_work_mode(mode)
         if hasattr(self.settings_panel, 'sync_business_logic_controls'):
-            self.settings_panel.sync_business_logic_controls(typ)
+            self.settings_panel.sync_business_logic_controls(mode)
+        self._calculate_expected_samples()
         self._validate_start_button()
 
     def _on_start_requested(self):
@@ -1171,7 +1226,7 @@ class MainPresenter(QObject):
             return
 
         task = self._processing_session.enqueue_task(
-            main_state=replace(self.main_window_state),
+            main_state=clone_main_window_state(self.main_window_state),
             settings_state=replace(self.settings_state),
         )
         self.message_bus.publish('logging', f'Задача #{task.task_id} добавлена в очередь.')
@@ -1202,6 +1257,27 @@ class MainPresenter(QObject):
         self.main_window_state.ui_mode = normalized_mode
         self._save_main_window_to_qsettings()
 
+    def _refresh_update_client_config(self) -> None:
+        self._update_client_config = load_update_client_config()
+        self._selected_update_channel = load_selected_update_channel(
+            self._update_client_config.default_channel,
+            available_channels=self._update_client_config.available_channels,
+        )
+        self.view.configure_update_channels(
+            self._update_client_config.available_channels,
+            self._selected_update_channel,
+        )
+
+    def _on_update_channel_selected(self, channel: str) -> None:
+        self._refresh_update_client_config()
+        requested_channel = str(channel or '').strip().lower()
+        available_channels = self._update_client_config.available_channels
+        if requested_channel in available_channels:
+            self._selected_update_channel = requested_channel
+            save_selected_update_channel(requested_channel)
+            self.view.configure_update_channels(available_channels, requested_channel)
+            self.message_bus.publish('logging', f'Канал обновлений переключен на {requested_channel}.')
+
     def _on_simple_workflow_requested(self, preset_name: str):
         preset_path = self.SIMPLE_WORKFLOW_PRESETS.get(str(preset_name))
         if preset_path is None:
@@ -1223,6 +1299,7 @@ class MainPresenter(QObject):
             model_path=self.main_window_state.model_path,
             epochs=self.main_window_state.epochs,
             ui_mode='simple',
+            mode_state=normalize_main_window_mode_state(getattr(self.main_window_state, 'mode_state', {})),
         )
         self._restore_task_state_to_ui(
             restored_main_state,
@@ -1281,7 +1358,7 @@ class MainPresenter(QObject):
         *,
         log_message: str = 'Параметры задачи восстановлены в интерфейсе.',
     ):
-        self.main_window_state = replace(main_state)
+        self.main_window_state = clone_main_window_state(main_state)
         self.settings_state = replace(settings_state)
         sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
         self.sample_calculator.set_path(Path(sample_folder) if sample_folder else None)
@@ -1745,7 +1822,8 @@ class MainPresenter(QObject):
 
     def _start_update_check(self, *, manual: bool = False) -> None:
         texts = get_ui_section('main_window')
-        manifest_url = load_update_manifest_url()
+        self._refresh_update_client_config()
+        manifest_url = load_update_manifest_url(self._selected_update_channel)
         if not manifest_url:
             if manual:
                 self.view.show_warning.emit(
@@ -1762,7 +1840,10 @@ class MainPresenter(QObject):
         self.message_bus.publish('logging', 'Запущена проверка обновлений.')
         if not manifest_url:
             return
-        self._update_check_thread = AppUpdateCheckThread(manifest_url=manifest_url)
+        self._update_check_thread = AppUpdateCheckThread(
+            manifest_url=manifest_url,
+            channel=self._selected_update_channel,
+        )
         self._update_check_thread.checked.connect(self._on_update_check_finished)
         self._update_check_thread.finished.connect(self._clear_update_check_thread)
         self._update_check_thread.start()
@@ -1781,40 +1862,51 @@ class MainPresenter(QObject):
                 )
             return
         if manual:
-            self._show_release_selector(update_info)
+            self._show_update_notification(update_info, manual=True)
             return
         if not is_newer_version(update_info.version, APP_VERSION):
             return
-        last_notified = load_last_notified_version()
+        last_notified = load_last_notified_version(self._selected_update_channel)
         if not should_notify_version(update_info.version, APP_VERSION, last_notified):
             return
         self._show_update_notification(update_info)
-        save_last_notified_version(update_info.version)
+        save_last_notified_version(update_info.version, self._selected_update_channel)
 
-    def _show_update_notification(self, update_info: UpdateInfo) -> None:
+    @staticmethod
+    def _markdown_to_message_html(markdown: str) -> str:
+        from PyQt6.QtGui import QTextDocument
+
+        document = QTextDocument()
+        document.setMarkdown(str(markdown or '').strip())
+        return document.toHtml()
+
+    def _show_update_notification(self, update_info: UpdateInfo, *, manual: bool = False) -> None:
         texts = get_ui_section('main_window')
         title = str(texts.get('update_available_title', 'Доступна новая версия'))
+        template_key = 'update_manual_text' if manual else 'update_available_text'
         body_template = str(
             texts.get(
-                'update_available_text',
+                template_key,
                 'Установлена версия {current_version}. Доступна версия {new_version}.',
             )
         )
         body = body_template.format(
             current_version=APP_VERSION,
             new_version=update_info.version,
+            channel=self._selected_update_channel,
         )
         release_history = collect_release_history(update_info)
+        body_markdown = body
         if release_history:
             history_title = str(texts.get('update_release_history_title', 'История релизов:'))
-            body = f'{body}\n\n{history_title}\n{release_history}'
-        if update_info.download_url:
-            body = f'{body}\n\n{update_info.download_url}'
+            body_markdown = f'{body_markdown}\n\n## {history_title}\n\n{release_history}'
 
         dialog = QMessageBox(self.view)
         dialog.setIcon(QMessageBox.Icon.Information)
         dialog.setWindowTitle(title)
-        dialog.setText(body)
+        dialog.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        dialog.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextBrowserInteraction)
+        dialog.setText(self._markdown_to_message_html(body_markdown))
         open_button = None
         install_button = None
         select_version_button = None
@@ -2090,12 +2182,13 @@ class GeneralNeuralHandlerThread(QThread):
 class AppUpdateCheckThread(QThread):
     checked = QtCore.pyqtSignal(object)
 
-    def __init__(self, *, manifest_url: str) -> None:
+    def __init__(self, *, manifest_url: str, channel: str) -> None:
         super().__init__()
         self._manifest_url = str(manifest_url).strip()
+        self._channel = str(channel or '').strip().lower()
 
     def run(self) -> None:
-        self.checked.emit(fetch_update_info(self._manifest_url))
+        self.checked.emit(fetch_update_info(self._manifest_url, expected_channel=self._channel))
 
 
 class AppUpdateDownloadThread(QThread):

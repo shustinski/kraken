@@ -88,10 +88,34 @@ def test_get_processing_start_blockers_returns_specific_messages():
 
     blockers = get_processing_start_blockers(state)
 
-    assert 'Укажите число эпох больше нуля.' in blockers
-    assert 'Выберите существующую папку с исходными изображениями.' in blockers
-    assert 'Выберите существующую папку для результатов.' in blockers
-    assert 'Выберите существующий файл модели.' in blockers
+    assert '\u0423\u043a\u0430\u0436\u0438\u0442\u0435 \u0447\u0438\u0441\u043b\u043e \u044d\u043f\u043e\u0445 \u0431\u043e\u043b\u044c\u0448\u0435 \u043d\u0443\u043b\u044f.' not in blockers
+    assert (
+        '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044e\u0449\u0443\u044e \u043f\u0430\u043f\u043a\u0443 '
+        '\u0441 \u0438\u0441\u0445\u043e\u0434\u043d\u044b\u043c\u0438 \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f\u043c\u0438.'
+    ) in blockers
+    assert (
+        '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044e\u0449\u0443\u044e \u043f\u0430\u043f\u043a\u0443 '
+        '\u0434\u043b\u044f \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u043e\u0432.'
+    ) in blockers
+    assert (
+        '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044e\u0449\u0438\u0439 \u0444\u0430\u0439\u043b '
+        '\u043c\u043e\u0434\u0435\u043b\u0438.'
+    ) in blockers
+
+
+def test_can_start_processing_recognition_only_ignores_empty_epochs():
+    tmp_path = make_test_dir("presenter_validation_rec_epochs")
+    model = tmp_path / 'm.pth'
+    model.write_text('x', encoding='utf-8')
+    state = MainWindowState(
+        work_mode='recognition_only',
+        source_folder=str(tmp_path),
+        result_folder=str(tmp_path),
+        model_path=str(model),
+        epochs=0,
+    )
+
+    assert can_start_processing(state) is True
 
 
 def test_build_processing_start_error_message_formats_blockers_for_dialog():
@@ -99,6 +123,5 @@ def test_build_processing_start_error_message_formats_blockers_for_dialog():
 
     message = build_processing_start_error_message(state)
 
-    assert message.startswith('Запуск невозможен:\n- ')
-    assert 'Укажите число эпох больше нуля.' in message
-    assert 'Выберите корректный режим работы.' in message
+    assert message.startswith('\u0417\u0430\u043f\u0443\u0441\u043a \u043d\u0435\u0432\u043e\u0437\u043c\u043e\u0436\u0435\u043d:\n- ')
+    assert '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 \u0440\u0435\u0436\u0438\u043c \u0440\u0430\u0431\u043e\u0442\u044b.' in message

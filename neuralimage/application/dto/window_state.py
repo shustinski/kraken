@@ -1,5 +1,8 @@
-from dataclasses import dataclass, field
+import copy
+from dataclasses import dataclass, field, replace
 from typing import Any
+
+from lib.data_interfaces import WorkMode, normalize_work_mode
 
 
 @dataclass
@@ -12,6 +15,7 @@ class MainWindowState:
     sample_folder: str = ''
     epochs: int = 20
     ui_mode: str = 'simple'
+    mode_state: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -138,3 +142,91 @@ class SettingsState:
     synthetic_defect_generator: dict[str, Any] = field(default_factory=dict)
     tech_aug: dict[str, Any] = field(default_factory=dict)
     pcb_defects: dict[str, Any] = field(default_factory=dict)
+
+
+_MODE_STATE_SUPPORTED_MODES = {
+    WorkMode.train_and_recognition.value,
+    WorkMode.further_training.value,
+    WorkMode.recognition_only.value,
+    WorkMode.train_only.value,
+}
+_MODE_STATE_PATH_KEYS = (
+    'source_folder',
+    'result_folder',
+    'model_path',
+    'label_folder',
+    'sample_folder',
+)
+
+
+def build_main_window_mode_state_entry(
+    *,
+    source_folder: str = '',
+    result_folder: str = '',
+    model_path: str = '',
+    label_folder: str = '',
+    sample_folder: str = '',
+    epochs: int | str = 20,
+) -> dict[str, Any]:
+    try:
+        normalized_epochs = int(epochs)
+    except (TypeError, ValueError):
+        normalized_epochs = MainWindowState().epochs
+    return {
+        'source_folder': str(source_folder or ''),
+        'result_folder': str(result_folder or ''),
+        'model_path': str(model_path or ''),
+        'label_folder': str(label_folder or ''),
+        'sample_folder': str(sample_folder or ''),
+        'epochs': normalized_epochs,
+    }
+
+
+def build_main_window_mode_state_entry_from_state(state: MainWindowState) -> dict[str, Any]:
+    return build_main_window_mode_state_entry(
+        source_folder=getattr(state, 'source_folder', ''),
+        result_folder=getattr(state, 'result_folder', ''),
+        model_path=getattr(state, 'model_path', ''),
+        label_folder=getattr(state, 'label_folder', ''),
+        sample_folder=getattr(state, 'sample_folder', ''),
+        epochs=getattr(state, 'epochs', MainWindowState().epochs),
+    )
+
+
+def normalize_main_window_mode_state(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_mode, raw_entry in value.items():
+        mode = normalize_work_mode(raw_mode)
+        if mode not in _MODE_STATE_SUPPORTED_MODES or not isinstance(raw_entry, dict):
+            continue
+        normalized[mode] = build_main_window_mode_state_entry(
+            source_folder=raw_entry.get('source_folder', ''),
+            result_folder=raw_entry.get('result_folder', ''),
+            model_path=raw_entry.get('model_path', ''),
+            label_folder=raw_entry.get('label_folder', ''),
+            sample_folder=raw_entry.get('sample_folder', ''),
+            epochs=raw_entry.get('epochs', MainWindowState().epochs),
+        )
+    return normalized
+
+
+def resolve_main_window_mode_state_entry(state: MainWindowState, mode: str) -> dict[str, Any]:
+    normalized_mode = normalize_work_mode(mode)
+    mode_state = normalize_main_window_mode_state(getattr(state, 'mode_state', {}))
+    entry = mode_state.get(normalized_mode)
+    if entry is not None:
+        return build_main_window_mode_state_entry(**entry)
+
+    current_mode = normalize_work_mode(getattr(state, 'work_mode', ''))
+    if current_mode == normalized_mode:
+        return build_main_window_mode_state_entry_from_state(state)
+    return build_main_window_mode_state_entry()
+
+
+def clone_main_window_state(state: MainWindowState) -> MainWindowState:
+    return replace(
+        state,
+        mode_state=copy.deepcopy(normalize_main_window_mode_state(getattr(state, 'mode_state', {}))),
+    )

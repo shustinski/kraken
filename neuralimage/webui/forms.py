@@ -10,11 +10,15 @@ from lib.data_interfaces import (
     ConfidenceSaveMode,
     OptimizerName,
     MixedPrecisionMode,
+    MultiGpuMode,
+    PatchBatchSyncMode,
     SampleCutMode,
     SchedulerName,
     ValidationSource,
     WorkMode,
     normalize_confidence_save_mode,
+    normalize_multi_gpu_mode,
+    normalize_patch_batch_sync_mode,
     normalize_scheduler_name,
     normalize_validation_source,
     normalize_work_mode,
@@ -43,6 +47,8 @@ _BASE_SELECT_ATTRS = {
 _START_FORM_ATTRS = {
     'form': 'start-form',
 }
+
+_MISSING = object()
 
 
 def _copy_dict(value):
@@ -239,6 +245,8 @@ class SettingsForm(forms.Form):
     step = forms.IntegerField(label='Step', min_value=4, max_value=1024)
     vertical_rotation = forms.BooleanField(label='Rotate 180°', required=False)
     horizontal_rotation = forms.BooleanField(label='Rotate 90°', required=False)
+    flip_x = forms.BooleanField(label='Flip X', required=False)
+    flip_y = forms.BooleanField(label='Flip Y', required=False)
     additional_augmentation = forms.BooleanField(label='Additional augmentation', required=False)
     random_crop = forms.BooleanField(label='Random crop in online mode', required=False)
     crops_per_image = forms.IntegerField(label='Crops per image', min_value=1, max_value=5000, required=False)
@@ -252,14 +260,27 @@ class SettingsForm(forms.Form):
     augmentation_contrast_strength = forms.FloatField(
         label='Augmentation contrast strength', min_value=0.0, max_value=1.0, required=False
     )
+    augmentation_gamma_strength = forms.FloatField(
+        label='Augmentation gamma strength', min_value=0.0, max_value=5.0, required=False
+    )
     augmentation_noise_probability = forms.FloatField(
         label='Augmentation noise probability', min_value=0.0, max_value=1.0, required=False
     )
     augmentation_noise_sigma = forms.FloatField(
         label='Augmentation noise sigma', min_value=0.0, max_value=1.0, required=False
     )
+    augmentation_blur_probability = forms.FloatField(
+        label='Augmentation blur probability', min_value=0.0, max_value=1.0, required=False
+    )
+    augmentation_blur_radius = forms.FloatField(
+        label='Augmentation blur radius', min_value=0.0, max_value=10.0, required=False
+    )
     sample_x = forms.IntegerField(label='Sample X', min_value=8, max_value=4096)
     sample_y = forms.IntegerField(label='Sample Y', min_value=8, max_value=4096)
+    train_patch_x = forms.IntegerField(label='Train patch X', min_value=8, max_value=4096, required=False)
+    train_patch_y = forms.IntegerField(label='Train patch Y', min_value=8, max_value=4096, required=False)
+    recognition_patch_x = forms.IntegerField(label='Recognition patch X', min_value=8, max_value=4096, required=False)
+    recognition_patch_y = forms.IntegerField(label='Recognition patch Y', min_value=8, max_value=4096, required=False)
     model = forms.CharField(label='Model architecture')
     color_mode = forms.ChoiceField(label='Color mode', choices=[('RGB', 'RGB'), ('ЧБ', 'ЧБ')])
     use_validation = forms.BooleanField(label='Use validation', required=False)
@@ -276,13 +297,34 @@ class SettingsForm(forms.Form):
     validation_label_folder = forms.CharField(label='Validation label folder', required=False)
     save_validation_binary_images = forms.BooleanField(label='Save validation binary images', required=False)
     shuffle = forms.BooleanField(label='Shuffle dataset', required=False)
+    shuffle_patches_in_frame = forms.BooleanField(label='Shuffle patches inside frame', required=False)
     sample_cut_mode = forms.ChoiceField(
         label='Sample cut mode',
         choices=[(SampleCutMode.disk.value, 'To disk'), (SampleCutMode.online.value, 'Online')],
     )
     batch_size = forms.IntegerField(label='Batch size', min_value=1, max_value=512)
+    train_batch_size = forms.IntegerField(label='Train batch size', min_value=1, max_value=512, required=False)
+    recognition_batch_size = forms.IntegerField(label='Recognition batch size', min_value=1, max_value=512, required=False)
     dataloader_num_workers = forms.IntegerField(label='DataLoader workers', min_value=-1, max_value=64, required=False)
+    sync_patch_sizes = forms.BooleanField(label='Sync patch sizes', required=False)
+    patch_batch_sync_mode = forms.ChoiceField(
+        label='Patch/batch sync mode',
+        choices=[(mode.value, mode.value) for mode in PatchBatchSyncMode],
+        required=False,
+    )
     overlap = forms.IntegerField(label='Overlap', min_value=0, max_value=256)
+    recognition_jpeg_quality = forms.IntegerField(label='Recognition JPEG quality', min_value=1, max_value=100, required=False)
+    recognition_multiprocessing_enabled = forms.BooleanField(label='Recognition multiprocessing', required=False)
+    recognition_binarize_output = forms.BooleanField(label='Binarize recognition output', required=False)
+    recognition_use_auto_threshold = forms.BooleanField(label='Use recommended threshold', required=False)
+    recognition_threshold = forms.FloatField(label='Recognition threshold', min_value=0.0, max_value=1.0, required=False)
+    recognition_postprocess = forms.BooleanField(label='Recognition postprocess', required=False)
+    recognition_postprocess_kernel_size = forms.IntegerField(
+        label='Recognition postprocess kernel size',
+        min_value=1,
+        max_value=255,
+        required=False,
+    )
     recognition_tta_enabled = forms.BooleanField(label='Use TTA for recognition', required=False)
     confidence_tta_enabled = forms.BooleanField(label='Use TTA for confidence map', required=False)
     confidence_save_mode = forms.ChoiceField(
@@ -401,6 +443,13 @@ class SettingsForm(forms.Form):
     mixup_probability = forms.FloatField(label='Mixup probability', min_value=0.0, max_value=1.0, required=False)
     mixup_alpha = forms.FloatField(label='Mixup alpha', min_value=0.0, max_value=10.0, required=False)
     skip_uniform_labels = forms.BooleanField(label='Skip all-0/all-1 labels in training', required=False)
+    rare_patch_oversampling_enabled = forms.BooleanField(label='Rare patch oversampling', required=False)
+    rare_patch_oversampling_factor = forms.IntegerField(
+        label='Rare patch oversampling factor',
+        min_value=2,
+        max_value=128,
+        required=False,
+    )
     early_stopping_enabled = forms.BooleanField(label='Enable early stopping', required=False)
     early_stopping_patience = forms.IntegerField(label='Early stopping patience', min_value=0, max_value=2000)
     early_stopping_min_delta = forms.FloatField(label='Early stopping min delta', min_value=0.0, max_value=10.0)
@@ -408,6 +457,23 @@ class SettingsForm(forms.Form):
     torch_compile_enabled = forms.BooleanField(label='Enable torch.compile', required=False)
     show_batch_preview = forms.BooleanField(label='Show batch preview', required=False)
     use_multi_gpu = forms.BooleanField(label='Use multi-GPU', required=False)
+    multi_gpu_mode = forms.ChoiceField(
+        label='Multi-GPU mode',
+        choices=[(mode.value, mode.value) for mode in MultiGpuMode],
+        required=False,
+    )
+    local_crop_x = forms.IntegerField(label='Local crop X', min_value=8, max_value=4096, required=False)
+    local_crop_y = forms.IntegerField(label='Local crop Y', min_value=8, max_value=4096, required=False)
+    context_crop_x = forms.IntegerField(label='Context crop X', min_value=8, max_value=4096, required=False)
+    context_crop_y = forms.IntegerField(label='Context crop Y', min_value=8, max_value=4096, required=False)
+    context_input_x = forms.IntegerField(label='Context input X', min_value=8, max_value=4096, required=False)
+    context_input_y = forms.IntegerField(label='Context input Y', min_value=8, max_value=4096, required=False)
+    context_branch_channels = forms.CharField(label='Context branch channels', required=False)
+    fusion_type = forms.ChoiceField(label='Fusion type', choices=[('concat', 'concat')], required=False)
+    use_context_branch = forms.BooleanField(label='Use context branch', required=False)
+    synthetic_defect_generator = forms.JSONField(label='Synthetic defect generator JSON', required=False)
+    tech_aug = forms.JSONField(label='Technology augmentation JSON', required=False)
+    pcb_defects = forms.JSONField(label='PCB defects JSON', required=False)
 
     def __init__(self, *args, **kwargs):
         language = kwargs.pop('language', None)
@@ -424,10 +490,19 @@ class SettingsForm(forms.Form):
             'scale_augmentation_strength',
             'sample_x',
             'sample_y',
+            'train_patch_x',
+            'train_patch_y',
+            'recognition_patch_x',
+            'recognition_patch_y',
             'validation_percent',
             'batch_size',
+            'train_batch_size',
+            'recognition_batch_size',
             'dataloader_num_workers',
             'overlap',
+            'recognition_jpeg_quality',
+            'recognition_threshold',
+            'recognition_postprocess_kernel_size',
             'log_update_frequency',
             'edge_cut_size',
             'target_x',
@@ -435,8 +510,11 @@ class SettingsForm(forms.Form):
             'learning_rate',
             'augmentation_brightness_strength',
             'augmentation_contrast_strength',
+            'augmentation_gamma_strength',
             'augmentation_noise_probability',
             'augmentation_noise_sigma',
+            'augmentation_blur_probability',
+            'augmentation_blur_radius',
             'dice_loss_weight',
             'iou_loss_weight',
             'weight_decay',
@@ -466,8 +544,15 @@ class SettingsForm(forms.Form):
             'random_artifacts_size_ratio',
             'mixup_probability',
             'mixup_alpha',
+            'rare_patch_oversampling_factor',
             'early_stopping_patience',
             'early_stopping_min_delta',
+            'local_crop_x',
+            'local_crop_y',
+            'context_crop_x',
+            'context_crop_y',
+            'context_input_x',
+            'context_input_y',
         ):
             self.fields[field_name].widget.attrs.update(_BASE_NUM_INPUT_ATTRS)
 
@@ -480,6 +565,10 @@ class SettingsForm(forms.Form):
             'loss_function',
             'scheduler_name',
             'scheduler_one_cycle_anneal_strategy',
+            'patch_batch_sync_mode',
+            'multi_gpu_mode',
+            'fusion_type',
+            'confidence_save_mode',
         ):
             self.fields[field_name].widget.attrs.update(_BASE_SELECT_ATTRS)
 
@@ -495,6 +584,11 @@ class SettingsForm(forms.Form):
             _BASE_TEXT_INPUT_ATTRS
             | {'placeholder': _read_text(placeholders, 'validation_label_folder', r'D:\data\validation\labels')}
         )
+        self.fields['context_branch_channels'].widget.attrs.update(
+            _BASE_TEXT_INPUT_ATTRS | {'placeholder': _read_text(placeholders, 'context_branch_channels', '16, 32, 64, 128')}
+        )
+        for field_name in ('synthetic_defect_generator', 'tech_aug', 'pcb_defects'):
+            self.fields[field_name].widget.attrs.update(_BASE_TEXT_INPUT_ATTRS | {'rows': 8})
         self._apply_localized_texts()
 
     def _apply_localized_texts(self) -> None:
@@ -564,6 +658,23 @@ class SettingsForm(forms.Form):
             for mode in ConfidenceSaveMode
         ]
 
+        patch_sync_choices = _copy_dict(choices.get('patch_batch_sync_mode', {}))
+        self.fields['patch_batch_sync_mode'].choices = [
+            (mode.value, _read_text(patch_sync_choices, mode.value, mode.value))
+            for mode in PatchBatchSyncMode
+        ]
+
+        multi_gpu_choices = _copy_dict(choices.get('multi_gpu_mode', {}))
+        self.fields['multi_gpu_mode'].choices = [
+            (mode.value, _read_text(multi_gpu_choices, mode.value, mode.value))
+            for mode in MultiGpuMode
+        ]
+
+        fusion_choices = _copy_dict(choices.get('fusion_type', {}))
+        self.fields['fusion_type'].choices = [
+            ('concat', _read_text(fusion_choices, 'concat', 'concat')),
+        ]
+
         loss_function_choices = _copy_dict(choices.get('loss_function', {}))
         default_loss_labels = {
             'bce': 'BCE',
@@ -585,10 +696,39 @@ class SettingsForm(forms.Form):
 
     def clean(self):
         cleaned = super().clean()
-        use_validation = bool(cleaned.get('use_validation', False))
+        defaults = SettingsState()
+        use_validation = bool(self._checkbox_value(cleaned, defaults, 'use_validation'))
         validation_source = normalize_validation_source(cleaned.get('validation_source'))
         validation_image_folder = str(cleaned.get('validation_image_folder') or '').strip()
         validation_label_folder = str(cleaned.get('validation_label_folder') or '').strip()
+        cleaned['patch_batch_sync_mode'] = normalize_patch_batch_sync_mode(cleaned.get('patch_batch_sync_mode'))
+        cleaned['multi_gpu_mode'] = normalize_multi_gpu_mode(
+            cleaned.get('multi_gpu_mode'),
+            use_multi_gpu_fallback=bool(self._checkbox_value(cleaned, defaults, 'use_multi_gpu')),
+        )
+        cleaned['fusion_type'] = str(cleaned.get('fusion_type') or defaults.fusion_type).strip().lower() or defaults.fusion_type
+
+        raw_channels = str(cleaned.get('context_branch_channels') or '').strip()
+        if raw_channels:
+            try:
+                parsed_channels = tuple(
+                    max(1, int(part.strip()))
+                    for part in raw_channels.split(',')
+                    if part.strip()
+                )
+            except ValueError:
+                parsed_channels = ()
+            if not parsed_channels:
+                self.add_error('context_branch_channels', 'Context branch channels must be a comma-separated list of integers.')
+            else:
+                cleaned['context_branch_channels'] = parsed_channels
+
+        for json_field in ('synthetic_defect_generator', 'tech_aug', 'pcb_defects'):
+            json_value = cleaned.get(json_field)
+            if json_value in (None, ''):
+                cleaned[json_field] = {}
+            elif not isinstance(json_value, dict):
+                self.add_error(json_field, 'This field must contain a JSON object.')
 
         cleaned['validation_source'] = validation_source
         cleaned['validation_image_folder'] = validation_image_folder
@@ -603,6 +743,24 @@ class SettingsForm(forms.Form):
             self.add_error('validation_label_folder', 'Validation label folder must point to an existing directory.')
 
         return cleaned
+
+    def _checkbox_value(
+        self,
+        cleaned: dict[str, object],
+        defaults: SettingsState,
+        name: str,
+        *,
+        fallback: object = _MISSING,
+    ):
+        default_value = getattr(defaults, name) if fallback is _MISSING else fallback
+        value = cleaned.get(name)
+        if not self.is_bound:
+            return default_value if value is None else bool(value)
+        field_name = self.add_prefix(name)
+        presence_name = f'__present__{field_name}'
+        if field_name not in self.data and presence_name not in self.data:
+            return default_value
+        return bool(value)
 
     def to_state(self) -> SettingsState:
         cleaned = self.cleaned_data
@@ -620,39 +778,101 @@ class SettingsForm(forms.Form):
                 return fallback[name]
             return getattr(defaults, name)
 
+        def _pair_value(
+            x_name: str,
+            y_name: str,
+            default_value,
+            *,
+            allow_none: bool = False,
+        ):
+            x_value = cleaned.get(x_name)
+            y_value = cleaned.get(y_name)
+            if x_value is None and y_value is None:
+                if allow_none and default_value is None:
+                    return None
+                fallback_pair = tuple(default_value if default_value is not None else defaults.sample_size)
+                return int(fallback_pair[0]), int(fallback_pair[1])
+            fallback_pair = tuple(default_value if default_value is not None else defaults.sample_size)
+            return (
+                int(x_value if x_value is not None else fallback_pair[0]),
+                int(y_value if y_value is not None else fallback_pair[1]),
+            )
+
+        def _optional_int(name: str, default_value=None):
+            value = cleaned.get(name)
+            if value is None:
+                return default_value
+            return int(value)
+
+        def _json_object(name: str) -> dict:
+            value = cleaned.get(name)
+            if isinstance(value, dict):
+                return dict(value)
+            fallback_value = getattr(defaults, name)
+            return dict(fallback_value) if isinstance(fallback_value, dict) else {}
+
         return SettingsState(
             step=cleaned['step'],
-            vertical_rotation=cleaned.get('vertical_rotation', False),
-            horizontal_rotation=cleaned.get('horizontal_rotation', False),
-            additional_augmentation=cleaned.get('additional_augmentation', False),
-            random_crop=cleaned.get('random_crop', False),
+            vertical_rotation=self._checkbox_value(cleaned, defaults, 'vertical_rotation'),
+            horizontal_rotation=self._checkbox_value(cleaned, defaults, 'horizontal_rotation'),
+            flip_x=self._checkbox_value(cleaned, defaults, 'flip_x'),
+            flip_y=self._checkbox_value(cleaned, defaults, 'flip_y'),
+            additional_augmentation=self._checkbox_value(cleaned, defaults, 'additional_augmentation'),
+            random_crop=self._checkbox_value(cleaned, defaults, 'random_crop'),
             crops_per_image=_with_default('crops_per_image'),
-            scale_augmentation=cleaned.get('scale_augmentation', False),
+            scale_augmentation=self._checkbox_value(cleaned, defaults, 'scale_augmentation'),
             scale_augmentation_strength=_with_default('scale_augmentation_strength'),
             augmentation_brightness_strength=_with_default('augmentation_brightness_strength'),
             augmentation_contrast_strength=_with_default('augmentation_contrast_strength'),
+            augmentation_gamma_strength=_with_default('augmentation_gamma_strength'),
             augmentation_noise_probability=_with_default('augmentation_noise_probability'),
             augmentation_noise_sigma=_with_default('augmentation_noise_sigma'),
+            augmentation_blur_probability=_with_default('augmentation_blur_probability'),
+            augmentation_blur_radius=_with_default('augmentation_blur_radius'),
             sample_size=(cleaned['sample_x'], cleaned['sample_y']),
+            train_patch_size=_pair_value(
+                'train_patch_x',
+                'train_patch_y',
+                getattr(defaults, 'train_patch_size', None),
+                allow_none=True,
+            ),
+            recognition_patch_size=_pair_value(
+                'recognition_patch_x',
+                'recognition_patch_y',
+                getattr(defaults, 'recognition_patch_size', None),
+                allow_none=True,
+            ),
             model=cleaned['model'],
             color_mode=cleaned['color_mode'],
-            shuffle=cleaned.get('shuffle', False),
-            use_validation=cleaned.get('use_validation', False),
+            shuffle=self._checkbox_value(cleaned, defaults, 'shuffle'),
+            shuffle_patches_in_frame=self._checkbox_value(cleaned, defaults, 'shuffle_patches_in_frame'),
+            use_validation=self._checkbox_value(cleaned, defaults, 'use_validation'),
             validation_source=normalize_validation_source(cleaned.get('validation_source')),
             validation_percent=_with_default('validation_percent'),
             validation_image_folder=str(cleaned.get('validation_image_folder', '') or ''),
             validation_label_folder=str(cleaned.get('validation_label_folder', '') or ''),
-            save_validation_binary_images=cleaned.get('save_validation_binary_images', False),
+            save_validation_binary_images=self._checkbox_value(cleaned, defaults, 'save_validation_binary_images'),
             sample_cut_mode=cleaned['sample_cut_mode'],
             batch_size=cleaned['batch_size'],
+            train_batch_size=_optional_int('train_batch_size', getattr(defaults, 'train_batch_size', None)),
+            recognition_batch_size=_optional_int('recognition_batch_size', getattr(defaults, 'recognition_batch_size', None)),
             dataloader_num_workers=_with_default('dataloader_num_workers'),
+            sync_patch_sizes=self._checkbox_value(cleaned, defaults, 'sync_patch_sizes'),
+            patch_batch_sync_mode=normalize_patch_batch_sync_mode(cleaned.get('patch_batch_sync_mode')),
             overlap=cleaned['overlap'],
-            recognition_tta_enabled=cleaned.get('recognition_tta_enabled', False),
-            confidence_tta_enabled=cleaned.get('confidence_tta_enabled', False),
+            recognition_jpeg_quality=_with_default('recognition_jpeg_quality'),
+            recognition_multiprocessing_enabled=self._checkbox_value(cleaned, defaults, 'recognition_multiprocessing_enabled'),
+            recognition_binarize_output=self._checkbox_value(cleaned, defaults, 'recognition_binarize_output'),
+            recognition_use_auto_threshold=self._checkbox_value(cleaned, defaults, 'recognition_use_auto_threshold'),
+            recognition_threshold=_with_default('recognition_threshold'),
+            recognition_postprocess=self._checkbox_value(cleaned, defaults, 'recognition_postprocess'),
+            recognition_postprocess_kernel_size=_with_default('recognition_postprocess_kernel_size'),
+            recognition_tta_enabled=self._checkbox_value(cleaned, defaults, 'recognition_tta_enabled'),
+            confidence_tta_enabled=self._checkbox_value(cleaned, defaults, 'confidence_tta_enabled'),
             confidence_save_mode=normalize_confidence_save_mode(cleaned.get('confidence_save_mode')),
             log_update_frequency=cleaned['log_update_frequency'],
-            crop_enabled=cleaned.get('crop_enabled', False),
-            resize_enabled=cleaned.get('resize_enabled', False),
+            crop_enabled=self._checkbox_value(cleaned, defaults, 'crop_enabled'),
+            resize_enabled=self._checkbox_value(cleaned, defaults, 'resize_enabled'),
             edge_cut_size=_with_default('edge_cut_size'),
             target_size=(
                 _with_default('target_x'),
@@ -669,8 +889,8 @@ class SettingsForm(forms.Form):
             iou_loss_weight=_with_default('iou_loss_weight'),
             learning_rate=cleaned['learning_rate'],
             weight_decay=cleaned['weight_decay'],
-            deep_supervision=cleaned.get('deep_supervision', True),
-            warmup_enabled=cleaned.get('warmup_enabled', False),
+            deep_supervision=self._checkbox_value(cleaned, defaults, 'deep_supervision'),
+            warmup_enabled=self._checkbox_value(cleaned, defaults, 'warmup_enabled'),
             warmup_epochs=cleaned['warmup_epochs'],
             warmup_start_factor=cleaned['warmup_start_factor'],
             scheduler_name=normalize_scheduler_name(cleaned.get('scheduler_name')),
@@ -689,41 +909,57 @@ class SettingsForm(forms.Form):
             ),
             scheduler_one_cycle_div_factor=_with_default('scheduler_one_cycle_div_factor'),
             scheduler_one_cycle_final_div_factor=_with_default('scheduler_one_cycle_final_div_factor'),
-            scheduler_one_cycle_three_phase=cleaned.get('scheduler_one_cycle_three_phase', False),
+            scheduler_one_cycle_three_phase=self._checkbox_value(cleaned, defaults, 'scheduler_one_cycle_three_phase'),
             scheduler_step_lr_step_size=_with_default('scheduler_step_lr_step_size'),
             scheduler_step_lr_gamma=_with_default('scheduler_step_lr_gamma'),
-            hard_mining_enabled=cleaned.get('hard_mining_enabled', False),
+            hard_mining_enabled=self._checkbox_value(cleaned, defaults, 'hard_mining_enabled'),
             hard_mining_strength=_with_default('hard_mining_strength'),
             hard_mining_ema_alpha=_with_default('hard_mining_ema_alpha'),
-            hard_pixel_mining_enabled=cleaned.get('hard_pixel_mining_enabled', False),
+            hard_pixel_mining_enabled=self._checkbox_value(cleaned, defaults, 'hard_pixel_mining_enabled'),
             hard_pixel_mining_ratio=_with_default('hard_pixel_mining_ratio'),
-            cutout_enabled=cleaned.get('cutout_enabled', False),
+            cutout_enabled=self._checkbox_value(cleaned, defaults, 'cutout_enabled'),
             cutout_probability=_with_default('cutout_probability'),
             cutout_holes=_with_default('cutout_holes'),
             cutout_size_ratio=_with_default('cutout_size_ratio'),
-            random_artifacts_enabled=cleaned.get('random_artifacts_enabled', False),
+            random_artifacts_enabled=self._checkbox_value(cleaned, defaults, 'random_artifacts_enabled'),
             random_artifacts_probability=_with_default('random_artifacts_probability'),
             random_artifacts_count=_with_default('random_artifacts_count'),
             random_artifacts_size_ratio=_with_default('random_artifacts_size_ratio'),
-            random_artifacts_dust_enabled=cleaned.get('random_artifacts_dust_enabled', False),
-            random_artifacts_resist_residue_enabled=cleaned.get('random_artifacts_resist_residue_enabled', False),
-            random_artifacts_etch_residue_enabled=cleaned.get('random_artifacts_etch_residue_enabled', False),
-            random_artifacts_particle_cluster_enabled=cleaned.get(
+            random_artifacts_dust_enabled=self._checkbox_value(cleaned, defaults, 'random_artifacts_dust_enabled'),
+            random_artifacts_resist_residue_enabled=self._checkbox_value(cleaned, defaults, 'random_artifacts_resist_residue_enabled'),
+            random_artifacts_etch_residue_enabled=self._checkbox_value(cleaned, defaults, 'random_artifacts_etch_residue_enabled'),
+            random_artifacts_particle_cluster_enabled=self._checkbox_value(
+                cleaned,
+                defaults,
                 'random_artifacts_particle_cluster_enabled',
-                False,
             ),
-            random_artifacts_flake_enabled=cleaned.get('random_artifacts_flake_enabled', False),
-            mixup_enabled=cleaned.get('mixup_enabled', False),
+            random_artifacts_flake_enabled=self._checkbox_value(cleaned, defaults, 'random_artifacts_flake_enabled'),
+            mixup_enabled=self._checkbox_value(cleaned, defaults, 'mixup_enabled'),
             mixup_probability=_with_default('mixup_probability'),
             mixup_alpha=_with_default('mixup_alpha'),
-            skip_uniform_labels=cleaned.get('skip_uniform_labels', False),
-            early_stopping_enabled=cleaned.get('early_stopping_enabled', False),
+            skip_uniform_labels=self._checkbox_value(cleaned, defaults, 'skip_uniform_labels'),
+            rare_patch_oversampling_enabled=self._checkbox_value(cleaned, defaults, 'rare_patch_oversampling_enabled'),
+            rare_patch_oversampling_factor=_with_default('rare_patch_oversampling_factor'),
+            early_stopping_enabled=self._checkbox_value(cleaned, defaults, 'early_stopping_enabled'),
             early_stopping_patience=cleaned['early_stopping_patience'],
             early_stopping_min_delta=cleaned['early_stopping_min_delta'],
-            early_stopping_restore_best_weights=cleaned.get('early_stopping_restore_best_weights', False),
-            torch_compile_enabled=cleaned.get('torch_compile_enabled', False),
-            show_batch_preview=cleaned.get('show_batch_preview', False),
-            use_multi_gpu=cleaned.get('use_multi_gpu', False),
+            early_stopping_restore_best_weights=self._checkbox_value(cleaned, defaults, 'early_stopping_restore_best_weights'),
+            torch_compile_enabled=self._checkbox_value(cleaned, defaults, 'torch_compile_enabled'),
+            show_batch_preview=self._checkbox_value(cleaned, defaults, 'show_batch_preview'),
+            use_multi_gpu=self._checkbox_value(cleaned, defaults, 'use_multi_gpu'),
+            multi_gpu_mode=normalize_multi_gpu_mode(
+                cleaned.get('multi_gpu_mode'),
+                use_multi_gpu_fallback=bool(self._checkbox_value(cleaned, defaults, 'use_multi_gpu')),
+            ),
+            local_crop_size=_pair_value('local_crop_x', 'local_crop_y', getattr(defaults, 'local_crop_size', None), allow_none=True),
+            context_crop_size=_pair_value('context_crop_x', 'context_crop_y', getattr(defaults, 'context_crop_size', None), allow_none=True),
+            context_input_size=_pair_value('context_input_x', 'context_input_y', getattr(defaults, 'context_input_size', None), allow_none=True),
+            context_branch_channels=tuple(cleaned.get('context_branch_channels') or defaults.context_branch_channels),
+            fusion_type=str(cleaned.get('fusion_type') or defaults.fusion_type),
+            use_context_branch=self._checkbox_value(cleaned, defaults, 'use_context_branch'),
+            synthetic_defect_generator=_json_object('synthetic_defect_generator'),
+            tech_aug=_json_object('tech_aug'),
+            pcb_defects=_json_object('pcb_defects'),
         )
 
 
@@ -750,6 +986,8 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'step': state.step,
         'vertical_rotation': state.vertical_rotation,
         'horizontal_rotation': state.horizontal_rotation,
+        'flip_x': getattr(state, 'flip_x', False),
+        'flip_y': getattr(state, 'flip_y', False),
         'additional_augmentation': state.additional_augmentation,
         'random_crop': getattr(state, 'random_crop', False),
         'crops_per_image': getattr(state, 'crops_per_image', 64),
@@ -757,13 +995,21 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'scale_augmentation_strength': getattr(state, 'scale_augmentation_strength', 0.2),
         'augmentation_brightness_strength': state.augmentation_brightness_strength,
         'augmentation_contrast_strength': state.augmentation_contrast_strength,
+        'augmentation_gamma_strength': getattr(state, 'augmentation_gamma_strength', 0.15),
         'augmentation_noise_probability': state.augmentation_noise_probability,
         'augmentation_noise_sigma': state.augmentation_noise_sigma,
+        'augmentation_blur_probability': getattr(state, 'augmentation_blur_probability', 0.25),
+        'augmentation_blur_radius': getattr(state, 'augmentation_blur_radius', 1.0),
         'sample_x': state.sample_size[0],
         'sample_y': state.sample_size[1],
+        'train_patch_x': (getattr(state, 'train_patch_size', None) or state.sample_size)[0],
+        'train_patch_y': (getattr(state, 'train_patch_size', None) or state.sample_size)[1],
+        'recognition_patch_x': (getattr(state, 'recognition_patch_size', None) or state.sample_size)[0],
+        'recognition_patch_y': (getattr(state, 'recognition_patch_size', None) or state.sample_size)[1],
         'model': state.model,
         'color_mode': state.color_mode,
         'shuffle': state.shuffle,
+        'shuffle_patches_in_frame': getattr(state, 'shuffle_patches_in_frame', state.shuffle),
         'use_validation': state.use_validation,
         'validation_source': getattr(state, 'validation_source', ValidationSource.split.value),
         'validation_percent': state.validation_percent,
@@ -772,8 +1018,19 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'save_validation_binary_images': getattr(state, 'save_validation_binary_images', False),
         'sample_cut_mode': state.sample_cut_mode,
         'batch_size': state.batch_size,
+        'train_batch_size': getattr(state, 'train_batch_size', state.batch_size),
+        'recognition_batch_size': getattr(state, 'recognition_batch_size', state.batch_size),
         'dataloader_num_workers': getattr(state, 'dataloader_num_workers', -1),
+        'sync_patch_sizes': getattr(state, 'sync_patch_sizes', True),
+        'patch_batch_sync_mode': getattr(state, 'patch_batch_sync_mode', PatchBatchSyncMode.patch_and_batch.value),
         'overlap': state.overlap,
+        'recognition_jpeg_quality': getattr(state, 'recognition_jpeg_quality', 95),
+        'recognition_multiprocessing_enabled': getattr(state, 'recognition_multiprocessing_enabled', True),
+        'recognition_binarize_output': getattr(state, 'recognition_binarize_output', True),
+        'recognition_use_auto_threshold': getattr(state, 'recognition_use_auto_threshold', True),
+        'recognition_threshold': getattr(state, 'recognition_threshold', 0.5),
+        'recognition_postprocess': getattr(state, 'recognition_postprocess', False),
+        'recognition_postprocess_kernel_size': getattr(state, 'recognition_postprocess_kernel_size', 3),
         'recognition_tta_enabled': getattr(state, 'recognition_tta_enabled', False),
         'confidence_tta_enabled': getattr(state, 'confidence_tta_enabled', False),
         'confidence_save_mode': getattr(state, 'confidence_save_mode', ConfidenceSaveMode.off.value),
@@ -847,6 +1104,8 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'mixup_probability': getattr(state, 'mixup_probability', 1.0),
         'mixup_alpha': getattr(state, 'mixup_alpha', 0.2),
         'skip_uniform_labels': state.skip_uniform_labels,
+        'rare_patch_oversampling_enabled': getattr(state, 'rare_patch_oversampling_enabled', False),
+        'rare_patch_oversampling_factor': getattr(state, 'rare_patch_oversampling_factor', 2),
         'early_stopping_enabled': state.early_stopping_enabled,
         'early_stopping_patience': state.early_stopping_patience,
         'early_stopping_min_delta': state.early_stopping_min_delta,
@@ -854,5 +1113,18 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'torch_compile_enabled': state.torch_compile_enabled,
         'show_batch_preview': state.show_batch_preview,
         'use_multi_gpu': state.use_multi_gpu,
+        'multi_gpu_mode': getattr(state, 'multi_gpu_mode', ''),
+        'local_crop_x': (getattr(state, 'local_crop_size', None) or state.sample_size)[0],
+        'local_crop_y': (getattr(state, 'local_crop_size', None) or state.sample_size)[1],
+        'context_crop_x': (getattr(state, 'context_crop_size', None) or state.sample_size)[0],
+        'context_crop_y': (getattr(state, 'context_crop_size', None) or state.sample_size)[1],
+        'context_input_x': (getattr(state, 'context_input_size', None) or state.sample_size)[0],
+        'context_input_y': (getattr(state, 'context_input_size', None) or state.sample_size)[1],
+        'context_branch_channels': ', '.join(str(channel) for channel in getattr(state, 'context_branch_channels', (16, 32, 64, 128))),
+        'fusion_type': getattr(state, 'fusion_type', 'concat'),
+        'use_context_branch': getattr(state, 'use_context_branch', False),
+        'synthetic_defect_generator': getattr(state, 'synthetic_defect_generator', {}),
+        'tech_aug': getattr(state, 'tech_aug', {}),
+        'pcb_defects': getattr(state, 'pcb_defects', {}),
     }
 

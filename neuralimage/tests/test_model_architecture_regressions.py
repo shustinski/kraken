@@ -3,7 +3,11 @@ import pytest
 torch = pytest.importorskip('torch')
 nn = pytest.importorskip('torch.nn')
 
-from model.NeuralNetwork import create_model, get_registered_model_registry, get_registered_models
+from model.NeuralNetwork import (
+    create_model,
+    get_registered_model_names_by_type,
+    get_registered_model_registry,
+)
 from model.NeuralNetwork.registrator import ModelType
 from model.NeuralNetwork.CNN_Models import (
     ImageBinarizationTransformer,
@@ -18,11 +22,10 @@ from model.NeuralNetwork import transformer_segmentation as transformer_segmenta
 from model.NeuralNetwork.transformer_segmentation import NativeHierarchicalBackbone
 
 
-def test_quasi_dual_scale_unet_alias_is_registered():
-    registered = get_registered_models()
+def test_frame_unet_is_listed_once_in_experimental_group():
+    grouped = get_registered_model_names_by_type()
 
-    assert 'quasi_dual_scale_unet' in registered
-    assert registered['quasi_dual_scale_unet'] is registered['FrameUnet']
+    assert grouped[ModelType.experimental].count('FrameUnet') == 1
 
 
 def test_registered_models_expose_model_type_metadata():
@@ -80,8 +83,8 @@ def test_uber_model_tta_uses_original_input_flips():
     assert torch.allclose(outputs, torch.ones_like(outputs))
 
 
-def test_quasi_dual_scale_alias_can_instantiate():
-    model = create_model('quasi_dual_scale_unet', 1, use_context_branch=False)
+def test_frame_unet_can_instantiate():
+    model = create_model('FrameUnet', 1, use_context_branch=False)
 
     outputs = model(torch.randn(1, 1, 64, 64))
 
@@ -98,7 +101,7 @@ def test_quasi_dual_scale_alias_can_instantiate():
         ('Wellnet2 mini', {}),
         ('EfficientUNet', {}),
         ('UNET++', {}),
-        ('quasi_dual_scale_unet', {'use_context_branch': False}),
+        ('FrameUnet', {'use_context_branch': False}),
     ],
 )
 def test_convolutional_models_support_deep_supervision_in_train_only(model_name, kwargs):

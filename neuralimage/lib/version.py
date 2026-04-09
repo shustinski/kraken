@@ -1,5 +1,5 @@
 APP_NAME = "NeuralImage"
-APP_VERSION = "6.0.0"
+APP_VERSION = "6.0.5"
 
 
 def get_app_title() -> str:

@@ -28,6 +28,42 @@ MemoryMetricsCollector = Callable[[], dict[str, float] | None]
 _QUEUE_EMPTY = object()
 
 
+def _extract_confidence_calibration(model: nn.Module) -> tuple[torch.Tensor, torch.Tensor] | None:
+    metadata = getattr(model, '_neuralimage_artifact_metadata', None)
+    if not isinstance(metadata, dict):
+        return None
+    confidence = metadata.get('confidence')
+    if not isinstance(confidence, dict):
+        return None
+    raw_edges = confidence.get('calibration_bin_edges')
+    raw_values = confidence.get('calibration_bin_values')
+    if not isinstance(raw_edges, (list, tuple)) or not isinstance(raw_values, (list, tuple)):
+        return None
+    if len(raw_edges) != len(raw_values) + 1 or len(raw_values) <= 0:
+        return None
+    try:
+        edges = torch.tensor([float(value) for value in raw_edges[1:-1]], dtype=torch.float32)
+        values = torch.tensor([float(value) for value in raw_values], dtype=torch.float32)
+    except (TypeError, ValueError):
+        return None
+    if values.numel() <= 0:
+        return None
+    return edges, values
+
+
+def _apply_confidence_calibration(
+    confidence_outputs: torch.Tensor,
+    calibration: tuple[torch.Tensor, torch.Tensor] | None,
+) -> torch.Tensor:
+    if calibration is None:
+        return confidence_outputs
+    edges, values = calibration
+    bucket_edges = edges.to(device=confidence_outputs.device, dtype=confidence_outputs.dtype)
+    calibrated_values = values.to(device=confidence_outputs.device, dtype=confidence_outputs.dtype)
+    bucket_indices = torch.bucketize(confidence_outputs, bucket_edges)
+    return calibrated_values[bucket_indices]
+
+
 @dataclass(frozen=True)
 class RecognitionWorkload:
     source_files: list[Path]
@@ -891,6 +927,7 @@ def gpu_predict(
         ms_scales.append(scale)
     if not ms_scales:
         ms_scales = [1.0]
+    confidence_calibration = _extract_confidence_calibration(model)
 
     def _extract_prediction_tensors(outputs: Any) -> tuple[torch.Tensor, torch.Tensor | None]:
         mask_outputs = extract_mask_outputs(outputs)
@@ -925,6 +962,7 @@ def gpu_predict(
         for scale in ms_scales:
             if abs(scale - 1.0) < 1e-8:
                 scaled = batch_tensor
+                scaled_context = context_batch_tensor
             else:
                 scaled_h = max(8, int(round(base_h * scale)))
                 scaled_w = max(8, int(round(base_w * scale)))
@@ -934,7 +972,18 @@ def gpu_predict(
                     mode='bilinear',
                     align_corners=False,
                 )
-            logits, confidence_logits = _predict_once(scaled, context_batch_tensor)
+                scaled_context = None
+                if context_batch_tensor is not None:
+                    context_h, context_w = int(context_batch_tensor.shape[-2]), int(context_batch_tensor.shape[-1])
+                    scaled_context_h = max(8, int(round(context_h * scale)))
+                    scaled_context_w = max(8, int(round(context_w * scale)))
+                    scaled_context = F.interpolate(
+                        context_batch_tensor,
+                        size=(scaled_context_h, scaled_context_w),
+                        mode='bilinear',
+                        align_corners=False,
+                    )
+            logits, confidence_logits = _predict_once(scaled, scaled_context)
             if logits.shape[-2:] != (base_h, base_w):
                 logits = F.interpolate(logits, size=(base_h, base_w), mode='bilinear', align_corners=False)
             if mask_acc is None:
@@ -959,8 +1008,8 @@ def gpu_predict(
             confidence_weight += 1.0
             if tta_flip:
                 flipped_context = None
-                if context_batch_tensor is not None:
-                    flipped_context = torch.flip(context_batch_tensor, dims=[-1])
+                if scaled_context is not None:
+                    flipped_context = torch.flip(scaled_context, dims=[-1])
                 logits_h, confidence_h = _predict_once(torch.flip(scaled, dims=[-1]), flipped_context)
                 logits_h = torch.flip(logits_h, dims=[-1])
                 if logits_h.shape[-2:] != (base_h, base_w):
@@ -1038,6 +1087,11 @@ def gpu_predict(
             if not bool(torch.isfinite(confidence_outputs).all()):
                 confidence_outputs = torch.nan_to_num(confidence_outputs, nan=0.0, posinf=1.0, neginf=0.0)
             confidence_outputs = torch.clamp(confidence_outputs, min=0.0, max=1.0)
+            confidence_outputs = torch.clamp(
+                _apply_confidence_calibration(confidence_outputs, confidence_calibration),
+                min=0.0,
+                max=1.0,
+            )
 
             predictions = outputs.detach().cpu().numpy()
             confidence_predictions = confidence_outputs.detach().cpu().numpy()

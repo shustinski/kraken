@@ -197,6 +197,39 @@ def test_build_workflow_parameters_maps_frame_and_patch_shuffle_flags_separately
     assert training.generation.crops_per_image == 17
 
 
+def test_build_workflow_parameters_syncs_recognition_patch_and_batch_sizes():
+    source = make_test_dir("workflow_source_patch_batch_sync")
+    result = make_test_dir("workflow_result_patch_batch_sync")
+    sample = make_test_dir("workflow_sample_patch_batch_sync")
+    label = make_test_dir("workflow_label_patch_batch_sync")
+
+    main = MainWindowState(
+        work_mode='train_only',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(
+        sample_size=(256, 256),
+        train_patch_size=(192, 160),
+        recognition_patch_size=(384, 320),
+        batch_size=8,
+        train_batch_size=6,
+        recognition_batch_size=2,
+        sync_patch_sizes=True,
+        patch_batch_sync_mode='patch_and_batch',
+    )
+
+    _, training, recognition = build_workflow_parameters(main, settings)
+
+    assert training.generation.segment_size == (192, 160)
+    assert training.batch_size == 6
+    assert recognition.part_size == (192, 160)
+    assert recognition.batch_size == 6
+
+
 def test_build_workflow_parameters_maps_flip_flags():
     source = make_test_dir("workflow_source_flips")
     result = make_test_dir("workflow_result_flips")
@@ -421,6 +454,28 @@ def test_build_workflow_parameters_keeps_recognition_patch_size_when_sync_disabl
     _, _, recognition = build_workflow_parameters(main, settings)
 
     assert recognition.part_size == (320, 224)
+
+
+def test_build_workflow_parameters_enables_context_branch_for_frame_unet_by_default():
+    source = make_test_dir("workflow_source_frame_unet_context")
+    result = make_test_dir("workflow_result_frame_unet_context")
+    sample = make_test_dir("workflow_sample_frame_unet_context")
+    label = make_test_dir("workflow_label_frame_unet_context")
+
+    main = MainWindowState(
+        work_mode='train_and_recognition',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        epochs=1,
+    )
+    settings = SettingsState(model='FrameUnet')
+
+    _, training, recognition = build_workflow_parameters(main, settings)
+
+    assert training.use_context_branch is True
+    assert recognition.use_context_branch is None
 
 
 def test_build_workflow_parameters_migrates_legacy_pcb_defects_into_synthetic_generator():

@@ -169,7 +169,7 @@ MIN_RECOGNITION_THRESHOLD = 0.0
 MAX_RECOGNITION_THRESHOLD = 1.0
 MIN_POSTPROCESS_KERNEL_SIZE = 1
 MAX_POSTPROCESS_KERNEL_SIZE = 31
-OPTIMIZERS = ('adam', 'adamw', 'adamw_muon')
+OPTIMIZERS = ('adam', 'adamw')
 MIXED_PRECISION_MODES = ('off', 'fp16', 'bf16')
 LOSS_FUNCTIONS = LOSS_SELECTION_NAMES
 MULTI_GPU_MODES = ('off', 'dataparallel', 'distributeddataparallel')
@@ -179,7 +179,6 @@ CONFIDENCE_SAVE_MODES = ('off', 'separate_grayscale')
 OPTIMIZER_PRESETS = (
     ('Adam', 'adam', 1e-3, 0.0),
     ('AdamW', 'adamw', 5e-4, 1e-2),
-    ('AdamW + Muon', 'adamw_muon', 3e-4, 2e-2),
 )
 LOSS_PRESET_WEIGHTS = {
     'conductors': {'bce': 0.5, 'dice': 0.5},

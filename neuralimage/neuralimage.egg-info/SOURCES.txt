@@ -51,7 +51,6 @@ lib/message_bus.py
 lib/random_artifacts.py
 lib/rare_patch_masks.py
 lib/runtime_paths.py
-lib/sample_fast_cutter_pyx.py
 lib/ui_texts.py
 lib/update_checker.py
 lib/version.py

@@ -299,7 +299,7 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
         validation_image_folder='val_images_ini',
         validation_label_folder='val_labels_ini',
         save_validation_binary_images=True,
-        optimizer_name='adamw_muon',
+        optimizer_name='adamw',
         mixed_precision='off',
         loss_function='dice',
         loss_term_weights={'dice': 1.0},
@@ -384,7 +384,7 @@ def test_state_store_roundtrip_settings_ini_backend(monkeypatch):
     assert loaded.validation_image_folder == 'val_images_ini'
     assert loaded.validation_label_folder == 'val_labels_ini'
     assert loaded.save_validation_binary_images is True
-    assert loaded.optimizer_name == 'adamw_muon'
+    assert loaded.optimizer_name == 'adamw'
     assert loaded.mixed_precision == 'off'
     assert loaded.loss_function == 'dice'
     assert loaded.loss_term_weights == {'dice': 1.0}

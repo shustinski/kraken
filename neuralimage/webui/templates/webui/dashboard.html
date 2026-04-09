@@ -242,6 +242,36 @@
                             {% if settings_form.sample_y.errors %}<div class="field-error">{{ settings_form.sample_y.errors|striptags }}</div>{% endif %}
                         </div>
                     </div>
+                    <div class="inline-2">
+                        <div class="field compact">
+                            <label>{{ settings_form.train_patch_x.label }}</label>
+                            {{ settings_form.train_patch_x }}
+                            {% if settings_form.train_patch_x.errors %}<div class="field-error">{{ settings_form.train_patch_x.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.train_patch_y.label }}</label>
+                            {{ settings_form.train_patch_y }}
+                            {% if settings_form.train_patch_y.errors %}<div class="field-error">{{ settings_form.train_patch_y.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="inline-2" data-role="recognition-patch-size">
+                        <div class="field compact">
+                            <label>{{ settings_form.recognition_patch_x.label }}</label>
+                            {{ settings_form.recognition_patch_x }}
+                            {% if settings_form.recognition_patch_x.errors %}<div class="field-error">{{ settings_form.recognition_patch_x.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.recognition_patch_y.label }}</label>
+                            {{ settings_form.recognition_patch_y }}
+                            {% if settings_form.recognition_patch_y.errors %}<div class="field-error">{{ settings_form.recognition_patch_y.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <label class="check-row" title="{{ settings_form.sync_patch_sizes.help_text }}">{{ settings_form.sync_patch_sizes }} {{ settings_form.sync_patch_sizes.label }}</label>
+                    <div class="field compact" data-role="patch-batch-sync-mode">
+                        <label>{{ settings_form.patch_batch_sync_mode.label }}</label>
+                        {{ settings_form.patch_batch_sync_mode }}
+                        {% if settings_form.patch_batch_sync_mode.errors %}<div class="field-error">{{ settings_form.patch_batch_sync_mode.errors|striptags }}</div>{% endif %}
+                    </div>
                     <div class="field compact" data-role="step-field">
                         <label>{{ settings_form.step.label }}</label>
                         {{ settings_form.step }}
@@ -254,6 +284,8 @@
                     </div>
                     <label class="check-row" title="{{ settings_form.horizontal_rotation.help_text }}">{{ settings_form.horizontal_rotation }} {{ settings_form.horizontal_rotation.label }}</label>
                     <label class="check-row" title="{{ settings_form.vertical_rotation.help_text }}">{{ settings_form.vertical_rotation }} {{ settings_form.vertical_rotation.label }}</label>
+                    <label class="check-row" title="{{ settings_form.flip_x.help_text }}">{{ settings_form.flip_x }} {{ settings_form.flip_x.label }}</label>
+                    <label class="check-row" title="{{ settings_form.flip_y.help_text }}">{{ settings_form.flip_y }} {{ settings_form.flip_y.label }}</label>
                     <label class="check-row" title="{{ settings_form.additional_augmentation.help_text }}">{{ settings_form.additional_augmentation }} {{ settings_form.additional_augmentation.label }}</label>
                     <label class="check-row" title="{{ settings_form.random_crop.help_text }}">{{ settings_form.random_crop }} {{ settings_form.random_crop.label }}</label>
                     <div class="field compact" data-role="crops-per-image-field">
@@ -279,6 +311,11 @@
                             {% if settings_form.augmentation_contrast_strength.errors %}<div class="field-error">{{ settings_form.augmentation_contrast_strength.errors|striptags }}</div>{% endif %}
                         </div>
                         <div class="field compact">
+                            <label>{{ settings_form.augmentation_gamma_strength.label }}</label>
+                            {{ settings_form.augmentation_gamma_strength }}
+                            {% if settings_form.augmentation_gamma_strength.errors %}<div class="field-error">{{ settings_form.augmentation_gamma_strength.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
                             <label>{{ settings_form.augmentation_noise_probability.label }}</label>
                             {{ settings_form.augmentation_noise_probability }}
                             {% if settings_form.augmentation_noise_probability.errors %}<div class="field-error">{{ settings_form.augmentation_noise_probability.errors|striptags }}</div>{% endif %}
@@ -287,6 +324,16 @@
                             <label>{{ settings_form.augmentation_noise_sigma.label }}</label>
                             {{ settings_form.augmentation_noise_sigma }}
                             {% if settings_form.augmentation_noise_sigma.errors %}<div class="field-error">{{ settings_form.augmentation_noise_sigma.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.augmentation_blur_probability.label }}</label>
+                            {{ settings_form.augmentation_blur_probability }}
+                            {% if settings_form.augmentation_blur_probability.errors %}<div class="field-error">{{ settings_form.augmentation_blur_probability.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.augmentation_blur_radius.label }}</label>
+                            {{ settings_form.augmentation_blur_radius }}
+                            {% if settings_form.augmentation_blur_radius.errors %}<div class="field-error">{{ settings_form.augmentation_blur_radius.errors|striptags }}</div>{% endif %}
                         </div>
                     </div>
                     <label class="check-row" title="{{ settings_form.cutout_enabled.help_text }}">{{ settings_form.cutout_enabled }} {{ settings_form.cutout_enabled.label }}</label>
@@ -350,6 +397,7 @@
                 <section class="section">
                     <h3>{{ texts.validation_section }}</h3>
                     <label class="check-row" title="{{ settings_form.shuffle.help_text }}">{{ settings_form.shuffle }} {{ settings_form.shuffle.label }}</label>
+                    <label class="check-row" title="{{ settings_form.shuffle_patches_in_frame.help_text }}">{{ settings_form.shuffle_patches_in_frame }} {{ settings_form.shuffle_patches_in_frame.label }}</label>
                     <label class="check-row" title="{{ settings_form.use_validation.help_text }}">{{ settings_form.use_validation }} {{ settings_form.use_validation.label }}</label>
                     <div class="field compact" data-role="validation-source">
                         <label>{{ settings_form.validation_source.label }}</label>
@@ -414,7 +462,6 @@
                     <div class="preset-row">
                         <button type="button" class="preset-btn" data-optimizer="adam" data-lr="0.001" data-wd="0.0">Adam</button>
                         <button type="button" class="preset-btn" data-optimizer="adamw" data-lr="0.0005" data-wd="0.01">AdamW</button>
-                        <button type="button" class="preset-btn" data-optimizer="adamw_muon" data-lr="0.0003" data-wd="0.02">AdamW + Muon</button>
                     </div>
 
                     <div class="field compact">
@@ -470,6 +517,18 @@
                     </div>
                     <div class="inline-2">
                         <div class="field compact">
+                            <label>{{ settings_form.train_batch_size.label }}</label>
+                            {{ settings_form.train_batch_size }}
+                            {% if settings_form.train_batch_size.errors %}<div class="field-error">{{ settings_form.train_batch_size.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact" data-role="recognition-batch-size">
+                            <label>{{ settings_form.recognition_batch_size.label }}</label>
+                            {{ settings_form.recognition_batch_size }}
+                            {% if settings_form.recognition_batch_size.errors %}<div class="field-error">{{ settings_form.recognition_batch_size.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="inline-2">
+                        <div class="field compact">
                             <label>{{ settings_form.overlap.label }}</label>
                             {{ settings_form.overlap }}
                             {% if settings_form.overlap.errors %}<div class="field-error">{{ settings_form.overlap.errors|striptags }}</div>{% endif %}
@@ -482,6 +541,11 @@
                     </div>
                     <label class="check-row" title="{{ settings_form.torch_compile_enabled.help_text }}">{{ settings_form.torch_compile_enabled }} {{ settings_form.torch_compile_enabled.label }}</label>
                     <label class="check-row" title="{{ settings_form.use_multi_gpu.help_text }}">{{ settings_form.use_multi_gpu }} {{ settings_form.use_multi_gpu.label }}</label>
+                    <div class="field compact" data-role="multi-gpu-mode">
+                        <label>{{ settings_form.multi_gpu_mode.label }}</label>
+                        {{ settings_form.multi_gpu_mode }}
+                        {% if settings_form.multi_gpu_mode.errors %}<div class="field-error">{{ settings_form.multi_gpu_mode.errors|striptags }}</div>{% endif %}
+                    </div>
                 </section>
 
                 <section class="section">
@@ -609,6 +673,12 @@
                         {% if settings_form.hard_pixel_mining_ratio.errors %}<div class="field-error">{{ settings_form.hard_pixel_mining_ratio.errors|striptags }}</div>{% endif %}
                     </div>
                     <label class="check-row" title="{{ settings_form.skip_uniform_labels.help_text }}">{{ settings_form.skip_uniform_labels }} {{ settings_form.skip_uniform_labels.label }}</label>
+                    <label class="check-row" title="{{ settings_form.rare_patch_oversampling_enabled.help_text }}">{{ settings_form.rare_patch_oversampling_enabled }} {{ settings_form.rare_patch_oversampling_enabled.label }}</label>
+                    <div class="field compact" data-role="rare-patch-fields">
+                        <label>{{ settings_form.rare_patch_oversampling_factor.label }}</label>
+                        {{ settings_form.rare_patch_oversampling_factor }}
+                        {% if settings_form.rare_patch_oversampling_factor.errors %}<div class="field-error">{{ settings_form.rare_patch_oversampling_factor.errors|striptags }}</div>{% endif %}
+                    </div>
                     <label class="check-row" title="{{ settings_form.early_stopping_enabled.help_text }}">{{ settings_form.early_stopping_enabled }} {{ settings_form.early_stopping_enabled.label }}</label>
                     <div class="inline-2">
                         <div class="field compact">
@@ -646,6 +716,104 @@
                             {{ settings_form.target_y }}
                             {% if settings_form.target_y.errors %}<div class="field-error">{{ settings_form.target_y.errors|striptags }}</div>{% endif %}
                         </div>
+                    </div>
+                </section>
+
+                <section class="section">
+                    <h3>{{ texts.recognition_section|default:"Recognition" }}</h3>
+                    <div class="inline-2">
+                        <div class="field compact">
+                            <label>{{ settings_form.recognition_jpeg_quality.label }}</label>
+                            {{ settings_form.recognition_jpeg_quality }}
+                            {% if settings_form.recognition_jpeg_quality.errors %}<div class="field-error">{{ settings_form.recognition_jpeg_quality.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.confidence_save_mode.label }}</label>
+                            {{ settings_form.confidence_save_mode }}
+                            {% if settings_form.confidence_save_mode.errors %}<div class="field-error">{{ settings_form.confidence_save_mode.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <label class="check-row" title="{{ settings_form.recognition_multiprocessing_enabled.help_text }}">{{ settings_form.recognition_multiprocessing_enabled }} {{ settings_form.recognition_multiprocessing_enabled.label }}</label>
+                    <label class="check-row" title="{{ settings_form.recognition_binarize_output.help_text }}">{{ settings_form.recognition_binarize_output }} {{ settings_form.recognition_binarize_output.label }}</label>
+                    <label class="check-row" title="{{ settings_form.recognition_use_auto_threshold.help_text }}">{{ settings_form.recognition_use_auto_threshold }} {{ settings_form.recognition_use_auto_threshold.label }}</label>
+                    <div class="field compact" data-role="recognition-threshold">
+                        <label>{{ settings_form.recognition_threshold.label }}</label>
+                        {{ settings_form.recognition_threshold }}
+                        {% if settings_form.recognition_threshold.errors %}<div class="field-error">{{ settings_form.recognition_threshold.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <label class="check-row" title="{{ settings_form.recognition_postprocess.help_text }}">{{ settings_form.recognition_postprocess }} {{ settings_form.recognition_postprocess.label }}</label>
+                    <div class="field compact" data-role="recognition-postprocess-kernel">
+                        <label>{{ settings_form.recognition_postprocess_kernel_size.label }}</label>
+                        {{ settings_form.recognition_postprocess_kernel_size }}
+                        {% if settings_form.recognition_postprocess_kernel_size.errors %}<div class="field-error">{{ settings_form.recognition_postprocess_kernel_size.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <label class="check-row" title="{{ settings_form.recognition_tta_enabled.help_text }}">{{ settings_form.recognition_tta_enabled }} {{ settings_form.recognition_tta_enabled.label }}</label>
+                    <label class="check-row" title="{{ settings_form.confidence_tta_enabled.help_text }}">{{ settings_form.confidence_tta_enabled }} {{ settings_form.confidence_tta_enabled.label }}</label>
+                </section>
+
+                <section class="section">
+                    <h3>{{ texts.advanced_section|default:"Advanced" }}</h3>
+                    <label class="check-row" title="{{ settings_form.use_context_branch.help_text }}">{{ settings_form.use_context_branch }} {{ settings_form.use_context_branch.label }}</label>
+                    <div class="inline-2">
+                        <div class="field compact">
+                            <label>{{ settings_form.local_crop_x.label }}</label>
+                            {{ settings_form.local_crop_x }}
+                            {% if settings_form.local_crop_x.errors %}<div class="field-error">{{ settings_form.local_crop_x.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.local_crop_y.label }}</label>
+                            {{ settings_form.local_crop_y }}
+                            {% if settings_form.local_crop_y.errors %}<div class="field-error">{{ settings_form.local_crop_y.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="inline-2" data-role="context-crop-size">
+                        <div class="field compact">
+                            <label>{{ settings_form.context_crop_x.label }}</label>
+                            {{ settings_form.context_crop_x }}
+                            {% if settings_form.context_crop_x.errors %}<div class="field-error">{{ settings_form.context_crop_x.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.context_crop_y.label }}</label>
+                            {{ settings_form.context_crop_y }}
+                            {% if settings_form.context_crop_y.errors %}<div class="field-error">{{ settings_form.context_crop_y.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="inline-2" data-role="context-input-size">
+                        <div class="field compact">
+                            <label>{{ settings_form.context_input_x.label }}</label>
+                            {{ settings_form.context_input_x }}
+                            {% if settings_form.context_input_x.errors %}<div class="field-error">{{ settings_form.context_input_x.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.context_input_y.label }}</label>
+                            {{ settings_form.context_input_y }}
+                            {% if settings_form.context_input_y.errors %}<div class="field-error">{{ settings_form.context_input_y.errors|striptags }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="field compact" data-role="context-branch-channels">
+                        <label>{{ settings_form.context_branch_channels.label }}</label>
+                        {{ settings_form.context_branch_channels }}
+                        {% if settings_form.context_branch_channels.errors %}<div class="field-error">{{ settings_form.context_branch_channels.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field compact" data-role="fusion-type">
+                        <label>{{ settings_form.fusion_type.label }}</label>
+                        {{ settings_form.fusion_type }}
+                        {% if settings_form.fusion_type.errors %}<div class="field-error">{{ settings_form.fusion_type.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field">
+                        <label>{{ settings_form.synthetic_defect_generator.label }}</label>
+                        {{ settings_form.synthetic_defect_generator }}
+                        {% if settings_form.synthetic_defect_generator.errors %}<div class="field-error">{{ settings_form.synthetic_defect_generator.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field">
+                        <label>{{ settings_form.tech_aug.label }}</label>
+                        {{ settings_form.tech_aug }}
+                        {% if settings_form.tech_aug.errors %}<div class="field-error">{{ settings_form.tech_aug.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field">
+                        <label>{{ settings_form.pcb_defects.label }}</label>
+                        {{ settings_form.pcb_defects }}
+                        {% if settings_form.pcb_defects.errors %}<div class="field-error">{{ settings_form.pcb_defects.errors|striptags }}</div>{% endif %}
                     </div>
                 </section>
             </div>

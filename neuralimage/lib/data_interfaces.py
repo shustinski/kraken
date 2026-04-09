@@ -86,7 +86,6 @@ def normalize_confidence_save_mode(value: str | ConfidenceSaveMode | None) -> st
 class OptimizerName(enum.Enum):
     adam = 'adam'
     adamw = 'adamw'
-    adamw_muon = 'adamw_muon'
 
 
 class MixedPrecisionMode(enum.Enum):

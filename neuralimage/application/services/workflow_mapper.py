@@ -54,12 +54,14 @@ def build_workflow_parameters(
     )
     if sync_patch_sizes:
         recognition_patch_size = train_patch_size
+    if patch_batch_sync_mode in ('batch', 'patch_and_batch'):
+        recognition_batch_size = train_batch_size
     local_crop_size = tuple(getattr(settings, 'local_crop_size', None) or train_patch_size)
     context_crop_size = getattr(settings, 'context_crop_size', None)
     context_input_size = getattr(settings, 'context_input_size', None)
     requested_context_branch = getattr(settings, 'use_context_branch', None)
     if requested_context_branch is None:
-        requested_context_branch = settings.model in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}
+        requested_context_branch = settings.model == 'FrameUnet'
     model = (
         settings.model
         if work_mode in (WorkMode.train_only, WorkMode.train_and_recognition)

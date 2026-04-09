@@ -54,6 +54,8 @@ def build_workflow_parameters(
     )
     if sync_patch_sizes:
         recognition_patch_size = train_patch_size
+    if patch_batch_sync_mode in ('batch', 'patch_and_batch'):
+        recognition_batch_size = train_batch_size
     local_crop_size = tuple(getattr(settings, 'local_crop_size', None) or train_patch_size)
     context_crop_size = getattr(settings, 'context_crop_size', None)
     context_input_size = getattr(settings, 'context_input_size', None)

@@ -127,7 +127,7 @@ def test_settings_panel_optimizer_presets_apply_values_and_highlight_active(qapp
     panel = SettingsPanel()
     panel.connect_internal_signals()
 
-    adam_btn, adamw_btn, muon_btn = panel.optimizer_preset_buttons
+    adam_btn, adamw_btn = panel.optimizer_preset_buttons
 
     adamw_btn.click()
     assert panel.optimizer_type.currentText() == 'adamw'
@@ -135,20 +135,10 @@ def test_settings_panel_optimizer_presets_apply_values_and_highlight_active(qapp
     assert panel.weight_decay_spinbox.value() == pytest.approx(0.01)
     assert adamw_btn.isChecked() is True
     assert adam_btn.isChecked() is False
-    assert muon_btn.isChecked() is False
-
-    muon_btn.click()
-    assert panel.optimizer_type.currentText() == 'adamw_muon'
-    assert panel.learning_rate_spinbox.value() == pytest.approx(0.0003)
-    assert panel.weight_decay_spinbox.value() == pytest.approx(0.02)
-    assert muon_btn.isChecked() is True
-    assert adam_btn.isChecked() is False
-    assert adamw_btn.isChecked() is False
 
     panel.learning_rate_spinbox.setValue(0.00031)
     assert adam_btn.isChecked() is False
     assert adamw_btn.isChecked() is False
-    assert muon_btn.isChecked() is False
 
 
 def test_settings_panel_toggles_validation_spinbox(qapp):
@@ -1332,7 +1322,7 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     panel.augmentation_noise_sigma_spinbox.setValue(0.02)
     panel.augmentation_blur_probability_spinbox.setValue(0.5)
     panel.augmentation_blur_radius_spinbox.setValue(1.6)
-    panel.optimizer_type.setCurrentText('adamw_muon')
+    panel.optimizer_type.setCurrentText('adamw')
     panel.mixed_precision_type.setCurrentText('off')
     panel.set_loss_term_weights({'bce': 0.2, 'iou': 0.8})
     panel.learning_rate_spinbox.setValue(0.0003)
@@ -1417,7 +1407,7 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert presenter.settings_state.augmentation_noise_sigma == pytest.approx(0.02)
     assert presenter.settings_state.augmentation_blur_probability == pytest.approx(0.5)
     assert presenter.settings_state.augmentation_blur_radius == pytest.approx(1.6)
-    assert presenter.settings_state.optimizer_name == 'adamw_muon'
+    assert presenter.settings_state.optimizer_name == 'adamw'
     assert presenter.settings_state.mixed_precision == 'off'
     assert presenter.settings_state.loss_function == 'iou'
     assert presenter.settings_state.loss_term_weights['bce'] == pytest.approx(0.2)

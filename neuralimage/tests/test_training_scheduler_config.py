@@ -155,47 +155,11 @@ def test_step_epoch_scheduler_uses_validation_loss_then_train_loss_fallback():
     assert plateau_scheduler.calls == [0.4, 0.9]
 
 
-def test_create_adamw_muon_optimizer_falls_back_when_module_lookup_raises(monkeypatch):
-    trainer = _build_trainer(
-        optimizer_params=OptimizerParameters(
-            name=OptimizerName.adamw_muon,
-            learning_rate=3e-4,
-            weight_decay=2e-2,
-        ),
-    )
-
-    def _raise_missing_spec(module_name):
-        raise ModuleNotFoundError(f"No module named '{module_name}'")
-
-    monkeypatch.setattr(target.optim, 'Muon', None, raising=False)
-    monkeypatch.setattr(target.importlib.util, 'find_spec', _raise_missing_spec)
-
-    optimizer = trainer._create_optimizer()
-
-    assert isinstance(optimizer, torch.optim.AdamW)
-    assert any('Muon optimizer is unavailable. Using AdamW.' in str(message[1]) for message in trainer._bus.messages)
-
-
-def test_create_adamw_muon_optimizer_prefers_native_torch_muon():
+def test_create_adamw_optimizer_returns_torch_adamw():
     trainer = _build_trainer(
         model=torch.nn.Linear(4, 2, bias=False),
         optimizer_params=OptimizerParameters(
-            name=OptimizerName.adamw_muon,
-            learning_rate=3e-4,
-            weight_decay=2e-2,
-        ),
-    )
-
-    optimizer = trainer._create_optimizer()
-
-    assert isinstance(optimizer, torch.optim.Muon)
-
-
-def test_create_adamw_muon_optimizer_falls_back_for_non_2d_model_params():
-    trainer = _build_trainer(
-        model=torch.nn.Conv2d(3, 8, 3),
-        optimizer_params=OptimizerParameters(
-            name=OptimizerName.adamw_muon,
+            name=OptimizerName.adamw,
             learning_rate=3e-4,
             weight_decay=2e-2,
         ),
@@ -204,4 +168,3 @@ def test_create_adamw_muon_optimizer_falls_back_for_non_2d_model_params():
     optimizer = trainer._create_optimizer()
 
     assert isinstance(optimizer, torch.optim.AdamW)
-    assert any('Muon optimizer initialization failed (Muon only supports 2D parameters' in str(message[1]) for message in trainer._bus.messages)

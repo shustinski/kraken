@@ -28,6 +28,15 @@ from lib.rare_patch_masks import resolve_rare_patch_mask_path
 from model.NeuralNetwork.context_utils import PatchWindow, extract_centered_crop, normalize_size_pair, resize_chw_image
 
 
+_REPLAY_RARE_PATCH_DIR = Path('replay_buffer') / 'rare_patch_masks'
+
+
+def _resolve_artifact_replay_mask_path(artifact_dir: Path | None, sample_name: str | Path) -> Path | None:
+    if artifact_dir is None:
+        return None
+    return Path(artifact_dir) / _REPLAY_RARE_PATCH_DIR / f'{Path(str(sample_name)).stem}.png'
+
+
 def _unwrap_tech_augmented_mask(result: np.ndarray | tuple[np.ndarray, np.ndarray]) -> np.ndarray:
     if isinstance(result, tuple):
         return np.asarray(result[1])
@@ -241,6 +250,8 @@ class NoCutDataset(Dataset):
         self._current_image_cutter: SampleFastCutter | None = None
         self._frame_cache: OrderedDict[tuple[int, int, bool], SampleFastCutter] = OrderedDict()
         self._frame_cache_limit = self._resolve_frame_cache_limit()
+        artifact_dir = getattr(settings, 'artifact_dir', None)
+        self._artifact_replay_dir = Path(artifact_dir) if artifact_dir is not None else None
 
         self._create_files_list()
         self._calculate_len()
@@ -307,7 +318,9 @@ class NoCutDataset(Dataset):
         self._rebuild_lookup()
 
     def _resolve_dynamic_frame_lengths(self) -> bool:
-        if not (self._skip_uniform_labels or self._rare_patch_oversampling_enabled):
+        if self._rare_patch_oversampling_enabled:
+            return True
+        if not self._skip_uniform_labels:
             return False
         return bool(
             getattr(self._cut_settings, 'random_crop', False)
@@ -413,15 +426,25 @@ class NoCutDataset(Dataset):
     def _load_prepared_rare_mask(self, image_path: Path, image_size: tuple[int, int]) -> Image.Image | None:
         if not self._rare_patch_oversampling_enabled or self._rare_patch_oversampling_factor <= 1:
             return None
-        rare_mask_path = resolve_rare_patch_mask_path(self._sample_folder, image_path.stem)
-        if not rare_mask_path.exists():
+        candidate_paths = [
+            resolve_rare_patch_mask_path(self._sample_folder, image_path.stem),
+            _resolve_artifact_replay_mask_path(self._artifact_replay_dir, image_path.stem),
+        ]
+        combined_mask: np.ndarray | None = None
+        for rare_mask_path in candidate_paths:
+            if rare_mask_path is None or not rare_mask_path.exists():
+                continue
+            rare_mask = ImagePreparator(rare_mask_path, self._prep_settings).image.convert('L')
+            if rare_mask.size != image_size:
+                rare_mask = rare_mask.resize(image_size, resample=Image.Resampling.NEAREST)
+            rare_mask_array = np.asarray(rare_mask, dtype=np.uint8)
+            if combined_mask is None:
+                combined_mask = rare_mask_array
+            else:
+                combined_mask = np.maximum(combined_mask, rare_mask_array)
+        if combined_mask is None or int(np.count_nonzero(combined_mask)) <= 0:
             return None
-        rare_mask = ImagePreparator(rare_mask_path, self._prep_settings).image.convert('L')
-        if rare_mask.size != image_size:
-            rare_mask = rare_mask.resize(image_size, resample=Image.Resampling.NEAREST)
-        if rare_mask.getbbox() is None:
-            return None
-        return rare_mask
+        return Image.fromarray(combined_mask.astype(np.uint8, copy=False), mode='L')
 
     def _build_context_crop(self, cutter: SampleFastCutter, part: int):
         left, top, right, bottom = cutter.resolve_part_coordinates(part)
@@ -707,14 +730,50 @@ class SyntheticDefectDataset(Dataset):
 
     def _sample_topology_parameters(self, idx: int) -> SyntheticTopologyParameters:
         rng = np.random.default_rng(int(self._sample_seed(idx, salt=17)))
-        trace_count_range = tuple(self._config.trace_count_range)
-        background_noise_sigma_range = tuple(self._config.background_noise_sigma_range)
-        trace_noise_sigma_range = tuple(self._config.trace_noise_sigma_range)
+        curriculum_progress = min(1.0, max(0.0, float(self._epoch_index) / 6.0))
+        topology_domain = str(self._config.topology_domain or 'pcb').strip().lower()
+        topology_family = str(self._config.topology_family or 'pcb_mixed').strip().lower()
+
+        density_scale = 1.15 if topology_domain == 'ic' else 0.95
+        width_scale = 0.9 if topology_domain == 'ic' else 1.1
+        noise_scale = 0.7 if topology_domain == 'ic' else 1.0
+        if 'cell_array' in topology_family:
+            density_scale *= 1.2
+            width_scale *= 0.9
+        elif 'tree' in topology_family:
+            density_scale *= 0.9
+            noise_scale *= 0.9
+        elif 'parallel' in topology_family:
+            density_scale *= 1.05
+
+        def _blend_int_range(values: tuple[int, int], *, scale: float = 1.0) -> tuple[int, int]:
+            low, high = int(values[0]), int(values[1])
+            scaled_low = max(1, int(round(low * scale)))
+            scaled_high = max(scaled_low, int(round(high * scale)))
+            start_high = max(scaled_low, int(round(scaled_low + ((scaled_high - scaled_low) * 0.35))))
+            current_high = int(round(start_high + ((scaled_high - start_high) * curriculum_progress)))
+            return scaled_low, max(scaled_low, current_high)
+
+        def _blend_float_range(values: tuple[float, float], *, scale: float = 1.0) -> tuple[float, float]:
+            low, high = float(values[0]) * float(scale), float(values[1]) * float(scale)
+            start_high = low + ((high - low) * 0.35)
+            current_high = start_high + ((high - start_high) * curriculum_progress)
+            return float(low), float(max(low, current_high))
+
+        trace_count_range = _blend_int_range(tuple(self._config.trace_count_range), scale=density_scale)
+        segment_count_range = _blend_int_range(tuple(self._config.segment_count_range))
+        trace_half_width_range = _blend_int_range(tuple(self._config.trace_half_width_range), scale=width_scale)
+        background_noise_sigma_range = _blend_float_range(tuple(self._config.background_noise_sigma_range), scale=noise_scale)
+        trace_noise_sigma_range = _blend_float_range(tuple(self._config.trace_noise_sigma_range), scale=noise_scale)
+        current_margin = int(
+            round((float(self._config.margin) * (1.25 if topology_domain == 'pcb' else 1.1)) * (1.0 - curriculum_progress))
+            + round(float(self._config.margin) * curriculum_progress)
+        )
         return SyntheticTopologyParameters(
             trace_count=int(rng.integers(int(trace_count_range[0]), int(trace_count_range[1]) + 1)),
-            segment_count_range=tuple(self._config.segment_count_range),
-            trace_half_width_range=tuple(self._config.trace_half_width_range),
-            margin=int(self._config.margin),
+            segment_count_range=segment_count_range,
+            trace_half_width_range=trace_half_width_range,
+            margin=max(4, int(current_margin)),
             topology_domain=str(self._config.topology_domain),
             topology_family=str(self._config.topology_family),
             via_count_range=(1, max(1, min(6, int(round(float(trace_count_range[1]) / 3.0))))),

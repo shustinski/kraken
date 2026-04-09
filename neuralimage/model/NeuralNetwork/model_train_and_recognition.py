@@ -9,7 +9,7 @@ import math
 import random
 import re
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty
 
@@ -22,6 +22,7 @@ import multiprocessing as mp
 import threading
 
 import numpy as np
+import cv2
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -53,11 +54,13 @@ from lib.data_interfaces import (
 from lib.file_retry import retry_file_read
 from lib.file_func import filter_images
 from lib.func import get_input_channels
+from lib.image_processing import sew_image
 from lib.images import ImagePreparator, SampleCalculator
 from lib.images import _build_enabled_transform_variants
 from lib.loss_config import format_loss_formula, resolve_loss_term_weights, sanitize_loss_term_weights
 from lib.message_bus import AbstractMessageBus
 from lib.random_artifacts import generate_random_artifact_patch
+from lib.rare_patch_masks import save_rare_patch_mask
 from model.NeuralNetwork.blocks import extract_confidence_output, extract_mask_outputs
 from model.NeuralNetwork.context_utils import normalize_size_pair
 from model.NeuralNetwork.model_io import load_model_artifact, save_model_artifact
@@ -88,6 +91,10 @@ FOCAL_TVERSKY_BETA = 0.7
 BOUNDARY_LOSS_KERNEL_SIZE = 3
 CLDICE_SKELETON_ITERATIONS = 16
 VALIDATION_THRESHOLD_CANDIDATES: tuple[float, ...] = tuple(value / 100.0 for value in range(10, 95, 5))
+VALIDATION_CONFIDENCE_CALIBRATION_BINS = 16
+LOW_CONFIDENCE_TARGET_ACCURACY = 0.85
+LOW_CONFIDENCE_MIN_THRESHOLD = 0.15
+LOW_CONFIDENCE_MAX_THRESHOLD = 0.5
 DEEP_SUPERVISION_DECAY = 0.5
 CONFIDENCE_LOSS_WEIGHT = 0.2
 RECOGNITION_AUX_WORKERS_PER_GPU = 4
@@ -541,6 +548,8 @@ class _ValidationNoCutFrameExportCache:
     parts_count: int
     part_lookup: list[int] | None
     patches: dict[int, np.ndarray]
+    confidence_patches: dict[int, np.ndarray] = field(default_factory=dict)
+    label_patches: dict[int, np.ndarray] = field(default_factory=dict)
 
 
 @dataclass
@@ -548,6 +557,8 @@ class _ValidationExportCache:
     mode: str
     dataset: Any
     sample_predictions: dict[int, np.ndarray] | None = None
+    sample_confidence: dict[int, np.ndarray] | None = None
+    sample_labels: dict[int, np.ndarray] | None = None
     frame_predictions: dict[int, _ValidationNoCutFrameExportCache] | None = None
 
 
@@ -936,6 +947,8 @@ class TrainerProcess(mp.Process):
         self._uncompiled_model: nn.Module | None = None
         self._torch_compile_active = False
         self._recommended_inference_threshold = 0.5
+        self._confidence_calibration_metadata: dict[str, Any] = {}
+        self._topology_validation_metadata: dict[str, Any] = {}
         self._train_epoch_history: list[tuple[float, float]] = []
         self._val_epoch_history: list[tuple[float, float]] = []
         self._val_iou_history: list[tuple[float, float]] = []
@@ -965,11 +978,16 @@ class TrainerProcess(mp.Process):
 
     def _resolve_artifact_runtime_metadata(self) -> dict[str, Any]:
         threshold = float(min(max(getattr(self, '_recommended_inference_threshold', 0.5), 0.0), 1.0))
-        return {
+        metadata = {
             'inference': {
                 'recommended_threshold': threshold,
             },
         }
+        if self._confidence_calibration_metadata:
+            metadata['confidence'] = dict(self._confidence_calibration_metadata)
+        if self._topology_validation_metadata:
+            metadata['validation'] = dict(self._topology_validation_metadata)
+        return metadata
 
     def _save_model_artifact(self) -> None:
         model_name, input_channels, model_kwargs = self._resolve_model_artifact_metadata()
@@ -2277,15 +2295,174 @@ class TrainerProcess(mp.Process):
         }
 
     @staticmethod
+    def _compute_topology_counts(
+        prediction_mask: np.ndarray,
+        target_mask: np.ndarray,
+    ) -> dict[str, float]:
+        prediction_u8 = np.ascontiguousarray(prediction_mask.astype(np.uint8))
+        target_u8 = np.ascontiguousarray(target_mask.astype(np.uint8))
+        pred_components, pred_labels = cv2.connectedComponents(prediction_u8, connectivity=8)
+        target_components, target_labels = cv2.connectedComponents(target_u8, connectivity=8)
+        pred_count = max(0, int(pred_components) - 1)
+        target_count = max(0, int(target_components) - 1)
+
+        matched_target = 0
+        if target_count > 0 and pred_count > 0:
+            overlap_target_ids = np.unique(target_labels[prediction_u8 > 0])
+            matched_target = int(np.count_nonzero(overlap_target_ids > 0))
+        elif target_count == 0 and pred_count == 0:
+            matched_target = 0
+
+        matched_pred = 0
+        if pred_count > 0 and target_count > 0:
+            overlap_pred_ids = np.unique(pred_labels[target_u8 > 0])
+            matched_pred = int(np.count_nonzero(overlap_pred_ids > 0))
+        elif pred_count == 0 and target_count == 0:
+            matched_pred = 0
+
+        denom = max(1, target_count)
+        return {
+            'pred_components': float(pred_count),
+            'target_components': float(target_count),
+            'matched_pred_components': float(max(0, matched_pred)),
+            'matched_target_components': float(max(0, matched_target)),
+            'break_error': float(max(pred_count - target_count, 0) / denom),
+            'short_error': float(max(target_count - pred_count, 0) / denom),
+        }
+
+    @staticmethod
+    def _compute_topology_metrics(
+        *,
+        pred_components: float,
+        target_components: float,
+        matched_pred_components: float,
+        matched_target_components: float,
+        break_error: float,
+        short_error: float,
+    ) -> dict[str, float]:
+        if pred_components <= 0.0 and target_components <= 0.0:
+            precision = 1.0
+            recall = 1.0
+        else:
+            precision = (
+                float(matched_pred_components) / float(pred_components)
+                if pred_components > 0.0
+                else 0.0
+            )
+            recall = (
+                float(matched_target_components) / float(target_components)
+                if target_components > 0.0
+                else 0.0
+            )
+        denom = precision + recall
+        topology_f1 = (2.0 * precision * recall) / denom if denom > 0.0 else 0.0
+        break_score = float(max(0.0, 1.0 - float(break_error)))
+        short_score = float(max(0.0, 1.0 - float(short_error)))
+        return {
+            'component_precision': float(precision),
+            'component_recall': float(recall),
+            'topology_f1': float(topology_f1),
+            'break_score': break_score,
+            'short_score': short_score,
+        }
+
+    def _merge_threshold_metrics(
+        self,
+        *,
+        binary_metrics: dict[str, float],
+        topology_counts: dict[str, float],
+    ) -> dict[str, float]:
+        topology_metrics = self._compute_topology_metrics(
+            pred_components=float(topology_counts.get('pred_components', 0.0)),
+            target_components=float(topology_counts.get('target_components', 0.0)),
+            matched_pred_components=float(topology_counts.get('matched_pred_components', 0.0)),
+            matched_target_components=float(topology_counts.get('matched_target_components', 0.0)),
+            break_error=float(topology_counts.get('break_error', 0.0)),
+            short_error=float(topology_counts.get('short_error', 0.0)),
+        )
+        topology_score = (
+            float(binary_metrics.get('dice', 0.0)) * 0.45
+            + float(binary_metrics.get('iou', 0.0)) * 0.25
+            + float(topology_metrics.get('topology_f1', 0.0)) * 0.20
+            + float(topology_metrics.get('break_score', 0.0)) * 0.05
+            + float(topology_metrics.get('short_score', 0.0)) * 0.05
+        )
+        merged = dict(binary_metrics)
+        merged.update(topology_metrics)
+        merged['topology_score'] = float(topology_score)
+        return merged
+
+    @staticmethod
+    def _build_confidence_calibration_metadata(
+        *,
+        bin_edges: np.ndarray,
+        bin_counts: np.ndarray,
+        bin_correct: np.ndarray,
+        bin_confidence_sum: np.ndarray,
+    ) -> dict[str, Any]:
+        counts = np.asarray(bin_counts, dtype=np.float64)
+        correct = np.asarray(bin_correct, dtype=np.float64)
+        confidence_sum = np.asarray(bin_confidence_sum, dtype=np.float64)
+        total = float(np.sum(counts))
+        if total <= 0.0:
+            return {}
+
+        mean_confidence = np.divide(
+            confidence_sum,
+            np.maximum(counts, 1.0),
+            out=np.zeros_like(confidence_sum),
+            where=counts > 0,
+        )
+        empirical_accuracy = np.divide(
+            correct,
+            np.maximum(counts, 1.0),
+            out=np.zeros_like(correct),
+            where=counts > 0,
+        )
+        calibrated_values = np.maximum.accumulate(empirical_accuracy)
+        ece = float(
+            np.sum((counts / total) * np.abs(empirical_accuracy - mean_confidence))
+        )
+
+        low_confidence_threshold = 0.25
+        candidate_edges = [
+            float(bin_edges[index + 1])
+            for index, (count, value) in enumerate(zip(counts, calibrated_values))
+            if count > 0.0 and float(value) < LOW_CONFIDENCE_TARGET_ACCURACY
+        ]
+        if candidate_edges:
+            low_confidence_threshold = max(candidate_edges)
+        low_confidence_threshold = float(
+            min(max(low_confidence_threshold, LOW_CONFIDENCE_MIN_THRESHOLD), LOW_CONFIDENCE_MAX_THRESHOLD)
+        )
+
+        return {
+            'calibration_bin_edges': tuple(float(value) for value in np.asarray(bin_edges, dtype=np.float64)),
+            'calibration_bin_values': tuple(float(value) for value in calibrated_values),
+            'calibration_bin_counts': tuple(int(value) for value in counts.astype(np.int64)),
+            'ece': ece,
+            'low_confidence_threshold': float(low_confidence_threshold),
+        }
+
+    @staticmethod
     def _pick_best_validation_threshold(
         threshold_metrics: dict[float, dict[str, float]],
     ) -> tuple[float, dict[str, float]]:
         if not threshold_metrics:
-            return 0.5, {'accuracy': 0.0, 'iou': 0.0, 'dice': 0.0, 'f1': 0.0}
+            return 0.5, {
+                'accuracy': 0.0,
+                'iou': 0.0,
+                'dice': 0.0,
+                'f1': 0.0,
+                'topology_score': 0.0,
+                'break_score': 0.0,
+                'short_score': 0.0,
+            }
 
-        def _sort_key(item: tuple[float, dict[str, float]]) -> tuple[float, float, float]:
+        def _sort_key(item: tuple[float, dict[str, float]]) -> tuple[float, float, float, float]:
             threshold, metrics = item
             return (
+                float(metrics.get('topology_score', 0.0)),
                 float(metrics.get('dice', 0.0)),
                 float(metrics.get('iou', 0.0)),
                 -abs(float(threshold) - 0.5),
@@ -2418,7 +2595,7 @@ class TrainerProcess(mp.Process):
         return [int(item) for item in parts]
 
     def _create_validation_export_cache(self) -> _ValidationExportCache | None:
-        if (not self._save_validation_binary_images) or self._val_dataloader is None:
+        if self._val_dataloader is None:
             return None
 
         dataset = self._resolve_validation_dataset()
@@ -2442,6 +2619,8 @@ class TrainerProcess(mp.Process):
                 mode='custom',
                 dataset=dataset,
                 sample_predictions={},
+                sample_confidence={},
+                sample_labels={},
             )
 
         if not isinstance(base_dataset, NoCutDataset):
@@ -2501,6 +2680,8 @@ class TrainerProcess(mp.Process):
         *,
         sample_indices: Any,
         probs: torch.Tensor,
+        confidence: torch.Tensor,
+        labels: torch.Tensor,
         saved_images: int,
     ) -> None:
         if export_cache is None or probs.ndim < 4:
@@ -2515,14 +2696,20 @@ class TrainerProcess(mp.Process):
             return
 
         cpu_probs = probs.detach().cpu().to(dtype=torch.float16).numpy()
+        cpu_confidence = confidence.detach().cpu().to(dtype=torch.float16).numpy()
+        cpu_labels = labels.detach().cpu().to(dtype=torch.float16).numpy()
         if export_cache.mode == 'custom':
             sample_predictions = export_cache.sample_predictions
-            if sample_predictions is None:
+            sample_confidence = export_cache.sample_confidence
+            sample_labels = export_cache.sample_labels
+            if sample_predictions is None or sample_confidence is None or sample_labels is None:
                 return
             for batch_offset, sample_index in enumerate(resolved_indices):
                 if batch_offset >= int(cpu_probs.shape[0]):
                     break
                 sample_predictions[int(sample_index)] = np.ascontiguousarray(cpu_probs[batch_offset])
+                sample_confidence[int(sample_index)] = np.ascontiguousarray(cpu_confidence[batch_offset])
+                sample_labels[int(sample_index)] = np.ascontiguousarray(cpu_labels[batch_offset])
             return
 
         if export_cache.mode != 'no_cut':
@@ -2561,6 +2748,8 @@ class TrainerProcess(mp.Process):
             if location < 0 or location >= frame_cache.parts_count or location in frame_cache.patches:
                 continue
             frame_cache.patches[int(location)] = np.ascontiguousarray(cpu_probs[batch_offset])
+            frame_cache.confidence_patches[int(location)] = np.ascontiguousarray(cpu_confidence[batch_offset])
+            frame_cache.label_patches[int(location)] = np.ascontiguousarray(cpu_labels[batch_offset])
 
     def _save_validation_binary_predictions_from_cache(
         self,
@@ -2632,6 +2821,139 @@ class TrainerProcess(mp.Process):
             )
             saved_images += 1
         return int(saved_images)
+
+    @staticmethod
+    def _build_low_confidence_replay_mask(
+        *,
+        probability: np.ndarray,
+        confidence: np.ndarray,
+        label: np.ndarray,
+        threshold: float,
+        low_confidence_threshold: float,
+    ) -> np.ndarray:
+        probability_array = np.asarray(probability, dtype=np.float32)
+        confidence_array = np.asarray(confidence, dtype=np.float32)
+        label_array = np.asarray(label, dtype=np.float32)
+        if probability_array.ndim == 3:
+            probability_array = probability_array[0]
+        if confidence_array.ndim == 3:
+            confidence_array = confidence_array[0]
+        if label_array.ndim == 3:
+            label_array = label_array[0]
+
+        label_binary = label_array >= 0.5
+        prediction_binary = probability_array >= float(threshold)
+        prediction_error = prediction_binary != label_binary
+        low_confidence = confidence_array <= float(low_confidence_threshold)
+        near_boundary = np.abs(probability_array - float(threshold)) <= 0.15
+        replay_mask = (prediction_error | low_confidence | (label_binary & near_boundary)).astype(np.uint8) * 255
+        if int(np.count_nonzero(replay_mask)) <= 0:
+            return replay_mask
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        return cv2.dilate(replay_mask, kernel, iterations=1)
+
+    def _save_low_confidence_replay_mask(self, *, image_path: Path, mask_array: np.ndarray) -> bool:
+        normalized_mask = np.where(np.asarray(mask_array, dtype=np.uint8) > 0, 255, 0).astype(np.uint8, copy=False)
+        save_rare_patch_mask(image_path.parent, image_path.stem, normalized_mask)
+        replay_dir = self._save_path.parent / 'replay_buffer' / 'rare_patch_masks'
+        replay_dir.mkdir(parents=True, exist_ok=True)
+        replay_path = replay_dir / f'{image_path.stem}.png'
+        if int(np.count_nonzero(normalized_mask)) <= 0:
+            if replay_path.exists():
+                replay_path.unlink()
+            return False
+        Image.fromarray(normalized_mask, mode='L').save(replay_path, format='PNG')
+        return True
+
+    def _save_low_confidence_replay_from_cache(
+        self,
+        *,
+        export_cache: _ValidationExportCache | None,
+        threshold: float,
+        low_confidence_threshold: float,
+    ) -> int:
+        if export_cache is None:
+            return 0
+
+        if export_cache.mode == 'custom':
+            saved_masks = 0
+            sample_predictions = export_cache.sample_predictions or {}
+            sample_confidence = export_cache.sample_confidence or {}
+            sample_labels = export_cache.sample_labels or {}
+            dataset = export_cache.dataset
+            base_dataset = self._unwrap_validation_dataset(dataset)
+            if not isinstance(base_dataset, CustomDataset):
+                return 0
+            for sample_index, probability in sample_predictions.items():
+                confidence = sample_confidence.get(int(sample_index))
+                label = sample_labels.get(int(sample_index))
+                if confidence is None or label is None:
+                    continue
+                image_path = Path(base_dataset.samples[int(sample_index)][0])
+                replay_mask = self._build_low_confidence_replay_mask(
+                    probability=probability,
+                    confidence=confidence,
+                    label=label,
+                    threshold=float(threshold),
+                    low_confidence_threshold=float(low_confidence_threshold),
+                )
+                if self._save_low_confidence_replay_mask(image_path=image_path, mask_array=replay_mask):
+                    saved_masks += 1
+            return int(saved_masks)
+
+        if export_cache.mode != 'no_cut':
+            return 0
+        frame_predictions = export_cache.frame_predictions or {}
+        saved_masks = 0
+        for frame_cache in frame_predictions.values():
+            if (
+                len(frame_cache.patches) < int(frame_cache.parts_count)
+                or len(frame_cache.confidence_patches) < int(frame_cache.parts_count)
+                or len(frame_cache.label_patches) < int(frame_cache.parts_count)
+            ):
+                continue
+            sample_patch = next(iter(frame_cache.patches.values()), None)
+            if sample_patch is None:
+                continue
+            probability_stack = np.zeros(
+                (
+                    int(frame_cache.parts_count),
+                    int(sample_patch.shape[0]),
+                    int(sample_patch.shape[1]),
+                    int(sample_patch.shape[2]),
+                ),
+                dtype=np.float32,
+            )
+            confidence_stack = np.zeros_like(probability_stack)
+            label_stack = np.zeros_like(probability_stack)
+            for location, patch in frame_cache.patches.items():
+                probability_stack[int(location)] = np.asarray(patch, dtype=np.float32)
+                confidence_stack[int(location)] = np.asarray(frame_cache.confidence_patches[int(location)], dtype=np.float32)
+                label_stack[int(location)] = np.asarray(frame_cache.label_patches[int(location)], dtype=np.float32)
+            replay_patch_stack = np.stack(
+                [
+                    self._build_low_confidence_replay_mask(
+                        probability=probability_stack[index],
+                        confidence=confidence_stack[index],
+                        label=label_stack[index],
+                        threshold=float(threshold),
+                        low_confidence_threshold=float(low_confidence_threshold),
+                    )[None, :, :]
+                    for index in range(int(frame_cache.parts_count))
+                ],
+                axis=0,
+            ).astype(np.float32, copy=False) / 255.0
+            replay_image = sew_image(
+                base_image=frame_cache.baseim_size,
+                predictions=replay_patch_stack,
+                overlap=int(frame_cache.overlap),
+                threshold=0.5,
+                postprocess_kernel_size=0,
+            )
+            replay_array = np.asarray(replay_image.convert('L'), dtype=np.uint8)
+            if self._save_low_confidence_replay_mask(image_path=frame_cache.image_path, mask_array=replay_array):
+                saved_masks += 1
+        return int(saved_masks)
 
     def _describe_validation_sample(self, dataset: Any, sample_index: int, fallback_index: int) -> str:
         describe_fn = getattr(dataset, 'describe_sample', None)
@@ -2785,6 +3107,31 @@ class TrainerProcess(mp.Process):
             }
             for threshold in VALIDATION_THRESHOLD_CANDIDATES
         }
+        threshold_topology_counts = {
+            float(threshold): {
+                'pred_components': 0.0,
+                'target_components': 0.0,
+                'matched_pred_components': 0.0,
+                'matched_target_components': 0.0,
+                'break_error': 0.0,
+                'short_error': 0.0,
+            }
+            for threshold in VALIDATION_THRESHOLD_CANDIDATES
+        }
+        confidence_bin_edges = np.linspace(
+            0.0,
+            1.0,
+            VALIDATION_CONFIDENCE_CALIBRATION_BINS + 1,
+            dtype=np.float32,
+        )
+        threshold_confidence_stats = {
+            float(threshold): {
+                'counts': np.zeros(VALIDATION_CONFIDENCE_CALIBRATION_BINS, dtype=np.float64),
+                'correct': np.zeros(VALIDATION_CONFIDENCE_CALIBRATION_BINS, dtype=np.float64),
+                'confidence_sum': np.zeros(VALIDATION_CONFIDENCE_CALIBRATION_BINS, dtype=np.float64),
+            }
+            for threshold in VALIDATION_THRESHOLD_CANDIDATES
+        }
         skipped_non_finite_batches = 0
         validation_export_cache = self._create_validation_export_cache()
         export_saved_images = 0
@@ -2806,15 +3153,28 @@ class TrainerProcess(mp.Process):
                 val_loss += loss.item() * image.size(0)
                 val_loss_samples += int(image.size(0))
                 probs = torch.sigmoid(self._sanitize_outputs_for_loss(outputs))
+                confidence_logits = self._extract_confidence_output_tensor(outputs)
+                if confidence_logits is None:
+                    confidence_probs = 1.0 - (torch.abs(probs - 0.5) * 2.0)
+                else:
+                    confidence_logits = self._resize_output_like_label(confidence_logits, label)
+                    confidence_probs = torch.sigmoid(confidence_logits)
+                confidence_probs = torch.clamp(
+                    torch.nan_to_num(confidence_probs, nan=0.0, posinf=1.0, neginf=0.0),
+                    min=0.0,
+                    max=1.0,
+                )
+                label_bin = self._sanitize_labels_for_loss(label) >= 0.5
                 self._collect_validation_export_batch(
                     validation_export_cache,
                     sample_indices=_sample_indices,
                     probs=probs,
+                    confidence=confidence_probs,
+                    labels=label_bin.float(),
                     saved_images=export_saved_images,
                 )
                 export_saved_images += int(probs.shape[0])
                 preds = probs >= 0.5
-                label_bin = self._sanitize_labels_for_loss(label) >= 0.5
                 correct += (preds == label_bin).sum().item()
                 total += label_bin.numel()
                 preds_f = preds.float()
@@ -2822,6 +3182,14 @@ class TrainerProcess(mp.Process):
                 true_positive += float((preds_f * label_f).sum().item())
                 false_positive += float((preds_f * (1.0 - label_f)).sum().item())
                 false_negative += float(((1.0 - preds_f) * label_f).sum().item())
+                cpu_probs = probs.detach().cpu().numpy()
+                cpu_confidence = confidence_probs.detach().cpu().numpy()
+                cpu_label_bin = label_bin.detach().cpu().numpy().astype(np.uint8, copy=False)
+                confidence_bin_indices = np.clip(
+                    (cpu_confidence * float(VALIDATION_CONFIDENCE_CALIBRATION_BINS)).astype(np.int64),
+                    0,
+                    VALIDATION_CONFIDENCE_CALIBRATION_BINS - 1,
+                )
                 for threshold, counts in threshold_counts.items():
                     threshold_preds = probs >= float(threshold)
                     counts['correct'] += int((threshold_preds == label_bin).sum().item())
@@ -2830,6 +3198,33 @@ class TrainerProcess(mp.Process):
                     counts['tp'] += float((threshold_preds_f * label_f).sum().item())
                     counts['fp'] += float((threshold_preds_f * (1.0 - label_f)).sum().item())
                     counts['fn'] += float(((1.0 - threshold_preds_f) * label_f).sum().item())
+                    threshold_preds_cpu = cpu_probs >= float(threshold)
+                    topology_counts = threshold_topology_counts[float(threshold)]
+                    for sample_index in range(int(threshold_preds_cpu.shape[0])):
+                        sample_topology = self._compute_topology_counts(
+                            threshold_preds_cpu[sample_index, 0],
+                            cpu_label_bin[sample_index, 0],
+                        )
+                        for key, value in sample_topology.items():
+                            topology_counts[key] += float(value)
+                    confidence_stats = threshold_confidence_stats[float(threshold)]
+                    flat_bins = confidence_bin_indices.reshape(-1)
+                    flat_confidence = cpu_confidence.reshape(-1).astype(np.float64, copy=False)
+                    flat_correct = (threshold_preds_cpu == cpu_label_bin).reshape(-1).astype(np.float64, copy=False)
+                    confidence_stats['counts'] += np.bincount(
+                        flat_bins,
+                        minlength=VALIDATION_CONFIDENCE_CALIBRATION_BINS,
+                    )
+                    confidence_stats['correct'] += np.bincount(
+                        flat_bins,
+                        weights=flat_correct,
+                        minlength=VALIDATION_CONFIDENCE_CALIBRATION_BINS,
+                    )
+                    confidence_stats['confidence_sum'] += np.bincount(
+                        flat_bins,
+                        weights=flat_confidence,
+                        minlength=VALIDATION_CONFIDENCE_CALIBRATION_BINS,
+                    )
 
         if skipped_non_finite_batches > 0:
             self._bus.put([
@@ -2853,17 +3248,35 @@ class TrainerProcess(mp.Process):
             total=total,
         )
         threshold_metrics = {
-            float(threshold): self._compute_binary_metrics(
-                true_positive=float(counts['tp']),
-                false_positive=float(counts['fp']),
-                false_negative=float(counts['fn']),
-                correct=int(counts['correct']),
-                total=int(counts['total']),
+            float(threshold): self._merge_threshold_metrics(
+                binary_metrics=self._compute_binary_metrics(
+                    true_positive=float(counts['tp']),
+                    false_positive=float(counts['fp']),
+                    false_negative=float(counts['fn']),
+                    correct=int(counts['correct']),
+                    total=int(counts['total']),
+                ),
+                topology_counts=threshold_topology_counts[float(threshold)],
             )
             for threshold, counts in threshold_counts.items()
         }
         best_threshold, best_threshold_metrics = self._pick_best_validation_threshold(threshold_metrics)
         self._recommended_inference_threshold = float(best_threshold)
+        best_confidence_stats = threshold_confidence_stats[float(best_threshold)]
+        self._confidence_calibration_metadata = self._build_confidence_calibration_metadata(
+            bin_edges=confidence_bin_edges,
+            bin_counts=np.asarray(best_confidence_stats['counts'], dtype=np.float64),
+            bin_correct=np.asarray(best_confidence_stats['correct'], dtype=np.float64),
+            bin_confidence_sum=np.asarray(best_confidence_stats['confidence_sum'], dtype=np.float64),
+        )
+        self._topology_validation_metadata = {
+            'best_threshold_topology_score': float(best_threshold_metrics.get('topology_score', 0.0)),
+            'best_threshold_break_score': float(best_threshold_metrics.get('break_score', 0.0)),
+            'best_threshold_short_score': float(best_threshold_metrics.get('short_score', 0.0)),
+            'best_threshold_component_precision': float(best_threshold_metrics.get('component_precision', 0.0)),
+            'best_threshold_component_recall': float(best_threshold_metrics.get('component_recall', 0.0)),
+            'best_threshold_topology_f1': float(best_threshold_metrics.get('topology_f1', 0.0)),
+        }
         self._save_validation_binary_predictions(
             epoch=epoch,
             device=device,
@@ -2871,6 +3284,22 @@ class TrainerProcess(mp.Process):
             threshold=float(best_threshold),
             export_cache=validation_export_cache,
         )
+        low_confidence_threshold = float(
+            self._confidence_calibration_metadata.get('low_confidence_threshold', LOW_CONFIDENCE_MIN_THRESHOLD)
+        )
+        replay_mask_count = self._save_low_confidence_replay_from_cache(
+            export_cache=validation_export_cache,
+            threshold=float(best_threshold),
+            low_confidence_threshold=low_confidence_threshold,
+        )
+        if replay_mask_count > 0:
+            self._bus.put([
+                'logging',
+                (
+                    f'Low-confidence replay buffer updated: {int(replay_mask_count)} mask(s) '
+                    f'(threshold={low_confidence_threshold:.2f}).'
+                ),
+            ])
 
         return {
             'loss': float(avg_val_loss),
@@ -2883,6 +3312,10 @@ class TrainerProcess(mp.Process):
             'best_threshold_iou': float(best_threshold_metrics['iou']),
             'best_threshold_dice': float(best_threshold_metrics['dice']),
             'best_threshold_f1': float(best_threshold_metrics['f1']),
+            'best_threshold_topology_score': float(best_threshold_metrics.get('topology_score', 0.0)),
+            'best_threshold_break_score': float(best_threshold_metrics.get('break_score', 0.0)),
+            'best_threshold_short_score': float(best_threshold_metrics.get('short_score', 0.0)),
+            'best_threshold_topology_f1': float(best_threshold_metrics.get('topology_f1', 0.0)),
         }
 
     def _create_optimizer(self):
@@ -2898,8 +3331,6 @@ class TrainerProcess(mp.Process):
                 return optim.Adam(self._model.parameters(), **adam_kwargs)
         if params.name == OptimizerName.adamw:
             return self._create_adamw_optimizer(params)
-        if params.name == OptimizerName.adamw_muon:
-            return self._create_adamw_muon_optimizer(params)
         raise ValueError(f'Unsupported optimizer: {params.name}')
 
     def _can_use_fused_optim(self) -> bool:
@@ -2982,52 +3413,6 @@ class TrainerProcess(mp.Process):
         except TypeError:
             adamw_kwargs.pop('fused', None)
             return optim.AdamW(self._model.parameters(), **adamw_kwargs)
-
-    @staticmethod
-    def _load_optional_attribute(module_name: str, attribute_name: str) -> Any | None:
-        try:
-            module_spec = importlib.util.find_spec(module_name)
-        except (AttributeError, ImportError, ModuleNotFoundError, ValueError):
-            return None
-        if module_spec is None:
-            return None
-        try:
-            module = importlib.import_module(module_name)
-        except Exception:
-            return None
-        return getattr(module, attribute_name, None)
-
-    def _create_adamw_muon_optimizer(self, params: OptimizerParameters):
-        """
-        Prepared hook for Muon integration.
-        Tries to use optional Muon package; if unavailable falls back to AdamW.
-        """
-        muon_cls = getattr(optim, 'Muon', None)
-        if muon_cls is None:
-            for module_name in ('muon', 'optimizers.muon', 'torch_optimizer'):
-                muon_cls = self._load_optional_attribute(module_name, 'Muon')
-                if muon_cls is not None:
-                    break
-
-        if muon_cls is None:
-            self._bus.put([
-                'logging',
-                'Muon optimizer is unavailable. Using AdamW.',
-            ])
-            return self._create_adamw_optimizer(params)
-
-        try:
-            return muon_cls(
-                self._model.parameters(),
-                lr=params.learning_rate,
-                weight_decay=params.weight_decay,
-            )
-        except Exception as error:
-            self._bus.put([
-                'logging',
-                f'Muon optimizer initialization failed ({error}). Using AdamW.',
-            ])
-            return self._create_adamw_optimizer(params)
 
     @staticmethod
     def _tensor_to_preview_array(tensor: torch.Tensor) -> np.ndarray:
@@ -4547,6 +4932,9 @@ class TrainerProcess(mp.Process):
         best_threshold_iou = float(validation_result.get('best_threshold_iou', val_iou))
         best_threshold_dice = float(validation_result.get('best_threshold_dice', val_dice))
         best_threshold_f1 = float(validation_result.get('best_threshold_f1', val_f1))
+        best_threshold_topology_score = float(validation_result.get('best_threshold_topology_score', 0.0))
+        best_threshold_break_score = float(validation_result.get('best_threshold_break_score', 0.0))
+        best_threshold_short_score = float(validation_result.get('best_threshold_short_score', 0.0))
         self._val_epoch_history.append((float(epoch + 1), float(avg_val_loss)))
         self._val_iou_history.append((float(epoch + 1), float(val_iou)))
         self._val_dice_history.append((float(epoch + 1), float(val_dice)))
@@ -4558,7 +4946,9 @@ class TrainerProcess(mp.Process):
                 f'Validation accuracy: {val_accuracy:.4%} | '
                 f'IoU: {val_iou:.4%} | Dice: {val_dice:.4%} | F1: {val_f1:.4%} | '
                 f'Best threshold: {best_threshold:.2f} '
-                f'(IoU {best_threshold_iou:.4%}, Dice {best_threshold_dice:.4%}, F1 {best_threshold_f1:.4%})'
+                f'(IoU {best_threshold_iou:.4%}, Dice {best_threshold_dice:.4%}, '
+                f'F1 {best_threshold_f1:.4%}, topology {best_threshold_topology_score:.4%}, '
+                f'break {best_threshold_break_score:.4%}, short {best_threshold_short_score:.4%})'
             ),
         ])
         self._bus.put([
@@ -4575,6 +4965,9 @@ class TrainerProcess(mp.Process):
                 'best_threshold_iou': float(best_threshold_iou),
                 'best_threshold_dice': float(best_threshold_dice),
                 'best_threshold_f1': float(best_threshold_f1),
+                'best_threshold_topology_score': float(best_threshold_topology_score),
+                'best_threshold_break_score': float(best_threshold_break_score),
+                'best_threshold_short_score': float(best_threshold_short_score),
             },
         ])
 

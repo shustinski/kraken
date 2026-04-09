@@ -1,5 +1,4 @@
 import os
-import importlib
 from pathlib import Path
 
 import PIL.Image
@@ -44,24 +43,6 @@ def _apply_transform_variant(patch: np.ndarray, variant: str) -> np.ndarray:
     if variant == 'flip_y':
         return patch[:, :, ::-1].copy()
     return patch
-
-def _load_sample_fast_cutter_getitem():
-    try:
-        module = importlib.import_module('lib.sample_fast_cutter_pyx')
-        getitem_fn = getattr(module, 'sample_fast_cutter_getitem', None)
-        module_file = str(getattr(module, '__file__', '')).lower()
-        is_accelerated = module_file.endswith('.pyd') or module_file.endswith('.so')
-        return getitem_fn, is_accelerated
-    except Exception:
-        return None, False
-
-
-_sample_fast_cutter_getitem, _sample_fast_cutter_accelerated = _load_sample_fast_cutter_getitem()
-
-
-def is_sample_fast_cutter_accelerated() -> bool:
-    return bool(_sample_fast_cutter_accelerated and _sample_fast_cutter_getitem is not None)
-
 
 def _resolve_crops_per_image(params: object) -> int:
     return max(1, int(getattr(params, 'crops_per_image', 64)))
@@ -410,15 +391,6 @@ class SampleFastCutter:
         if shuffle:
             random.shuffle(parts_list)
         self._parts_list = parts_list
-        # The current accelerator implementation rotates only channel 0 and can
-        # fail on non-square 90/270 rotations.
-        self._use_accelerator = (
-            is_sample_fast_cutter_accelerated()
-            and not self._additional_augmentation
-            and self.image_matrix.shape[0] == 1
-            and (self._square_patch or not self._horizontal_rotation)
-        )
-
     @classmethod
     def from_image(
         cls,
@@ -617,29 +589,6 @@ class SampleFastCutter:
         return bool(np.any(rare_patch > 0.5))
 
     def __getitem__(self, item):
-        # if self._use_accelerator and _sample_fast_cutter_getitem is not None:
-        #     try:
-        #         image, label = _sample_fast_cutter_getitem(
-        #             self._parts_list,
-        #             item,
-        #             self._vertical_rotation,
-        #             self._horizontal_rotation,
-        #             self._width_steps,
-        #             self._step,
-        #             self._sample_x,
-        #             self._sample_y,
-        #             self._base_w,
-        #             self._base_h,
-        #             self.image_matrix,
-        #             self.label_matrix,
-        #         )
-        #         if self._additional_augmentation:
-        #             image = self._apply_additional_augmentation(image)
-        #         return image, label
-        #     except Exception:
-        #         # Disable accelerator for this instance after first failure.
-        #         self._use_accelerator = False
-
         location, transform_variant, scale_variant, augmentation_variant = self._decode_part_index(item)
 
         image = self._extract_patch(self.image_matrix, location, scale_variant=scale_variant)

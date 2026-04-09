@@ -420,7 +420,7 @@ class GeneralNeuralHandler:
             model_kwargs['img_size'] = img_size
             return model_kwargs
 
-        if resolved_name == 'FrameUnet':
+        if resolved_name in {'quasi_dual_scale_unet', 'FrameUnet', 'UNetWithContextBranch'}:
             requested_context_branch = getattr(self.tranining_parameters, 'use_context_branch', None)
             if requested_context_branch is None:
                 requested_context_branch = True
@@ -595,12 +595,6 @@ class GeneralNeuralHandler:
             ),
             pcb_defects=build_pcb_defect_parameters(None),
         )
-        validation_without_train_only_sampling = replace(
-            training_without_tech_aug,
-            rare_patch_oversampling_enabled=False,
-            rare_patch_oversampling_factor=1,
-            skip_uniform_labels=False,
-        )
         synthetic_generator = build_synthetic_defect_generator_parameters(
             getattr(self.tranining_parameters, 'synthetic_defect_generator', None)
         )
@@ -633,7 +627,7 @@ class GeneralNeuralHandler:
             val_dataset = (
                 NoCutDataset(
                     val_samples,
-                    validation_without_train_only_sampling,
+                    training_without_tech_aug,
                     apply_train_only_transforms=False,
                 )
                 if val_samples

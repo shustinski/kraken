@@ -5,7 +5,7 @@
       "D:/data/inference/source_1.jpg"
     ],
     "result_folder": "D:/data/inference/results",
-    "model_name": "FrameUnet",
+    "model_name": "quasi_dual_scale_unet",
     "local_crop_size": [
       256,
       256

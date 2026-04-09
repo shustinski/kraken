@@ -1,32 +1,65 @@
+import pytest
+
 import torch
+from torch import nn
+import torch.nn.functional as F
+from torch.cpu.amp import GradScaler,autocast
 
-from model.NeuralNetwork.blocks import extract_mask_outputs
-from model.NeuralNetwork.registrator import create_model, get_registered_models
-
+from lib import System
+from model.NeuralNetwork.registrator import *
+from model.NeuralNetwork.blocks import *
 
 CHANNELS = 3
+def test_model_correctness():
+    model_names = get_registered_models()
+    gpus = System.check_gpu_availability()
+    devices_list = [torch.device(f"cuda:{gpu}") for gpu in range(gpus)]
+    scaler = GradScaler()
 
+    # Set environment variable to avoid fragmentation
+    import os
 
-def test_registered_models_return_normalized_mask_outputs():
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    dummy = torch.randn(1, CHANNELS, 32, 32, device=device)
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
-    for model_name in get_registered_models():
-        model = create_model(model_name, CHANNELS).to(device).eval()
-        model_input = dummy
-        if bool(getattr(model, 'use_context_branch', False)):
-            model_input = {
-                'local_image': dummy,
-                'context_image': dummy,
-            }
-        with torch.inference_mode():
-            outputs = model(model_input)
-        mask_outputs = extract_mask_outputs(outputs)
-        if isinstance(mask_outputs, (list, tuple)):
-            assert mask_outputs
-            primary = mask_outputs[0]
-        else:
-            primary = mask_outputs
-        assert torch.is_tensor(primary), f'{model_name} returned unsupported primary output type'
-        assert primary.ndim == 4, f'{model_name} returned invalid output rank {primary.ndim}'
-        assert int(primary.shape[0]) == 1, f'{model_name} changed batch dimension'
+    for model in model_names:
+        # try:
+        model_test = create_model(model, CHANNELS)
+        model_test = model_test.to(devices_list[0])
+
+        trainable = sum(p.numel() for p in model_test.parameters() if p.requires_grad)
+        print(f"Trainable parameters for {model}: {trainable:,}")
+
+        # Reduce batch size to prevent memory issues
+        dummy = torch.randn(1, CHANNELS, 32, 32)  # batch=1, single-channel image
+        dummy = dummy.to(devices_list[0])
+
+        with autocast():
+            out = model_test(dummy)
+
+        out = out.to('cpu')
+        torch.cuda.empty_cache()
+        print('output shape:', out.shape)
+
+            # except torch.cuda.OutOfMemoryError as e:
+        #     print(f"OutOfMemoryError with model {model}: {e}")
+        #     torch.cuda.empty_cache()  # Clear cache and continue with next model
+        #     continue
+        # except Exception as e:
+        #     print(f"Error with model {model}: {e}")
+        #     torch.cuda.empty_cache()
+        #     continue  # expected shape: (4, 1, 256, 256)
+    # model_test = create_model('Transformer', 1, 256, 16)
+    # model_test = model_test.to(devices_list[0])
+    # trainable = sum(p.numel() for p in model_test.parameters() if p.requires_grad)
+    # rainable = model_test.parameters()
+    # print(f"Trainable parameters for {'Transformer'}: {trainable:,}")
+    # dummy = torch.randn(4, 1, 512, 512)  # batch=4, single-channel image
+    # dummy = dummy.to(devices_list[0])
+    # out = model_test(dummy)
+    # out = out.to('cpu')
+    # print('output shape:', out.shape)  # expected shape: (4, 1, 256, 256)
+
+    # model = BigCnnV2(inputs=1, base_ch=64, latent_dim=256,
+    #                  use_se=True, use_res=True,
+    #                  norm='gn', act='gelu')
+

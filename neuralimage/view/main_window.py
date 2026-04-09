@@ -554,57 +554,6 @@ class MainView(QMainWindow):
         if menu_action is not None:
             menu_action.setVisible(True)
 
-    def configure_update_channels(self, channels: list[str] | tuple[str, ...], selected_channel: str) -> None:
-        normalized_channels: list[str] = []
-        for channel in channels:
-            value = str(channel or '').strip().lower()
-            if value and value not in normalized_channels:
-                normalized_channels.append(value)
-        if not normalized_channels:
-            normalized_channels = ['stable']
-        self._available_update_channels = list(normalized_channels)
-        normalized_selected = str(selected_channel or '').strip().lower()
-        if normalized_selected not in self._available_update_channels:
-            normalized_selected = self._available_update_channels[0]
-        self._selected_update_channel = normalized_selected
-        menu = self._update_channel_menu
-        if menu is None:
-            return
-        menu.clear()
-        self._update_channel_actions = {}
-        self._update_channel_action_group = QActionGroup(self)
-        self._update_channel_action_group.setExclusive(True)
-        for channel in self._available_update_channels:
-            action = QAction(self._format_update_channel_label(channel), self)
-            action.setCheckable(True)
-            action.setData(channel)
-            action.triggered.connect(lambda _checked=False, value=channel: self._handle_update_channel_action(value))
-            self._update_channel_action_group.addAction(action)
-            menu.addAction(action)
-            self._update_channel_actions[channel] = action
-        self._sync_update_channel_menu_checks()
-
-    def _format_update_channel_label(self, channel: str) -> str:
-        normalized = str(channel or '').strip().lower()
-        t = self._main_texts()
-        if normalized == 'stable':
-            return str(t.get('update_channel_stable', 'Stable'))
-        if normalized == 'beta':
-            return str(t.get('update_channel_beta', 'Beta'))
-        return normalized or str(t.get('update_channel_unknown', 'Unknown'))
-
-    def _handle_update_channel_action(self, channel: str) -> None:
-        normalized = str(channel or '').strip().lower()
-        if not normalized:
-            return
-        self._selected_update_channel = normalized
-        self._sync_update_channel_menu_checks()
-        self.update_channel_selected.emit(normalized)
-
-    def _sync_update_channel_menu_checks(self) -> None:
-        for channel, action in self._update_channel_actions.items():
-            action.setChecked(channel == self._selected_update_channel)
-
     def set_batch_preview_enabled(self, enabled: bool) -> None:
         action = getattr(self, "batch_preview_action", None)
         if action is not None:

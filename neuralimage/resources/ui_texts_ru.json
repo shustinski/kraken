@@ -956,7 +956,8 @@
         },
         "optimizer_name": {
           "adam": "Adam",
-          "adamw": "AdamW"
+          "adamw": "AdamW",
+          "adamw_muon": "AdamW + Muon"
         },
         "scheduler_name": {
           "off": "Выключен",

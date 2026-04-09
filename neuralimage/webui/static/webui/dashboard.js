@@ -2,7 +2,6 @@
     const STORAGE_KEY = 'neuralimage_webui_form_v1';
 
     const shell = document.getElementById('app-shell');
-    const startForm = document.getElementById('start-form');
     const toggleSettingsBtn = document.getElementById('toggle-settings');
     const statusNode = document.getElementById('run-status');
     const logContainer = document.getElementById('logs-container');
@@ -50,21 +49,13 @@
     const additionalAugmentationInput = document.querySelector('[name="settings-additional_augmentation"]');
     const randomCropInput = document.querySelector('[name="settings-random_crop"]');
     const scaleAugmentationInput = document.querySelector('[name="settings-scale_augmentation"]');
-    const syncPatchSizesInput = document.querySelector('[name="settings-sync_patch_sizes"]');
-    const patchBatchSyncModeInput = document.querySelector('[name="settings-patch_batch_sync_mode"]');
     const cutoutEnabledInput = document.querySelector('[name="settings-cutout_enabled"]');
     const randomArtifactsEnabledInput = document.querySelector('[name="settings-random_artifacts_enabled"]');
     const mixupEnabledInput = document.querySelector('[name="settings-mixup_enabled"]');
     const hardMiningEnabledInput = document.querySelector('[name="settings-hard_mining_enabled"]');
     const hardPixelMiningEnabledInput = document.querySelector('[name="settings-hard_pixel_mining_enabled"]');
-    const rarePatchOversamplingInput = document.querySelector('[name="settings-rare_patch_oversampling_enabled"]');
     const lossFunctionInput = document.querySelector('[name="settings-loss_function"]');
     const schedulerInput = document.querySelector('[name="settings-scheduler_name"]');
-    const useMultiGpuInput = document.querySelector('[name="settings-use_multi_gpu"]');
-    const recognitionBinarizeOutputInput = document.querySelector('[name="settings-recognition_binarize_output"]');
-    const recognitionUseAutoThresholdInput = document.querySelector('[name="settings-recognition_use_auto_threshold"]');
-    const recognitionPostprocessInput = document.querySelector('[name="settings-recognition_postprocess"]');
-    const useContextBranchInput = document.querySelector('[name="settings-use_context_branch"]');
 
     const optimizerInput = document.querySelector('[name="settings-optimizer_name"]');
     const learningRateInput = document.querySelector('[name="settings-learning_rate"]');
@@ -90,22 +81,11 @@
     const stepField = document.querySelector('[data-role="step-field"]');
     const cropsPerImageField = document.querySelector('[data-role="crops-per-image-field"]');
     const scaleAugmentationStrengthField = document.querySelector('[data-role="scale-augmentation-strength"]');
-    const recognitionPatchSizeField = document.querySelector('[data-role="recognition-patch-size"]');
-    const patchBatchSyncModeField = document.querySelector('[data-role="patch-batch-sync-mode"]');
     const cutoutFields = document.querySelector('[data-role="cutout-fields"]');
     const randomArtifactsFields = document.querySelector('[data-role="random-artifacts-fields"]');
     const mixupFields = document.querySelector('[data-role="mixup-fields"]');
     const hardMiningField = document.querySelector('[data-role="hard-mining-fields"]');
     const hardPixelMiningField = document.querySelector('[data-role="hard-pixel-mining-fields"]');
-    const rarePatchFields = document.querySelector('[data-role="rare-patch-fields"]');
-    const recognitionBatchSizeField = document.querySelector('[data-role="recognition-batch-size"]');
-    const multiGpuModeField = document.querySelector('[data-role="multi-gpu-mode"]');
-    const recognitionThresholdField = document.querySelector('[data-role="recognition-threshold"]');
-    const recognitionPostprocessKernelField = document.querySelector('[data-role="recognition-postprocess-kernel"]');
-    const contextCropSizeField = document.querySelector('[data-role="context-crop-size"]');
-    const contextInputSizeField = document.querySelector('[data-role="context-input-size"]');
-    const contextBranchChannelsField = document.querySelector('[data-role="context-branch-channels"]');
-    const fusionTypeField = document.querySelector('[data-role="fusion-type"]');
     const diceLossWeightField = document.querySelector('[data-role="dice-loss-weight"]');
     const iouLossWeightField = document.querySelector('[data-role="iou-loss-weight"]');
     const schedulerFields = document.querySelector('[data-role="scheduler-fields"]');
@@ -136,7 +116,7 @@
     function persistFormState() {
         const data = {};
         getPersistedControls().forEach((el) => {
-            if (el.name === 'csrfmiddlewaretoken' || el.name.startsWith('__present__')) return;
+            if (el.name === 'csrfmiddlewaretoken') return;
             if (el.type === 'radio') {
                 if (el.checked) {
                     data[el.name] = el.value;
@@ -164,7 +144,6 @@
         }
 
         getPersistedControls().forEach((el) => {
-            if (el.name.startsWith('__present__')) return;
             if (!(el.name in data)) return;
             let value = data[el.name];
             if (el.name === 'main-work_mode' || el.name === 'work_mode_radio') {
@@ -184,7 +163,7 @@
 
     function bindAutoSave() {
         getPersistedControls().forEach((el) => {
-            if (el.name === 'csrfmiddlewaretoken' || el.name.startsWith('__present__')) return;
+            if (el.name === 'csrfmiddlewaretoken') return;
             el.addEventListener('change', persistFormState);
             el.addEventListener('input', persistFormState);
         });
@@ -195,27 +174,7 @@
         wrapper.style.opacity = enabled ? '1' : '0.55';
         const controls = wrapper.querySelectorAll('input, select, textarea, button');
         controls.forEach((node) => {
-            if (node.tagName === 'BUTTON') {
-                node.disabled = !enabled;
-                return;
-            }
-            if (node.matches('input:not([type="checkbox"]):not([type="radio"]), textarea')) {
-                node.readOnly = !enabled;
-            }
-            node.setAttribute('aria-disabled', enabled ? 'false' : 'true');
-        });
-    }
-
-    function syncCheckboxPresenceMarkers() {
-        if (!startForm) return;
-        startForm.querySelectorAll('input[data-checkbox-presence="1"]').forEach((node) => node.remove());
-        startForm.querySelectorAll('input[type="checkbox"][name]').forEach((checkbox) => {
-            const marker = document.createElement('input');
-            marker.type = 'hidden';
-            marker.name = `__present__${checkbox.name}`;
-            marker.value = '1';
-            marker.dataset.checkboxPresence = '1';
-            startForm.appendChild(marker);
+            node.disabled = !enabled;
         });
     }
 
@@ -296,18 +255,10 @@
         const scaleAugmentationEnabled = !!(
             isOnlineCutMode && scaleAugmentationInput && scaleAugmentationInput.checked
         );
-        const patchBatchSyncMode = patchBatchSyncModeInput ? patchBatchSyncModeInput.value : 'patch_and_batch';
-        const syncPatchSizes = !!(syncPatchSizesInput && syncPatchSizesInput.checked);
         const validationEnabled = !!(useValidationInput && useValidationInput.checked);
         const validationSource = validationSourceInput ? validationSourceInput.value : 'split';
         const useExternalValidation = validationEnabled && validationSource === 'external';
         const schedulerValue = schedulerInput ? schedulerInput.value : 'off';
-        const recognitionBinarizeOutput = !!(recognitionBinarizeOutputInput && recognitionBinarizeOutputInput.checked);
-        const recognitionUseAutoThreshold = !!(
-            recognitionUseAutoThresholdInput && recognitionUseAutoThresholdInput.checked
-        );
-        const recognitionPostprocess = !!(recognitionPostprocessInput && recognitionPostprocessInput.checked);
-        const useContextBranch = !!(useContextBranchInput && useContextBranchInput.checked);
 
         setFieldEnabled(validationSourceField, validationEnabled);
         setFieldEnabled(validationPercentField, validationEnabled && !useExternalValidation);
@@ -319,31 +270,11 @@
         setFieldReadonly(stepField, !randomCropEnabled);
         setFieldReadonly(cropsPerImageField, randomCropEnabled);
         setFieldEnabled(scaleAugmentationStrengthField, scaleAugmentationEnabled);
-        setFieldEnabled(patchBatchSyncModeField, true);
-        setFieldEnabled(
-            recognitionPatchSizeField,
-            !(syncPatchSizes || ['patch', 'patch_and_batch'].includes(patchBatchSyncMode)),
-        );
-        setFieldEnabled(
-            recognitionBatchSizeField,
-            !['batch', 'patch_and_batch'].includes(patchBatchSyncMode),
-        );
         setFieldEnabled(cutoutFields, !!(cutoutEnabledInput && cutoutEnabledInput.checked));
         setFieldEnabled(randomArtifactsFields, !!(randomArtifactsEnabledInput && randomArtifactsEnabledInput.checked));
         setFieldEnabled(mixupFields, !!(mixupEnabledInput && mixupEnabledInput.checked));
         setFieldEnabled(hardMiningField, !!(hardMiningEnabledInput && hardMiningEnabledInput.checked));
         setFieldEnabled(hardPixelMiningField, !!(hardPixelMiningEnabledInput && hardPixelMiningEnabledInput.checked));
-        setFieldEnabled(rarePatchFields, !!(rarePatchOversamplingInput && rarePatchOversamplingInput.checked));
-        setFieldEnabled(multiGpuModeField, !!(useMultiGpuInput && useMultiGpuInput.checked));
-        setFieldEnabled(recognitionThresholdField, recognitionBinarizeOutput && !recognitionUseAutoThreshold);
-        setFieldEnabled(
-            recognitionPostprocessKernelField,
-            recognitionBinarizeOutput && recognitionPostprocess,
-        );
-        setFieldEnabled(contextCropSizeField, useContextBranch);
-        setFieldEnabled(contextInputSizeField, useContextBranch);
-        setFieldEnabled(contextBranchChannelsField, useContextBranch);
-        setFieldEnabled(fusionTypeField, useContextBranch);
         setFieldEnabled(
             diceLossWeightField,
             !!(lossFunctionInput && ['bce_dice', 'focal_dice', 'ce_dice'].includes(lossFunctionInput.value)),
@@ -616,17 +547,8 @@
     if (mixupEnabledInput) mixupEnabledInput.addEventListener('change', applyDependentRules);
     if (hardMiningEnabledInput) hardMiningEnabledInput.addEventListener('change', applyDependentRules);
     if (hardPixelMiningEnabledInput) hardPixelMiningEnabledInput.addEventListener('change', applyDependentRules);
-    if (rarePatchOversamplingInput) rarePatchOversamplingInput.addEventListener('change', applyDependentRules);
-    if (syncPatchSizesInput) syncPatchSizesInput.addEventListener('change', applyDependentRules);
-    if (patchBatchSyncModeInput) patchBatchSyncModeInput.addEventListener('change', applyDependentRules);
     if (lossFunctionInput) lossFunctionInput.addEventListener('change', applyDependentRules);
     if (schedulerInput) schedulerInput.addEventListener('change', applyDependentRules);
-    if (useMultiGpuInput) useMultiGpuInput.addEventListener('change', applyDependentRules);
-    if (recognitionBinarizeOutputInput) recognitionBinarizeOutputInput.addEventListener('change', applyDependentRules);
-    if (recognitionUseAutoThresholdInput) recognitionUseAutoThresholdInput.addEventListener('change', applyDependentRules);
-    if (recognitionPostprocessInput) recognitionPostprocessInput.addEventListener('change', applyDependentRules);
-    if (useContextBranchInput) useContextBranchInput.addEventListener('change', applyDependentRules);
-    if (startForm) startForm.addEventListener('submit', syncCheckboxPresenceMarkers);
 
     restoreFormState();
     syncWorkModeRadiosFromSelect();

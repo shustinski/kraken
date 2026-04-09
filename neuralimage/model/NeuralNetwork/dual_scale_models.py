@@ -51,7 +51,7 @@ class _ContextEncoder(nn.Module):
 
 
 @register_model('FrameUnet', model_type=ModelType.experimental)
-class FrameUnet(DeepSupervisionMixin, nn.Module):
+class QuasiDualScaleUNet(DeepSupervisionMixin, nn.Module):
     """U-Net with a lightweight context encoder fused at the local bottleneck."""
 
     def __init__(
@@ -162,8 +162,11 @@ class FrameUnet(DeepSupervisionMixin, nn.Module):
 
         if self.use_context_branch:
             if context_x is None:
-                raise ValueError(
-                    'Context branch is enabled, but "context_image" was not provided to FrameUnet.'
+                context_x = F.interpolate(
+                    local_x,
+                    size=(int(self.context_input_size[1]), int(self.context_input_size[0])),
+                    mode='bilinear',
+                    align_corners=False,
                 )
             context_features = self.context_encoder(context_x)
             if context_features.shape[-2:] != bottleneck.shape[-2:]:

@@ -23,6 +23,16 @@ try:
 except Exception:
     ndi = None
 
+try:
+    from scipy.spatial import cKDTree
+except Exception:
+    cKDTree = None
+
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
 from .backend_constants import (
     ANALYSIS_CACHE_DIR,
     ANALYSIS_CACHE_VERSION,
@@ -793,6 +803,39 @@ def _prob_from_gray(gray: np.ndarray) -> np.ndarray:
     return np.asarray(gray, dtype=np.float32) / 255.0
 
 
+def _is_binary_like_probability(probability: np.ndarray, *, tolerance: float = 1e-4) -> bool:
+    prob = np.asarray(probability, dtype=np.float32)
+    if prob.size == 0:
+        return False
+    finite = prob[np.isfinite(prob)]
+    if finite.size == 0:
+        return False
+    distance_to_binary = np.minimum(np.abs(finite), np.abs(finite - 1.0))
+    return bool(np.max(distance_to_binary, initial=0.0) <= float(max(EPS, tolerance)))
+
+
+def _internal_confidence_probability_map(probability: np.ndarray, *, support_mask: np.ndarray | None = None) -> np.ndarray:
+    prob = np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0)
+    mask_bool = np.asarray(support_mask, dtype=bool) if support_mask is not None else np.asarray(prob >= 0.5, dtype=bool)
+    if prob.size == 0 or not _is_binary_like_probability(prob):
+        return prob
+    if mask_bool.shape != prob.shape:
+        mask_bool = np.asarray(prob >= 0.5, dtype=bool)
+    if not np.any(mask_bool):
+        return prob
+    inside = _distance_transform(mask_bool)
+    outside = _distance_transform(~mask_bool)
+    signed_distance = np.asarray(inside - outside, dtype=np.float32)
+    scale = float(np.percentile(np.abs(signed_distance), 95.0))
+    if not np.isfinite(scale) or scale <= EPS:
+        scale = float(np.max(np.abs(signed_distance))) if signed_distance.size else 1.0
+    scale = max(scale, 1.0)
+    proxy = np.clip(0.5 + 0.5 * signed_distance / scale, 0.0, 1.0).astype(np.float32)
+    proxy[mask_bool] = np.maximum(proxy[mask_bool], 0.5 + 0.5 * np.clip(inside[mask_bool] / scale, 0.0, 1.0))
+    proxy[~mask_bool] = np.minimum(proxy[~mask_bool], 0.5 - 0.5 * np.clip(outside[~mask_bool] / scale, 0.0, 1.0))
+    return np.clip(proxy, 0.0, 1.0).astype(np.float32)
+
+
 def _confidence_map_from_probability(probability: np.ndarray) -> np.ndarray:
     probability_array = np.asarray(probability, dtype=np.float32)
     return np.clip(2.0 * np.abs(probability_array - 0.5), 0.0, 1.0).astype(np.float32)
@@ -1028,8 +1071,8 @@ def _polygon_frame_confidence(
 ) -> PolygonConfidenceMetrics:
     """Compute lightweight frame-level polygon confidence without object-aware geometry refinement."""
 
-    prob = np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0)
     strong = np.asarray(mask, dtype=bool)
+    prob = _internal_confidence_probability_map(probability, support_mask=strong)
     if strong.shape != prob.shape:
         strong = np.asarray(strong, dtype=bool)
         if strong.shape != prob.shape:
@@ -3751,7 +3794,7 @@ def _polygon_internal_confidence(
     include_debug: bool = False,
     config: PolygonConfidencePipelineConfig | None = None,
 ) -> PolygonConfidenceMetrics:
-    prob = _normalize_probability_map(probability)
+    prob = _internal_confidence_probability_map(probability, support_mask=np.asarray(mask, dtype=bool))
     pipeline_config = config or _polygon_confidence_config()
     mask_bool, final_candidates, debug_data = _polygon_confidence_pipeline(
         prob,
@@ -3979,7 +4022,10 @@ def _point_local_contrast(probability: np.ndarray, x: float, y: float, radius: i
 
 
 def _point_internal_confidence(prediction_view: object, *, neighborhood_radius: int = POINT_CONFIDENCE_NEIGHBOR_RADIUS, include_objects: bool = True) -> PointConfidenceMetrics:
-    probability = _prob_from_gray(np.asarray(getattr(prediction_view, 'pred_gray'), dtype=np.uint8))
+    probability = _internal_confidence_probability_map(
+        _prob_from_gray(np.asarray(getattr(prediction_view, 'pred_gray'), dtype=np.uint8)),
+        support_mask=np.asarray(getattr(prediction_view, 'pred_bin'), dtype=bool),
+    )
     confidence_map = _confidence_map_from_probability(probability)
     points = tuple(getattr(prediction_view, 'points', ()))
     if not points:
@@ -4072,6 +4118,9 @@ def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
     if ndi is not None:
         labels, count = ndi.label(mask_bool, structure=np.ones((3, 3), dtype=np.uint8))
         return np.asarray(labels, dtype=np.int32), int(count)
+    if cv2 is not None:
+        count, labels = cv2.connectedComponents(np.asarray(mask_bool, dtype=np.uint8), connectivity=8)
+        return np.asarray(labels, dtype=np.int32), max(0, int(count) - 1)
     height, width = mask_bool.shape
     labels = np.zeros((height, width), dtype=np.int32)
     next_label = 1
@@ -4169,6 +4218,16 @@ def _boundary_mask(mask: np.ndarray) -> np.ndarray:
     return center & np.logical_not(interior)
 
 
+def _distance_transform(mask: np.ndarray) -> np.ndarray:
+    mask_bool = np.asarray(mask, dtype=bool)
+    if ndi is not None:
+        return np.asarray(ndi.distance_transform_edt(mask_bool), dtype=np.float32)
+    if cv2 is not None:
+        distances = cv2.distanceTransform(np.asarray(mask_bool, dtype=np.uint8), cv2.DIST_L2, 5)
+        return np.asarray(distances, dtype=np.float32)
+    raise RuntimeError("Distance transform backend is unavailable")
+
+
 _NEIGHBOR_SLICE_ORDER = (
     (slice(0, -2), slice(0, -2)),
     (slice(0, -2), slice(1, -1)),
@@ -4261,15 +4320,21 @@ def _component_area_stats(labels: np.ndarray, count: int) -> tuple[list[float], 
     return component_areas, mean_component_area
 
 
-def _mask_structure(mask: np.ndarray) -> dict[str, object]:
+def _mask_structure(mask: np.ndarray, *, include_skeleton: bool = True) -> dict[str, object]:
     mask_bool = np.asarray(mask, dtype=bool)
     labels, count = _label_components(mask_bool)
-    skeleton = skeletonize(mask_bool)
-    if np.any(skeleton):
-        skeleton_neighbors = _neighbor_count(skeleton)
-        endpoint_count = int(np.count_nonzero(skeleton & (skeleton_neighbors == 1)))
-        branchpoint_count = int(np.count_nonzero(skeleton & (skeleton_neighbors >= 3)))
+    if include_skeleton:
+        skeleton = skeletonize(mask_bool)
+        if np.any(skeleton):
+            skeleton_neighbors = _neighbor_count(skeleton)
+            endpoint_count = int(np.count_nonzero(skeleton & (skeleton_neighbors == 1)))
+            branchpoint_count = int(np.count_nonzero(skeleton & (skeleton_neighbors >= 3)))
+        else:
+            skeleton_neighbors = np.zeros_like(mask_bool, dtype=np.uint8)
+            endpoint_count = 0
+            branchpoint_count = 0
     else:
+        skeleton = np.zeros_like(mask_bool, dtype=bool)
         skeleton_neighbors = np.zeros_like(mask_bool, dtype=np.uint8)
         endpoint_count = 0
         branchpoint_count = 0
@@ -4280,6 +4345,7 @@ def _mask_structure(mask: np.ndarray) -> dict[str, object]:
         "component_count": int(count),
         "area_fraction": float(area / max(1, mask_bool.size)),
         "mean_component_area": mean_component_area,
+        "has_skeleton": bool(include_skeleton),
         "skeleton": skeleton,
         "skeleton_neighbors": skeleton_neighbors,
         "skeleton_length": float(np.count_nonzero(skeleton)),
@@ -4465,6 +4531,32 @@ def _distance_similarity(distance: float, shape: tuple[int, int]) -> float:
     return float(1.0 - min(1.0, float(distance) / _frame_diagonal(shape)))
 
 
+def _nearest_distances_between_coordinate_sets(coords_a: np.ndarray, coords_b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    coords_a = np.asarray(coords_a, dtype=np.float32)
+    coords_b = np.asarray(coords_b, dtype=np.float32)
+    if coords_a.shape[0] == 0 or coords_b.shape[0] == 0:
+        return np.zeros(coords_a.shape[0], dtype=np.float64), np.zeros(coords_b.shape[0], dtype=np.float64)
+
+    def _chunked_nearest_distances(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+        pair_budget = 1_000_000
+        chunk_size = max(1, min(int(source.shape[0]), int(max(1, pair_budget // max(1, int(target.shape[0]))))))
+        nearest = np.empty(source.shape[0], dtype=np.float64)
+        for start in range(0, source.shape[0], chunk_size):
+            stop = min(source.shape[0], start + chunk_size)
+            diff = np.asarray(source[start:stop, None, :] - target[None, :, :], dtype=np.float32)
+            squared = np.sum(np.square(diff, dtype=np.float32), axis=2, dtype=np.float64)
+            nearest[start:stop] = np.sqrt(np.min(squared, axis=1, initial=np.inf))
+        return nearest
+
+    if cKDTree is not None:
+        tree_a = cKDTree(coords_a)
+        tree_b = cKDTree(coords_b)
+        nearest_a = np.asarray(tree_b.query(coords_a, k=1)[0], dtype=np.float64)
+        nearest_b = np.asarray(tree_a.query(coords_b, k=1)[0], dtype=np.float64)
+        return nearest_a, nearest_b
+    return _chunked_nearest_distances(coords_a, coords_b), _chunked_nearest_distances(coords_b, coords_a)
+
+
 def _hausdorff_distance(first: np.ndarray, second: np.ndarray) -> float:
     first_boundary = _boundary_mask(first)
     second_boundary = _boundary_mask(second)
@@ -4474,9 +4566,9 @@ def _hausdorff_distance(first: np.ndarray, second: np.ndarray) -> float:
         return 0.0
     if not np.any(first_boundary) or not np.any(second_boundary):
         return diagonal
-    if ndi is not None:
-        dist_to_second = ndi.distance_transform_edt(~second_boundary)
-        dist_to_first = ndi.distance_transform_edt(~first_boundary)
+    if ndi is not None or cv2 is not None:
+        dist_to_second = _distance_transform(~second_boundary)
+        dist_to_first = _distance_transform(~first_boundary)
         directed_first = float(np.max(dist_to_second[first_boundary])) if np.any(first_boundary) else 0.0
         directed_second = float(np.max(dist_to_first[second_boundary])) if np.any(second_boundary) else 0.0
         return float(max(directed_first, directed_second))
@@ -4486,10 +4578,9 @@ def _hausdorff_distance(first: np.ndarray, second: np.ndarray) -> float:
         return 0.0
     if first_points.size == 0 or second_points.size == 0:
         return diagonal
-    diff = first_points[:, None, :] - second_points[None, :, :]
-    distances = np.sqrt(np.sum(np.square(diff, dtype=np.float64), axis=2, dtype=np.float64))
-    directed_first = float(np.max(np.min(distances, axis=1)))
-    directed_second = float(np.max(np.min(distances, axis=0)))
+    nearest_first, nearest_second = _nearest_distances_between_coordinate_sets(first_points, second_points)
+    directed_first = float(np.max(nearest_first, initial=0.0))
+    directed_second = float(np.max(nearest_second, initial=0.0))
     return float(max(directed_first, directed_second))
 
 
@@ -4505,6 +4596,8 @@ def _structural_penalties(
     gt_count = int(current_gt_structure["component_count"])
     pred_count = int(current_pred_structure["component_count"])
     delta_cc = float(abs(pred_count - gt_count) / max(1, gt_count))
+    if not bool(current_pred_structure.get("has_skeleton", True)) or not bool(current_gt_structure.get("has_skeleton", True)):
+        return delta_cc, 0, 0, 0.0
 
     skeleton_gt = np.asarray(current_gt_structure["skeleton"], dtype=bool)
     supported_gt = skeleton_gt & _binary_dilate(pred, radius=1)
@@ -4618,11 +4711,29 @@ def _point_match_threshold(point_a: object, point_b: object, base_radius: float)
 
 def _match_point_sets(points_a: tuple[object, ...], points_b: tuple[object, ...], base_radius: float) -> tuple[list[float], set[int], set[int]]:
     candidate_pairs: list[tuple[float, int, int]] = []
-    for index_a, point_a in enumerate(points_a):
-        for index_b, point_b in enumerate(points_b):
-            distance = float(np.hypot(float(getattr(point_a, "x", 0.0)) - float(getattr(point_b, "x", 0.0)), float(getattr(point_a, "y", 0.0)) - float(getattr(point_b, "y", 0.0))))
-            if distance <= _point_match_threshold(point_a, point_b, base_radius):
-                candidate_pairs.append((distance, index_a, index_b))
+    if cKDTree is not None and points_a and points_b:
+        coords_a = _point_coordinates(points_a)
+        coords_b = _point_coordinates(points_b)
+        radius = max(0.0, float(base_radius))
+        if coords_a.shape[0] > 0 and coords_b.shape[0] > 0 and radius >= 0.0:
+            tree_b = cKDTree(coords_b)
+            neighbors = tree_b.query_ball_point(coords_a, r=radius)
+            for index_a, neighbor_indices in enumerate(neighbors):
+                point_a = points_a[index_a]
+                for index_b in neighbor_indices:
+                    point_b = points_b[int(index_b)]
+                    distance = float(np.hypot(
+                        float(getattr(point_a, "x", 0.0)) - float(getattr(point_b, "x", 0.0)),
+                        float(getattr(point_a, "y", 0.0)) - float(getattr(point_b, "y", 0.0)),
+                    ))
+                    if distance <= _point_match_threshold(point_a, point_b, base_radius):
+                        candidate_pairs.append((distance, index_a, int(index_b)))
+    else:
+        for index_a, point_a in enumerate(points_a):
+            for index_b, point_b in enumerate(points_b):
+                distance = float(np.hypot(float(getattr(point_a, "x", 0.0)) - float(getattr(point_b, "x", 0.0)), float(getattr(point_a, "y", 0.0)) - float(getattr(point_b, "y", 0.0))))
+                if distance <= _point_match_threshold(point_a, point_b, base_radius):
+                    candidate_pairs.append((distance, index_a, index_b))
     candidate_pairs.sort(key=lambda item: (item[0], item[1], item[2]))
     matched_distances: list[float] = []
     matched_a: set[int] = set()
@@ -4644,10 +4755,7 @@ def _point_distance_scores(points_a: tuple[object, ...], points_b: tuple[object,
     diagonal = float(max(EPS, math.hypot(float(frame_shape[0]), float(frame_shape[1]))))
     if coords_a.shape[0] == 0 or coords_b.shape[0] == 0:
         return diagonal, diagonal
-    diff = coords_a[:, None, :] - coords_b[None, :, :]
-    distances = np.sqrt(np.sum(np.square(diff, dtype=np.float64), axis=2, dtype=np.float64))
-    nearest_a = np.min(distances, axis=1)
-    nearest_b = np.min(distances, axis=0)
+    nearest_a, nearest_b = _nearest_distances_between_coordinate_sets(coords_a, coords_b)
     chamfer = float((nearest_a.mean(dtype=np.float64) + nearest_b.mean(dtype=np.float64)) / 2.0)
     hausdorff = float(max(float(nearest_a.max(initial=0.0)), float(nearest_b.max(initial=0.0))))
     return chamfer, hausdorff
@@ -4915,7 +5023,7 @@ def _prepare_mask_pairwise_descriptors(
         prob = np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0)
         mask = np.asarray(masks_by_model.get(model_id), dtype=bool)
         boundary = _boundary_mask(mask)
-        dist_to_boundary = np.asarray(ndi.distance_transform_edt(~boundary), dtype=np.float32) if ndi is not None and np.any(boundary) else None
+        dist_to_boundary = _distance_transform(~boundary) if np.any(boundary) and (ndi is not None or cv2 is not None) else None
         current_structure = (model_structures or {}).get(str(model_id)) or _mask_structure(mask)
         descriptors[str(model_id)] = {
             'prob': prob,
@@ -5202,6 +5310,7 @@ def _build_model_payloads(
     include_confidence_objects: bool = True,
     include_original_gray: bool = True,
     include_model_confidence: bool = True,
+    include_structure_details: bool = True,
 ) -> tuple[
     dict[str, np.ndarray],
     dict[str, np.ndarray],
@@ -5219,7 +5328,7 @@ def _build_model_payloads(
     original_gray = _load_optional_gray(record.original_path, max_side=analysis_max_side) if include_original_gray else None
     gt_gray = _load_optional_gray(record.gt_path, max_side=analysis_max_side)
     gt_mask = _mask_from_gray(gt_gray) if gt_gray is not None else None
-    gt_structure = _mask_structure(gt_mask) if gt_mask is not None else None
+    gt_structure = _mask_structure(gt_mask, include_skeleton=include_structure_details) if gt_mask is not None else None
 
     probabilities: dict[str, np.ndarray] = {}
     masks: dict[str, np.ndarray] = {}
@@ -5246,7 +5355,7 @@ def _build_model_payloads(
         if gt_gray is not None and tuple(int(v) for v in gt_gray.shape) != target_shape:
             gt_gray = _load_optional_gray(record.gt_path, target_shape=target_shape, max_side=analysis_max_side)
             gt_mask = _mask_from_gray(gt_gray) if gt_gray is not None else None
-            gt_structure = _mask_structure(gt_mask) if gt_mask is not None else None
+            gt_structure = _mask_structure(gt_mask, include_skeleton=include_structure_details) if gt_mask is not None else None
         prob_gray = _load_optional_gray(record.model_prob_paths.get(spec.model_id), target_shape=target_shape, max_side=analysis_max_side)
         if prob_gray is None:
             prob_gray = mask_gray
@@ -5288,7 +5397,7 @@ def _build_model_payloads(
             }
             continue
 
-        mask_structure = _mask_structure(mask)
+        mask_structure = _mask_structure(mask, include_skeleton=include_structure_details)
         model_structures[spec.model_id] = mask_structure
         area_fraction = float(mask_structure['area_fraction'])
         proxy_score = float(_clip01(1.0 - area_fraction))
@@ -5371,6 +5480,7 @@ def _analyze_record_payload(
         include_confidence_objects=False,
         include_original_gray=False,
         include_model_confidence=include_model_confidence,
+        include_structure_details=False,
     )
     timings_ms['loading_preprocess'] = 1000.0 * (perf_counter() - load_started)
     probabilities = list(probabilities_by_model.values())
@@ -5380,7 +5490,7 @@ def _analyze_record_payload(
     metrics_started = perf_counter()
     consensus_prob = _consensus_probability(probabilities)
     consensus_mask = np.asarray(consensus_prob >= 0.5, dtype=bool)
-    consensus_structure = _mask_structure(consensus_mask)
+    consensus_structure = _mask_structure(consensus_mask, include_skeleton=False)
 
     pairwise_rows = _pairwise_model_comparisons(
         probabilities_by_model,
@@ -5490,9 +5600,9 @@ def _iter_record_payloads(
         if not include_model_confidence:
             side_limit = int(analysis_max_side or 0)
             if side_limit > 0 and side_limit <= 1024:
-                safe_limit = 6
-            elif side_limit == 0:
                 safe_limit = 4
+            elif side_limit == 0:
+                safe_limit = 3
         worker_count = min(worker_count, safe_limit)
 
     def run_sequential():
@@ -5546,7 +5656,9 @@ def _iter_record_payloads(
         with executor_cls(max_workers=worker_count) as executor:
             try:
                 completed = 0
-                max_in_flight = max(1, worker_count * (2 if use_thread_pool else 1))
+                # Keep the queue aligned with the number of active workers so the UI
+                # reflects actual parallel execution instead of pre-buffered tasks.
+                max_in_flight = max(1, worker_count)
                 next_index = 0
                 future_to_order: dict[object, int] = {}
                 ordered_results: dict[int, tuple[str, dict[str, object] | None]] = {}
@@ -5755,6 +5867,7 @@ def _collect_frame_records_modern(
     original_index = build_folder_index(original_folder.path, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check) if original_folder is not None else {}
     gt_index = build_folder_index(gt_folder.path, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check) if gt_folder is not None else {}
     fallback_model_indexes: dict[str, dict[str, Path]] = {}
+    fallback_prob_indexes: dict[str, dict[str, Path]] = {}
 
     records: list[FrameRecord] = []
     sorted_keys = sorted(base_index.keys(), key=natural_sort_key)
@@ -5762,6 +5875,19 @@ def _collect_frame_records_modern(
         if cancel_check is not None and cancel_check():
             raise BuildCancelledError("Build cancelled")
         model_mask_paths: dict[str, str] = {base_spec.model_id: str(base_index[key])}
+        model_prob_paths: dict[str, str] = {}
+        if base_spec.prob_folder is not None:
+            resolved_prob = _resolve_model_path_for_key(
+                base_spec.prob_folder,
+                key,
+                extensions,
+                fallback_prob_indexes,
+                recursive=options.recursive,
+                cancel_check=cancel_check,
+            )
+            model_prob_paths[base_spec.model_id] = str(resolved_prob) if resolved_prob is not None else ""
+        else:
+            model_prob_paths[base_spec.model_id] = ""
         missing_required_model = False
         for spec in model_specs[1:]:
             resolved = _resolve_model_path_for_key(
@@ -5776,9 +5902,20 @@ def _collect_frame_records_modern(
                 missing_required_model = True
                 break
             model_mask_paths[spec.model_id] = str(resolved)
+            if spec.prob_folder is not None:
+                resolved_prob = _resolve_model_path_for_key(
+                    spec.prob_folder,
+                    key,
+                    extensions,
+                    fallback_prob_indexes,
+                    recursive=options.recursive,
+                    cancel_check=cancel_check,
+                )
+                model_prob_paths[spec.model_id] = str(resolved_prob) if resolved_prob is not None else ""
+            else:
+                model_prob_paths[spec.model_id] = ""
         if missing_required_model:
             continue
-        model_prob_paths = {spec.model_id: "" for spec in model_specs}
         original_path = _resolve_aux_path(key, original_index)
         gt_path = _resolve_aux_path(key, gt_index)
         records.append(FrameRecord(
@@ -6295,6 +6432,7 @@ def load_frame_detail_base(
         polygon_confidence_summary=polygon_confidence_summary,
         include_confidence_objects=False,
         include_model_confidence=False,
+        include_structure_details=True,
     )
 
     gt_gray = _load_optional_gray(active_record.gt_path, target_shape=tuple(int(v) for v in gt_mask.shape) if gt_mask is not None else (tuple(int(v) for v in original_gray.shape) if original_gray is not None else None), max_side=max_side)

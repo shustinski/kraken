@@ -41,7 +41,7 @@ class GeometryMode(str, Enum):
     @property
     def label(self) -> str:
         labels = {
-            self.MASK: "Masks / polygons",
+            self.MASK: "Polygons",
             self.POINT: "Points",
             self.AUTO: "Auto",
         }

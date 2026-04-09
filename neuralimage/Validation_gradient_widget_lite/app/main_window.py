@@ -538,8 +538,9 @@ class ValidationGradientExtendWidget(QWidget):
         # control_layout.addWidget(self.export_group)
 
         self.thumbnail_size_spin = QSpinBox(self)
-        self.thumbnail_size_spin.setRange(*THUMBNAIL_SIZE_RANGE)
+        self.thumbnail_size_spin.setRange(DEFAULT_CELL_SIZE, DEFAULT_CELL_SIZE)
         self.thumbnail_size_spin.setValue(DEFAULT_CELL_SIZE)
+        self.thumbnail_size_spin.setEnabled(False)
 
         self.layout_mode_combo = QComboBox(self)
         self._populate_layout_mode_combo(DEFAULT_MATRIX_LAYOUT_MODE)
@@ -777,6 +778,12 @@ class ValidationGradientExtendWidget(QWidget):
             self._matrix_columns_row,
         ):
             layout.addWidget(row)
+        self._matrix_pixel_size_row.setVisible(False)
+        is_indexed_layout = str(self.layout_mode_combo.currentData() or DEFAULT_MATRIX_LAYOUT_MODE) == "indexed_grid"
+        self._matrix_total_frames_row.setVisible(is_indexed_layout)
+        self._matrix_frames_per_row_row.setVisible(is_indexed_layout)
+        self._matrix_rows_row.setVisible(not is_indexed_layout)
+        self._matrix_columns_row.setVisible(not is_indexed_layout)
         layout.addStretch(1)
         return widget
 
@@ -796,13 +803,12 @@ class ValidationGradientExtendWidget(QWidget):
             label_min_width=METRIC_SETTINGS_LABEL_MIN_WIDTH,
         )
         layout.addWidget(self._metric_scope_row)
-        layout.addWidget(
-            self._build_setting_row(
-                self._t("menu.metric.select"),
-                self.metric_combo,
-                label_min_width=METRIC_SETTINGS_LABEL_MIN_WIDTH,
-            )
+        self._metric_select_row = self._build_setting_row(
+            self._t("menu.metric.select"),
+            self.metric_combo,
+            label_min_width=METRIC_SETTINGS_LABEL_MIN_WIDTH,
         )
+        layout.addWidget(self._metric_select_row)
         layout.addStretch(1)
         return widget
 
@@ -883,6 +889,7 @@ class ValidationGradientExtendWidget(QWidget):
             (getattr(self, "_matrix_rows_row", None), "matrix.rows"),
             (getattr(self, "_matrix_columns_row", None), "matrix.columns"),
             (getattr(self, "_metric_scope_row", None), "analysis.confidence_model"),
+            (getattr(self, "_metric_select_row", None), "menu.metric.select"),
         ):
             label = getattr(row, "_title_label", None)
             if label is not None:

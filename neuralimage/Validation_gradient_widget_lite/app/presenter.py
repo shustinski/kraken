@@ -43,6 +43,7 @@ from ..ui.details_dialog import ExtendFrameDetailsDialog
 from ..ui.matrix_view import MatrixLayoutConfig, build_matrix_layout
 from ..ui.ui_components import FolderRowWidget
 from ..ui.ui_constants import (
+    DEFAULT_CELL_SIZE,
     DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA,
     DEFAULT_ERROR_WINDOW,
     DEFAULT_FRAMES_PER_ROW,
@@ -157,7 +158,15 @@ class ValidationGradientExtendPresenter(QObject):
         context = self._analysis_context_for_state(state, build_result)
         is_confidence = context.analysis_mode == INTRA_MODEL_CONFIDENCE_MODE
         is_point = context.object_type == POINT_OBJECT_TYPE
+        layout_mode = str(self.layout_mode_combo.currentData() or DEFAULT_MATRIX_LAYOUT_MODE)
+        is_indexed_layout = layout_mode == "indexed_grid"
+        self._set_row_visible(getattr(self, "_matrix_pixel_size_row", None), False)
+        self._set_row_visible(getattr(self, "_matrix_total_frames_row", None), is_indexed_layout)
+        self._set_row_visible(getattr(self, "_matrix_frames_per_row_row", None), is_indexed_layout)
+        self._set_row_visible(getattr(self, "_matrix_rows_row", None), not is_indexed_layout)
+        self._set_row_visible(getattr(self, "_matrix_columns_row", None), not is_indexed_layout)
         self._set_row_visible(getattr(self, "_metric_scope_row", None), is_confidence)
+        self._set_row_visible(getattr(self, "_metric_select_row", None), not is_confidence)
         self._set_row_visible(getattr(self, "_matrix_confidence_delta_row", None), is_confidence)
         self._set_row_visible(getattr(self, "_matrix_polygon_confidence_summary_row", None), is_confidence and not is_point)
         self._set_row_visible(getattr(self, "_matrix_boundary_row", None), not is_confidence and not is_point)
@@ -406,7 +415,7 @@ class ValidationGradientExtendPresenter(QObject):
     def _capture_view_snapshot(self) -> dict[str, object]:
         confidence_model_id = self._selected_confidence_model_id(None)
         return {
-            "cell_size": int(self.thumbnail_size_spin.value()),
+            "cell_size": int(DEFAULT_CELL_SIZE),
             "layout_config": self._build_layout_config(),
             "gradient_name": self.gradient_selector.selected_gradient(),
             "error_window": self.gradient_range_selector.error_window(),
@@ -550,7 +559,7 @@ class ValidationGradientExtendPresenter(QObject):
             return
         requires_analytics = options_changed or self._metric_value_missing_for_build_result(state.build_result, metric_key)
         if requires_analytics:
-            if auto_recompute:
+            if auto_recompute and bool(getattr(state.build_result, "scores_computed", False)):
                 self._start_compute_analytics(state=state, sync_context=False)
             return
         self._apply_metric_to_state(state, metric_key)
@@ -613,7 +622,7 @@ class ValidationGradientExtendPresenter(QObject):
         context_state: ExtendMatrixTabState | None = None,
     ) -> None:
         state = context_state if context_state is not None else self._current_tab_state()
-        self._sync_mode_controls(None, None)
+        self._sync_mode_controls(state, build_result)
         metric_key = str(preferred_metric_key or self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY)
         selected_confidence_model_id = str(preferred_scope_key or self.metric_scope_combo.currentData() or self._metric_scope_for_metric_key(metric_key) or "")
         self._populate_metric_scope_combo(build_result, selected_confidence_model_id)
@@ -1486,7 +1495,7 @@ class ValidationGradientExtendPresenter(QObject):
             return
         geometry_mode = geometry_mode_for_object_type(self._selected_object_type())
         options = BuildOptions(
-            thumbnail_size=int(self.thumbnail_size_spin.value()),
+            thumbnail_size=int(DEFAULT_CELL_SIZE),
             recursive=True,
             geometry_mode=geometry_mode,
             mask_threshold=float(self.mask_threshold_spin.value()),
@@ -1614,8 +1623,6 @@ class ValidationGradientExtendPresenter(QObject):
         if result.records:
             state.matrix_view.select_record_by_key(result.records[0].key, ensure_visible=False)
             self._update_matrix_preview(state, result.records[0])
-        if self._metric_value_missing_for_build_result(state.build_result, state.metric_key):
-            self._deferred_analytics_restart = (state, False)
         self._sync_action_buttons()
 
     def _on_analytics_finished(self, result: BuildResult, *, generation: int | None = None, request_signature: tuple[object, ...] | None = None) -> None:
@@ -1667,8 +1674,10 @@ class ValidationGradientExtendPresenter(QObject):
             self._apply_tab_visual_settings(state, reset_view=False)
             return
         if self._metric_value_missing_for_build_result(state.build_result, metric_key):
-            if self._worker is None:
+            if self._worker is None and bool(getattr(state.build_result, "scores_computed", False)):
                 self._start_compute_analytics(state=state, sync_context=False)
+            else:
+                self._apply_tab_visual_settings(state, reset_view=False)
             return
         updated_records: list[FrameRecord] = []
         absolute_scores: list[float] = []
@@ -1712,14 +1721,14 @@ class ValidationGradientExtendPresenter(QObject):
 
     def _on_analysis_mode_changed(self, *_args) -> None:
         state = self._current_tab_state()
-        self._sync_mode_controls(None, None)
+        self._sync_mode_controls(state, None if state is None else state.build_result)
         if state is not None:
             self._sync_current_analysis_context(state, auto_recompute=True)
         self._sync_action_buttons()
 
     def _on_object_type_changed(self, *_args) -> None:
         state = self._current_tab_state()
-        self._sync_mode_controls(None, None)
+        self._sync_mode_controls(state, None if state is None else state.build_result)
         if state is not None:
             self._sync_current_analysis_context(state, auto_recompute=True)
         self._sync_action_buttons()
@@ -1729,7 +1738,7 @@ class ValidationGradientExtendPresenter(QObject):
         if state is None:
             return
         metric_key = str(self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY)
-        if self._worker is None and self._metric_value_missing_for_build_result(state.build_result, metric_key):
+        if self._worker is None and bool(getattr(state.build_result, "scores_computed", False)) and self._metric_value_missing_for_build_result(state.build_result, metric_key):
             self._start_compute_analytics()
             return
         self._apply_metric_to_state(state, metric_key)
@@ -1742,6 +1751,8 @@ class ValidationGradientExtendPresenter(QObject):
         self._apply_tab_visual_settings(state, reset_view=False)
 
     def _on_matrix_visual_parameter_changed(self, *_args) -> None:
+        state = self._current_tab_state()
+        self._sync_mode_controls(state, None if state is None else state.build_result)
         self._sync_action_buttons()
 
     def _on_gradient_preset_changed(self, gradient_name: str) -> None:
@@ -1783,9 +1794,9 @@ class ValidationGradientExtendPresenter(QObject):
         self.metric_combo.setToolTip(self._metric_hint_fallback(state.metric_key, state.build_result))
         if self._metric_value_missing_for_build_result(state.build_result, state.metric_key):
             self._update_matrix_preview(state)
-            if self._worker is None:
+            if self._worker is None and bool(getattr(state.build_result, "scores_computed", False)):
                 self._start_compute_analytics(state=state, sync_context=False)
-            else:
+            elif self._worker is not None and bool(getattr(state.build_result, "scores_computed", False)):
                 self._deferred_analytics_restart = (state, False)
             self._sync_action_buttons()
             return
@@ -1932,7 +1943,7 @@ class ValidationGradientExtendPresenter(QObject):
 
     def _build_build_settings_payload(self) -> dict:
         return {
-            "thumbnail_size": int(self.thumbnail_size_spin.value()),
+            "thumbnail_size": int(DEFAULT_CELL_SIZE),
             "analysis_mode": self._selected_analysis_mode(),
             "object_type": self._selected_object_type(),
             "geometry_mode": str(self.geometry_mode_combo.currentData() or DEFAULT_GEOMETRY_MODE),
@@ -1978,7 +1989,7 @@ class ValidationGradientExtendPresenter(QObject):
             QSignalBlocker(self.frame_type_filter_combo),
         ]
         _ = blockers
-        self.thumbnail_size_spin.setValue(int(payload.get("thumbnail_size", self.thumbnail_size_spin.value())))
+        self.thumbnail_size_spin.setValue(int(DEFAULT_CELL_SIZE))
         analysis_mode = str(payload.get("analysis_mode") or self._selected_analysis_mode())
         analysis_index = self.analysis_mode_combo.findData(analysis_mode)
         self.analysis_mode_combo.setCurrentIndex(analysis_index if analysis_index >= 0 else 0)

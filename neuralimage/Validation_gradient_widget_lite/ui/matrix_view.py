@@ -182,8 +182,8 @@ def build_matrix_layout(records: list[FrameRecord], layout_config: MatrixLayoutC
             placements.append((record, row, column))
         return placements, columns, rows
 
-    columns = int(layout_config.frames_per_row) + 1
-    total_frames = int(layout_config.total_frames) + 1
+    columns = int(layout_config.frames_per_row)
+    total_frames = int(layout_config.total_frames)
     if columns <= 0 or total_frames <= 0:
         raise ValueError("Invalid indexed matrix layout")
     rows = max(1, math.ceil(total_frames / columns))

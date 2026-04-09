@@ -1,40 +1,68 @@
-﻿"""Store lightweight per-tab state used by the lite widget."""
+"""UI state containers for the extended validation gradient widget."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PyQt6.QtWidgets import QGroupBox, QLabel, QWidget
+from PyQt6.QtWidgets import QGroupBox, QLabel, QTabWidget, QWidget
 
+from ..core.analysis_modes import INTER_MODEL_ANALYSIS_MODE, POLYGON_OBJECT_TYPE
 from ..core.domain import BuildResult
 from ..ui.matrix_view import MatrixLayoutConfig, MatrixListWidget, MatrixMiniMapWidget
-from ..ui.ui_constants import DEFAULT_CELL_SIZE, DEFAULT_ERROR_WINDOW, DEFAULT_GRADIENT_NAME, DEFAULT_SCORE_VIEW_MODE
+from ..ui.ui_constants import DEFAULT_CELL_SIZE, DEFAULT_ERROR_WINDOW, DEFAULT_GRADIENT_NAME, DEFAULT_MATRIX_METRIC_KEY, DEFAULT_METRIC_SCOPE
 
 
 @dataclass(slots=True)
-class LitePreviewPanel:
+class ExtendPreviewPanel:
     """Store the selected-frame preview widgets shown next to one matrix tab."""
 
     group: QGroupBox
     frame_title: QLabel
     frame_value: QLabel
-    absolute_title: QLabel
-    absolute_value: QLabel
-    relative_title: QLabel
-    relative_value: QLabel
+    overall_title: QLabel
+    overall_value: QLabel
+    metric_title: QLabel
+    metric_value: QLabel
+    labeled_title: QLabel
+    labeled_value: QLabel
+    acquisition_title: QLabel
+    acquisition_value: QLabel
+    score_cards: dict[str, QWidget] = field(default_factory=dict)
+    histogram_cards: dict[str, QWidget] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
-class LiteMatrixTabState:
-    """Store the UI objects and mutable mismatch-only state for one matrix tab."""
+class ExtendMatrixTabState:
+    """Store the UI objects and mutable state for one matrix tab."""
 
     widget: QWidget
     matrix_view: MatrixListWidget
     mini_map: MatrixMiniMapWidget
     build_result: BuildResult
+    content_tabs: QTabWidget | None = None
     cell_size: int = DEFAULT_CELL_SIZE
     layout_config: MatrixLayoutConfig = field(default_factory=MatrixLayoutConfig)
     gradient_name: str = DEFAULT_GRADIENT_NAME
     error_window: tuple[float, float] = DEFAULT_ERROR_WINDOW
-    score_view_mode: str = DEFAULT_SCORE_VIEW_MODE
-    preview: LitePreviewPanel | None = None
+    metric_key: str = DEFAULT_MATRIX_METRIC_KEY
+    metric_scope: str = DEFAULT_METRIC_SCOPE
+    analysis_mode: str = INTER_MODEL_ANALYSIS_MODE
+    object_type: str = POLYGON_OBJECT_TYPE
+    confidence_model_id: str | None = None
+    frame_type_filter: str = 'all'
+    preview: ExtendPreviewPanel | None = None
+    percentile_filter_metric_key: str | None = None
+    percentile_filter_bin_index: int | None = None
+    correlation_filter_band: str | None = None
+    percentile_cache: dict[tuple[str, tuple[str, ...]], dict[str, float]] = field(default_factory=dict)
+    metric_result_cache: dict[str, BuildResult] = field(default_factory=dict)
+    base_records_cache: dict[tuple[str, int], tuple] = field(default_factory=dict)
+    repeated_percentile_cache: dict[tuple[str, tuple[str, ...], int], tuple] = field(default_factory=dict)
+    processing_state_by_key: dict[str, str] = field(default_factory=dict)
+    repeated_bad_column: QWidget | None = None
+    repeated_good_column: QWidget | None = None
+
+
+# Backward-compatible aliases for legacy lite imports.
+LitePreviewPanel = ExtendPreviewPanel
+LiteMatrixTabState = ExtendMatrixTabState
 

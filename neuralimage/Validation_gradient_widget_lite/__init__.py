@@ -1,8 +1,15 @@
-﻿"""Expose the public API of the mismatch-only lite widget package."""
-from .app.main_window import ValidationGradientLiteMainWindow, ValidationGradientLiteWidget
+"""Public API for the lite widget package with extended capabilities."""
+from .app.main_window import (
+    ValidationGradientExtendMainWindow,
+    ValidationGradientExtendWidget,
+    ValidationGradientLiteMainWindow,
+    ValidationGradientLiteWidget,
+)
 from .plugin.plugin import ValidationGradientLitePlugin
 
 __all__ = [
+    "ValidationGradientExtendMainWindow",
+    "ValidationGradientExtendWidget",
     "ValidationGradientLiteMainWindow",
     "ValidationGradientLitePlugin",
     "ValidationGradientLiteWidget",

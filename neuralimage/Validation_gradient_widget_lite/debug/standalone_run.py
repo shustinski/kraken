@@ -1,4 +1,4 @@
-﻿"""Run the lite widget from an IDE or terminal."""
+"""Run the lite widget from an IDE or terminal."""
 from __future__ import annotations
 
 import sys
@@ -13,7 +13,3 @@ else:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-

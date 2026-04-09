@@ -154,6 +154,10 @@ def build_matrix_layout(records: list[FrameRecord], layout_config: MatrixLayoutC
     if not records:
         return [], 0, 0
     mode = str(getattr(layout_config, "mode", "indexed_grid") or "indexed_grid")
+    fixed_positions = all(
+        record.identity is not None and record.identity.tile_x is not None and record.identity.tile_y is not None
+        for record in records
+    )
     if mode == "manual_grid":
         rows = int(layout_config.rows)
         columns = int(layout_config.columns)
@@ -162,6 +166,15 @@ def build_matrix_layout(records: list[FrameRecord], layout_config: MatrixLayoutC
         capacity = rows * columns
         if len(records) > capacity:
             raise ValueError(f"Custom matrix layout capacity {capacity} is smaller than the frame count {len(records)}")
+        if fixed_positions:
+            placements: list[tuple[FrameRecord, int, int]] = []
+            for record in records:
+                row = int(record.identity.tile_y)
+                column = int(record.identity.tile_x)
+                if row < 0 or row >= rows or column < 0 or column >= columns:
+                    raise ValueError("Stored matrix coordinates are outside the configured custom layout")
+                placements.append((record, row, column))
+            return sorted(placements, key=lambda item: (item[1], item[2], natural_sort_key(item[0].key))), columns, rows
         placements: list[tuple[FrameRecord, int, int]] = []
         for index, record in enumerate(records):
             row = index // columns
@@ -174,6 +187,15 @@ def build_matrix_layout(records: list[FrameRecord], layout_config: MatrixLayoutC
     if columns <= 0 or total_frames <= 0:
         raise ValueError("Invalid indexed matrix layout")
     rows = max(1, math.ceil(total_frames / columns))
+    if fixed_positions:
+        placements = []
+        for record in records:
+            row = int(record.identity.tile_y)
+            column = int(record.identity.tile_x)
+            if row < 0 or row >= rows or column < 0 or column >= columns:
+                raise ValueError("Stored matrix coordinates are outside the configured indexed layout")
+            placements.append((record, row, column))
+        return sorted(placements, key=lambda item: (item[1], item[2], natural_sort_key(item[0].key))), columns, rows
     placements: list[tuple[FrameRecord, int, int]] = []
     for record in sorted(records, key=lambda item: natural_sort_key(item.key)):
         frame_index = extract_frame_number(record.display_name or record.key)
@@ -986,6 +1008,13 @@ class MatrixListWidget(QGraphicsView):
             return None
         return float(record.score)
 
+    @staticmethod
+    def _format_metric_value(value: float) -> str:
+        numeric = float(value)
+        if 0.0 <= numeric <= 1.0:
+            return f"{numeric * 100.0:.3f}%"
+        return f"{numeric:.3f}"
+
     def _background_color(self, score: float) -> QColor:
         position = map_score_to_palette_position(score, self._error_window_low, self._error_window_high)
         return interpolate_gradient_color(self._gradient_name, position)
@@ -1002,9 +1031,11 @@ class MatrixListWidget(QGraphicsView):
             return f"{record.display_name}\n{self._t('matrix.mismatch_not_computed')}{suffix}"
         lines = [record.display_name]
         if record.absolute_score is not None:
-            lines.append(f"{self._t('matrix.absolute_mismatch')}: {record.absolute_score * 100.0:.3f}%")
+            lines.append(f"{self._t('matrix.absolute_mismatch')}: {self._format_metric_value(record.absolute_score)}")
         if record.relative_score is not None:
             lines.append(f"{self._t('matrix.relative_mismatch')}: {record.relative_score * 100.0:.3f}%")
+        if record.score_percentile is not None:
+            lines.append(f"Score percentile: P{float(record.score_percentile):.1f}")
         if self._reference_key == record.key:
             lines.append(self._t('matrix.reference_frame'))
         return "\n".join(lines)
@@ -1016,9 +1047,11 @@ class MatrixListWidget(QGraphicsView):
         if self._reference_key == record.key:
             parts.append(self._t('matrix.reference_short'))
         if record.absolute_score is not None:
-            parts.append(f"{self._t('matrix.absolute_short')} {record.absolute_score * 100.0:.3f}%")
+            parts.append(f"{self._t('matrix.absolute_short')} {self._format_metric_value(record.absolute_score)}")
         if record.relative_score is not None:
             parts.append(f"{self._t('matrix.relative_short')} {record.relative_score * 100.0:.3f}%")
+        if record.score_percentile is not None:
+            parts.append(f"P{float(record.score_percentile):.1f}")
         return " | ".join(parts)
 
 

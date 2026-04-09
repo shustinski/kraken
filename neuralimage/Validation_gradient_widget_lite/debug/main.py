@@ -1,4 +1,4 @@
-﻿"""Provide the standalone Qt application entrypoint for the lite mismatch-only widget."""
+"""Standalone Qt entrypoint for the lite widget."""
 from __future__ import annotations
 
 import sys

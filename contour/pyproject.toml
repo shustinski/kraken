@@ -27,4 +27,8 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-polygon_widget = ["pipeline_example.json"]
+polygon_widget = [
+    "pipeline_example.json",
+    "resources/styles/*.qss",
+    "resources/styles/icons/*.svg",
+]

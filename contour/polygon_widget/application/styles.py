@@ -3,29 +3,40 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_SHARED_STYLES_DIRNAME = "shared_qt_styles"
 _WINDOWS_ABSOLUTE_PATH = re.compile(r"^[a-zA-Z]:[\\/]")
 _URL_PATTERN = re.compile(r'url\((?P<quote>["\']?)(?P<path>[^)"\']+)(?P=quote)\)')
 
 
-def project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+def package_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
 
-def shared_styles_root() -> Path:
-    return project_root().parent / _SHARED_STYLES_DIRNAME
+def styles_root() -> Path:
+    return package_root() / "resources" / "styles"
 
 
-def resolve_shared_style_path(*parts: str) -> Path:
-    return shared_styles_root().joinpath(*parts)
+def resolve_style_path(*parts: str) -> Path:
+    return styles_root().joinpath(*parts)
 
 
-def load_shared_stylesheet(name: str = "dark_modern.qss") -> str:
-    stylesheet_path = resolve_shared_style_path(name)
+def load_stylesheet(name: str = "dark_modern.qss") -> str:
+    stylesheet_path = resolve_style_path(name)
     if not stylesheet_path.exists():
         return ""
     content = stylesheet_path.read_text(encoding="utf-8")
     return _rewrite_relative_urls(content, stylesheet_path.parent)
+
+
+def shared_styles_root() -> Path:
+    return styles_root()
+
+
+def resolve_shared_style_path(*parts: str) -> Path:
+    return resolve_style_path(*parts)
+
+
+def load_shared_stylesheet(name: str = "dark_modern.qss") -> str:
+    return load_stylesheet(name)
 
 
 def _rewrite_relative_urls(content: str, base_dir: Path) -> str:

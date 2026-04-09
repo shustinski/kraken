@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QApplication
 
 from .model import PolygonWidgetApplicationModel, StartupConfiguration
 from .presenter import PolygonWidgetPresenter
-from .styles import load_shared_stylesheet
+from .styles import load_stylesheet
 from .view import PolygonWidgetStandaloneWindow
 
 
@@ -78,7 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _try_apply_app_qss(app: QApplication) -> None:
-    stylesheet = load_shared_stylesheet()
+    stylesheet = load_stylesheet()
     if stylesheet:
         app.setStyleSheet(stylesheet)
 

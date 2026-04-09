@@ -1,0 +1,26 @@
+Metadata-Version: 2.4
+Name: vialanet-polygon-widget
+Version: 0.1.0
+Summary: Standalone polygon extraction and editing widget.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.24
+Requires-Dist: opencv-python>=4.8
+Requires-Dist: PyQt6>=6.7
+
+# ViaLaNet Polygon Widget
+
+Standalone PyQt widget for polygon extraction, editing, and export.
+
+## Run
+
+```powershell
+pip install -e .
+polygon-widget
+```
+
+## Alternative
+
+```powershell
+python -m polygon_widget
+```

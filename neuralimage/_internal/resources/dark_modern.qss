@@ -299,21 +299,21 @@ QDoubleSpinBox::down-button:disabled {
 }
 
 QComboBox::down-arrow {
-    image: url(_internal/resources/icons/chevron_down_light.svg);
+    image: url(icons/chevron_down_light.svg);
     width: 10px;
     height: 10px;
 }
 
 QSpinBox::up-arrow,
 QDoubleSpinBox::up-arrow {
-    image: url(_internal/resources/icons/chevron_up_light.svg);
+    image: url(icons/chevron_up_light.svg);
     width: 10px;
     height: 10px;
 }
 
 QSpinBox::down-arrow,
 QDoubleSpinBox::down-arrow {
-    image: url(_internal/resources/icons/chevron_down_light.svg);
+    image: url(icons/chevron_down_light.svg);
     width: 10px;
     height: 10px;
 }
@@ -377,7 +377,7 @@ QRadioButton::indicator:checked:disabled {
 
 QCheckBox::indicator:checked {
     border-radius: 4px;
-    image: url(_internal/resources/icons/check_light.svg);
+    image: url(icons/check_light.svg);
 }
 
 QRadioButton::indicator:checked {

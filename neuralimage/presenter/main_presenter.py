@@ -71,11 +71,23 @@ from lib.update_checker import (
     should_notify_version,
 )
 from lib.version import APP_VERSION
-from model.NeuralNetwork import get_registered_model_names_by_type, get_registered_models
+from model.NeuralNetwork import get_registered_model_names_by_type
 from model.general_neural_handler import GeneralNeuralHandler
 from lib.ui_texts import get_ui_section
 from view import MainView, SettingsPanel
 from view.task_properties_dialog import TaskPropertiesDialog
+import presenter.dialogs as presenter_dialogs
+import presenter.plugin_flow as plugin_flow
+import presenter.sample_counting as sample_counting
+import presenter.state_sync as state_sync
+import presenter.task_flow as task_flow
+import presenter.update_flow as update_flow
+from .background_workers import (
+    AppUpdateCheckThread as PresenterAppUpdateCheckThread,
+    AppUpdateDownloadThread as PresenterAppUpdateDownloadThread,
+    GeneralNeuralHandlerThread as PresenterGeneralNeuralHandlerThread,
+    RarePatchEditorPreparationThread as PresenterRarePatchEditorPreparationThread,
+)
 
 
 class _ValidationGradientPluginWindow(QtWidgets.QMainWindow):
@@ -105,30 +117,23 @@ class _ValidationGradientPluginWindow(QtWidgets.QMainWindow):
 
 
 def _format_auto_answer_button_text(text: str, seconds_left: int) -> str:
-    if seconds_left <= 0:
-        return text
-    return f'{text} ({int(seconds_left)})'
+    return presenter_dialogs.format_auto_answer_button_text(text, seconds_left)
 
 
 def _tk_filedialog(kind: str, filetypes=None) -> str | None:
-    """Qt-based file dialog helper."""
-    if kind == 'folder':
-        path = QFileDialog.getExistingDirectory(None, 'Выберите папку')
-    else:  # 'file'
-        filter_str = ''
-        if filetypes:
-            labels = []
-            for title, ext in filetypes:
-                cleaned = ext if str(ext).startswith('*.') else f'*{ext}'
-                labels.append(f'{title} ({cleaned})')
-            filter_str = ';;'.join(labels)
-        path, _ = QFileDialog.getOpenFileName(None, 'Выберите файл', '', filter_str)
-    return path if path else None
+    return presenter_dialogs.choose_path_dialog(kind, filetypes)
 
 
 class SampleCountSignals(QObject):
     calculated = QtCore.pyqtSignal(int, str, object, int)
     failed = QtCore.pyqtSignal(int, str)
+
+
+def _should_schedule_startup_update_check() -> bool:
+    disabled_flag = str(os.getenv('NEURALIMAGE_DISABLE_AUTO_UPDATE_CHECK', '') or '').strip().lower()
+    if disabled_flag in {'1', 'true', 'yes', 'on'}:
+        return False
+    return not bool(os.getenv('PYTEST_CURRENT_TEST'))
 
 
 class MainPresenter(QObject):
@@ -153,7 +158,7 @@ class MainPresenter(QObject):
         self.settings_panel = SettingsPanel()
 
         # Получаем список активных моделей нейросетей
-        self.active_nn_models = get_registered_models()
+        self.active_nn_models = {}
         self.settings_panel.model_type_init(get_registered_model_names_by_type())
 
         self._update_client_config = load_update_client_config()
@@ -204,7 +209,8 @@ class MainPresenter(QObject):
         self._set_initial_sample_count_state()
         self.view.show()
         QtCore.QTimer.singleShot(0, self._calculate_expected_samples)
-        QtCore.QTimer.singleShot(0, self._start_update_check)
+        if _should_schedule_startup_update_check():
+            QtCore.QTimer.singleShot(0, self._start_update_check)
 
 
 
@@ -279,127 +285,35 @@ class MainPresenter(QObject):
     #   Инициализация UI
     # ------------------------------------------------------------------ #
     def _load_initial_state(self):
-        # Читаем настройки из Settings и заполняем View
-        self._load_main_window_settings()
-        self._load_settings_panel_settings()
-
-        # Последняя проверка доступности кнопки "Начать"
-        self.view.restore_from_dataclass(self.main_window_state)
-        self._apply_settings_to_panel()
-        self.view.set_batch_preview_enabled(self.settings_state.show_batch_preview)
-        self.settings_panel.set_model(self.settings_state.model)
-        self._restore_work_mode_ui()
-        self.view.apply_ui_mode(getattr(self.main_window_state, 'ui_mode', 'simple'))
-        self.view.set_simple_workflow_profile(None)
-
-        self.settings_panel.connect_internal_signals()
-        self.view.connect_internal_signals()
-
-        self._refresh_queue_view()
-        self._validate_start_button()
+        state_sync.load_initial_state(self)
 
     def _load_main_window_settings(self):
-        self.main_window_state = self._state_store.load_main_window_state()
-        self.main_window_state.mode_state = normalize_main_window_mode_state(
-            getattr(self.main_window_state, 'mode_state', {})
-        )
-        current_mode = normalize_work_mode(getattr(self.main_window_state, 'work_mode', ''))
-        if current_mode:
-            mode_state = dict(self.main_window_state.mode_state)
-            if current_mode not in mode_state:
-                mode_state[current_mode] = build_main_window_mode_state_entry_from_state(self.main_window_state)
-                self.main_window_state.mode_state = mode_state
-        sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
-        self.sample_calculator.set_path(Path(sample_folder) if sample_folder else None)
+        state_sync.load_main_window_settings(self)
 
     def _load_settings_panel_settings(self):
-        self.settings_state = self._state_store.load_settings_state()
+        state_sync.load_settings_panel_settings(self)
 
     def _set_initial_sample_count_state(self) -> None:
-        sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
-        if sample_folder and Path(sample_folder).is_dir():
-            self.settings_panel.set_samples_count_loading()
-            if hasattr(self.view, 'set_samples_count_loading'):
-                self.view.set_samples_count_loading()
-            return
-        self.settings_panel.set_samples_count(0)
-        if hasattr(self.view, 'set_samples_count'):
-            self.view.set_samples_count(0)
+        state_sync.set_initial_sample_count_state(self)
 
     # ------------------------------------------------------------------ #
     #   Обновление класса состояния окон
     # ------------------------------------------------------------------ #
 
     def _current_view_main_window_mode_entry(self) -> dict[str, object]:
-        v = self.view
-        return build_main_window_mode_state_entry(
-            source_folder=v.lbl_source.text(),
-            result_folder=v.lbl_result.text(),
-            model_path=v.model_path.text(),
-            label_folder=v.label_path.text(),
-            sample_folder=v.sample_path.text(),
-            epochs=v.le_epochs.value(),
-        )
+        return state_sync.current_view_main_window_mode_entry(self)
 
     def _store_view_state_for_mode(self, mode: str) -> None:
-        normalized_mode = normalize_work_mode(mode)
-        if not normalized_mode:
-            return
-        mode_state = normalize_main_window_mode_state(getattr(self.main_window_state, 'mode_state', {}))
-        mode_state[normalized_mode] = self._current_view_main_window_mode_entry()
-        self.main_window_state.mode_state = mode_state
+        state_sync.store_view_state_for_mode(self, mode)
 
     def _restore_mode_state_to_view(self, mode: str) -> None:
-        entry = resolve_main_window_mode_state_entry(self.main_window_state, mode)
-        self.view.set_source_path(str(entry.get('source_folder', '')))
-        self.view.set_result_path(str(entry.get('result_folder', '')))
-        self.view.set_label_path(str(entry.get('label_folder', '')))
-        self.view.set_jpg_path(str(entry.get('sample_folder', '')))
-        self.view.model_path.setText(str(entry.get('model_path', '')))
-        try:
-            epochs = int(entry.get('epochs', MainWindowState().epochs))
-        except (TypeError, ValueError):
-            epochs = MainWindowState().epochs
-        self.view.le_epochs.setValue(epochs)
-        self.main_window_state.source_folder = str(entry.get('source_folder', ''))
-        self.main_window_state.result_folder = str(entry.get('result_folder', ''))
-        self.main_window_state.label_folder = str(entry.get('label_folder', ''))
-        self.main_window_state.sample_folder = str(entry.get('sample_folder', ''))
-        self.main_window_state.model_path = str(entry.get('model_path', ''))
-        self.main_window_state.epochs = epochs
-        sample_folder = str(entry.get('sample_folder', '') or '').strip()
-        self.sample_calculator.set_path(Path(sample_folder) if sample_folder else None)
+        state_sync.restore_mode_state_to_view(self, mode)
 
     def _update_main_window_state(self):
-        v = self.view
-        work_mode = self._update_work_mode()
-        mode_state = normalize_main_window_mode_state(getattr(self.main_window_state, 'mode_state', {}))
-        if work_mode:
-            mode_state[work_mode] = self._current_view_main_window_mode_entry()
-        self.main_window_state.work_mode = work_mode
-        self.main_window_state.source_folder = v.lbl_source.text()
-        self.main_window_state.result_folder = v.lbl_result.text()
-        self.main_window_state.label_folder = v.label_path.text()
-        self.main_window_state.sample_folder = v.sample_path.text()
-        self.main_window_state.model_path = v.model_path.text()
-        self.main_window_state.epochs = v.le_epochs.value()
-        self.main_window_state.ui_mode = self.view.current_ui_mode()
-        self.main_window_state.mode_state = mode_state
+        state_sync.update_main_window_state(self)
 
     def _restore_work_mode_ui(self):
-        mode = normalize_work_mode(getattr(self.main_window_state, 'work_mode', ''))
-        v = self.view
-        mode_to_button = {
-            WorkMode.train_and_recognition.value: v.rb_train_and_recognition,
-            WorkMode.train_only.value: v.rb_train_only,
-            WorkMode.further_training.value: v.rb_further_train_model,
-            WorkMode.recognition_only.value: v.rb_recognition,
-        }
-        if mode not in mode_to_button:
-            mode = WorkMode.train_and_recognition.value
-            self.main_window_state.work_mode = mode
-        mode_to_button[mode].setChecked(True)
-        self._on_sample_type_changed(mode)
+        state_sync.restore_work_mode_ui(self)
 
     def _apply_settings_to_panel(self) -> None:
         """
@@ -426,6 +340,7 @@ class MainPresenter(QObject):
           guard against ``AttributeError`` so the function is safe to reuse across
           different dialog layouts.
         """
+        return state_sync.apply_settings_to_panel(self)
         # ------------------------------------------------------------------
         # 1. Берем короткую ссылку на панель для компактности кода.
         # ------------------------------------------------------------------
@@ -631,19 +546,10 @@ class MainPresenter(QObject):
         s.target_y_size.setValue(state.target_size[1])
 
     def _update_work_mode(self) -> str:
-        v = self.view
-        if v.rb_train_and_recognition.isChecked():
-            return WorkMode.train_and_recognition.value
-        elif v.rb_train_only.isChecked():
-            return WorkMode.train_only.value
-        elif v.rb_further_train_model.isChecked():
-            return WorkMode.further_training.value
-        elif v.rb_recognition.isChecked():
-            return WorkMode.recognition_only.value
-        else:
-            return ''
+        return state_sync.update_work_mode(self)
 
     def _update_settings_window_state(self):
+        return state_sync.update_settings_window_state(self)
         s = self.settings_panel
 
         h = s.horizontal_rotation.isChecked()
@@ -1034,7 +940,7 @@ class MainPresenter(QObject):
             'Обнаружены CIF-метки. Готовлю binary_cif для редактора редких областей.',
         )
         self._set_rare_patch_editor_preparing(True)
-        thread = RarePatchEditorPreparationThread(
+        thread = PresenterRarePatchEditorPreparationThread(
             sample_folder=sample_folder,
             label_folder=label_folder,
             message_bus=self.message_bus,
@@ -1098,14 +1004,7 @@ class MainPresenter(QObject):
         self.view.log_message.emit(f'Ошибка: {message}')
 
     def _update_cut_mode(self) -> str:
-        s = self.settings_panel
-
-        if s.cut_dataset_type.isChecked():
-            return SampleCutMode.disk.value
-        elif s.no_cut_dataset_type.isChecked():
-            return SampleCutMode.online.value
-        else:
-            return SampleCutMode.online.value
+        return state_sync.update_cut_mode(self)
 
     # ------------------------------------------------------------------ #
     #   Сохранение окон в QSettings
@@ -1126,12 +1025,7 @@ class MainPresenter(QObject):
         self._state_store.save_settings_state(state)
 
     def _reset_settings_to_defaults(self):
-        self.settings_state = SettingsState()
-        self._apply_settings_to_panel()
-        self._update_settings_window_state()
-        self._set_max_shift()
-        self._calculate_expected_samples()
-        self._validate_start_button()
+        state_sync.reset_settings_to_defaults(self)
 
     def _choose_source_folder(self):
         path = _tk_filedialog('folder')
@@ -1216,30 +1110,10 @@ class MainPresenter(QObject):
         self._validate_start_button()
 
     def _on_start_requested(self):
-        self._save_windows_to_qsettings()
-        self._update_main_window_state()
-        self._update_settings_window_state()
-        validation_error = build_processing_start_error_message(self.main_window_state, self.settings_state)
-        if validation_error:
-            self.view.show_warning.emit(validation_error)
-            self.message_bus.publish('logging', validation_error.replace('\n', ' | '))
-            return
-
-        task = self._processing_session.enqueue_task(
-            main_state=clone_main_window_state(self.main_window_state),
-            settings_state=replace(self.settings_state),
-        )
-        self.message_bus.publish('logging', f'Задача #{task.task_id} добавлена в очередь.')
-        self._refresh_queue_view(selected_task_id=task.task_id)
-        self._start_next_task_if_possible()
+        task_flow.on_start_requested(self)
 
     def _on_stop_requested(self):
-        if self.neuaral_handler is None:
-            return
-        self.neuaral_handler.stop()
-        active_task = self._processing_session.request_stop()
-        if active_task is not None:
-            self.message_bus.publish('logging', f'Остановлена активная задача #{active_task.task_id}.')
+        task_flow.on_stop_requested(self)
 
     def _on_release_memory_requested(self):
         gc.collect()
@@ -1258,25 +1132,20 @@ class MainPresenter(QObject):
         self._save_main_window_to_qsettings()
 
     def _refresh_update_client_config(self) -> None:
-        self._update_client_config = load_update_client_config()
-        self._selected_update_channel = load_selected_update_channel(
-            self._update_client_config.default_channel,
-            available_channels=self._update_client_config.available_channels,
-        )
-        self.view.configure_update_channels(
-            self._update_client_config.available_channels,
-            self._selected_update_channel,
+        update_flow.refresh_update_client_config(
+            self,
+            load_update_client_config_fn=load_update_client_config,
+            load_selected_update_channel_fn=load_selected_update_channel,
         )
 
     def _on_update_channel_selected(self, channel: str) -> None:
-        self._refresh_update_client_config()
-        requested_channel = str(channel or '').strip().lower()
-        available_channels = self._update_client_config.available_channels
-        if requested_channel in available_channels:
-            self._selected_update_channel = requested_channel
-            save_selected_update_channel(requested_channel)
-            self.view.configure_update_channels(available_channels, requested_channel)
-            self.message_bus.publish('logging', f'Канал обновлений переключен на {requested_channel}.')
+        update_flow.on_update_channel_selected(
+            self,
+            channel,
+            save_selected_update_channel_fn=save_selected_update_channel,
+            load_update_client_config_fn=load_update_client_config,
+            load_selected_update_channel_fn=load_selected_update_channel,
+        )
 
     def _on_simple_workflow_requested(self, preset_name: str):
         preset_path = self.SIMPLE_WORKFLOW_PRESETS.get(str(preset_name))
@@ -1320,36 +1189,13 @@ class MainPresenter(QObject):
         self._remove_queue_row(row)
 
     def _remove_queue_row(self, row: int):
-        try:
-            task = self._processing_session.remove_task_by_index(row)
-        except ActiveTaskMutationError as error:
-            self.message_bus.publish('logging', f'Нельзя убрать активную задачу #{error.task_id}.')
-            return
-        if task is None:
-            return
-        self.message_bus.publish('logging', f'Задача #{task.task_id} удалена из очереди.')
-        queue_size = len(self._processing_session.queue_snapshot())
-        self._refresh_queue_view(selected_row=min(row, queue_size - 1))
+        task_flow.remove_queue_row(self, row)
 
     def _on_queue_properties_requested(self, row: int):
-        task = self._processing_session.get_task_by_index(row)
-        snapshot = self._processing_session.queue_snapshot()
-        if task is None or row < 0 or row >= len(snapshot):
-            return
-
-        dialog = TaskPropertiesDialog(
-            task_id=task.task_id,
-            status=snapshot[row].status,
-            paused=task.paused,
-            main_window_state=task.main_window_state,
-            settings_state=task.settings_state,
-            parent=self.view,
-        )
-        dialog.restore_requested.connect(self._on_task_restore_requested)
-        dialog.exec()
+        task_flow.on_queue_properties_requested(self, row, dialog_cls=TaskPropertiesDialog)
 
     def _on_task_restore_requested(self, main_state: MainWindowState, settings_state: SettingsState):
-        self._restore_task_state_to_ui(main_state, settings_state)
+        task_flow.on_task_restore_requested(self, main_state, settings_state)
 
     def _restore_task_state_to_ui(
         self,
@@ -1358,179 +1204,50 @@ class MainPresenter(QObject):
         *,
         log_message: str = 'Параметры задачи восстановлены в интерфейсе.',
     ):
-        self.main_window_state = clone_main_window_state(main_state)
-        self.settings_state = replace(settings_state)
-        sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
-        self.sample_calculator.set_path(Path(sample_folder) if sample_folder else None)
-
-        self.view.restore_from_dataclass(self.main_window_state)
-        self._apply_settings_to_panel()
-        self._restore_work_mode_ui()
-        self.view.apply_ui_mode(getattr(self.main_window_state, 'ui_mode', 'simple'))
-        self.view.set_simple_workflow_profile(None)
-        if getattr(self.main_window_state, 'ui_mode', 'simple') != 'simple' and hasattr(self.view, 'show_settings_dock'):
-            self.view.show_settings_dock()
-
-        self._update_main_window_state()
-        self._update_settings_window_state()
-        self._set_max_shift()
-        self._calculate_expected_samples()
-        self._validate_start_button()
-        self.message_bus.publish('logging', log_message)
+        state_sync.restore_task_state_to_ui(
+            self,
+            main_state,
+            settings_state,
+            log_message=log_message,
+        )
 
     def _on_queue_pause_toggle_requested(self):
-        row = self.view.get_selected_queue_row()
-        try:
-            task = self._processing_session.toggle_pause_by_index(row)
-        except ActiveTaskMutationError as error:
-            self.message_bus.publish('logging', f'Нельзя поставить на паузу активную задачу #{error.task_id}.')
-            return
-        if task is None:
-            return
-        state = 'поставлена на паузу' if task.paused else 'снята с паузы'
-        self.message_bus.publish('logging', f'Задача #{task.task_id} {state}.')
-        self._refresh_queue_view(selected_task_id=task.task_id)
-        self._start_next_task_if_possible()
+        task_flow.on_queue_pause_toggle_requested(self)
 
     def _refresh_queue_view(self, selected_row: int = -1, selected_task_id: int | None = None):
-        items: list[str] = []
-        resolved_selected_row = selected_row
-        status_map = {
-            'queued': 'в очереди',
-            'paused': 'на паузе',
-            'running': 'выполняется',
-        }
-        for idx, task in enumerate(self._processing_session.queue_snapshot()):
-            status = status_map.get(task.status, task.status)
-            items.append(f'#{task.task_id} | {task.work_mode} | {status}')
-            if selected_task_id is not None and task.task_id == selected_task_id:
-                resolved_selected_row = idx
-        self.view.set_task_queue_items(items, resolved_selected_row)
+        task_flow.refresh_queue_view(
+            self,
+            selected_row=selected_row,
+            selected_task_id=selected_task_id,
+        )
 
     def _start_next_task_if_possible(self):
-        decision = self._processing_session.next_task_to_start(
-            worker_running=self.neuaral_handler is not None and self.neuaral_handler.isRunning()
-        )
-        if decision.worker_busy:
-            return
-        next_task = decision.task
-        if next_task is None:
-            self.view.toggle_start_stop.emit(False)
-            return
-
-        self._refresh_queue_view(selected_task_id=next_task.task_id)
-        self.view.toggle_start_stop.emit(True)
-        self._start_task(next_task)
+        task_flow.start_next_task_if_possible(self)
 
     def _start_task(self, task: QueuedTask):
-        os.environ['NEURALIMAGE_TORCH_COMPILE'] = '1' if task.settings_state.torch_compile_enabled else '0'
-        self.message_bus.publish(
-            'logging',
-            f'torch.compile {"enabled" if task.settings_state.torch_compile_enabled else "disabled"} by UI setting.',
+        task_flow.start_task(
+            self,
+            task,
+            handler_thread_cls=GeneralNeuralHandlerThread,
+            workflow_builder=build_workflow_parameters,
+            artifact_dir_builder=build_training_artifact_dir,
+            workflow_snapshot_saver=save_workflow_snapshot,
+            workflow_snapshot_filename=WORKFLOW_SNAPSHOT_FILENAME,
         )
-        work_mode, training_settings, recognition_parameters = build_workflow_parameters(
-            task.main_window_state, task.settings_state
-        )
-        if work_mode is None:
-            self.message_bus.publish('error', f'Задача #{task.task_id}: не удалось определить режим работы.')
-            self._processing_session.drop_task(task.task_id)
-            self.view.toggle_start_stop.emit(False)
-            self._refresh_queue_view()
-            self._start_next_task_if_possible()
-            return
-        if work_mode in (
-            WorkMode.train_only,
-            WorkMode.train_and_recognition,
-            WorkMode.further_training,
-        ):
-            try:
-                artifact_dir = build_training_artifact_dir(
-                    task.main_window_state,
-                    task.settings_state,
-                    work_mode,
-                )
-                training_settings.artifact_dir = artifact_dir
-                snapshot_path = save_workflow_snapshot(
-                    task.main_window_state,
-                    task.settings_state,
-                    destination=artifact_dir / WORKFLOW_SNAPSHOT_FILENAME,
-                    workflow_snapshot=(work_mode, training_settings, recognition_parameters),
-                )
-                self.message_bus.publish('logging', f'Артефакты запуска будут сохранены в {artifact_dir}.')
-                self.message_bus.publish('logging', f'Параметры запуска сохранены в {snapshot_path}.')
-            except OSError as error:
-                self.message_bus.publish('error', f'Не удалось сохранить параметры запуска: {error}')
-
-        self.neuaral_handler = GeneralNeuralHandlerThread(
-            work_mode=work_mode,
-            recognition_parameters=recognition_parameters,
-            tranining_parameters=training_settings,
-            message_bus=self.message_bus,
-            callback=self._on_stop_requested,
-        )
-        self.neuaral_handler.ask.connect(self._thread_ask)
-        self.neuaral_handler.finished.connect(self._on_task_finished)
-        self.neuaral_handler.start()
-        self.message_bus.publish('logging', f'Запущена задача #{task.task_id}.')
 
     def _on_task_finished(self):
-        result = self._processing_session.complete_active_task()
-        if result.task is not None:
-            if result.stop_requested:
-                self.message_bus.publish('logging', f'Задача #{result.task.task_id} остановлена.')
-            else:
-                self.message_bus.publish('logging', f'Задача #{result.task.task_id} завершена.')
-        self.neuaral_handler = None
-        self._refresh_queue_view()
-        self._start_next_task_if_possible()
+        task_flow.on_task_finished(self)
     def _clear_validation_gradient_window_refs(self) -> None:
-        self._validation_gradient_window = None
-        self._validation_gradient_plugin = None
+        plugin_flow.clear_validation_gradient_window_refs(self)
 
     def _on_open_validation_gradient_requested(self) -> None:
-        window = self._validation_gradient_window
-        if window is not None:
-            window.show()
-            window.raise_()
-            window.activateWindow()
-            return
-
-        from Validation_gradient_widget_lite import ValidationGradientLitePlugin
-
-        plugin = ValidationGradientLitePlugin()
-        try:
-            widget = plugin.create_widget(parent=None)
-        except Exception as exc:
-            self.view.show_warning.emit(f'Failed to open Validation Gradient Lite: {exc}')
-            return
-
-        title = getattr(plugin, 'display_name', 'Validation Gradient Widget Lite')
-        window = _ValidationGradientPluginWindow(
-            plugin=plugin,
-            widget=widget,
-            title=str(title),
-            on_closed=self._clear_validation_gradient_window_refs,
-            parent=self.view,
+        plugin_flow.open_validation_gradient_requested(
+            self,
+            window_cls=plugin_flow.ValidationGradientPluginWindow,
         )
-        self._validation_gradient_plugin = plugin
-        self._validation_gradient_window = window
-        window.show()
-        window.raise_()
-        window.activateWindow()
 
     def _shutdown_validation_gradient_plugin(self) -> None:
-        window = self._validation_gradient_window
-        plugin = self._validation_gradient_plugin
-        if window is not None:
-            self._validation_gradient_window = None
-            self._validation_gradient_plugin = None
-            window.close()
-            return
-        if plugin is not None:
-            try:
-                plugin.shutdown()
-            finally:
-                self._validation_gradient_plugin = None
+        plugin_flow.shutdown_validation_gradient_plugin(self)
 
     def _on_close_requested(self):
         ui_texts = get_ui_section('main_window')
@@ -1551,98 +1268,27 @@ class MainPresenter(QObject):
     # ------------------------------------------------------------------ #
 
     def _calculate_expected_samples(self):
-        self._update_settings_window_state()
-        calculator_settings = self.get_cut_settings_from_window_state()
-        self.sample_calculator.set_settings(calculator_settings)
-        self._set_sample_number(calculator_settings)
+        sample_counting.calculate_expected_samples(self)
 
     def get_cut_settings_from_window_state(self) -> CutSettings:
-        s = self.settings_state
-        train_patch_size = tuple(getattr(s, 'train_patch_size', None) or s.sample_size)
-        online_mode = getattr(s, 'sample_cut_mode', SampleCutMode.online.value) == SampleCutMode.online.value
-        return CutSettings(step=s.step,
-                           x_size=train_patch_size[0],
-                           y_size=train_patch_size[1],
-                           vertical_rotation=s.vertical_rotation,
-                           horizontal_rotation=s.horizontal_rotation,
-                           flip_x=bool(getattr(s, 'flip_x', False)),
-                           flip_y=bool(getattr(s, 'flip_y', False)),
-                           color_mode=s.color_mode,
-                           model=s.model,
-                           additional_augmentation=s.additional_augmentation,
-                           augmentation_gamma_strength=float(getattr(s, 'augmentation_gamma_strength', 0.15)),
-                           augmentation_blur_probability=float(getattr(s, 'augmentation_blur_probability', 0.25)),
-                           augmentation_blur_radius=float(getattr(s, 'augmentation_blur_radius', 1.0)),
-                           random_crop=bool(
-                               getattr(s, 'random_crop', False)
-                               and online_mode
-                           ),
-                           crops_per_image=int(getattr(s, 'crops_per_image', 64)),
-                           scale_augmentation=bool(getattr(s, 'scale_augmentation', False) and online_mode),
-                           scale_augmentation_strength=float(getattr(s, 'scale_augmentation_strength', 0.2)),
-                           )
+        return sample_counting.get_cut_settings_from_window_state(self)
 
     def _set_sample_number(self, calculator_settings: CutSettings) -> None:
-        sample_folder = str(getattr(self.main_window_state, 'sample_folder', '') or '').strip()
-        if not sample_folder or not Path(sample_folder).is_dir():
-            self._invalidate_sample_count_requests()
-            self.settings_panel.set_samples_count(0)
-            if hasattr(self.view, 'set_samples_count'):
-                self.view.set_samples_count(0)
-            return
-
-        self._sample_count_request_serial += 1
-        request_id = self._sample_count_request_serial
-        self._latest_sample_count_request_id = request_id
-        self._debounced_sample_count_request = (
-            request_id,
-            sample_folder,
-            calculator_settings,
-            getattr(self.settings_state, 'synthetic_defect_generator', None),
-        )
-        self.settings_panel.set_samples_count_loading()
-        if hasattr(self.view, 'set_samples_count_loading'):
-            self.view.set_samples_count_loading()
-        self._sample_count_debounce_timer.start()
+        sample_counting.set_sample_number(self, calculator_settings)
 
     def _invalidate_sample_count_requests(self) -> None:
-        self._sample_count_request_serial += 1
-        self._latest_sample_count_request_id = self._sample_count_request_serial
-        self._debounced_sample_count_request = None
-        self._pending_sample_count_request = None
-        self._sample_count_debounce_timer.stop()
+        sample_counting.invalidate_sample_count_requests(self)
 
     def _dispatch_sample_count_request(self) -> None:
-        request = self._debounced_sample_count_request
-        self._debounced_sample_count_request = None
-        if request is None:
-            return
-        if self._sample_count_worker_thread is not None and self._sample_count_worker_thread.is_alive():
-            self._pending_sample_count_request = request
-            return
-        self._start_sample_count_request(request)
+        sample_counting.dispatch_sample_count_request(self)
 
     def _start_sample_count_request(self, request: tuple[int, str, CutSettings, object]) -> None:
-        request_id, sample_folder, calculator_settings, synthetic_config = request
-        cached_path = self._sample_count_cache_path
-        cached_sizes = list(self._sample_count_cache_sizes) if self._sample_count_cache_sizes is not None else None
-        if normalized_path := self._normalize_sample_count_path(sample_folder):
-            if normalized_path != cached_path or cached_sizes is None:
-                self._publish_log_message(
-                    f'Индексация файлов выборки запущена в отдельном потоке: {sample_folder}'
-                )
-            else:
-                self._publish_log_message(
-                    f'Пересчет количества кадров запущен в отдельном потоке: {sample_folder}'
-                )
-        worker_thread = threading.Thread(
-            target=self._run_sample_count_request,
-            args=(request_id, sample_folder, calculator_settings, synthetic_config, cached_path, cached_sizes),
-            daemon=True,
-            name=f'sample-count-{request_id}',
+        sample_counting.start_sample_count_request(
+            self,
+            request,
+            sample_worker_cls=SampleWorker,
+            threading_module=threading,
         )
-        self._sample_count_worker_thread = worker_thread
-        worker_thread.start()
 
     def _run_sample_count_request(
         self,
@@ -1653,47 +1299,20 @@ class MainPresenter(QObject):
         cached_path: str | None,
         cached_sizes: list[tuple[int, int]] | None,
     ) -> None:
-        try:
-            sample_path = Path(sample_folder)
-            normalized_path = self._normalize_sample_count_path(sample_path)
-            if not sample_path.is_dir():
-                self._sample_count_signals.calculated.emit(request_id, normalized_path, [], 0)
-                return
-
-            if normalized_path == cached_path and cached_sizes is not None:
-                image_sizes = list(cached_sizes)
-            else:
-                self._publish_log_message(
-                    f'Выполняется индексация списка файлов выборки: {sample_folder}'
-                )
-                image_paths = SampleWorker.collect_image_paths(sample_path)
-                image_sizes = SampleWorker.collect_image_sizes(image_paths)
-
-            total_samples = SampleWorker.calculate_total_samples(image_sizes, calculator_settings)
-            synthetic_generator = build_synthetic_defect_generator_parameters(synthetic_config)
-            if synthetic_generator.enabled and float(synthetic_generator.epoch_size_factor) > 0.0 and image_sizes:
-                synthetic_frame_count = max(
-                    1,
-                    int(round(len(image_sizes) * float(synthetic_generator.epoch_size_factor))),
-                )
-                synthetic_size_xy = (
-                    max(int(calculator_settings.x_size), int(synthetic_generator.image_size_xy[0])),
-                    max(int(calculator_settings.y_size), int(synthetic_generator.image_size_xy[1])),
-                )
-                total_samples += (
-                    synthetic_frame_count
-                    * SampleWorker.calculate_image_parts_for_settings(
-                        (int(synthetic_size_xy[1]), int(synthetic_size_xy[0])),
-                        calculator_settings,
-                    )
-                )
-            self._sample_count_signals.calculated.emit(request_id, normalized_path, image_sizes, total_samples)
-        except Exception as exc:
-            self._sample_count_signals.failed.emit(request_id, str(exc))
+        sample_counting.run_sample_count_request(
+            self,
+            request_id,
+            sample_folder,
+            calculator_settings,
+            synthetic_config,
+            cached_path,
+            cached_sizes,
+            sample_worker_cls=SampleWorker,
+        )
 
     @staticmethod
     def _normalize_sample_count_path(path: Path | str) -> str:
-        return os.path.normcase(os.path.abspath(str(path)))
+        return sample_counting.normalize_sample_count_path(path)
 
     @QtCore.pyqtSlot(int, str, object, int)
     def _on_sample_count_calculated(
@@ -1703,46 +1322,23 @@ class MainPresenter(QObject):
         image_sizes: object,
         total_samples: int,
     ) -> None:
-        self._sample_count_worker_thread = None
-        if normalized_path:
-            self._sample_count_cache_path = normalized_path
-            self._sample_count_cache_sizes = list(image_sizes) if isinstance(image_sizes, list) else []
-        if request_id == self._latest_sample_count_request_id:
-            self.settings_panel.set_samples_count(total_samples)
-            if hasattr(self.view, 'set_samples_count'):
-                self.view.set_samples_count(total_samples)
-            self._publish_log_message(f'Количество кадров в выборке пересчитано: {total_samples}')
-        self._start_pending_sample_count_request_if_needed()
+        sample_counting.on_sample_count_calculated(
+            self,
+            request_id,
+            normalized_path,
+            image_sizes,
+            total_samples,
+        )
 
     @QtCore.pyqtSlot(int, str)
     def _on_sample_count_failed(self, request_id: int, error_message: str) -> None:
-        self._sample_count_worker_thread = None
-        if request_id == self._latest_sample_count_request_id:
-            self.settings_panel.set_samples_count(0)
-            if hasattr(self.view, 'set_samples_count'):
-                self.view.set_samples_count(0)
-            self.message_bus.publish('logging', f'Не удалось рассчитать количество кадров: {error_message}')
-        self._start_pending_sample_count_request_if_needed()
+        sample_counting.on_sample_count_failed(self, request_id, error_message)
 
     def _start_pending_sample_count_request_if_needed(self) -> None:
-        if self._debounced_sample_count_request is not None:
-            return
-        request = self._pending_sample_count_request
-        if request is None:
-            return
-        self._pending_sample_count_request = None
-        self._start_sample_count_request(request)
+        sample_counting.start_pending_sample_count_request_if_needed(self)
 
     def _set_max_shift(self):
-        s = self.settings_panel
-        x_size = s.sample_x_size.value()
-        y_size = s.sample_y_size.value()
-
-        min_size = min(x_size, y_size)
-
-        s.shift_spinbox.setMaximum(min_size)
-        if s.shift_spinbox.value() > min_size:
-            s.shift_spinbox.setValue(min_size)
+        sample_counting.set_max_shift(self)
 
     # ------------------------------------------------------------------ #
     #   Валидация и управление кнопкой "Начать"
@@ -1763,250 +1359,60 @@ class MainPresenter(QObject):
         default_answer: bool = False,
         timeout_seconds: int = 0,
     ):
-        buttons = QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        default_button = QMessageBox.StandardButton.Yes if default_answer else QMessageBox.StandardButton.No
-
-        dialog = QMessageBox(self.view)
-        dialog.setIcon(QMessageBox.Icon.Question)
-        dialog.setWindowTitle(header)
-        dialog.setText(question)
-        dialog.setStandardButtons(buttons)
-        dialog.setDefaultButton(default_button)
-        dialog.setEscapeButton(default_button)
-
-        if timeout_seconds > 0:
-            timer = QtCore.QTimer(dialog)
-            timer.setInterval(1000)
-            seconds_left = max(0, int(timeout_seconds))
-            default_button_widget = dialog.button(default_button)
-            default_button_text = (
-                default_button_widget.text() if default_button_widget is not None else ''
-            )
-
-            def _update_button_text():
-                if default_button_widget is None:
-                    return
-                default_button_widget.setText(
-                    _format_auto_answer_button_text(default_button_text, seconds_left)
-                )
-
-            def _auto_answer():
-                nonlocal seconds_left
-                if not dialog.isVisible():
-                    return
-                seconds_left -= 1
-                if seconds_left <= 0:
-                    timer.stop()
-                    if default_button_widget is not None:
-                        default_button_widget.setText(default_button_text)
-                        default_button_widget.click()
-                    else:
-                        dialog.done(int(default_button))
-                    return
-                _update_button_text()
-
-            _update_button_text()
-            timer.timeout.connect(_auto_answer)
-            dialog.finished.connect(timer.stop)
-            timer.start()
-
-        dialog.exec()
-        clicked_button = dialog.clickedButton()
-        reply = dialog.standardButton(clicked_button) if clicked_button is not None else default_button
-
-        answer = True if reply == QMessageBox.StandardButton.Yes else False
-
+        answer = presenter_dialogs.ask_yes_no_with_timeout(
+            parent=self.view,
+            question=question,
+            header=header,
+            default_answer=default_answer,
+            timeout_seconds=timeout_seconds,
+        )
         handler = self.neuaral_handler
         if handler is not None:
             handler.answer.emit(answer)
 
     def _start_update_check(self, *, manual: bool = False) -> None:
-        texts = get_ui_section('main_window')
-        self._refresh_update_client_config()
-        manifest_url = load_update_manifest_url(self._selected_update_channel)
-        if not manifest_url:
-            if manual:
-                self.view.show_warning.emit(
-                    str(texts.get('update_check_not_configured', 'Источник обновлений не настроен.'))
-                )
-            return
-        if self._update_check_thread is not None:
-            if manual:
-                self.view.show_info.emit(
-                    str(texts.get('update_check_in_progress', 'Проверка обновлений уже выполняется.'))
-                )
-            return
-        self._update_check_manual = manual
-        self.message_bus.publish('logging', 'Запущена проверка обновлений.')
-        if not manifest_url:
-            return
-        self._update_check_thread = AppUpdateCheckThread(
-            manifest_url=manifest_url,
-            channel=self._selected_update_channel,
+        update_flow.start_update_check(
+            self,
+            manual=manual,
+            load_update_manifest_url_fn=load_update_manifest_url,
+            update_check_thread_cls=PresenterAppUpdateCheckThread,
+            load_update_client_config_fn=load_update_client_config,
+            load_selected_update_channel_fn=load_selected_update_channel,
         )
-        self._update_check_thread.checked.connect(self._on_update_check_finished)
-        self._update_check_thread.finished.connect(self._clear_update_check_thread)
-        self._update_check_thread.start()
 
     def _clear_update_check_thread(self) -> None:
-        self._update_check_thread = None
-        self._update_check_manual = False
+        update_flow.clear_update_check_thread(self)
 
     def _on_update_check_finished(self, update_info: object) -> None:
-        texts = get_ui_section('main_window')
-        manual = self._update_check_manual
-        if not isinstance(update_info, UpdateInfo):
-            if manual:
-                self.view.show_warning.emit(
-                    str(texts.get('update_check_failed', 'Не удалось проверить наличие обновлений.'))
-                )
-            return
-        if manual:
-            self._show_update_notification(update_info, manual=True)
-            return
-        if not is_newer_version(update_info.version, APP_VERSION):
-            return
-        last_notified = load_last_notified_version(self._selected_update_channel)
-        if not should_notify_version(update_info.version, APP_VERSION, last_notified):
-            return
-        self._show_update_notification(update_info)
-        save_last_notified_version(update_info.version, self._selected_update_channel)
+        update_flow.on_update_check_finished(
+            self,
+            update_info,
+            update_info_cls=UpdateInfo,
+            app_version=APP_VERSION,
+            is_newer_version_fn=is_newer_version,
+            load_last_notified_version_fn=load_last_notified_version,
+            should_notify_version_fn=should_notify_version,
+            save_last_notified_version_fn=save_last_notified_version,
+        )
 
     @staticmethod
     def _markdown_to_message_html(markdown: str) -> str:
-        from PyQt6.QtGui import QTextDocument
-
-        document = QTextDocument()
-        document.setMarkdown(str(markdown or '').strip())
-        return document.toHtml()
+        return presenter_dialogs.markdown_to_message_html(markdown)
 
     def _show_update_notification(self, update_info: UpdateInfo, *, manual: bool = False) -> None:
-        texts = get_ui_section('main_window')
-        title = str(texts.get('update_available_title', 'Доступна новая версия'))
-        template_key = 'update_manual_text' if manual else 'update_available_text'
-        body_template = str(
-            texts.get(
-                template_key,
-                'Установлена версия {current_version}. Доступна версия {new_version}.',
-            )
+        update_flow.show_update_notification(
+            self,
+            update_info,
+            manual=manual,
+            app_version=APP_VERSION,
+            collect_release_history_fn=collect_release_history,
         )
-        body = body_template.format(
-            current_version=APP_VERSION,
-            new_version=update_info.version,
-            channel=self._selected_update_channel,
-        )
-        release_history = collect_release_history(update_info)
-        body_markdown = body
-        if release_history:
-            history_title = str(texts.get('update_release_history_title', 'История релизов:'))
-            body_markdown = f'{body_markdown}\n\n## {history_title}\n\n{release_history}'
-
-        dialog = QMessageBox(self.view)
-        dialog.setIcon(QMessageBox.Icon.Information)
-        dialog.setWindowTitle(title)
-        dialog.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        dialog.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextBrowserInteraction)
-        dialog.setText(self._markdown_to_message_html(body_markdown))
-        open_button = None
-        install_button = None
-        select_version_button = None
-        if update_info.download_url:
-            install_button = dialog.addButton(
-                str(texts.get('update_download_install', 'Скачать и установить')),
-                QMessageBox.ButtonRole.AcceptRole,
-            )
-        if update_info.releases:
-            select_version_button = dialog.addButton(
-                str(texts.get('update_select_version', 'Выбрать версию')),
-                QMessageBox.ButtonRole.ActionRole,
-            )
-        if update_info.download_url:
-            open_button = dialog.addButton(
-                str(texts.get('update_open_download', 'Скачать')),
-                QMessageBox.ButtonRole.AcceptRole,
-            )
-        dialog.addButton(
-            str(texts.get('update_later', 'Позже')),
-            QMessageBox.ButtonRole.RejectRole,
-        )
-        dialog.exec()
-        if install_button is not None and dialog.clickedButton() is install_button:
-            self._start_update_download(self._resolve_latest_release(update_info))
-            return
-        if select_version_button is not None and dialog.clickedButton() is select_version_button:
-            self._show_release_selector(update_info)
-            return
-        if open_button is not None and dialog.clickedButton() is open_button:
-            try:
-                webbrowser.open(update_info.download_url)
-            except Exception:
-                pass
 
     def _show_release_selector(self, update_info: UpdateInfo) -> None:
-        texts = get_ui_section('main_window')
-        releases = tuple(update_info.releases)
-        if not releases:
-            self.view.show_warning.emit(
-                str(texts.get('update_check_failed', 'Не удалось проверить наличие обновлений.'))
-            )
-            return
-
-        labels: list[str] = []
-        initial_index = 0
-        for idx, release in enumerate(releases):
-            label = str(release.version)
-            if release.version == APP_VERSION:
-                label = f'{label} ({str(texts.get("update_current_version_label", "текущая"))})'
-                initial_index = idx
-            labels.append(label)
-
-        selected_label, accepted = QInputDialog.getItem(
-            self.view,
-            str(texts.get('update_select_title', 'Выбор версии')),
-            str(texts.get('update_select_label', 'Выберите версию для установки или отката:')),
-            labels,
-            initial_index,
-            False,
-        )
-        if not accepted:
-            return
-        selected_release = releases[labels.index(selected_label)]
-        self._confirm_release_install(selected_release)
+        update_flow.show_release_selector(self, update_info, app_version=APP_VERSION)
 
     def _confirm_release_install(self, release: ReleaseInfo) -> None:
-        texts = get_ui_section('main_window')
-        if not release.download_url:
-            self.view.show_warning.emit(
-                str(texts.get('update_missing_download', 'Для выбранной версии не задан путь к установщику.'))
-            )
-            return
-        if release.version == APP_VERSION:
-            self.view.show_info.emit(
-                str(texts.get('update_selected_current', 'Выбранная версия уже установлена.'))
-            )
-            return
-
-        question = str(
-            texts.get(
-                'update_confirm_selected',
-                'Установить версию {selected_version} поверх текущей {current_version}?',
-            )
-        ).format(
-            selected_version=release.version,
-            current_version=APP_VERSION,
-        )
-        if release.notes:
-            question = f'{question}\n\n{release.notes}'
-        reply = QMessageBox.question(
-            self.view,
-            str(texts.get('update_install_title', 'Установка обновления')),
-            question,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        self._start_update_download(release)
+        update_flow.confirm_release_install(self, release, app_version=APP_VERSION)
 
     @staticmethod
     def _resolve_latest_release(update_info: UpdateInfo) -> ReleaseInfo:
@@ -2020,65 +1426,25 @@ class MainPresenter(QObject):
         )
 
     def _start_update_download(self, release: ReleaseInfo) -> None:
-        if self._update_download_thread is not None:
-            return
-        if self.neuaral_handler is not None and self.neuaral_handler.isRunning():
-            texts = get_ui_section('main_window')
-            self.view.show_warning.emit(
-                str(
-                    texts.get(
-                        'update_busy_message',
-                        'Сначала остановите активную задачу, затем повторите обновление.',
-                    )
-                )
-            )
-            return
-        self.message_bus.publish('logging', f'Загрузка версии {release.version} запущена.')
-        self._update_download_thread = AppUpdateDownloadThread(release=release)
-        self._update_download_thread.finished_download.connect(self._on_update_download_finished)
-        self._update_download_thread.failed_download.connect(self._on_update_download_failed)
-        self._update_download_thread.finished.connect(self._clear_update_download_thread)
-        self._update_download_thread.start()
+        update_flow.start_update_download(
+            self,
+            release,
+            update_download_thread_cls=PresenterAppUpdateDownloadThread,
+        )
 
     def _clear_update_download_thread(self) -> None:
-        self._update_download_thread = None
+        update_flow.clear_update_download_thread(self)
 
     def _on_update_download_finished(self, installer_path: str, version: str) -> None:
-        texts = get_ui_section('main_window')
-        question = str(
-            texts.get(
-                'update_ready_to_install',
-                'Обновление {new_version} загружено. Приложение будет закрыто, затем запустится установщик.\nПродолжить?',
-            )
-        ).format(new_version=version)
-        reply = QMessageBox.question(
-            self.view,
-            str(texts.get('update_install_title', 'Установка обновления')),
-            question,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+        update_flow.on_update_download_finished(
+            self,
+            installer_path,
+            version,
+            launch_update_installer_fn=launch_update_installer,
         )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            launch_update_installer(installer_path)
-        except OSError as exc:
-            self._on_update_download_failed(str(exc))
-            return
-        self.message_bus.publish('logging', f'Запущен установщик обновления: {installer_path}.')
-        self._save_windows_to_qsettings()
-        self.view.allow_close()
 
     def _on_update_download_failed(self, error_message: str) -> None:
-        texts = get_ui_section('main_window')
-        message = str(
-            texts.get(
-                'update_download_failed',
-                'Не удалось скачать или запустить обновление: {error}',
-            )
-        ).format(error=error_message)
-        self.view.show_warning.emit(message)
-        self.message_bus.publish('error', message)
+        update_flow.on_update_download_failed(self, error_message)
 
 
 class RarePatchEditorPreparationThread(QThread):

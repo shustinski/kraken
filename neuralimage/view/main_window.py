@@ -32,9 +32,9 @@ import numpy as np
 from lib.data_interfaces import WorkMode
 from lib.logging_policy import MAX_LOG_MESSAGES
 from lib.runtime_paths import resolve_internal_path
+from lib.shared_styles import load_stylesheet, resolve_shared_style_path
 from lib.ui_texts import get_ui_language, get_ui_section
 from lib.version import get_app_title
-from polygon_widget import PolygonExtractionWidget
 from view.changelog_dialog import show_changelog_dialog
 from view.help_dialog import show_help_dialog
 from view.metrics_panel import TrainingMetricsDock
@@ -68,35 +68,16 @@ def _save_persisted_ui_mode(mode: str) -> None:
     settings.setValue('ui_mode', 'advanced' if mode == 'advanced' else 'simple')
     settings.sync()
 
+
+def _modal_dialogs_enabled() -> bool:
+    disabled_flag = str(os.getenv('NEURALIMAGE_DISABLE_MODAL_DIALOGS', '') or '').strip().lower()
+    if disabled_flag in {'1', 'true', 'yes', 'on'}:
+        return False
+    return not bool(os.getenv('PYTEST_CURRENT_TEST'))
+
+
 def load_qss_from_resource(qss_path: str):
-    if not qss_path:
-        return ""
-    if not os.path.exists(qss_path):
-        return ""
-    with open(qss_path, "r", encoding="utf-8") as file:
-        return file.read()
-
-
-class _PolygonExtractorWindow(QMainWindow):
-    def __init__(
-        self,
-        widget: PolygonExtractionWidget,
-        title: str,
-        on_closed,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._on_closed = on_closed
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.setWindowTitle(title)
-        self.setCentralWidget(widget)
-        self.resize(1600, 900)
-
-    def closeEvent(self, event) -> None:
-        try:
-            self._on_closed()
-        finally:
-            super().closeEvent(event)
+    return load_stylesheet(qss_path)
 
 
 class MainView(QMainWindow):
@@ -192,17 +173,12 @@ class MainView(QMainWindow):
         self._available_update_channels: list[str] = []
         self._selected_update_channel = 'stable'
         self._open_validation_gradient_action = None
-        self._open_polygon_extractor_action = None
         self._ui_mode_menu = None
         self._ui_mode_simple_action = None
         self._ui_mode_advanced_action = None
         self._ui_mode = _load_persisted_ui_mode()
         self._current_work_mode = ''
         self._selected_simple_workflow: str | None = None
-        self.polygon_extraction_widget: PolygonExtractionWidget | None = None
-        self.polygon_extraction_window: _PolygonExtractorWindow | None = None
-        self._pending_polygon_input_dir: str = ""
-        self._pending_polygon_output_dir: str = ""
 
         self._setup_ui()
 
@@ -484,11 +460,6 @@ class MainView(QMainWindow):
             self,
         )
         view_menu.addAction(self.open_tic_tac_toe_action)
-        self._open_polygon_extractor_action = QAction(
-            self._polygon_menu_text(),
-            self,
-        )
-        plugins_menu.addAction(self._open_polygon_extractor_action)
         self._open_validation_gradient_action = QAction(
             t.get("menu_open_validation_gradient", "Open Validation gradient"),
             self,
@@ -684,8 +655,6 @@ class MainView(QMainWindow):
             self.release_memory_action.triggered.connect(self.release_memory_requested.emit)
         if hasattr(self, "open_tic_tac_toe_action"):
             self.open_tic_tac_toe_action.triggered.connect(self.open_tic_tac_toe_requested.emit)
-        if self._open_polygon_extractor_action is not None:
-            self._open_polygon_extractor_action.triggered.connect(self.show_polygon_extraction_window)
         if self._open_validation_gradient_action is not None:
             self._open_validation_gradient_action.triggered.connect(self.open_validation_gradient_requested.emit)
         if self._check_updates_action is not None:
@@ -744,10 +713,70 @@ class MainView(QMainWindow):
         texts = getattr(self, "_texts", None)
         return texts if isinstance(texts, dict) else get_ui_section("main_window")
 
+    def _format_update_channel_label(self, channel: str) -> str:
+        normalized_channel = str(channel or "").strip().lower()
+        if not normalized_channel:
+            normalized_channel = "stable"
+        default_label = normalized_channel.replace("_", " ").title()
+        return str(
+            self._main_texts().get(
+                f"update_channel_{normalized_channel}",
+                default_label,
+            )
+        )
+
+    def configure_update_channels(
+        self,
+        available_channels: list[str] | tuple[str, ...] | None,
+        selected_channel: str | None,
+    ) -> None:
+        normalized_channels: list[str] = []
+        for channel in available_channels or ("stable",):
+            normalized = str(channel or "").strip().lower()
+            if normalized and normalized not in normalized_channels:
+                normalized_channels.append(normalized)
+        if not normalized_channels:
+            normalized_channels = ["stable"]
+
+        resolved_selected = str(selected_channel or "").strip().lower()
+        if resolved_selected not in normalized_channels:
+            resolved_selected = normalized_channels[0]
+
+        self._available_update_channels = normalized_channels
+        self._selected_update_channel = resolved_selected
+        self._update_channel_actions = {}
+
+        if self._update_channel_menu is None:
+            return
+
+        self._update_channel_menu.clear()
+        self._update_channel_action_group = QActionGroup(self)
+        self._update_channel_action_group.setExclusive(True)
+
+        for channel in normalized_channels:
+            action = QAction(self._format_update_channel_label(channel), self)
+            action.setCheckable(True)
+            action.setData(channel)
+            action.setChecked(channel == resolved_selected)
+            action.triggered.connect(
+                lambda checked=False, selected=channel: (
+                    self.update_channel_selected.emit(selected) if checked else None
+                )
+            )
+            self._update_channel_action_group.addAction(action)
+            self._update_channel_menu.addAction(action)
+            self._update_channel_actions[channel] = action
+
     def _show_info_message(self, text: str) -> None:
+        if not _modal_dialogs_enabled():
+            self.statusBar().showMessage(str(text))
+            return
         QMessageBox.information(self, str(self._main_texts().get("info", "Информация")), text)
 
     def _show_warning_message(self, text: str) -> None:
+        if not _modal_dialogs_enabled():
+            self.statusBar().showMessage(str(text))
+            return
         QMessageBox.warning(self, str(self._main_texts().get("warning", "Предупреждение")), text)
 
     def _format_validation_quality_text(self, iou: float, dice: float, f1: float) -> str:
@@ -1130,8 +1159,8 @@ class MainView(QMainWindow):
 
     def _theme_qss_path(self, theme: str) -> str:
         if theme == "light":
-            return str(resolve_internal_path('resources', 'style.qss'))
-        return str(resolve_internal_path('resources', 'dark_modern.qss'))
+            return str(resolve_shared_style_path('style.qss'))
+        return str(resolve_shared_style_path('dark_modern.qss'))
 
     def _sync_language_menu_checks(self) -> None:
         if hasattr(self, "ui_language_ru_action"):
@@ -1301,12 +1330,6 @@ class MainView(QMainWindow):
             self.open_tic_tac_toe_action.setText(
                 t.get("menu_open_tic_tac_toe", "Крестики-нолики (нейросеть)")
             )
-        if self._open_polygon_extractor_action is not None:
-            self._open_polygon_extractor_action.setText(self._polygon_menu_text())
-        if self.polygon_extraction_window is not None:
-            self.polygon_extraction_window.setWindowTitle(self._polygon_window_title())
-        if self.polygon_extraction_widget is not None and hasattr(self.polygon_extraction_widget, "set_ui_language"):
-            self.polygon_extraction_widget.set_ui_language(self._ui_language)
         if self._open_validation_gradient_action is not None:
             self._open_validation_gradient_action.setText(
                 t.get("menu_open_validation_gradient", "Open Validation gradient")
@@ -1357,11 +1380,9 @@ class MainView(QMainWindow):
 
     def set_source_path(self, path: str):
         self.lbl_source.setText(path)
-        self._queue_polygon_widget_path_sync()
 
     def set_result_path(self, path: str):
         self.lbl_result.setText(path)
-        self._queue_polygon_widget_path_sync()
 
     def set_samples_count(self, total_samples: int) -> None:
         try:

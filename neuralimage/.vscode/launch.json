@@ -2,25 +2,24 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Polygon Widget",
+      "name": "NeuralImage Desktop",
       "type": "python",
       "request": "launch",
-      "module": "polygon_widget",
+      "program": "${workspaceFolder}\\main.py",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true
     },
     {
-      "name": "Polygon Widget With Pipeline",
+      "name": "NeuralImage Desktop UI Only",
       "type": "python",
       "request": "launch",
-      "module": "polygon_widget",
+      "program": "${workspaceFolder}\\main.py",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true,
       "args": [
-        "--pipeline-json",
-        "${workspaceFolder}\\polygon_widget\\pipeline_example.json"
+        "--ui-only"
       ]
     }
   ]

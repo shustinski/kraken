@@ -2361,14 +2361,25 @@ class TrainerProcess(mp.Process):
     @staticmethod
     def _resolve_validation_sample_indices(
         sample_indices: Any,
-        *,
-        fallback_start: int,
-        batch_size: int,
+        fallback_start: int | None = None,
+        batch_size: int | None = None,
     ) -> list[int]:
+        resolved_fallback_start = 0 if fallback_start is None else int(fallback_start)
+        resolved_batch_size = 1 if batch_size is None else max(1, int(batch_size))
         if torch.is_tensor(sample_indices):
-            return [int(index) for index in sample_indices.detach().cpu().tolist()]
+            resolved = sample_indices.detach().cpu().tolist()
+            if isinstance(resolved, list):
+                return [int(index) for index in resolved]
+            return [int(resolved)]
+        if isinstance(sample_indices, np.ndarray):
+            resolved = sample_indices.tolist()
+            if isinstance(resolved, list):
+                return [int(index) for index in resolved]
+            return [int(resolved)]
         if sample_indices is None:
-            return list(range(int(fallback_start), int(fallback_start) + int(batch_size)))
+            return list(range(resolved_fallback_start, resolved_fallback_start + resolved_batch_size))
+        if isinstance(sample_indices, (int, np.integer)):
+            return [int(sample_indices)]
         return [int(index) for index in sample_indices]
 
     @staticmethod

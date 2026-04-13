@@ -34,7 +34,8 @@ def _rewrite_relative_urls(content: str, base_dir: Path) -> str:
         raw_path = match.group("path").strip()
         if not _is_relative_url(raw_path):
             return match.group(0)
-        return f'url("{(base_dir / raw_path).resolve().as_uri()}")'
+        resolved_path = (base_dir / raw_path).resolve()
+        return f'url("{resolved_path.as_posix()}")'
 
     return _URL_PATTERN.sub(replacer, content)
 

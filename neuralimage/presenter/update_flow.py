@@ -3,10 +3,83 @@ from __future__ import annotations
 import webbrowser
 
 from PyQt6 import QtCore
-from PyQt6.QtWidgets import QInputDialog, QMessageBox
+from PyQt6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QInputDialog,
+    QMessageBox,
+    QTextBrowser,
+    QVBoxLayout,
+)
 
 from lib.ui_texts import get_ui_section
 from presenter.dialogs import markdown_to_message_html
+
+
+class _UpdateNotificationDialog(QDialog):
+    def __init__(
+        self,
+        parent,
+        *,
+        title: str,
+        body_markdown: str,
+        download_available: bool,
+        has_releases: bool,
+        texts: dict[str, object],
+    ) -> None:
+        super().__init__(parent)
+        self._selected_action = 'later'
+        self.setWindowTitle(str(title))
+        self.resize(860, 640)
+
+        layout = QVBoxLayout(self)
+
+        self.content_view = QTextBrowser(self)
+        self.content_view.setReadOnly(True)
+        self.content_view.setOpenExternalLinks(True)
+        self.content_view.setOpenLinks(True)
+        self.content_view.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextBrowserInteraction)
+        self.content_view.setHtml(markdown_to_message_html(body_markdown))
+        self.content_view.moveCursor(self.content_view.textCursor().MoveOperation.Start)
+        layout.addWidget(self.content_view)
+
+        buttons = QDialogButtonBox(self)
+        later_button = buttons.addButton(
+            str(texts.get('update_later', 'Позже')),
+            QDialogButtonBox.ButtonRole.RejectRole,
+        )
+        later_button.clicked.connect(self.reject)
+
+        if download_available:
+            install_button = buttons.addButton(
+                str(texts.get('update_download_install', 'Скачать и установить')),
+                QDialogButtonBox.ButtonRole.AcceptRole,
+            )
+            install_button.clicked.connect(lambda: self._finish('install'))
+
+        if has_releases:
+            select_version_button = buttons.addButton(
+                str(texts.get('update_select_version', 'Выбрать версию')),
+                QDialogButtonBox.ButtonRole.ActionRole,
+            )
+            select_version_button.clicked.connect(lambda: self._finish('select_version'))
+
+        if download_available:
+            open_button = buttons.addButton(
+                str(texts.get('update_open_download', 'Скачать')),
+                QDialogButtonBox.ButtonRole.ActionRole,
+            )
+            open_button.clicked.connect(lambda: self._finish('open_download'))
+
+        layout.addWidget(buttons)
+
+    @property
+    def selected_action(self) -> str:
+        return self._selected_action
+
+    def _finish(self, action: str) -> None:
+        self._selected_action = str(action)
+        self.accept()
 
 
 def refresh_update_client_config(
@@ -151,42 +224,22 @@ def show_update_notification(
         history_title = str(texts.get('update_release_history_title', 'История релизов:'))
         body_markdown = f'{body_markdown}\n\n## {history_title}\n\n{release_history}'
 
-    dialog = QMessageBox(presenter.view)
-    dialog.setIcon(QMessageBox.Icon.Information)
-    dialog.setWindowTitle(title)
-    dialog.setTextFormat(QtCore.Qt.TextFormat.RichText)
-    dialog.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextBrowserInteraction)
-    dialog.setText(markdown_to_message_html(body_markdown))
-    open_button = None
-    install_button = None
-    select_version_button = None
-    if update_info.download_url:
-        install_button = dialog.addButton(
-            str(texts.get('update_download_install', 'Скачать и установить')),
-            QMessageBox.ButtonRole.AcceptRole,
-        )
-    if update_info.releases:
-        select_version_button = dialog.addButton(
-            str(texts.get('update_select_version', 'Выбрать версию')),
-            QMessageBox.ButtonRole.ActionRole,
-        )
-    if update_info.download_url:
-        open_button = dialog.addButton(
-            str(texts.get('update_open_download', 'Скачать')),
-            QMessageBox.ButtonRole.AcceptRole,
-        )
-    dialog.addButton(
-        str(texts.get('update_later', 'Позже')),
-        QMessageBox.ButtonRole.RejectRole,
+    dialog = _UpdateNotificationDialog(
+        presenter.view,
+        title=title,
+        body_markdown=body_markdown,
+        download_available=bool(update_info.download_url),
+        has_releases=bool(update_info.releases),
+        texts=texts,
     )
     dialog.exec()
-    if install_button is not None and dialog.clickedButton() is install_button:
+    if dialog.selected_action == 'install':
         presenter._start_update_download(presenter._resolve_latest_release(update_info))
         return
-    if select_version_button is not None and dialog.clickedButton() is select_version_button:
+    if dialog.selected_action == 'select_version':
         presenter._show_release_selector(update_info)
         return
-    if open_button is not None and dialog.clickedButton() is open_button:
+    if dialog.selected_action == 'open_download':
         try:
             webbrowser.open(update_info.download_url)
         except Exception:

@@ -44,3 +44,21 @@ def test_main_module_does_not_import_controller_at_module_import_time(monkeypatc
     spec.loader.exec_module(module)
 
     assert hasattr(module, 'main')
+
+
+def test_main_module_restores_missing_standard_streams(monkeypatch):
+    module_name = '_test_main_streams'
+    main_path = Path(__file__).resolve().parent.parent / 'main.py'
+
+    monkeypatch.setattr(sys, 'stdout', None, raising=False)
+    monkeypatch.setattr(sys, 'stderr', None, raising=False)
+    sys.modules.pop(module_name, None)
+
+    spec = importlib.util.spec_from_file_location(module_name, main_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert sys.stdout is not None
+    assert sys.stderr is not None

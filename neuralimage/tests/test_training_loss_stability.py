@@ -294,6 +294,14 @@ def test_describe_train_preview_sample_falls_back_to_batch_name_without_indices(
     assert sample_name == 'batch_000004'
 
 
+def test_resolve_validation_sample_indices_accepts_legacy_positional_fallback_arguments():
+    trainer = _build_trainer('bce')
+
+    resolved = trainer._resolve_validation_sample_indices(None, 5, 3)
+
+    assert resolved == [5, 6, 7]
+
+
 def test_publish_train_batch_runtime_preview_uses_filtered_batch_tensors():
     trainer = _build_trainer('bce')
     trainer._epochs = 1

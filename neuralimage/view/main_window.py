@@ -176,6 +176,8 @@ class MainView(QMainWindow):
         self._ui_mode_menu = None
         self._ui_mode_simple_action = None
         self._ui_mode_advanced_action = None
+        self._central_scroll: QScrollArea | None = None
+        self._central_content: QWidget | None = None
         self._ui_mode = _load_persisted_ui_mode()
         self._current_work_mode = ''
         self._selected_simple_workflow: str | None = None
@@ -186,8 +188,8 @@ class MainView(QMainWindow):
 
         t = get_ui_section("main_window")
         self._texts = t
-        central = QWidget(self)
-        self.main_grid = QGridLayout(central)
+        self._central_content = QWidget(self)
+        self.main_grid = QGridLayout(self._central_content)
 
         row = 0
         self.main_grid.setColumnStretch(0, 1)
@@ -388,7 +390,10 @@ class MainView(QMainWindow):
 
         self.main_grid.setRowStretch(row, 10)
 
-        self.setCentralWidget(central)
+        self._central_scroll = QScrollArea(self)
+        self._central_scroll.setWidgetResizable(True)
+        self._central_scroll.setWidget(self._central_content)
+        self.setCentralWidget(self._central_scroll)
         self.statusBar().showMessage("")
 
         self.metrics_panel = TrainingMetricsDock(self)

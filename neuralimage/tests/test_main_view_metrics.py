@@ -4,7 +4,7 @@ import numpy as np
 
 pytest.importorskip('PyQt6')
 
-from PyQt6.QtWidgets import QApplication, QSizePolicy, QWidget
+from PyQt6.QtWidgets import QApplication, QSizePolicy, QScrollArea, QWidget
 
 from UI.clickable_label import ClickableLabel
 from lib.logging_policy import MAX_LOG_MESSAGES
@@ -126,6 +126,15 @@ def test_main_view_shows_sample_count_at_top(qapp):
 
     view.apply_ui_language('en')
     assert "42" in view.sample_count_top_label.text()
+
+
+def test_main_view_wraps_central_content_in_scroll_area(qapp):
+    view = MainView(QWidget())
+
+    central_widget = view.centralWidget()
+
+    assert isinstance(central_widget, QScrollArea)
+    assert central_widget.widget() is view._central_content
 
 
 def test_clickable_label_does_not_force_window_width(qapp):
@@ -315,6 +324,8 @@ def test_main_view_simple_mode_hides_docks_and_shows_presets(qapp):
 def test_main_view_work_mode_visibility_tracks_model_and_epochs(qapp):
     view = MainView(QWidget())
     view.show()
+    qapp.processEvents()
+    view.apply_ui_mode('advanced')
     qapp.processEvents()
 
     view.apply_work_mode('train_only')

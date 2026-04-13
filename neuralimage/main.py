@@ -3,6 +3,7 @@ import importlib
 import multiprocessing as mp
 import os
 import platform
+import sys
 from importlib.util import find_spec
 from typing import Sequence
 
@@ -25,6 +26,26 @@ from typing import Sequence
 
 # _preload_windows_torch_dll()
 from lib.version import get_app_title
+
+
+_STD_STREAM_FALLBACKS: list[object] = []
+
+
+def _ensure_standard_streams() -> None:
+    for stream_name, original_name in (('stdout', '__stdout__'), ('stderr', '__stderr__')):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None:
+            continue
+        original_stream = getattr(sys, original_name, None)
+        if original_stream is not None:
+            setattr(sys, stream_name, original_stream)
+            continue
+        fallback_stream = open(os.devnull, 'w', encoding='utf-8', buffering=1)
+        _STD_STREAM_FALLBACKS.append(fallback_stream)
+        setattr(sys, stream_name, fallback_stream)
+
+
+_ensure_standard_streams()
 
 
 def _build_parser() -> argparse.ArgumentParser:

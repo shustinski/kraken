@@ -10,6 +10,7 @@ from ...application.use_cases.processing import (
     prepare_image_for_preview,
     process_image_path,
 )
+from ...application.use_cases.autotune import auto_tune_pipeline
 from .image_conversion import cv_to_qimage
 
 
@@ -54,6 +55,12 @@ class PreviewProcessingSignals(QObject):
 
 class PreparedImageSignals(QObject):
     result = pyqtSignal(int, str, object, object)
+    error = pyqtSignal(int, str)
+    finished = pyqtSignal(int)
+
+
+class AutoTuneSignals(QObject):
+    result = pyqtSignal(int, object)
     error = pyqtSignal(int, str)
     finished = pyqtSignal(int)
 
@@ -106,6 +113,28 @@ class PreparedImageRunnable(QRunnable):
                 preprocessed_image,
                 self.request.pipeline_config,
             )
+        except Exception as exc:
+            self.signals.error.emit(self.request_id, str(exc))
+        finally:
+            self.signals.finished.emit(self.request_id)
+
+
+class AutoTuneRunnable(QRunnable):
+    def __init__(self, request_id: int, image_path: str, source_image, reference_polygons: list) -> None:
+        super().__init__()
+        self.request_id = int(request_id)
+        self.image_path = str(image_path)
+        self.source_image = source_image.copy()
+        self.reference_polygons = [polygon.clone() for polygon in reference_polygons]
+        self.signals = AutoTuneSignals()
+
+    def run(self) -> None:
+        try:
+            result = auto_tune_pipeline(
+                source_image=self.source_image,
+                reference_polygons=self.reference_polygons,
+            )
+            self.signals.result.emit(self.request_id, result)
         except Exception as exc:
             self.signals.error.emit(self.request_id, str(exc))
         finally:

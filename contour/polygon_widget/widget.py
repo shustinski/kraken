@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, QSize, QSignalBlocker, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -33,11 +33,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .adapters.qt.preview import PreparedImageRunnable, PreviewImageView, PreviewProcessingRunnable
+from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewImageView, PreviewProcessingRunnable
 from .application.dto import PersistedPaths
 from .application.processing import ContourExtractionSettings, DisplaySettings, SaveOptions
 from .application.services import WorkspaceSession
 from .application.use_cases import (
+    AutoTuneResult,
     PreparedImageRequest,
     PreviewProcessingRequest,
     build_prepared_image_signature,
@@ -104,6 +105,11 @@ class PolygonExtractionWidget(QWidget):
         self._prepared_image_pending_request: PreparedImageRequest | None = None
         self._prepared_image_running_signature: tuple[str, str] | None = None
         self._prepared_image_pending_signature: tuple[str, str] | None = None
+        self._auto_tune_thread_pool = QThreadPool(self)
+        self._auto_tune_thread_pool.setMaxThreadCount(1)
+        self._auto_tune_thread_pool.setExpiryTimeout(-1)
+        self._auto_tune_request_serial = 0
+        self._auto_tune_running_request_id: int | None = None
 
         self._batch_processor = BatchProcessor(self)
         self._batch_processor.set_ui_language(self._ui_language)
@@ -346,10 +352,14 @@ class PolygonExtractionWidget(QWidget):
         self.save_pipeline_button.clicked.connect(self._save_pipeline_json)
         self.load_pipeline_button = QPushButton("Load JSON")
         self.load_pipeline_button.clicked.connect(self._load_pipeline_json)
+        self.auto_tune_button = QPushButton("Auto-fit from drawing")
+        self.auto_tune_button.clicked.connect(self._start_auto_tune_from_reference)
+        self.auto_tune_button.setToolTip("Use the currently drawn polygons as the fitting target")
         apply_layout.addWidget(self.auto_apply_checkbox)
         apply_layout.addWidget(self.apply_pipeline_button)
         apply_layout.addWidget(self.save_pipeline_button)
         apply_layout.addWidget(self.load_pipeline_button)
+        apply_layout.addWidget(self.auto_tune_button)
         top_layout.addLayout(apply_layout)
 
         self.parameters_group = QGroupBox("Step parameters")
@@ -979,6 +989,20 @@ class PolygonExtractionWidget(QWidget):
         self.apply_pipeline_button.setText(self._tr("apply_current_button"))
         self.save_pipeline_button.setText(self._tr("save_json_button"))
         self.load_pipeline_button.setText(self._tr("load_json_button"))
+        self.auto_tune_button.setText(
+            self._tr(
+                "auto_tune_button",
+                "Автоподбор по рисунку" if self._ui_language == "ru" else "Auto-fit from drawing",
+            )
+        )
+        self.auto_tune_button.setToolTip(
+            self._tr(
+                "auto_tune_button_tooltip",
+                "Использовать текущие нарисованные полигоны как эталон"
+                if self._ui_language == "ru"
+                else "Use the currently drawn polygons as the fitting target",
+            )
+        )
         self.parameters_group.setTitle(self._tr("step_parameters_group"))
 
         self.contour_group.setTitle(self._tr("contour_extraction_group"))
@@ -1389,6 +1413,92 @@ class PolygonExtractionWidget(QWidget):
         if self.auto_apply_checkbox.isChecked() and self._workspace.current_image_path:
             self.process_current_image(debounced=True)
 
+    def _start_auto_tune_from_reference(self) -> None:
+        current_state = self._workspace.current_state
+        current_image_path = self._workspace.current_image_path
+        reference_polygons = self.get_polygons()
+
+        if current_state is None or current_state.source_image is None or current_image_path is None:
+            self._append_log(self._tr("no_image_selected_log", "Изображение не выбрано." if self._ui_language == "ru" else "No image selected."))
+            return
+        if not reference_polygons:
+            self._append_log(
+                self._tr(
+                    "auto_tune_no_reference_log",
+                    "Для автоподбора сначала нарисуйте эталонный полигон или область."
+                    if self._ui_language == "ru"
+                    else "Draw at least one reference polygon before running auto-fit.",
+                )
+            )
+            return
+        if self._auto_tune_running_request_id is not None:
+            self._append_log(
+                self._tr(
+                    "auto_tune_already_running_log",
+                    "Автоподбор уже выполняется."
+                    if self._ui_language == "ru"
+                    else "Auto-fit is already running.",
+                )
+            )
+            return
+
+        self._auto_tune_request_serial += 1
+        request_id = self._auto_tune_request_serial
+        self._auto_tune_running_request_id = request_id
+        self._append_log(
+            self._tr(
+                "auto_tune_started_log",
+                "Запущен автоподбор по {count} полигонам."
+                if self._ui_language == "ru"
+                else "Auto-fit started using {count} reference polygons.",
+                count=len(reference_polygons),
+            )
+        )
+        worker = AutoTuneRunnable(
+            request_id=request_id,
+            image_path=current_image_path,
+            source_image=current_state.source_image,
+            reference_polygons=reference_polygons,
+        )
+        worker.signals.result.connect(self._on_auto_tune_result)
+        worker.signals.error.connect(self._on_auto_tune_error)
+        worker.signals.finished.connect(self._on_auto_tune_finished)
+        self._auto_tune_thread_pool.start(worker)
+        self._refresh_busy_indicator()
+
+    def _apply_auto_tune_result(self, result: AutoTuneResult) -> None:
+        self._pipeline = PreprocessingPipeline.from_dict(result.pipeline_config)
+        self._populate_pipeline_list()
+        self._set_extraction_settings(result.contour_settings)
+        self.process_current_image()
+
+    def _set_extraction_settings(self, settings: ContourExtractionSettings) -> None:
+        blockers = [
+            QSignalBlocker(self.retrieval_mode_combo),
+            QSignalBlocker(self.approximation_mode_combo),
+            QSignalBlocker(self.epsilon_spin),
+            QSignalBlocker(self.epsilon_relative_checkbox),
+            QSignalBlocker(self.min_area_spin),
+            QSignalBlocker(self.max_area_spin),
+            QSignalBlocker(self.min_perimeter_spin),
+            QSignalBlocker(self.min_points_spin),
+        ]
+        try:
+            retrieval_index = self.retrieval_mode_combo.findData(settings.retrieval_mode)
+            if retrieval_index >= 0:
+                self.retrieval_mode_combo.setCurrentIndex(retrieval_index)
+            approximation_index = self.approximation_mode_combo.findData(settings.approximation_mode)
+            if approximation_index >= 0:
+                self.approximation_mode_combo.setCurrentIndex(approximation_index)
+            self.epsilon_spin.setValue(float(settings.epsilon))
+            self.epsilon_relative_checkbox.setChecked(bool(settings.epsilon_relative))
+            self.min_area_spin.setValue(float(settings.min_area))
+            self.max_area_spin.setValue(0.0 if settings.max_area is None else float(settings.max_area))
+            self.min_perimeter_spin.setValue(float(settings.min_perimeter))
+            self.min_points_spin.setValue(int(settings.min_points))
+        finally:
+            del blockers
+
     def _current_contour_settings(self) -> ContourExtractionSettings:
         max_area = self.max_area_spin.value()
         return ContourExtractionSettings(
@@ -1522,6 +1632,7 @@ class PolygonExtractionWidget(QWidget):
                 self._preview_update_timer.isActive(),
                 self._prepared_image_running_request_id is not None,
                 self._prepared_image_pending_request is not None,
+                self._auto_tune_running_request_id is not None,
             )
         )
         if hasattr(self, "preview_busy_label"):
@@ -1529,6 +1640,8 @@ class PolygonExtractionWidget(QWidget):
             self.preview_busy_label.setVisible(active)
         if hasattr(self, "preview_busy_progress"):
             self.preview_busy_progress.setVisible(active)
+        if hasattr(self, "auto_tune_button"):
+            self.auto_tune_button.setEnabled(self._auto_tune_running_request_id is None)
 
     def _on_prepared_image_result(self, request_id: int, image_path: str, preprocessed_image, pipeline_config: dict) -> None:
         if request_id != self._prepared_image_running_request_id:
@@ -1549,6 +1662,41 @@ class PolygonExtractionWidget(QWidget):
             self._prepared_image_running_signature = None
         if self._prepared_image_pending_request is not None:
             self._start_pending_prepared_image_update()
+        self._refresh_busy_indicator()
+
+    def _on_auto_tune_result(self, request_id: int, result: AutoTuneResult) -> None:
+        if request_id != self._auto_tune_running_request_id:
+            return
+        self._apply_auto_tune_result(result)
+        roi_width = result.roi_bbox[2]
+        roi_height = result.roi_bbox[3]
+        self._append_log(
+            self._tr(
+                "auto_tune_finished_log",
+                "Автоподбор завершён: score={score:.3f}, ROI={width}x{height}, проверок={evaluations}."
+                if self._ui_language == "ru"
+                else "Auto-fit completed: score={score:.3f}, ROI={width}x{height}, evaluations={evaluations}.",
+                score=result.score,
+                width=roi_width,
+                height=roi_height,
+                evaluations=result.evaluations,
+            )
+        )
+
+    def _on_auto_tune_error(self, request_id: int, message: str) -> None:
+        if request_id != self._auto_tune_running_request_id:
+            return
+        self._append_log(
+            self._tr(
+                "auto_tune_failed_log",
+                "Ошибка автоподбора: {error}" if self._ui_language == "ru" else "Auto-fit failed: {error}",
+                error=message,
+            )
+        )
+
+    def _on_auto_tune_finished(self, request_id: int) -> None:
+        if request_id == self._auto_tune_running_request_id:
+            self._auto_tune_running_request_id = None
         self._refresh_busy_indicator()
 
     def _on_preview_processing_result(self, request_id: int, result) -> None:

@@ -52,13 +52,15 @@ def ensure_uint8(image: np.ndarray) -> np.ndarray:
 
 def _imread_unicode_safe(path: str | Path, flags: int) -> np.ndarray | None:
     normalized_path = Path(path)
-    image = cv2.imread(str(normalized_path), flags)
-    if image is not None:
-        return image
     if not normalized_path.exists():
         raise FileNotFoundError(tr("unable_to_load_image", path=normalized_path))
+    normalized_text = str(normalized_path)
+    if normalized_text.isascii():
+        image = cv2.imread(normalized_text, flags)
+        if image is not None:
+            return image
     try:
-        raw_bytes = np.fromfile(str(normalized_path), dtype=np.uint8)
+        raw_bytes = np.fromfile(normalized_text, dtype=np.uint8)
     except OSError as exc:
         raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_path)) from exc
     if raw_bytes.size == 0:

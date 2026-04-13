@@ -1,3 +1,4 @@
+from .autotune import AutoTuneResult, auto_tune_pipeline
 from .processing import (
     PreparedImageRequest,
     PreviewProcessingRequest,
@@ -9,8 +10,10 @@ from .processing import (
 from .workspace import find_matching_cif_path, index_cif_directory, load_input_directory, normalize_image_selection
 
 __all__ = [
+    "AutoTuneResult",
     "PreparedImageRequest",
     "PreviewProcessingRequest",
+    "auto_tune_pipeline",
     "build_prepared_image_signature",
     "build_preview_request_signature",
     "find_matching_cif_path",

@@ -1,2 +1,2 @@
 [console_scripts]
-polygon-widget = polygon_widget.app:main
+polygon-widget = polygon_widget.application.cli:main

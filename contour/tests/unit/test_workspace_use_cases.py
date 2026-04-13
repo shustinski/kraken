@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from polygon_widget.application.use_cases.workspace import (
     find_matching_cif_path,
@@ -10,6 +10,22 @@ from polygon_widget.application.use_cases.workspace import (
     load_input_directory,
     normalize_image_selection,
 )
+
+
+class _FakeDirectoryEntry:
+    def __init__(self, path: str, *, is_file: bool) -> None:
+        normalized_path = Path(path)
+        self._path = str(normalized_path)
+        self.name = normalized_path.name
+        self.stem = normalized_path.stem
+        self.suffix = normalized_path.suffix
+        self._is_file = is_file
+
+    def is_file(self) -> bool:
+        return self._is_file
+
+    def __str__(self) -> str:
+        return self._path
 
 
 class WorkspaceUseCasesTests(unittest.TestCase):
@@ -35,23 +51,29 @@ class WorkspaceUseCasesTests(unittest.TestCase):
         self.assertEqual(state.image_paths, ("images\\b.png", "images\\a.jpg"))
 
     def test_index_cif_directory_only_collects_cif_files(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            (root / "beta.CIF").write_text("", encoding="utf-8")
-            (root / "alpha.cif").write_text("", encoding="utf-8")
-            (root / "notes.txt").write_text("", encoding="utf-8")
-            (root / "nested").mkdir()
+        root = Path("images")
+        entries = [
+            _FakeDirectoryEntry("images/beta.CIF", is_file=True),
+            _FakeDirectoryEntry("images/alpha.cif", is_file=True),
+            _FakeDirectoryEntry("images/notes.txt", is_file=True),
+            _FakeDirectoryEntry("images/nested", is_file=False),
+        ]
 
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.is_dir", return_value=True),
+            patch("pathlib.Path.iterdir", return_value=entries),
+        ):
             state = index_cif_directory(root)
 
-            self.assertTrue(state.available)
-            self.assertEqual(
-                state.indexed_paths,
-                {
-                    "alpha": str(root / "alpha.cif"),
-                    "beta": str(root / "beta.CIF"),
-                },
-            )
+        self.assertTrue(state.available)
+        self.assertEqual(
+            state.indexed_paths,
+            {
+                "alpha": "images\\alpha.cif",
+                "beta": "images\\beta.CIF",
+            },
+        )
 
     def test_find_matching_cif_path_uses_case_insensitive_image_stem(self) -> None:
         indexed_paths = {"sample": "sample.cif"}

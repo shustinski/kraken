@@ -81,6 +81,42 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
             if len(tokens) >= 3 and tokens[0] == "S":
                 image_size = (_parse_cif_int(tokens[1]), _parse_cif_int(tokens[2]))
             continue
+        if stripped.startswith("B "):
+            if image_size is None:
+                raise ValueError(tr("cif_size_header_missing", path=cif_path))
+            payload = stripped[2:].rstrip(";").split()
+            if len(payload) != 4:
+                continue
+            box_width = _parse_cif_int(payload[0])
+            box_height = _parse_cif_int(payload[1])
+            center_x = _parse_cif_int(payload[2])
+            center_y = _parse_cif_int(payload[3])
+
+            width, height = image_size
+            image_center_y = float(height - center_y)
+            half_width = float(box_width) / 2.0
+            half_height = float(box_height) / 2.0
+            image_points = [
+                (float(center_x) - half_width, image_center_y - half_height),
+                (float(center_x) + half_width, image_center_y - half_height),
+                (float(center_x) + half_width, image_center_y + half_height),
+                (float(center_x) - half_width, image_center_y + half_height),
+            ]
+            area, perimeter, bbox = compute_polygon_metrics(image_points)
+            polygons.append(
+                PolygonData(
+                    id=len(polygons) + 1,
+                    points=image_points,
+                    is_hole=False,
+                    parent_id=None,
+                    category="via",
+                    shape_hint="box",
+                    area=area,
+                    perimeter=perimeter,
+                    bbox=bbox,
+                )
+            )
+            continue
         if not stripped.startswith("P "):
             continue
         if image_size is None:
@@ -108,6 +144,8 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
                 points=image_points,
                 is_hole=False,
                 parent_id=None,
+                category="conductor",
+                shape_hint="polygon",
                 area=area,
                 perimeter=perimeter,
                 bbox=bbox,
@@ -118,6 +156,18 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
 
 
 def _polygon_to_cif_line(polygon: PolygonData, image_width: int, image_height: int) -> str:
+    if polygon.shape_hint == "box":
+        x_values = [point[0] for point in polygon.points]
+        y_values = [point[1] for point in polygon.points]
+        if len(x_values) < 4 or len(y_values) < 4:
+            return ""
+        width = max(1, int(round(max(x_values) - min(x_values))))
+        height = max(1, int(round(max(y_values) - min(y_values))))
+        center_x = int(round((min(x_values) + max(x_values)) / 2.0))
+        center_y = int(round((min(y_values) + max(y_values)) / 2.0))
+        cif_x = max(0, min(image_width, center_x))
+        cif_y = max(0, min(image_height, int(round(image_height - center_y))))
+        return f"B {width} {height} {cif_x} {cif_y};"
     points = []
     for x_coord, y_coord in polygon.points:
         cif_x = max(0, min(image_width, int(round(x_coord))))
@@ -168,6 +218,8 @@ def save_polygons_csv(path: str | Path, image_path: str, polygons: list[PolygonD
                 "y",
                 "is_hole",
                 "parent_id",
+                "category",
+                "shape_hint",
                 "area",
                 "perimeter",
                 "bbox_x",
@@ -187,6 +239,8 @@ def save_polygons_csv(path: str | Path, image_path: str, polygons: list[PolygonD
                         f"{y_coord:.6f}",
                         int(polygon.is_hole),
                         "" if polygon.parent_id is None else polygon.parent_id,
+                        polygon.category,
+                        polygon.shape_hint,
                         f"{polygon.area:.6f}",
                         f"{polygon.perimeter:.6f}",
                         polygon.bbox[0],
@@ -208,6 +262,8 @@ def save_polygons_txt(path: str | Path, image_path: str, polygons: list[PolygonD
                 f"polygon_id: {polygon.id}",
                 f"  is_hole: {polygon.is_hole}",
                 f"  parent_id: {polygon.parent_id}",
+                f"  category: {polygon.category}",
+                f"  shape_hint: {polygon.shape_hint}",
                 f"  area: {polygon.area:.6f}",
                 f"  perimeter: {polygon.perimeter:.6f}",
                 f"  bbox: {polygon.bbox}",

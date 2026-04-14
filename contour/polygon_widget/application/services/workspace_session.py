@@ -103,11 +103,17 @@ class WorkspaceSession:
             prepared_image_required=state.source_image is not None,
         )
 
-    def store_preprocessed_image(self, image_path: str, preprocessed_image: Any) -> bool:
+    def store_preprocessed_image(
+        self,
+        image_path: str,
+        preprocessed_image: Any,
+        pipeline_config: dict[str, Any] | None = None,
+    ) -> bool:
         state = self._state_cache.get(image_path)
         if state is None:
             return False
         state.preprocessed_image = preprocessed_image
+        state.pipeline_config = None if pipeline_config is None else dict(pipeline_config)
         return self._current_image_path == image_path and self._current_state is state
 
     def apply_processing_result(self, result: BatchImageResult) -> bool:
@@ -115,6 +121,7 @@ class WorkspaceSession:
             image_path=result.image_path,
             source_image=result.source_image,
             preprocessed_image=result.preprocessed_image,
+            pipeline_config=None if result.pipeline_config is None else dict(result.pipeline_config),
             mask_image=result.mask_image,
             polygons=result.polygons,
         )

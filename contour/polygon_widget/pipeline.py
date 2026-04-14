@@ -8,7 +8,7 @@ import numpy as np
 
 from .application.processing import OperationParameterSpec, PipelineStepConfig
 from .i18n import choice_label, operation_name, parameter_label, tr
-from .utils import ensure_uint8
+from .utils import ensure_binary_mask, ensure_uint8
 
 
 OperationCallable = Callable[[np.ndarray, dict[str, Any]], np.ndarray]
@@ -140,6 +140,148 @@ def _resize_interpolation(name: str) -> int:
     return mapping.get(name, cv2.INTER_LINEAR)
 
 
+def _as_gray(image: np.ndarray) -> np.ndarray:
+    data = ensure_uint8(image)
+    if data.ndim == 3 and data.shape[2] == 4:
+        return cv2.cvtColor(data, cv2.COLOR_BGRA2GRAY)
+    if data.ndim == 3:
+        return cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
+    return data
+
+
+def _as_bgr(image: np.ndarray) -> np.ndarray:
+    data = ensure_uint8(image)
+    if data.ndim == 2:
+        return cv2.cvtColor(data, cv2.COLOR_GRAY2BGR)
+    if data.ndim == 3 and data.shape[2] == 4:
+        return cv2.cvtColor(data, cv2.COLOR_BGRA2BGR)
+    return data
+
+
+def _color_selection_entries(parameters: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_entries = parameters.get("selected_colors", [])
+    if not isinstance(raw_entries, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        rgb = entry.get("rgb")
+        if not isinstance(rgb, (list, tuple)) or len(rgb) != 3:
+            continue
+        try:
+            parsed_rgb = [max(0, min(255, int(channel))) for channel in rgb]
+        except (TypeError, ValueError):
+            continue
+        result.append(
+            {
+                "rgb": parsed_rgb,
+                "enabled": bool(entry.get("enabled", True)),
+            }
+        )
+    return result
+
+
+def _color_binarize(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    bgr = _as_bgr(image)
+    delta = max(0, min(255, int(parameters.get("delta", 10))))
+    color_entries = [entry for entry in _color_selection_entries(parameters) if entry.get("enabled", True)]
+    if not color_entries:
+        return np.zeros(bgr.shape[:2], dtype=np.uint8)
+    mask = np.zeros(bgr.shape[:2], dtype=np.uint8)
+    rgb_image = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    for entry in color_entries:
+        rgb = np.asarray(entry["rgb"], dtype=np.int16)
+        lower = np.clip(rgb - delta, 0, 255).astype(np.uint8)
+        upper = np.clip(rgb + delta, 0, 255).astype(np.uint8)
+        mask = cv2.bitwise_or(mask, cv2.inRange(rgb_image, lower, upper))
+    return mask
+
+
+def _binary_fill_holes(image: np.ndarray, _parameters: dict[str, Any]) -> np.ndarray:
+    mask = ensure_binary_mask(image)
+    flood = mask.copy()
+    h, w = mask.shape[:2]
+    flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+    cv2.floodFill(flood, flood_mask, (0, 0), 255)
+    holes = cv2.bitwise_not(flood)
+    return cv2.bitwise_or(mask, holes)
+
+
+def _binary_filter_components(image: np.ndarray, parameters: dict[str, Any], *, metric: str) -> np.ndarray:
+    mask = ensure_binary_mask(image)
+    num_labels, labels = cv2.connectedComponents((mask > 0).astype(np.uint8), connectivity=8)
+    result = np.zeros_like(mask)
+    minimum = float(parameters.get(f"min_component_{metric}", 0.0) or 0.0)
+    maximum_raw = float(parameters.get(f"max_component_{metric}", 0.0) or 0.0)
+    maximum = maximum_raw if maximum_raw > 0 else None
+    for label_index in range(1, num_labels):
+        component_mask = np.where(labels == label_index, 255, 0).astype(np.uint8)
+        if metric == "area":
+            value = float(cv2.countNonZero(component_mask))
+        else:
+            contours, _hierarchy = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            value = float(sum(cv2.arcLength(contour, True) for contour in contours))
+        if value < minimum:
+            continue
+        if maximum is not None and value > maximum:
+            continue
+        result[labels == label_index] = 255
+    return result
+
+
+def _binary_filter_area(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    return _binary_filter_components(image, parameters, metric="area")
+
+
+def _binary_filter_perimeter(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    return _binary_filter_components(image, parameters, metric="perimeter")
+
+
+def _watershed_split(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    mask = ensure_binary_mask(image)
+    if cv2.countNonZero(mask) == 0:
+        return mask
+
+    distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    max_distance = float(distance.max())
+    if max_distance <= 0.0:
+        return mask
+
+    distance_ratio = min(0.95, max(0.05, float(parameters.get("distance_ratio", 0.35))))
+    local_max_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    local_max = distance >= cv2.dilate(distance, local_max_kernel, iterations=1) - 1e-6
+    sure_fg = np.where(local_max & (distance >= (max_distance * distance_ratio)), 255, 0).astype(np.uint8)
+
+    min_peak_area = max(0, int(parameters.get("min_peak_area", 0) or 0))
+    if min_peak_area > 0:
+        count, labels, stats, _centroids = cv2.connectedComponentsWithStats((sure_fg > 0).astype(np.uint8), connectivity=8)
+        filtered = np.zeros_like(sure_fg)
+        for label_index in range(1, count):
+            if int(stats[label_index, cv2.CC_STAT_AREA]) >= min_peak_area:
+                filtered[labels == label_index] = 255
+        sure_fg = filtered
+
+    marker_count, _marker_labels = cv2.connectedComponents((sure_fg > 0).astype(np.uint8), connectivity=8)
+    if marker_count <= 2:
+        return mask
+
+    kernel = _kernel(parameters)
+    sure_bg = cv2.dilate(mask, kernel, iterations=max(1, int(parameters.get("background_iterations", 1))))
+    unknown = cv2.subtract(sure_bg, sure_fg)
+
+    _marker_count, markers = cv2.connectedComponents((sure_fg > 0).astype(np.uint8), connectivity=8)
+    markers = markers.astype(np.int32) + 1
+    markers[unknown > 0] = 0
+
+    marker_image = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    markers = cv2.watershed(marker_image, markers)
+
+    result = np.zeros_like(mask)
+    result[markers > 1] = 255
+    return result
+
+
 def _kernel(parameters: dict[str, Any]) -> np.ndarray:
     size = _odd(int(parameters.get("kernel_size", 3)), minimum=1)
     shape = _morph_shape(str(parameters.get("shape", "rect")))
@@ -166,6 +308,7 @@ def _bilateral(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
 
 
 def _clahe(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    image = _as_gray(image)
     tile_grid = max(1, int(parameters.get("tile_grid_size", 8)))
     clahe = cv2.createCLAHE(
         clipLimit=max(0.1, float(parameters.get("clip_limit", 2.0))),
@@ -175,7 +318,7 @@ def _clahe(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
 
 
 def _histogram_equalization(image: np.ndarray, _: dict[str, Any]) -> np.ndarray:
-    return cv2.equalizeHist(image)
+    return cv2.equalizeHist(_as_gray(image))
 
 
 def _brightness_contrast(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
@@ -193,6 +336,7 @@ def _gamma_correction(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarr
 
 
 def _threshold(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    image = _as_gray(image)
     _, result = cv2.threshold(
         image,
         float(parameters.get("threshold", 127)),
@@ -203,6 +347,7 @@ def _threshold(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
 
 
 def _adaptive_threshold(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    image = _as_gray(image)
     return cv2.adaptiveThreshold(
         image,
         float(parameters.get("max_value", 255)),
@@ -214,6 +359,7 @@ def _adaptive_threshold(image: np.ndarray, parameters: dict[str, Any]) -> np.nda
 
 
 def _otsu_threshold(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    image = _as_gray(image)
     _, result = cv2.threshold(
         image,
         0,
@@ -241,6 +387,7 @@ def _dilate(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
 
 
 def _canny(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    image = _as_gray(image)
     aperture_size = max(3, min(7, _odd(int(parameters.get("aperture_size", 3)), minimum=3)))
     return cv2.Canny(
         image,
@@ -274,6 +421,18 @@ def _resize(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
     )
 
 
+def _scale_resize(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    height, width = image.shape[:2]
+    scale = max(0.05, float(parameters.get("scale", 1.0)))
+    target_width = max(1, int(round(width * scale)))
+    target_height = max(1, int(round(height * scale)))
+    return cv2.resize(
+        image,
+        (target_width, target_height),
+        interpolation=_resize_interpolation(str(parameters.get("interpolation", "linear"))),
+    )
+
+
 def _crop(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
     x_coord = max(0, int(parameters.get("x", 0)))
     y_coord = max(0, int(parameters.get("y", 0)))
@@ -291,13 +450,15 @@ def _sharpen(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
 
 
 def _denoise(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
-    return cv2.fastNlMeansDenoising(
-        image,
-        None,
+    image = ensure_uint8(image)
+    kwargs = dict(
         h=max(1.0, float(parameters.get("h", 10.0))),
         templateWindowSize=_odd(int(parameters.get("template_window_size", 7)), minimum=3),
         searchWindowSize=_odd(int(parameters.get("search_window_size", 21)), minimum=3),
     )
+    if image.ndim == 3:
+        return cv2.fastNlMeansDenoisingColored(image, None, kwargs["h"], kwargs["h"], kwargs["templateWindowSize"], kwargs["searchWindowSize"])
+    return cv2.fastNlMeansDenoising(image, None, **kwargs)
 
 
 def _register_builtin_operations() -> None:
@@ -362,6 +523,14 @@ def _register_builtin_operations() -> None:
             _gamma_correction,
         ),
         OperationDescriptor(
+            "color_binarize",
+            "Color Binarize",
+            (
+                OperationParameterSpec("delta", "Color delta", "int", 10, minimum=0, maximum=255, step=1),
+            ),
+            _color_binarize,
+        ),
+        OperationDescriptor(
             "threshold",
             "Threshold",
             (
@@ -394,6 +563,37 @@ def _register_builtin_operations() -> None:
             "Otsu Threshold",
             (OperationParameterSpec("threshold_type", "Type", "choice", "binary", options=["binary", "binary_inv"]),),
             _otsu_threshold,
+        ),
+        OperationDescriptor("binary_fill_holes", "Fill Holes", (), _binary_fill_holes),
+        OperationDescriptor(
+            "binary_filter_area",
+            "Filter By Area",
+            (
+                OperationParameterSpec("min_component_area", "Min area", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0),
+                OperationParameterSpec("max_component_area", "Max area", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0),
+            ),
+            _binary_filter_area,
+        ),
+        OperationDescriptor(
+            "binary_filter_perimeter",
+            "Filter By Perimeter",
+            (
+                OperationParameterSpec("min_component_perimeter", "Min perimeter", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0),
+                OperationParameterSpec("max_component_perimeter", "Max perimeter", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0),
+            ),
+            _binary_filter_perimeter,
+        ),
+        OperationDescriptor(
+            "watershed_split",
+            "Watershed Split",
+            (
+                OperationParameterSpec("distance_ratio", "Distance ratio", "float", 0.35, minimum=0.05, maximum=0.95, step=0.01),
+                OperationParameterSpec("min_peak_area", "Min peak area", "int", 0, minimum=0, maximum=1_000_000, step=1),
+                OperationParameterSpec("kernel_size", "Kernel size", "int", 3, minimum=1, maximum=99, step=2),
+                OperationParameterSpec("shape", "Kernel shape", "choice", "ellipse", options=["rect", "ellipse", "cross"]),
+                OperationParameterSpec("background_iterations", "Background iterations", "int", 1, minimum=1, maximum=20, step=1),
+            ),
+            _watershed_split,
         ),
         OperationDescriptor("morph_open", "Morphological Open", common_kernel_specs, lambda image, params: _morph_op(image, cv2.MORPH_OPEN, params)),
         OperationDescriptor("morph_close", "Morphological Close", common_kernel_specs, lambda image, params: _morph_op(image, cv2.MORPH_CLOSE, params)),
@@ -430,6 +630,21 @@ def _register_builtin_operations() -> None:
                 ),
             ),
             _resize,
+        ),
+        OperationDescriptor(
+            "scale_resize",
+            "Scale Resize",
+            (
+                OperationParameterSpec("scale", "Scale", "float", 1.0, minimum=0.05, maximum=16.0, step=0.05),
+                OperationParameterSpec(
+                    "interpolation",
+                    "Interpolation",
+                    "choice",
+                    "linear",
+                    options=["nearest", "linear", "area", "cubic", "lanczos"],
+                ),
+            ),
+            _scale_resize,
         ),
         OperationDescriptor(
             "crop",

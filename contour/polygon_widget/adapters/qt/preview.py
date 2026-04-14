@@ -73,6 +73,8 @@ class PreviewProcessingRunnable(QRunnable):
             image_path=request.image_path,
             pipeline_config=dict(request.pipeline_config),
             contour_settings=request.contour_settings,
+            source_image=request.source_image,
+            preprocessed_image=request.preprocessed_image,
         )
         self.signals = PreviewProcessingSignals()
 
@@ -82,6 +84,8 @@ class PreviewProcessingRunnable(QRunnable):
                 image_path=self.request.image_path,
                 pipeline_config=self.request.pipeline_config,
                 contour_settings=self.request.contour_settings,
+                source_image=self.request.source_image,
+                preprocessed_image=self.request.preprocessed_image,
             )
             self.signals.result.emit(self.request_id, result)
         except Exception as exc:

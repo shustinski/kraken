@@ -8,7 +8,7 @@ from ..processing import BatchImageResult, ContourExtractionSettings, DisplaySet
 from ...contour_extractor import extract_polygons
 from ...pipeline import PreprocessingPipeline
 from ...serializers import save_result_bundle
-from ...utils import ensure_binary_mask, load_image_grayscale
+from ...utils import ensure_binary_mask, load_image_color
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +16,8 @@ class PreviewProcessingRequest:
     image_path: str
     pipeline_config: dict[str, Any]
     contour_settings: ContourExtractionSettings
+    source_image: Any | None = None
+    preprocessed_image: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,12 +54,14 @@ def process_image_path(
     save_options: SaveOptions | None = None,
     display_settings: DisplaySettings | None = None,
     *,
-    image_loader: Callable[[str], Any] = load_image_grayscale,
+    source_image: Any | None = None,
+    preprocessed_image: Any | None = None,
+    image_loader: Callable[[str], Any] = load_image_color,
     save_bundle: Callable[..., dict[str, str]] = save_result_bundle,
 ) -> BatchImageResult:
     pipeline = PreprocessingPipeline.from_dict(pipeline_config)
-    source_image = image_loader(image_path)
-    preprocessed = pipeline.apply(source_image)
+    source = source_image if source_image is not None else image_loader(image_path)
+    preprocessed = preprocessed_image if preprocessed_image is not None else pipeline.apply(source)
     mask = ensure_binary_mask(preprocessed)
     polygons = extract_polygons(mask, contour_settings)
     saved_files: dict[str, str] = {}
@@ -66,7 +70,7 @@ def process_image_path(
             output_directory=output_directory,
             image_path=image_path,
             polygons=polygons,
-            source_image=source_image,
+            source_image=source,
             display_settings=display_settings or DisplaySettings(),
             save_options=save_options or SaveOptions(),
             metadata={
@@ -76,8 +80,9 @@ def process_image_path(
         )
     return BatchImageResult(
         image_path=image_path,
-        source_image=source_image,
+        source_image=source,
         preprocessed_image=preprocessed,
+        pipeline_config=dict(pipeline_config),
         mask_image=mask,
         polygons=polygons,
         saved_files=saved_files,

@@ -1,10 +1,45 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..domain import PolygonData
+
+
+VIA_SIZE_MODE_RANGE = "range"
+VIA_SIZE_MODE_FIXED = "fixed"
+
+
+def normalize_via_size_mode(value: Any) -> str:
+    return VIA_SIZE_MODE_FIXED if str(value).strip().lower() == VIA_SIZE_MODE_FIXED else VIA_SIZE_MODE_RANGE
+
+
+def parse_integer_value_list(payload: Any) -> list[int]:
+    if payload in (None, ""):
+        return []
+    if isinstance(payload, str):
+        raw_values = re.split(r"[\s,;]+", payload.strip())
+    elif isinstance(payload, (list, tuple, set)):
+        raw_values = list(payload)
+    else:
+        raw_values = [payload]
+
+    values: set[int] = set()
+    for raw_value in raw_values:
+        if raw_value in (None, ""):
+            continue
+        text = str(raw_value).strip()
+        if not text:
+            continue
+        try:
+            parsed = int(float(text))
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            values.add(parsed)
+    return sorted(values)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,39 +91,123 @@ class PipelineStepConfig:
 
 @dataclass(slots=True)
 class ContourExtractionSettings:
+    extraction_profile: str = "conductors"
+    object_type: str = "conductor"
+    output_mode: str = "polygon"
     retrieval_mode: str = "RETR_EXTERNAL"
     approximation_mode: str = "CHAIN_APPROX_SIMPLE"
     epsilon: float = 2.0
     epsilon_relative: bool = False
+    preserve_corners: bool = False
     min_area: float = 10.0
     max_area: float | None = None
     min_perimeter: float = 10.0
+    max_perimeter: float | None = None
     min_points: int = 3
+    min_bbox_width: int = 0
+    max_bbox_width: int | None = None
+    min_bbox_height: int = 0
+    max_bbox_height: int | None = None
+    min_aspect_ratio: float = 0.0
+    max_aspect_ratio: float | None = None
+    exclude_border_touching: bool = False
+    min_solidity: float = 0.0
+    min_extent: float = 0.0
+    min_via_width: int = 0
+    max_via_width: int | None = None
+    min_via_height: int = 0
+    max_via_height: int | None = None
+    via_size_mode: str = VIA_SIZE_MODE_RANGE
+    fixed_via_widths: list[int] = field(default_factory=list)
+    fixed_via_heights: list[int] = field(default_factory=list)
+    min_hierarchy_depth: int = 0
+    max_hierarchy_depth: int | None = None
+    max_hole_area_ratio: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "extraction_profile": self.extraction_profile,
+            "object_type": self.object_type,
+            "output_mode": self.output_mode,
             "retrieval_mode": self.retrieval_mode,
             "approximation_mode": self.approximation_mode,
             "epsilon": self.epsilon,
             "epsilon_relative": self.epsilon_relative,
+            "preserve_corners": self.preserve_corners,
             "min_area": self.min_area,
             "max_area": self.max_area,
             "min_perimeter": self.min_perimeter,
             "min_points": self.min_points,
+            "max_perimeter": self.max_perimeter,
+            "min_bbox_width": self.min_bbox_width,
+            "max_bbox_width": self.max_bbox_width,
+            "min_bbox_height": self.min_bbox_height,
+            "max_bbox_height": self.max_bbox_height,
+            "min_aspect_ratio": self.min_aspect_ratio,
+            "max_aspect_ratio": self.max_aspect_ratio,
+            "exclude_border_touching": self.exclude_border_touching,
+            "min_solidity": self.min_solidity,
+            "min_extent": self.min_extent,
+            "min_via_width": self.min_via_width,
+            "max_via_width": self.max_via_width,
+            "min_via_height": self.min_via_height,
+            "max_via_height": self.max_via_height,
+            "via_size_mode": normalize_via_size_mode(self.via_size_mode),
+            "fixed_via_widths": list(self.fixed_via_widths),
+            "fixed_via_heights": list(self.fixed_via_heights),
+            "min_hierarchy_depth": self.min_hierarchy_depth,
+            "max_hierarchy_depth": self.max_hierarchy_depth,
+            "max_hole_area_ratio": self.max_hole_area_ratio,
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ContourExtractionSettings":
         max_area = payload.get("max_area")
+        max_perimeter = payload.get("max_perimeter")
+        max_bbox_width = payload.get("max_bbox_width")
+        max_bbox_height = payload.get("max_bbox_height")
+        max_aspect_ratio = payload.get("max_aspect_ratio")
+        max_via_width = payload.get("max_via_width")
+        max_via_height = payload.get("max_via_height")
+        max_hierarchy_depth = payload.get("max_hierarchy_depth")
+        max_hole_area_ratio = payload.get("max_hole_area_ratio")
         return cls(
+            extraction_profile=str(payload.get("extraction_profile", "conductors")),
+            object_type=str(payload.get("object_type", "conductor")),
+            output_mode=str(payload.get("output_mode", "polygon")),
             retrieval_mode=str(payload.get("retrieval_mode", "RETR_EXTERNAL")),
             approximation_mode=str(payload.get("approximation_mode", "CHAIN_APPROX_SIMPLE")),
             epsilon=float(payload.get("epsilon", 2.0)),
             epsilon_relative=bool(payload.get("epsilon_relative", False)),
+            preserve_corners=bool(payload.get("preserve_corners", False)),
             min_area=float(payload.get("min_area", 10.0)),
             max_area=None if max_area in (None, "", 0, 0.0) else float(max_area),
             min_perimeter=float(payload.get("min_perimeter", 10.0)),
             min_points=max(3, int(payload.get("min_points", 3))),
+            max_perimeter=None if max_perimeter in (None, "", 0, 0.0) else float(max_perimeter),
+            min_bbox_width=max(0, int(payload.get("min_bbox_width", 0))),
+            max_bbox_width=None if max_bbox_width in (None, "", 0, 0.0) else max(1, int(max_bbox_width)),
+            min_bbox_height=max(0, int(payload.get("min_bbox_height", 0))),
+            max_bbox_height=None if max_bbox_height in (None, "", 0, 0.0) else max(1, int(max_bbox_height)),
+            min_aspect_ratio=max(0.0, float(payload.get("min_aspect_ratio", 0.0))),
+            max_aspect_ratio=None if max_aspect_ratio in (None, "", 0, 0.0) else float(max_aspect_ratio),
+            exclude_border_touching=bool(payload.get("exclude_border_touching", False)),
+            min_solidity=max(0.0, float(payload.get("min_solidity", 0.0))),
+            min_extent=max(0.0, float(payload.get("min_extent", 0.0))),
+            min_via_width=max(0, int(payload.get("min_via_width", 0))),
+            max_via_width=None if max_via_width in (None, "", 0, 0.0) else max(1, int(max_via_width)),
+            min_via_height=max(0, int(payload.get("min_via_height", 0))),
+            max_via_height=None if max_via_height in (None, "", 0, 0.0) else max(1, int(max_via_height)),
+            via_size_mode=normalize_via_size_mode(payload.get("via_size_mode", VIA_SIZE_MODE_RANGE)),
+            fixed_via_widths=parse_integer_value_list(payload.get("fixed_via_widths")),
+            fixed_via_heights=parse_integer_value_list(payload.get("fixed_via_heights")),
+            min_hierarchy_depth=max(0, int(payload.get("min_hierarchy_depth", 0))),
+            max_hierarchy_depth=None
+            if max_hierarchy_depth in (None, "", 0, 0.0)
+            else max(0, int(max_hierarchy_depth)),
+            max_hole_area_ratio=None
+            if max_hole_area_ratio in (None, "", 0, 0.0)
+            else max(0.0, float(max_hole_area_ratio)),
         )
 
 
@@ -168,6 +287,7 @@ class ImageProcessingState:
     image_path: str
     source_image: Any | None = None
     preprocessed_image: Any | None = None
+    pipeline_config: dict[str, Any] | None = None
     mask_image: Any | None = None
     polygons: list[PolygonData] = field(default_factory=list)
 
@@ -177,6 +297,7 @@ class BatchImageResult:
     image_path: str
     source_image: Any | None
     preprocessed_image: Any | None
+    pipeline_config: dict[str, Any] | None
     mask_image: Any | None
     polygons: list[PolygonData]
     saved_files: dict[str, str] = field(default_factory=dict)

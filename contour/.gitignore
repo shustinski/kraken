@@ -1,0 +1,15 @@
+.idea/
+__pycache__/
+.pytest_cache/
+.venv/
+.pycache_tmp/
+.pytest_tmp/
+.codex*
+.tracecov*/
+build/
+dist/
+polygon_widget/__pycache__/
+
+*.cif
+
+

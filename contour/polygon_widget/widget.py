@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, QSignalBlocker, Qt, QThreadPool, QTimer, pyqtSignal
+import cv2
+import numpy as np
+from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, QSignalBlocker, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -21,6 +25,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -28,14 +33,24 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from .adapters.qt.image_conversion import cv_to_qimage
 from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewImageView, PreviewProcessingRunnable
 from .application.dto import PersistedPaths
-from .application.processing import ContourExtractionSettings, DisplaySettings, SaveOptions
+from .application.processing import (
+    VIA_SIZE_MODE_FIXED,
+    VIA_SIZE_MODE_RANGE,
+    ContourExtractionSettings,
+    DisplaySettings,
+    SaveOptions,
+    normalize_via_size_mode,
+)
 from .application.services import WorkspaceSession
 from .application.use_cases import (
     AutoTuneResult,
@@ -61,7 +76,559 @@ from .pipeline import (
     get_parameter_display_label,
 )
 from .serializers import load_polygons_cif, save_result_bundle
-from .utils import is_image_path, load_image_grayscale, scan_image_files
+from .utils import is_image_path, load_image_color, scan_image_files
+
+
+LocalizedTextMap = dict[str, tuple[str, str]]
+
+
+EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
+    "extraction_profile": (
+        "Выбирает независимый набор настроек для проводников или переходных отверстий.",
+        "Selects an independent settings profile for conductors or vias.",
+    ),
+    "retrieval_mode": (
+        "Определяет, искать ли только внешние контуры или всю иерархию вложенных контуров.",
+        "Controls whether only outer contours or the full nested contour hierarchy is extracted.",
+    ),
+    "approximation_mode": (
+        "Задаёт, насколько подробно хранится контур: компактно или со всеми промежуточными точками.",
+        "Controls how densely contour points are stored: compact or full detail.",
+    ),
+    "epsilon": (
+        "Сила упрощения контура. Больше значение уменьшает число вершин и сглаживает форму.",
+        "Contour simplification strength. Higher values reduce vertices and smooth the shape.",
+    ),
+    "epsilon_mode": (
+        "Переключает epsilon между абсолютным значением в пикселях и долей от периметра контура.",
+        "Switches epsilon between an absolute pixel value and a fraction of contour perimeter.",
+    ),
+    "min_area": (
+        "Отсекает слишком маленькие объекты по площади.",
+        "Rejects objects that are too small by area.",
+    ),
+    "max_area": (
+        "Отсекает слишком большие объекты по площади.",
+        "Rejects objects that are too large by area.",
+    ),
+    "min_perimeter": (
+        "Отсекает короткие шумовые контуры по длине границы.",
+        "Rejects short noisy contours by boundary length.",
+    ),
+    "max_perimeter": (
+        "Отсекает слишком длинные и рваные контуры.",
+        "Rejects overly long or ragged contours.",
+    ),
+    "min_points": (
+        "Минимальное число вершин после аппроксимации. Помогает убрать вырожденные фигуры.",
+        "Minimum number of vertices after approximation. Helps remove degenerate shapes.",
+    ),
+    "min_bbox_width": (
+        "Минимальная ширина ограничивающего прямоугольника объекта.",
+        "Minimum object bounding-box width.",
+    ),
+    "max_bbox_width": (
+        "Максимальная ширина ограничивающего прямоугольника объекта.",
+        "Maximum object bounding-box width.",
+    ),
+    "min_bbox_height": (
+        "Минимальная высота ограничивающего прямоугольника объекта.",
+        "Minimum object bounding-box height.",
+    ),
+    "max_bbox_height": (
+        "Максимальная высота ограничивающего прямоугольника объекта.",
+        "Maximum object bounding-box height.",
+    ),
+    "min_aspect_ratio": (
+        "Минимальное отношение ширины к высоте. Полезно для отбора вытянутых объектов.",
+        "Minimum width-to-height ratio. Useful for selecting elongated objects.",
+    ),
+    "max_aspect_ratio": (
+        "Максимальное отношение ширины к высоте. Полезно для отсечения слишком вытянутых форм.",
+        "Maximum width-to-height ratio. Useful for rejecting overly elongated shapes.",
+    ),
+    "exclude_border_touching": (
+        "Убирает объекты, касающиеся границы изображения. Полезно против обрезанных фрагментов.",
+        "Removes objects touching the image border. Useful against cropped fragments.",
+    ),
+    "min_solidity": (
+        "Фильтр по заполненности относительно выпуклой оболочки. Больше значение оставляет более плотные формы.",
+        "Compactness filter relative to the convex hull. Higher values keep denser shapes.",
+    ),
+    "min_extent": (
+        "Фильтр по заполненности bbox. Больше значение оставляет объекты, лучше заполняющие свой прямоугольник.",
+        "Bounding-box fill filter. Higher values keep objects that fill their box better.",
+    ),
+    "via_size_mode": (
+        "РџРµСЂРµРєР»СЋС‡Р°РµС‚ РѕС‚Р±РѕСЂ via РјРµР¶РґСѓ РґРёР°РїР°Р·РѕРЅРѕРј Рё С‚РѕС‡РЅС‹РјРё Р·РЅР°С‡РµРЅРёСЏРјРё.",
+        "Switches via filtering between a size range and exact size values.",
+    ),
+    "min_via_width": (
+        "Минимальная ширина переходного отверстия в via-профиле.",
+        "Minimum via width in the via profile.",
+    ),
+    "max_via_width": (
+        "Максимальная ширина переходного отверстия в via-профиле.",
+        "Maximum via width in the via profile.",
+    ),
+    "min_via_height": (
+        "Минимальная высота переходного отверстия в via-профиле.",
+        "Minimum via height in the via profile.",
+    ),
+    "max_via_height": (
+        "Максимальная высота переходного отверстия в via-профиле.",
+        "Maximum via height in the via profile.",
+    ),
+    "fixed_via_widths": (
+        "РЎРїРёСЃРѕРє С€РёСЂРёРЅ via. РљР°Р¶РґР°СЏ С€РёСЂРёРЅР° СЃРІСЏР·Р°РЅР° СЃ РІС‹СЃРѕС‚РѕР№ РІ С‚РѕР№ Р¶Рµ РїРѕР·РёС†РёРё.",
+        "Via widths list. Each width is paired with the height at the same position.",
+    ),
+    "fixed_via_heights": (
+        "РЎРїРёСЃРѕРє РІС‹СЃРѕС‚ via. РљР°Р¶РґР°СЏ РІС‹СЃРѕС‚Р° СЃРІСЏР·Р°РЅР° СЃ С€РёСЂРёРЅРѕР№ РІ С‚РѕР№ Р¶Рµ РїРѕР·РёС†РёРё.",
+        "Via heights list. Each height is paired with the width at the same position.",
+    ),
+    "min_hierarchy_depth": (
+        "Минимальная глубина в иерархии контуров. Ноль означает внешние контуры.",
+        "Minimum contour hierarchy depth. Zero means outer contours.",
+    ),
+    "max_hierarchy_depth": (
+        "Максимальная глубина в иерархии контуров.",
+        "Maximum contour hierarchy depth.",
+    ),
+    "max_hole_area_ratio": (
+        "Ограничивает размер внутренней дырки относительно родительского контура.",
+        "Limits inner-hole size relative to its parent contour.",
+    ),
+    "delta": (
+        "RGB-допуск для выбранных цветов.",
+        "RGB tolerance for the selected colors.",
+    ),
+    "min_component_area": (
+        "Минимальная площадь белого компонента бинарной маски.",
+        "Minimum white-component area in the binary mask.",
+    ),
+    "max_component_area": (
+        "Максимальная площадь белого компонента бинарной маски. 0 означает без ограничения.",
+        "Maximum white-component area. Zero means unlimited.",
+    ),
+    "min_component_perimeter": (
+        "Минимальный периметр белого компонента бинарной маски.",
+        "Minimum white-component perimeter in the binary mask.",
+    ),
+    "max_component_perimeter": (
+        "Максимальный периметр белого компонента бинарной маски. 0 означает без ограничения.",
+        "Maximum white-component perimeter. Zero means unlimited.",
+    ),
+}
+
+
+PIPELINE_PARAMETER_HELP_TEXTS: LocalizedTextMap = {
+    "kernel_size": (
+        "Размер окна обработки. Большее окно сильнее сглаживает или меняет форму маски, но теряет мелкие детали.",
+        "Processing window size. Larger windows smooth or reshape the mask more aggressively but lose fine detail.",
+    ),
+    "iterations": (
+        "Число повторов морфологической операции. Больше повторов усиливает эффект.",
+        "Number of morphology repeats. More iterations make the effect stronger.",
+    ),
+    "shape": (
+        "Форма структурирующего элемента. Rect даёт жёсткую геометрию, ellipse мягче, cross тоньше воздействует на линии.",
+        "Structuring element shape. Rect is strict, ellipse softer, cross affects thin lines more gently.",
+    ),
+    "sigma_x": (
+        "Сила гауссова размытия. Чем больше, тем мягче края и меньше шум.",
+        "Gaussian blur strength. Higher values soften edges and reduce noise more.",
+    ),
+    "diameter": (
+        "Размер области bilateral-фильтрации. Большее значение сильнее сглаживает текстуры.",
+        "Bilateral neighborhood size. Higher values smooth textures more strongly.",
+    ),
+    "sigma_color": (
+        "Насколько сильно фильтр сглаживает различия по яркости.",
+        "How strongly the filter smooths intensity differences.",
+    ),
+    "sigma_space": (
+        "Насколько широко bilateral учитывает соседние пиксели по расстоянию.",
+        "How far the bilateral filter looks spatially.",
+    ),
+    "clip_limit": (
+        "Ограничение усиления локального контраста для CLAHE.",
+        "Local contrast boost limit for CLAHE.",
+    ),
+    "tile_grid_size": (
+        "Размер сетки локального выравнивания контраста в CLAHE.",
+        "Local contrast grid size for CLAHE.",
+    ),
+    "alpha": (
+        "Множитель контраста. Больше значение делает различия яркостей заметнее.",
+        "Contrast multiplier. Higher values increase tonal separation.",
+    ),
+    "beta": (
+        "Сдвиг яркости. Положительное значение осветляет, отрицательное затемняет.",
+        "Brightness offset. Positive brightens, negative darkens.",
+    ),
+    "gamma": (
+        "Нелинейная коррекция яркости. Меньше 1 осветляет тени, больше 1 затемняет.",
+        "Nonlinear brightness correction. Below 1 brightens shadows, above 1 darkens them.",
+    ),
+    "threshold": (
+        "Порог бинаризации. Пиксели по одну сторону порога становятся фоном, по другую объектом.",
+        "Binarization threshold. Pixels on one side become background, on the other become foreground.",
+    ),
+    "max_value": (
+        "Значение, которым заполняются пиксели после пороговой операции.",
+        "Output value assigned by thresholding.",
+    ),
+    "threshold_type": (
+        "Тип пороговой операции: прямой, инверсный и другие варианты преобразования.",
+        "Thresholding mode: direct, inverted, and other conversion variants.",
+    ),
+    "adaptive_method": (
+        "Способ локального расчёта порога для adaptive threshold.",
+        "Method used to compute local thresholds in adaptive thresholding.",
+    ),
+    "block_size": (
+        "Размер локального окна для adaptive threshold.",
+        "Local window size for adaptive thresholding.",
+    ),
+    "c_value": (
+        "Смещение локального порога. Меняет агрессивность отделения объекта от фона.",
+        "Local threshold offset. Changes how aggressively foreground is separated from background.",
+    ),
+    "threshold1": (
+        "Нижний порог Canny. Определяет чувствительность к слабым границам.",
+        "Lower Canny threshold. Controls sensitivity to weak edges.",
+    ),
+    "threshold2": (
+        "Верхний порог Canny. Определяет, какие границы считаются уверенными.",
+        "Upper Canny threshold. Controls which edges are considered strong.",
+    ),
+    "aperture_size": (
+        "Размер фильтра Собеля в Canny. Больше значение даёт более гладкую оценку градиента.",
+        "Sobel kernel size in Canny. Larger values produce a smoother gradient estimate.",
+    ),
+    "l2gradient": (
+        "Использует более точную, но немного более тяжёлую оценку градиента в Canny.",
+        "Uses a more precise but slightly heavier gradient computation in Canny.",
+    ),
+    "width": (
+        "Целевая ширина для resize или ширина выделяемой области для crop.",
+        "Target width for resize or extracted region width for crop.",
+    ),
+    "height": (
+        "Целевая высота для resize или высота выделяемой области для crop.",
+        "Target height for resize or extracted region height for crop.",
+    ),
+    "keep_aspect": (
+        "Сохраняет пропорции изображения при изменении размера.",
+        "Preserves image aspect ratio during resizing.",
+    ),
+    "interpolation": (
+        "Метод интерполяции при изменении размера изображения.",
+        "Interpolation method used during resizing.",
+    ),
+    "x": (
+        "Координата левого края области crop.",
+        "Left coordinate of the crop region.",
+    ),
+    "y": (
+        "Координата верхнего края области crop.",
+        "Top coordinate of the crop region.",
+    ),
+    "amount": (
+        "Сила повышения резкости. Больше значение сильнее подчёркивает контуры.",
+        "Sharpening strength. Higher values emphasize edges more strongly.",
+    ),
+    "sigma": (
+        "Ширина предварительного размытия перед повышением резкости.",
+        "Pre-blur width used before sharpening.",
+    ),
+    "h": (
+        "Сила подавления шума в Non-Local Means.",
+        "Noise suppression strength in Non-Local Means denoising.",
+    ),
+    "template_window_size": (
+        "Размер шаблона для сравнения текстур при denoise.",
+        "Template size used for texture comparison during denoising.",
+    ),
+    "search_window_size": (
+        "Размер области поиска похожих фрагментов при denoise.",
+        "Search area size for similar patches during denoising.",
+    ),
+}
+
+
+PIPELINE_OPERATION_GROUPS: tuple[tuple[str, tuple[str, str], tuple[str, ...]], ...] = (
+    (
+        "smoothing",
+        ("Сглаживание и шум", "Smoothing and noise"),
+        ("gaussian_blur", "median_blur", "bilateral_filter", "denoise"),
+    ),
+    (
+        "contrast",
+        ("Контраст и тон", "Contrast and tone"),
+        ("clahe", "histogram_equalization", "brightness_contrast", "gamma_correction", "sharpen"),
+    ),
+    (
+        "thresholding",
+        ("Пороговая обработка", "Thresholding"),
+        ("color_binarize", "threshold", "adaptive_threshold", "otsu_threshold", "invert"),
+    ),
+    (
+        "binary",
+        ("Бинарные фильтры", "Binary filters"),
+        ("binary_fill_holes", "binary_filter_area", "binary_filter_perimeter", "watershed_split"),
+    ),
+    (
+        "morphology",
+        ("Морфология", "Morphology"),
+        ("morph_open", "morph_close", "erode", "dilate", "gradient", "tophat", "blackhat"),
+    ),
+    (
+        "geometry",
+        ("Геометрия и границы", "Geometry and edges"),
+        ("canny", "resize", "scale_resize", "crop"),
+    ),
+)
+
+
+PIPELINE_OPERATION_HELP_TEXTS: dict[str, dict[str, tuple[str, str]]] = {
+    "gaussian_blur": {
+        "summary": (
+            "Мягко размывает изображение и подавляет мелкий шум перед бинаризацией.",
+            "Smoothly blurs the image and suppresses fine noise before thresholding.",
+        ),
+        "use": (
+            "Используйте, когда объект читается, но края слегка шумят.",
+            "Use it when the object is visible but the edges are slightly noisy.",
+        ),
+    },
+    "median_blur": {
+        "summary": (
+            "Хорошо убирает одиночные выбросы и соль-перец, сохраняя границы лучше обычного blur.",
+            "Removes salt-and-pepper outliers while preserving edges better than a regular blur.",
+        ),
+        "use": (
+            "Подходит для бинарных масок и изображений с точечным шумом.",
+            "Best for binary masks and images with impulse noise.",
+        ),
+    },
+    "bilateral_filter": {
+        "summary": (
+            "Сглаживает внутри областей, но старается сохранить контуры.",
+            "Smooths within regions while trying to preserve edges.",
+        ),
+        "use": (
+            "Полезен, когда нужно уменьшить текстурный шум и не размыть границы проводника.",
+            "Useful when you need to reduce texture noise without washing out conductor edges.",
+        ),
+    },
+    "clahe": {
+        "summary": (
+            "Усиливает локальный контраст по частям изображения.",
+            "Boosts local contrast in small image regions.",
+        ),
+        "use": (
+            "Применяйте при неравномерной подсветке или слабом локальном контрасте.",
+            "Apply it under uneven illumination or weak local contrast.",
+        ),
+    },
+    "histogram_equalization": {
+        "summary": (
+            "Растягивает общий контраст по всему изображению.",
+            "Expands overall contrast across the whole image.",
+        ),
+        "use": (
+            "Подходит для равномерно тусклых изображений без сильной локальной засветки.",
+            "Good for uniformly dull images without strong local glare.",
+        ),
+    },
+    "brightness_contrast": {
+        "summary": (
+            "Линейно меняет яркость и контраст.",
+            "Linearly adjusts brightness and contrast.",
+        ),
+        "use": (
+            "Используйте для грубой подстройки перед threshold.",
+            "Use it for coarse correction before thresholding.",
+        ),
+    },
+    "gamma_correction": {
+        "summary": (
+            "Нелинейно перераспределяет яркости, сильнее влияя на тени и свет.",
+            "Nonlinearly redistributes tones, affecting shadows and highlights differently.",
+        ),
+        "use": (
+            "Подходит, когда нужно поднять тёмные детали или приглушить пересвет.",
+            "Useful when you need to lift dark details or tame highlights.",
+        ),
+    },
+    "threshold": {
+        "summary": (
+            "Преобразует изображение в маску по одному глобальному порогу.",
+            "Converts the image into a mask using a single global threshold.",
+        ),
+        "use": (
+            "Работает хорошо при стабильном фоне и понятном разделении яркостей.",
+            "Works well with a stable background and clear intensity separation.",
+        ),
+    },
+    "adaptive_threshold": {
+        "summary": (
+            "Строит маску по локальному порогу для каждой области изображения.",
+            "Builds a mask using a local threshold for each image region.",
+        ),
+        "use": (
+            "Используйте при градиентной подсветке и неоднородном фоне.",
+            "Use it under lighting gradients and non-uniform backgrounds.",
+        ),
+    },
+    "otsu_threshold": {
+        "summary": (
+            "Автоматически подбирает глобальный порог по гистограмме.",
+            "Automatically chooses a global threshold from the histogram.",
+        ),
+        "use": (
+            "Хороший стартовый вариант, когда вручную порог ещё не известен.",
+            "A good starting option when you do not yet know the right manual threshold.",
+        ),
+    },
+    "morph_open": {
+        "summary": (
+            "Сначала сужает, потом расширяет маску. Убирает мелкие шумовые точки.",
+            "Erodes then dilates the mask. Removes small foreground specks.",
+        ),
+        "use": (
+            "Полезно для очистки случайных точек перед поиском контуров.",
+            "Useful for cleaning isolated specks before contour extraction.",
+        ),
+    },
+    "morph_close": {
+        "summary": (
+            "Сначала расширяет, потом сужает маску. Закрывает мелкие разрывы и дырки.",
+            "Dilates then erodes the mask. Closes small gaps and holes.",
+        ),
+        "use": (
+            "Используйте, когда проводник рвётся или контур состоит из щелей.",
+            "Use it when a conductor breaks apart or the contour has small gaps.",
+        ),
+    },
+    "erode": {
+        "summary": (
+            "Сужает светлые области и убирает тонкие выступы.",
+            "Shrinks bright regions and removes thin protrusions.",
+        ),
+        "use": (
+            "Подходит для отделения слипшихся объектов и удаления утолщений.",
+            "Useful for separating touching objects and trimming thick edges.",
+        ),
+    },
+    "dilate": {
+        "summary": (
+            "Расширяет светлые области и укрепляет тонкие элементы.",
+            "Expands bright regions and reinforces thin structures.",
+        ),
+        "use": (
+            "Помогает восстановить разорванные линии и усилить слабые проводники.",
+            "Helps reconnect broken lines and strengthen weak conductors.",
+        ),
+    },
+    "gradient": {
+        "summary": (
+            "Оставляет в основном границу объекта как разность между dilate и erode.",
+            "Keeps mainly the object boundary as the difference between dilate and erode.",
+        ),
+        "use": (
+            "Используйте для выделения краёв, когда важен контур, а не заливка.",
+            "Use it when edges matter more than filled regions.",
+        ),
+    },
+    "tophat": {
+        "summary": (
+            "Выделяет маленькие светлые детали на более тёмном фоне.",
+            "Highlights small bright details on a darker background.",
+        ),
+        "use": (
+            "Полезен для поиска мелких светлых отверстий или точек.",
+            "Useful for finding small bright vias or spots.",
+        ),
+    },
+    "blackhat": {
+        "summary": (
+            "Выделяет маленькие тёмные детали на более светлом фоне.",
+            "Highlights small dark details on a lighter background.",
+        ),
+        "use": (
+            "Полезен для тёмных отверстий или канавок на светлом поле.",
+            "Useful for dark vias or grooves on a bright field.",
+        ),
+    },
+    "canny": {
+        "summary": (
+            "Строит карту границ по резким перепадам яркости.",
+            "Builds an edge map from strong intensity changes.",
+        ),
+        "use": (
+            "Используйте, когда объект хорошо описывается линиями границ.",
+            "Use it when the object is best represented by edge lines.",
+        ),
+    },
+    "invert": {
+        "summary": (
+            "Меняет светлое и тёмное местами.",
+            "Swaps bright and dark regions.",
+        ),
+        "use": (
+            "Нужно, когда объект и фон перепутаны относительно ожидаемой бинаризации.",
+            "Useful when foreground and background polarity are reversed for the expected thresholding flow.",
+        ),
+    },
+    "resize": {
+        "summary": (
+            "Меняет размер изображения для нормализации масштаба объектов.",
+            "Changes image size to normalize object scale.",
+        ),
+        "use": (
+            "Полезно, если изображения приходят в разных разрешениях.",
+            "Useful when images arrive at different resolutions.",
+        ),
+    },
+    "crop": {
+        "summary": (
+            "Обрезает изображение до рабочей области.",
+            "Crops the image to a region of interest.",
+        ),
+        "use": (
+            "Используйте, если полезная область известна заранее и не нужно обрабатывать весь кадр.",
+            "Use it when the useful region is known in advance and the full frame is unnecessary.",
+        ),
+    },
+    "sharpen": {
+        "summary": (
+            "Подчёркивает локальные перепады и делает границы резче.",
+            "Emphasizes local changes and sharpens edges.",
+        ),
+        "use": (
+            "Полезно перед пороговой обработкой, если границы объекта размыты.",
+            "Useful before thresholding when object edges are soft.",
+        ),
+    },
+    "denoise": {
+        "summary": (
+            "Убирает шум с сохранением общей структуры изображения.",
+            "Removes noise while preserving the overall image structure.",
+        ),
+        "use": (
+            "Используйте на шумных снимках перед более агрессивными шагами pipeline.",
+            "Use it on noisy captures before more aggressive pipeline steps.",
+        ),
+    },
+}
+
+
+def _localized_text(mapping: LocalizedTextMap, key: str, language: str) -> str:
+    entry = mapping.get(key, ("", ""))
+    return entry[0] if language == "ru" else entry[1]
 
 
 class PolygonExtractionWidget(QWidget):
@@ -79,7 +646,27 @@ class PolygonExtractionWidget(QWidget):
         self._workspace = WorkspaceSession()
         self._pipeline = PreprocessingPipeline()
         self._display_settings = DisplaySettings()
+        self._contour_settings_profiles = {
+            "conductors": ContourExtractionSettings(
+                extraction_profile="conductors",
+                object_type="conductor",
+                output_mode="polygon",
+            ),
+            "vias": ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                min_solidity=0.6,
+                min_extent=0.5,
+                min_aspect_ratio=0.5,
+                max_aspect_ratio=2.0,
+            ),
+        }
+        self._active_extraction_profile = "conductors"
+        self._ignore_extraction_profile_change = False
         self._ignore_pipeline_item_change = False
+        self._suspend_fixed_via_updates = False
+        self._fixed_via_rows: list[dict[str, QWidget]] = []
         self._parameter_widgets: dict[str, QWidget] = {}
         self._updating_views = False
         self._batch_progress_enabled = False
@@ -97,6 +684,8 @@ class PolygonExtractionWidget(QWidget):
         self._preview_pending_request: PreviewProcessingRequest | None = None
         self._preview_running_signature: tuple[str, str, str] | None = None
         self._preview_pending_signature: tuple[str, str, str] | None = None
+        self._help_menu: QMenu | None = None
+        self._color_pick_pipeline_row: int | None = None
         self._prepared_image_thread_pool = QThreadPool(self)
         self._prepared_image_thread_pool.setMaxThreadCount(1)
         self._prepared_image_thread_pool.setExpiryTimeout(-1)
@@ -121,10 +710,12 @@ class PolygonExtractionWidget(QWidget):
 
         self._build_ui()
         self._apply_compact_ui_style()
+        self._disable_spinbox_wheel_changes()
         self._restore_persisted_paths()
         self._populate_pipeline_operations()
         self._populate_pipeline_list()
         self._apply_display_settings()
+        self._set_extraction_settings(self._contour_settings_profiles[self._active_extraction_profile])
         self.set_ui_language(self._ui_language)
 
     def _build_ui(self) -> None:
@@ -313,25 +904,45 @@ class PolygonExtractionWidget(QWidget):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        top_panel = QWidget()
-        top_layout = QVBoxLayout(top_panel)
-
-        header_layout = QHBoxLayout()
-        self.operation_selector = QComboBox()
+        self.available_filters_group = QGroupBox("Available filters")
+        available_layout = QVBoxLayout(self.available_filters_group)
+        self.operation_tree = QTreeWidget()
+        self.operation_tree.setHeaderHidden(True)
+        self.operation_tree.setRootIsDecorated(True)
+        self.operation_tree.setUniformRowHeights(True)
+        self.operation_tree.setMouseTracking(True)
+        self.operation_tree.currentItemChanged.connect(self._on_available_operation_selected)
+        self.operation_tree.itemEntered.connect(self._on_available_operation_hovered)
+        self.operation_tree.itemDoubleClicked.connect(self._on_available_operation_activated)
+        self.operation_tree.setMinimumHeight(180)
+        available_layout.addWidget(self.operation_tree, 1)
         self.add_step_button = QPushButton("Add step")
         self.add_step_button.clicked.connect(self._add_pipeline_step)
-        header_layout.addWidget(self.operation_selector, 1)
-        header_layout.addWidget(self.add_step_button)
-        top_layout.addLayout(header_layout)
+        available_layout.addWidget(self.add_step_button)
+
+        self.parameters_group = QGroupBox("Step parameters")
+        parameters_scroll = QScrollArea()
+        parameters_scroll.setWidgetResizable(True)
+        parameters_scroll.setMinimumHeight(170)
+        parameters_widget = QWidget()
+        self.parameters_form = QFormLayout(parameters_widget)
+        self._configure_compact_form(self.parameters_form)
+        parameters_scroll.setWidget(parameters_widget)
+        group_layout = QVBoxLayout(self.parameters_group)
+        group_layout.addWidget(parameters_scroll)
+
+        self.pipeline_steps_group = QGroupBox("Applied filters")
+        steps_layout = QVBoxLayout(self.pipeline_steps_group)
 
         self.pipeline_list = QListWidget()
         self.pipeline_list.currentRowChanged.connect(self._on_pipeline_step_selected)
         self.pipeline_list.itemChanged.connect(self._on_pipeline_item_changed)
-        self.pipeline_list.setMinimumHeight(120)
-        self.pipeline_list.setMaximumHeight(220)
-        top_layout.addWidget(self.pipeline_list)
+        self.pipeline_list.setMinimumHeight(180)
+        steps_layout.addWidget(self.pipeline_list, 1)
 
-        buttons_layout = QVBoxLayout()
+        buttons_row = QWidget()
+        buttons_layout = QHBoxLayout(buttons_row)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
         self.remove_step_button = QPushButton("Remove")
         self.remove_step_button.clicked.connect(self._remove_pipeline_step)
         self.move_up_step_button = QPushButton("Up")
@@ -341,9 +952,11 @@ class PolygonExtractionWidget(QWidget):
         buttons_layout.addWidget(self.remove_step_button)
         buttons_layout.addWidget(self.move_up_step_button)
         buttons_layout.addWidget(self.move_down_step_button)
-        top_layout.addLayout(buttons_layout)
+        steps_layout.addWidget(buttons_row)
 
-        apply_layout = QVBoxLayout()
+        apply_row = QWidget()
+        apply_layout = QGridLayout(apply_row)
+        apply_layout.setContentsMargins(0, 0, 0, 0)
         self.auto_apply_checkbox = QCheckBox("Auto apply")
         self.auto_apply_checkbox.setChecked(True)
         self.apply_pipeline_button = QPushButton("Apply to current image")
@@ -355,37 +968,73 @@ class PolygonExtractionWidget(QWidget):
         self.auto_tune_button = QPushButton("Auto-fit from drawing")
         self.auto_tune_button.clicked.connect(self._start_auto_tune_from_reference)
         self.auto_tune_button.setToolTip("Use the currently drawn polygons as the fitting target")
-        apply_layout.addWidget(self.auto_apply_checkbox)
-        apply_layout.addWidget(self.apply_pipeline_button)
-        apply_layout.addWidget(self.save_pipeline_button)
-        apply_layout.addWidget(self.load_pipeline_button)
-        apply_layout.addWidget(self.auto_tune_button)
-        top_layout.addLayout(apply_layout)
+        apply_layout.addWidget(self.auto_apply_checkbox, 0, 0)
+        apply_layout.addWidget(self.apply_pipeline_button, 0, 1)
+        apply_layout.addWidget(self.save_pipeline_button, 1, 0)
+        apply_layout.addWidget(self.load_pipeline_button, 1, 1)
+        apply_layout.addWidget(self.auto_tune_button, 2, 0, 1, 2)
+        apply_layout.setColumnStretch(0, 1)
+        apply_layout.setColumnStretch(1, 1)
+        steps_layout.addWidget(apply_row)
 
-        self.parameters_group = QGroupBox("Step parameters")
-        parameters_scroll = QScrollArea()
-        parameters_scroll.setWidgetResizable(True)
-        parameters_widget = QWidget()
-        self.parameters_form = QFormLayout(parameters_widget)
-        parameters_scroll.setWidget(parameters_widget)
-        group_layout = QVBoxLayout(self.parameters_group)
-        group_layout.addWidget(parameters_scroll)
-        pipeline_splitter = QSplitter(Qt.Orientation.Vertical)
-        pipeline_splitter.setChildrenCollapsible(False)
-        pipeline_splitter.addWidget(top_panel)
-        pipeline_splitter.addWidget(self.parameters_group)
-        pipeline_splitter.setStretchFactor(0, 0)
-        pipeline_splitter.setStretchFactor(1, 1)
-        pipeline_splitter.setSizes([260, 520])
-        layout.addWidget(pipeline_splitter, 1)
+        self.pipeline_help_group = QGroupBox("Filter help")
+        help_layout = QVBoxLayout(self.pipeline_help_group)
+        self.pipeline_help_title = QLabel()
+        self.pipeline_help_title.setWordWrap(True)
+        self.pipeline_help_summary = QLabel()
+        self.pipeline_help_summary.setWordWrap(True)
+        self.pipeline_help_use = QLabel()
+        self.pipeline_help_use.setWordWrap(True)
+        preview_row = QWidget()
+        preview_layout = QHBoxLayout(preview_row)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        before_column = QVBoxLayout()
+        self.pipeline_help_before_title = QLabel("Before")
+        self.pipeline_help_before_image = QLabel()
+        before_column.addWidget(self.pipeline_help_before_title)
+        before_column.addWidget(self.pipeline_help_before_image)
+        after_column = QVBoxLayout()
+        self.pipeline_help_after_title = QLabel("After")
+        self.pipeline_help_after_image = QLabel()
+        after_column.addWidget(self.pipeline_help_after_title)
+        after_column.addWidget(self.pipeline_help_after_image)
+        preview_layout.addLayout(before_column)
+        preview_layout.addLayout(after_column)
+        help_layout.addWidget(self.pipeline_help_title)
+        help_layout.addWidget(self.pipeline_help_summary)
+        help_layout.addWidget(self.pipeline_help_use)
+        help_layout.addWidget(preview_row)
+
+        layout.addWidget(self.available_filters_group)
+        layout.addWidget(self.parameters_group)
+        layout.addWidget(self.pipeline_steps_group)
+        layout.addWidget(self.pipeline_help_group)
+        layout.addStretch(1)
         return tab
 
     def _build_extraction_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
 
         self.contour_group = QGroupBox("Contour extraction")
-        contour_form = QFormLayout(self.contour_group)
+        contour_layout = QVBoxLayout(self.contour_group)
+        self.profile_group = QGroupBox("Profile")
+        self.profile_form = QFormLayout(self.profile_group)
+        self._configure_compact_form(self.profile_form)
+        self.extraction_profile_combo = QComboBox()
+        self.extraction_profile_combo.addItem("Conductors", "conductors")
+        self.extraction_profile_combo.addItem("Vias", "vias")
+        self.profile_form.addRow("Extraction profile", self.extraction_profile_combo)
+        self.extraction_profile_label_widget = self.profile_form.labelForField(self.extraction_profile_combo)
+
+        self.basic_filters_group = QGroupBox("Basic filters")
+        self.basic_filters_form = QFormLayout(self.basic_filters_group)
+        self._configure_compact_form(self.basic_filters_form)
         self.retrieval_mode_combo = QComboBox()
         for mode_name in RETRIEVAL_MODE_MAP:
             self.retrieval_mode_combo.addItem(mode_name, mode_name)
@@ -408,9 +1057,107 @@ class PolygonExtractionWidget(QWidget):
         self.min_perimeter_spin = QDoubleSpinBox()
         self.min_perimeter_spin.setRange(0.0, 1_000_000_000.0)
         self.min_perimeter_spin.setValue(10.0)
+        self.max_perimeter_spin = QDoubleSpinBox()
+        self.max_perimeter_spin.setRange(0.0, 1_000_000_000.0)
+        self.max_perimeter_spin.setValue(0.0)
         self.min_points_spin = QSpinBox()
         self.min_points_spin.setRange(3, 10_000)
         self.min_points_spin.setValue(3)
+
+        self.geometry_filters_group = QGroupBox("Geometry filters")
+        self.geometry_filters_form = QFormLayout(self.geometry_filters_group)
+        self._configure_compact_form(self.geometry_filters_form)
+        self.min_bbox_width_spin = QSpinBox()
+        self.min_bbox_width_spin.setRange(0, 100_000)
+        self.min_bbox_width_spin.setValue(0)
+        self.max_bbox_width_spin = QSpinBox()
+        self.max_bbox_width_spin.setRange(0, 100_000)
+        self.max_bbox_width_spin.setValue(0)
+        self.min_bbox_height_spin = QSpinBox()
+        self.min_bbox_height_spin.setRange(0, 100_000)
+        self.min_bbox_height_spin.setValue(0)
+        self.max_bbox_height_spin = QSpinBox()
+        self.max_bbox_height_spin.setRange(0, 100_000)
+        self.max_bbox_height_spin.setValue(0)
+        self.min_aspect_ratio_spin = QDoubleSpinBox()
+        self.min_aspect_ratio_spin.setRange(0.0, 1_000.0)
+        self.min_aspect_ratio_spin.setDecimals(3)
+        self.min_aspect_ratio_spin.setSingleStep(0.05)
+        self.min_aspect_ratio_spin.setValue(0.0)
+        self.max_aspect_ratio_spin = QDoubleSpinBox()
+        self.max_aspect_ratio_spin.setRange(0.0, 1_000.0)
+        self.max_aspect_ratio_spin.setDecimals(3)
+        self.max_aspect_ratio_spin.setSingleStep(0.05)
+        self.max_aspect_ratio_spin.setValue(0.0)
+        self.exclude_border_touching_checkbox = QCheckBox("Exclude")
+        self.min_solidity_spin = QDoubleSpinBox()
+        self.min_solidity_spin.setRange(0.0, 1.0)
+        self.min_solidity_spin.setDecimals(3)
+        self.min_solidity_spin.setSingleStep(0.05)
+        self.min_solidity_spin.setValue(0.0)
+        self.min_extent_spin = QDoubleSpinBox()
+        self.min_extent_spin.setRange(0.0, 1.0)
+        self.min_extent_spin.setDecimals(3)
+        self.min_extent_spin.setSingleStep(0.05)
+        self.min_extent_spin.setValue(0.0)
+
+        self.via_group = QGroupBox("Via constraints")
+        self.via_form = QFormLayout(self.via_group)
+        self._configure_compact_form(self.via_form)
+        self.via_size_mode_combo = QComboBox()
+        self.via_size_mode_combo.addItem("Range", VIA_SIZE_MODE_RANGE)
+        self.via_size_mode_combo.addItem("Fixed values", VIA_SIZE_MODE_FIXED)
+        self.min_via_width_spin = QSpinBox()
+        self.min_via_width_spin.setRange(0, 100_000)
+        self.min_via_width_spin.setValue(0)
+        self.max_via_width_spin = QSpinBox()
+        self.max_via_width_spin.setRange(0, 100_000)
+        self.max_via_width_spin.setValue(0)
+        self.min_via_height_spin = QSpinBox()
+        self.min_via_height_spin.setRange(0, 100_000)
+        self.min_via_height_spin.setValue(0)
+        self.max_via_height_spin = QSpinBox()
+        self.max_via_height_spin.setRange(0, 100_000)
+        self.max_via_height_spin.setValue(0)
+        self.fixed_vias_widget = QWidget()
+        self.fixed_vias_widget.setObjectName("fixedViaArea")
+        self.fixed_vias_layout = QVBoxLayout(self.fixed_vias_widget)
+        self.fixed_vias_layout.setContentsMargins(10, 10, 10, 10)
+        self.fixed_vias_layout.setSpacing(8)
+        self.fixed_vias_widget.setStyleSheet(
+            "#fixedViaArea { background-color: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.10); border-radius: 8px; }"
+            "#fixedViaArea QLabel, #fixedViaArea QSpinBox, #fixedViaArea QPushButton { border: none; background: transparent; }"
+        )
+        self.fixed_via_rows_widget = QWidget()
+        self.fixed_via_rows_layout = QVBoxLayout(self.fixed_via_rows_widget)
+        self.fixed_via_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.fixed_via_rows_layout.setSpacing(6)
+        self.fixed_vias_layout.addWidget(self.fixed_via_rows_widget)
+        self.fixed_via_add_button = QPushButton("+")
+        self.fixed_via_add_button.setMinimumHeight(38)
+        self.fixed_via_add_button.setStyleSheet(
+            "QPushButton { background-color: #2fbf71; color: white; font-size: 22px; font-weight: 700; border-radius: 8px; }"
+            "QPushButton:hover { background-color: #28a764; }"
+            "QPushButton:pressed { background-color: #229157; }"
+        )
+        self.fixed_via_add_button.clicked.connect(self._add_fixed_via_row)
+        self.fixed_vias_layout.addWidget(self.fixed_via_add_button)
+
+        self.topology_group = QGroupBox("Hierarchy and holes")
+        self.topology_form = QFormLayout(self.topology_group)
+        self._configure_compact_form(self.topology_form)
+        self.min_hierarchy_depth_spin = QSpinBox()
+        self.min_hierarchy_depth_spin.setRange(0, 100)
+        self.min_hierarchy_depth_spin.setValue(0)
+        self.max_hierarchy_depth_spin = QSpinBox()
+        self.max_hierarchy_depth_spin.setRange(0, 100)
+        self.max_hierarchy_depth_spin.setValue(0)
+        self.max_hole_area_ratio_spin = QDoubleSpinBox()
+        self.max_hole_area_ratio_spin.setRange(0.0, 10.0)
+        self.max_hole_area_ratio_spin.setDecimals(3)
+        self.max_hole_area_ratio_spin.setSingleStep(0.05)
+        self.max_hole_area_ratio_spin.setValue(0.0)
+        self.extraction_profile_combo.currentIndexChanged.connect(self._on_extraction_profile_changed)
         self.retrieval_mode_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
         self.approximation_mode_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
         self.epsilon_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -419,24 +1166,93 @@ class PolygonExtractionWidget(QWidget):
         self.max_area_spin.valueChanged.connect(self._on_extraction_settings_changed)
         self.min_perimeter_spin.valueChanged.connect(self._on_extraction_settings_changed)
         self.min_points_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.max_perimeter_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.min_bbox_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.max_bbox_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.min_bbox_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.max_bbox_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.min_aspect_ratio_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.max_aspect_ratio_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.exclude_border_touching_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+        self.min_solidity_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.min_extent_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_size_mode_combo.currentIndexChanged.connect(self._on_via_size_mode_changed)
+        self.min_via_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.max_via_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.min_via_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.max_via_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.min_hierarchy_depth_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.max_hierarchy_depth_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.max_hole_area_ratio_spin.valueChanged.connect(self._on_extraction_settings_changed)
 
-        contour_form.addRow("Retrieval mode", self.retrieval_mode_combo)
-        self.retrieval_mode_label_widget = contour_form.labelForField(self.retrieval_mode_combo)
-        contour_form.addRow("Approximation mode", self.approximation_mode_combo)
-        self.approximation_mode_label_widget = contour_form.labelForField(self.approximation_mode_combo)
-        contour_form.addRow("Epsilon", self.epsilon_spin)
-        self.epsilon_label_widget = contour_form.labelForField(self.epsilon_spin)
-        contour_form.addRow("Epsilon mode", self.epsilon_relative_checkbox)
-        self.epsilon_mode_label_widget = contour_form.labelForField(self.epsilon_relative_checkbox)
-        contour_form.addRow("Min area", self.min_area_spin)
-        self.min_area_label_widget = contour_form.labelForField(self.min_area_spin)
-        contour_form.addRow("Max area (0 = unlimited)", self.max_area_spin)
-        self.max_area_label_widget = contour_form.labelForField(self.max_area_spin)
-        contour_form.addRow("Min perimeter", self.min_perimeter_spin)
-        self.min_perimeter_label_widget = contour_form.labelForField(self.min_perimeter_spin)
-        contour_form.addRow("Min point count", self.min_points_spin)
-        self.min_point_count_label_widget = contour_form.labelForField(self.min_points_spin)
-        layout.addWidget(self.contour_group)
+        self.basic_filters_form.addRow("Retrieval mode", self.retrieval_mode_combo)
+        self.retrieval_mode_label_widget = self.basic_filters_form.labelForField(self.retrieval_mode_combo)
+        self.basic_filters_form.addRow("Approximation mode", self.approximation_mode_combo)
+        self.approximation_mode_label_widget = self.basic_filters_form.labelForField(self.approximation_mode_combo)
+        self.basic_filters_form.addRow("Epsilon", self.epsilon_spin)
+        self.epsilon_label_widget = self.basic_filters_form.labelForField(self.epsilon_spin)
+        self.basic_filters_form.addRow("Epsilon mode", self.epsilon_relative_checkbox)
+        self.epsilon_mode_label_widget = self.basic_filters_form.labelForField(self.epsilon_relative_checkbox)
+        self.basic_filters_form.addRow("Min area", self.min_area_spin)
+        self.min_area_label_widget = self.basic_filters_form.labelForField(self.min_area_spin)
+        self.basic_filters_form.addRow("Max area (0 = unlimited)", self.max_area_spin)
+        self.max_area_label_widget = self.basic_filters_form.labelForField(self.max_area_spin)
+        self.basic_filters_form.addRow("Min perimeter", self.min_perimeter_spin)
+        self.min_perimeter_label_widget = self.basic_filters_form.labelForField(self.min_perimeter_spin)
+        self.basic_filters_form.addRow("Max perimeter (0 = unlimited)", self.max_perimeter_spin)
+        self.max_perimeter_label_widget = self.basic_filters_form.labelForField(self.max_perimeter_spin)
+        self.basic_filters_form.addRow("Min point count", self.min_points_spin)
+        self.min_point_count_label_widget = self.basic_filters_form.labelForField(self.min_points_spin)
+
+        self.geometry_filters_form.addRow("Min bbox width", self.min_bbox_width_spin)
+        self.min_bbox_width_label_widget = self.geometry_filters_form.labelForField(self.min_bbox_width_spin)
+        self.geometry_filters_form.addRow("Max bbox width (0 = unlimited)", self.max_bbox_width_spin)
+        self.max_bbox_width_label_widget = self.geometry_filters_form.labelForField(self.max_bbox_width_spin)
+        self.geometry_filters_form.addRow("Min bbox height", self.min_bbox_height_spin)
+        self.min_bbox_height_label_widget = self.geometry_filters_form.labelForField(self.min_bbox_height_spin)
+        self.geometry_filters_form.addRow("Max bbox height (0 = unlimited)", self.max_bbox_height_spin)
+        self.max_bbox_height_label_widget = self.geometry_filters_form.labelForField(self.max_bbox_height_spin)
+        self.geometry_filters_form.addRow("Min aspect ratio", self.min_aspect_ratio_spin)
+        self.min_aspect_ratio_label_widget = self.geometry_filters_form.labelForField(self.min_aspect_ratio_spin)
+        self.geometry_filters_form.addRow("Max aspect ratio (0 = unlimited)", self.max_aspect_ratio_spin)
+        self.max_aspect_ratio_label_widget = self.geometry_filters_form.labelForField(self.max_aspect_ratio_spin)
+        self.geometry_filters_form.addRow("Border handling", self.exclude_border_touching_checkbox)
+        self.border_handling_label_widget = self.geometry_filters_form.labelForField(self.exclude_border_touching_checkbox)
+        self.geometry_filters_form.addRow("Min solidity", self.min_solidity_spin)
+        self.min_solidity_label_widget = self.geometry_filters_form.labelForField(self.min_solidity_spin)
+        self.geometry_filters_form.addRow("Min extent", self.min_extent_spin)
+        self.min_extent_label_widget = self.geometry_filters_form.labelForField(self.min_extent_spin)
+
+        self.via_form.addRow("Via size mode", self.via_size_mode_combo)
+        self.via_size_mode_label_widget = self.via_form.labelForField(self.via_size_mode_combo)
+        self.via_form.addRow("Min via width", self.min_via_width_spin)
+        self.min_via_width_label_widget = self.via_form.labelForField(self.min_via_width_spin)
+        self.via_form.addRow("Max via width (0 = unlimited)", self.max_via_width_spin)
+        self.max_via_width_label_widget = self.via_form.labelForField(self.max_via_width_spin)
+        self.via_form.addRow("Min via height", self.min_via_height_spin)
+        self.min_via_height_label_widget = self.via_form.labelForField(self.min_via_height_spin)
+        self.via_form.addRow("Max via height (0 = unlimited)", self.max_via_height_spin)
+        self.max_via_height_label_widget = self.via_form.labelForField(self.max_via_height_spin)
+        self.via_form.addRow("Fixed vias", self.fixed_vias_widget)
+        self.fixed_vias_label_widget = self.via_form.labelForField(self.fixed_vias_widget)
+        self._update_via_size_controls_state()
+
+        self.topology_form.addRow("Min hierarchy depth", self.min_hierarchy_depth_spin)
+        self.min_hierarchy_depth_label_widget = self.topology_form.labelForField(self.min_hierarchy_depth_spin)
+        self.topology_form.addRow("Max hierarchy depth (0 = unlimited)", self.max_hierarchy_depth_spin)
+        self.max_hierarchy_depth_label_widget = self.topology_form.labelForField(self.max_hierarchy_depth_spin)
+        self.topology_form.addRow("Max hole area ratio (0 = unlimited)", self.max_hole_area_ratio_spin)
+        self.max_hole_area_ratio_label_widget = self.topology_form.labelForField(self.max_hole_area_ratio_spin)
+
+        for group in [
+            self.profile_group,
+            self.basic_filters_group,
+            self.geometry_filters_group,
+            self.via_group,
+            self.topology_group,
+        ]:
+            contour_layout.addWidget(group)
+        container_layout.addWidget(self.contour_group)
 
         self.save_group = QGroupBox("Save options")
         save_layout = QVBoxLayout(self.save_group)
@@ -455,8 +1271,10 @@ class PolygonExtractionWidget(QWidget):
             self.save_preview_checkbox,
         ]:
             save_layout.addWidget(checkbox)
-        layout.addWidget(self.save_group)
-        layout.addStretch(1)
+        container_layout.addWidget(self.save_group)
+        container_layout.addStretch(1)
+        scroll.setWidget(container)
+        layout.addWidget(scroll, 1)
         return tab
 
     def _build_display_tab(self) -> QWidget:
@@ -512,6 +1330,435 @@ class PolygonExtractionWidget(QWidget):
         self.display_form.addRow(self.show_labels_checkbox)
         return tab
 
+    def _build_help_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        self.help_scroll = QScrollArea()
+        self.help_scroll.setWidgetResizable(True)
+        self.help_container = QWidget()
+        self.help_layout = QVBoxLayout(self.help_container)
+        self.help_layout.setContentsMargins(0, 0, 0, 0)
+        self.help_scroll.setWidget(self.help_container)
+        layout.addWidget(self.help_scroll, 1)
+        self._rebuild_help_cards()
+        return tab
+
+    def _clear_layout_widgets(self, layout: QVBoxLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                self._clear_layout_widgets(child_layout)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _build_help_sample_image() -> np.ndarray:
+        image = np.full((180, 260), 38, dtype=np.uint8)
+        cv2.rectangle(image, (18, 18), (110, 90), 190, thickness=-1)
+        cv2.circle(image, (176, 60), 26, 230, thickness=-1)
+        cv2.circle(image, (176, 60), 10, 70, thickness=-1)
+        cv2.line(image, (20, 136), (236, 120), 160, thickness=6)
+        cv2.line(image, (22, 154), (236, 154), 210, thickness=4)
+        cv2.putText(image, "A1", (126, 138), cv2.FONT_HERSHEY_SIMPLEX, 0.8, 240, 2, cv2.LINE_AA)
+        noise = np.random.default_rng(42).normal(0, 12, image.shape).astype(np.int16)
+        return np.clip(image.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+
+    def _operation_help_entry(self, operation_name: str) -> tuple[str, str]:
+        entry = PIPELINE_OPERATION_HELP_TEXTS.get(operation_name, {})
+        summary_pair = entry.get("summary", ("", ""))
+        use_pair = entry.get("use", ("", ""))
+        summary = summary_pair[0] if self._ui_language == "ru" else summary_pair[1]
+        use_case = use_pair[0] if self._ui_language == "ru" else use_pair[1]
+        if not summary:
+            summary = "Преобразование обрабатывает изображение перед извлечением контуров." if self._ui_language == "ru" else "This transformation preprocesses the image before contour extraction."
+        if not use_case:
+            use_case = "Используйте, когда этот эффект приближает изображение к удобной бинарной маске." if self._ui_language == "ru" else "Use it when the effect moves the image toward a cleaner binary mask."
+        return summary, use_case
+
+    def _pipeline_parameter_tooltip(self, operation_name: str, parameter_name: str) -> str:
+        del operation_name
+        return _localized_text(PIPELINE_PARAMETER_HELP_TEXTS, parameter_name, self._ui_language)
+
+    def _pixmap_for_help_image(self, image: np.ndarray) -> QPixmap:
+        return QPixmap.fromImage(cv_to_qimage(image)).scaled(
+            190,
+            132,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    def _rebuild_help_cards(self) -> None:
+        if not hasattr(self, "help_layout"):
+            return
+        self._clear_layout_widgets(self.help_layout)
+        intro = QLabel(
+            "Ниже показано, как каждое преобразование меняет один и тот же тестовый кадр. Это помогает понять, когда шаг уместен в pipeline."
+            if self._ui_language == "ru"
+            else "Below, each transformation is applied to the same synthetic sample image so you can see what it changes and when to use it."
+        )
+        intro.setWordWrap(True)
+        self.help_layout.addWidget(intro)
+        sample_image = self._build_help_sample_image()
+        before_pixmap = self._pixmap_for_help_image(sample_image)
+        for descriptor in available_operations():
+            card = QGroupBox(get_operation_display_name(descriptor.type_name, self._ui_language))
+            card_layout = QVBoxLayout(card)
+            summary, use_case = self._operation_help_entry(descriptor.type_name)
+            summary_label = QLabel(summary)
+            summary_label.setWordWrap(True)
+            use_label = QLabel(
+                ("Когда использовать: " if self._ui_language == "ru" else "When to use: ") + use_case
+            )
+            use_label.setWordWrap(True)
+            images_row = QWidget()
+            images_layout = QHBoxLayout(images_row)
+            images_layout.setContentsMargins(0, 0, 0, 0)
+            before_box = QVBoxLayout()
+            before_title = QLabel("До" if self._ui_language == "ru" else "Before")
+            before_image = QLabel()
+            before_image.setPixmap(before_pixmap)
+            before_box.addWidget(before_title)
+            before_box.addWidget(before_image)
+            after_box = QVBoxLayout()
+            after_title = QLabel("После" if self._ui_language == "ru" else "After")
+            after_image = QLabel()
+            try:
+                processed = descriptor.handler(sample_image.copy(), descriptor.default_parameters())
+            except Exception:
+                processed = sample_image
+            after_image.setPixmap(self._pixmap_for_help_image(processed))
+            after_box.addWidget(after_title)
+            after_box.addWidget(after_image)
+            images_layout.addLayout(before_box)
+            images_layout.addLayout(after_box)
+            card_layout.addWidget(summary_label)
+            card_layout.addWidget(use_label)
+            card_layout.addWidget(images_row)
+            self.help_layout.addWidget(card)
+        self.help_layout.addStretch(1)
+
+    def help_menu_title(self) -> str:
+        return self._tr("tab_help")
+
+    def attach_help_menu(self, menu: QMenu) -> None:
+        self._help_menu = menu
+        self._refresh_help_menu()
+
+    def _refresh_help_menu(self) -> None:
+        if self._help_menu is None:
+            return
+        self._help_menu.clear()
+        overview_action = self._help_menu.addAction(
+            self._tr("help_all_filters_action", "Все преобразования" if self._ui_language == "ru" else "All transformations")
+        )
+        overview_action.triggered.connect(lambda _checked=False: self._show_help_dialog())
+        self._help_menu.addSeparator()
+        for group_key, labels, operations in PIPELINE_OPERATION_GROUPS:
+            submenu = self._help_menu.addMenu(labels[0] if self._ui_language == "ru" else labels[1])
+            submenu.setObjectName(f"helpMenu_{group_key}")
+            for operation_name in operations:
+                action = submenu.addAction(get_operation_display_name(operation_name, self._ui_language))
+                action.triggered.connect(lambda _checked=False, op=operation_name: self._show_help_dialog(op))
+
+    def _show_help_dialog(self, operation_name: str | None = None) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(
+            self._tr("tab_help") if operation_name is None else get_operation_display_name(operation_name, self._ui_language)
+        )
+        dialog.resize(960, 720)
+        layout = QVBoxLayout(dialog)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        help_layout = QVBoxLayout(container)
+        help_layout.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(container)
+        layout.addWidget(scroll, 1)
+        self._populate_help_cards(
+            help_layout,
+            [operation_name] if operation_name is not None else self._all_operation_names(),
+        )
+        dialog.exec()
+
+    def _populate_help_cards(self, layout: QVBoxLayout, operation_names: list[str]) -> None:
+        self._clear_layout_widgets(layout)
+        intro = QLabel(
+            self._tr(
+                "help_intro_text",
+                "Ниже показано, как каждое преобразование меняет один и тот же тестовый кадр. Это помогает понять, когда шаг уместен в pipeline."
+                if self._ui_language == "ru"
+                else "Each transformation below is applied to the same sample image so you can see its effect and when to use it.",
+            )
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        sample_image = self._build_help_sample_image()
+        before_pixmap = self._pixmap_for_help_image(sample_image)
+        for operation_name in operation_names:
+            descriptor = get_operation_descriptor(operation_name)
+            card = QGroupBox(get_operation_display_name(descriptor.type_name, self._ui_language))
+            card_layout = QVBoxLayout(card)
+            summary, use_case = self._operation_help_entry(descriptor.type_name)
+            summary_label = QLabel(summary)
+            summary_label.setWordWrap(True)
+            use_label = QLabel(
+                ("Когда использовать: " if self._ui_language == "ru" else "When to use: ") + use_case
+            )
+            use_label.setWordWrap(True)
+            images_row = QWidget()
+            images_layout = QHBoxLayout(images_row)
+            images_layout.setContentsMargins(0, 0, 0, 0)
+            before_box = QVBoxLayout()
+            before_title = QLabel("До" if self._ui_language == "ru" else "Before")
+            before_image = QLabel()
+            before_image.setPixmap(before_pixmap)
+            before_box.addWidget(before_title)
+            before_box.addWidget(before_image)
+            after_box = QVBoxLayout()
+            after_title = QLabel("После" if self._ui_language == "ru" else "After")
+            after_image = QLabel()
+            try:
+                processed = descriptor.handler(sample_image.copy(), descriptor.default_parameters())
+            except Exception:
+                processed = sample_image
+            after_image.setPixmap(self._pixmap_for_help_image(processed))
+            after_box.addWidget(after_title)
+            after_box.addWidget(after_image)
+            images_layout.addLayout(before_box)
+            images_layout.addLayout(after_box)
+            card_layout.addWidget(summary_label)
+            card_layout.addWidget(use_label)
+            card_layout.addWidget(images_row)
+            layout.addWidget(card)
+        layout.addStretch(1)
+
+    def _all_operation_names(self) -> list[str]:
+        return [descriptor.type_name for descriptor in available_operations()]
+
+    def _selected_available_operation_name(self) -> str | None:
+        if not hasattr(self, "operation_tree"):
+            return None
+        item = self.operation_tree.currentItem()
+        if item is None:
+            return None
+        operation_name = item.data(0, Qt.ItemDataRole.UserRole)
+        return str(operation_name) if operation_name else None
+
+    def _find_operation_tree_item(self, operation_name: str) -> QTreeWidgetItem | None:
+        if not hasattr(self, "operation_tree"):
+            return None
+        for index in range(self.operation_tree.topLevelItemCount()):
+            group_item = self.operation_tree.topLevelItem(index)
+            for child_index in range(group_item.childCount()):
+                child_item = group_item.child(child_index)
+                if child_item.data(0, Qt.ItemDataRole.UserRole) == operation_name:
+                    return child_item
+        return None
+
+    def _update_pipeline_help_preview(self, operation_name: str | None) -> None:
+        if not hasattr(self, "pipeline_help_title"):
+            return
+        if not operation_name:
+            self.pipeline_help_title.clear()
+            self.pipeline_help_summary.clear()
+            self.pipeline_help_use.clear()
+            self.pipeline_help_before_image.clear()
+            self.pipeline_help_after_image.clear()
+            return
+        descriptor = get_operation_descriptor(operation_name)
+        summary, use_case = self._operation_help_entry(operation_name)
+        sample_image = self._build_help_sample_image()
+        self.pipeline_help_title.setText(get_operation_display_name(operation_name, self._ui_language))
+        self.pipeline_help_summary.setText(summary)
+        self.pipeline_help_use.setText(
+            ("Когда использовать: " if self._ui_language == "ru" else "When to use: ") + use_case
+        )
+        self.pipeline_help_before_image.setPixmap(self._pixmap_for_help_image(sample_image))
+        try:
+            processed = descriptor.handler(sample_image.copy(), descriptor.default_parameters())
+        except Exception:
+            processed = sample_image
+        self.pipeline_help_after_image.setPixmap(self._pixmap_for_help_image(processed))
+
+    def _on_available_operation_selected(self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None) -> None:
+        operation_name = current.data(0, Qt.ItemDataRole.UserRole) if current is not None else None
+        self._update_pipeline_help_preview(str(operation_name) if operation_name else None)
+
+    def _on_available_operation_hovered(self, item: QTreeWidgetItem, _column: int) -> None:
+        operation_name = item.data(0, Qt.ItemDataRole.UserRole)
+        if operation_name:
+            self._update_pipeline_help_preview(str(operation_name))
+
+    def _on_available_operation_activated(self, item: QTreeWidgetItem, _column: int) -> None:
+        if item.data(0, Qt.ItemDataRole.UserRole):
+            self._add_pipeline_step()
+
+    def _set_field_tooltip(self, label_widget: QLabel | None, field_widget: QWidget, help_key: str) -> None:
+        tooltip = _localized_text(EXTRACTION_HELP_TEXTS, help_key, self._ui_language)
+        if label_widget is not None:
+            label_widget.setToolTip(tooltip)
+        field_widget.setToolTip(tooltip)
+
+    def _renumber_fixed_via_rows(self) -> None:
+        for index, row in enumerate(self._fixed_via_rows, start=1):
+            label = row["label"]
+            if isinstance(label, QLabel):
+                label.setText(f"via{index}")
+
+    def _clear_fixed_via_rows(self) -> None:
+        while self._fixed_via_rows:
+            row = self._fixed_via_rows.pop()
+            widget = row["widget"]
+            if isinstance(widget, QWidget):
+                self.fixed_via_rows_layout.removeWidget(widget)
+                widget.deleteLater()
+
+    def _fixed_via_pairs(self) -> list[tuple[int, int]]:
+        pairs: list[tuple[int, int]] = []
+        for row in self._fixed_via_rows:
+            width_spin = row["width_spin"]
+            height_spin = row["height_spin"]
+            if isinstance(width_spin, QSpinBox) and isinstance(height_spin, QSpinBox):
+                pairs.append((int(width_spin.value()), int(height_spin.value())))
+        return pairs
+
+    def _delete_fixed_via_row(self, row_widget: QWidget) -> None:
+        for index, row in enumerate(self._fixed_via_rows):
+            if row["widget"] is row_widget:
+                self._fixed_via_rows.pop(index)
+                self.fixed_via_rows_layout.removeWidget(row_widget)
+                row_widget.deleteLater()
+                self._renumber_fixed_via_rows()
+                if not self._suspend_fixed_via_updates:
+                    self._on_extraction_settings_changed()
+                return
+
+    def _add_fixed_via_row(self, *_args, width: int = 1, height: int = 1) -> None:
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+
+        via_label = QLabel("")
+        via_label.setMinimumWidth(44)
+        width_spin = QSpinBox()
+        width_spin.setRange(1, 100_000)
+        width_spin.setValue(max(1, int(width)))
+        width_spin.setPrefix("X ")
+        height_spin = QSpinBox()
+        height_spin.setRange(1, 100_000)
+        height_spin.setValue(max(1, int(height)))
+        height_spin.setPrefix("Y ")
+        remove_button = QPushButton("-")
+        remove_button.setFixedWidth(36)
+        remove_button.setMinimumHeight(30)
+        remove_button.setStyleSheet(
+            "QPushButton { background-color: #d64545; color: white; font-size: 18px; font-weight: 700; border-radius: 6px; }"
+            "QPushButton:hover { background-color: #bf3838; }"
+            "QPushButton:pressed { background-color: #a93030; }"
+        )
+
+        width_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        height_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        remove_button.clicked.connect(lambda _checked=False, widget=row_widget: self._delete_fixed_via_row(widget))
+
+        self._fixed_via_rows.append(
+            {
+                "widget": row_widget,
+                "label": via_label,
+                "width_spin": width_spin,
+                "height_spin": height_spin,
+                "remove_button": remove_button,
+            }
+        )
+
+        row_layout.addWidget(via_label)
+        row_layout.addWidget(width_spin, 1)
+        row_layout.addWidget(height_spin, 1)
+        row_layout.addWidget(remove_button)
+        self.fixed_via_rows_layout.addWidget(row_widget)
+        self._renumber_fixed_via_rows()
+
+        width_spin.setToolTip(_localized_text(EXTRACTION_HELP_TEXTS, "fixed_via_widths", self._ui_language))
+        height_spin.setToolTip(_localized_text(EXTRACTION_HELP_TEXTS, "fixed_via_heights", self._ui_language))
+        remove_button.setToolTip(self._tr("fixed_via_remove_tooltip", "Удалить via" if self._ui_language == "ru" else "Remove via"))
+
+        if not self._suspend_fixed_via_updates:
+            self._on_extraction_settings_changed()
+
+    def _apply_extraction_tooltips(self) -> None:
+        self._set_field_tooltip(self.extraction_profile_label_widget, self.extraction_profile_combo, "extraction_profile")
+        self._set_field_tooltip(self.retrieval_mode_label_widget, self.retrieval_mode_combo, "retrieval_mode")
+        self._set_field_tooltip(self.approximation_mode_label_widget, self.approximation_mode_combo, "approximation_mode")
+        self._set_field_tooltip(self.epsilon_label_widget, self.epsilon_spin, "epsilon")
+        self._set_field_tooltip(self.epsilon_mode_label_widget, self.epsilon_relative_checkbox, "epsilon_mode")
+        self._set_field_tooltip(self.min_area_label_widget, self.min_area_spin, "min_area")
+        self._set_field_tooltip(self.max_area_label_widget, self.max_area_spin, "max_area")
+        self._set_field_tooltip(self.min_perimeter_label_widget, self.min_perimeter_spin, "min_perimeter")
+        self._set_field_tooltip(self.max_perimeter_label_widget, self.max_perimeter_spin, "max_perimeter")
+        self._set_field_tooltip(self.min_point_count_label_widget, self.min_points_spin, "min_points")
+        self._set_field_tooltip(self.min_bbox_width_label_widget, self.min_bbox_width_spin, "min_bbox_width")
+        self._set_field_tooltip(self.max_bbox_width_label_widget, self.max_bbox_width_spin, "max_bbox_width")
+        self._set_field_tooltip(self.min_bbox_height_label_widget, self.min_bbox_height_spin, "min_bbox_height")
+        self._set_field_tooltip(self.max_bbox_height_label_widget, self.max_bbox_height_spin, "max_bbox_height")
+        self._set_field_tooltip(self.min_aspect_ratio_label_widget, self.min_aspect_ratio_spin, "min_aspect_ratio")
+        self._set_field_tooltip(self.max_aspect_ratio_label_widget, self.max_aspect_ratio_spin, "max_aspect_ratio")
+        self._set_field_tooltip(self.border_handling_label_widget, self.exclude_border_touching_checkbox, "exclude_border_touching")
+        self._set_field_tooltip(self.min_solidity_label_widget, self.min_solidity_spin, "min_solidity")
+        self._set_field_tooltip(self.min_extent_label_widget, self.min_extent_spin, "min_extent")
+        self._set_field_tooltip(self.via_size_mode_label_widget, self.via_size_mode_combo, "via_size_mode")
+        self._set_field_tooltip(self.min_via_width_label_widget, self.min_via_width_spin, "min_via_width")
+        self._set_field_tooltip(self.max_via_width_label_widget, self.max_via_width_spin, "max_via_width")
+        self._set_field_tooltip(self.min_via_height_label_widget, self.min_via_height_spin, "min_via_height")
+        self._set_field_tooltip(self.max_via_height_label_widget, self.max_via_height_spin, "max_via_height")
+        self._set_field_tooltip(self.fixed_vias_label_widget, self.fixed_vias_widget, "fixed_via_widths")
+        self.fixed_via_add_button.setToolTip(
+            self._tr("fixed_via_add_tooltip", "Добавить новый via" if self._ui_language == "ru" else "Add a new via")
+        )
+        for row in self._fixed_via_rows:
+            width_spin = row["width_spin"]
+            height_spin = row["height_spin"]
+            remove_button = row["remove_button"]
+            if isinstance(width_spin, QSpinBox):
+                width_spin.setToolTip(_localized_text(EXTRACTION_HELP_TEXTS, "fixed_via_widths", self._ui_language))
+            if isinstance(height_spin, QSpinBox):
+                height_spin.setToolTip(_localized_text(EXTRACTION_HELP_TEXTS, "fixed_via_heights", self._ui_language))
+            if isinstance(remove_button, QPushButton):
+                remove_button.setToolTip(
+                    self._tr("fixed_via_remove_tooltip", "Удалить via" if self._ui_language == "ru" else "Remove via")
+                )
+        self._set_field_tooltip(self.min_hierarchy_depth_label_widget, self.min_hierarchy_depth_spin, "min_hierarchy_depth")
+        self._set_field_tooltip(self.max_hierarchy_depth_label_widget, self.max_hierarchy_depth_spin, "max_hierarchy_depth")
+        self._set_field_tooltip(self.max_hole_area_ratio_label_widget, self.max_hole_area_ratio_spin, "max_hole_area_ratio")
+
+    def _update_via_size_controls_state(self) -> None:
+        fixed_mode = normalize_via_size_mode(self.via_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
+        range_widgets = [
+            (self.min_via_width_label_widget, self.min_via_width_spin),
+            (self.max_via_width_label_widget, self.max_via_width_spin),
+            (self.min_via_height_label_widget, self.min_via_height_spin),
+            (self.max_via_height_label_widget, self.max_via_height_spin),
+        ]
+        fixed_widgets = [
+            (self.fixed_vias_label_widget, self.fixed_vias_widget),
+        ]
+        for label_widget, field_widget in range_widgets:
+            if label_widget is not None:
+                label_widget.setVisible(not fixed_mode)
+            field_widget.setVisible(not fixed_mode)
+        for label_widget, field_widget in fixed_widgets:
+            if label_widget is not None:
+                label_widget.setVisible(fixed_mode)
+            field_widget.setVisible(fixed_mode)
+
+    def _update_extraction_profile_controls_state(self) -> None:
+        is_via_profile = self._active_extraction_profile == "vias"
+        self.via_group.setEnabled(is_via_profile)
+        self.via_group.setVisible(is_via_profile)
+        self.topology_group.setVisible(not is_via_profile)
+
     def _build_visual_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -521,6 +1768,9 @@ class PolygonExtractionWidget(QWidget):
         self.polygon_editor = PolygonEditorView()
         self.polygon_editor.polygonsEdited.connect(self._on_polygons_edited)
         self.polygon_editor.logRequested.connect(self._append_log)
+        self.polygon_editor.imageClicked.connect(self._on_editor_image_clicked)
+        self.polygon_editor.rulerMeasurementChanged.connect(self._update_ruler_status)
+        self.polygon_editor.toolChanged.connect(self._on_editor_tool_changed)
         self.editor_toolbar = self._build_editor_toolbar()
         editor_layout.addWidget(self.editor_toolbar)
         editor_layout.addWidget(self.polygon_editor, 1)
@@ -540,6 +1790,7 @@ class PolygonExtractionWidget(QWidget):
         for text, tool in [
             ("Select", EditorTool.SELECT),
             ("Pan", EditorTool.PAN),
+            ("Ruler", EditorTool.RULER),
             ("Add Polygon", EditorTool.ADD_POLYGON),
             ("Brush", EditorTool.BRUSH),
             ("Add Vertex", EditorTool.ADD_VERTEX),
@@ -596,6 +1847,11 @@ class PolygonExtractionWidget(QWidget):
         )
         layout.addWidget(self.delete_vertex_mode_label)
         layout.addWidget(self.delete_vertex_mode_combo)
+
+        self.ruler_status_label = QLabel("")
+        self.ruler_status_label.setMinimumWidth(180)
+        self.ruler_status_label.setVisible(False)
+        layout.addWidget(self.ruler_status_label)
 
         self.undo_button = QToolButton()
         self._configure_toolbar_button(self.undo_button, self._create_editor_action_icon("undo"), "Undo")
@@ -677,6 +1933,8 @@ class PolygonExtractionWidget(QWidget):
             self._paint_select_icon(painter, stroke)
         elif tool == EditorTool.PAN:
             self._paint_pan_icon(painter, stroke, accent)
+        elif tool == EditorTool.RULER:
+            self._paint_ruler_icon(painter, stroke, warning)
         elif tool == EditorTool.ADD_POLYGON:
             self._paint_polygon_badge_icon(painter, stroke, accent, "+")
         elif tool == EditorTool.BRUSH:
@@ -755,6 +2013,19 @@ class PolygonExtractionWidget(QWidget):
         painter.setPen(QPen(accent, 1.8))
         painter.setBrush(QBrush(accent))
         painter.drawEllipse(QRectF(center.x() - 2.2, center.y() - 2.2, 4.4, 4.4))
+
+    def _paint_ruler_icon(self, painter: QPainter, stroke: QColor, accent: QColor) -> None:
+        start = QPointF(5.0, 19.5)
+        end = QPointF(23.0, 8.5)
+        painter.setPen(QPen(stroke, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(start, end)
+        painter.setPen(QPen(accent, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        for tick in range(1, 5):
+            base_x = 6.5 + tick * 3.4
+            base_y = 18.6 - tick * 2.1
+            painter.drawLine(QPointF(base_x, base_y), QPointF(base_x - 1.0, base_y - 1.8))
+        self._draw_vertex_marker(painter, start, stroke, QColor("#FFFFFF"), radius=1.6)
+        self._draw_vertex_marker(painter, end, stroke, QColor("#FFFFFF"), radius=1.6)
 
     def _paint_polygon_badge_icon(
         self,
@@ -955,7 +2226,7 @@ class PolygonExtractionWidget(QWidget):
     def _retranslate_ui(self) -> None:
         if not hasattr(self, "control_tabs"):
             return
-        selected_operation = self.operation_selector.currentData() if hasattr(self, "operation_selector") else None
+        selected_operation = self._selected_available_operation_name()
         selected_pipeline_row = self.pipeline_list.currentRow() if hasattr(self, "pipeline_list") else -1
 
         self.path_group.setTitle(self._tr("path_panel_title"))
@@ -981,10 +2252,21 @@ class PolygonExtractionWidget(QWidget):
         self.save_current_button.setText(self._tr("save_current_button"))
         self.max_workers_label.setText(self._tr("max_workers_label"))
 
+        self.available_filters_group.setTitle(
+            self._tr("available_filters_group_title", "Фильтры pipeline" if self._ui_language == "ru" else "Pipeline filters")
+        )
+        self.pipeline_steps_group.setTitle(
+            self._tr("applied_filters_group_title", "Примененные фильтры" if self._ui_language == "ru" else "Applied filters")
+        )
+        self.pipeline_help_group.setTitle(
+            self._tr("pipeline_help_group_title", "Справка по фильтру" if self._ui_language == "ru" else "Filter help")
+        )
         self.add_step_button.setText(self._tr("add_step_button"))
         self.remove_step_button.setText(self._tr("remove_step_button"))
         self.move_up_step_button.setText(self._tr("move_up_button"))
         self.move_down_step_button.setText(self._tr("move_down_button"))
+        self.pipeline_help_before_title.setText("До" if self._ui_language == "ru" else "Before")
+        self.pipeline_help_after_title.setText("После" if self._ui_language == "ru" else "After")
         self.auto_apply_checkbox.setText(self._tr("auto_apply_checkbox"))
         self.apply_pipeline_button.setText(self._tr("apply_current_button"))
         self.save_pipeline_button.setText(self._tr("save_json_button"))
@@ -1006,6 +2288,15 @@ class PolygonExtractionWidget(QWidget):
         self.parameters_group.setTitle(self._tr("step_parameters_group"))
 
         self.contour_group.setTitle(self._tr("contour_extraction_group"))
+        self.profile_group.setTitle(self._tr("extraction_profile_group_title", "Профиль" if self._ui_language == "ru" else "Profile"))
+        self.basic_filters_group.setTitle(self._tr("basic_filters_group_title", "Базовые фильтры" if self._ui_language == "ru" else "Basic filters"))
+        self.geometry_filters_group.setTitle(self._tr("geometry_filters_group_title", "Геометрия" if self._ui_language == "ru" else "Geometry"))
+        self.via_group.setTitle(self._tr("via_constraints_group_title", "Ограничения via" if self._ui_language == "ru" else "Via constraints"))
+        self.topology_group.setTitle(self._tr("topology_group_title", "Иерархия и отверстия" if self._ui_language == "ru" else "Hierarchy and holes"))
+        if self.extraction_profile_label_widget is not None:
+            self.extraction_profile_label_widget.setText(self._tr("extraction_profile_label"))
+        self.extraction_profile_combo.setItemText(0, self._tr("extraction_profile_conductors"))
+        self.extraction_profile_combo.setItemText(1, self._tr("extraction_profile_vias"))
         if self.retrieval_mode_label_widget is not None:
             self.retrieval_mode_label_widget.setText(self._tr("retrieval_mode_label"))
         if self.approximation_mode_label_widget is not None:
@@ -1021,11 +2312,67 @@ class PolygonExtractionWidget(QWidget):
             self.max_area_label_widget.setText(self._tr("max_area_label"))
         if self.min_perimeter_label_widget is not None:
             self.min_perimeter_label_widget.setText(self._tr("min_perimeter_label"))
+        if self.max_perimeter_label_widget is not None:
+            self.max_perimeter_label_widget.setText(self._tr("max_perimeter_label"))
         if self.min_point_count_label_widget is not None:
             self.min_point_count_label_widget.setText(self._tr("min_point_count_label"))
+        if self.min_bbox_width_label_widget is not None:
+            self.min_bbox_width_label_widget.setText(self._tr("min_bbox_width_label"))
+        if self.max_bbox_width_label_widget is not None:
+            self.max_bbox_width_label_widget.setText(self._tr("max_bbox_width_label"))
+        if self.min_bbox_height_label_widget is not None:
+            self.min_bbox_height_label_widget.setText(self._tr("min_bbox_height_label"))
+        if self.max_bbox_height_label_widget is not None:
+            self.max_bbox_height_label_widget.setText(self._tr("max_bbox_height_label"))
+        if self.min_aspect_ratio_label_widget is not None:
+            self.min_aspect_ratio_label_widget.setText(self._tr("min_aspect_ratio_label"))
+        if self.max_aspect_ratio_label_widget is not None:
+            self.max_aspect_ratio_label_widget.setText(self._tr("max_aspect_ratio_label"))
+        if self.border_handling_label_widget is not None:
+            self.border_handling_label_widget.setText(self._tr("border_handling_label"))
+        self.exclude_border_touching_checkbox.setText(
+            self._tr("exclude_border_touching_checkbox_short", "Исключать" if self._ui_language == "ru" else "Exclude")
+        )
+        if self.min_solidity_label_widget is not None:
+            self.min_solidity_label_widget.setText(self._tr("min_solidity_label"))
+        if self.min_extent_label_widget is not None:
+            self.min_extent_label_widget.setText(self._tr("min_extent_label"))
+        if self.via_size_mode_label_widget is not None:
+            self.via_size_mode_label_widget.setText(
+                self._tr("via_size_mode_label", "Режим размеров via" if self._ui_language == "ru" else "Via size mode")
+            )
+        self.via_size_mode_combo.setItemText(
+            0,
+            self._tr("via_size_mode_range", "Диапазон" if self._ui_language == "ru" else "Range"),
+        )
+        self.via_size_mode_combo.setItemText(
+            1,
+            self._tr("via_size_mode_fixed", "Фиксированные значения" if self._ui_language == "ru" else "Fixed values"),
+        )
+        if self.min_via_width_label_widget is not None:
+            self.min_via_width_label_widget.setText(self._tr("min_via_width_label", "Мин. ширина via" if self._ui_language == "ru" else "Min via width"))
+        if self.max_via_width_label_widget is not None:
+            self.max_via_width_label_widget.setText(self._tr("max_via_width_label", "Макс. ширина via (0 = без ограничения)" if self._ui_language == "ru" else "Max via width (0 = unlimited)"))
+        if self.min_via_height_label_widget is not None:
+            self.min_via_height_label_widget.setText(self._tr("min_via_height_label", "Мин. высота via" if self._ui_language == "ru" else "Min via height"))
+        if self.max_via_height_label_widget is not None:
+            self.max_via_height_label_widget.setText(self._tr("max_via_height_label", "Макс. высота via (0 = без ограничения)" if self._ui_language == "ru" else "Max via height (0 = unlimited)"))
+        if self.fixed_vias_label_widget is not None:
+            self.fixed_vias_label_widget.setText(
+                self._tr("fixed_vias_label", "Фиксированные via" if self._ui_language == "ru" else "Fixed vias")
+            )
+        if self.min_hierarchy_depth_label_widget is not None:
+            self.min_hierarchy_depth_label_widget.setText(self._tr("min_hierarchy_depth_label"))
+        if self.max_hierarchy_depth_label_widget is not None:
+            self.max_hierarchy_depth_label_widget.setText(self._tr("max_hierarchy_depth_label"))
+        if self.max_hole_area_ratio_label_widget is not None:
+            self.max_hole_area_ratio_label_widget.setText(self._tr("max_hole_area_ratio_label"))
         self.save_group.setTitle(self._tr("save_options_group"))
         self.save_svg_checkbox.setText(self._tr("save_svg_checkbox"))
         self.save_preview_checkbox.setText(self._tr("save_preview_checkbox"))
+        self._apply_extraction_tooltips()
+        self._renumber_fixed_via_rows()
+        self._update_extraction_profile_controls_state()
 
         if self.external_color_label_widget is not None:
             self.external_color_label_widget.setText(self._tr("external_contour_label"))
@@ -1051,19 +2398,22 @@ class PolygonExtractionWidget(QWidget):
         self.brush_mode_label.setText("Кисть" if self._ui_language == "ru" else "Brush")
         self.brush_size_label.setText("Толщина" if self._ui_language == "ru" else "Width")
         self.delete_vertex_mode_label.setText("Удаление" if self._ui_language == "ru" else "Delete")
+        self._on_editor_tool_changed(self.polygon_editor.current_tool)
         self._retranslate_editor_mode_combos()
         self.preview_busy_label.setText(self._busy_indicator_text())
         self._set_progress_status(self._progress_status_key, **self._progress_status_kwargs)
 
         self._populate_pipeline_operations()
-        if selected_operation is not None:
-            operation_index = self.operation_selector.findData(selected_operation)
-            if operation_index >= 0:
-                self.operation_selector.setCurrentIndex(operation_index)
         self._populate_pipeline_list()
         if selected_pipeline_row >= 0 and selected_pipeline_row < self.pipeline_list.count():
             self.pipeline_list.setCurrentRow(selected_pipeline_row)
         self._retranslate_contour_mode_combos()
+        if selected_operation:
+            target_item = self._find_operation_tree_item(selected_operation)
+            if target_item is not None:
+                self.operation_tree.setCurrentItem(target_item)
+        self._update_pipeline_help_preview(self._selected_available_operation_name())
+        self._refresh_help_menu()
 
     def _update_tool_button_texts(self) -> None:
         texts = {
@@ -1078,6 +2428,8 @@ class PolygonExtractionWidget(QWidget):
         }
         for tool, button in self._tool_buttons.items():
             label = texts.get(tool, tool.value)
+            if tool == EditorTool.RULER:
+                label = self._tr("tool_ruler", "Линейка" if self._ui_language == "ru" else "Ruler")
             button.setToolTip(label)
             button.setStatusTip(label)
             button.setAccessibleName(label)
@@ -1093,6 +2445,33 @@ class PolygonExtractionWidget(QWidget):
             button.setToolTip(label)
             button.setStatusTip(label)
             button.setAccessibleName(label)
+
+    def _on_editor_tool_changed(self, tool) -> None:
+        is_ruler = tool == EditorTool.RULER
+        self.ruler_status_label.setVisible(is_ruler)
+        if is_ruler and not self.ruler_status_label.text():
+            self.ruler_status_label.setText(
+                self._tr(
+                    "ruler_idle_label",
+                    "Потяните на изображении для измерения" if self._ui_language == "ru" else "Drag on the image to measure",
+                )
+            )
+        elif not is_ruler:
+            self.ruler_status_label.clear()
+
+    def _update_ruler_status(self, text: str) -> None:
+        if not text:
+            if self.polygon_editor.current_tool == EditorTool.RULER:
+                self.ruler_status_label.setText(
+                    self._tr(
+                        "ruler_idle_label",
+                        "Потяните на изображении для измерения" if self._ui_language == "ru" else "Drag on the image to measure",
+                    )
+                )
+            else:
+                self.ruler_status_label.clear()
+            return
+        self.ruler_status_label.setText(text)
 
     def _retranslate_editor_mode_combos(self) -> None:
         polygon_mode = self.polygon_mode_combo.currentData()
@@ -1140,6 +2519,24 @@ class PolygonExtractionWidget(QWidget):
         layout.addWidget(widget)
         return group
 
+    def _configure_compact_form(self, form: QFormLayout) -> None:
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+    def _disable_spinbox_wheel_changes(self) -> None:
+        for spinbox in self.findChildren(QAbstractSpinBox):
+            spinbox.installEventFilter(self)
+
+    def _register_spinbox(self, spinbox: QAbstractSpinBox) -> None:
+        spinbox.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        if isinstance(watched, QAbstractSpinBox) and event.type() == QEvent.Type.Wheel:
+            event.ignore()
+            return True
+        return super().eventFilter(watched, event)
+
     def _build_color_button(self, color: str, handler) -> QPushButton:
         button = QPushButton(color)
         button.clicked.connect(handler)
@@ -1151,12 +2548,28 @@ class PolygonExtractionWidget(QWidget):
         button.setStyleSheet(f"background-color: {color_value}; color: #111111;")
 
     def _populate_pipeline_operations(self) -> None:
-        self.operation_selector.clear()
-        for descriptor in available_operations():
-            self.operation_selector.addItem(
-                get_operation_display_name(descriptor.type_name, self._ui_language),
-                descriptor.type_name,
-            )
+        selected_operation = self._selected_available_operation_name()
+        self.operation_tree.clear()
+        for _group_key, labels, operations in PIPELINE_OPERATION_GROUPS:
+            group_item = QTreeWidgetItem([labels[0] if self._ui_language == "ru" else labels[1]])
+            group_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            for operation_name in operations:
+                child_item = QTreeWidgetItem([get_operation_display_name(operation_name, self._ui_language)])
+                child_item.setData(0, Qt.ItemDataRole.UserRole, operation_name)
+                summary, use_case = self._operation_help_entry(operation_name)
+                child_item.setToolTip(
+                    0,
+                    f"{summary}\n\n"
+                    + (("Когда использовать: " if self._ui_language == "ru" else "When to use: ") + use_case),
+                )
+                group_item.addChild(child_item)
+            group_item.setExpanded(True)
+            self.operation_tree.addTopLevelItem(group_item)
+        target_operation = selected_operation or self._all_operation_names()[0]
+        target_item = self._find_operation_tree_item(target_operation)
+        if target_item is not None:
+            self.operation_tree.setCurrentItem(target_item)
+            self._update_pipeline_help_preview(target_operation)
 
     def _populate_pipeline_list(self) -> None:
         self._ignore_pipeline_item_change = True
@@ -1189,6 +2602,7 @@ class PolygonExtractionWidget(QWidget):
     def _render_pipeline_parameters(self, row: int) -> None:
         self._clear_parameters_form()
         if row < 0 or row >= len(self._pipeline.steps):
+            self._set_color_pick_active(None)
             return
         step = self._pipeline.steps[row]
         descriptor = get_operation_descriptor(step.operation)
@@ -1216,6 +2630,7 @@ class PolygonExtractionWidget(QWidget):
                 )
             elif spec.kind == "int":
                 widget = QSpinBox()
+                self._register_spinbox(widget)
                 widget.setRange(int(spec.minimum or -1_000_000), int(spec.maximum or 1_000_000))
                 widget.setSingleStep(int(spec.step or 1))
                 widget.setValue(int(value))
@@ -1224,6 +2639,7 @@ class PolygonExtractionWidget(QWidget):
                 )
             else:
                 widget = QDoubleSpinBox()
+                self._register_spinbox(widget)
                 widget.setDecimals(spec.decimals)
                 widget.setRange(float(spec.minimum or -1_000_000), float(spec.maximum or 1_000_000))
                 widget.setSingleStep(float(spec.step or 0.1))
@@ -1231,8 +2647,16 @@ class PolygonExtractionWidget(QWidget):
                 widget.valueChanged.connect(
                     lambda new_value, name=spec.name, row_index=row: self._update_step_parameter(row_index, name, float(new_value))
                 )
+            tooltip = spec.tooltip or self._pipeline_parameter_tooltip(step.operation, spec.name)
+            widget.setToolTip(tooltip)
             self._parameter_widgets[spec.name] = widget
-            self.parameters_form.addRow(get_parameter_display_label(spec, self._ui_language), widget)
+            label_widget = QLabel(get_parameter_display_label(spec, self._ui_language))
+            label_widget.setToolTip(tooltip)
+            self.parameters_form.addRow(label_widget, widget)
+        if step.operation == "color_binarize":
+            self._render_color_binarize_parameters(row)
+        else:
+            self._set_color_pick_active(None)
 
     def _update_step_parameter(self, row: int, parameter_name: str, value) -> None:
         if row < 0 or row >= len(self._pipeline.steps):
@@ -1241,8 +2665,163 @@ class PolygonExtractionWidget(QWidget):
         if self.auto_apply_checkbox.isChecked() and self._workspace.current_image_path:
             self.process_current_image(debounced=True)
 
+    def _color_selection_entries(self, row: int) -> list[dict[str, object]]:
+        if row < 0 or row >= len(self._pipeline.steps):
+            return []
+        entries = self._pipeline.steps[row].parameters.get("selected_colors", [])
+        if not isinstance(entries, list):
+            entries = []
+        normalized: list[dict[str, object]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            rgb = entry.get("rgb")
+            if not isinstance(rgb, (list, tuple)) or len(rgb) != 3:
+                continue
+            try:
+                parsed_rgb = [max(0, min(255, int(channel))) for channel in rgb]
+            except (TypeError, ValueError):
+                continue
+            normalized.append({"rgb": parsed_rgb, "enabled": bool(entry.get("enabled", True))})
+        self._pipeline.steps[row].parameters["selected_colors"] = normalized
+        return normalized
+
+    def _render_color_binarize_parameters(self, row: int) -> None:
+        entries = self._color_selection_entries(row)
+        group = QGroupBox(
+            self._tr("color_binarize_group_title", "Цвета для бинаризации" if self._ui_language == "ru" else "Colors for binarization")
+        )
+        layout = QVBoxLayout(group)
+        hint = QLabel(
+            self._tr(
+                "color_binarize_hint",
+                "Включите выбор и кликните по изображению, чтобы добавить цвет. Галочкой можно временно отключить цвет."
+                if self._ui_language == "ru"
+                else "Enable picking and click the image to add a color. Uncheck an item to disable it temporarily.",
+            )
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        color_list = QListWidget()
+        color_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        for entry in entries:
+            rgb = entry["rgb"]
+            item = QListWidgetItem(f"#{int(rgb[0]):02X}{int(rgb[1]):02X}{int(rgb[2]):02X}")
+            item.setData(Qt.ItemDataRole.UserRole, list(rgb))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            item.setCheckState(Qt.CheckState.Checked if entry.get("enabled", True) else Qt.CheckState.Unchecked)
+            item.setBackground(QColor(int(rgb[0]), int(rgb[1]), int(rgb[2])))
+            brightness = int(rgb[0]) * 0.299 + int(rgb[1]) * 0.587 + int(rgb[2]) * 0.114
+            item.setForeground(QColor("#111111" if brightness > 150 else "#F8FAFC"))
+            color_list.addItem(item)
+        color_list.itemChanged.connect(lambda item, row_index=row, widget=color_list: self._on_color_entry_changed(row_index, widget, item))
+        layout.addWidget(color_list)
+
+        buttons_row = QWidget()
+        buttons_layout = QHBoxLayout(buttons_row)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        pick_button = QPushButton(
+            self._tr("pick_colors_button", "Выбор с изображения" if self._ui_language == "ru" else "Pick from image")
+        )
+        pick_button.setCheckable(True)
+        pick_button.setChecked(self._color_pick_pipeline_row == row)
+        pick_button.toggled.connect(lambda checked, row_index=row: self._set_color_pick_active(row_index if checked else None))
+        remove_button = QPushButton(
+            self._tr("remove_selected_color_button", "Удалить выбранный" if self._ui_language == "ru" else "Remove selected")
+        )
+        remove_button.clicked.connect(lambda _checked=False, row_index=row, widget=color_list: self._remove_selected_color_entry(row_index, widget))
+        clear_button = QPushButton(
+            self._tr("clear_colors_button", "Очистить список" if self._ui_language == "ru" else "Clear list")
+        )
+        clear_button.clicked.connect(lambda _checked=False, row_index=row: self._clear_color_entries(row_index))
+        buttons_layout.addWidget(pick_button)
+        buttons_layout.addWidget(remove_button)
+        buttons_layout.addWidget(clear_button)
+        layout.addWidget(buttons_row)
+        self.parameters_form.addRow(group)
+
+    def _on_color_entry_changed(self, row: int, color_list: QListWidget, item: QListWidgetItem) -> None:
+        entries = self._color_selection_entries(row)
+        index = color_list.row(item)
+        if index < 0 or index >= len(entries):
+            return
+        entries[index]["enabled"] = item.checkState() == Qt.CheckState.Checked
+        self._pipeline.steps[row].parameters["selected_colors"] = entries
+        self._auto_apply_pipeline()
+
+    def _remove_selected_color_entry(self, row: int, color_list: QListWidget) -> None:
+        index = color_list.currentRow()
+        if index < 0:
+            return
+        entries = self._color_selection_entries(row)
+        if index >= len(entries):
+            return
+        entries.pop(index)
+        self._pipeline.steps[row].parameters["selected_colors"] = entries
+        self._render_pipeline_parameters(row)
+        self._auto_apply_pipeline()
+
+    def _clear_color_entries(self, row: int) -> None:
+        if row < 0 or row >= len(self._pipeline.steps):
+            return
+        self._pipeline.steps[row].parameters["selected_colors"] = []
+        self._render_pipeline_parameters(row)
+        self._auto_apply_pipeline()
+
+    def _set_color_pick_active(self, row: int | None) -> None:
+        self._color_pick_pipeline_row = row
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_image_click_mode(row is not None)
+
+    def _add_color_selection(self, row: int, rgb: tuple[int, int, int]) -> None:
+        entries = self._color_selection_entries(row)
+        for entry in entries:
+            if tuple(entry["rgb"]) == tuple(rgb):
+                entry["enabled"] = True
+                self._pipeline.steps[row].parameters["selected_colors"] = entries
+                self._render_pipeline_parameters(row)
+                self._auto_apply_pipeline()
+                return
+        entries.append({"rgb": [int(rgb[0]), int(rgb[1]), int(rgb[2])], "enabled": True})
+        self._pipeline.steps[row].parameters["selected_colors"] = entries
+        self._render_pipeline_parameters(row)
+        self._auto_apply_pipeline()
+
+    def _on_editor_image_clicked(self, x_coord: float, y_coord: float) -> None:
+        row = self._color_pick_pipeline_row
+        if row is None or row < 0 or row >= len(self._pipeline.steps):
+            return
+        current_state = self._workspace.current_state
+        if current_state is None or current_state.source_image is None:
+            return
+        image = np.asarray(current_state.source_image)
+        x_index = int(round(x_coord))
+        y_index = int(round(y_coord))
+        if y_index < 0 or x_index < 0 or y_index >= image.shape[0] or x_index >= image.shape[1]:
+            return
+        if image.ndim == 2:
+            value = int(image[y_index, x_index])
+            rgb = (value, value, value)
+        else:
+            pixel = image[y_index, x_index]
+            if image.shape[2] >= 3:
+                rgb = (int(pixel[2]), int(pixel[1]), int(pixel[0]))
+            else:
+                value = int(pixel[0])
+                rgb = (value, value, value)
+        self._add_color_selection(row, rgb)
+        self._append_log(
+            self._tr(
+                "color_picked_log",
+                "Добавлен цвет {color}" if self._ui_language == "ru" else "Added color {color}",
+                color=f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}",
+            )
+        )
+
     def _add_pipeline_step(self) -> None:
-        operation_name = str(self.operation_selector.currentData())
+        operation_name = self._selected_available_operation_name()
+        if not operation_name:
+            return
         self._pipeline.steps.append(PreprocessingPipeline.create_step(operation_name))
         self._populate_pipeline_list()
         self.pipeline_list.setCurrentRow(len(self._pipeline.steps) - 1)
@@ -1284,8 +2863,33 @@ class PolygonExtractionWidget(QWidget):
         self._auto_apply_pipeline()
 
     def _on_extraction_settings_changed(self, *_args) -> None:
-        if self._workspace.current_image_path:
+        self._store_active_extraction_profile_settings()
+        if self.auto_apply_checkbox.isChecked() and self._workspace.current_image_path:
             self.process_current_image(debounced=True)
+
+    def _on_via_size_mode_changed(self, *_args) -> None:
+        self._update_via_size_controls_state()
+        if normalize_via_size_mode(self.via_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED and not self._fixed_via_rows:
+            self._add_fixed_via_row(width=1, height=1)
+            return
+        self._on_extraction_settings_changed()
+
+    def _on_extraction_profile_changed(self, *_args) -> None:
+        if self._ignore_extraction_profile_change:
+            return
+        self._store_active_extraction_profile_settings()
+        profile = str(self.extraction_profile_combo.currentData() or "conductors")
+        self._active_extraction_profile = profile
+        self._set_extraction_settings(self._contour_settings_profiles[profile])
+        self._update_extraction_profile_controls_state()
+        if self.auto_apply_checkbox.isChecked() and self._workspace.current_image_path:
+            self.process_current_image(debounced=True)
+
+    def _store_active_extraction_profile_settings(self) -> None:
+        if not hasattr(self, "extraction_profile_combo"):
+            return
+        profile = str(self.extraction_profile_combo.currentData() or self._active_extraction_profile or "conductors")
+        self._contour_settings_profiles[profile] = self._current_contour_settings()
 
     def _save_pipeline_json(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -1474,6 +3078,7 @@ class PolygonExtractionWidget(QWidget):
 
     def _set_extraction_settings(self, settings: ContourExtractionSettings) -> None:
         blockers = [
+            QSignalBlocker(self.extraction_profile_combo),
             QSignalBlocker(self.retrieval_mode_combo),
             QSignalBlocker(self.approximation_mode_combo),
             QSignalBlocker(self.epsilon_spin),
@@ -1482,8 +3087,32 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.max_area_spin),
             QSignalBlocker(self.min_perimeter_spin),
             QSignalBlocker(self.min_points_spin),
+            QSignalBlocker(self.max_perimeter_spin),
+            QSignalBlocker(self.min_bbox_width_spin),
+            QSignalBlocker(self.max_bbox_width_spin),
+            QSignalBlocker(self.min_bbox_height_spin),
+            QSignalBlocker(self.max_bbox_height_spin),
+            QSignalBlocker(self.min_aspect_ratio_spin),
+            QSignalBlocker(self.max_aspect_ratio_spin),
+            QSignalBlocker(self.exclude_border_touching_checkbox),
+            QSignalBlocker(self.min_solidity_spin),
+            QSignalBlocker(self.min_extent_spin),
+            QSignalBlocker(self.via_size_mode_combo),
+            QSignalBlocker(self.min_via_width_spin),
+            QSignalBlocker(self.max_via_width_spin),
+            QSignalBlocker(self.min_via_height_spin),
+            QSignalBlocker(self.max_via_height_spin),
+            QSignalBlocker(self.min_hierarchy_depth_spin),
+            QSignalBlocker(self.max_hierarchy_depth_spin),
+            QSignalBlocker(self.max_hole_area_ratio_spin),
         ]
         try:
+            profile_index = self.extraction_profile_combo.findData(settings.extraction_profile)
+            if profile_index >= 0:
+                self._ignore_extraction_profile_change = True
+                self.extraction_profile_combo.setCurrentIndex(profile_index)
+                self._ignore_extraction_profile_change = False
+            self._active_extraction_profile = str(settings.extraction_profile or self._active_extraction_profile)
             retrieval_index = self.retrieval_mode_combo.findData(settings.retrieval_mode)
             if retrieval_index >= 0:
                 self.retrieval_mode_combo.setCurrentIndex(retrieval_index)
@@ -1495,13 +3124,60 @@ class PolygonExtractionWidget(QWidget):
             self.min_area_spin.setValue(float(settings.min_area))
             self.max_area_spin.setValue(0.0 if settings.max_area is None else float(settings.max_area))
             self.min_perimeter_spin.setValue(float(settings.min_perimeter))
+            self.max_perimeter_spin.setValue(0.0 if settings.max_perimeter is None else float(settings.max_perimeter))
             self.min_points_spin.setValue(int(settings.min_points))
+            self.min_bbox_width_spin.setValue(int(settings.min_bbox_width))
+            self.max_bbox_width_spin.setValue(0 if settings.max_bbox_width is None else int(settings.max_bbox_width))
+            self.min_bbox_height_spin.setValue(int(settings.min_bbox_height))
+            self.max_bbox_height_spin.setValue(0 if settings.max_bbox_height is None else int(settings.max_bbox_height))
+            self.min_aspect_ratio_spin.setValue(float(settings.min_aspect_ratio))
+            self.max_aspect_ratio_spin.setValue(0.0 if settings.max_aspect_ratio is None else float(settings.max_aspect_ratio))
+            self.exclude_border_touching_checkbox.setChecked(bool(settings.exclude_border_touching))
+            self.min_solidity_spin.setValue(float(settings.min_solidity))
+            self.min_extent_spin.setValue(float(settings.min_extent))
+            via_size_mode_index = self.via_size_mode_combo.findData(normalize_via_size_mode(settings.via_size_mode))
+            if via_size_mode_index >= 0:
+                self.via_size_mode_combo.setCurrentIndex(via_size_mode_index)
+            self.min_via_width_spin.setValue(int(settings.min_via_width))
+            self.max_via_width_spin.setValue(0 if settings.max_via_width is None else int(settings.max_via_width))
+            self.min_via_height_spin.setValue(int(settings.min_via_height))
+            self.max_via_height_spin.setValue(0 if settings.max_via_height is None else int(settings.max_via_height))
+            self._suspend_fixed_via_updates = True
+            self._clear_fixed_via_rows()
+            for width, height in zip(settings.fixed_via_widths, settings.fixed_via_heights, strict=False):
+                self._add_fixed_via_row(width=width, height=height)
+            self._suspend_fixed_via_updates = False
+            self.min_hierarchy_depth_spin.setValue(int(settings.min_hierarchy_depth))
+            self.max_hierarchy_depth_spin.setValue(0 if settings.max_hierarchy_depth is None else int(settings.max_hierarchy_depth))
+            self.max_hole_area_ratio_spin.setValue(0.0 if settings.max_hole_area_ratio is None else float(settings.max_hole_area_ratio))
+            self._update_via_size_controls_state()
+            self._update_extraction_profile_controls_state()
         finally:
+            self._suspend_fixed_via_updates = False
+            self._ignore_extraction_profile_change = False
             del blockers
 
     def _current_contour_settings(self) -> ContourExtractionSettings:
         max_area = self.max_area_spin.value()
+        max_perimeter = self.max_perimeter_spin.value()
+        max_bbox_width = self.max_bbox_width_spin.value()
+        max_bbox_height = self.max_bbox_height_spin.value()
+        max_aspect_ratio = self.max_aspect_ratio_spin.value()
+        max_via_width = self.max_via_width_spin.value()
+        max_via_height = self.max_via_height_spin.value()
+        via_size_mode = normalize_via_size_mode(self.via_size_mode_combo.currentData())
+        fixed_via_pairs = self._fixed_via_pairs()
+        fixed_via_widths = [width for width, _height in fixed_via_pairs]
+        fixed_via_heights = [height for _width, height in fixed_via_pairs]
+        max_hierarchy_depth = self.max_hierarchy_depth_spin.value()
+        max_hole_area_ratio = self.max_hole_area_ratio_spin.value()
+        extraction_profile = str(self.extraction_profile_combo.currentData() or self._active_extraction_profile or "conductors")
+        object_type = "via" if extraction_profile == "vias" else "conductor"
+        output_mode = "box" if extraction_profile == "vias" else "polygon"
         return ContourExtractionSettings(
+            extraction_profile=extraction_profile,
+            object_type=object_type,
+            output_mode=output_mode,
             retrieval_mode=str(self.retrieval_mode_combo.currentData() or self.retrieval_mode_combo.currentText()),
             approximation_mode=str(self.approximation_mode_combo.currentData() or self.approximation_mode_combo.currentText()),
             epsilon=self.epsilon_spin.value(),
@@ -1510,6 +3186,26 @@ class PolygonExtractionWidget(QWidget):
             max_area=None if max_area <= 0 else max_area,
             min_perimeter=self.min_perimeter_spin.value(),
             min_points=self.min_points_spin.value(),
+            max_perimeter=None if max_perimeter <= 0 else max_perimeter,
+            min_bbox_width=self.min_bbox_width_spin.value(),
+            max_bbox_width=None if max_bbox_width <= 0 else max_bbox_width,
+            min_bbox_height=self.min_bbox_height_spin.value(),
+            max_bbox_height=None if max_bbox_height <= 0 else max_bbox_height,
+            min_aspect_ratio=self.min_aspect_ratio_spin.value(),
+            max_aspect_ratio=None if max_aspect_ratio <= 0 else max_aspect_ratio,
+            exclude_border_touching=self.exclude_border_touching_checkbox.isChecked(),
+            min_solidity=self.min_solidity_spin.value(),
+            min_extent=self.min_extent_spin.value(),
+            via_size_mode=via_size_mode,
+            min_via_width=self.min_via_width_spin.value(),
+            max_via_width=None if max_via_width <= 0 else max_via_width,
+            min_via_height=self.min_via_height_spin.value(),
+            max_via_height=None if max_via_height <= 0 else max_via_height,
+            fixed_via_widths=fixed_via_widths,
+            fixed_via_heights=fixed_via_heights,
+            min_hierarchy_depth=self.min_hierarchy_depth_spin.value(),
+            max_hierarchy_depth=None if max_hierarchy_depth <= 0 else max_hierarchy_depth,
+            max_hole_area_ratio=None if max_hole_area_ratio <= 0 else max_hole_area_ratio,
         )
 
     def _current_save_options(self) -> SaveOptions:
@@ -1572,10 +3268,20 @@ class PolygonExtractionWidget(QWidget):
     def _build_preview_request(self) -> PreviewProcessingRequest | None:
         if not self._workspace.current_image_path:
             return None
+        source_image = None
+        preprocessed_image = None
+        current_state = self._workspace.current_state
+        pipeline_config = self.get_pipeline()
+        if current_state is not None and current_state.image_path == self._workspace.current_image_path:
+            source_image = current_state.source_image
+            if current_state.preprocessed_image is not None and current_state.pipeline_config == pipeline_config:
+                preprocessed_image = current_state.preprocessed_image
         return PreviewProcessingRequest(
             image_path=self._workspace.current_image_path,
-            pipeline_config=self.get_pipeline(),
+            pipeline_config=pipeline_config,
             contour_settings=self._current_contour_settings(),
+            source_image=source_image,
+            preprocessed_image=preprocessed_image,
         )
 
     def _preview_request_signature(self, request: PreviewProcessingRequest) -> tuple[str, str, str]:
@@ -1648,7 +3354,7 @@ class PolygonExtractionWidget(QWidget):
             return
         if pipeline_config != self.get_pipeline():
             return
-        if self._workspace.store_preprocessed_image(image_path, preprocessed_image):
+        if self._workspace.store_preprocessed_image(image_path, preprocessed_image, pipeline_config):
             self._sync_current_state_views()
 
     def _on_prepared_image_error(self, request_id: int, message: str) -> None:
@@ -1870,7 +3576,7 @@ class PolygonExtractionWidget(QWidget):
         self._refresh_busy_indicator()
         image_result = self._workspace.load_image(
             path,
-            load_source_image=load_image_grayscale,
+            load_source_image=load_image_color,
             load_cif_overlay=self._load_cif_overlay_polygons,
         )
         if image_result.reused_current_state:

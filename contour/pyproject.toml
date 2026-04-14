@@ -31,5 +31,5 @@ include = [
 polygon_widget = [
     "pipeline_example.json",
     "resources/styles/*.qss",
-    "resources/styles/icons/*.svg",
+    "resources/styles/icons/*",
 ]

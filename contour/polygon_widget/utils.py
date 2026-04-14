@@ -104,6 +104,10 @@ def load_image_color(path: str | Path) -> np.ndarray:
 
 def ensure_binary_mask(image: np.ndarray) -> np.ndarray:
     gray = ensure_uint8(image)
+    if gray.ndim == 3 and gray.shape[2] == 4:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGRA2GRAY)
+    elif gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
     unique_values = np.unique(gray)
     if unique_values.size <= 2:
         return np.where(gray > 0, 255, 0).astype(np.uint8)

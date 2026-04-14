@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QGraphicsPathItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
+    QGraphicsSimpleTextItem,
     QGraphicsView,
 )
 
@@ -42,6 +43,7 @@ from .i18n import active_language, tr
 class EditorTool(str, Enum):
     SELECT = "select"
     PAN = "pan"
+    RULER = "ruler"
     ADD_POLYGON = "add_polygon"
     BRUSH = "brush"
     ADD_VERTEX = "add_vertex"
@@ -79,6 +81,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygon_items: dict[int, EditablePolygonItem] = {}
         self._selected_polygon_id: int | None = None
         self._next_polygon_id = 1
+        self._polygon_overlays_visible = True
 
         self._image_item = QGraphicsPixmapItem()
         self._image_item.setZValue(0)
@@ -100,6 +103,18 @@ class PolygonEditorScene(QGraphicsScene):
         preview_brush.setAlpha(48)
         self._preview_rect_item.setBrush(QBrush(preview_brush))
         self.addItem(self._preview_rect_item)
+        self._measurement_item = QGraphicsPathItem()
+        self._measurement_item.setZValue(12)
+        measurement_pen = QPen(QColor("#F59E0B"), 2.0, Qt.PenStyle.DashLine)
+        self._measurement_item.setPen(measurement_pen)
+        self._measurement_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self.addItem(self._measurement_item)
+        self._measurement_label_item = QGraphicsSimpleTextItem()
+        self._measurement_label_item.setZValue(13)
+        self._measurement_label_item.setBrush(QBrush(QColor("#F8FAFC")))
+        self._measurement_label_item.setFlag(QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self.addItem(self._measurement_label_item)
+        self._measurement_label_item.hide()
         self.setSceneRect(QRectF(0, 0, 1, 1))
 
     def set_pending_path_width(self, width: float) -> None:
@@ -122,6 +137,16 @@ class PolygonEditorScene(QGraphicsScene):
     def set_display_settings(self, settings: DisplaySettings) -> None:
         self._display_settings = settings
         self._refresh_all_items()
+
+    def set_polygon_overlays_visible(self, visible: bool) -> None:
+        self._polygon_overlays_visible = bool(visible)
+        for item in self._polygon_items.values():
+            item.setVisible(self._polygon_overlays_visible)
+        self._pending_path_item.setVisible(self._polygon_overlays_visible)
+        self._preview_rect_item.setVisible(self._polygon_overlays_visible)
+
+    def polygon_overlays_visible(self) -> bool:
+        return self._polygon_overlays_visible
 
     def get_polygons(self) -> list[PolygonData]:
         return [self._polygons[polygon_id].clone() for polygon_id in sorted(self._polygons)]
@@ -279,6 +304,25 @@ class PolygonEditorScene(QGraphicsScene):
 
     def clear_preview_rect(self) -> None:
         self._preview_rect_item.setPath(QPainterPath())
+
+    def set_measurement(self, start: QPointF, end: QPointF, label_text: str = "") -> None:
+        path = QPainterPath()
+        path.moveTo(start)
+        path.lineTo(end)
+        marker_radius = 2.4
+        path.addEllipse(start, marker_radius, marker_radius)
+        path.addEllipse(end, marker_radius, marker_radius)
+        self._measurement_item.setPath(path)
+        if label_text:
+            self._measurement_label_item.setText(label_text)
+            self._measurement_label_item.setPos(_measurement_label_position(start, end))
+            self._measurement_label_item.show()
+        else:
+            self._measurement_label_item.hide()
+
+    def clear_measurement(self) -> None:
+        self._measurement_item.setPath(QPainterPath())
+        self._measurement_label_item.hide()
 
     def add_rectangle_polygon(self, start: QPointF, end: QPointF) -> bool:
         rect = QRectF(start, end).normalized()
@@ -480,6 +524,8 @@ class PolygonEditorScene(QGraphicsScene):
             points=[(float(x), float(y)) for x, y in points],
             is_hole=existing.is_hole,
             parent_id=existing.parent_id,
+            category=existing.category,
+            shape_hint=existing.shape_hint,
             area=area,
             perimeter=perimeter,
             bbox=bbox,
@@ -491,6 +537,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygons[polygon.id] = polygon.clone()
         self._next_polygon_id = max(self._next_polygon_id, polygon.id + 1)
         item = EditablePolygonItem(self._polygons[polygon.id], self._display_settings)
+        item.setVisible(self._polygon_overlays_visible)
         self._polygon_items[polygon.id] = item
         self.addItem(item)
         if refresh:
@@ -577,6 +624,9 @@ class PolygonEditorView(QGraphicsView):
     polygonsEdited = pyqtSignal()
     activePolygonChanged = pyqtSignal(object)
     logRequested = pyqtSignal(str)
+    imageClicked = pyqtSignal(float, float)
+    rulerMeasurementChanged = pyqtSignal(str)
+    toolChanged = pyqtSignal(object)
 
     def __init__(self, parent=None) -> None:
         self._editor_scene = PolygonEditorScene()
@@ -598,6 +648,9 @@ class PolygonEditorView(QGraphicsView):
         self._drag_vertex_index: int | None = None
         self._drag_origin_points: list[tuple[float, float]] | None = None
         self._drag_start_scene_pos: QPointF | None = None
+        self._last_pointer_scene_pos: QPointF | None = None
+        self._middle_button_hides_overlays = False
+        self._image_click_mode = False
 
         self._editor_scene.polygonsChanged.connect(self.polygonsEdited.emit)
         self._editor_scene.activePolygonChanged.connect(self.activePolygonChanged.emit)
@@ -610,6 +663,10 @@ class PolygonEditorView(QGraphicsView):
     def undo_stack(self) -> QUndoStack:
         return self._editor_scene.undo_stack
 
+    @property
+    def current_tool(self) -> EditorTool:
+        return self._tool
+
     def set_tool(self, tool: EditorTool) -> None:
         self._tool = tool
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag if tool == EditorTool.PAN else QGraphicsView.DragMode.NoDrag)
@@ -617,6 +674,10 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.cancel_pending_polygon()
         if tool != EditorTool.DELETE_VERTEX:
             self._editor_scene.clear_preview_rect()
+        if tool != EditorTool.RULER:
+            self._editor_scene.clear_measurement()
+            self.rulerMeasurementChanged.emit("")
+        self.toolChanged.emit(tool)
 
     def set_polygon_create_mode(self, mode: PolygonCreateMode) -> None:
         self._polygon_create_mode = mode
@@ -650,6 +711,9 @@ class PolygonEditorView(QGraphicsView):
     def set_ui_language(self, language: str | None) -> None:
         self._editor_scene.set_ui_language(language)
 
+    def set_image_click_mode(self, enabled: bool) -> None:
+        self._image_click_mode = bool(enabled)
+
     def fit_to_view(self) -> None:
         rect = self._editor_scene.sceneRect()
         if rect.width() > 0 and rect.height() > 0:
@@ -676,10 +740,22 @@ class PolygonEditorView(QGraphicsView):
 
     def mousePressEvent(self, event) -> None:
         scene_pos = self.mapToScene(event.position().toPoint())
+        self._last_pointer_scene_pos = scene_pos
         tolerance = self._scene_tolerance(8)
+
+        if self._image_click_mode and event.button() == Qt.MouseButton.LeftButton:
+            self.imageClicked.emit(scene_pos.x(), scene_pos.y())
+            event.accept()
+            return
 
         if self._tool == EditorTool.PAN:
             super().mousePressEvent(event)
+            return
+
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._middle_button_hides_overlays = True
+            self._editor_scene.set_polygon_overlays_visible(False)
+            event.accept()
             return
 
         if self._tool == EditorTool.ADD_POLYGON:
@@ -709,6 +785,15 @@ class PolygonEditorView(QGraphicsView):
 
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
+            return
+
+        if self._tool == EditorTool.RULER:
+            self._drag_kind = "ruler"
+            self._drag_start_scene_pos = scene_pos
+            measurement_text = self._format_ruler_measurement(scene_pos, scene_pos)
+            self._editor_scene.set_measurement(scene_pos, scene_pos, measurement_text)
+            self.rulerMeasurementChanged.emit(measurement_text)
+            event.accept()
             return
 
         if self._tool == EditorTool.DELETE_POLYGON:
@@ -758,6 +843,7 @@ class PolygonEditorView(QGraphicsView):
 
     def mouseMoveEvent(self, event) -> None:
         scene_pos = self.mapToScene(event.position().toPoint())
+        self._last_pointer_scene_pos = scene_pos
         if self._tool == EditorTool.PAN:
             super().mouseMoveEvent(event)
             return
@@ -767,6 +853,13 @@ class PolygonEditorView(QGraphicsView):
             return
         if self._drag_kind == "rect_polygon" and self._drag_start_scene_pos is not None:
             self._editor_scene.set_preview_rect(self._drag_start_scene_pos, scene_pos)
+            event.accept()
+            return
+        if self._drag_kind == "ruler" and self._drag_start_scene_pos is not None:
+            target_pos = self._ruler_target(self._drag_start_scene_pos, scene_pos, event.modifiers())
+            measurement_text = self._format_ruler_measurement(self._drag_start_scene_pos, target_pos)
+            self._editor_scene.set_measurement(self._drag_start_scene_pos, target_pos, measurement_text)
+            self.rulerMeasurementChanged.emit(measurement_text)
             event.accept()
             return
         if self._drag_kind == "delete_area" and self._drag_start_scene_pos is not None:
@@ -797,6 +890,11 @@ class PolygonEditorView(QGraphicsView):
         if self._tool == EditorTool.PAN:
             super().mouseReleaseEvent(event)
             return
+        if event.button() == Qt.MouseButton.MiddleButton and self._middle_button_hides_overlays:
+            self._middle_button_hides_overlays = False
+            self._editor_scene.set_polygon_overlays_visible(True)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_kind is not None:
             if self._drag_kind == "brush":
                 release_pos = self.mapToScene(event.position().toPoint())
@@ -812,6 +910,12 @@ class PolygonEditorView(QGraphicsView):
                 self._editor_scene.add_brush_stroke(brush_points, self._brush_thickness)
             elif self._drag_kind == "rect_polygon" and self._drag_start_scene_pos is not None:
                 self._editor_scene.add_rectangle_polygon(self._drag_start_scene_pos, self.mapToScene(event.position().toPoint()))
+            elif self._drag_kind == "ruler" and self._drag_start_scene_pos is not None:
+                release_pos = self.mapToScene(event.position().toPoint())
+                target_pos = self._ruler_target(self._drag_start_scene_pos, release_pos, event.modifiers())
+                measurement_text = self._format_ruler_measurement(self._drag_start_scene_pos, target_pos)
+                self._editor_scene.set_measurement(self._drag_start_scene_pos, target_pos, measurement_text)
+                self.rulerMeasurementChanged.emit(measurement_text)
             elif self._drag_kind == "delete_area" and self._drag_start_scene_pos is not None:
                 self._editor_scene.delete_vertices_in_rect(QRectF(self._drag_start_scene_pos, self.mapToScene(event.position().toPoint())))
                 self._editor_scene.clear_preview_rect()
@@ -871,6 +975,9 @@ class PolygonEditorView(QGraphicsView):
             return
         if event.key() == Qt.Key.Key_Escape:
             self._editor_scene.cancel_pending_polygon()
+            self._editor_scene.clear_measurement()
+            if self._tool == EditorTool.RULER:
+                self.rulerMeasurementChanged.emit("")
             self._drag_kind = None
             event.accept()
             return
@@ -878,7 +985,24 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.delete_polygon()
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Shift and self._drag_kind == "ruler" and self._drag_start_scene_pos is not None and self._last_pointer_scene_pos is not None:
+            target_pos = self._ruler_target(self._drag_start_scene_pos, self._last_pointer_scene_pos, event.modifiers())
+            measurement_text = self._format_ruler_measurement(self._drag_start_scene_pos, target_pos)
+            self._editor_scene.set_measurement(self._drag_start_scene_pos, target_pos, measurement_text)
+            self.rulerMeasurementChanged.emit(measurement_text)
+            event.accept()
+            return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Shift and self._drag_kind == "ruler" and self._drag_start_scene_pos is not None and self._last_pointer_scene_pos is not None:
+            target_pos = self._ruler_target(self._drag_start_scene_pos, self._last_pointer_scene_pos, event.modifiers())
+            measurement_text = self._format_ruler_measurement(self._drag_start_scene_pos, target_pos)
+            self._editor_scene.set_measurement(self._drag_start_scene_pos, target_pos, measurement_text)
+            self.rulerMeasurementChanged.emit(measurement_text)
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
 
     def _scene_tolerance(self, pixels: int) -> float:
         start = self.mapToScene(QPoint(0, 0))
@@ -892,6 +1016,21 @@ class PolygonEditorView(QGraphicsView):
             if last_point is not None:
                 target = _snap_to_45(last_point, scene_pos)
         self._editor_scene.append_pending_point(target)
+
+    def _ruler_target(self, start: QPointF, target: QPointF, modifiers: Qt.KeyboardModifier | Qt.KeyboardModifiers) -> QPointF:
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            return _snap_to_45(start, target)
+        return QPointF(target)
+
+    def _format_ruler_measurement(self, start: QPointF, end: QPointF) -> str:
+        dx = end.x() - start.x()
+        dy = end.y() - start.y()
+        distance = hypot(dx, dy)
+        return (
+            f"L={distance:.1f}px, dX={dx:.1f}, dY={dy:.1f}"
+            if self._editor_scene._ui_language != "ru"
+            else f"L={distance:.1f}px, dX={dx:.1f}, dY={dy:.1f}"
+        )
 
 
 def _distance_to_segment(point: tuple[float, float], start: tuple[float, float], end: tuple[float, float]) -> float:
@@ -928,6 +1067,21 @@ def _snap_to_45(start: QPointF, target: QPointF) -> QPointF:
     snapped_angle = round(angle / (pi / 4.0)) * (pi / 4.0)
     distance = hypot(dx, dy)
     return QPointF(start.x() + cos(snapped_angle) * distance, start.y() + sin(snapped_angle) * distance)
+
+
+def _measurement_label_position(start: QPointF, end: QPointF) -> QPointF:
+    dx = end.x() - start.x()
+    dy = end.y() - start.y()
+    midpoint = QPointF((start.x() + end.x()) / 2.0, (start.y() + end.y()) / 2.0)
+    distance = hypot(dx, dy)
+    if distance < 1e-6:
+        return QPointF(midpoint.x() + 6.0, midpoint.y() - 16.0)
+    normal_x = -dy / distance
+    normal_y = dx / distance
+    if normal_y > 0:
+        normal_x *= -1.0
+        normal_y *= -1.0
+    return QPointF(midpoint.x() + normal_x * 14.0, midpoint.y() + normal_y * 14.0)
 
 
 def _bbox_from_points(points: list[tuple[float, float]], padding: int = 0) -> tuple[int, int, int, int]:

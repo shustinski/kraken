@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 
-from polygon_widget.application import main
+from polygon_widget.application.cli import main
 
 
 if __name__ == "__main__":

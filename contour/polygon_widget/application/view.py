@@ -1,22 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QMainWindow
 
 from ..widget import PolygonExtractionWidget
+from .styles import resolve_style_path
 
 
 def _try_apply_app_icon(window: QMainWindow) -> None:
-    try:
-        from lib.runtime_paths import resolve_internal_path
-    except Exception:
-        return
-    icon_path = resolve_internal_path("icon.png")
-    if Path(icon_path).exists():
+    icon_path = resolve_style_path("icons", "icon.png")
+    if icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
 
 
@@ -26,6 +22,8 @@ class PolygonWidgetMainView(QMainWindow):
         self._presenter: Any | None = None
         self._widget = PolygonExtractionWidget(self)
         self.setCentralWidget(self._widget)
+        self._help_menu = self.menuBar().addMenu(self._widget.help_menu_title())
+        self._widget.attach_help_menu(self._help_menu)
         _try_apply_app_icon(self)
 
     @property
@@ -43,6 +41,7 @@ class PolygonWidgetMainView(QMainWindow):
 
     def set_ui_language(self, language: str) -> None:
         self._widget.set_ui_language(language)
+        self._help_menu.setTitle(self._widget.help_menu_title())
 
     def set_input_directory(self, path: str) -> None:
         self._widget.set_input_directory(path)
@@ -71,4 +70,3 @@ class PolygonWidgetMainView(QMainWindow):
 
 class PolygonWidgetStandaloneWindow(PolygonWidgetMainView):
     """Backward-compatible alias for the standalone main window."""
-

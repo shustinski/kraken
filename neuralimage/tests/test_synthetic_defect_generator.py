@@ -1,5 +1,6 @@
 import pytest
 import torch
+import numpy as np
 
 pytest.importorskip('PyQt6')
 
@@ -145,6 +146,61 @@ def test_synthetic_defect_dataset_generates_full_frames_then_cuts_into_patches()
     assert tuple(image_patch.shape) == (1, 256, 256)
     assert tuple(label_patch.shape) == (1, 256, 256)
     assert float(label_patch.sum().item()) > 0.0
+
+
+def test_synthetic_defect_dataset_skip_uniform_labels_filters_patches_before_batching(monkeypatch):
+    root = make_test_dir('synthetic_defect_dataset_skip_uniform_labels')
+    settings = TrainingParameters(
+        image_path=root / 'images',
+        label_path=root / 'labels',
+        shuffle=False,
+        validation=False,
+        validation_percent=0,
+        batch_size=2,
+        cut_mode=SampleCutMode.online,
+        colors=1,
+        epochs=1,
+        generation=SampleGenerationSettings(
+            step=2,
+            segment_size=(2, 2),
+            vertical_rotation=False,
+            horizontal_rotation=False,
+            channels=1,
+            shuffle_patches_in_frame=False,
+        ),
+        prepare=SamplePrepareSettings(),
+        skip_uniform_labels=True,
+        synthetic_defect_generator={
+            'enabled': True,
+            'image_size_xy': [4, 4],
+            'trace_count_range': [1, 1],
+            'segment_count_range': [1, 1],
+            'trace_half_width_range': [1, 1],
+            'defects': {'enabled': False},
+        },
+    )
+
+    def _fake_generate(self, *, size_hw, channels, seed):
+        image = np.arange(16, dtype=np.float32).reshape(1, 4, 4) / 15.0
+        label = np.zeros((1, 4, 4), dtype=np.float32)
+        label[:, 2:, 2:] = 1.0
+        label[:, 0:2, 2:] = 1.0
+        label[:, 2, 1] = 1.0
+        return image, label
+
+    monkeypatch.setattr(
+        'model.NeuralNetwork.dataset.SyntheticTopologyGenerator.generate',
+        _fake_generate,
+    )
+
+    dataset = SyntheticDefectDataset(1, settings, apply_train_only_transforms=False)
+
+    assert len(dataset) == 1
+    image_patch, label_patch = dataset[0]
+    assert tuple(image_patch.shape) == (1, 2, 2)
+    assert tuple(label_patch.shape) == (1, 2, 2)
+    assert float(label_patch.sum().item()) > 0.0
+    assert float((label_patch <= 0.5).sum().item()) > 0.0
 
 
 def test_synthetic_defect_dataset_keeps_label_unchanged_when_defects_are_enabled():

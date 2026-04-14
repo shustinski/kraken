@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: neuralimage
-Version: 5.9.1
+Version: 6.0.0
 Summary: Desktop and web tooling for neural IC image segmentation, training, and recognition.
 Requires-Python: >=3.13
 Requires-Dist: numpy>=1.26

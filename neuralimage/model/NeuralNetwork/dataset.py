@@ -502,6 +502,7 @@ class SyntheticDefectDataset(Dataset):
     ) -> None:
         self.colors = int(settings.colors)
         self._generation = settings.generation
+        self._skip_uniform_labels = bool(getattr(settings, 'skip_uniform_labels', False))
         self._config = build_synthetic_defect_generator_parameters(
             getattr(settings, 'synthetic_defect_generator', None)
         )
@@ -528,7 +529,7 @@ class SyntheticDefectDataset(Dataset):
             max(int(self._local_crop_size[1]), int(self._config.image_size_xy[1])),
         )
         self._frame_count = max(0, int(sample_count))
-        self._parts_per_frame = max(
+        self._static_parts_per_frame = max(
             0,
             int(
                 len(
@@ -539,9 +540,12 @@ class SyntheticDefectDataset(Dataset):
                 )
             ),
         )
-        self._sample_count = int(self._frame_count * self._parts_per_frame)
+        self._dynamic_frame_lengths = self._skip_uniform_labels
         self._epoch_index = 0
         self._frame_order = list(range(self._frame_count))
+        self._frame_lengths: list[int] = []
+        self._lookup_len_list: list[int] = []
+        self._samples_amount: int = 0
         self._current_frame_index: int | None = None
         self._current_frame_cutter: SampleFastCutter | None = None
         self._frame_cache: OrderedDict[tuple[int, int, bool], SampleFastCutter] = OrderedDict()
@@ -552,14 +556,19 @@ class SyntheticDefectDataset(Dataset):
             if self._apply_train_only_transforms and self._config.enabled and self._config.defects.enabled
             else None
         )
+        self._calculate_len()
 
     def __len__(self) -> int:
-        return self._sample_count
+        return self._samples_amount
 
     def set_epoch(self) -> None:
         self._epoch_index += 1
         if self.shuffle_frames:
             random.shuffle(self._frame_order)
+        if self._dynamic_frame_lengths:
+            self._refresh_frame_lengths()
+        elif self.shuffle_frames:
+            self._rebuild_lookup()
         self._current_frame_index = None
         self._current_frame_cutter = None
         self._frame_cache.clear()
@@ -569,7 +578,7 @@ class SyntheticDefectDataset(Dataset):
         return f'synthetic_frame_{int(frame):06d}__part_{int(part):06d}'
 
     def __getitem__(self, idx: int):
-        if idx < 0 or idx >= self._sample_count:
+        if idx < 0 or idx >= self._samples_amount:
             raise IndexError('dataset index out of range')
         frame, part = self._resolve_index(int(idx))
         if self._current_frame_index != frame:
@@ -594,11 +603,32 @@ class SyntheticDefectDataset(Dataset):
         }, label_tensor
 
     def _resolve_index(self, idx: int) -> tuple[int, int]:
-        if self._parts_per_frame <= 0:
+        if self._samples_amount <= 0 or not self._lookup_len_list:
             raise IndexError('synthetic dataset contains no patches')
-        frame = int(idx) // int(self._parts_per_frame)
-        part = int(idx) % int(self._parts_per_frame)
-        return frame, part
+        return index_in_list(int(idx), self._lookup_len_list)
+
+    def _calculate_len(self) -> None:
+        self._frame_lengths = [
+            self._calculate_frame_len(frame_index)
+            for frame_index in range(self._frame_count)
+        ]
+        self._rebuild_lookup()
+
+    def _refresh_frame_lengths(self) -> None:
+        self._frame_lengths = [
+            self._calculate_frame_len(frame_index)
+            for frame_index in range(self._frame_count)
+        ]
+        self._rebuild_lookup()
+
+    def _rebuild_lookup(self) -> None:
+        self._lookup_len_list = summarise_list(self._frame_lengths.copy())
+        self._samples_amount = sum(self._frame_lengths)
+
+    def _calculate_frame_len(self, frame_index: int) -> int:
+        if self._skip_uniform_labels:
+            return len(self._build_frame_cutter(frame_index, shuffle=False))
+        return int(self._static_parts_per_frame)
 
     def _resolve_frame_id(self, frame_index: int) -> int:
         if frame_index < 0 or frame_index >= len(self._frame_order):
@@ -631,6 +661,7 @@ class SyntheticDefectDataset(Dataset):
                 ),
                 self._generation,
                 shuffle=shuffle,
+                skip_uniform_labels=self._skip_uniform_labels,
             )
         finally:
             random.setstate(random_state)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import importlib
+import collections
 import os
 import re
 from collections.abc import Mapping
@@ -12,7 +12,9 @@ import torch
 import torch.nn as nn
 
 from lib.file_retry import retry_file_read
-from . import CNN_Models, blocks, transformer_segmentation
+import model
+
+from . import CNN_Models, blocks, dual_scale_models, transformer_segmentation
 from .registrator import create_model, get_registered_models
 
 
@@ -27,6 +29,11 @@ _DYNAMIC_SAFE_GLOBAL_PREFIXES = (
     'torch.nn.',
     'collections.',
 )
+_SAFE_GLOBAL_ROOTS: dict[str, Any] = {
+    'collections': collections,
+    'model': model,
+    'torch': torch,
+}
 
 
 def _iter_internal_module_classes(module: Any) -> list[type[Any]]:
@@ -58,6 +65,7 @@ def _resolve_safe_pickle_globals() -> list[Any]:
     candidates.extend(_iter_torch_nn_classes())
     candidates.extend(get_registered_models().values())
     candidates.extend(_iter_internal_module_classes(CNN_Models))
+    candidates.extend(_iter_internal_module_classes(dual_scale_models))
     candidates.extend(_iter_internal_module_classes(transformer_segmentation))
     candidates.extend(_iter_internal_module_classes(blocks))
 
@@ -87,20 +95,15 @@ def _resolve_global_symbol(path: str) -> Any | None:
     parts = [part for part in str(path).split('.') if part]
     if len(parts) < 2:
         return None
-    for split_index in range(len(parts) - 1, 0, -1):
-        module_name = '.'.join(parts[:split_index])
-        attr_chain = parts[split_index:]
-        try:
-            target: Any = importlib.import_module(module_name)
-        except Exception:
-            continue
-        try:
-            for attr in attr_chain:
-                target = getattr(target, attr)
-            return target
-        except Exception:
-            continue
-    return None
+    target = _SAFE_GLOBAL_ROOTS.get(parts[0])
+    if target is None:
+        return None
+    try:
+        for attr in parts[1:]:
+            target = getattr(target, attr)
+    except Exception:
+        return None
+    return target
 
 
 def _torch_load_with_safe_globals(

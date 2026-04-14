@@ -1,7 +1,6 @@
 import enum
 import inspect
-from importlib import import_module
-from typing import Dict, Type, TypedDict
+from typing import Callable, Dict, Type, TypedDict
 
 import torch.nn as nn
 
@@ -19,22 +18,42 @@ class ModelRegistryEntry(TypedDict):
 
 _MODEL_REGISTRY: Dict[str, ModelRegistryEntry] = {}
 _LOADED_MODEL_MODULES: set[str] = set()
-_MODEL_CATALOG: Dict[str, tuple[str, str, ModelType]] = {
-    'S 660k': ('model.NeuralNetwork.CNN_Models', 'SmallFCNN', ModelType.deprecated),
-    'M 720k': ('model.NeuralNetwork.CNN_Models', 'MediumFCNN', ModelType.deprecated),
-    'Unet 21.6M': ('model.NeuralNetwork.CNN_Models', 'Unet', ModelType.deprecated),
-    'Wellnet 86.5M': ('model.NeuralNetwork.CNN_Models', 'Wellnet', ModelType.deprecated),
-    'Wellnet2': ('model.NeuralNetwork.CNN_Models', 'Wellnet2', ModelType.deprecated),
-    'Wellnet2 mini': ('model.NeuralNetwork.CNN_Models', 'Wellnet2Mini', ModelType.deprecated),
-    'EfficientUNet': ('model.NeuralNetwork.CNN_Models', 'EfficientUNet', ModelType.stable),
-    'EfficientUNetMax': ('model.NeuralNetwork.CNN_Models', 'EfficientUNetMax', ModelType.experimental),
-    'UNET++': ('model.NeuralNetwork.CNN_Models', 'UnetPlusPlus', ModelType.experimental),
-    'Transformer': ('model.NeuralNetwork.CNN_Models', 'ImageBinarizationTransformer', ModelType.experimental),
-    'FrameUnet': ('model.NeuralNetwork.dual_scale_models', 'QuasiDualScaleUNet', ModelType.experimental),
-    'Swin UPerNet B': ('model.NeuralNetwork.transformer_segmentation', 'SwinUPerNetB', ModelType.experimental),
-    'Swin UPerNet L': ('model.NeuralNetwork.transformer_segmentation', 'SwinUPerNetL', ModelType.experimental),
-    'Mask2Former Swin B': ('model.NeuralNetwork.transformer_segmentation', 'Mask2FormerSwinB', ModelType.experimental),
-    'Mask2Former Swin L': ('model.NeuralNetwork.transformer_segmentation', 'Mask2FormerSwinL', ModelType.experimental),
+
+
+def _load_cnn_models() -> None:
+    from . import CNN_Models  # noqa: F401
+
+
+def _load_dual_scale_models() -> None:
+    from . import dual_scale_models  # noqa: F401
+
+
+def _load_transformer_segmentation_models() -> None:
+    from . import transformer_segmentation  # noqa: F401
+
+
+_MODEL_MODULE_LOADERS: Dict[str, Callable[[], None]] = {
+    'cnn_models': _load_cnn_models,
+    'dual_scale_models': _load_dual_scale_models,
+    'transformer_segmentation': _load_transformer_segmentation_models,
+}
+
+_MODEL_CATALOG: Dict[str, tuple[str, ModelType]] = {
+    'S 660k': ('cnn_models', ModelType.deprecated),
+    'M 720k': ('cnn_models', ModelType.deprecated),
+    'Unet 21.6M': ('cnn_models', ModelType.deprecated),
+    'Wellnet 86.5M': ('cnn_models', ModelType.deprecated),
+    'Wellnet2': ('cnn_models', ModelType.deprecated),
+    'Wellnet2 mini': ('cnn_models', ModelType.deprecated),
+    'EfficientUNet': ('cnn_models', ModelType.stable),
+    'EfficientUNetMax': ('cnn_models', ModelType.experimental),
+    'UNET++': ('cnn_models', ModelType.experimental),
+    'Transformer': ('cnn_models', ModelType.experimental),
+    'FrameUnet': ('dual_scale_models', ModelType.experimental),
+    'Swin UPerNet B': ('transformer_segmentation', ModelType.experimental),
+    'Swin UPerNet L': ('transformer_segmentation', ModelType.experimental),
+    'Mask2Former Swin B': ('transformer_segmentation', ModelType.experimental),
+    'Mask2Former Swin L': ('transformer_segmentation', ModelType.experimental),
 }
 
 
@@ -74,11 +93,11 @@ def _ensure_model_loaded(name: str) -> None:
     entry = _MODEL_CATALOG.get(str(name))
     if entry is None:
         return
-    module_name, _class_name, _model_type = entry
-    if module_name in _LOADED_MODEL_MODULES:
+    module_key, _model_type = entry
+    if module_key in _LOADED_MODEL_MODULES:
         return
-    import_module(module_name)
-    _LOADED_MODEL_MODULES.add(module_name)
+    _MODEL_MODULE_LOADERS[module_key]()
+    _LOADED_MODEL_MODULES.add(module_key)
 
 
 def _ensure_all_models_loaded() -> None:
@@ -109,7 +128,7 @@ def get_registered_model_registry() -> Dict[str, ModelRegistryEntry]:
 
 def get_registered_model_names_by_type() -> dict[ModelType, list[str]]:
     grouped: dict[ModelType, list[str]] = {model_type: [] for model_type in ModelType}
-    for model_name, (_module_name, _class_name, model_type) in _MODEL_CATALOG.items():
+    for model_name, (_module_name, model_type) in _MODEL_CATALOG.items():
         grouped[model_type].append(model_name)
     return grouped
 

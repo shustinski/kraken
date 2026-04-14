@@ -5,7 +5,7 @@ import json
 
 from PyQt6.QtCore import QSettings
 
-from ..ui.ui_constants import SETTINGS_BUILD_KEY, SETTINGS_DETAILS_VIEW_KEY, SETTINGS_ERROR_VIEW_KEY, SETTINGS_FOLDERS_KEY, SETTINGS_LANGUAGE_KEY
+from ..ui.ui_constants import SETTINGS_BUILD_KEY, SETTINGS_DETAILS_VIEW_KEY, SETTINGS_FOLDERS_KEY, SETTINGS_LANGUAGE_KEY
 
 
 class ValidationGradientLiteSettingsService:
@@ -25,12 +25,6 @@ class ValidationGradientLiteSettingsService:
 
     def save_build_settings_payload(self, payload: dict) -> None:
         self._save_payload(SETTINGS_BUILD_KEY, payload)
-
-    def load_error_view_payload(self) -> dict:
-        return self._load_payload(SETTINGS_ERROR_VIEW_KEY)
-
-    def save_error_view_payload(self, payload: dict) -> None:
-        self._save_payload(SETTINGS_ERROR_VIEW_KEY, payload)
 
     def load_details_view_payload(self) -> dict:
         return self._load_payload(SETTINGS_DETAILS_VIEW_KEY)

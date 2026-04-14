@@ -1,6 +1,7 @@
 """Standalone Qt entrypoint for the lite widget."""
 from __future__ import annotations
 
+import multiprocessing as mp
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ else:
 
 
 def main() -> int:
+    mp.freeze_support()
     app = QApplication(sys.argv)
     window = ValidationGradientLiteMainWindow()
     window.show()

@@ -34,16 +34,15 @@ from PyQt6.QtWidgets import (
 from ..infra.services import ValidationGradientLiteSettingsService
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
 from ..ui.i18n import Translator, set_current_language
-from ..ui.matrix_view import GradientPresetSelectorWidget, GradientRangeSelectorWidget, MatrixListWidget, MatrixMiniMapWidget
+from ..ui.matrix_view import MatrixListWidget, MatrixMiniMapWidget
 from ..ui.ui_constants import (
     BOUNDARY_RADIUS_RANGE,
-    CONFIDENCE_UNCERTAINTY_DELTA_RANGE,
+    CONFIDENCE_UNCERTAINTY_PROFILE_OPTIONS,
     CONTROL_PANEL_SPLITTER_SIZES,
     DEFAULT_BOUNDARY_RADIUS,
     DEFAULT_CELL_SIZE,
-    DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA,
+    DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE,
     DEFAULT_ANALYSIS_MODE,
-    DEFAULT_ERROR_WINDOW,
     DEFAULT_EXPORT_NEIGHBOR_RADIUS,
     DEFAULT_EXPORT_PERCENT,
     DEFAULT_EXPORT_PERCENTILE,
@@ -51,7 +50,6 @@ from ..ui.ui_constants import (
     DEFAULT_FILTER_TO_EXPORT_CANDIDATES,
     DEFAULT_FRAMES_PER_ROW,
     DEFAULT_GEOMETRY_MODE,
-    DEFAULT_GRADIENT_NAME,
     DEFAULT_MASK_THRESHOLD,
     DEFAULT_POINT_CONFIDENCE_RADIUS,
     DEFAULT_POINT_EXTRACTION_MODE,
@@ -59,6 +57,7 @@ from ..ui.ui_constants import (
     DEFAULT_POLYGON_CONFIDENCE_SUMMARY,
     DEFAULT_MATRIX_COLUMNS,
     DEFAULT_MATRIX_LAYOUT_MODE,
+    DEFAULT_MATRIX_SCORE_VIEW_MODE,
     DEFAULT_MATRIX_METRIC_KEY,
     DEFAULT_METRIC_SCOPE,
     DEFAULT_MATRIX_ROWS,
@@ -83,8 +82,13 @@ from ..ui.ui_constants import (
     METRIC_SETTINGS_WIDGET_MIN_WIDTH,
     MATRIX_METRIC_GROUP_OPTIONS,
     MATRIX_METRIC_OPTIONS,
+    MATRIX_SCORE_VIEW_OPTIONS,
     MATRIX_ROWS_RANGE,
     OVERVIEW_PANEL_MAX_WIDTH,
+    PERCENTILE_BAND_BOUNDS,
+    PERCENTILE_BAND_COLORS,
+    PERCENTILE_BAND_LABELS,
+    PERCENTILE_BAND_TITLES,
     POINT_CONFIDENCE_RADIUS_RANGE,
     POINT_MATCH_RADIUS_RANGE,
     POLYGON_CONFIDENCE_SUMMARY_OPTIONS,
@@ -159,14 +163,15 @@ class _PercentileHistogramWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._counts = [0, 0, 0, 0, 0]
+        self._counts = [0] * len(PERCENTILE_BAND_BOUNDS)
         self._total = 0
         self._active_bin: int | None = None
         self.setMinimumHeight(120)
 
     def set_payload(self, counts: list[int], total: int, *, active_bin: int | None = None) -> None:
-        self._counts = [int(value) for value in counts[:5]] + [0] * max(0, 5 - len(counts))
-        self._counts = self._counts[:5]
+        expected = len(PERCENTILE_BAND_BOUNDS)
+        self._counts = [int(value) for value in counts[:expected]] + [0] * max(0, expected - len(counts))
+        self._counts = self._counts[:expected]
         self._total = int(total)
         self._active_bin = None if active_bin is None else int(active_bin)
         self.update()
@@ -178,8 +183,9 @@ class _PercentileHistogramWidget(QWidget):
         if rect.width() <= 0 or rect.height() <= 0:
             return []
         max_count = max(1, max(self._counts, default=1))
-        bar_width = max(12.0, rect.width() / max(5.0, len(self._counts) * 1.35))
-        gap = max(6.0, (rect.width() - bar_width * len(self._counts)) / max(1.0, len(self._counts) - 1.0))
+        band_count = max(1, len(self._counts))
+        bar_width = max(12.0, rect.width() / max(4.0, band_count * 1.25))
+        gap = max(6.0, (rect.width() - bar_width * band_count) / max(1.0, band_count - 1.0))
         rects: list[QRectF] = []
         for index, count in enumerate(self._counts):
             height_ratio = float(count) / float(max_count)
@@ -198,15 +204,10 @@ class _PercentileHistogramWidget(QWidget):
             painter.end()
             return
         painter.fillRect(rect, QColor('#11161d'))
-        labels = ('0-20', '20-40', '40-60', '60-80', '80-100')
+        labels = PERCENTILE_BAND_LABELS
         for index, bar_rect in enumerate(self._bar_rects(rect)):
             count = self._counts[index]
-            if index <= 1:
-                color = QColor('#1f5f3b')
-            elif index == 2:
-                color = QColor('#8a6a12')
-            else:
-                color = QColor('#8c2f39')
+            color = QColor(PERCENTILE_BAND_COLORS[index])
             painter.fillRect(bar_rect, color)
             if self._active_bin == index:
                 painter.setPen(QPen(QColor('#f5f8fc'), 2.0))
@@ -256,7 +257,7 @@ class _PercentileHistogramCard(QWidget):
         self.setVisible(visible)
         self.title_label.setText(title)
         self.chart.set_payload(counts, total, active_bin=active_bin)
-        labels = ('P0-20', 'P20-40', 'P40-60', 'P60-80', 'P80-100')
+        labels = PERCENTILE_BAND_TITLES
         translator = Translator()
         summary = ' | '.join(f'{label}: {int(count)}' for label, count in zip(labels, counts))
         if active_bin is not None and 0 <= int(active_bin) < len(labels):
@@ -287,8 +288,8 @@ class _CorrelationColumnWidget(QFrame):
         self.summary_label.setWordWrap(True)
         self.summary_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.summary_label.setStyleSheet('color: #c9d3df; background: transparent; border: none;')
+        self.summary_label.setVisible(False)
         layout.addWidget(self.header_button)
-        layout.addWidget(self.summary_label)
         layout.addStretch(1)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         self._refresh_style(False)
@@ -319,15 +320,7 @@ class _CorrelationColumnWidget(QFrame):
 
     def set_payload(self, frame_count: int, mean_hits: float, max_hits: int, *, active: bool) -> None:
         self._refresh_style(active)
-        translator = Translator()
-        if frame_count <= 0:
-            self.summary_label.setText(translator.tr("hist.no_repeated"))
-            return
-        self.summary_label.setText(
-            f'{translator.tr("hist.frames_in_band")}: {int(frame_count)}\n'
-            f'{translator.tr("hist.mean_hits")}: {float(mean_hits):.2f}\n'
-            f'{translator.tr("hist.max_hits")}: {int(max_hits)}'
-        )
+        self.summary_label.clear()
 
 
 
@@ -544,6 +537,8 @@ class ValidationGradientExtendWidget(QWidget):
 
         self.layout_mode_combo = QComboBox(self)
         self._populate_layout_mode_combo(DEFAULT_MATRIX_LAYOUT_MODE)
+        self.matrix_score_view_combo = QComboBox(self)
+        self._populate_matrix_score_view_combo(DEFAULT_MATRIX_SCORE_VIEW_MODE)
 
         self.total_frames_spin = QSpinBox(self)
         self.total_frames_spin.setRange(*TOTAL_FRAMES_RANGE)
@@ -569,11 +564,8 @@ class ValidationGradientExtendWidget(QWidget):
         self.boundary_radius_spin = QSpinBox(self)
         self.boundary_radius_spin.setRange(*BOUNDARY_RADIUS_RANGE)
         self.boundary_radius_spin.setValue(DEFAULT_BOUNDARY_RADIUS)
-        self.confidence_uncertainty_delta_spin = QDoubleSpinBox(self)
-        self.confidence_uncertainty_delta_spin.setRange(*CONFIDENCE_UNCERTAINTY_DELTA_RANGE)
-        self.confidence_uncertainty_delta_spin.setSingleStep(0.01)
-        self.confidence_uncertainty_delta_spin.setDecimals(2)
-        self.confidence_uncertainty_delta_spin.setValue(DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA)
+        self.confidence_uncertainty_profile_combo = QComboBox(self)
+        self._populate_confidence_uncertainty_profile_combo(DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
         self.polygon_confidence_summary_combo = QComboBox(self)
         self._populate_polygon_confidence_summary_combo(DEFAULT_POLYGON_CONFIDENCE_SUMMARY)
         self.point_match_radius_spin = QDoubleSpinBox(self)
@@ -598,12 +590,6 @@ class ValidationGradientExtendWidget(QWidget):
         self.frame_type_filter_combo = QComboBox(self)
         self._populate_frame_type_filter_combo('all')
 
-        self.gradient_selector = GradientPresetSelectorWidget(self)
-        self.gradient_range_selector = GradientRangeSelectorWidget(self)
-        self.gradient_selector.set_selected_gradient(DEFAULT_GRADIENT_NAME, emit_signal=False)
-        self.gradient_range_selector.set_gradient_name(DEFAULT_GRADIENT_NAME)
-        self.gradient_range_selector.set_error_window(*DEFAULT_ERROR_WINDOW)
-
         self.language_toggle_button = QToolButton(self._menu_bar)
         self.language_toggle_button.setAutoRaise(True)
         self.language_toggle_button.setObjectName(EXTEND_LANGUAGE_BUTTON_OBJECT_NAME)
@@ -616,8 +602,6 @@ class ValidationGradientExtendWidget(QWidget):
         self._add_menu_widget(matrix_menu, self._build_matrix_settings_widget())
         metric_menu = self._menu_bar.addMenu(self._t("menu.metric"))
         self._add_menu_widget(metric_menu, self._build_metric_settings_widget())
-        view_menu = self._menu_bar.addMenu(self._t("menu.error_view"))
-        self._add_menu_widget(view_menu, self._build_error_view_settings_widget())
         self._menu_bar.setCornerWidget(self.language_toggle_button, Qt.Corner.TopRightCorner)
 
     def _populate_layout_mode_combo(self, selected_mode: str | None) -> None:
@@ -629,6 +613,16 @@ class ValidationGradientExtendWidget(QWidget):
         index = self.layout_mode_combo.findData(current)
         self.layout_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self.layout_mode_combo.blockSignals(False)
+
+    def _populate_matrix_score_view_combo(self, selected_mode: str | None) -> None:
+        current = str(selected_mode or DEFAULT_MATRIX_SCORE_VIEW_MODE)
+        self.matrix_score_view_combo.blockSignals(True)
+        self.matrix_score_view_combo.clear()
+        for label_key, key in MATRIX_SCORE_VIEW_OPTIONS:
+            self.matrix_score_view_combo.addItem(self._t(label_key), key)
+        index = self.matrix_score_view_combo.findData(current)
+        self.matrix_score_view_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.matrix_score_view_combo.blockSignals(False)
 
     def _populate_analysis_mode_combo(self, selected_mode: str | None) -> None:
         current = str(selected_mode or DEFAULT_ANALYSIS_MODE)
@@ -665,6 +659,16 @@ class ValidationGradientExtendWidget(QWidget):
         index = self.polygon_confidence_summary_combo.findData(current)
         self.polygon_confidence_summary_combo.setCurrentIndex(index if index >= 0 else 0)
         self.polygon_confidence_summary_combo.blockSignals(False)
+
+    def _populate_confidence_uncertainty_profile_combo(self, selected_value: str | None) -> None:
+        current = str(selected_value or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
+        self.confidence_uncertainty_profile_combo.blockSignals(True)
+        self.confidence_uncertainty_profile_combo.clear()
+        for label_key, key in CONFIDENCE_UNCERTAINTY_PROFILE_OPTIONS:
+            self.confidence_uncertainty_profile_combo.addItem(self._t(label_key), key)
+        index = self.confidence_uncertainty_profile_combo.findData(current)
+        self.confidence_uncertainty_profile_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.confidence_uncertainty_profile_combo.blockSignals(False)
 
     def _populate_metric_scope_combo(self, build_result: BuildResult | None, selected_scope: str | None) -> None:
         current = str(selected_scope or "")
@@ -748,12 +752,13 @@ class ValidationGradientExtendWidget(QWidget):
         self._matrix_geometry_row = self._build_setting_row(self._t("analysis.object_type"), self.geometry_mode_combo)
         self._matrix_threshold_row = self._build_setting_row(self._t('matrix.threshold'), self.mask_threshold_spin)
         self._matrix_boundary_row = self._build_setting_row(self._t('matrix.boundary_radius'), self.boundary_radius_spin)
-        self._matrix_confidence_delta_row = self._build_setting_row(self._t('matrix.confidence_delta'), self.confidence_uncertainty_delta_spin)
+        self._matrix_confidence_delta_row = self._build_setting_row(self._t('matrix.confidence_delta'), self.confidence_uncertainty_profile_combo)
         self._matrix_polygon_confidence_summary_row = self._build_setting_row(self._t('matrix.polygon_confidence_summary'), self.polygon_confidence_summary_combo)
         self._matrix_point_radius_row = self._build_setting_row(self._t('matrix.point_match_radius'), self.point_match_radius_spin)
         self._matrix_point_confidence_radius_row = self._build_setting_row(self._t('matrix.point_confidence_radius'), self.point_confidence_radius_spin)
         self._matrix_point_mode_row = self._build_setting_row(self._t('matrix.point_extraction_mode'), self.point_extraction_mode_combo)
         self._matrix_layout_row = self._build_setting_row(self._t("matrix.layout"), self.layout_mode_combo)
+        self._matrix_score_view_row = self._build_setting_row(self._t("matrix.score_view"), self.matrix_score_view_combo)
         self._matrix_frame_type_filter_row = self._build_setting_row(self._t('matrix.frame_type_filter'), self.frame_type_filter_combo)
         self._matrix_total_frames_row = self._build_setting_row(self._t("matrix.total_frames"), self.total_frames_spin)
         self._matrix_frames_per_row_row = self._build_setting_row(self._t("matrix.frames_per_row"), self.frames_per_row_spin)
@@ -771,6 +776,7 @@ class ValidationGradientExtendWidget(QWidget):
             self._matrix_point_confidence_radius_row,
             self._matrix_point_mode_row,
             self._matrix_layout_row,
+            self._matrix_score_view_row,
             self._matrix_frame_type_filter_row,
             self._matrix_total_frames_row,
             self._matrix_frames_per_row_row,
@@ -812,16 +818,6 @@ class ValidationGradientExtendWidget(QWidget):
         layout.addStretch(1)
         return widget
 
-    def _build_error_view_settings_widget(self) -> QWidget:
-        widget = QWidget(self)
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(6)
-        layout.addWidget(self.gradient_selector)
-        layout.addWidget(self.gradient_range_selector)
-        layout.addStretch(1)
-        return widget
-
     def _update_language_toggle_button(self) -> None:
         current_language = str(self._i18n.language or "en").lower()
         next_language = "RU" if current_language == "en" else "EN"
@@ -832,6 +828,8 @@ class ValidationGradientExtendWidget(QWidget):
         self._t = self._i18n.tr
         self._setup_menu_bar()
         self._update_language_toggle_button()
+        self._populate_matrix_score_view_combo(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE)
+        self._populate_confidence_uncertainty_profile_combo(self.confidence_uncertainty_profile_combo.currentData() or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
         self.folders_group.setTitle(self._t("folders.group"))
         self.folders_info_label.setText(self._t("folders.info"))
         self.btn_add_folder.setToolTip(self._t("folders.add_model"))
@@ -1053,12 +1051,13 @@ class ValidationGradientExtendWidget(QWidget):
         # self.filter_to_candidates_checkbox.toggled.connect(self._presenter._on_export_selection_changed)
 
         self.layout_mode_combo.currentIndexChanged.connect(self._presenter._on_matrix_visual_parameter_changed)
+        self.matrix_score_view_combo.currentIndexChanged.connect(self._presenter._on_matrix_score_view_changed)
         self.thumbnail_size_spin.valueChanged.connect(self._presenter._on_matrix_visual_parameter_changed)
         self.analysis_mode_combo.currentIndexChanged.connect(self._presenter._on_analysis_mode_changed)
         self.geometry_mode_combo.currentIndexChanged.connect(self._presenter._on_object_type_changed)
         self.mask_threshold_spin.valueChanged.connect(self._presenter._sync_action_buttons)
         self.boundary_radius_spin.valueChanged.connect(self._presenter._sync_action_buttons)
-        self.confidence_uncertainty_delta_spin.valueChanged.connect(self._presenter._sync_action_buttons)
+        self.confidence_uncertainty_profile_combo.currentIndexChanged.connect(self._presenter._sync_action_buttons)
         self.polygon_confidence_summary_combo.currentIndexChanged.connect(self._presenter._sync_action_buttons)
         self.point_match_radius_spin.valueChanged.connect(self._presenter._sync_action_buttons)
         self.point_confidence_radius_spin.valueChanged.connect(self._presenter._sync_action_buttons)
@@ -1071,9 +1070,6 @@ class ValidationGradientExtendWidget(QWidget):
         self.metric_combo.currentIndexChanged.connect(self._presenter._on_metric_changed)
         self.frame_type_filter_combo.currentIndexChanged.connect(self._presenter._on_frame_type_filter_changed)
         self.language_toggle_button.clicked.connect(self._toggle_language)
-        self.gradient_selector.gradientChanged.connect(self._presenter._on_gradient_preset_changed)
-        self.gradient_range_selector.rangeChanged.connect(self._presenter._on_error_window_changed)
-
         self.matrix_tabs.currentChanged.connect(self._presenter._on_current_tab_changed)
         self.matrix_tabs.tabCloseRequested.connect(self._presenter._close_matrix_tab)
 
@@ -1113,8 +1109,7 @@ class ValidationGradientExtendWidget(QWidget):
             content_tabs=content_tabs,
             cell_size=int(snapshot["cell_size"]),
             layout_config=snapshot["layout_config"],
-            gradient_name=str(snapshot["gradient_name"]),
-            error_window=tuple(snapshot["error_window"]),
+            matrix_score_view_mode=str(snapshot.get("matrix_score_view_mode") or DEFAULT_MATRIX_SCORE_VIEW_MODE),
             metric_key=str(snapshot.get("metric_key") or DEFAULT_MATRIX_METRIC_KEY),
             metric_scope=str(snapshot.get("metric_scope") or ""),
             analysis_mode=str(snapshot.get("analysis_mode") or DEFAULT_ANALYSIS_MODE),

@@ -366,6 +366,7 @@ class PolygonConfidenceMetrics:
     """Store internal polygon confidence derived from one grayscale mask."""
 
     frame_uncertainty_score: float
+    mean_uncertainty: float
     uncertain_support_fraction: float
     top_uncertainty_mean: float
     largest_uncertain_region_fraction: float
@@ -379,6 +380,9 @@ class PolygonConfidenceMetrics:
     object_area_fraction: float
     polygon_count: int
     summary_metric: str
+    low_conf_fraction: float = 0.0
+    worst_tail_uncertainty: float = 0.0
+    largest_low_conf_component: float = 0.0
     objects: tuple[PolygonObjectConfidence, ...] = ()
     debug_data: PolygonConfidenceDebugData | None = None
 
@@ -402,6 +406,7 @@ class PointConfidenceMetrics:
     """Store internal point confidence derived from one grayscale mask."""
 
     frame_uncertainty_score: float
+    mean_uncertainty: float
     uncertain_support_fraction: float
     top_uncertainty_mean: float
     largest_uncertain_region_fraction: float
@@ -411,6 +416,9 @@ class PointConfidenceMetrics:
     mean_point_probability: float
     mean_point_contrast: float
     point_count: int
+    low_conf_fraction: float = 0.0
+    worst_tail_uncertainty: float = 0.0
+    largest_low_conf_component: float = 0.0
     objects: tuple[PointObjectConfidence, ...] = ()
 
 

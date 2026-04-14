@@ -21,6 +21,7 @@ from ..core.analysis_modes import (
     default_metric_key,
     display_metric_keys,
     geometry_mode_for_object_type,
+    metric_level_key,
     metric_visual_ratio,
     object_type_from_geometry_mode,
     percentile_basis_keys,
@@ -34,7 +35,6 @@ from ..core.repository import (
     _parse_model_metric_key,
     compute_metric_percentiles,
     metric_higher_is_better,
-    metric_percentile_high_is_bad,
     metric_value_for_record,
 )
 from ..core.workers import AnalyticsWorker, FrameIndexWorker
@@ -45,12 +45,13 @@ from ..ui.ui_components import FolderRowWidget
 from ..ui.ui_constants import (
     DEFAULT_CELL_SIZE,
     DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA,
-    DEFAULT_ERROR_WINDOW,
+    DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE,
     DEFAULT_FRAMES_PER_ROW,
     DEFAULT_GEOMETRY_MODE,
     DEFAULT_GRADIENT_NAME,
     DEFAULT_MATRIX_COLUMNS,
     DEFAULT_MATRIX_LAYOUT_MODE,
+    DEFAULT_MATRIX_SCORE_VIEW_MODE,
     DEFAULT_MATRIX_METRIC_KEY,
     DEFAULT_METRIC_SCOPE,
     DEFAULT_MATRIX_ROWS,
@@ -63,6 +64,8 @@ from ..ui.ui_constants import (
     FOLDER_ROW_MIN_HEIGHT,
     MATRIX_METRIC_GROUP_OPTIONS,
     MATRIX_METRIC_OPTIONS,
+    PERCENTILE_BAND_BOUNDS,
+    CONFIDENCE_UNCERTAINTY_PROFILE_VALUES,
 )
 from .state import ExtendMatrixTabState
 
@@ -188,6 +191,30 @@ class ValidationGradientExtendPresenter(QObject):
             model_id = re.sub(r"[^a-zA-Z0-9_]+", "_", label.strip().lower()).strip("_") or f"model_{row + 1}"
             specs.append(ModelSpec(model_id=model_id, display_name=label, mask_folder=folder_path, threshold=threshold))
         return tuple(specs)
+
+    def _selected_confidence_uncertainty_profile(self) -> str:
+        return str(self.confidence_uncertainty_profile_combo.currentData() or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
+
+    def _confidence_uncertainty_delta_for_profile(self, profile_key: str | None) -> float:
+        profile = str(profile_key or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
+        value = CONFIDENCE_UNCERTAINTY_PROFILE_VALUES.get(profile, DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA)
+        return float(value)
+
+    def _selected_confidence_uncertainty_delta(self) -> float:
+        return self._confidence_uncertainty_delta_for_profile(self._selected_confidence_uncertainty_profile())
+
+    def _confidence_uncertainty_profile_for_value(self, value: float | None) -> str:
+        if value is None or not isfinite(float(value)):
+            return DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE
+        numeric = float(value)
+        best_key = DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE
+        best_distance = float("inf")
+        for key, candidate in CONFIDENCE_UNCERTAINTY_PROFILE_VALUES.items():
+            distance = abs(float(candidate) - numeric)
+            if distance < best_distance:
+                best_key = str(key)
+                best_distance = float(distance)
+        return best_key
 
     def _append_folder_item(self, folder_path: Path, *, checked: bool) -> QListWidgetItem:
         folder_path = Path(folder_path)
@@ -366,15 +393,16 @@ class ValidationGradientExtendPresenter(QObject):
     #     QMessageBox.information(self._view, "Validation Gradient Excend", f"Exported {summary['selected_count']} primary and {summary['supplemental_count']} supplemental frames.\nManifest: {summary['manifest_path']}")
 
     def _percentile_bin_bounds(self, bin_index: int) -> tuple[float, float]:
-        normalized = max(0, min(int(bin_index), 4))
-        return float(normalized * 20), float((normalized + 1) * 20)
+        normalized = max(0, min(int(bin_index), len(PERCENTILE_BAND_BOUNDS) - 1))
+        low_bound, high_bound = PERCENTILE_BAND_BOUNDS[normalized]
+        return float(low_bound), float(high_bound)
 
     def _records_in_percentile_bin(self, records: tuple[FrameRecord, ...] | list[FrameRecord], percentile_map: dict[str, float], bin_index: int) -> tuple[FrameRecord, ...]:
         low_bound, high_bound = self._percentile_bin_bounds(bin_index)
         selected: list[FrameRecord] = []
         for record in records:
             percentile = float(percentile_map.get(record.key, 0.0))
-            if bin_index >= 4:
+            if bin_index >= len(PERCENTILE_BAND_BOUNDS) - 1:
                 matches = low_bound <= percentile <= high_bound
             else:
                 matches = low_bound <= percentile < high_bound
@@ -417,14 +445,14 @@ class ValidationGradientExtendPresenter(QObject):
         return {
             "cell_size": int(DEFAULT_CELL_SIZE),
             "layout_config": self._build_layout_config(),
-            "gradient_name": self.gradient_selector.selected_gradient(),
-            "error_window": self.gradient_range_selector.error_window(),
+            "matrix_score_view_mode": str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE),
             "analysis_mode": self._selected_analysis_mode(),
             "object_type": self._selected_object_type(),
             "geometry_mode": str(self.geometry_mode_combo.currentData() or DEFAULT_GEOMETRY_MODE),
             "mask_threshold": float(self.mask_threshold_spin.value()),
             "boundary_radius": int(self.boundary_radius_spin.value()),
-            "confidence_uncertainty_delta": float(self.confidence_uncertainty_delta_spin.value()),
+            "confidence_uncertainty_profile": self._selected_confidence_uncertainty_profile(),
+            "confidence_uncertainty_delta": self._selected_confidence_uncertainty_delta(),
             "point_match_radius": float(self.point_match_radius_spin.value()),
             "point_confidence_radius": int(self.point_confidence_radius_spin.value()),
             "point_extraction_mode": str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
@@ -447,13 +475,18 @@ class ValidationGradientExtendPresenter(QObject):
         self.geometry_mode_combo.setCurrentIndex(geometry_index if geometry_index >= 0 else 0)
         del geometry_blocker
 
+        score_view_blocker = QSignalBlocker(self.matrix_score_view_combo)
+        score_view_index = self.matrix_score_view_combo.findData(str(state.matrix_score_view_mode or DEFAULT_MATRIX_SCORE_VIEW_MODE))
+        self.matrix_score_view_combo.setCurrentIndex(score_view_index if score_view_index >= 0 else 0)
+        del score_view_blocker
+
     def _analysis_options_from_controls(self, state: ExtendMatrixTabState, *, object_type: str) -> BuildOptions:
         return replace(
             state.build_result.options,
             geometry_mode=geometry_mode_for_object_type(object_type),
             mask_threshold=float(self.mask_threshold_spin.value()),
             boundary_radius=int(self.boundary_radius_spin.value()),
-            confidence_uncertainty_delta=float(self.confidence_uncertainty_delta_spin.value()),
+            confidence_uncertainty_delta=self._selected_confidence_uncertainty_delta(),
             point_match_radius=float(self.point_match_radius_spin.value()),
             point_confidence_radius=int(self.point_confidence_radius_spin.value()),
             point_extraction_mode=str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
@@ -671,10 +704,15 @@ class ValidationGradientExtendPresenter(QObject):
         try:
             self._sync_state_record_coordinates(state)
             display_records = self._display_records_for_state(state)
-            state.matrix_view.set_gradient_preset(state.gradient_name)
-            state.matrix_view.set_error_window(*state.error_window)
+            state.matrix_view.set_gradient_preset(DEFAULT_GRADIENT_NAME)
             state.matrix_view.set_cell_size(int(state.cell_size))
             state.matrix_view.set_layout_config(state.layout_config)
+            state.matrix_view.set_score_view_mode(str(state.matrix_score_view_mode or DEFAULT_MATRIX_SCORE_VIEW_MODE))
+            state.matrix_view.set_metric_context(
+                state.metric_key,
+                point_match_radius=float(getattr(state.build_result.options, "point_match_radius", 3.0)),
+                bce_score_cap=float(BCE_SCORE_CAP),
+            )
             state.matrix_view.set_reference_key(state.build_result.best_match_key)
             sort_mode = "input_order" if str(state.layout_config.mode or "indexed_grid") == "manual_grid" else "name"
             state.matrix_view.set_records(list(display_records), sort_mode=sort_mode, reset_view=reset_view)
@@ -719,10 +757,30 @@ class ValidationGradientExtendPresenter(QObject):
             point_match_radius=float(self.point_match_radius_spin.value()),
             bce_score_cap=float(BCE_SCORE_CAP),
         )
+        level_key = metric_level_key(
+            metric_key,
+            value,
+            point_match_radius=float(self.point_match_radius_spin.value()),
+            bce_score_cap=float(BCE_SCORE_CAP),
+        )
         higher_is_better = self._metric_higher_is_better(metric_key)
-        if ratio is None:
+        family = str(metric_key or "").split("::", 1)[0]
+        if ratio is None or level_key is None:
             background = "#2f3844"
             foreground = "#edf3fb"
+        elif family == "model_confidence":
+            if level_key == "score.level.low":
+                background = "#1f5f3b"
+                foreground = "#e9fff1"
+            elif level_key == "score.level.moderate":
+                background = "#6f7a18"
+                foreground = "#f7ffd8"
+            elif level_key == "score.level.elevated":
+                background = "#a75d12"
+                foreground = "#fff0dc"
+            else:
+                background = "#8c2f39"
+                foreground = "#ffe9ec"
         elif higher_is_better:
             if ratio < 0.33:
                 background = "#8c2f39"
@@ -748,29 +806,15 @@ class ValidationGradientExtendPresenter(QObject):
     def _metric_score_text(self, value: float | None, metric_key: str) -> str:
         if value is None:
             return "-"
-        ratio = metric_visual_ratio(
+        level_key = metric_level_key(
             metric_key,
             value,
             point_match_radius=float(self.point_match_radius_spin.value()),
             bce_score_cap=float(BCE_SCORE_CAP),
         )
-        if ratio is None:
+        if level_key is None:
             return "-"
-        higher_is_better = self._metric_higher_is_better(metric_key)
-        if higher_is_better:
-            if ratio < 0.33:
-                level = self._t("score.level.poor")
-            elif ratio < 0.66:
-                level = self._t("score.level.fair")
-            else:
-                level = self._t("score.level.good")
-        else:
-            if ratio < 0.33:
-                level = self._t("score.level.low")
-            elif ratio < 0.66:
-                level = self._t("score.level.medium")
-            else:
-                level = self._t("score.level.high")
+        level = self._t(level_key)
         if "::" in str(metric_key):
             return f"{level} {float(value) * 100.0:.1f}%"
         if str(metric_key) in {"overall_polygon_score", "iou_score", "dice_score", "polygon_bce_score", "overall_point_score", "precision_score", "recall_score", "f1_score", "localization_score"}:
@@ -895,6 +939,10 @@ class ValidationGradientExtendPresenter(QObject):
             'model': 'Model',
             'labeled_best_quality': 'Best labeled quality',
             'frame_uncertainty_score': 'Frame uncertainty score',
+            'mean_uncertainty': 'Mean uncertainty',
+            'low_conf_fraction': 'Low-confidence fraction',
+            'worst_tail_uncertainty': 'Worst-tail uncertainty',
+            'largest_low_conf_component': 'Largest low-confidence component',
             'uncertain_support_fraction': 'Uncertain support fraction',
             'top_uncertainty_mean': 'Top uncertainty mean',
             'largest_uncertain_region_fraction': 'Largest uncertain region fraction',
@@ -1046,14 +1094,22 @@ class ValidationGradientExtendPresenter(QObject):
     def _percentile_style(self, percentile: float | None, metric_key: str | None = None) -> str:
         if percentile is None:
             return self._metric_score_style(None, "overall_polygon_score")
-        metric = str(metric_key or (self._current_tab_state().metric_key if self._current_tab_state() is not None else "overall_polygon_score"))
-        clipped = max(0.0, min(float(percentile), 100.0)) / 100.0
-        high_is_bad = metric_percentile_high_is_bad(metric)
-        if high_is_bad:
-            ratio = 1.0 - clipped
+        clipped = max(0.0, min(float(percentile), 100.0))
+        # Percentiles shown in the UI are always goodness percentiles:
+        # low percentile means a worse frame, high percentile means a better one.
+        if clipped < 15.0:
+            background = "#8c2f39"
+            foreground = "#ffe9ec"
+        elif clipped < 35.0:
+            background = "#a75d12"
+            foreground = "#fff0dc"
+        elif clipped < 60.0:
+            background = "#6f7a18"
+            foreground = "#f7ffd8"
         else:
-            ratio = clipped
-        return self._metric_score_style(float(ratio), "model_model_score")
+            background = "#1f5f3b"
+            foreground = "#e9fff1"
+        return f"padding: 6px 10px; border-radius: 8px; background-color: {background}; color: {foreground}; font-weight: 700;"
 
     def _percentile_text(self, percentile: float | None) -> str:
         if percentile is None:
@@ -1073,12 +1129,15 @@ class ValidationGradientExtendPresenter(QObject):
 
     def _percentile_histogram_counts(self, state: ExtendMatrixTabState, metric_key: str) -> list[int]:
         percentiles = self._percentile_map_for_metric(state, metric_key)
-        counts = [0, 0, 0, 0, 0]
+        counts = [0] * len(PERCENTILE_BAND_BOUNDS)
         for value in percentiles.values():
             clipped = max(0.0, min(float(value), 100.0))
-            index = min(4, int(clipped // 20.0))
-            if clipped >= 100.0:
-                index = 4
+            index = len(PERCENTILE_BAND_BOUNDS) - 1
+            for candidate_index, (low_bound, high_bound) in enumerate(PERCENTILE_BAND_BOUNDS):
+                is_last = candidate_index >= len(PERCENTILE_BAND_BOUNDS) - 1
+                if (low_bound <= clipped <= high_bound) if is_last else (low_bound <= clipped < high_bound):
+                    index = candidate_index
+                    break
             counts[index] += 1
         return counts
 
@@ -1091,14 +1150,13 @@ class ValidationGradientExtendPresenter(QObject):
         metrics_by_record: dict[str, list[tuple[str, float]]] = {record.key: [] for record in state.build_result.records}
         for metric_key in available_keys:
             percentile_map = self._percentile_map_for_metric(state, metric_key)
-            high_is_bad = metric_percentile_high_is_bad(metric_key)
             for record in state.build_result.records:
                 percentile = percentile_map.get(record.key)
                 if percentile is None:
                     continue
-                if band == 'bad' and ((float(percentile) >= 80.0) if high_is_bad else (float(percentile) <= 20.0)):
+                if band == 'bad' and float(percentile) < 15.0:
                     metrics_by_record[record.key].append((self._metric_label(metric_key, state.build_result), float(percentile)))
-                elif band == 'good' and ((float(percentile) <= 20.0) if high_is_bad else (float(percentile) >= 80.0)):
+                elif band == 'good' and float(percentile) >= 60.0:
                     metrics_by_record[record.key].append((self._metric_label(metric_key, state.build_result), float(percentile)))
         entries: list[tuple[FrameRecord, int, float, list[str]]] = []
         records_by_key = {record.key: record for record in state.build_result.records}
@@ -1110,9 +1168,9 @@ class ValidationGradientExtendPresenter(QObject):
             record = records_by_key[key]
             entries.append((record, len(values), average_percentile, metric_labels))
         if band == 'bad':
-            entries.sort(key=lambda item: (-item[1], -item[2] if any(metric_percentile_high_is_bad(metric_key) for metric_key in available_keys) else item[2], item[0].display_name.lower()))
+            entries.sort(key=lambda item: (-item[1], item[2], item[0].display_name.lower()))
         else:
-            entries.sort(key=lambda item: (-item[1], item[2] if any(metric_percentile_high_is_bad(metric_key) for metric_key in available_keys) else -item[2], item[0].display_name.lower()))
+            entries.sort(key=lambda item: (-item[1], -item[2], item[0].display_name.lower()))
         state.repeated_percentile_cache[cache_key] = tuple(entries)
         return entries
 
@@ -1282,6 +1340,10 @@ class ValidationGradientExtendPresenter(QObject):
                         f"model: {model_name}",
                         f"frame_uncertainty_score: {self._format_component_value(getattr(confidence_row, 'frame_uncertainty_score', None))}",
                         f"summary_metric: {self._format_component_value(getattr(confidence_row, 'summary_metric', None))}",
+                        f"mean_uncertainty: {self._format_component_value(getattr(confidence_row, 'mean_uncertainty', None))}",
+                        f"low_conf_fraction: {self._format_component_value(getattr(confidence_row, 'low_conf_fraction', None))}",
+                        f"worst_tail_uncertainty: {self._format_component_value(getattr(confidence_row, 'worst_tail_uncertainty', None))}",
+                        f"largest_low_conf_component: {self._format_component_value(getattr(confidence_row, 'largest_low_conf_component', None))}",
                         f"mean_object_confidence: {self._format_component_value(getattr(confidence_row, 'mean_object_confidence', None))}",
                         f"uncertain_support_fraction: {self._format_component_value(getattr(confidence_row, 'uncertain_support_fraction', None))}",
                         f"top_uncertainty_mean: {self._format_component_value(getattr(confidence_row, 'top_uncertainty_mean', None))}",
@@ -1297,6 +1359,10 @@ class ValidationGradientExtendPresenter(QObject):
                 return [
                     f"model: {model_name}",
                     f"frame_uncertainty_score: {self._format_component_value(getattr(confidence_row, 'frame_uncertainty_score', None))}",
+                    f"mean_uncertainty: {self._format_component_value(getattr(confidence_row, 'mean_uncertainty', None))}",
+                    f"low_conf_fraction: {self._format_component_value(getattr(confidence_row, 'low_conf_fraction', None))}",
+                    f"worst_tail_uncertainty: {self._format_component_value(getattr(confidence_row, 'worst_tail_uncertainty', None))}",
+                    f"largest_low_conf_component: {self._format_component_value(getattr(confidence_row, 'largest_low_conf_component', None))}",
                     f"mean_point_confidence: {self._format_component_value(getattr(confidence_row, 'mean_point_confidence', None))}",
                     f"uncertain_support_fraction: {self._format_component_value(getattr(confidence_row, 'uncertain_support_fraction', None))}",
                     f"top_uncertainty_mean: {self._format_component_value(getattr(confidence_row, 'top_uncertainty_mean', None))}",
@@ -1493,6 +1559,7 @@ class ValidationGradientExtendPresenter(QObject):
         if not model_specs:
             QMessageBox.warning(self._view, self._t("dialog.warning_title"), self._t("errors.active_model_required"))
             return
+        self._close_all_details_dialogs()
         geometry_mode = geometry_mode_for_object_type(self._selected_object_type())
         options = BuildOptions(
             thumbnail_size=int(DEFAULT_CELL_SIZE),
@@ -1500,7 +1567,7 @@ class ValidationGradientExtendPresenter(QObject):
             geometry_mode=geometry_mode,
             mask_threshold=float(self.mask_threshold_spin.value()),
             boundary_radius=int(self.boundary_radius_spin.value()),
-            confidence_uncertainty_delta=float(self.confidence_uncertainty_delta_spin.value()),
+            confidence_uncertainty_delta=self._selected_confidence_uncertainty_delta(),
             point_match_radius=float(self.point_match_radius_spin.value()),
             point_confidence_radius=int(self.point_confidence_radius_spin.value()),
             point_extraction_mode=str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
@@ -1750,25 +1817,17 @@ class ValidationGradientExtendPresenter(QObject):
         state.frame_type_filter = str(self.frame_type_filter_combo.currentData() or 'all')
         self._apply_tab_visual_settings(state, reset_view=False)
 
+    def _on_matrix_score_view_changed(self, *_args) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        state.matrix_score_view_mode = str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE)
+        self._apply_tab_visual_settings(state, reset_view=False)
+
     def _on_matrix_visual_parameter_changed(self, *_args) -> None:
         state = self._current_tab_state()
         self._sync_mode_controls(state, None if state is None else state.build_result)
         self._sync_action_buttons()
-
-    def _on_gradient_preset_changed(self, gradient_name: str) -> None:
-        state = self._current_tab_state()
-        if state is None:
-            return
-        state.gradient_name = str(gradient_name)
-        self.gradient_range_selector.set_gradient_name(state.gradient_name)
-        self._apply_tab_visual_settings(state, reset_view=False)
-
-    def _on_error_window_changed(self, low_bound: float, high_bound: float) -> None:
-        state = self._current_tab_state()
-        if state is None:
-            return
-        state.error_window = (float(low_bound), float(high_bound))
-        self._apply_tab_visual_settings(state, reset_view=False)
 
     def _on_current_tab_changed(self, _index: int) -> None:
         state = self._current_tab_state()
@@ -1776,9 +1835,6 @@ class ValidationGradientExtendPresenter(QObject):
             self._sync_action_buttons()
             return
         self._set_ui_context_from_state(state)
-        self.gradient_selector.set_selected_gradient(state.gradient_name, emit_signal=False)
-        self.gradient_range_selector.set_gradient_name(state.gradient_name)
-        self.gradient_range_selector.set_error_window(*state.error_window)
         scope_blocker = QSignalBlocker(self.metric_scope_combo)
         self._populate_metric_scope_combo(state.build_result, state.confidence_model_id or state.metric_scope)
         scope_index = self.metric_scope_combo.findData(str(state.confidence_model_id or state.metric_scope or ""))
@@ -1826,6 +1882,14 @@ class ValidationGradientExtendPresenter(QObject):
 
     def _forget_details_dialog(self, dialog: ExtendFrameDetailsDialog) -> None:
         self._details_dialogs = [opened for opened in self._details_dialogs if opened is not dialog]
+
+    def _close_all_details_dialogs(self) -> None:
+        for dialog in list(self._details_dialogs):
+            try:
+                dialog.close()
+            except Exception:
+                pass
+        self._details_dialogs.clear()
 
     def _open_record_details(self, record: FrameRecord, state: ExtendMatrixTabState) -> None:
         dialog = ExtendFrameDetailsDialog(
@@ -1912,7 +1976,6 @@ class ValidationGradientExtendPresenter(QObject):
     def _restore_persisted_state(self) -> None:
         self._restore_folder_manager_state()
         self._restore_build_settings()
-        self._restore_error_view_settings()
         self._update_source_labels()
 
     def _restore_folder_manager_state(self) -> None:
@@ -1944,12 +2007,14 @@ class ValidationGradientExtendPresenter(QObject):
     def _build_build_settings_payload(self) -> dict:
         return {
             "thumbnail_size": int(DEFAULT_CELL_SIZE),
+            "matrix_score_view_mode": str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE),
             "analysis_mode": self._selected_analysis_mode(),
             "object_type": self._selected_object_type(),
             "geometry_mode": str(self.geometry_mode_combo.currentData() or DEFAULT_GEOMETRY_MODE),
             "mask_threshold": float(self.mask_threshold_spin.value()),
             "boundary_radius": int(self.boundary_radius_spin.value()),
-            "confidence_uncertainty_delta": float(self.confidence_uncertainty_delta_spin.value()),
+            "confidence_uncertainty_profile": self._selected_confidence_uncertainty_profile(),
+            "confidence_uncertainty_delta": self._selected_confidence_uncertainty_delta(),
             "point_match_radius": float(self.point_match_radius_spin.value()),
             "point_confidence_radius": int(self.point_confidence_radius_spin.value()),
             "point_extraction_mode": str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
@@ -1969,11 +2034,12 @@ class ValidationGradientExtendPresenter(QObject):
         payload = self._settings_service.load_build_settings_payload() or {}
         blockers = [
             QSignalBlocker(self.thumbnail_size_spin),
+            QSignalBlocker(self.matrix_score_view_combo),
             QSignalBlocker(self.analysis_mode_combo),
             QSignalBlocker(self.geometry_mode_combo),
             QSignalBlocker(self.mask_threshold_spin),
             QSignalBlocker(self.boundary_radius_spin),
-            QSignalBlocker(self.confidence_uncertainty_delta_spin),
+            QSignalBlocker(self.confidence_uncertainty_profile_combo),
             QSignalBlocker(self.point_match_radius_spin),
             QSignalBlocker(self.point_confidence_radius_spin),
             QSignalBlocker(self.point_extraction_mode_combo),
@@ -1990,6 +2056,9 @@ class ValidationGradientExtendPresenter(QObject):
         ]
         _ = blockers
         self.thumbnail_size_spin.setValue(int(DEFAULT_CELL_SIZE))
+        score_view_mode = str(payload.get("matrix_score_view_mode") or DEFAULT_MATRIX_SCORE_VIEW_MODE)
+        score_view_index = self.matrix_score_view_combo.findData(score_view_mode)
+        self.matrix_score_view_combo.setCurrentIndex(score_view_index if score_view_index >= 0 else 0)
         analysis_mode = str(payload.get("analysis_mode") or self._selected_analysis_mode())
         analysis_index = self.analysis_mode_combo.findData(analysis_mode)
         self.analysis_mode_combo.setCurrentIndex(analysis_index if analysis_index >= 0 else 0)
@@ -1998,7 +2067,11 @@ class ValidationGradientExtendPresenter(QObject):
         self.geometry_mode_combo.setCurrentIndex(geometry_index if geometry_index >= 0 else 0)
         self.mask_threshold_spin.setValue(float(payload.get("mask_threshold", self.mask_threshold_spin.value())))
         self.boundary_radius_spin.setValue(int(payload.get("boundary_radius", self.boundary_radius_spin.value())))
-        self.confidence_uncertainty_delta_spin.setValue(float(payload.get("confidence_uncertainty_delta", DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA)))
+        uncertainty_profile = str(payload.get("confidence_uncertainty_profile") or "")
+        if not uncertainty_profile:
+            uncertainty_profile = self._confidence_uncertainty_profile_for_value(payload.get("confidence_uncertainty_delta"))
+        uncertainty_index = self.confidence_uncertainty_profile_combo.findData(uncertainty_profile)
+        self.confidence_uncertainty_profile_combo.setCurrentIndex(uncertainty_index if uncertainty_index >= 0 else 0)
         self.point_match_radius_spin.setValue(float(payload.get("point_match_radius", self.point_match_radius_spin.value())))
         self.point_confidence_radius_spin.setValue(int(payload.get("point_confidence_radius", DEFAULT_POINT_CONFIDENCE_RADIUS)))
         point_extraction_mode = str(payload.get("point_extraction_mode") or DEFAULT_POINT_EXTRACTION_MODE)
@@ -2021,26 +2094,9 @@ class ValidationGradientExtendPresenter(QObject):
         index = self.frame_type_filter_combo.findData(frame_type_filter)
         self.frame_type_filter_combo.setCurrentIndex(index if index >= 0 else 0)
 
-    def _build_error_view_payload(self) -> dict:
-        return {
-            "gradient_name": self.gradient_selector.selected_gradient(),
-            "error_window": [float(value) for value in self.gradient_range_selector.error_window()],
-        }
-
-    def _restore_error_view_settings(self) -> None:
-        payload = self._settings_service.load_error_view_payload()
-        if not payload:
-            return
-        self.gradient_selector.set_selected_gradient(str(payload.get("gradient_name") or DEFAULT_GRADIENT_NAME), emit_signal=False)
-        self.gradient_range_selector.set_gradient_name(self.gradient_selector.selected_gradient())
-        error_window = payload.get("error_window") or list(DEFAULT_ERROR_WINDOW)
-        if isinstance(error_window, (list, tuple)) and len(error_window) == 2:
-            self.gradient_range_selector.set_error_window(float(error_window[0]), float(error_window[1]))
-
     def _persist_state(self) -> None:
         self._settings_service.save_folder_manager_payload(self._build_folder_manager_payload())
         self._settings_service.save_build_settings_payload(self._build_build_settings_payload())
-        self._settings_service.save_error_view_payload(self._build_error_view_payload())
         self._settings_service.sync()
 
     def shutdown(self) -> None:
@@ -2057,18 +2113,17 @@ class ValidationGradientExtendPresenter(QObject):
             if thread.isRunning():
                 thread.wait(30000)
         self._cleanup_worker()
-        for dialog in list(self._details_dialogs):
-            try:
-                dialog.close()
-            except Exception:
-                pass
-        self._details_dialogs.clear()
+        self._close_all_details_dialogs()
         self._persist_state()
 
 
-    # Legacy lite compatibility methods.
-    def _start_compute_mismatches(self) -> None:
+    # Preferred analytics entrypoint.
+    def _start_compute_metrics(self) -> None:
         self._start_compute_analytics()
+
+    # Legacy lite compatibility alias.
+    def _start_compute_mismatches(self) -> None:
+        self._start_compute_metrics()
 
     def _set_base_folder(self) -> None:
         self._set_original_folder()

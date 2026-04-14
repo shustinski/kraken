@@ -131,5 +131,8 @@ class DetailConfidenceWorker(WorkerBase):
         self.finished.emit(payload)
 
 
+# Preferred alias for the analytics worker used by the widget.
+MetricsWorker = AnalyticsWorker
+
 # Backward-compatible alias for legacy lite imports.
 MismatchWorker = AnalyticsWorker

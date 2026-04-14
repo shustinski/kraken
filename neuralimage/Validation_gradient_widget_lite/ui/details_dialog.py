@@ -26,12 +26,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..core.analysis_modes import metric_visual_ratio
+from ..core.analysis_modes import metric_level_key, metric_visual_ratio
 from ..core.backend_constants import BCE_SCORE_CAP, MODEL_CONFIDENCE_UNCERTAIN_DELTA, POINT_SUPPORT_THRESHOLD, POLYGON_SUPPORT_THRESHOLD
 from ..core.domain import BuildResult, ComparisonMode, FrameRecord
 from ..core.repository import (
     _boundary_mask,
     _confidence_map_from_probability,
+    _confidence_display_map_from_probability,
     _frame_uncertainty_components_from_probability,
     metric_higher_is_better,
     _paint_disk,
@@ -39,9 +40,8 @@ from ..core.repository import (
     _support_weights_from_probability,
     _uncertainty_map_from_probability,
     compute_comparison,
-    load_frame_detail_base,
 )
-from ..core.workers import DetailConfidenceWorker
+from ..core.workers import DetailConfidenceWorker, DetailPayloadWorker
 from ..ui.i18n import Translator
 
 
@@ -119,15 +119,22 @@ class ExtendFrameDetailsDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
+        self.setModal(False)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._record = record
         self._build_result = build_result
         self._translator = Translator()
         self._t = self._translator.tr
         self._payload: dict[str, object] = {}
         self._overlay_cache: dict[tuple[object, ...], QPixmap] = {}
+        self._derived_cache: dict[tuple[object, ...], object] = {}
         self._comparison_score: float | None = None
         self._preferred_metric_key = str(preferred_metric_key or build_result.selected_metric_key or "overall_frame_score")
         self._pending_initial_fit = True
+        self._detail_thread: QThread | None = None
+        self._detail_worker: DetailPayloadWorker | None = None
         self._confidence_thread: QThread | None = None
         self._confidence_worker: DetailConfidenceWorker | None = None
         self._loading_confidence_model_id: str | None = None
@@ -314,6 +321,7 @@ class ExtendFrameDetailsDialog(QDialog):
             self._schedule_reset_view()
 
     def closeEvent(self, event) -> None:
+        self._stop_detail_worker()
         self._stop_confidence_worker()
         super().closeEvent(event)
 
@@ -833,6 +841,7 @@ class ExtendFrameDetailsDialog(QDialog):
         return self._auto_model_model_tuple()
 
     def _start_loading_payload(self, *, reset_view: bool, preserve_selection: bool) -> None:
+        self._stop_detail_worker()
         self._stop_confidence_worker()
         self._payload_loading = True
         previous_result_kind = self._selected_result_kind() if preserve_selection else None
@@ -842,22 +851,31 @@ class ExtendFrameDetailsDialog(QDialog):
         self.comparison_score_value_label.setText("Loading...")
         self.comparison_score_value_label.setStyleSheet(self._comparison_score_style(None))
         self.comparison_label.setText("Loading frame details...")
-        try:
-            payload = load_frame_detail_base(
-                self._record,
-                self._build_result,
-                model_id=default_model_id,
-                max_side=max_side,
+        self._refresh_scene(reset_view=reset_view)
+        self._refresh_info()
+        self._detail_thread = QThread(self)
+        self._detail_worker = DetailPayloadWorker(self._record, self._build_result, default_model_id, max_side)
+        self._detail_worker.moveToThread(self._detail_thread)
+        self._detail_thread.started.connect(self._detail_worker.run)
+        self._detail_worker.finished.connect(
+            lambda payload, rv=reset_view, ps=preserve_selection, prk=previous_result_kind: self._on_payload_loaded(
+                payload,
+                reset_view=rv,
+                preserve_selection=ps,
+                previous_result_kind=prk,
             )
-        except Exception as error:
-            self._on_detail_worker_failed(str(error))
-            return
-        self._on_payload_loaded(payload, reset_view=reset_view, preserve_selection=preserve_selection, previous_result_kind=previous_result_kind)
+        )
+        self._detail_worker.failed.connect(self._on_detail_worker_failed)
+        self._detail_worker.finished.connect(self._detail_thread.quit)
+        self._detail_worker.failed.connect(self._detail_thread.quit)
+        self._detail_thread.finished.connect(self._cleanup_detail_worker)
+        self._detail_thread.start()
 
     def _on_payload_loaded(self, payload: dict[str, object], *, reset_view: bool, preserve_selection: bool, previous_result_kind: str | None) -> None:
         self._payload_loading = False
         self._payload = payload
         self._overlay_cache.clear()
+        self._derived_cache.clear()
         self._set_confidence_loading_state(False)
         preferred_kind = previous_result_kind if preserve_selection else self._restored_result_kind
         self._refresh_result_kind_options(preferred_kind)
@@ -868,6 +886,29 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _load_current_payload(self, *, reset_view: bool, preserve_selection: bool) -> None:
         self._start_loading_payload(reset_view=reset_view, preserve_selection=preserve_selection)
+
+    def _cleanup_detail_worker(self) -> None:
+        if self._detail_worker is not None:
+            self._detail_worker.deleteLater()
+        if self._detail_thread is not None:
+            self._detail_thread.deleteLater()
+        self._detail_worker = None
+        self._detail_thread = None
+
+    def _stop_detail_worker(self) -> None:
+        worker = self._detail_worker
+        if worker is not None:
+            request_cancel = getattr(worker, "request_cancel", None)
+            if callable(request_cancel):
+                request_cancel()
+        thread = self._detail_thread
+        if thread is not None:
+            try:
+                thread.quit()
+            except Exception:
+                pass
+            if thread.isRunning():
+                thread.wait(30000)
 
     def _cleanup_confidence_worker(self) -> None:
         if self._confidence_worker is not None:
@@ -945,6 +986,7 @@ class ExtendFrameDetailsDialog(QDialog):
             return
         (self._payload.setdefault("model_confidence", {}))[model_id] = confidence_row
         self._overlay_cache.clear()
+        self._derived_cache.clear()
         self._set_confidence_loading_state(False)
         self._refresh_scene(reset_view=False)
         self._refresh_info()
@@ -1081,6 +1123,43 @@ class ExtendFrameDetailsDialog(QDialog):
                 return float(spec.threshold)
         return 0.5
 
+    def _polygon_confidence_render_data(self, model_id: str | None) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        cache_key = ("polygon_confidence_render", model_id)
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, tuple) and len(cached) == 3:
+            return cached
+        if model_id is None:
+            return None
+        model_probabilities = self._payload.get("model_probabilities") or {}
+        model_probability = model_probabilities.get(model_id)
+        if model_probability is None:
+            return None
+        probability = np.clip(np.asarray(model_probability, dtype=np.float32), 0.0, 1.0)
+        if probability.ndim != 2 or probability.size == 0:
+            return None
+        source_mask = self._source_mask(f"model:{model_id}")
+        if source_mask is None:
+            source_mask = np.asarray(probability >= self._model_threshold(model_id), dtype=bool)
+        strong_mask = np.asarray(source_mask, dtype=bool)
+        if strong_mask.shape != probability.shape:
+            strong_mask = np.zeros_like(probability, dtype=bool)
+        support_weights = _support_weights_from_probability(probability, POLYGON_SUPPORT_THRESHOLD)
+        support_mask = np.asarray(support_weights > 0.0, dtype=bool)
+        if not np.any(support_mask):
+            support_mask = strong_mask
+        display_confidence = _confidence_display_map_from_probability(
+            probability,
+            support_mask=support_mask,
+            support_threshold=POLYGON_SUPPORT_THRESHOLD,
+        )
+        result = (
+            np.asarray(display_confidence, dtype=np.float32),
+            np.asarray(support_weights, dtype=np.float32),
+            np.asarray(support_mask, dtype=bool),
+        )
+        self._derived_cache[cache_key] = result
+        return result
+
     def _confidence_heatmap(self, model_id: str | None, *, uncertainty: bool) -> np.ndarray:
         if model_id is None:
             return np.zeros_like(self._base_array(), dtype=np.float32)
@@ -1104,8 +1183,12 @@ class ExtendFrameDetailsDialog(QDialog):
                 value = float(1.0 - point_conf) if uncertainty else point_conf
                 _paint_disk(result, x, y, max(1.0, float(getattr(point, 'radius', 0.0))) + 1.0, value)
             return np.clip(result, 0.0, 1.0).astype(np.float32)
-        confidence_map = _uncertainty_map_from_probability(prob) if uncertainty else _confidence_map_from_probability(prob)
-        return np.clip(confidence_map, 0.0, 1.0).astype(np.float32)
+        render_data = self._polygon_confidence_render_data(model_id)
+        if render_data is None:
+            return np.zeros_like(prob, dtype=np.float32)
+        display_confidence, _support_weights, _support_mask = render_data
+        display_confidence = np.asarray(display_confidence, dtype=np.float32)
+        return np.clip(1.0 - display_confidence if uncertainty else display_confidence, 0.0, 1.0).astype(np.float32, copy=False)
 
     def _confidence_color(self, value: float) -> tuple[int, int, int]:
         score = float(max(0.0, min(1.0, value)))
@@ -1174,24 +1257,13 @@ class ExtendFrameDetailsDialog(QDialog):
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
-        if model_id is None:
+        render_data = self._polygon_confidence_render_data(model_id)
+        if render_data is None:
             return QPixmap()
-        model_probabilities = self._payload.get('model_probabilities') or {}
-        model_masks = self._payload.get('model_masks') or {}
-        model_probability = model_probabilities.get(model_id)
-        model_mask = model_masks.get(model_id)
-        if model_mask is None or model_probability is None:
-            return QPixmap()
-        probability = np.clip(np.asarray(model_probability, dtype=np.float32), 0.0, 1.0)
-        strong_mask = np.asarray(model_mask, dtype=bool)
-        if probability.ndim != 2 or strong_mask.ndim != 2 or probability.shape != strong_mask.shape:
-            return QPixmap()
-        confidence_map = _confidence_map_from_probability(probability)
-        support_weights = _support_weights_from_probability(probability, POLYGON_SUPPORT_THRESHOLD)
-        support_mask = support_weights > 0.0
+        confidence_map, support_weights, support_mask = render_data
         if not np.any(support_mask):
             return QPixmap()
-        height, width = probability.shape
+        height, width = confidence_map.shape
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
         red, green, blue = self._confidence_color_arrays(confidence_map)
         final_alpha = np.clip(np.round(235.0 * support_weights), 0.0, 255.0).astype(np.uint8)
@@ -1278,25 +1350,16 @@ class ExtendFrameDetailsDialog(QDialog):
             return cached
         if model_id is None:
             return QPixmap()
-        model_probabilities = self._payload.get('model_probabilities') or {}
-        model_probability = model_probabilities.get(model_id)
-        if model_probability is None:
+        if self._is_point_geometry():
+            confidence_pixmap = self._point_object_confidence_overlay_pixmap(model_id)
+            if not confidence_pixmap.isNull():
+                self._overlay_cache[cache_key] = confidence_pixmap
+                return confidence_pixmap
+        render_data = self._polygon_confidence_render_data(model_id)
+        if render_data is None:
             return QPixmap()
-        probability = np.clip(np.asarray(model_probability, dtype=np.float32), 0.0, 1.0)
-        if probability.ndim != 2 or probability.size == 0:
-            return QPixmap()
-        source_mask = self._source_mask(f"model:{model_id}")
-        if source_mask is None:
-            source_mask = np.asarray(probability >= self._model_threshold(model_id), dtype=bool)
-        strong_mask = np.asarray(source_mask, dtype=bool)
-        if strong_mask.shape != probability.shape:
-            strong_mask = np.zeros_like(probability, dtype=bool)
-        confidence_map = _confidence_map_from_probability(probability)
-        support_weights = _support_weights_from_probability(probability, POLYGON_SUPPORT_THRESHOLD)
-        support_mask = support_weights > 0.0
-        if not np.any(support_mask):
-            support_mask = strong_mask
-        height, width = probability.shape
+        confidence_map, support_weights, support_mask = render_data
+        height, width = confidence_map.shape
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
         red, green, blue = self._confidence_color_arrays(confidence_map)
         final_alpha = np.clip(np.round(235.0 * support_weights), 0.0, 255.0).astype(np.uint8)
@@ -1342,6 +1405,10 @@ class ExtendFrameDetailsDialog(QDialog):
                 if hasattr(confidence_row, 'mean_object_confidence'):
                     lines = [
                         f"frame_uncertainty_score: {float(getattr(confidence_row, 'frame_uncertainty_score', 0.0)):.4f}",
+                        f"mean_uncertainty: {float(getattr(confidence_row, 'mean_uncertainty', 0.0)):.4f}",
+                        f"low_conf_fraction: {float(getattr(confidence_row, 'low_conf_fraction', 0.0)):.4f}",
+                        f"worst_tail_uncertainty: {float(getattr(confidence_row, 'worst_tail_uncertainty', 0.0)):.4f}",
+                        f"largest_low_conf_component: {float(getattr(confidence_row, 'largest_low_conf_component', 0.0)):.4f}",
                         f"mean_frame_confidence: {float(getattr(confidence_row, 'mean_object_confidence', 0.0)):.4f}",
                         f"mean_frame_probability: {float(getattr(confidence_row, 'mean_object_probability', 0.0)):.4f}",
                         f"uncertain_fraction: {float(getattr(confidence_row, 'uncertain_fraction', 0.0)):.4f}",
@@ -1357,6 +1424,10 @@ class ExtendFrameDetailsDialog(QDialog):
                     )
                 lines = [
                     f"frame_uncertainty_score: {float(getattr(confidence_row, 'frame_uncertainty_score', 0.0)):.4f}",
+                    f"mean_uncertainty: {float(getattr(confidence_row, 'mean_uncertainty', 0.0)):.4f}",
+                    f"low_conf_fraction: {float(getattr(confidence_row, 'low_conf_fraction', 0.0)):.4f}",
+                    f"worst_tail_uncertainty: {float(getattr(confidence_row, 'worst_tail_uncertainty', 0.0)):.4f}",
+                    f"largest_low_conf_component: {float(getattr(confidence_row, 'largest_low_conf_component', 0.0)):.4f}",
                     f"mean_point_confidence: {float(getattr(confidence_row, 'mean_point_confidence', 0.0)):.4f}",
                     f"mean_center_confidence: {float(getattr(confidence_row, 'mean_center_confidence', 0.0)):.4f}",
                     f"mean_local_confidence: {float(getattr(confidence_row, 'mean_local_confidence', 0.0)):.4f}",
@@ -1377,6 +1448,10 @@ class ExtendFrameDetailsDialog(QDialog):
                 if self._is_point_geometry():
                     lines = [
                         f"frame_uncertainty_score: {quick['frame_uncertainty_score']:.4f}",
+                        f"mean_uncertainty: {quick['mean_uncertainty']:.4f}",
+                        f"low_conf_fraction: {quick['low_conf_fraction']:.4f}",
+                        f"worst_tail_uncertainty: {quick['worst_tail_uncertainty']:.4f}",
+                        f"largest_low_conf_component: {quick['largest_low_conf_component']:.4f}",
                         f"mean_point_confidence: {quick['mean_confidence']:.4f}",
                         f"mean_point_probability: {quick['mean_probability']:.4f}",
                         f"uncertain_fraction: {quick['uncertain_fraction']:.4f}",
@@ -1388,6 +1463,10 @@ class ExtendFrameDetailsDialog(QDialog):
                     return self._t("details.point_internal_confidence"), float(quick['frame_uncertainty_score']), lines
                 lines = [
                     f"frame_uncertainty_score: {quick['frame_uncertainty_score']:.4f}",
+                    f"mean_uncertainty: {quick['mean_uncertainty']:.4f}",
+                    f"low_conf_fraction: {quick['low_conf_fraction']:.4f}",
+                    f"worst_tail_uncertainty: {quick['worst_tail_uncertainty']:.4f}",
+                    f"largest_low_conf_component: {quick['largest_low_conf_component']:.4f}",
                     f"mean_frame_confidence: {quick['mean_confidence']:.4f}",
                     f"mean_frame_probability: {quick['mean_probability']:.4f}",
                     f"uncertain_fraction: {quick['uncertain_fraction']:.4f}",
@@ -1514,28 +1593,50 @@ class ExtendFrameDetailsDialog(QDialog):
         return str(self.layer_view_combo.currentData() or "binary")
 
     def _base_array(self) -> np.ndarray:
+        cache_key = ("base_array", str(self._payload.get("selected_model_id") or ""))
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
         original = self._payload.get("original_gray")
         if original is not None:
             base_array = np.asarray(original, dtype=np.uint8)
             if base_array.size > 0:
+                self._derived_cache[cache_key] = base_array
                 return base_array
         selected_prob = np.asarray(self._payload.get("selected_prob"), dtype=np.float32)
         if selected_prob.ndim == 2 and selected_prob.size > 0:
-            return np.clip(np.rint(selected_prob * 255.0), 0, 255).astype(np.uint8)
-        return np.zeros((1, 1), dtype=np.uint8)
+            base_array = np.clip(np.rint(selected_prob * 255.0), 0, 255).astype(np.uint8)
+            self._derived_cache[cache_key] = base_array
+            return base_array
+        fallback = np.zeros((1, 1), dtype=np.uint8)
+        self._derived_cache[cache_key] = fallback
+        return fallback
 
     def _source_mask(self, source_key: str | None) -> np.ndarray | None:
+        cache_key = ("source_mask", source_key, bool(self._is_point_geometry()))
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
         if self._is_point_geometry():
             point_map = self._source_point_map(source_key)
-            return np.asarray(point_map > 0.1, dtype=bool) if point_map is not None else None
+            mask = np.asarray(point_map > 0.1, dtype=bool) if point_map is not None else None
+            if mask is not None:
+                self._derived_cache[cache_key] = mask
+            return mask
         if source_key == "gt":
             gt_mask = self._payload.get("gt_mask")
-            return np.asarray(gt_mask, dtype=bool) if gt_mask is not None else None
+            mask = np.asarray(gt_mask, dtype=bool) if gt_mask is not None else None
+            if mask is not None:
+                self._derived_cache[cache_key] = mask
+            return mask
         if isinstance(source_key, str) and source_key.startswith("model:"):
             model_id = source_key.split(":", 1)[1]
             masks = self._payload.get("model_masks") or {}
             model_mask = masks.get(model_id)
-            return np.asarray(model_mask, dtype=bool) if model_mask is not None else None
+            mask = np.asarray(model_mask, dtype=bool) if model_mask is not None else None
+            if mask is not None:
+                self._derived_cache[cache_key] = mask
+            return mask
         return None
 
     def _source_float_map(self, source_key: str | None) -> np.ndarray | None:
@@ -1602,14 +1703,24 @@ class ExtendFrameDetailsDialog(QDialog):
         return str(self._payload.get("geometry_mode") or "mask") == "point"
 
     def _source_point_map(self, source_key: str | None) -> np.ndarray | None:
+        cache_key = ("source_point_map", source_key)
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
         if source_key == "gt":
             gt_view = self._payload.get("gt_point_view")
-            return _point_map_from_view(gt_view) if gt_view is not None else None
+            point_map = _point_map_from_view(gt_view) if gt_view is not None else None
+            if point_map is not None:
+                self._derived_cache[cache_key] = point_map
+            return point_map
         if isinstance(source_key, str) and source_key.startswith("model:"):
             model_id = source_key.split(":", 1)[1]
             model_views = self._payload.get("model_views") or {}
             view = model_views.get(model_id)
-            return _point_map_from_view(view) if view is not None else None
+            point_map = _point_map_from_view(view) if view is not None else None
+            if point_map is not None:
+                self._derived_cache[cache_key] = point_map
+            return point_map
         return None
 
     def _source_point_view(self, source_key: str | None):
@@ -1647,6 +1758,18 @@ class ExtendFrameDetailsDialog(QDialog):
         return pairs, matched_a, matched_b
 
     def _point_matches_pixmap(self, first_key: str | None, second_key: str | None) -> QPixmap:
+        cache_key = (
+            "point_matches",
+            first_key,
+            second_key,
+            float(self._payload.get("point_match_radius") or 3.0),
+            self._named_color("difference_mask").name(QColor.NameFormat.HexArgb),
+            self._named_color("first_mask").name(QColor.NameFormat.HexArgb),
+            self._named_color("second_mask").name(QColor.NameFormat.HexArgb),
+        )
+        cached = self._overlay_cache.get(cache_key)
+        if cached is not None:
+            return cached
         base = self._base_array()
         height, width = base.shape
         pixmap = QPixmap(width, height)
@@ -1683,6 +1806,7 @@ class ExtendFrameDetailsDialog(QDialog):
             y = int(round(float(getattr(point, 'y', 0.0))))
             painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
         painter.end()
+        self._overlay_cache[cache_key] = pixmap
         return pixmap
 
     def _current_difference_mode_label(self) -> str:
@@ -1730,25 +1854,52 @@ class ExtendFrameDetailsDialog(QDialog):
         return str(source_key or "-")
 
     def _source_pixmap(self, source_key: str | None, color: QColor, *, prefer_grayscale: bool) -> QPixmap:
+        cache_key = (
+            "source_pixmap",
+            source_key,
+            self._selected_layer_view(),
+            bool(prefer_grayscale),
+            bool(self._is_point_geometry()),
+            color.name(QColor.NameFormat.HexArgb),
+        )
+        cached = self._overlay_cache.get(cache_key)
+        if cached is not None:
+            return cached
         view_mode = self._selected_layer_view()
         render_float_map = self._source_render_float_map(source_key)
         float_map = self._source_float_map(source_key)
         if source_key == "original" and render_float_map is not None:
-            return self._grayscale_to_pixmap(np.clip(np.rint(render_float_map * 255.0), 0, 255).astype(np.uint8))
+            pixmap = self._grayscale_to_pixmap(np.clip(np.rint(render_float_map * 255.0), 0, 255).astype(np.uint8))
+            self._overlay_cache[cache_key] = pixmap
+            return pixmap
         if view_mode == "source" and render_float_map is not None:
-            return self._grayscale_to_pixmap(np.clip(np.rint(render_float_map * 255.0), 0, 255).astype(np.uint8))
+            pixmap = self._grayscale_to_pixmap(np.clip(np.rint(render_float_map * 255.0), 0, 255).astype(np.uint8))
+            self._overlay_cache[cache_key] = pixmap
+            return pixmap
         if self._is_point_geometry() and float_map is not None and source_key != "original":
-            return self._intensity_to_pixmap(np.asarray(float_map, dtype=np.float32), color)
+            pixmap = self._intensity_to_pixmap(np.asarray(float_map, dtype=np.float32), color)
+            self._overlay_cache[cache_key] = pixmap
+            return pixmap
         if self._is_point_geometry() and source_key == "original" and float_map is not None:
-            return self._intensity_to_pixmap(np.asarray(float_map, dtype=np.float32), color)
+            pixmap = self._intensity_to_pixmap(np.asarray(float_map, dtype=np.float32), color)
+            self._overlay_cache[cache_key] = pixmap
+            return pixmap
         if prefer_grayscale and render_float_map is not None:
-            return self._grayscale_to_pixmap(np.clip(np.rint(render_float_map * 255.0), 0, 255).astype(np.uint8))
+            pixmap = self._grayscale_to_pixmap(np.clip(np.rint(render_float_map * 255.0), 0, 255).astype(np.uint8))
+            self._overlay_cache[cache_key] = pixmap
+            return pixmap
         mask = self._source_mask(source_key)
         if mask is not None:
-            return self._mask_to_pixmap(mask, color)
+            pixmap = self._mask_to_pixmap(mask, color)
+            self._overlay_cache[cache_key] = pixmap
+            return pixmap
         if render_float_map is not None:
-            return self._grayscale_to_pixmap(np.clip(np.rint(render_float_map * 255.0), 0, 255).astype(np.uint8))
-        return QPixmap()
+            pixmap = self._grayscale_to_pixmap(np.clip(np.rint(render_float_map * 255.0), 0, 255).astype(np.uint8))
+            self._overlay_cache[cache_key] = pixmap
+            return pixmap
+        empty = QPixmap()
+        self._overlay_cache[cache_key] = empty
+        return empty
 
     def _comparison_input(self, source_key: str | None, mode: ComparisonMode) -> np.ndarray:
         if mode == ComparisonMode.GRAYSCALE_DIFF:
@@ -1766,6 +1917,52 @@ class ExtendFrameDetailsDialog(QDialog):
     def _pairwise_comparison_inputs(self, first_key: str | None, second_key: str | None, mode: ComparisonMode) -> tuple[np.ndarray, np.ndarray]:
         return self._comparison_input(first_key, mode), self._comparison_input(second_key, mode)
 
+    def _comparison_overlay_result(
+        self,
+        first_key: str | None,
+        second_key: str | None,
+        mode: ComparisonMode,
+        color: QColor,
+    ) -> tuple[QPixmap, float]:
+        cache_key = (
+            "comparison_overlay",
+            first_key,
+            second_key,
+            str(mode.value),
+            color.name(QColor.NameFormat.HexArgb),
+        )
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            pixmap, score = cached
+            if isinstance(pixmap, QPixmap):
+                return pixmap, float(score)
+        first, second = self._pairwise_comparison_inputs(first_key, second_key, mode)
+        heatmap, score = compute_comparison(first, second, mode)
+        pixmap = self._intensity_to_pixmap(np.asarray(heatmap, dtype=np.float32), color)
+        result = (pixmap, float(score))
+        self._derived_cache[cache_key] = result
+        return result
+
+    def _boundary_overlay_result(self, first_key: str | None, second_key: str | None, color: QColor) -> tuple[QPixmap, float]:
+        cache_key = (
+            "boundary_overlay",
+            first_key,
+            second_key,
+            color.name(QColor.NameFormat.HexArgb),
+        )
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            pixmap, score = cached
+            if isinstance(pixmap, QPixmap):
+                return pixmap, float(score)
+        first = self._boundary_input(first_key)
+        second = self._boundary_input(second_key)
+        heatmap, score = compute_comparison(first, second, ComparisonMode.DISAGREEMENT)
+        pixmap = self._intensity_to_pixmap(np.asarray(heatmap, dtype=np.float32), color)
+        result = (pixmap, float(score))
+        self._derived_cache[cache_key] = result
+        return result
+
     def _refresh_scene(self, *, reset_view: bool) -> None:
         if self._payload_loading and not self._payload:
             self.original_item.setPixmap(QPixmap())
@@ -1779,7 +1976,12 @@ class ExtendFrameDetailsDialog(QDialog):
         scene = self.overlay_view.scene()
         assert scene is not None
         scene.setSceneRect(0.0, 0.0, float(width), float(height))
-        self.original_item.setPixmap(self._grayscale_to_pixmap(base_array))
+        base_pixmap_key = ("base_pixmap", str(self._payload.get("selected_model_id") or ""))
+        base_pixmap = self._overlay_cache.get(base_pixmap_key)
+        if base_pixmap is None:
+            base_pixmap = self._grayscale_to_pixmap(base_array)
+            self._overlay_cache[base_pixmap_key] = base_pixmap
+        self.original_item.setPixmap(base_pixmap)
         _preset_key, first_key, second_key = self._current_comparison_tuple()
         mode = self._current_operation_mode()
         prefer_grayscale = self._selected_result_kind() == "diff" and mode == ComparisonMode.GRAYSCALE_DIFF
@@ -1806,19 +2008,16 @@ class ExtendFrameDetailsDialog(QDialog):
             self._comparison_score = None
             self.result_item.setPixmap(self._confidence_overlay_pixmap(confidence_model_id))
         elif kind == "boundary":
-            first = self._boundary_input(first_key)
-            second = self._boundary_input(second_key)
-            heatmap, score = compute_comparison(first, second, ComparisonMode.DISAGREEMENT)
+            pixmap, score = self._boundary_overlay_result(first_key, second_key, self._named_color("boundary_mask"))
             self._comparison_score = float(score)
-            self.result_item.setPixmap(self._intensity_to_pixmap(np.asarray(heatmap, dtype=np.float32), self._named_color("boundary_mask")))
+            self.result_item.setPixmap(pixmap)
         elif kind == "point_matches":
             self._comparison_score = None
             self.result_item.setPixmap(self._point_matches_pixmap(first_key, second_key))
         else:
-            first, second = self._pairwise_comparison_inputs(first_key, second_key, mode)
-            heatmap, score = compute_comparison(first, second, mode)
+            pixmap, score = self._comparison_overlay_result(first_key, second_key, mode, self._named_color("difference_mask"))
             self._comparison_score = float(score)
-            self.result_item.setPixmap(self._intensity_to_pixmap(np.asarray(heatmap, dtype=np.float32), self._named_color("difference_mask")))
+            self.result_item.setPixmap(pixmap)
         self._update_layer_states()
 
     def _quick_confidence_score(self, model_id: str | None) -> dict[str, float] | None:
@@ -1840,7 +2039,7 @@ class ExtendFrameDetailsDialog(QDialog):
         weight_total = float(np.sum(np.asarray(support_weights, dtype=np.float64), dtype=np.float64))
         delta = float(self._payload.get("confidence_uncertainty_delta") or MODEL_CONFIDENCE_UNCERTAIN_DELTA)
         uncertain = np.abs(probability - 0.5) <= max(0.0, delta)
-        frame_uncertainty_score, uncertain_support_fraction, top_uncertainty_mean, largest_uncertain_region_fraction = _frame_uncertainty_components_from_probability(
+        frame_uncertainty_score, mean_uncertainty, low_conf_fraction, worst_tail_uncertainty, largest_low_conf_component = _frame_uncertainty_components_from_probability(
             probability,
             support_threshold=POLYGON_SUPPORT_THRESHOLD,
         )
@@ -1849,9 +2048,13 @@ class ExtendFrameDetailsDialog(QDialog):
             "mean_probability": float(np.sum(np.asarray(support_weights * probability, dtype=np.float64), dtype=np.float64) / max(1e-8, weight_total)) if weight_total > 0.0 else 0.0,
             "uncertain_fraction": float(np.mean(uncertain[support_mask], dtype=np.float64)) if np.any(support_mask) else 0.0,
             "frame_uncertainty_score": float(frame_uncertainty_score),
-            "uncertain_support_fraction": float(uncertain_support_fraction),
-            "top_uncertainty_mean": float(top_uncertainty_mean),
-            "largest_uncertain_region_fraction": float(largest_uncertain_region_fraction),
+            "mean_uncertainty": float(mean_uncertainty),
+            "low_conf_fraction": float(low_conf_fraction),
+            "worst_tail_uncertainty": float(worst_tail_uncertainty),
+            "largest_low_conf_component": float(largest_low_conf_component),
+            "uncertain_support_fraction": float(low_conf_fraction),
+            "top_uncertainty_mean": float(worst_tail_uncertainty),
+            "largest_uncertain_region_fraction": float(largest_low_conf_component),
             "focus_fraction": float(np.count_nonzero(support_mask) / max(1, support_mask.size)),
         }
 
@@ -1866,10 +2069,30 @@ class ExtendFrameDetailsDialog(QDialog):
             point_match_radius=float(getattr(self._build_result.options, "point_match_radius", 3.0) or 3.0),
             bce_score_cap=float(BCE_SCORE_CAP),
         )
+        level_key = metric_level_key(
+            active_metric,
+            value,
+            point_match_radius=float(getattr(self._build_result.options, "point_match_radius", 3.0) or 3.0),
+            bce_score_cap=float(BCE_SCORE_CAP),
+        )
         higher_is_better = metric_higher_is_better(active_metric)
-        if ratio is None:
+        family = str(active_metric or "").split("::", 1)[0]
+        if ratio is None or level_key is None:
             background = "#2f3844"
             foreground = "#edf3fb"
+        elif family == "model_confidence":
+            if level_key == "score.level.low":
+                background = "#1f5f3b"
+                foreground = "#e9fff1"
+            elif level_key == "score.level.moderate":
+                background = "#6f7a18"
+                foreground = "#f7ffd8"
+            elif level_key == "score.level.elevated":
+                background = "#a75d12"
+                foreground = "#fff0dc"
+            else:
+                background = "#8c2f39"
+                foreground = "#ffe9ec"
         elif higher_is_better:
             if ratio < 0.33:
                 background = "#8c2f39"
@@ -1896,29 +2119,15 @@ class ExtendFrameDetailsDialog(QDialog):
         if value is None:
             return "-"
         active_metric = str(metric_key or self._comparison_score_metric_key())
-        ratio = metric_visual_ratio(
+        level_key = metric_level_key(
             active_metric,
             value,
             point_match_radius=float(getattr(self._build_result.options, "point_match_radius", 3.0) or 3.0),
             bce_score_cap=float(BCE_SCORE_CAP),
         )
-        if ratio is None:
+        if level_key is None:
             return "-"
-        higher_is_better = metric_higher_is_better(active_metric)
-        if higher_is_better:
-            if ratio < 0.33:
-                level = self._t("score.level.poor")
-            elif ratio < 0.66:
-                level = self._t("score.level.fair")
-            else:
-                level = self._t("score.level.good")
-        else:
-            if ratio < 0.33:
-                level = self._t("score.level.low")
-            elif ratio < 0.66:
-                level = self._t("score.level.medium")
-            else:
-                level = self._t("score.level.high")
+        level = self._t(level_key)
         if "::" in active_metric:
             return f"{level} {float(value) * 100.0:.1f}%"
         return f"{level} {float(value):.4f}"
@@ -2052,6 +2261,7 @@ class ExtendFrameDetailsDialog(QDialog):
         colors[key] = color.name(QColor.NameFormat.HexArgb)
         self._session_view_state["colors"] = colors
         self._overlay_cache.clear()
+        self._derived_cache.clear()
         self._update_color_button_styles()
         self._refresh_scene(reset_view=False)
         self._refresh_info()

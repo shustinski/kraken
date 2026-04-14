@@ -11,7 +11,6 @@ SETTINGS_ORG = "ValidationGradientExcend"
 SETTINGS_APP = "ValidationGradientExcend"
 SETTINGS_FOLDERS_KEY = "ui/model_folders"
 SETTINGS_BUILD_KEY = "ui/build_settings"
-SETTINGS_ERROR_VIEW_KEY = "ui/error_view_settings"
 SETTINGS_DETAILS_VIEW_KEY = "ui/details_view_settings"
 SETTINGS_LANGUAGE_KEY = "ui/language"
 SETTINGS_ORIGINAL_FOLDER_KEY = "ui/original_folder"
@@ -22,12 +21,13 @@ FOLDER_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 
 DEFAULT_COMPARISON_MODE = ComparisonMode.DISAGREEMENT
 DEFAULT_CELL_SIZE = 15
-DEFAULT_GRADIENT_NAME = "viridis"
-DEFAULT_ERROR_WINDOW = (0.10, 0.90)
+DEFAULT_GRADIENT_NAME = "traffic_lights"
+DEFAULT_ERROR_WINDOW = (0.0, 1.0)
 DEFAULT_MATRIX_METRIC_KEY = "overall_frame_score"
 DEFAULT_ANALYSIS_MODE = INTER_MODEL_ANALYSIS_MODE
 DEFAULT_METRIC_SCOPE = ""
 DEFAULT_MATRIX_LAYOUT_MODE = "indexed_grid"
+DEFAULT_MATRIX_SCORE_VIEW_MODE = "relative"
 DEFAULT_TOTAL_FRAMES = 10000
 DEFAULT_FRAMES_PER_ROW = 100
 DEFAULT_MATRIX_ROWS = 100
@@ -42,6 +42,7 @@ DEFAULT_GEOMETRY_MODE = GeometryMode.MASK.value
 DEFAULT_MASK_THRESHOLD = 0.5
 DEFAULT_BOUNDARY_RADIUS = 1
 DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA = 0.10
+DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE = "standard"
 DEFAULT_POINT_MATCH_RADIUS = 3.0
 DEFAULT_POINT_CONFIDENCE_RADIUS = 3
 DEFAULT_POINT_EXTRACTION_MODE = 'component_centroids'
@@ -56,7 +57,6 @@ MATRIX_ROWS_RANGE = (1, 100_000)
 MATRIX_COLUMNS_RANGE = (1, 100_000)
 THUMBNAIL_SIZE_RANGE = (2, 128)
 BOUNDARY_RADIUS_RANGE = (1, 16)
-CONFIDENCE_UNCERTAINTY_DELTA_RANGE = (0.01, 0.49)
 POINT_MATCH_RADIUS_RANGE = (1.0, 64.0)
 POINT_CONFIDENCE_RADIUS_RANGE = (1, 16)
 MASK_THRESHOLD_RANGE = (0.0, 1.0)
@@ -89,6 +89,16 @@ MATRIX_HOVER_PEN_WIDTH = 1.2
 MATRIX_PROCESSING_PEN_WIDTH = 1.4
 MATRIX_REFERENCE_PEN_WIDTH = 1.8
 
+PERCENTILE_BAND_BOUNDS = (
+    (0.0, 15.0),
+    (15.0, 35.0),
+    (35.0, 60.0),
+    (60.0, 100.0),
+)
+PERCENTILE_BAND_LABELS = ("0-15", "15-35", "35-60", "60-100")
+PERCENTILE_BAND_TITLES = ("P0-15", "P15-35", "P35-60", "P60-100")
+PERCENTILE_BAND_COLORS = ("#8c2f39", "#a75d12", "#6f7a18", "#1f5f3b")
+
 MINIMAP_MIN_SIZE = (160, 160)
 MINIMAP_FRAME_MARGIN = 6
 MINIMAP_PROCESSING_TRIANGLE_HALF_WIDTH = 2.0
@@ -113,17 +123,16 @@ SELECTED_BLINK_COLOR = QColor(255, 255, 255)
 MINIMAP_SELECTED_COLOR = QColor(255, 255, 255)
 
 GRADIENT_PRESETS = {
-    "viridis": ((0.0, (68, 1, 84)), (0.25, (59, 82, 139)), (0.5, (33, 145, 140)), (0.75, (94, 201, 98)), (1.0, (253, 231, 37))),
-    "inferno": ((0.0, (0, 0, 4)), (0.25, (87, 15, 109)), (0.5, (187, 55, 84)), (0.75, (249, 142, 8)), (1.0, (252, 255, 164))),
-    "plasma": ((0.0, (13, 8, 135)), (0.25, (126, 3, 168)), (0.5, (203, 71, 119)), (0.75, (248, 149, 64)), (1.0, (240, 249, 33))),
-    "cividis": ((0.0, (0, 32, 76)), (0.25, (40, 71, 112)), (0.5, (87, 109, 115)), (0.75, (140, 145, 110)), (1.0, (253, 233, 69))),
-    "magma": ((0.0, (0, 0, 4)), (0.25, (80, 18, 123)), (0.5, (182, 54, 121)), (0.75, (251, 136, 97)), (1.0, (252, 253, 191))),
-    "turbo": ((0.0, (48, 18, 59)), (0.25, (50, 101, 220)), (0.5, (35, 182, 121)), (0.75, (245, 209, 66)), (1.0, (122, 4, 3))),
-    "gray": ((0.0, (0, 0, 0)), (1.0, (255, 255, 255))),
-    "hot": ((0.0, (10, 0, 0)), (0.33, (180, 0, 0)), (0.66, (255, 180, 0)), (1.0, (255, 255, 255))),
-    "coolwarm": ((0.0, (59, 76, 192)), (0.5, (221, 221, 221)), (1.0, (180, 4, 38))),
+    # One standardized matrix palette: bad -> red, good -> bright green.
+    "traffic_lights": (
+        (0.0, (186, 0, 0)),
+        (0.18, (233, 74, 0)),
+        (0.42, (255, 196, 0)),
+        (0.68, (168, 228, 0)),
+        (1.0, (0, 255, 96)),
+    ),
 }
-GRADIENT_LABELS = {name: name.title().replace("_", "-") for name in GRADIENT_PRESETS}
+GRADIENT_LABELS = {"traffic_lights": "Standard"}
 
 GEOMETRY_MODE_OPTIONS = (
     (GeometryMode.MASK.label, GeometryMode.MASK.value),
@@ -135,6 +144,18 @@ POLYGON_CONFIDENCE_SUMMARY_OPTIONS = (
     ('polygon_confidence_summary.weighted', 'weighted'),
     ('polygon_confidence_summary.core', 'core'),
 )
+
+CONFIDENCE_UNCERTAINTY_PROFILE_OPTIONS = (
+    ("confidence_delta_profile.soft", "soft"),
+    ("confidence_delta_profile.standard", "standard"),
+    ("confidence_delta_profile.strict", "strict"),
+)
+
+CONFIDENCE_UNCERTAINTY_PROFILE_VALUES = {
+    "soft": 0.06,
+    "standard": 0.10,
+    "strict": 0.15,
+}
 
 EXPORT_SELECTION_MODE_OPTIONS = (
     ("Worst frame count", "count"),
@@ -156,6 +177,11 @@ MATRIX_METRIC_OPTIONS = (
     ("metric.model_labeled_score", "model_labeled_score", "model_labeled"),
     ("metric.labeled_best_quality", "labeled_best_quality", "model_labeled"),
     ("metric.labeled_mean_quality", "labeled_mean_quality", "model_labeled"),
+)
+
+MATRIX_SCORE_VIEW_OPTIONS = (
+    ("matrix.score_view.relative", "relative"),
+    ("matrix.score_view.absolute", "absolute"),
 )
 
 EXTEND_ROOT_OBJECT_NAME = "ValidationGradientExcendRoot"

@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPaintEvent, QPen
 from PyQt6.QtWidgets import (
@@ -23,9 +24,10 @@ from PyQt6.QtWidgets import (
 )
 
 from ..core.backend_constants import FRAME_NUMBER_PATTERN
+from ..core.analysis_modes import metric_visual_ratio
 from ..core.domain import FrameRecord
 from .i18n import Translator
-from ..core.repository import natural_sort_key
+from ..core.repository import metric_higher_is_better, natural_sort_key
 from .ui_constants import (
     CARD_CONTENT_SPACING,
     DEFAULT_BORDER,
@@ -74,7 +76,7 @@ from .ui_constants import (
 
 @dataclass(frozen=True, slots=True)
 class MatrixLayoutConfig:
-    """Describe the supported matrix layouts used by the lite mismatch matrix."""
+    """Describe the supported matrix layouts used by the lite matrix."""
 
     mode: str = "indexed_grid"
     total_frames: int = 0
@@ -149,6 +151,40 @@ def map_score_to_palette_position(score: float, low_bound: float, high_bound: fl
     return max(0.0, min((low - value) / (low - high), 1.0))
 
 
+def compute_auto_color_window(scores: list[float] | tuple[float, ...]) -> tuple[float, float]:
+    """Derive one robust display window so small score changes stay visible."""
+    if not scores:
+        return DEFAULT_ERROR_WINDOW
+    values = np.asarray(scores, dtype=np.float32)
+    finite = values[np.isfinite(values)]
+    if finite.size <= 1:
+        return DEFAULT_ERROR_WINDOW
+    low = float(np.quantile(finite, 0.08))
+    high = float(np.quantile(finite, 0.92))
+    if high <= low:
+        return DEFAULT_ERROR_WINDOW
+    min_span = 0.14
+    if (high - low) < min_span:
+        center = float(np.median(finite))
+        half = min_span * 0.5
+        low = max(0.0, center - half)
+        high = min(1.0, center + half)
+        if (high - low) < min_span:
+            if center <= 0.5:
+                high = min(1.0, low + min_span)
+            else:
+                low = max(0.0, high - min_span)
+    return max(0.0, low), min(1.0, high)
+
+
+def enhance_palette_position(position: float) -> float:
+    """Increase contrast near good/bad ends so weak variations are easier to spot."""
+    value = max(0.0, min(float(position), 1.0))
+    if value <= 0.5:
+        return 0.5 * math.pow(value * 2.0, 0.82)
+    return 1.0 - 0.5 * math.pow((1.0 - value) * 2.0, 0.82)
+
+
 def build_matrix_layout(records: list[FrameRecord], layout_config: MatrixLayoutConfig) -> tuple[list[tuple[FrameRecord, int, int]], int, int]:
     """Place frame records into one indexed or custom matrix layout."""
     if not records:
@@ -186,8 +222,8 @@ def build_matrix_layout(records: list[FrameRecord], layout_config: MatrixLayoutC
     total_frames = int(layout_config.total_frames)
     if columns <= 0 or total_frames <= 0:
         raise ValueError("Invalid indexed matrix layout")
-    rows = max(1, math.ceil(total_frames / columns))
     if fixed_positions:
+        rows = max(1, math.ceil(total_frames / columns))
         placements = []
         for record in records:
             row = int(record.identity.tile_y)
@@ -196,11 +232,27 @@ def build_matrix_layout(records: list[FrameRecord], layout_config: MatrixLayoutC
                 raise ValueError("Stored matrix coordinates are outside the configured indexed layout")
             placements.append((record, row, column))
         return sorted(placements, key=lambda item: (item[1], item[2], natural_sort_key(item[0].key))), columns, rows
-    placements: list[tuple[FrameRecord, int, int]] = []
-    for record in sorted(records, key=lambda item: natural_sort_key(item.key)):
+    indexed_records: list[tuple[FrameRecord, int]] = []
+    for record in sorted(records, key=lambda item: natural_sort_key(item.display_name or item.key)):
         frame_index = extract_frame_number(record.display_name or record.key)
-        if frame_index < 0 or frame_index >= total_frames:
-            raise ValueError(f"Frame index {frame_index} is outside the configured matrix range 0..{total_frames - 1}")
+        indexed_records.append((record, frame_index))
+    if not indexed_records:
+        return [], columns, 0
+    raw_indices = [frame_index for _record, frame_index in indexed_records]
+    min_index = min(raw_indices)
+    max_index = max(raw_indices)
+    one_based_sequential = min_index >= 1 and max_index <= total_frames and 0 not in raw_indices
+    index_offset = 1 if one_based_sequential else 0
+    normalized_max_index = max_index - index_offset
+    if normalized_max_index < 0:
+        raise ValueError("Invalid indexed matrix layout")
+    effective_total_frames = max(total_frames, normalized_max_index + 1)
+    rows = max(1, math.ceil(effective_total_frames / columns))
+    placements: list[tuple[FrameRecord, int, int]] = []
+    for record, raw_frame_index in indexed_records:
+        frame_index = raw_frame_index - index_offset
+        if frame_index < 0:
+            raise ValueError(f"Frame index {raw_frame_index} is outside the configured matrix range")
         row = frame_index // columns
         column = frame_index % columns
         placements.append((record, row, column))
@@ -395,7 +447,7 @@ class _GradientPresetCard(QFrame):
 
 
 class GradientPresetSelectorWidget(QWidget):
-    """Select the active gradient preset used to render mismatch scores."""
+    """Select the active gradient preset used to render matrix scores."""
 
     gradientChanged = pyqtSignal(str)
 
@@ -629,6 +681,11 @@ class MatrixListWidget(QGraphicsView):
         self._rows = 0
         self._gradient_name = DEFAULT_GRADIENT_NAME
         self._error_window_low, self._error_window_high = DEFAULT_ERROR_WINDOW
+        self._auto_color_window_low, self._auto_color_window_high = DEFAULT_ERROR_WINDOW
+        self._score_view_mode = "relative"
+        self._metric_key: str | None = None
+        self._point_match_radius = 3.0
+        self._bce_score_cap = 1.0
         self._overview_image: QImage | None = None
         self._selection_blink_on = False
         self._selection_blink_timer = QTimer(self)
@@ -661,6 +718,15 @@ class MatrixListWidget(QGraphicsView):
     def set_error_window(self, low_bound: float, high_bound: float) -> None:
         self._error_window_low = max(0.0, min(float(low_bound), 1.0))
         self._error_window_high = max(0.0, min(float(high_bound), 1.0))
+
+    def set_score_view_mode(self, mode: str | None) -> None:
+        normalized = str(mode or "relative").strip().lower()
+        self._score_view_mode = "absolute" if normalized == "absolute" else "relative"
+
+    def set_metric_context(self, metric_key: str | None, *, point_match_radius: float, bce_score_cap: float) -> None:
+        self._metric_key = None if metric_key is None else str(metric_key)
+        self._point_match_radius = float(point_match_radius)
+        self._bce_score_cap = float(bce_score_cap)
 
     def set_layout_config(self, layout_config: MatrixLayoutConfig) -> None:
         self._layout_config = layout_config
@@ -878,6 +944,8 @@ class MatrixListWidget(QGraphicsView):
 
     def _rebuild_scene(self, records: list[FrameRecord]) -> None:
         self._records = list(records)
+        ready_scores = [float(record.score) for record in self._records if bool(getattr(record, "score_ready", False))]
+        self._auto_color_window_low, self._auto_color_window_high = compute_auto_color_window(ready_scores)
         selected_key = self._selected_item.record.key if self._selected_item is not None else None
         hovered_key = self._hovered_item.record.key if self._hovered_item is not None else None
         self._selected_item = None
@@ -1006,6 +1074,21 @@ class MatrixListWidget(QGraphicsView):
     def _display_score(self, record: FrameRecord) -> float | None:
         if not bool(getattr(record, "score_ready", False)):
             return None
+        if self._score_view_mode == "absolute":
+            absolute_value = getattr(record, "absolute_score", None)
+            if absolute_value is None:
+                return None
+            ratio = metric_visual_ratio(
+                self._metric_key,
+                float(absolute_value),
+                point_match_radius=float(self._point_match_radius),
+                bce_score_cap=float(self._bce_score_cap),
+            )
+            if ratio is None:
+                return None
+            higher_is_better = metric_higher_is_better(str(self._metric_key or ""))
+            goodness = float(ratio) if higher_is_better else (1.0 - float(ratio))
+            return max(0.0, min(goodness, 1.0))
         return float(record.score)
 
     @staticmethod
@@ -1016,7 +1099,11 @@ class MatrixListWidget(QGraphicsView):
         return f"{numeric:.3f}"
 
     def _background_color(self, score: float) -> QColor:
-        position = map_score_to_palette_position(score, self._error_window_low, self._error_window_high)
+        if self._score_view_mode == "absolute":
+            position = max(0.0, min(float(score), 1.0))
+        else:
+            position = map_score_to_palette_position(score, self._auto_color_window_low, self._auto_color_window_high)
+        position = enhance_palette_position(position)
         return interpolate_gradient_color(self._gradient_name, position)
 
     def _background_color_for_record(self, record: FrameRecord) -> QColor:
@@ -1058,6 +1145,8 @@ class MatrixListWidget(QGraphicsView):
 __all__ = [
     "GradientPresetSelectorWidget",
     "GradientRangeSelectorWidget",
+    "compute_auto_color_window",
+    "enhance_palette_position",
     "MatrixLayoutConfig",
     "MatrixListWidget",
     "MatrixMiniMapWidget",

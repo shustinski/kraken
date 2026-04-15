@@ -291,6 +291,7 @@ class _RunContext:
     scheduler_step_mode: str = 'none'
     warmup_scheduler: Any = None
     warmup_total_steps: int = 0
+    enable_cuda_event_timing: bool = True
 
 
 @dataclass(frozen=True)
@@ -1233,6 +1234,30 @@ class TrainerProcess(mp.Process):
             loader_kwargs['persistent_workers'] = bool(getattr(base_loader, 'persistent_workers', False))
         return DataLoader(**loader_kwargs)
 
+    def _configure_ddp_dataloaders(self, *, rank: int, world_size: int) -> None:
+        if self._train_dataloader is None:
+            raise RuntimeError('Train dataloader is not initialized for DDP.')
+
+        sampler_obj = getattr(self._train_dataloader, 'sampler', None)
+        train_shuffle = bool(getattr(self._train_dataloader, 'shuffle', False))
+        if (not train_shuffle) and isinstance(sampler_obj, RandomSampler):
+            train_shuffle = True
+        self._train_dataloader = self._build_distributed_loader(
+            self._train_dataloader,
+            rank=rank,
+            world_size=world_size,
+            shuffle=train_shuffle,
+        )
+
+        if self._val_dataloader is None:
+            return
+        if rank == 0:
+            return
+        # Validation is executed only on rank 0. Non-main ranks should not shard
+        # or iterate validation data because this distorts metrics and adds
+        # unnecessary loader overhead.
+        self._val_dataloader = None
+
     def _has_multi_gpu_cuda(self) -> bool:
         if not torch.cuda.is_available():
             return False
@@ -1302,26 +1327,7 @@ class TrainerProcess(mp.Process):
                 self._bus = _NoOpQueue()
                 self._show_batch_preview = False
 
-            if self._train_dataloader is None:
-                raise RuntimeError('Train dataloader is not initialized for DDP.')
-
-            sampler_obj = getattr(self._train_dataloader, 'sampler', None)
-            train_shuffle = bool(getattr(self._train_dataloader, 'shuffle', False))
-            if (not train_shuffle) and isinstance(sampler_obj, RandomSampler):
-                train_shuffle = True
-            self._train_dataloader = self._build_distributed_loader(
-                self._train_dataloader,
-                rank=rank,
-                world_size=world_size,
-                shuffle=train_shuffle,
-            )
-            if self._val_dataloader is not None:
-                self._val_dataloader = self._build_distributed_loader(
-                    self._val_dataloader,
-                    rank=rank,
-                    world_size=world_size,
-                    shuffle=False,
-                )
+            self._configure_ddp_dataloaders(rank=rank, world_size=world_size)
 
             self._model.to(device)
             self._try_compile_model(is_main_process=(rank == 0), device=device)
@@ -3528,6 +3534,12 @@ class TrainerProcess(mp.Process):
         )
         self._log_warmup_configuration(warmup_scheduler)
         self._log_scheduler_configuration(scheduler, scheduler_step_mode)
+        enable_cuda_event_timing = bool(device.type == 'cuda' and is_main_process and not distributed)
+        if distributed and is_main_process and device.type == 'cuda':
+            self._bus.put([
+                'logging',
+                'Detailed CUDA batch timing is disabled in DDP to avoid per-step device synchronization overhead.',
+            ])
 
         return _RunContext(
             bce_criterion=bce_criterion,
@@ -3542,6 +3554,7 @@ class TrainerProcess(mp.Process):
             scheduler_step_mode=scheduler_step_mode,
             warmup_scheduler=warmup_scheduler,
             warmup_total_steps=warmup_total_steps,
+            enable_cuda_event_timing=enable_cuda_event_timing,
         )
 
     def _restore_training_state(self, run_context: _RunContext) -> tuple[int, _EarlyStoppingState, _EarlyStoppingConfig]:
@@ -4119,6 +4132,7 @@ class TrainerProcess(mp.Process):
         batch: Any,
         device: torch.device,
         data_wait_started_at: float,
+        enable_cuda_event_timing: bool = True,
     ) -> tuple[_PreparedTrainBatch | None, int]:
         data, target, sample_indices = self._split_batch(batch)
         inputs = self._move_batch_input_to_device(data, device)
@@ -4137,7 +4151,8 @@ class TrainerProcess(mp.Process):
         augmentation_events = None
         if has_batch_augmentations:
             augmentation_start = time.perf_counter()
-            augmentation_events = self._create_cuda_timing_events(device, 2)
+            if enable_cuda_event_timing:
+                augmentation_events = self._create_cuda_timing_events(device, 2)
             if augmentation_events is not None:
                 augmentation_start_event, augmentation_end_event = augmentation_events
                 self._record_cuda_timing_event(augmentation_start_event, device)
@@ -4185,7 +4200,9 @@ class TrainerProcess(mp.Process):
 
         step_device = batch.image.device
         forward_start = time.perf_counter()
-        step_events = self._create_cuda_timing_events(step_device, 4)
+        step_events = None
+        if run_context.enable_cuda_event_timing:
+            step_events = self._create_cuda_timing_events(step_device, 4)
         if step_events is not None:
             forward_start_event, forward_end_event, backward_end_event, optimizer_end_event = step_events
             self._record_cuda_timing_event(forward_start_event, step_device)
@@ -4376,10 +4393,12 @@ class TrainerProcess(mp.Process):
                 batch = next(train_iterator)
             except StopIteration:
                 break
+            enable_cuda_event_timing = bool(getattr(run_context, 'enable_cuda_event_timing', True))
             prepared_batch, skipped_here = self._prepare_train_batch(
                 batch=batch,
                 device=device,
                 data_wait_started_at=data_wait_started_at,
+                enable_cuda_event_timing=enable_cuda_event_timing,
             )
             if skipped_here > 0:
                 epoch_stats.skipped_uniform_count += skipped_here

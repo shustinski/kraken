@@ -227,6 +227,9 @@ class MainPresenter(QObject):
     def _connect_view_signals(self):
         v = self.view
         v.sample_type_changed.connect(self._on_sample_type_changed)
+        v.le_epochs.valueChanged.connect(
+            lambda value: self.settings_panel.epochs_spinbox.setValue(int(value))
+        )
 
         v.source_path_requested.connect(self._choose_source_folder)
         v.result_path_requested.connect(self._choose_result_folder)
@@ -257,6 +260,7 @@ class MainPresenter(QObject):
 
     def _connect_settings_signal(self):
         v = self.settings_panel
+        v.epochs_spinbox.valueChanged.connect(lambda value: self.view.le_epochs.setValue(int(value)))
         v.cut_slider_shifted.connect(self._calculate_expected_samples)
         v.horisontal_rotate_clicked.connect(self._calculate_expected_samples)
         v.vertical_rotate_clicked.connect(self._calculate_expected_samples)
@@ -426,6 +430,7 @@ class MainPresenter(QObject):
             s._sync_augmentation_controls(state.additional_augmentation)
         if hasattr(s, '_sync_training_augmentation_controls'):
             s._sync_training_augmentation_controls()
+        s.epochs_spinbox.setValue(int(getattr(self.main_window_state, 'epochs', 20)))
 
         # 3.6 Размер батча / overlap
         train_batch_size = int(getattr(state, 'train_batch_size', None) or state.batch_size)
@@ -444,17 +449,21 @@ class MainPresenter(QObject):
         )
         s.recognition_threshold_spinbox.setValue(float(getattr(state, 'recognition_threshold', 0.5)))
         s.recognition_tta_check_box.setChecked(bool(getattr(state, 'recognition_tta_enabled', False)))
-        s.confidence_tta_check_box.setChecked(bool(getattr(state, 'confidence_tta_enabled', False)))
         s.recognition_postprocess_check_box.setChecked(bool(getattr(state, 'recognition_postprocess', False)))
         s.recognition_postprocess_kernel_size_spinbox.setValue(
             int(getattr(state, 'recognition_postprocess_kernel_size', 3))
         )
-        if hasattr(s, 'set_confidence_save_mode_value'):
+        if hasattr(s, 'set_confidence_output_mode'):
+            s.set_confidence_output_mode(
+                str(getattr(state, 'confidence_save_mode', 'off')),
+                bool(getattr(state, 'confidence_tta_enabled', False)),
+            )
+        elif hasattr(s, 'set_confidence_save_mode_value'):
             s.set_confidence_save_mode_value(str(getattr(state, 'confidence_save_mode', 'off')))
         s.log_update_frequency_spinbox.setValue(state.log_update_frequency)
         s.optimizer_type.setCurrentText(state.optimizer_name)
         s.mixed_precision_type.setCurrentText(state.mixed_precision)
-        s.deep_supervision_check_box.setChecked(bool(getattr(state, 'deep_supervision', True)))
+        s.deep_supervision_check_box.setChecked(bool(getattr(state, 'deep_supervision', False)))
         if hasattr(s, 'set_loss_term_weights'):
             s.set_loss_term_weights(
                 resolve_loss_term_weights(
@@ -615,7 +624,11 @@ class MainPresenter(QObject):
         recognition_use_auto_threshold = s.recognition_use_auto_threshold_check_box.isChecked()
         recognition_threshold = s.recognition_threshold_spinbox.value()
         recognition_tta_enabled = s.recognition_tta_check_box.isChecked()
-        confidence_tta_enabled = s.confidence_tta_check_box.isChecked()
+        confidence_tta_enabled = (
+            s.is_confidence_tta_enabled()
+            if hasattr(s, 'is_confidence_tta_enabled')
+            else False
+        )
         recognition_postprocess = s.recognition_postprocess_check_box.isChecked()
         recognition_postprocess_kernel_size = s.recognition_postprocess_kernel_size_spinbox.value()
         confidence_save_mode = (

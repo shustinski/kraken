@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
 
@@ -7,8 +9,30 @@ block_cipher = None
 _spec_file = globals().get('__file__')
 project_root = Path(_spec_file).resolve().parent if _spec_file else Path.cwd()
 
-# Build-time flag: set to True to bundle optional Django WebUI assets/deps.
-include_webui = False
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, '') or '').strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {'1', 'true', 'yes', 'on'}
+
+
+def _resolve_build_target() -> str:
+    raw = str(os.getenv('NEURALIMAGE_BUILD_TARGET', '') or '').strip().lower()
+    if raw in {'linux', 'windows'}:
+        return raw
+    if sys.platform.startswith('linux'):
+        return 'linux'
+    if sys.platform.startswith('win'):
+        return 'windows'
+    return 'native'
+
+
+build_target = _resolve_build_target()
+app_name = str(os.getenv('NEURALIMAGE_APP_NAME', 'NeuralImage') or 'NeuralImage').strip() or 'NeuralImage'
+
+# Build-time flag: set via env to bundle optional Django WebUI assets/deps.
+include_webui = _env_flag('NEURALIMAGE_INCLUDE_WEBUI', default=False)
 
 datas = [
     # NOTE:
@@ -71,6 +95,16 @@ if not include_webui:
         'webui_project',
     ]
 
+icon_path = None
+if build_target == 'windows':
+    icon_candidate = project_root / '_internal' / 'icon.ico'
+    if icon_candidate.exists():
+        icon_path = [str(icon_candidate)]
+elif build_target == 'linux':
+    icon_candidate = project_root / '_internal' / 'icon.png'
+    if icon_candidate.exists():
+        icon_path = [str(icon_candidate)]
+
 a = Analysis(
     ['main.py'],
     pathex=[str(project_root)],
@@ -95,7 +129,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='NeuralImage',
+    name=app_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -106,7 +140,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['_internal/icon.ico'],
+    icon=icon_path,
 )
 
 coll = COLLECT(
@@ -117,5 +151,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='NeuralImage',
+    name=app_name,
 )

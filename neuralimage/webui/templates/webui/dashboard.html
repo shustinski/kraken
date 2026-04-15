@@ -167,6 +167,82 @@
                 <button type="submit" class="btn-stop" id="stop-btn">{{ texts.stop_button }}</button>
             </form>
 
+            <section class="panel queue-panel">
+                <div class="section-head">
+                    <h2>{{ desktop_texts.queue }}</h2>
+                    <div class="queue-actions">
+                        <button type="button" class="ghost-btn" id="queue-pause-btn">{{ desktop_texts.queue_pause }}</button>
+                        <button type="button" class="ghost-btn" id="queue-remove-btn">{{ desktop_texts.queue_remove }}</button>
+                    </div>
+                </div>
+                <div id="queue-list" class="queue-list"></div>
+            </section>
+
+            <section class="panel runtime-panel">
+                <div class="runtime-grid">
+                    <article class="runtime-card">
+                        <h2>{{ desktop_texts.progress_group }}</h2>
+                        <div class="progress-list">
+                            <div class="progress-item">
+                                <div class="progress-meta">
+                                    <span>{{ desktop_texts.progress_epochs }}</span>
+                                    <strong id="progress-epoch-text">0%</strong>
+                                </div>
+                                <div class="progress-track"><div class="progress-fill" id="progress-epoch-fill"></div></div>
+                            </div>
+                            <div class="progress-item">
+                                <div class="progress-meta">
+                                    <span>{{ desktop_texts.progress_batches }}</span>
+                                    <strong id="progress-batch-text">0%</strong>
+                                </div>
+                                <div class="progress-track"><div class="progress-fill accent" id="progress-batch-fill"></div></div>
+                            </div>
+                            <div class="progress-item">
+                                <div class="progress-meta">
+                                    <span>{{ desktop_texts.progress_recognition }}</span>
+                                    <strong id="progress-recognition-text">0%</strong>
+                                </div>
+                                <div class="progress-track"><div class="progress-fill success" id="progress-recognition-fill"></div></div>
+                            </div>
+                        </div>
+                        <div class="runtime-notes">
+                            <p id="recognition-speed-value">{{ js_texts.recognition_speed_default|default:"Recognition speed: -" }}</p>
+                            <p id="memory-usage-value">{{ desktop_texts.memory_label_default }}</p>
+                            <p id="validation-quality-summary">{{ desktop_texts.validation_quality_default }}</p>
+                            <p id="performance-summary">{{ desktop_texts.performance_label_default }}</p>
+                        </div>
+                    </article>
+
+                    <article class="runtime-card">
+                        <h2>{{ desktop_texts.preview_group }}</h2>
+                        <p id="preview-frame-name" class="preview-frame-name">{{ desktop_texts.preview_current_frame_default }}</p>
+                        <div class="preview-grid">
+                            <div class="preview-column">
+                                <span class="preview-title">{{ desktop_texts.preview_image }}</span>
+                                <div class="preview-tile">
+                                    <img id="preview-image" alt="{{ desktop_texts.preview_image }}" hidden>
+                                    <span class="preview-empty" id="preview-image-empty">{{ js_texts.preview_unavailable|default:"Preview is not available yet." }}</span>
+                                </div>
+                            </div>
+                            <div class="preview-column" id="preview-label-column">
+                                <span class="preview-title">{{ desktop_texts.preview_label }}</span>
+                                <div class="preview-tile">
+                                    <img id="preview-label" alt="{{ desktop_texts.preview_label }}" hidden>
+                                    <span class="preview-empty" id="preview-label-empty">{{ js_texts.preview_unavailable|default:"Preview is not available yet." }}</span>
+                                </div>
+                            </div>
+                            <div class="preview-column">
+                                <span class="preview-title">{{ desktop_texts.preview_output }}</span>
+                                <div class="preview-tile">
+                                    <img id="preview-output" alt="{{ desktop_texts.preview_output }}" hidden>
+                                    <span class="preview-empty" id="preview-output-empty">{{ js_texts.preview_unavailable|default:"Preview is not available yet." }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
             <section class="panel metrics-panel">
                 <h2>{{ texts.metrics_title }}</h2>
                 <div class="metrics-grid">

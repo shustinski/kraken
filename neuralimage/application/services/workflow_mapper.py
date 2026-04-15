@@ -112,7 +112,7 @@ def build_workflow_parameters(
     try:
         mixed_precision = MixedPrecisionMode(settings.mixed_precision)
     except ValueError:
-        mixed_precision = MixedPrecisionMode.bf16
+        mixed_precision = MixedPrecisionMode.fp16
     try:
         scheduler_name = SchedulerName(
             normalize_scheduler_name(getattr(settings, 'scheduler_name', SchedulerName.off.value))
@@ -253,7 +253,7 @@ def build_workflow_parameters(
         context_branch_channels=tuple(getattr(settings, 'context_branch_channels', (16, 32, 64, 128))),
         fusion_type=str(getattr(settings, 'fusion_type', 'concat')),
         use_context_branch=bool(requested_context_branch),
-        deep_supervision=bool(getattr(settings, 'deep_supervision', True)),
+        deep_supervision=bool(getattr(settings, 'deep_supervision', False)),
         dataloader_num_workers=int(getattr(settings, 'dataloader_num_workers', -1)),
         pcb_defects=pcb_defects,
         synthetic_defect_generator=synthetic_defect_generator,

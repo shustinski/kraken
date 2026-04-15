@@ -1323,7 +1323,7 @@ class TrainingParameters:
     validation_label_path: Path | None = None
     save_validation_binary_images: bool = False
     optimizer: OptimizerParameters = field(default_factory=OptimizerParameters)
-    mixed_precision: MixedPrecisionMode = MixedPrecisionMode.bf16
+    mixed_precision: MixedPrecisionMode = MixedPrecisionMode.fp16
     loss_function: str = 'bce'
     loss_term_weights: dict[str, float] = field(default_factory=dict)
     dice_loss_weight: float = 0.5
@@ -1348,7 +1348,7 @@ class TrainingParameters:
     context_branch_channels: tuple[int, ...] = (16, 32, 64, 128)
     fusion_type: str = 'concat'
     use_context_branch: bool | None = None
-    deep_supervision: bool = True
+    deep_supervision: bool = False
     artifact_dir: Path | None = None
     dataloader_num_workers: int = -1
     pcb_defects: PCBDefectParameters = field(default_factory=PCBDefectParameters)

@@ -143,6 +143,7 @@ def test_main_presenter_restores_task_state_to_main_window_and_settings(qapp, mo
     assert presenter.view.sample_path.text() == 'sample-dir'
     assert presenter.view.model_path.text() == 'model-file.pth'
     assert presenter.view.le_epochs.value() == 9
+    assert presenter.settings_panel.epochs_spinbox.value() == 9
     assert presenter.view.rb_recognition.isChecked() is True
     assert presenter.settings_panel.shift_spinbox.value() == 72
     assert presenter.settings_panel.cut_dataset_type.isChecked() is True
@@ -157,7 +158,7 @@ def test_main_presenter_restores_task_state_to_main_window_and_settings(qapp, mo
     assert presenter.settings_panel.recognition_jpeg_quality_spinbox.value() == 91
     assert presenter.settings_panel.recognition_multiprocessing_check_box.isChecked() is False
     assert presenter.settings_panel.recognition_tta_check_box.isChecked() is True
-    assert presenter.settings_panel.confidence_tta_check_box.isChecked() is True
+    assert presenter.settings_panel.get_confidence_export_mode_value() == 'tta'
     assert presenter.settings_panel.get_confidence_save_mode_value() == 'separate_grayscale'
     assert presenter.settings_panel.deep_supervision_check_box.isChecked() is False
     assert presenter.view.is_batch_preview_enabled() is False
@@ -203,6 +204,7 @@ def test_main_presenter_can_restore_ui_from_workflow_snapshot_file(qapp, monkeyp
     assert presenter.view.sample_path.text() == 'restored-samples'
     assert presenter.view.label_path.text() == 'restored-labels'
     assert presenter.view.le_epochs.value() == 13
+    assert presenter.settings_panel.epochs_spinbox.value() == 13
     assert presenter.view.rb_train_only.isChecked() is True
     assert presenter.settings_panel.train_patch_x_size.value() == 160
     assert presenter.settings_panel.train_patch_y_size.value() == 224
@@ -213,7 +215,7 @@ def test_main_presenter_can_restore_ui_from_workflow_snapshot_file(qapp, monkeyp
     assert presenter.settings_panel.recognition_threshold_spinbox.value() == pytest.approx(0.62)
     assert presenter.settings_panel.recognition_use_auto_threshold_check_box.isChecked() is False
     assert presenter.settings_panel.recognition_tta_check_box.isChecked() is True
-    assert presenter.settings_panel.confidence_tta_check_box.isChecked() is False
+    assert presenter.settings_panel.get_confidence_export_mode_value() == 'model_output'
     assert presenter.settings_panel.get_confidence_save_mode_value() == 'separate_grayscale'
     assert presenter.settings_panel.deep_supervision_check_box.isChecked() is False
     assert state_store.saved_main_state is not None

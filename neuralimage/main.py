@@ -48,6 +48,27 @@ def _ensure_standard_streams() -> None:
 _ensure_standard_streams()
 
 
+def _configure_multiprocessing_start_method() -> str | None:
+    override = str(os.getenv('NEURALIMAGE_MP_START_METHOD', '') or '').strip().lower()
+    if override:
+        requested_method = override
+    elif sys.platform.startswith('linux'):
+        # Linux defaults to "fork", which is fragile once Qt and CUDA-enabled
+        # torch objects exist in the parent process. Prefer spawn for desktop
+        # runtime stability and parity with Windows behavior.
+        requested_method = 'spawn'
+    else:
+        requested_method = ''
+    if not requested_method:
+        return mp.get_start_method(allow_none=True)
+
+    current_method = mp.get_start_method(allow_none=True)
+    if current_method is None:
+        mp.set_start_method(requested_method, force=False)
+        return requested_method
+    return current_method
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -96,6 +117,7 @@ def _run_desktop_ui(*, ui_only: bool) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    _configure_multiprocessing_start_method()
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.web:

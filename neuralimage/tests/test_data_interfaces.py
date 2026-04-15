@@ -67,7 +67,7 @@ def test_dataclass_instantiation():
     assert train.validation_label_path is None
     assert train.save_validation_binary_images is False
     assert train.dataloader_num_workers == -1
-    assert train.deep_supervision is True
+    assert train.deep_supervision is False
     assert train.generation.tech_aug.enabled is False
     assert rec.source_files == [Path('x')]
     assert rec.recognition_multiprocessing_enabled is True
@@ -95,7 +95,7 @@ def test_training_parameters_default_optimizer():
     assert train.optimizer.name == OptimizerName.adam
     assert train.optimizer.learning_rate == 1e-3
     assert train.optimizer.weight_decay == 0.0
-    assert train.mixed_precision.value == 'bf16'
+    assert train.mixed_precision.value == 'fp16'
     assert train.warmup.enabled is False
     assert train.scheduler.name == SchedulerName.off
     assert train.scheduler.plateau_factor == 0.5

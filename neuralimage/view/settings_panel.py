@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QDockWidget,
     QCheckBox,
     QFormLayout,
+    QGridLayout,
     QLabel,
     QPushButton,
     QApplication,
@@ -69,6 +70,8 @@ EDGE_CUT_STEP = 10
 TARGET_SIZE_RANGE = (0, 4000)
 TARGET_SIZE_STEP = 100
 TARGET_SIZE_DEFAULT = 2000
+EPOCHS_RANGE = (0, 1000)
+EPOCHS_DEFAULT = 20
 
 SHIFT_RANGE_MIN = 4
 SHIFT_RANGE_MAX = 2000
@@ -175,12 +178,13 @@ LOSS_FUNCTIONS = LOSS_SELECTION_NAMES
 MULTI_GPU_MODES = ('off', 'dataparallel', 'distributeddataparallel')
 SCHEDULER_NAMES = ('off', 'reduce_on_plateau', 'cosine_annealing', 'one_cycle', 'step_lr')
 ONE_CYCLE_ANNEAL_STRATEGIES = ('cos', 'linear')
-CONFIDENCE_SAVE_MODES = ('off', 'separate_grayscale')
+CONFIDENCE_SAVE_MODES = ('off', 'model_output', 'tta')
 OPTIMIZER_PRESETS = (
     ('Adam', 'adam', 1e-3, 0.0),
     ('AdamW', 'adamw', 5e-4, 1e-2),
     ('AdamW + Muon', 'adamw_muon', 3e-4, 2e-2),
 )
+VISIBLE_OPTIMIZER_PRESET_NAMES = frozenset({'adam', 'adamw'})
 LOSS_PRESET_WEIGHTS = {
     'conductors': {'bce': 0.5, 'dice': 0.5},
     'contacts': {'bce': 0.5, 'focal_tversky': 0.5},
@@ -610,6 +614,7 @@ class SettingsPanel(QDockWidget):
         self.train_patch_y_size = create_spinbox((SAMPLE_SIZE_MIN, SAMPLE_SIZE_MAX), default_value=256, step=10)
         self.recognition_patch_x_size = create_spinbox((SAMPLE_SIZE_MIN, SAMPLE_SIZE_MAX), default_value=256, step=10)
         self.recognition_patch_y_size = create_spinbox((SAMPLE_SIZE_MIN, SAMPLE_SIZE_MAX), default_value=256, step=10)
+        self.epochs_spinbox = create_spinbox(EPOCHS_RANGE, default_value=EPOCHS_DEFAULT, step=1)
         # Backward-compatible aliases (legacy code expects training patch controls here).
         self.sample_x_size = self.train_patch_x_size
         self.sample_y_size = self.train_patch_y_size
@@ -662,11 +667,25 @@ class SettingsPanel(QDockWidget):
         """Add a single visible label inside the row to avoid duplicate captions."""
         form.addRow(self._field_with_description(field, key))
 
+    def _create_collapsible_groupbox(self) -> tuple[QGroupBox, QVBoxLayout, QWidget]:
+        groupbox = QGroupBox('')
+        groupbox.setCheckable(True)
+        groupbox.setChecked(False)
+        groupbox_layout = QVBoxLayout(groupbox)
+        groupbox_layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
+        groupbox_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        content_widget.setVisible(False)
+        groupbox_layout.addWidget(content_widget)
+        groupbox.toggled.connect(content_widget.setVisible)
+        return groupbox, content_layout, content_widget
+
     @staticmethod
     def _apply_tooltip_to_widget_and_children(widget: QWidget, text: str) -> None:
         widget.setToolTip(text)
-        for child in widget.findChildren(QWidget):
-            child.setToolTip(text)
 
     def _build_loss_terms_widget(self) -> QWidget:
         widget = QWidget()
@@ -684,7 +703,6 @@ class SettingsPanel(QDockWidget):
             self.loss_presets_layout.addWidget(button)
             self.loss_preset_buttons[preset_name] = button
         self.loss_presets_layout.addStretch(1)
-        layout.addWidget(self.loss_presets_widget)
 
         for loss_name in LOSS_FUNCTIONS:
             checkbox = QCheckBox('')
@@ -852,6 +870,7 @@ class SettingsPanel(QDockWidget):
             training_applicable,
         )
         self._set_widgets_enabled((self.model_variants_groupbox,), model_selector_applicable)
+        self._set_fields_enabled((self.epochs_spinbox,), training_applicable)
         self._set_fields_enabled(
             (
                 self.nn_model_type,
@@ -868,7 +887,6 @@ class SettingsPanel(QDockWidget):
     def _sync_training_data_mode_controls(self, training_applicable: bool) -> None:
         self._set_widgets_enabled(
             (
-                self.augmentation_groupbox,
                 self.shuffle_groupbox,
                 self.horizontal_rotation,
                 self.vertical_rotation,
@@ -917,17 +935,18 @@ class SettingsPanel(QDockWidget):
         self._set_fields_enabled(
             (
                 self.optimizer_presets_widget,
-                self.optimizer_type,
                 self.learning_rate_spinbox,
                 self.weight_decay_spinbox,
                 self.dataloader_num_workers_spinbox,
                 self.log_update_frequency_spinbox,
                 self.mixed_precision_type,
                 self.loss_terms_groupbox,
+                self.optimizer_advanced_groupbox,
+                self.loss_advanced_groupbox,
             ),
             training_applicable,
         )
-        self._set_fields_enabled((self.train_batch_spinbox,), batch_related)
+        self._set_fields_enabled((self.train_batch_spinbox,), training_applicable)
         self._set_fields_enabled(
             (
                 self.recognition_batch_spinbox,
@@ -992,7 +1011,6 @@ class SettingsPanel(QDockWidget):
         )
         self._sync_optional_training_mode_controls(training_applicable)
         self._sync_patch_size_controls()
-        self._set_settings_page_visible('base', True)
         self._set_settings_page_visible('training', training_applicable)
         self._set_settings_page_visible('recognition', recognition_applicable)
         self._ensure_visible_settings_page_selected()
@@ -1122,11 +1140,14 @@ class SettingsPanel(QDockWidget):
             return group, form
 
         self.optimizer_preset_buttons: list[QPushButton] = []
+        self._visible_optimizer_presets: list[tuple[str, str, float, float]] = []
         self.optimizer_presets_widget = QWidget()
         preset_layout = QHBoxLayout(self.optimizer_presets_widget)
         preset_layout.setContentsMargins(0, 0, 0, 0)
         preset_layout.setSpacing(6)
         for title, optimizer_name, learning_rate, weight_decay in OPTIMIZER_PRESETS:
+            if optimizer_name not in VISIBLE_OPTIMIZER_PRESET_NAMES:
+                continue
             btn = QPushButton(title)
             btn.setCheckable(True)
             btn.clicked.connect(
@@ -1135,14 +1156,17 @@ class SettingsPanel(QDockWidget):
                 )
             )
             self.optimizer_preset_buttons.append(btn)
+            self._visible_optimizer_presets.append((title, optimizer_name, learning_rate, weight_decay))
             preset_layout.addWidget(btn)
+        preset_layout.addStretch(1)
 
         self.optimizer_type = NoWheelComboBox()
         self.optimizer_type.addItems(list(OPTIMIZERS))
         self.mixed_precision_type = NoWheelComboBox()
         self.mixed_precision_type.addItems(list(MIXED_PRECISION_MODES))
+        self.mixed_precision_type.setCurrentText('fp16')
         self.deep_supervision_check_box = QCheckBox('')
-        self.deep_supervision_check_box.setChecked(True)
+        self.deep_supervision_check_box.setChecked(False)
         self.loss_function_type = NoWheelComboBox()
         self.loss_function_type.addItems(list(LOSS_FUNCTIONS))
         self.dice_loss_weight_spinbox = create_double_spinbox((0.0, 1.0), step=0.05, default_value=0.5, decimals=2)
@@ -1194,8 +1218,6 @@ class SettingsPanel(QDockWidget):
         )
         self.recognition_tta_check_box = QCheckBox('')
         self.recognition_tta_check_box.setChecked(False)
-        self.confidence_tta_check_box = QCheckBox('')
-        self.confidence_tta_check_box.setChecked(False)
         self.confidence_save_mode_combo = NoWheelComboBox()
         for value in CONFIDENCE_SAVE_MODES:
             self.confidence_save_mode_combo.addItem(value, value)
@@ -1360,16 +1382,31 @@ class SettingsPanel(QDockWidget):
         # Keep backward compatibility for code that may inspect this attr.
         self.nn_aux_form = self.optimizer_form
 
-        self._add_labeled_row(self.optimizer_form, self.optimizer_presets_widget, 'optimizer_presets')
-        self._add_labeled_row(self.optimizer_form, self.optimizer_type, 'optimizer')
-        self._add_labeled_row(self.optimizer_form, self.learning_rate_spinbox, 'learning_rate')
-        self._add_labeled_row(self.optimizer_form, self.weight_decay_spinbox, 'weight_decay')
-        self._add_labeled_row(self.optimizer_form, self.train_batch_spinbox, 'train_batch_size')
-        self._add_labeled_row(self.optimizer_form, self.dataloader_num_workers_spinbox, 'dataloader_num_workers')
+        self.optimizer_form.addRow(self.optimizer_presets_widget)
+        (
+            self.optimizer_advanced_groupbox,
+            self.optimizer_advanced_layout,
+            self.optimizer_advanced_content_widget,
+        ) = self._create_collapsible_groupbox()
+        self.optimizer_advanced_form = self._create_form_layout(margins=(0, 0, 0, 0))
+        self.optimizer_advanced_layout.addLayout(self.optimizer_advanced_form)
+        self._add_labeled_row(self.optimizer_advanced_form, self.learning_rate_spinbox, 'learning_rate')
+        self._add_labeled_row(self.optimizer_advanced_form, self.weight_decay_spinbox, 'weight_decay')
+        self.optimizer_form.addRow(self.optimizer_advanced_groupbox)
 
-        self.precision_loss_form.addRow(self.deep_supervision_check_box)
-        self.precision_loss_form.addRow(self.loss_terms_groupbox)
+        self.precision_loss_form.addRow(self.loss_presets_widget)
+        (
+            self.loss_advanced_groupbox,
+            self.loss_advanced_layout,
+            self.loss_advanced_content_widget,
+        ) = self._create_collapsible_groupbox()
+        self.loss_advanced_form = self._create_form_layout(margins=(0, 0, 0, 0))
+        self.loss_advanced_layout.addLayout(self.loss_advanced_form)
+        self.loss_advanced_form.addRow(self.deep_supervision_check_box)
+        self.loss_advanced_form.addRow(self.loss_terms_groupbox)
+        self.precision_loss_form.addRow(self.loss_advanced_groupbox)
 
+        self.rare_patch_form.addRow(self.skip_uniform_labels_check_box)
         self.rare_patch_form.addRow(self.rare_patch_oversampling_check_box)
         self._add_labeled_row(
             self.rare_patch_form,
@@ -1386,7 +1423,6 @@ class SettingsPanel(QDockWidget):
         self.recognition_form.addRow(self.recognition_use_auto_threshold_check_box)
         self._add_labeled_row(self.recognition_form, self.recognition_threshold_spinbox, 'recognition_threshold')
         self.recognition_form.addRow(self.recognition_tta_check_box)
-        self.recognition_form.addRow(self.confidence_tta_check_box)
         self._add_labeled_row(self.recognition_form, self.confidence_save_mode_combo, 'confidence_save_mode')
         self.recognition_form.addRow(self.recognition_postprocess_check_box)
         self._add_labeled_row(
@@ -1394,11 +1430,12 @@ class SettingsPanel(QDockWidget):
             self.recognition_postprocess_kernel_size_spinbox,
             'recognition_postprocess_kernel_size',
         )
+        self._add_labeled_row(self.runtime_form, self.train_batch_spinbox, 'train_batch_size')
+        self._add_labeled_row(self.runtime_form, self.dataloader_num_workers_spinbox, 'dataloader_num_workers')
         self._add_labeled_row(self.runtime_form, self.multi_gpu_mode_combo, 'multi_gpu')
         self._add_labeled_row(self.runtime_form, self.mixed_precision_type, 'mixed_precision')
         self._add_labeled_row(self.runtime_form, self.log_update_frequency_spinbox, 'log_update_frequency')
         self.runtime_form.addRow(self.torch_compile_check_box)
-        self.runtime_form.addRow(self.skip_uniform_labels_check_box)
 
         self.warmup_form.addRow(self.warmup_check_box)
         self._add_labeled_row(self.warmup_form, self.warmup_epochs_spinbox, 'warmup_epochs')
@@ -1504,8 +1541,8 @@ class SettingsPanel(QDockWidget):
         self.general_groupbox = QGroupBox('')
         self.general_form = self._create_form_layout()
         self.general_groupbox.setLayout(self.general_form)
-        self.general_form.addRow(self.samples_number)
         self._add_labeled_row(self.general_form, self.nn_model_type, 'model')
+        self._add_labeled_row(self.general_form, self.epochs_spinbox, 'epochs')
         self._add_labeled_row(self.general_form, self.color_type, 'image_format')
         self.sync_patch_sizes_check_box = QCheckBox('')
         self.sync_patch_sizes_check_box.setChecked(True)
@@ -1529,10 +1566,16 @@ class SettingsPanel(QDockWidget):
         self.spatial_groupbox = QGroupBox('')
         self.spatial_form = self._create_form_layout()
         self.spatial_groupbox.setLayout(self.spatial_form)
-        self.spatial_form.addRow(self.vertical_rotation)
-        self.spatial_form.addRow(self.horizontal_rotation)
-        self.spatial_form.addRow(self.flip_x)
-        self.spatial_form.addRow(self.flip_y)
+        self.spatial_orientation_widget = QWidget()
+        self.spatial_orientation_layout = QGridLayout(self.spatial_orientation_widget)
+        self.spatial_orientation_layout.setContentsMargins(0, 0, 0, 0)
+        self.spatial_orientation_layout.setHorizontalSpacing(FIELD_DESCRIPTION_ROW_SPACING)
+        self.spatial_orientation_layout.setVerticalSpacing(FORM_VERTICAL_SPACING)
+        self.spatial_orientation_layout.addWidget(self.horizontal_rotation, 0, 0)
+        self.spatial_orientation_layout.addWidget(self.flip_x, 0, 1)
+        self.spatial_orientation_layout.addWidget(self.vertical_rotation, 1, 0)
+        self.spatial_orientation_layout.addWidget(self.flip_y, 1, 1)
+        self.spatial_form.addRow(self.spatial_orientation_widget)
         self.spatial_form.addRow(self.random_crop_check_box)
         self.spatial_sampling_row_widget = QWidget()
         self.spatial_sampling_row_layout = QHBoxLayout(self.spatial_sampling_row_widget)
@@ -1546,12 +1589,10 @@ class SettingsPanel(QDockWidget):
         self.spatial_form.addRow(self.spatial_sampling_row_widget)
         self.spatial_form.addRow(self.scale_augmentation_check_box)
         self._add_labeled_row(self.spatial_form, self.scale_augmentation_strength_spinbox, 'scale_augmentation_strength')
-        self.augmentation_form.addRow(self.spatial_groupbox)
-
-        self.augmentation_form.addRow(self.additional_augmentation_check_box)
         self.photometric_groupbox = QGroupBox('')
         self.photometric_form = self._create_form_layout()
         self.photometric_groupbox.setLayout(self.photometric_form)
+        self.photometric_form.addRow(self.additional_augmentation_check_box)
         self._add_labeled_row(self.photometric_form, self.augmentation_brightness_spinbox, 'augmentation_brightness_strength')
         self._add_labeled_row(self.photometric_form, self.augmentation_contrast_spinbox, 'augmentation_contrast_strength')
         self._add_labeled_row(self.photometric_form, self.augmentation_gamma_spinbox, 'augmentation_gamma_strength')
@@ -1559,12 +1600,10 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.photometric_form, self.augmentation_noise_sigma_spinbox, 'augmentation_noise_sigma')
         self._add_labeled_row(self.photometric_form, self.augmentation_blur_probability_spinbox, 'augmentation_blur_probability')
         self._add_labeled_row(self.photometric_form, self.augmentation_blur_radius_spinbox, 'augmentation_blur_radius')
-        self.augmentation_form.addRow(self.photometric_groupbox)
-
-        self.augmentation_form.addRow(self.synthetic_defect_generator_check_box)
         self.synthetic_defect_generator_groupbox = QGroupBox('')
         self.synthetic_defect_generator_form = self._create_form_layout()
         self.synthetic_defect_generator_groupbox.setLayout(self.synthetic_defect_generator_form)
+        self.synthetic_defect_generator_form.addRow(self.synthetic_defect_generator_check_box)
         self._add_labeled_row(
             self.synthetic_defect_generator_form,
             self.synthetic_topology_domain_combo,
@@ -1652,19 +1691,17 @@ class SettingsPanel(QDockWidget):
                 self.ic_defect_type_spinboxes[defect_name],
                 label_key,
             )
-        self.augmentation_form.addRow(self.synthetic_defect_generator_groupbox)
-        self.augmentation_form.addRow(self.cutout_check_box)
         self.cutout_groupbox = QGroupBox('')
         self.cutout_form = self._create_form_layout()
         self.cutout_groupbox.setLayout(self.cutout_form)
+        self.cutout_form.addRow(self.cutout_check_box)
         self._add_labeled_row(self.cutout_form, self.cutout_probability_spinbox, 'cutout_probability')
         self._add_labeled_row(self.cutout_form, self.cutout_holes_spinbox, 'cutout_holes')
         self._add_labeled_row(self.cutout_form, self.cutout_size_ratio_spinbox, 'cutout_size_ratio')
-        self.augmentation_form.addRow(self.cutout_groupbox)
-        self.augmentation_form.addRow(self.random_artifacts_check_box)
         self.random_artifacts_groupbox = QGroupBox('')
         self.random_artifacts_form = self._create_form_layout()
         self.random_artifacts_groupbox.setLayout(self.random_artifacts_form)
+        self.random_artifacts_form.addRow(self.random_artifacts_check_box)
         for artifact_name in RANDOM_ARTIFACT_TYPES:
             self.random_artifacts_form.addRow(self.random_artifact_type_checkboxes[artifact_name])
         self._add_labeled_row(
@@ -1682,18 +1719,15 @@ class SettingsPanel(QDockWidget):
             self.random_artifacts_size_ratio_spinbox,
             'random_artifacts_size_ratio',
         )
-        self.augmentation_form.addRow(self.random_artifacts_groupbox)
-        self.augmentation_form.addRow(self.mixup_check_box)
         self.mixup_groupbox = QGroupBox('')
         self.mixup_form = self._create_form_layout()
         self.mixup_groupbox.setLayout(self.mixup_form)
+        self.mixup_form.addRow(self.mixup_check_box)
         self._add_labeled_row(self.mixup_form, self.mixup_probability_spinbox, 'mixup_probability')
         self._add_labeled_row(self.mixup_form, self.mixup_alpha_spinbox, 'mixup_alpha')
-        self.augmentation_form.addRow(self.mixup_groupbox)
         self.pcb_defects_groupbox = QGroupBox('')
         self.pcb_defects_form = self._create_form_layout()
         self.pcb_defects_groupbox.setLayout(self.pcb_defects_form)
-        self.augmentation_form.addRow(self.augmentation_preview_button)
         self.additional_augmentation_check_box.toggled.connect(self._sync_augmentation_controls)
         self.cutout_check_box.toggled.connect(self._sync_training_augmentation_controls)
         self.random_artifacts_check_box.toggled.connect(self._sync_training_augmentation_controls)
@@ -1732,24 +1766,14 @@ class SettingsPanel(QDockWidget):
         self.settings_tabs = QTabWidget()
         self.settings_tabs.setDocumentMode(True)
 
-        self.base_page = QWidget()
-        self.base_page_layout = QVBoxLayout(self.base_page)
-        self.base_page_layout.setContentsMargins(0, 0, 0, 0)
-        self.base_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
-        self.base_page_layout.addWidget(self.general_groupbox)
-        self.base_page_layout.addWidget(self.sample_type_groupbox)
-        self.base_page_layout.addWidget(self.prepare_samples_groupbox)
-        self.base_page_layout.addWidget(self.validation_groupbox)
-        self.base_page_layout.addStretch(1)
-
         self.training_page = QWidget()
         self.training_page_layout = QVBoxLayout(self.training_page)
         self.training_page_layout.setContentsMargins(0, 0, 0, 0)
         self.training_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
-        self.training_page_layout.addWidget(self.augmentation_groupbox)
-        self.training_page_layout.addWidget(self.shuffle_groupbox)
+        self.training_page_layout.addWidget(self.samples_number)
+        self.training_page_layout.addWidget(self.general_groupbox)
+        self.training_page_layout.addWidget(self.spatial_groupbox)
         self.training_page_layout.addWidget(self.rare_patch_groupbox)
-        self.training_page_layout.addWidget(self.warmup_groupbox)
         self.training_page_layout.addWidget(self.optimizer_groupbox)
         self.training_page_layout.addWidget(self.precision_loss_groupbox)
         self.expert_groupbox = QGroupBox('')
@@ -1762,7 +1786,18 @@ class SettingsPanel(QDockWidget):
         self.expert_content_layout = QVBoxLayout(self.expert_content_widget)
         self.expert_content_layout.setContentsMargins(0, 0, 0, 0)
         self.expert_content_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        self.expert_content_layout.addWidget(self.sample_type_groupbox)
+        self.expert_content_layout.addWidget(self.prepare_samples_groupbox)
+        self.expert_content_layout.addWidget(self.validation_groupbox)
+        self.expert_content_layout.addWidget(self.shuffle_groupbox)
+        self.expert_content_layout.addWidget(self.photometric_groupbox)
+        self.expert_content_layout.addWidget(self.cutout_groupbox)
+        self.expert_content_layout.addWidget(self.random_artifacts_groupbox)
+        self.expert_content_layout.addWidget(self.synthetic_defect_generator_groupbox)
+        self.expert_content_layout.addWidget(self.mixup_groupbox)
+        self.expert_content_layout.addWidget(self.augmentation_preview_button)
         self.expert_content_layout.addWidget(self.model_variants_groupbox)
+        self.expert_content_layout.addWidget(self.warmup_groupbox)
         self.expert_content_layout.addWidget(self.scheduler_groupbox)
         self.expert_content_layout.addWidget(self.hard_mining_groupbox)
         self.expert_content_layout.addWidget(self.early_stopping_groupbox)
@@ -1779,7 +1814,6 @@ class SettingsPanel(QDockWidget):
         self.recognition_page_layout.addStretch(1)
 
         self._page_indexes = {
-            'base': self.settings_tabs.addTab(self.base_page, ''),
             'training': self.settings_tabs.addTab(self.training_page, ''),
             'recognition': self.settings_tabs.addTab(self.recognition_page, ''),
         }
@@ -1797,10 +1831,10 @@ class SettingsPanel(QDockWidget):
         layout.addStretch(1)
 
         self.general_form.setAlignment(self.nn_model_type, Qt.AlignmentFlag.AlignRight)
+        self.general_form.setAlignment(self.epochs_spinbox, Qt.AlignmentFlag.AlignRight)
         self.general_form.setAlignment(self.color_type, Qt.AlignmentFlag.AlignRight)
         self.model_variants_form.setAlignment(self.deprecated_model_type, Qt.AlignmentFlag.AlignRight)
         self.model_variants_form.setAlignment(self.experimental_model_type, Qt.AlignmentFlag.AlignRight)
-        self.augmentation_form.setAlignment(self.shift_spinbox, Qt.AlignmentFlag.AlignRight)
         self.validation_form.setAlignment(self.validation_mode_combo, Qt.AlignmentFlag.AlignRight)
         self.validation_form.setAlignment(self.validation_spinbox, Qt.AlignmentFlag.AlignRight)
         self.recognition_form.setAlignment(self.recognition_batch_spinbox, Qt.AlignmentFlag.AlignRight)
@@ -2420,7 +2454,10 @@ class SettingsPanel(QDockWidget):
         connect_settings_panel_signals(self)
 
     def show_settings_page(self, page_key: str) -> None:
-        index = self._page_indexes.get(str(page_key or '').strip().lower())
+        normalized_key = str(page_key or '').strip().lower()
+        if normalized_key == 'base':
+            normalized_key = 'training'
+        index = self._page_indexes.get(normalized_key)
         if index is None:
             return
         self.settings_tabs.setCurrentIndex(index)
@@ -2436,7 +2473,7 @@ class SettingsPanel(QDockWidget):
         current_index = self.settings_tabs.currentIndex()
         if hasattr(self.settings_tabs, 'isTabVisible') and self.settings_tabs.isTabVisible(current_index):
             return
-        for page_key in ('base', 'training', 'recognition'):
+        for page_key in ('training', 'recognition'):
             index = self._page_indexes.get(page_key)
             if index is None:
                 continue
@@ -2466,7 +2503,10 @@ class SettingsPanel(QDockWidget):
         current_optimizer = self.optimizer_type.currentText()
         current_learning_rate = float(self.learning_rate_spinbox.value())
         current_weight_decay = float(self.weight_decay_spinbox.value())
-        for btn, (_title, optimizer_name, learning_rate, weight_decay) in zip(self.optimizer_preset_buttons, OPTIMIZER_PRESETS):
+        for btn, (_title, optimizer_name, learning_rate, weight_decay) in zip(
+            self.optimizer_preset_buttons,
+            self._visible_optimizer_presets,
+        ):
             is_active = (
                 current_optimizer == optimizer_name
                 and abs(current_learning_rate - learning_rate) < OPTIMIZER_PRESET_FLOAT_TOLERANCE
@@ -2605,7 +2645,6 @@ class SettingsPanel(QDockWidget):
         random_crop_enabled = online_mode_enabled and bool(self.random_crop_check_box.isChecked())
         self.spatial_groupbox.setEnabled(self._training_controls_applicable)
         self.photometric_groupbox.setEnabled(self._training_controls_applicable)
-        self.photometric_groupbox.setVisible(control_enabled)
         self._set_field_enabled(self.augmentation_brightness_spinbox, control_enabled)
         self._set_field_enabled(self.augmentation_contrast_spinbox, control_enabled)
         self._set_field_enabled(self.augmentation_gamma_spinbox, control_enabled)
@@ -2652,7 +2691,6 @@ class SettingsPanel(QDockWidget):
         synthetic_enabled = training_enabled and bool(self.synthetic_defect_generator_check_box.isChecked())
         current_domain = self.get_synthetic_topology_domain_value()
         self.synthetic_defect_generator_groupbox.setEnabled(training_enabled)
-        self.synthetic_defect_generator_groupbox.setVisible(synthetic_enabled)
         self.synthetic_defect_generator_check_box.setEnabled(training_enabled)
         self._set_field_enabled(self.synthetic_topology_domain_combo, synthetic_enabled)
         self._set_field_enabled(
@@ -2715,15 +2753,52 @@ class SettingsPanel(QDockWidget):
         self.recognition_use_auto_threshold_check_box.setEnabled(binarize_output)
         self._set_field_enabled(self.recognition_threshold_spinbox, binarize_output and not auto_threshold)
         self.recognition_tta_check_box.setEnabled(recognition_enabled)
-        self.confidence_tta_check_box.setEnabled(recognition_enabled)
         self._set_field_enabled(self.confidence_save_mode_combo, recognition_enabled)
         self.recognition_postprocess_check_box.setEnabled(binarize_output)
         self._set_field_enabled(self.recognition_postprocess_kernel_size_spinbox, postprocess_enabled)
 
+    def get_confidence_export_mode_value(self) -> str:
+        normalized = str(self.confidence_save_mode_combo.currentData() or self.confidence_save_mode_combo.currentText() or 'off')
+        normalized = normalized.strip().lower()
+        if normalized in CONFIDENCE_SAVE_MODES:
+            return normalized
+        if normalized == 'separate_grayscale':
+            return 'model_output'
+        return 'off'
+
     def get_confidence_save_mode_value(self) -> str:
-        return str(self.confidence_save_mode_combo.currentData() or self.confidence_save_mode_combo.currentText() or 'off')
+        export_mode = self.get_confidence_export_mode_value()
+        if export_mode == 'off':
+            return 'off'
+        return 'separate_grayscale'
+
+    def is_confidence_tta_enabled(self) -> bool:
+        return self.get_confidence_export_mode_value() == 'tta'
+
+    def set_confidence_output_mode(self, confidence_save_mode: str | None, confidence_tta_enabled: bool = False) -> None:
+        normalized_save_mode = str(confidence_save_mode or 'off').strip().lower()
+        if normalized_save_mode in CONFIDENCE_SAVE_MODES:
+            self.set_confidence_export_mode_value(normalized_save_mode)
+            return
+        if normalized_save_mode == 'off':
+            self.set_confidence_export_mode_value('off')
+            return
+        if confidence_tta_enabled:
+            self.set_confidence_export_mode_value('tta')
+            return
+        self.set_confidence_export_mode_value('model_output')
 
     def set_confidence_save_mode_value(self, value: str) -> None:
+        normalized = str(value or 'off').strip().lower()
+        if normalized in CONFIDENCE_SAVE_MODES:
+            self.set_confidence_export_mode_value(normalized)
+            return
+        if normalized == 'off':
+            self.set_confidence_export_mode_value('off')
+            return
+        self.set_confidence_export_mode_value('model_output')
+
+    def set_confidence_export_mode_value(self, value: str) -> None:
         normalized = str(value or 'off').strip().lower()
         index = self.confidence_save_mode_combo.findData(normalized)
         if index < 0:
@@ -2767,15 +2842,12 @@ class SettingsPanel(QDockWidget):
         self.cutout_check_box.setEnabled(training_enabled)
         self.random_artifacts_check_box.setEnabled(training_enabled)
         self.cutout_groupbox.setEnabled(training_enabled)
-        self.cutout_groupbox.setVisible(training_enabled and bool(self.cutout_check_box.isChecked()))
         random_artifacts_enabled = training_enabled and bool(self.random_artifacts_check_box.isChecked())
         self.random_artifacts_groupbox.setEnabled(training_enabled)
-        self.random_artifacts_groupbox.setVisible(random_artifacts_enabled)
         for checkbox in self.random_artifact_type_checkboxes.values():
             checkbox.setEnabled(random_artifacts_enabled)
         self.mixup_check_box.setEnabled(training_enabled)
         self.mixup_groupbox.setEnabled(training_enabled)
-        self.mixup_groupbox.setVisible(training_enabled and bool(self.mixup_check_box.isChecked()))
         pcb_defects_enabled = training_enabled and bool(self.pcb_defects_check_box.isChecked())
         self.pcb_defects_groupbox.setEnabled(training_enabled)
         self.pcb_defects_check_box.setEnabled(training_enabled)

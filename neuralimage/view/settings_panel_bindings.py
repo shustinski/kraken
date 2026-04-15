@@ -104,7 +104,6 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.recognition_use_auto_threshold_check_box.toggled,
             panel.recognition_threshold_spinbox.valueChanged,
             panel.recognition_tta_check_box.toggled,
-            panel.confidence_tta_check_box.toggled,
             panel.confidence_save_mode_combo.currentIndexChanged,
             panel.recognition_postprocess_check_box.toggled,
             panel.recognition_postprocess_kernel_size_spinbox.valueChanged,

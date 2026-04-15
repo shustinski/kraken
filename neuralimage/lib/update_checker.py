@@ -323,6 +323,7 @@ def download_update_installer(release_info: ReleaseInfo | UpdateInfo) -> Path:
         if not source_path.is_file():
             raise FileNotFoundError(f'Installer file not found: {source_path}')
         shutil.copyfile(source_path, target_path)
+        _ensure_posix_executable(target_path)
         return target_path
     with request.urlopen(source, timeout=30.0) as response:
         with target_path.open('wb') as file:
@@ -331,6 +332,7 @@ def download_update_installer(release_info: ReleaseInfo | UpdateInfo) -> Path:
                 if not chunk:
                     break
                 file.write(chunk)
+    _ensure_posix_executable(target_path)
     return target_path
 
 
@@ -341,6 +343,7 @@ def get_update_staging_dir() -> Path:
 def launch_update_installer(installer_path: str | Path) -> None:
     installer = Path(installer_path)
     if os.name != 'nt':
+        _ensure_posix_executable(installer)
         subprocess.Popen([str(installer)], close_fds=True)
         return
     launcher_path = _write_update_launcher_script()
@@ -370,11 +373,32 @@ def collect_release_history(update_info: UpdateInfo) -> str:
 
 
 def _resolve_installer_name(update_info: ReleaseInfo | UpdateInfo, source: str = '') -> str:
-    source_name = Path(source).name if _is_filesystem_source(source) else Path(source).name
-    if source_name.lower().endswith('.exe'):
+    source_name = _extract_source_filename(source)
+    if source_name:
         return source_name
     version = re.sub(r'[^0-9A-Za-z._-]+', '_', update_info.version.strip() or 'latest')
-    return f'NeuralImage-{version}.exe'
+    suffix = '.exe' if os.name == 'nt' else ''
+    return f'NeuralImage-{version}{suffix}'
+
+
+def _extract_source_filename(source: str) -> str:
+    normalized = str(source or '').strip()
+    if not normalized:
+        return ''
+    if _is_filesystem_source(normalized):
+        return Path(normalized).name
+    parsed = urlparse.urlparse(normalized)
+    return Path(parsed.path).name
+
+
+def _ensure_posix_executable(path: Path) -> None:
+    if os.name == 'nt':
+        return
+    try:
+        current_mode = path.stat().st_mode
+        path.chmod(current_mode | 0o111)
+    except OSError:
+        return
 
 
 def _is_filesystem_source(value: str) -> bool:

@@ -80,6 +80,10 @@ def load_qss_from_resource(qss_path: str):
     return load_stylesheet(qss_path)
 
 
+def _load_menu_icon() -> QIcon:
+    return QIcon(str(resolve_internal_path('settings_icon.png')))
+
+
 class MainView(QMainWindow):
     sample_type_changed: pyqtSignal = pyqtSignal(str)
 
@@ -195,10 +199,8 @@ class MainView(QMainWindow):
         self.main_grid.setColumnStretch(0, 1)
         self.main_grid.setColumnStretch(1, 10)
         self.sample_count_top_label = QLabel(t.get("samples_count", "Кадров в выборке: 0"))
-        self.sample_count_top_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.main_grid.addWidget(self.sample_count_top_label, row, 0, 1, 2)
+        self.sample_count_top_label.hide()
 
-        row += 1
         self.work_mode_group = QGroupBox(t["mode"])
         sample_type_layout = QHBoxLayout(self.work_mode_group)
 
@@ -246,11 +248,10 @@ class MainView(QMainWindow):
         self.model_path = ClickableLabel()
         self.main_grid.addWidget(self.model_path, row, 1)
 
-        row += 1
         self.epochs_title_label = QLabel(t["epochs"])
-        self.main_grid.addWidget(self.epochs_title_label, row, 0)
+        self.epochs_title_label.hide()
         self.le_epochs = create_spinbox((0, 1000), 1, 40)
-        self.main_grid.addWidget(self.le_epochs, row, 1)
+        self.le_epochs.hide()
 
         row += 1
         self.buttons_row = QWidget()
@@ -432,9 +433,10 @@ class MainView(QMainWindow):
 
         self._open_config_action = QAction(t.get("menu_open_config", "Открыть"), self)
         file_menu.addAction(self._open_config_action)
-        self._settings_sample_action = QAction(QIcon("./assets/new.png"), t["menu_sample"], self)
-        self._settings_train_action = QAction(QIcon("./assets/new.png"), t["menu_train"], self)
-        self._settings_pred_action = QAction(QIcon("./assets/new.png"), t["menu_pred"], self)
+        menu_icon = _load_menu_icon()
+        self._settings_sample_action = QAction(menu_icon, t["menu_sample"], self)
+        self._settings_train_action = QAction(menu_icon, t["menu_train"], self)
+        self._settings_pred_action = QAction(menu_icon, t["menu_pred"], self)
         settings_menu.addAction(self._settings_sample_action)
         settings_menu.addAction(self._settings_train_action)
         settings_menu.addAction(self._settings_pred_action)
@@ -610,7 +612,7 @@ class MainView(QMainWindow):
             self.model_path.setEnabled(uses_model)
 
         show_model = True if not resolved_mode else uses_model
-        show_epochs = (self._ui_mode != 'simple') and (uses_epochs if resolved_mode else True)
+        show_epochs = False
         self.model_title_label.setVisible(show_model)
         self.model_path.setVisible(show_model)
         self.epochs_title_label.setVisible(show_epochs)

@@ -36,6 +36,14 @@ def _webui_texts(language: str) -> dict[str, object]:
     return get_ui_section('webui', language)
 
 
+def _desktop_texts(language: str) -> dict[str, object]:
+    return get_ui_section('main_window', language)
+
+
+def _task_texts(language: str) -> dict[str, object]:
+    return get_ui_section('task_properties_dialog', language)
+
+
 def _status_display(status: str, texts: dict[str, object]) -> str:
     status_texts = texts.get('status_values', {})
     if isinstance(status_texts, dict):
@@ -136,6 +144,38 @@ def _build_dashboard_context(
     texts: dict[str, object],
     status: str,
 ) -> dict[str, object]:
+    desktop_texts = _desktop_texts(language)
+    task_texts = _task_texts(language)
+    js_texts = dict(texts.get('js', {}))
+    js_texts.update({
+        'work_mode_labels': texts.get('main_form', {}).get('work_modes', {}),
+        'queue_status_values': task_texts.get('status_values', {}),
+        'queue_empty': 'No tasks in queue.' if language == 'en' else 'Очередь пуста.',
+        'preview_unavailable': 'Preview is not available yet.' if language == 'en' else 'Предпросмотр пока недоступен.',
+        'memory_label_default': desktop_texts.get('memory_label_default', 'Memory: -'),
+        'memory_unit': desktop_texts.get('memory_unit', 'MB'),
+        'speed_unit': desktop_texts.get('speed_unit', 'batch/s'),
+        'runtime_ram_label': desktop_texts.get('runtime_ram_label', 'RAM'),
+        'runtime_vram_label': desktop_texts.get('runtime_vram_label', 'VRAM'),
+        'runtime_speed_label': desktop_texts.get('runtime_speed_label', 'Speed'),
+        'validation_quality_default': desktop_texts.get('validation_quality_default', 'Validation quality: -'),
+        'validation_quality_template': desktop_texts.get(
+            'validation_quality_template',
+            'IoU: {iou} | Dice: {dice} | F1: {f1}',
+        ),
+        'performance_label_default': desktop_texts.get('performance_label_default', 'Performance: -'),
+        'performance_label_template': desktop_texts.get(
+            'performance_label_template',
+            'Batch timing | data: {data_wait_ms:.1f} ms | augmentation: {augmentation_ms:.1f} ms | '
+            'forward: {forward_ms:.1f} ms | backward: {backward_ms:.1f} ms | optimizer: {optimizer_ms:.1f} ms | '
+            'total: {total_ms:.1f} ms',
+        ),
+        'recognition_speed_default': desktop_texts.get('recognition_speed_default', 'Recognition speed: -'),
+        'recognition_speed_label': desktop_texts.get('recognition_speed_label', 'Recognition speed'),
+        'recognition_speed_unit': desktop_texts.get('recognition_speed_unit', 'img/s'),
+        'preview_current_frame': desktop_texts.get('preview_current_frame', 'Frame: {name}'),
+        'preview_current_frame_default': desktop_texts.get('preview_current_frame_default', 'Frame: -'),
+    })
     return {
         'main_form': main_form,
         'settings_form': settings_form,
@@ -146,7 +186,8 @@ def _build_dashboard_context(
         'app_version': APP_VERSION,
         'app_title': get_app_title(),
         'texts': texts,
-        'js_texts': texts.get('js', {}),
+        'desktop_texts': desktop_texts,
+        'js_texts': js_texts,
         'ui_language': language,
     }
 
@@ -181,11 +222,11 @@ def start_processing(request: HttpRequest):
         )
 
     session = get_session_service()
-    ok, error = session.start(main_form.to_state(), settings_form.to_state())
+    ok, error, success_message = session.start(main_form.to_state(), settings_form.to_state())
     if not ok:
         messages.error(request, error or str(texts.get('start_error', 'Не удалось запустить обработку.')))
     else:
-        messages.success(request, str(texts.get('start_ok', 'Обработка запущена.')))
+        messages.success(request, success_message or str(texts.get('start_ok', 'Обработка запущена.')))
 
     return redirect('webui:dashboard')
 
@@ -218,6 +259,34 @@ def status_api(request: HttpRequest):
     status = str(snapshot.get('status', 'idle'))
     snapshot['status_display'] = _status_display(status, texts)
     return JsonResponse(snapshot)
+
+
+@require_POST
+def queue_remove_api(request: HttpRequest):
+    task_id_raw = str(request.POST.get('task_id', '')).strip()
+    try:
+        task_id = int(task_id_raw)
+    except ValueError:
+        return JsonResponse({'ok': False, 'error': 'Invalid task id.'}, status=400)
+
+    ok, error = get_session_service().remove_task(task_id)
+    if not ok:
+        return JsonResponse({'ok': False, 'error': error or 'Failed to remove task.'}, status=400)
+    return JsonResponse({'ok': True})
+
+
+@require_POST
+def queue_pause_toggle_api(request: HttpRequest):
+    task_id_raw = str(request.POST.get('task_id', '')).strip()
+    try:
+        task_id = int(task_id_raw)
+    except ValueError:
+        return JsonResponse({'ok': False, 'error': 'Invalid task id.'}, status=400)
+
+    ok, error = get_session_service().toggle_pause_task(task_id)
+    if not ok:
+        return JsonResponse({'ok': False, 'error': error or 'Failed to change queue state.'}, status=400)
+    return JsonResponse({'ok': True})
 
 
 @require_POST

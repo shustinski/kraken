@@ -1,4 +1,4 @@
-﻿(function () {
+(function () {
     const STORAGE_KEY = 'neuralimage_webui_form_v1';
 
     const shell = document.getElementById('app-shell');
@@ -30,6 +30,31 @@
     const perfBackwardNode = document.getElementById('perf-backward');
     const perfOptimizerNode = document.getElementById('perf-optimizer');
     const perfTotalNode = document.getElementById('perf-total');
+
+    const queueListNode = document.getElementById('queue-list');
+    const queueRemoveBtn = document.getElementById('queue-remove-btn');
+    const queuePauseBtn = document.getElementById('queue-pause-btn');
+
+    const progressEpochTextNode = document.getElementById('progress-epoch-text');
+    const progressBatchTextNode = document.getElementById('progress-batch-text');
+    const progressRecognitionTextNode = document.getElementById('progress-recognition-text');
+    const progressEpochFillNode = document.getElementById('progress-epoch-fill');
+    const progressBatchFillNode = document.getElementById('progress-batch-fill');
+    const progressRecognitionFillNode = document.getElementById('progress-recognition-fill');
+
+    const recognitionSpeedNode = document.getElementById('recognition-speed-value');
+    const memoryUsageNode = document.getElementById('memory-usage-value');
+    const validationQualitySummaryNode = document.getElementById('validation-quality-summary');
+    const performanceSummaryNode = document.getElementById('performance-summary');
+
+    const previewFrameNameNode = document.getElementById('preview-frame-name');
+    const previewImageNode = document.getElementById('preview-image');
+    const previewLabelNode = document.getElementById('preview-label');
+    const previewOutputNode = document.getElementById('preview-output');
+    const previewImageEmptyNode = document.getElementById('preview-image-empty');
+    const previewLabelEmptyNode = document.getElementById('preview-label-empty');
+    const previewOutputEmptyNode = document.getElementById('preview-output-empty');
+    const previewLabelColumnNode = document.getElementById('preview-label-column');
 
     const startBtn = document.getElementById('start-btn');
     const stopBtn = document.getElementById('stop-btn');
@@ -92,6 +117,7 @@
     const schedulerGroups = document.querySelectorAll('[data-scheduler-group]');
 
     let afterId = 0;
+    let selectedQueueTaskId = null;
 
     function t(key, fallback) {
         const value = uiTexts[key];
@@ -99,7 +125,7 @@
     }
 
     function getCsrfToken() {
-        const tokenNode = document.querySelector('#start-form input[name=\"csrfmiddlewaretoken\"]');
+        const tokenNode = document.querySelector('#start-form input[name="csrfmiddlewaretoken"]');
         return tokenNode ? tokenNode.value : '';
     }
 
@@ -252,9 +278,7 @@
         syncCutModeSelectFromRadios();
         const isOnlineCutMode = !!(cutModeSelect && cutModeSelect.value === 'online');
         const randomCropEnabled = !!(isOnlineCutMode && randomCropInput && randomCropInput.checked);
-        const scaleAugmentationEnabled = !!(
-            isOnlineCutMode && scaleAugmentationInput && scaleAugmentationInput.checked
-        );
+        const scaleAugmentationEnabled = !!(isOnlineCutMode && scaleAugmentationInput && scaleAugmentationInput.checked);
         const validationEnabled = !!(useValidationInput && useValidationInput.checked);
         const validationSource = validationSourceInput ? validationSourceInput.value : 'split';
         const useExternalValidation = validationEnabled && validationSource === 'external';
@@ -364,8 +388,8 @@
     function updateButtonsByStatus(status) {
         const isRunning = status === 'running' || status === 'stopping';
         if (startBtn) {
-            startBtn.disabled = isRunning;
-            startBtn.style.display = isRunning ? 'none' : 'inline-block';
+            startBtn.disabled = false;
+            startBtn.style.display = 'inline-block';
         }
         if (stopBtn) {
             stopBtn.disabled = !isRunning;
@@ -450,6 +474,111 @@
         }
     }
 
+    function setProgress(fillNode, textNode, progress) {
+        const percent = Number(progress && progress.percent ? progress.percent : 0);
+        const text = progress && progress.text ? progress.text : '0%';
+        if (fillNode) fillNode.style.width = `${percent}%`;
+        if (textNode) textNode.textContent = text;
+    }
+
+    function setPreviewImage(imageNode, emptyNode, sourceUrl) {
+        if (!imageNode || !emptyNode) return;
+        if (sourceUrl) {
+            imageNode.src = sourceUrl;
+            imageNode.hidden = false;
+            emptyNode.hidden = true;
+            return;
+        }
+        imageNode.removeAttribute('src');
+        imageNode.hidden = true;
+        emptyNode.hidden = false;
+    }
+
+    function updatePreview(metrics) {
+        const preview = metrics.preview || {};
+        const mode = preview.mode === 'recognition' ? 'recognition' : 'train';
+        const sampleName = (preview.sample_name || '').trim();
+        const frameTemplate = t('preview_current_frame', 'Frame: {name}');
+        const frameDefault = t('preview_current_frame_default', 'Frame: -');
+        if (previewFrameNameNode) {
+            previewFrameNameNode.textContent = sampleName ? frameTemplate.replace('{name}', sampleName) : frameDefault;
+        }
+        if (previewLabelColumnNode) {
+            previewLabelColumnNode.style.display = mode === 'recognition' ? 'none' : '';
+        }
+        setPreviewImage(previewImageNode, previewImageEmptyNode, preview.image_url || null);
+        setPreviewImage(previewLabelNode, previewLabelEmptyNode, mode === 'recognition' ? null : (preview.label_url || null));
+        setPreviewImage(previewOutputNode, previewOutputEmptyNode, preview.output_url || null);
+    }
+
+    function updateRuntime(metrics) {
+        const progress = metrics.progress || {};
+        const memory = metrics.system_memory || {};
+        const quality = metrics.validation_quality || {};
+        const perf = metrics.train_perf || {};
+        const memoryUnit = t('memory_unit', 'MB');
+        const speedUnit = t('speed_unit', 'batch/s');
+        const ramLabel = t('runtime_ram_label', 'RAM');
+        const vramLabel = t('runtime_vram_label', 'VRAM');
+        const speedLabel = t('runtime_speed_label', 'Speed');
+        const recognitionLabel = t('recognition_speed_label', 'Recognition speed');
+        const recognitionUnit = t('recognition_speed_unit', 'img/s');
+        const validationDefault = t('validation_quality_default', 'Validation quality: -');
+        const performanceDefault = t('performance_label_default', 'Performance: -');
+        const formatPercent = (value) => (Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : '-');
+
+        setProgress(progressEpochFillNode, progressEpochTextNode, progress.epoch || {});
+        setProgress(progressBatchFillNode, progressBatchTextNode, progress.batch || {});
+        setProgress(progressRecognitionFillNode, progressRecognitionTextNode, progress.recognition || {});
+
+        if (recognitionSpeedNode) {
+            const speed = Number(metrics.recognition_speed_images_per_sec);
+            recognitionSpeedNode.textContent = Number.isFinite(speed)
+                ? `${recognitionLabel}: ${speed.toFixed(2)} ${recognitionUnit}`
+                : t('recognition_speed_default', 'Recognition speed: -');
+        }
+
+        if (memoryUsageNode) {
+            const ramText = Number.isFinite(Number(memory.ram_mb))
+                ? `${ramLabel}: ${Number(memory.ram_mb).toFixed(0)} ${memoryUnit}`
+                : `${ramLabel}: -`;
+            let vramText = `${vramLabel}: -`;
+            if (Number.isFinite(Number(memory.vram_allocated_mb))) {
+                const reserved = Number.isFinite(Number(memory.vram_reserved_mb))
+                    ? `/${Number(memory.vram_reserved_mb).toFixed(0)}`
+                    : '';
+                vramText = `${vramLabel}: ${Number(memory.vram_allocated_mb).toFixed(0)}${reserved} ${memoryUnit}`;
+            }
+            const trainSpeed = Number(metrics.train_speed_batches_per_sec);
+            const speedText = Number.isFinite(trainSpeed)
+                ? `${speedLabel}: ${trainSpeed.toFixed(2)} ${speedUnit}`
+                : `${speedLabel}: - ${speedUnit}`;
+            const hasRuntime = Number.isFinite(Number(memory.ram_mb))
+                || Number.isFinite(Number(memory.vram_allocated_mb))
+                || Number.isFinite(Number(memory.vram_reserved_mb))
+                || Number.isFinite(trainSpeed);
+            memoryUsageNode.textContent = hasRuntime ? `${ramText} | ${vramText} | ${speedText}` : t('memory_label_default', 'Memory: -');
+        }
+
+        if (validationQualitySummaryNode) {
+            const hasQuality = Number.isFinite(Number(quality.iou))
+                || Number.isFinite(Number(quality.dice))
+                || Number.isFinite(Number(quality.f1));
+            validationQualitySummaryNode.textContent = hasQuality
+                ? `IoU: ${formatPercent(Number(quality.iou))} | Dice: ${formatPercent(Number(quality.dice))} | F1: ${formatPercent(Number(quality.f1))}`
+                : validationDefault;
+        }
+
+        if (performanceSummaryNode) {
+            const hasPerf = Number.isFinite(Number(perf.total_ms)) && Number(perf.total_ms) > 0;
+            performanceSummaryNode.textContent = hasPerf
+                ? `Batch timing | data: ${Number(perf.data_wait_ms || 0).toFixed(1)} ms | augmentation: ${Number(perf.augmentation_ms || 0).toFixed(1)} ms | forward: ${Number(perf.forward_ms || 0).toFixed(1)} ms | backward: ${Number(perf.backward_ms || 0).toFixed(1)} ms | optimizer: ${Number(perf.optimizer_ms || 0).toFixed(1)} ms | total: ${Number(perf.total_ms || 0).toFixed(1)} ms`
+                : performanceDefault;
+        }
+
+        updatePreview(metrics);
+    }
+
     function updateMetrics(metrics) {
         const trainEpoch = (metrics.train_epoch || []).map((p) => ({ x: p.epoch, y: p.loss }));
         const rawValEpoch = metrics.val_epoch || [];
@@ -488,6 +617,111 @@
             { points: valDice, color: '#7ee787', label: 'Dice' },
         ]);
         drawChart(chartTrainBatch, trainBatch, '#7ee787');
+        updateRuntime(metrics);
+    }
+
+    function queueStatusLabel(status) {
+        const values = uiTexts.queue_status_values || {};
+        return values[status] || status;
+    }
+
+    function workModeLabel(mode) {
+        const values = uiTexts.work_mode_labels || {};
+        return values[mode] || mode;
+    }
+
+    function renderQueue(queueItems) {
+        if (!queueListNode) return;
+        queueListNode.innerHTML = '';
+        if (!Array.isArray(queueItems) || queueItems.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'queue-item';
+            empty.innerHTML = `<div class="queue-item-meta">${t('queue_empty', 'No tasks in queue.')}</div>`;
+            queueListNode.appendChild(empty);
+            selectedQueueTaskId = null;
+            if (queuePauseBtn) queuePauseBtn.disabled = true;
+            if (queueRemoveBtn) queueRemoveBtn.disabled = true;
+            return;
+        }
+
+        const queueTaskIds = queueItems.map((item) => Number(item.task_id));
+        if (!queueTaskIds.includes(Number(selectedQueueTaskId))) {
+            const running = queueItems.find((item) => item.status === 'running');
+            selectedQueueTaskId = running ? Number(running.task_id) : Number(queueItems[0].task_id);
+        }
+
+        queueItems.forEach((item) => {
+            const node = document.createElement('button');
+            node.type = 'button';
+            node.className = `queue-item ${item.status || 'queued'}`;
+            if (Number(item.task_id) === Number(selectedQueueTaskId)) {
+                node.classList.add('is-selected');
+            }
+            node.innerHTML = `
+                <div class="queue-item-title">#${item.task_id} | ${workModeLabel(item.work_mode)}</div>
+                <div class="queue-item-meta">${queueStatusLabel(item.status)}</div>
+            `;
+            node.addEventListener('click', () => {
+                selectedQueueTaskId = Number(item.task_id);
+                renderQueue(queueItems);
+            });
+            queueListNode.appendChild(node);
+        });
+
+        const selected = queueItems.find((item) => Number(item.task_id) === Number(selectedQueueTaskId)) || null;
+        const selectedStatus = selected ? selected.status : '';
+        if (queuePauseBtn) queuePauseBtn.disabled = !selected || selectedStatus === 'running';
+        if (queueRemoveBtn) queueRemoveBtn.disabled = !selected || selectedStatus === 'running';
+    }
+
+    async function postQueueAction(url, taskId) {
+        const csrf = getCsrfToken();
+        if (!csrf) {
+            window.alert(t('csrf_missing', 'CSRF token not found. Reload page and try again.'));
+            return false;
+        }
+        const body = new URLSearchParams();
+        body.set('task_id', String(taskId));
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                'X-CSRFToken': csrf,
+            },
+            body: body.toString(),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+            window.alert(payload.error || `Queue action failed (${response.status})`);
+            return false;
+        }
+        return true;
+    }
+
+    async function removeSelectedQueueTask() {
+        if (!selectedQueueTaskId) return;
+        if (queueRemoveBtn) queueRemoveBtn.disabled = true;
+        try {
+            const ok = await postQueueAction('/api/queue/remove/', selectedQueueTaskId);
+            if (ok) {
+                await poll();
+            }
+        } finally {
+            if (queueRemoveBtn) queueRemoveBtn.disabled = false;
+        }
+    }
+
+    async function pauseSelectedQueueTask() {
+        if (!selectedQueueTaskId) return;
+        if (queuePauseBtn) queuePauseBtn.disabled = true;
+        try {
+            const ok = await postQueueAction('/api/queue/pause-toggle/', selectedQueueTaskId);
+            if (ok) {
+                await poll();
+            }
+        } finally {
+            if (queuePauseBtn) queuePauseBtn.disabled = false;
+        }
     }
 
     async function poll() {
@@ -502,6 +736,7 @@
 
             afterId = data.last_event_id || afterId;
             appendLogs(data.events || []);
+            renderQueue(data.queue || []);
             updateMetrics(data.metrics || {});
         } catch (_error) {
             // Ignore transient polling errors.
@@ -512,6 +747,13 @@
         toggleSettingsBtn.addEventListener('click', () => {
             shell.classList.toggle('show-settings');
         });
+    }
+
+    if (queueRemoveBtn) {
+        queueRemoveBtn.addEventListener('click', removeSelectedQueueTask);
+    }
+    if (queuePauseBtn) {
+        queuePauseBtn.addEventListener('click', pauseSelectedQueueTask);
     }
 
     pickPathButtons.forEach((btn) => {
@@ -564,4 +806,3 @@
     setInterval(poll, 1000);
     poll();
 })();
-

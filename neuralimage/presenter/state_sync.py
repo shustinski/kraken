@@ -76,13 +76,15 @@ def set_initial_sample_count_state(presenter) -> None:
 
 def current_view_main_window_mode_entry(presenter) -> dict[str, object]:
     view = presenter.view
+    epochs_widget = getattr(getattr(presenter, 'settings_panel', None), 'epochs_spinbox', None)
+    epochs_value = epochs_widget.value() if epochs_widget is not None else view.le_epochs.value()
     return build_main_window_mode_state_entry(
         source_folder=view.lbl_source.text(),
         result_folder=view.lbl_result.text(),
         model_path=view.model_path.text(),
         label_folder=view.label_path.text(),
         sample_folder=view.sample_path.text(),
-        epochs=view.le_epochs.value(),
+        epochs=epochs_value,
     )
 
 
@@ -107,6 +109,8 @@ def restore_mode_state_to_view(presenter, mode: str) -> None:
     except (TypeError, ValueError):
         epochs = MainWindowState().epochs
     presenter.view.le_epochs.setValue(epochs)
+    if hasattr(presenter, 'settings_panel') and hasattr(presenter.settings_panel, 'epochs_spinbox'):
+        presenter.settings_panel.epochs_spinbox.setValue(epochs)
     presenter.main_window_state.source_folder = str(entry.get('source_folder', ''))
     presenter.main_window_state.result_folder = str(entry.get('result_folder', ''))
     presenter.main_window_state.label_folder = str(entry.get('label_folder', ''))
@@ -129,7 +133,8 @@ def update_main_window_state(presenter) -> None:
     presenter.main_window_state.label_folder = view.label_path.text()
     presenter.main_window_state.sample_folder = view.sample_path.text()
     presenter.main_window_state.model_path = view.model_path.text()
-    presenter.main_window_state.epochs = view.le_epochs.value()
+    epochs_widget = getattr(getattr(presenter, 'settings_panel', None), 'epochs_spinbox', None)
+    presenter.main_window_state.epochs = epochs_widget.value() if epochs_widget is not None else view.le_epochs.value()
     presenter.main_window_state.ui_mode = presenter.view.current_ui_mode()
     presenter.main_window_state.mode_state = mode_state
 
@@ -178,6 +183,8 @@ def apply_settings_to_panel(presenter) -> None:
     panel.train_patch_y_size.setValue(train_patch_size[1])
     panel.recognition_patch_x_size.setValue(recognition_patch_size[0])
     panel.recognition_patch_y_size.setValue(recognition_patch_size[1])
+    main_window_state = getattr(presenter, '__dict__', {}).get('main_window_state')
+    panel.epochs_spinbox.setValue(int(getattr(main_window_state, 'epochs', MainWindowState().epochs)))
 
     panel.set_model(state.model)
     if hasattr(panel, 'set_color_mode_value'):
@@ -249,17 +256,21 @@ def apply_settings_to_panel(presenter) -> None:
     )
     panel.recognition_threshold_spinbox.setValue(float(getattr(state, 'recognition_threshold', 0.5)))
     panel.recognition_tta_check_box.setChecked(bool(getattr(state, 'recognition_tta_enabled', False)))
-    panel.confidence_tta_check_box.setChecked(bool(getattr(state, 'confidence_tta_enabled', False)))
     panel.recognition_postprocess_check_box.setChecked(bool(getattr(state, 'recognition_postprocess', False)))
     panel.recognition_postprocess_kernel_size_spinbox.setValue(
         int(getattr(state, 'recognition_postprocess_kernel_size', 3))
     )
-    if hasattr(panel, 'set_confidence_save_mode_value'):
+    if hasattr(panel, 'set_confidence_output_mode'):
+        panel.set_confidence_output_mode(
+            str(getattr(state, 'confidence_save_mode', 'off')),
+            bool(getattr(state, 'confidence_tta_enabled', False)),
+        )
+    elif hasattr(panel, 'set_confidence_save_mode_value'):
         panel.set_confidence_save_mode_value(str(getattr(state, 'confidence_save_mode', 'off')))
     panel.log_update_frequency_spinbox.setValue(state.log_update_frequency)
     panel.optimizer_type.setCurrentText(state.optimizer_name)
     panel.mixed_precision_type.setCurrentText(state.mixed_precision)
-    panel.deep_supervision_check_box.setChecked(bool(getattr(state, 'deep_supervision', True)))
+    panel.deep_supervision_check_box.setChecked(bool(getattr(state, 'deep_supervision', False)))
     if hasattr(panel, 'set_loss_term_weights'):
         panel.set_loss_term_weights(
             resolve_loss_term_weights(
@@ -446,7 +457,11 @@ def update_settings_window_state(presenter) -> None:
     recognition_use_auto_threshold = panel.recognition_use_auto_threshold_check_box.isChecked()
     recognition_threshold = panel.recognition_threshold_spinbox.value()
     recognition_tta_enabled = panel.recognition_tta_check_box.isChecked()
-    confidence_tta_enabled = panel.confidence_tta_check_box.isChecked()
+    confidence_tta_enabled = (
+        panel.is_confidence_tta_enabled()
+        if hasattr(panel, 'is_confidence_tta_enabled')
+        else False
+    )
     recognition_postprocess = panel.recognition_postprocess_check_box.isChecked()
     recognition_postprocess_kernel_size = panel.recognition_postprocess_kernel_size_spinbox.value()
     confidence_save_mode = (

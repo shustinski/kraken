@@ -278,7 +278,7 @@ def _build_settings_state(
         warmup_enabled=read_bool('warmup_enabled', defaults.warmup_enabled),
         deep_supervision=read_bool(
             'deep_supervision',
-            getattr(defaults, 'deep_supervision', True),
+            getattr(defaults, 'deep_supervision', False),
         ),
         warmup_epochs=read_int('warmup_epochs', defaults.warmup_epochs),
         warmup_start_factor=read_float('warmup_start_factor', defaults.warmup_start_factor),
@@ -563,7 +563,7 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'early_stopping_min_delta': float(state.early_stopping_min_delta),
         'early_stopping_restore_best_weights': bool(state.early_stopping_restore_best_weights),
         'warmup_enabled': bool(state.warmup_enabled),
-        'deep_supervision': bool(getattr(state, 'deep_supervision', True)),
+        'deep_supervision': bool(getattr(state, 'deep_supervision', False)),
         'warmup_epochs': int(state.warmup_epochs),
         'warmup_start_factor': float(state.warmup_start_factor),
         'scheduler_name': normalize_scheduler_name(getattr(state, 'scheduler_name', 'off')),

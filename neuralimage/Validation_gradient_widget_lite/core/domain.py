@@ -7,6 +7,8 @@ from enum import Enum
 from typing import Any
 from pathlib import Path
 
+from .subpixel_grid import SubpixelGrid
+
 
 class ComparisonMode(str, Enum):
     """Define supported overlay operations in the details dialog."""
@@ -78,6 +80,15 @@ class BuildOptions:
     progress_update_interval: int = 32
     cache_enabled: bool = True
     analysis_max_side: int = 1024
+    tile_mode: str = "pixel"
+    tile_width: int = 256
+    tile_height: int = 256
+    tile_overlap_mode: str = "auto"
+    tile_overlap: int = 0
+    subpixel_view_mode: str = "pixel"
+    subpixel_rows: int = 2
+    subpixel_columns: int = 2
+    subpixel_aggregation: str = "mean"
     comparison_mode: ComparisonMode = ComparisonMode.DISAGREEMENT
     geometry_mode: GeometryMode = GeometryMode.MASK
     mask_threshold: float = 0.5
@@ -474,6 +485,7 @@ class FrameRecord:
     gt_path: str | None = None
     model_mask_paths: dict[str, str] = field(default_factory=dict)
     model_prob_paths: dict[str, str] = field(default_factory=dict)
+    subpixel_grid: SubpixelGrid | None = None
     summary: FrameAnalysisSummary | None = None
 
 

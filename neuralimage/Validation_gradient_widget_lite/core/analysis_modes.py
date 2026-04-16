@@ -26,9 +26,6 @@ INTER_MODEL_POLYGON_DISPLAY_KEYS: tuple[str, ...] = (
     "iou_score",
     "dice_score",
     "polygon_bce_score",
-    "iou",
-    "dice",
-    "bce",
 )
 INTER_MODEL_POLYGON_PERCENTILE_KEYS: tuple[str, ...] = (
     "overall_polygon_score",
@@ -43,10 +40,6 @@ INTER_MODEL_POINT_DISPLAY_KEYS: tuple[str, ...] = (
     "recall_score",
     "f1_score",
     "localization_score",
-    "precision",
-    "recall",
-    "f1",
-    "mean_localization_distance",
 )
 INTER_MODEL_POINT_PERCENTILE_KEYS: tuple[str, ...] = (
     "overall_point_score",
@@ -78,17 +71,6 @@ CONFIDENCE_QUALITY_THRESHOLDS: tuple[tuple[float, str], ...] = (
     (0.35, "score.level.moderate"),
     (0.60, "score.level.elevated"),
 )
-
-# Confidence percentiles stay inside the absolute quality band of the frame.
-# This keeps a "less bad" critical frame from surfacing as a globally good one
-# only because the rest of the batch is even worse.
-CONFIDENCE_PERCENTILE_BANDS: dict[str, tuple[float, float]] = {
-    "score.level.high": (0.0, 15.0),
-    "score.level.elevated": (15.0, 35.0),
-    "score.level.moderate": (35.0, 60.0),
-    "score.level.low": (60.0, 100.0),
-}
-
 
 @dataclass(frozen=True, slots=True)
 class AnalysisContext:
@@ -140,20 +122,6 @@ def confidence_quality_level_key(value: float | None) -> str | None:
         if numeric < float(upper_bound):
             return str(level_key)
     return "score.level.high"
-
-
-def confidence_quality_percentile_band(level_key: str | None) -> tuple[float, float] | None:
-    if level_key is None:
-        return None
-    band = CONFIDENCE_PERCENTILE_BANDS.get(str(level_key))
-    if band is None:
-        return None
-    return float(band[0]), float(band[1])
-
-
-def metric_uses_within_group_percentiles(metric_key: str | None) -> bool:
-    family = confidence_metric_family(metric_key)
-    return bool(family is not None and family[0] == "model_confidence")
 
 
 def available_confidence_model_ids(build_result: BuildResult | None) -> tuple[str, ...]:

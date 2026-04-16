@@ -47,6 +47,7 @@ class FrameIndexWorker(WorkerBase):
                 original_folder=self._original_folder,
                 gt_folder=self._gt_folder,
                 cancel_check=self._is_cancelled,
+                progress_callback=lambda current, total, key: self.progress.emit(current, total, key),
             )
         except Exception as error:
             self.failed.emit(str(error))

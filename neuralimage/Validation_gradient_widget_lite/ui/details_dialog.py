@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import numpy as np
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -29,6 +29,14 @@ from PyQt6.QtWidgets import (
 from ..core.analysis_modes import metric_level_key, metric_visual_ratio
 from ..core.backend_constants import BCE_SCORE_CAP, MODEL_CONFIDENCE_UNCERTAIN_DELTA, POINT_SUPPORT_THRESHOLD, POLYGON_SUPPORT_THRESHOLD
 from ..core.domain import BuildResult, ComparisonMode, FrameRecord
+from ..core.subpixel_grid import (
+    SubpixelGrid,
+    SubpixelGridSpec,
+    SubpixelSelection,
+    build_subpixel_grid_from_pair,
+    subpixel_bounds_for_index,
+    subpixel_spec_from_options,
+)
 from ..core.repository import (
     _boundary_mask,
     _confidence_map_from_probability,
@@ -40,9 +48,14 @@ from ..core.repository import (
     _support_weights_from_probability,
     _uncertainty_map_from_probability,
     compute_comparison,
+    compute_comparison_score,
 )
+from ..core.tile_grid import TileGridPlan, plan_tile_grid, tile_bounds_for_index
 from ..core.workers import DetailConfidenceWorker, DetailPayloadWorker
 from ..ui.i18n import Translator
+from ..ui.ui_constants import DEFAULT_SUBPIXEL_AGGREGATION
+
+DETAIL_PIXEL_VIEW_THRESHOLD = 32.0
 
 
 class _OverlayGraphicsView(QGraphicsView):
@@ -50,6 +63,8 @@ class _OverlayGraphicsView(QGraphicsView):
 
     middlePressed = pyqtSignal()
     middleReleased = pyqtSignal()
+    leftClicked = pyqtSignal(QPointF)
+    viewTransformChanged = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -68,6 +83,7 @@ class _OverlayGraphicsView(QGraphicsView):
         next_scale = current_scale * factor
         if 0.05 <= next_scale <= 60.0:
             self.scale(factor, factor)
+            self.viewTransformChanged.emit()
         event.accept()
 
     def mousePressEvent(self, event) -> None:
@@ -75,6 +91,8 @@ class _OverlayGraphicsView(QGraphicsView):
             self.middlePressed.emit()
             event.accept()
             return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.leftClicked.emit(self.mapToScene(event.position().toPoint()))
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
@@ -103,6 +121,53 @@ class _OverlayGraphicsView(QGraphicsView):
     def reset_view(self) -> None:
         self.resetTransform()
         self.fit_to_scene()
+        self.viewTransformChanged.emit()
+
+
+class _ExpandableDetailScoreCard(QWidget):
+    """Show the current frame score with click-to-expand details."""
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.title_label = QLabel(title, self)
+        self.title_label.setWordWrap(True)
+        self.value_button = QPushButton("-", self)
+        self.value_button.setCheckable(True)
+        self.value_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.value_button.setMinimumHeight(40)
+        self.value_button.setStyleSheet(
+            "padding: 8px 12px; border-radius: 10px; "
+            "background-color: #2f3844; color: #edf3fb; font-weight: 700; "
+            "border: none; text-align: center;"
+        )
+        self.details_label = QLabel("", self)
+        self.details_label.setWordWrap(True)
+        self.details_label.setStyleSheet(
+            "padding: 6px 8px; color: #c9d3df; "
+            "background-color: #11161d; border-radius: 8px;"
+        )
+        self.details_label.hide()
+        self.value_button.toggled.connect(self._on_toggled)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.value_button)
+        layout.addWidget(self.details_label)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.details_label.setVisible(bool(checked) and bool(self.details_label.text().strip()))
+
+    def set_payload(self, title: str, value_text: str, value_style: str, details: str, tooltip: str = "") -> None:
+        self.title_label.setText(str(title))
+        self.value_button.setText(str(value_text))
+        self.value_button.setStyleSheet(str(value_style) + "; border: none; text-align: center;")
+        self.details_label.setText(str(details))
+        self.details_label.setVisible(bool(self.value_button.isChecked()) and bool(str(details).strip()))
+        self.setToolTip(str(tooltip or ""))
+        self.title_label.setToolTip(str(tooltip or ""))
+        self.value_button.setToolTip(str(tooltip or ""))
+        self.details_label.setToolTip(str(tooltip or ""))
 
 
 class ExtendFrameDetailsDialog(QDialog):
@@ -144,7 +209,50 @@ class ExtendFrameDetailsDialog(QDialog):
         self._hold_preview_pixmap = QPixmap()
         self._session_view_state = session_view_state if session_view_state is not None else {}
         self._on_view_state_changed = on_view_state_changed
+        tile_selection_payload = self._session_view_state.get("tile_selection")
+        self._tile_selection = None
+        self._subpixel_selection: SubpixelSelection | None = None
+        subpixel_selection_payload = self._session_view_state.get("subpixel_selection")
+        if isinstance(tile_selection_payload, dict):
+            row = tile_selection_payload.get("row")
+            column = tile_selection_payload.get("column")
+            if row is not None and column is not None:
+                self._tile_selection = (int(row), int(column))
+        elif isinstance(tile_selection_payload, (tuple, list)) and len(tile_selection_payload) >= 2:
+            self._tile_selection = (int(tile_selection_payload[0]), int(tile_selection_payload[1]))
+        if isinstance(subpixel_selection_payload, dict):
+            try:
+                spec = None
+                spec_rows = subpixel_selection_payload.get("spec_rows")
+                spec_columns = subpixel_selection_payload.get("spec_columns")
+                if spec_rows is not None and spec_columns is not None:
+                    spec = SubpixelGridSpec(
+                        rows=int(spec_rows),
+                        columns=int(spec_columns),
+                        mode=str(subpixel_selection_payload.get("spec_mode") or "grid"),
+                        tile_width=int(subpixel_selection_payload.get("spec_tile_width") or 1),
+                        tile_height=int(subpixel_selection_payload.get("spec_tile_height") or 1),
+                        overlap=int(subpixel_selection_payload.get("spec_overlap") or 0),
+                    ).normalized()
+                self._subpixel_selection = SubpixelSelection(
+                    parent_row=int(subpixel_selection_payload.get("parent_row", 0)),
+                    parent_column=int(subpixel_selection_payload.get("parent_column", 0)),
+                    sub_row=int(subpixel_selection_payload.get("sub_row", 0)),
+                    sub_column=int(subpixel_selection_payload.get("sub_column", 0)),
+                    parent_value=float(subpixel_selection_payload.get("parent_value", 0.0)),
+                    subpixel_value=float(subpixel_selection_payload.get("subpixel_value", 0.0)),
+                    subpixel_confidence=(
+                        None if subpixel_selection_payload.get("subpixel_confidence") is None else float(subpixel_selection_payload.get("subpixel_confidence"))
+                    ),
+                    aggregation=str(subpixel_selection_payload.get("aggregation") or "mean"),
+                    metric_key=str(subpixel_selection_payload.get("metric_key") or "overall_frame_score"),
+                    spec=spec,
+                )
+            except Exception:
+                self._subpixel_selection = None
         self._restored_result_kind: str | None = None
+        self._sticky_result_kind: str | None = None
+        self._tile_plan: TileGridPlan | None = None
         self.frame_id_value = QLabel("-", self)
         self.frame_id_value.hide()
         self.resize(1440, 940)
@@ -157,6 +265,9 @@ class ExtendFrameDetailsDialog(QDialog):
         self.second_source_item = scene.addPixmap(QPixmap())
         self.result_item = scene.addPixmap(QPixmap())
         self.hold_preview_item = scene.addPixmap(QPixmap())
+        self.tile_preview_item = scene.addPixmap(QPixmap())
+        self.tile_grid_item = scene.addPixmap(QPixmap())
+        self.tile_selection_item = scene.addRect(0.0, 0.0, 0.0, 0.0)
         # Legacy lite aliases retained for backward compatibility.
         self.base_item = self.original_item
         self.first_item = self.first_source_item
@@ -173,6 +284,18 @@ class ExtendFrameDetailsDialog(QDialog):
         self.second_source_item.setZValue(2.0)
         self.result_item.setZValue(3.0)
         self.hold_preview_item.setZValue(4.0)
+        self.tile_preview_item.setZValue(-1.0)
+        self.tile_grid_item.setZValue(3.5)
+        self.tile_selection_item.setZValue(4.5)
+        selection_pen = QPen(QColor(255, 196, 0, 235), 0.0)
+        selection_pen.setCosmetic(True)
+        self.tile_selection_item.setPen(selection_pen)
+        self.tile_selection_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self.tile_selection_item.setVisible(False)
+        self.tile_preview_item.setVisible(False)
+        self.tile_grid_item.setVisible(False)
+        self.overlay_view.viewTransformChanged.connect(self._update_tile_lod)
+        self.overlay_view.leftClicked.connect(self._on_view_clicked)
         self._connect_signals()
         self._create_navigation_shortcuts()
         self._restore_view_settings()
@@ -212,11 +335,26 @@ class ExtendFrameDetailsDialog(QDialog):
 
         controls_scroll = QScrollArea(splitter)
         controls_scroll.setWidgetResizable(True)
-        controls_scroll.setMinimumWidth(380)
+        controls_scroll.setMinimumWidth(420)
         controls_host = QWidget(controls_scroll)
         controls_layout = QVBoxLayout(controls_host)
         controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(10)
         controls_scroll.setWidget(controls_host)
+
+        frame_summary_group = QGroupBox(self._t("details.frame_info"), controls_host)
+        frame_summary_form = QFormLayout(frame_summary_group)
+        frame_summary_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.frame_name_value = QLabel(self._record.display_name, frame_summary_group)
+        self.frame_name_value.setWordWrap(True)
+        self.frame_id_value.show()
+        self.subpixel_selection_value = QLabel("-", frame_summary_group)
+        self.subpixel_selection_value.setWordWrap(True)
+        self.subpixel_selection_value.hide()
+        frame_summary_form.addRow(self._t("matrix.preview.frame"), self.frame_name_value)
+        frame_summary_form.addRow(self._t("details.frame_id"), self.frame_id_value)
+        frame_summary_form.addRow(self._t("details.subpixel_selection"), self.subpixel_selection_value)
+        controls_layout.addWidget(frame_summary_group)
 
         config_group = QGroupBox(self._t("details.display"), controls_host)
         config_form = QFormLayout(config_group)
@@ -286,26 +424,12 @@ class ExtendFrameDetailsDialog(QDialog):
 
         comparison_score_group = QGroupBox(self._t("details.selected_comparison_score"), controls_host)
         comparison_score_layout = QVBoxLayout(comparison_score_group)
-        self.comparison_score_caption = QLabel("-", comparison_score_group)
-        self.comparison_score_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.comparison_score_caption.setWordWrap(True)
-        self.comparison_score_value_label = QLabel("-", comparison_score_group)
-        self.comparison_score_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.comparison_score_value_label.setMinimumHeight(40)
-        self.comparison_score_value_label.setStyleSheet("padding: 8px 12px; border-radius: 10px; background-color: #2f3844; color: #edf3fb; font-weight: 700;")
-        comparison_score_layout.addWidget(self.comparison_score_caption)
-        comparison_score_layout.addWidget(self.comparison_score_value_label)
+        self.comparison_score_card = _ExpandableDetailScoreCard(self._t("details.frame_score"), comparison_score_group)
+        comparison_score_layout.addWidget(self.comparison_score_card)
+        self.subpixel_score_card = _ExpandableDetailScoreCard(self._t("details.subpixel_score"), comparison_score_group)
+        self.subpixel_score_card.hide()
+        comparison_score_layout.addWidget(self.subpixel_score_card)
         controls_layout.addWidget(comparison_score_group)
-
-        comparison_group = QGroupBox(self._t("details.comparisons"), controls_host)
-        comparison_layout = QVBoxLayout(comparison_group)
-        self.comparison_label = QLabel("-", comparison_group)
-        self.comparison_label.setWordWrap(True)
-        self.comparison_label.setMinimumWidth(0)
-        self.comparison_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        comparison_layout.addWidget(self.comparison_label)
-        controls_layout.addWidget(comparison_group)
-
         controls_layout.addStretch(1)
 
         splitter.addWidget(viewer_widget)
@@ -326,6 +450,23 @@ class ExtendFrameDetailsDialog(QDialog):
         super().closeEvent(event)
 
     def keyPressEvent(self, event) -> None:
+        if self._subpixel_selection is not None:
+            if event.key() == Qt.Key.Key_Right:
+                self._step_subpixel_selection(0, +1)
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Down:
+                self._step_subpixel_selection(+1, 0)
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Left:
+                self._step_subpixel_selection(0, -1)
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Up:
+                self._step_subpixel_selection(-1, 0)
+                event.accept()
+                return
         if event.key() == Qt.Key.Key_Right:
             if self._legacy_step_record(+1):
                 event.accept()
@@ -364,6 +505,8 @@ class ExtendFrameDetailsDialog(QDialog):
         if self._record.identity is not None and self._record.identity.frame_id is not None:
             frame_id = str(self._record.identity.frame_id)
         self.frame_id_value.setText(frame_id)
+        if hasattr(self, "frame_name_value"):
+            self.frame_name_value.setText(str(self._record.display_name))
 
     def _legacy_step_record(self, delta: int) -> bool:
         records = tuple(self._build_result.records or ())
@@ -377,6 +520,10 @@ class ExtendFrameDetailsDialog(QDialog):
         if next_index < 0 or next_index >= len(records):
             return False
         self._record = records[next_index]
+        self._tile_selection = None
+        self._subpixel_selection = None
+        self._session_view_state.pop("tile_selection", None)
+        self._session_view_state.pop("subpixel_selection", None)
         self.setWindowTitle(self._t("details.window_title", name=self._record.display_name))
         self._legacy_update_frame_id_value()
         self._load_current_payload(reset_view=False, preserve_selection=True)
@@ -697,9 +844,15 @@ class ExtendFrameDetailsDialog(QDialog):
     def _refresh_tooltips(self, score_hint: str | None, overlay_hint: str | None, result_kind: str) -> None:
         score_tooltip = score_hint or ''
         overlay_tooltip = overlay_hint or ''
-        self.comparison_score_caption.setToolTip(score_tooltip)
-        self.comparison_score_value_label.setToolTip(score_tooltip)
-        self.comparison_label.setToolTip(score_tooltip)
+        self.comparison_score_card.setToolTip(score_tooltip)
+        self.comparison_score_card.title_label.setToolTip(score_tooltip)
+        self.comparison_score_card.value_button.setToolTip(score_tooltip)
+        self.comparison_score_card.details_label.setToolTip(score_tooltip)
+        if getattr(self, "subpixel_score_card", None) is not None:
+            self.subpixel_score_card.setToolTip(score_tooltip)
+            self.subpixel_score_card.title_label.setToolTip(score_tooltip)
+            self.subpixel_score_card.value_button.setToolTip(score_tooltip)
+            self.subpixel_score_card.details_label.setToolTip(score_tooltip)
         self.result_kind_combo.setToolTip(overlay_tooltip)
         self.result_layer_title.setToolTip(overlay_tooltip)
         self.result_item.setToolTip(overlay_tooltip) if hasattr(self.result_item, 'setToolTip') else None
@@ -844,13 +997,15 @@ class ExtendFrameDetailsDialog(QDialog):
         self._stop_detail_worker()
         self._stop_confidence_worker()
         self._payload_loading = True
-        previous_result_kind = self._selected_result_kind() if preserve_selection else None
+        previous_result_kind = self._selected_result_kind() if preserve_selection else self._sticky_result_kind
         default_model_id = self._preferred_confidence_model_id() or (self._build_result.model_specs[0].model_id if self._build_result.model_specs else None)
         max_side = int(getattr(self._build_result.options, "analysis_max_side", 0) or 0) or None
-        self.comparison_score_caption.setText(self._t("details.selected_comparison_score"))
-        self.comparison_score_value_label.setText("Loading...")
-        self.comparison_score_value_label.setStyleSheet(self._comparison_score_style(None))
-        self.comparison_label.setText("Loading frame details...")
+        self.comparison_score_card.set_payload(
+            self._t("details.frame_score"),
+            "Loading...",
+            self._comparison_score_style(None),
+            "Loading frame details...",
+        )
         self._refresh_scene(reset_view=reset_view)
         self._refresh_info()
         self._detail_thread = QThread(self)
@@ -877,7 +1032,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self._overlay_cache.clear()
         self._derived_cache.clear()
         self._set_confidence_loading_state(False)
-        preferred_kind = previous_result_kind if preserve_selection else self._restored_result_kind
+        preferred_kind = previous_result_kind if preserve_selection else (self._sticky_result_kind or self._restored_result_kind)
         self._refresh_result_kind_options(preferred_kind)
         self._restored_result_kind = None
         self._apply_selected_model(self._selected_model_for_current_comparison())
@@ -886,6 +1041,107 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _load_current_payload(self, *, reset_view: bool, preserve_selection: bool) -> None:
         self._start_loading_payload(reset_view=reset_view, preserve_selection=preserve_selection)
+
+    def _default_subpixel_spec(self) -> SubpixelGridSpec:
+        source_shape = None
+        try:
+            base = self._full_base_array()
+            if isinstance(base, np.ndarray) and base.ndim == 2 and base.size > 0:
+                source_shape = (int(base.shape[0]), int(base.shape[1]))
+        except Exception:
+            source_shape = None
+        return subpixel_spec_from_options(self._build_result.options, source_shape)
+
+    def _subpixel_grid_for_view(self) -> SubpixelGrid | None:
+        selection = self._subpixel_selection
+        if selection is None:
+            return None
+        spec = selection.spec or self._default_subpixel_spec()
+        mode = self._current_operation_mode()
+        _preset_key, first_key, second_key = self._current_comparison_tuple()
+        cache_key = (
+            "subpixel_grid_view",
+            str(self._record.key),
+            str(first_key),
+            str(second_key),
+            str(mode.value),
+            int(spec.rows),
+            int(spec.columns),
+            str(getattr(selection, "aggregation", DEFAULT_SUBPIXEL_AGGREGATION) or DEFAULT_SUBPIXEL_AGGREGATION),
+        )
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, SubpixelGrid):
+            return cached
+        first, second = self._pairwise_comparison_inputs(first_key, second_key, mode)
+        if first.ndim != 2 or second.ndim != 2 or first.size == 0 or second.size == 0 or first.shape != second.shape:
+            return None
+        grid = build_subpixel_grid_from_pair(
+            first,
+            second,
+            spec,
+            score_fn=lambda first_tile, second_tile: compute_comparison_score(first_tile, second_tile, mode),
+            aggregation=str(getattr(selection, "aggregation", DEFAULT_SUBPIXEL_AGGREGATION) or DEFAULT_SUBPIXEL_AGGREGATION),
+            value_kind="risk",
+        )
+        self._derived_cache[cache_key] = grid
+        return grid
+
+    def _step_subpixel_selection(self, delta_row: int, delta_column: int) -> bool:
+        selection = self._subpixel_selection
+        if selection is None:
+            return False
+        spec = selection.spec or self._default_subpixel_spec()
+        rows = max(1, int(spec.rows))
+        columns = max(1, int(spec.columns))
+        next_row = min(max(int(selection.sub_row) + int(delta_row), 0), rows - 1)
+        next_column = min(max(int(selection.sub_column) + int(delta_column), 0), columns - 1)
+        if next_row == int(selection.sub_row) and next_column == int(selection.sub_column):
+            return False
+        grid = self._subpixel_grid_for_view()
+        if grid is not None and grid.spec.normalized() == spec.normalized():
+            subpixel_value = float(grid.value_at(next_row, next_column))
+            subpixel_confidence = grid.confidence_at(next_row, next_column)
+            parent_value = float(grid.aggregate_value(selection.aggregation or DEFAULT_SUBPIXEL_AGGREGATION))
+        else:
+            subpixel_value = float(selection.subpixel_value)
+            subpixel_confidence = selection.subpixel_confidence
+            parent_value = float(selection.parent_value)
+        self._subpixel_selection = SubpixelSelection(
+            parent_row=int(selection.parent_row),
+            parent_column=int(selection.parent_column),
+            sub_row=int(next_row),
+            sub_column=int(next_column),
+            parent_value=float(parent_value),
+            subpixel_value=float(subpixel_value),
+            subpixel_confidence=None if subpixel_confidence is None else float(subpixel_confidence),
+            aggregation=str(selection.aggregation or DEFAULT_SUBPIXEL_AGGREGATION),
+            metric_key=str(selection.metric_key or self._comparison_score_metric_key()),
+            spec=spec.normalized(),
+        )
+        self._session_view_state["subpixel_selection"] = {
+            "parent_row": int(self._subpixel_selection.parent_row),
+            "parent_column": int(self._subpixel_selection.parent_column),
+            "sub_row": int(self._subpixel_selection.sub_row),
+            "sub_column": int(self._subpixel_selection.sub_column),
+            "parent_value": float(self._subpixel_selection.parent_value),
+            "subpixel_value": float(self._subpixel_selection.subpixel_value),
+            "subpixel_confidence": None if self._subpixel_selection.subpixel_confidence is None else float(self._subpixel_selection.subpixel_confidence),
+            "aggregation": str(self._subpixel_selection.aggregation),
+            "metric_key": str(self._subpixel_selection.metric_key),
+            "spec_rows": int(self._subpixel_selection.spec.rows if self._subpixel_selection.spec is not None else spec.rows),
+            "spec_columns": int(self._subpixel_selection.spec.columns if self._subpixel_selection.spec is not None else spec.columns),
+            "spec_mode": str(self._subpixel_selection.spec.mode if self._subpixel_selection.spec is not None else spec.mode),
+            "spec_tile_width": int(self._subpixel_selection.spec.tile_width if self._subpixel_selection.spec is not None else spec.tile_width),
+            "spec_tile_height": int(self._subpixel_selection.spec.tile_height if self._subpixel_selection.spec is not None else spec.tile_height),
+            "spec_overlap": int(self._subpixel_selection.spec.overlap if self._subpixel_selection.spec is not None else spec.overlap),
+        }
+        self._overlay_cache.clear()
+        self._derived_cache.clear()
+        self._refresh_scene(reset_view=False)
+        self._refresh_info()
+        self._update_tile_lod()
+        self._store_view_settings()
+        return True
 
     def _cleanup_detail_worker(self) -> None:
         if self._detail_worker is not None:
@@ -940,10 +1196,12 @@ class ExtendFrameDetailsDialog(QDialog):
     def _on_detail_worker_failed(self, message: str) -> None:
         self._payload_loading = False
         self._set_confidence_loading_state(False)
-        self.comparison_score_caption.setText(self._t("details.selected_comparison_score"))
-        self.comparison_score_value_label.setText("-")
-        self.comparison_score_value_label.setStyleSheet(self._comparison_score_style(None))
-        self.comparison_label.setText(str(message))
+        self.comparison_score_card.set_payload(
+            self._t("details.frame_score"),
+            "-",
+            self._comparison_score_style(None),
+            str(message),
+        )
 
     def _confidence_payload_ready(self, model_id: str | None) -> bool:
         if model_id is None:
@@ -1137,7 +1395,11 @@ class ExtendFrameDetailsDialog(QDialog):
         probability = np.clip(np.asarray(model_probability, dtype=np.float32), 0.0, 1.0)
         if probability.ndim != 2 or probability.size == 0:
             return None
-        source_mask = self._source_mask(f"model:{model_id}")
+        source_mask = None
+        model_masks = self._payload.get("model_masks") or {}
+        model_mask = model_masks.get(model_id)
+        if model_mask is not None:
+            source_mask = np.asarray(model_mask, dtype=bool)
         if source_mask is None:
             source_mask = np.asarray(probability >= self._model_threshold(model_id), dtype=bool)
         strong_mask = np.asarray(source_mask, dtype=bool)
@@ -1168,14 +1430,31 @@ class ExtendFrameDetailsDialog(QDialog):
         if model_prob is None:
             return np.zeros_like(self._base_array(), dtype=np.float32)
         prob = np.asarray(model_prob, dtype=np.float32)
+        tile_rect = self._selection_crop_rect()
+        if tile_rect is not None:
+            prob = self._crop_ndarray(prob, tile_rect)
         if self._is_point_geometry():
             model_view = (self._payload.get("model_views") or {}).get(model_id)
             result = np.zeros_like(prob, dtype=np.float32)
             if model_view is None:
                 return result
-            for point in tuple(getattr(model_view, 'points', ())):
-                x = float(getattr(point, 'x', 0.0))
-                y = float(getattr(point, 'y', 0.0))
+            points = tuple(getattr(model_view, 'points', ()))
+            x_offset = 0.0
+            y_offset = 0.0
+            if tile_rect is not None:
+                x0 = float(tile_rect.left())
+                y0 = float(tile_rect.top())
+                x1 = float(tile_rect.right())
+                y1 = float(tile_rect.bottom())
+                x_offset = x0
+                y_offset = y0
+                points = tuple(
+                    point for point in points
+                    if x0 <= float(getattr(point, 'x', 0.0)) <= x1 and y0 <= float(getattr(point, 'y', 0.0)) <= y1
+                )
+            for point in points:
+                x = float(getattr(point, 'x', 0.0)) - x_offset
+                y = float(getattr(point, 'y', 0.0)) - y_offset
                 px = int(round(x))
                 py = int(round(y))
                 point_prob = float(prob[py, px]) if 0 <= py < prob.shape[0] and 0 <= px < prob.shape[1] else 0.0
@@ -1218,7 +1497,7 @@ class ExtendFrameDetailsDialog(QDialog):
         return red, green, blue
 
     def _point_object_confidence_overlay_pixmap(self, model_id: str | None) -> QPixmap:
-        cache_key = ('point_confidence', model_id)
+        cache_key = ('point_confidence', model_id, self._selection_cache_key())
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1228,6 +1507,20 @@ class ExtendFrameDetailsDialog(QDialog):
         if confidence_row is None:
             return QPixmap()
         objects = tuple(getattr(confidence_row, 'objects', ()))
+        tile_rect = self._selection_crop_rect()
+        x_offset = 0.0
+        y_offset = 0.0
+        if tile_rect is not None:
+            x0 = float(tile_rect.left())
+            y0 = float(tile_rect.top())
+            x1 = float(tile_rect.right())
+            y1 = float(tile_rect.bottom())
+            x_offset = x0
+            y_offset = y0
+            objects = tuple(
+                point_row for point_row in objects
+                if x0 <= float(getattr(point_row, 'x', 0.0)) <= x1 and y0 <= float(getattr(point_row, 'y', 0.0)) <= y1
+            )
         if not objects:
             return QPixmap()
         base = self._base_array()
@@ -1245,15 +1538,21 @@ class ExtendFrameDetailsDialog(QDialog):
             radius = max(2, int(round(float(getattr(point_row, 'radius', 1.0)) + 1.0 + 1.5 * score)))
             painter.setPen(QPen(color, 1.4))
             painter.setBrush(color)
-            x = int(round(float(getattr(point_row, 'x', 0.0))))
-            y = int(round(float(getattr(point_row, 'y', 0.0))))
+            x = int(round(float(getattr(point_row, 'x', 0.0)) - x_offset))
+            y = int(round(float(getattr(point_row, 'y', 0.0)) - y_offset))
             painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
         painter.end()
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
     def _polygon_object_confidence_overlay_pixmap(self, model_id: str | None) -> QPixmap:
-        cache_key = ('polygon_confidence_frame', model_id, int(self._payload.get('boundary_radius') or 1))
+        tile_rect = self._selection_crop_rect()
+        cache_key = (
+            'polygon_confidence_frame',
+            model_id,
+            int(self._payload.get('boundary_radius') or 1),
+            self._selection_cache_key(),
+        )
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1261,6 +1560,10 @@ class ExtendFrameDetailsDialog(QDialog):
         if render_data is None:
             return QPixmap()
         confidence_map, support_weights, support_mask = render_data
+        if tile_rect is not None:
+            confidence_map = np.asarray(self._crop_ndarray(np.asarray(confidence_map, dtype=np.float32), tile_rect), dtype=np.float32)
+            support_weights = np.asarray(self._crop_ndarray(np.asarray(support_weights, dtype=np.float32), tile_rect), dtype=np.float32)
+            support_mask = np.asarray(self._crop_ndarray(np.asarray(support_mask, dtype=bool), tile_rect), dtype=bool)
         if not np.any(support_mask):
             return QPixmap()
         height, width = confidence_map.shape
@@ -1277,17 +1580,29 @@ class ExtendFrameDetailsDialog(QDialog):
         return pixmap
 
     def _confidence_debug_mask_pixmap(self, model_id: str | None, key: str, color: QColor) -> QPixmap:
-        cache_key = ('confidence_debug_mask', model_id, key, color.red(), color.green(), color.blue(), color.alpha())
+        cache_key = (
+            'confidence_debug_mask',
+            model_id,
+            key,
+            color.red(),
+            color.green(),
+            color.blue(),
+            color.alpha(),
+            self._selection_cache_key(),
+        )
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
         mask = self._confidence_debug_mask(model_id, key)
+        tile_rect = self._selection_crop_rect()
+        if mask is not None and tile_rect is not None:
+            mask = np.asarray(self._crop_ndarray(np.asarray(mask, dtype=bool), tile_rect), dtype=bool)
         pixmap = self._mask_to_pixmap(mask, color) if mask is not None else QPixmap()
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
     def _confidence_object_contours_pixmap(self, model_id: str | None) -> QPixmap:
-        cache_key = ('confidence_contours', model_id)
+        cache_key = ('confidence_contours', model_id, self._selection_cache_key())
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1301,12 +1616,15 @@ class ExtendFrameDetailsDialog(QDialog):
             contour_mask = _boundary_mask(final_mask)
         if contour_mask is None:
             return QPixmap()
+        tile_rect = self._selection_crop_rect()
+        if tile_rect is not None:
+            contour_mask = np.asarray(self._crop_ndarray(np.asarray(contour_mask, dtype=bool), tile_rect), dtype=bool)
         pixmap = self._mask_to_pixmap(contour_mask, self._named_color("boundary_mask"))
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
     def _confidence_branch_debug_pixmap(self, model_id: str | None) -> QPixmap:
-        cache_key = ('confidence_branch_debug', model_id)
+        cache_key = ('confidence_branch_debug', model_id, self._selection_cache_key())
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1322,6 +1640,7 @@ class ExtendFrameDetailsDialog(QDialog):
         pixmap = QPixmap(width, height)
         pixmap.fill(Qt.GlobalColor.transparent)
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        tile_rect = self._selection_crop_rect()
         color_map = {
             'large_polygon': (255, 225, 70),
             'global_hysteresis': (80, 210, 255),
@@ -1334,6 +1653,8 @@ class ExtendFrameDetailsDialog(QDialog):
             if branch_mask is None:
                 continue
             branch_bool = np.asarray(branch_mask, dtype=bool)
+            if tile_rect is not None:
+                branch_bool = np.asarray(self._crop_ndarray(branch_bool, tile_rect), dtype=bool)
             rgba[..., 0][branch_bool] = rgb[0]
             rgba[..., 1][branch_bool] = rgb[1]
             rgba[..., 2][branch_bool] = rgb[2]
@@ -1344,7 +1665,8 @@ class ExtendFrameDetailsDialog(QDialog):
         return pixmap
 
     def _confidence_overlay_pixmap(self, model_id: str | None) -> QPixmap:
-        cache_key = ('confidence_frame_overlay', model_id)
+        tile_rect = self._selection_crop_rect()
+        cache_key = ('confidence_frame_overlay', model_id, self._selection_cache_key())
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1359,6 +1681,10 @@ class ExtendFrameDetailsDialog(QDialog):
         if render_data is None:
             return QPixmap()
         confidence_map, support_weights, support_mask = render_data
+        if tile_rect is not None:
+            confidence_map = np.asarray(self._crop_ndarray(np.asarray(confidence_map, dtype=np.float32), tile_rect), dtype=np.float32)
+            support_weights = np.asarray(self._crop_ndarray(np.asarray(support_weights, dtype=np.float32), tile_rect), dtype=np.float32)
+            support_mask = np.asarray(self._crop_ndarray(np.asarray(support_mask, dtype=bool), tile_rect), dtype=bool)
         height, width = confidence_map.shape
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
         red, green, blue = self._confidence_color_arrays(confidence_map)
@@ -1418,7 +1744,7 @@ class ExtendFrameDetailsDialog(QDialog):
                         f"focus_area_fraction: {float(getattr(confidence_row, 'object_area_fraction', 0.0)):.4f}",
                     ]
                     return (
-                        self._t("details.polygon_internal_confidence"),
+                        self._t("details.frame_score"),
                         float(getattr(confidence_row, 'frame_uncertainty_score', 0.0)),
                         lines,
                     )
@@ -1439,7 +1765,7 @@ class ExtendFrameDetailsDialog(QDialog):
                     f"point_count: {int(getattr(confidence_row, 'point_count', 0))}",
                 ]
                 return (
-                    self._t("details.point_internal_confidence"),
+                    self._t("details.frame_score"),
                     float(getattr(confidence_row, 'frame_uncertainty_score', 0.0)),
                     lines,
                 )
@@ -1460,7 +1786,7 @@ class ExtendFrameDetailsDialog(QDialog):
                         f"largest_uncertain_region_fraction: {quick['largest_uncertain_region_fraction']:.4f}",
                         f"object_area_fraction: {quick['focus_fraction']:.4f}",
                     ]
-                    return self._t("details.point_internal_confidence"), float(quick['frame_uncertainty_score']), lines
+                    return self._t("details.frame_score"), float(quick['frame_uncertainty_score']), lines
                 lines = [
                     f"frame_uncertainty_score: {quick['frame_uncertainty_score']:.4f}",
                     f"mean_uncertainty: {quick['mean_uncertainty']:.4f}",
@@ -1475,7 +1801,7 @@ class ExtendFrameDetailsDialog(QDialog):
                     f"largest_uncertain_region_fraction: {quick['largest_uncertain_region_fraction']:.4f}",
                     f"focus_area_fraction: {quick['focus_fraction']:.4f}",
                 ]
-                return self._t("details.polygon_internal_confidence"), float(quick['frame_uncertainty_score']), lines
+                return self._t("details.frame_score"), float(quick['frame_uncertainty_score']), lines
         if group_key == "model_model":
             if len(model_ids) >= 2:
                 pairwise = self._pairwise_comparison_entry(model_ids[0], model_ids[1])
@@ -1483,7 +1809,7 @@ class ExtendFrameDetailsDialog(QDialog):
                     score = float(pairwise.get("agreement_score", 0.0))
                     if self._is_point_geometry():
                         return (
-                            self._t("metric.model_model_score"),
+                            self._t("details.frame_score"),
                             score,
                             [
                                 f"active precision: {float(pairwise.get('precision', 0.0)):.4f}",
@@ -1495,7 +1821,7 @@ class ExtendFrameDetailsDialog(QDialog):
                             ],
                         )
                     return (
-                        self._t("metric.model_model_score"),
+                        self._t("details.frame_score"),
                         score,
                         [
                             f"active soft_dice: {float(pairwise.get('soft_dice', 0.0)):.4f}",
@@ -1510,7 +1836,7 @@ class ExtendFrameDetailsDialog(QDialog):
                             f"auxiliary count_agreement: {float(pairwise.get('count_agreement', 0.0)):.4f}",
                         ],
                     )
-            return self._t("metric.model_model_score"), None, [self._t("details.score_unavailable")]
+            return self._t("details.frame_score"), None, [self._t("details.score_unavailable")]
         if group_key == "model_labeled":
             model_id = model_ids[0] if model_ids else None
             model_metrics = self._payload.get("model_metrics") or {}
@@ -1519,7 +1845,7 @@ class ExtendFrameDetailsDialog(QDialog):
                 score = float(selected.quality_score)
                 if hasattr(selected, "f1_at_radius"):
                     return (
-                        self._t("details.ground_truth_point_quality"),
+                        self._t("details.frame_score"),
                         score,
                         [
                             f"active precision: {float(selected.precision_at_radius):.4f}",
@@ -1533,7 +1859,7 @@ class ExtendFrameDetailsDialog(QDialog):
                         ],
                     )
                 return (
-                    self._t("details.ground_truth_polygon_quality"),
+                    self._t("details.frame_score"),
                     score,
                     [
                         f"active soft_dice: {float(selected.soft_dice):.4f}",
@@ -1551,8 +1877,20 @@ class ExtendFrameDetailsDialog(QDialog):
                         f"auxiliary connected_component_error: {float(selected.connected_component_error):.4f}",
                     ],
                 )
-            return self._t("details.ground_truth_quality_score"), None, [self._t("details.score_unavailable")]
-        return self._t("details.selected_comparison_score"), None, []
+            return self._t("details.frame_score"), None, [self._t("details.score_unavailable")]
+        return self._t("details.frame_score"), None, []
+
+    def _selected_subpixel_score_info(self) -> tuple[str, float | None, list[str]]:
+        if self._subpixel_selection is None:
+            return self._t("details.subpixel_score"), None, []
+        selection = self._subpixel_selection
+        spec = selection.spec or self._default_subpixel_spec()
+        lines = [
+            f"{self._t('details.subpixel_selection')}: r{int(selection.sub_row) + 1}, c{int(selection.sub_column) + 1}",
+            f"{self._t('details.parent_frame')}: r{int(selection.parent_row) + 1}, c{int(selection.parent_column) + 1}",
+            f"{int(spec.rows)} x {int(spec.columns)}",
+        ]
+        return self._t("details.subpixel_score"), float(selection.subpixel_value), lines
 
     def _on_model_a_changed(self, *_args) -> None:
         self._refresh_scene(reset_view=False)
@@ -1592,7 +1930,68 @@ class ExtendFrameDetailsDialog(QDialog):
     def _selected_layer_view(self) -> str:
         return str(self.layer_view_combo.currentData() or "binary")
 
-    def _base_array(self) -> np.ndarray:
+    def _tile_selection_rect(self, plan: TileGridPlan | None = None) -> QRectF | None:
+        if self._tile_selection is None:
+            return None
+        resolved_plan = plan or self._tile_plan_for_view()
+        if resolved_plan is None:
+            return None
+        row, column = self._tile_selection
+        if row < 0 or column < 0 or row >= int(resolved_plan.rows) or column >= int(resolved_plan.columns):
+            return None
+        return self._tile_rect_for_index(int(row), int(column), resolved_plan)
+
+    def _selection_crop_rect(self) -> QRectF | None:
+        if self._subpixel_selection is not None:
+            return self._subpixel_selection_rect()
+        return self._tile_selection_rect()
+
+    def _selection_cache_key(self) -> tuple[int, int, int, int] | None:
+        rect = self._selection_crop_rect()
+        if rect is None:
+            return None
+        return (
+            max(0, int(np.floor(float(rect.left())))),
+            max(0, int(np.floor(float(rect.top())))),
+            max(0, int(np.ceil(float(rect.right())))),
+            max(0, int(np.ceil(float(rect.bottom())))),
+        )
+
+    def _subpixel_selection_rect(self) -> QRectF | None:
+        if self._subpixel_selection is None:
+            return None
+        spec = self._subpixel_selection.spec
+        if spec is None:
+            spec = self._default_subpixel_spec()
+        full = self._full_base_array()
+        left, top, width, height = subpixel_bounds_for_index(
+            float(full.shape[1]),
+            float(full.shape[0]),
+            int(self._subpixel_selection.sub_row),
+            int(self._subpixel_selection.sub_column),
+            spec,
+        )
+        if width <= 0 or height <= 0:
+            return None
+        return QRectF(float(left), float(top), float(width), float(height))
+
+    @staticmethod
+    def _crop_ndarray(array: np.ndarray, rect: QRectF | None) -> np.ndarray:
+        if rect is None:
+            return array
+        if not isinstance(array, np.ndarray) or array.ndim < 2:
+            return array
+        left = max(0, int(np.floor(float(rect.left()))))
+        top = max(0, int(np.floor(float(rect.top()))))
+        right = min(int(array.shape[1]), int(np.ceil(float(rect.right()))))
+        bottom = min(int(array.shape[0]), int(np.ceil(float(rect.bottom()))))
+        if right <= left or bottom <= top:
+            return array[:0, :0]
+        if array.ndim == 2:
+            return array[top:bottom, left:right]
+        return array[top:bottom, left:right, ...]
+
+    def _full_base_array(self) -> np.ndarray:
         cache_key = ("base_array", str(self._payload.get("selected_model_id") or ""))
         cached = self._derived_cache.get(cache_key)
         if isinstance(cached, np.ndarray):
@@ -1612,23 +2011,30 @@ class ExtendFrameDetailsDialog(QDialog):
         self._derived_cache[cache_key] = fallback
         return fallback
 
+    def _base_array(self) -> np.ndarray:
+        base = self._full_base_array()
+        rect = self._subpixel_selection_rect()
+        if rect is None:
+            return base
+        return self._crop_ndarray(base, rect)
+
     def _source_mask(self, source_key: str | None) -> np.ndarray | None:
         cache_key = ("source_mask", source_key, bool(self._is_point_geometry()))
         cached = self._derived_cache.get(cache_key)
         if isinstance(cached, np.ndarray):
-            return cached
+            return self._crop_ndarray(cached, self._selection_crop_rect())
         if self._is_point_geometry():
             point_map = self._source_point_map(source_key)
             mask = np.asarray(point_map > 0.1, dtype=bool) if point_map is not None else None
             if mask is not None:
                 self._derived_cache[cache_key] = mask
-            return mask
+            return self._crop_ndarray(mask, self._selection_crop_rect()) if mask is not None else None
         if source_key == "gt":
             gt_mask = self._payload.get("gt_mask")
             mask = np.asarray(gt_mask, dtype=bool) if gt_mask is not None else None
             if mask is not None:
                 self._derived_cache[cache_key] = mask
-            return mask
+            return self._crop_ndarray(mask, self._selection_crop_rect()) if mask is not None else None
         if isinstance(source_key, str) and source_key.startswith("model:"):
             model_id = source_key.split(":", 1)[1]
             masks = self._payload.get("model_masks") or {}
@@ -1636,49 +2042,61 @@ class ExtendFrameDetailsDialog(QDialog):
             mask = np.asarray(model_mask, dtype=bool) if model_mask is not None else None
             if mask is not None:
                 self._derived_cache[cache_key] = mask
-            return mask
+            return self._crop_ndarray(mask, self._selection_crop_rect()) if mask is not None else None
         return None
 
     def _source_float_map(self, source_key: str | None) -> np.ndarray | None:
         if self._is_point_geometry():
             point_map = self._source_point_map(source_key)
-            return np.asarray(point_map, dtype=np.float32) if point_map is not None else None
+            value = np.asarray(point_map, dtype=np.float32) if point_map is not None else None
+            return self._crop_ndarray(value, self._selection_crop_rect()) if value is not None else None
         if source_key == "original":
             original = self._payload.get("original_gray")
-            return np.asarray(original, dtype=np.float32) / 255.0 if original is not None else None
+            value = np.asarray(original, dtype=np.float32) / 255.0 if original is not None else None
+            return self._crop_ndarray(value, self._selection_crop_rect()) if value is not None else None
         if source_key == "gt":
             gt_mask = self._payload.get("gt_mask")
-            return np.asarray(gt_mask, dtype=np.float32) if gt_mask is not None else None
+            value = np.asarray(gt_mask, dtype=np.float32) if gt_mask is not None else None
+            return self._crop_ndarray(value, self._selection_crop_rect()) if value is not None else None
         if isinstance(source_key, str) and source_key.startswith("model:"):
             model_id = source_key.split(":", 1)[1]
             probabilities = self._payload.get("model_probabilities") or {}
             model_prob = probabilities.get(model_id)
-            return np.asarray(model_prob, dtype=np.float32) if model_prob is not None else None
+            value = np.asarray(model_prob, dtype=np.float32) if model_prob is not None else None
+            return self._crop_ndarray(value, self._selection_crop_rect()) if value is not None else None
         return None
 
     def _source_render_float_map(self, source_key: str | None) -> np.ndarray | None:
         if source_key == "original":
             original = self._payload.get("original_gray")
-            return np.asarray(original, dtype=np.float32) / 255.0 if original is not None else None
+            value = np.asarray(original, dtype=np.float32) / 255.0 if original is not None else None
+            return self._crop_ndarray(value, self._selection_crop_rect()) if value is not None else None
         if source_key == "gt":
             gt_mask = self._payload.get("gt_mask")
-            return np.asarray(gt_mask, dtype=np.float32) if gt_mask is not None else None
+            value = np.asarray(gt_mask, dtype=np.float32) if gt_mask is not None else None
+            return self._crop_ndarray(value, self._selection_crop_rect()) if value is not None else None
         if isinstance(source_key, str) and source_key.startswith("model:"):
             model_id = source_key.split(":", 1)[1]
             probabilities = self._payload.get("model_probabilities") or {}
             model_prob = probabilities.get(model_id)
-            return np.asarray(model_prob, dtype=np.float32) if model_prob is not None else None
+            value = np.asarray(model_prob, dtype=np.float32) if model_prob is not None else None
+            return self._crop_ndarray(value, self._selection_crop_rect()) if value is not None else None
         return self._source_float_map(source_key)
 
     def _refresh_result_kind_options(self, preferred_kind: str | None = None) -> None:
-        current_kind = str(preferred_kind or self.result_kind_combo.currentData() or '')
+        current_kind = str(
+            preferred_kind
+            or self._sticky_result_kind
+            or self.result_kind_combo.currentData()
+            or ""
+        )
         if not current_kind:
             if self._preferred_confidence_model_id() is not None:
-                current_kind = 'confidence'
+                current_kind = "confidence"
             elif self._is_point_geometry():
-                current_kind = 'point_matches'
+                current_kind = "point_matches"
             else:
-                current_kind = 'diff'
+                current_kind = "diff"
         items: list[tuple[str, str]] = [(self._t("details.comparison_difference"), "diff")]
         if self._is_point_geometry():
             items.append((self._t("details.point_matches"), "point_matches"))
@@ -1690,10 +2108,13 @@ class ExtendFrameDetailsDialog(QDialog):
         for label, key in items:
             self.result_kind_combo.addItem(label, key)
             combo_index = self.result_kind_combo.count() - 1
-            self.result_kind_combo.setItemData(combo_index, self._result_kind_hint(str(key)) or '', Qt.ItemDataRole.ToolTipRole)
+            self.result_kind_combo.setItemData(combo_index, self._result_kind_hint(str(key)) or "", Qt.ItemDataRole.ToolTipRole)
         index = self.result_kind_combo.findData(current_kind)
+        if index < 0 and self._sticky_result_kind is not None:
+            index = self.result_kind_combo.findData(self._sticky_result_kind)
         self.result_kind_combo.setCurrentIndex(index if index >= 0 else 0)
         self.result_kind_combo.blockSignals(False)
+        self._sticky_result_kind = self._selected_result_kind()
         self.result_kind_combo.setToolTip(self._result_kind_hint(self._selected_result_kind()) or '')
 
     def _selected_result_kind(self) -> str:
@@ -1778,6 +2199,24 @@ class ExtendFrameDetailsDialog(QDialog):
         second_view = self._source_point_view(second_key)
         first_points = tuple(getattr(first_view, 'points', ())) if first_view is not None else tuple()
         second_points = tuple(getattr(second_view, 'points', ())) if second_view is not None else tuple()
+        tile_rect = self._selection_crop_rect()
+        x_offset = 0.0
+        y_offset = 0.0
+        if tile_rect is not None:
+            x0 = float(tile_rect.left())
+            y0 = float(tile_rect.top())
+            x1 = float(tile_rect.right())
+            y1 = float(tile_rect.bottom())
+            x_offset = x0
+            y_offset = y0
+            first_points = tuple(
+                point for point in first_points
+                if x0 <= float(getattr(point, 'x', 0.0)) <= x1 and y0 <= float(getattr(point, 'y', 0.0)) <= y1
+            )
+            second_points = tuple(
+                point for point in second_points
+                if x0 <= float(getattr(point, 'x', 0.0)) <= x1 and y0 <= float(getattr(point, 'y', 0.0)) <= y1
+            )
         pairs, matched_first, matched_second = self._point_match_pairs(first_points, second_points, float(self._payload.get('point_match_radius') or 3.0))
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -1786,14 +2225,19 @@ class ExtendFrameDetailsDialog(QDialog):
         for index_a, index_b, _distance in pairs:
             point_a = first_points[index_a]
             point_b = second_points[index_b]
-            painter.drawLine(int(round(float(getattr(point_a, 'x', 0.0)))), int(round(float(getattr(point_a, 'y', 0.0)))), int(round(float(getattr(point_b, 'x', 0.0)))), int(round(float(getattr(point_b, 'y', 0.0)))))
+            painter.drawLine(
+                int(round(float(getattr(point_a, 'x', 0.0)) - x_offset)),
+                int(round(float(getattr(point_a, 'y', 0.0)) - y_offset)),
+                int(round(float(getattr(point_b, 'x', 0.0)) - x_offset)),
+                int(round(float(getattr(point_b, 'y', 0.0)) - y_offset)),
+            )
         for index, point in enumerate(first_points):
             radius = max(2, int(round(float(getattr(point, 'radius', 0.0)) + 1.0)))
             color = QColor(70, 220, 120, 240) if index in matched_first else self._named_color("first_mask")
             painter.setPen(QPen(color, 1.2))
             painter.setBrush(color)
-            x = int(round(float(getattr(point, 'x', 0.0))))
-            y = int(round(float(getattr(point, 'y', 0.0))))
+            x = int(round(float(getattr(point, 'x', 0.0)) - x_offset))
+            y = int(round(float(getattr(point, 'y', 0.0)) - y_offset))
             painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
         for index, point in enumerate(second_points):
             if index in matched_second:
@@ -1802,8 +2246,8 @@ class ExtendFrameDetailsDialog(QDialog):
             color = self._named_color("second_mask")
             painter.setPen(QPen(color, 1.2))
             painter.setBrush(color)
-            x = int(round(float(getattr(point, 'x', 0.0))))
-            y = int(round(float(getattr(point, 'y', 0.0))))
+            x = int(round(float(getattr(point, 'x', 0.0)) - x_offset))
+            y = int(round(float(getattr(point, 'y', 0.0)) - y_offset))
             painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
         painter.end()
         self._overlay_cache[cache_key] = pixmap
@@ -1965,10 +2409,15 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _refresh_scene(self, *, reset_view: bool) -> None:
         if self._payload_loading and not self._payload:
+            self._tile_plan = None
+            self._tile_selection = None
             self.original_item.setPixmap(QPixmap())
             self.first_source_item.setPixmap(QPixmap())
             self.second_source_item.setPixmap(QPixmap())
             self.result_item.setPixmap(QPixmap())
+            self.tile_preview_item.setPixmap(QPixmap())
+            self.tile_grid_item.setPixmap(QPixmap())
+            self.tile_selection_item.setVisible(False)
             self._update_layer_states()
             return
         base_array = self._base_array()
@@ -1976,12 +2425,31 @@ class ExtendFrameDetailsDialog(QDialog):
         scene = self.overlay_view.scene()
         assert scene is not None
         scene.setSceneRect(0.0, 0.0, float(width), float(height))
-        base_pixmap_key = ("base_pixmap", str(self._payload.get("selected_model_id") or ""))
+        base_pixmap_key = (
+            "base_pixmap",
+            str(self._payload.get("selected_model_id") or ""),
+            self._tile_selection,
+            None
+            if self._subpixel_selection is None
+            else (
+                int(self._subpixel_selection.parent_row),
+                int(self._subpixel_selection.parent_column),
+                int(self._subpixel_selection.sub_row),
+                int(self._subpixel_selection.sub_column),
+                int(getattr(self._subpixel_selection.spec, "rows", 0) or 0),
+                int(getattr(self._subpixel_selection.spec, "columns", 0) or 0),
+                str(getattr(self._subpixel_selection.spec, "mode", "grid") or "grid"),
+                int(getattr(self._subpixel_selection.spec, "tile_width", 0) or 0),
+                int(getattr(self._subpixel_selection.spec, "tile_height", 0) or 0),
+                int(getattr(self._subpixel_selection.spec, "overlap", 0) or 0),
+            ),
+        )
         base_pixmap = self._overlay_cache.get(base_pixmap_key)
         if base_pixmap is None:
             base_pixmap = self._grayscale_to_pixmap(base_array)
             self._overlay_cache[base_pixmap_key] = base_pixmap
         self.original_item.setPixmap(base_pixmap)
+        self._refresh_tile_overlays(base_array)
         _preset_key, first_key, second_key = self._current_comparison_tuple()
         mode = self._current_operation_mode()
         prefer_grayscale = self._selected_result_kind() == "diff" and mode == ComparisonMode.GRAYSCALE_DIFF
@@ -2019,6 +2487,222 @@ class ExtendFrameDetailsDialog(QDialog):
             self._comparison_score = float(score)
             self.result_item.setPixmap(pixmap)
         self._update_layer_states()
+
+    def _tile_plan_for_view(self) -> TileGridPlan | None:
+        if str(getattr(self._build_result.options, "tile_mode", "pixel") or "pixel") != "tile":
+            return None
+        base = self._full_base_array()
+        if base.ndim != 2 or base.size == 0:
+            return None
+        return plan_tile_grid(
+            base.shape,
+            int(getattr(self._build_result.options, "tile_width", 256)),
+            int(getattr(self._build_result.options, "tile_height", 256)),
+            int(getattr(self._build_result.options, "tile_overlap", 0)),
+        )
+
+    def _tile_rect_for_index(self, row: int, column: int, plan: TileGridPlan) -> QRectF:
+        left, top, width, height = tile_bounds_for_index(plan, row, column)
+        return QRectF(float(left), float(top), float(width), float(height))
+
+    def _tile_mosaic_pixmap(self, base_array: np.ndarray, plan: TileGridPlan) -> QPixmap:
+        cache_key = (
+            "tile_mosaic",
+            id(base_array),
+            int(plan.tile_width),
+            int(plan.tile_height),
+            int(plan.overlap),
+            int(plan.rows),
+            int(plan.columns),
+        )
+        cached = self._overlay_cache.get(cache_key)
+        if isinstance(cached, QPixmap):
+            return cached
+        mosaic = np.ascontiguousarray(np.asarray(base_array, dtype=np.uint8)).copy()
+        for row in range(int(plan.rows)):
+            for column in range(int(plan.columns)):
+                left, top, width, height = tile_bounds_for_index(plan, row, column)
+                if width <= 0 or height <= 0:
+                    continue
+                tile = mosaic[top:top + height, left:left + width]
+                if tile.size == 0:
+                    continue
+                mean_value = int(np.clip(np.rint(float(np.mean(tile, dtype=np.float64))), 0, 255))
+                mosaic[top:top + height, left:left + width] = mean_value
+        pixmap = self._grayscale_to_pixmap(mosaic)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
+    def _tile_grid_pixmap(self, plan: TileGridPlan) -> QPixmap:
+        cache_key = (
+            "tile_grid",
+            int(plan.source_shape[0]),
+            int(plan.source_shape[1]),
+            int(plan.tile_width),
+            int(plan.tile_height),
+            int(plan.overlap),
+            int(plan.rows),
+            int(plan.columns),
+        )
+        cached = self._overlay_cache.get(cache_key)
+        if isinstance(cached, QPixmap):
+            return cached
+        source_height, source_width = (int(plan.source_shape[0]), int(plan.source_shape[1]))
+        image = QImage(max(1, source_width), max(1, source_height), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setPen(QPen(QColor(92, 196, 255, 180), 1.0))
+        for row in range(int(plan.rows)):
+            for column in range(int(plan.columns)):
+                rect = self._tile_rect_for_index(row, column, plan)
+                if rect.isNull():
+                    continue
+                painter.drawRect(rect)
+        painter.end()
+        pixmap = QPixmap.fromImage(image)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
+    def _update_tile_hint(self) -> None:
+        plan = self._tile_plan
+        if plan is None and self._subpixel_selection is None:
+            self.zoom_hint_label.hide()
+            return
+        if self._subpixel_selection is not None:
+            selection = self._subpixel_selection
+            spec = selection.spec or self._default_subpixel_spec()
+            hint = self._t(
+                "details.subpixel_view.hint",
+                parent_row=int(selection.parent_row) + 1,
+                parent_column=int(selection.parent_column) + 1,
+                sub_row=int(selection.sub_row) + 1,
+                sub_column=int(selection.sub_column) + 1,
+                rows=int(spec.rows),
+                columns=int(spec.columns),
+                value=float(selection.subpixel_value),
+                parent_value=float(selection.parent_value),
+            )
+            self.zoom_hint_label.setText(hint)
+            self.zoom_hint_label.show()
+            return
+        scale = max(0.01, float(self.overlay_view.transform().m11()))
+        tile_screen_size = min(int(plan.tile_width), int(plan.tile_height)) * scale if plan is not None else 0.0
+        mode_text = self._t("details.tile_view.zoomed_in") if tile_screen_size >= DETAIL_PIXEL_VIEW_THRESHOLD else self._t("details.tile_view.zoomed_out")
+        hint = self._t(
+            "details.tile_view.hint",
+            width=int(plan.tile_width) if plan is not None else 0,
+            height=int(plan.tile_height) if plan is not None else 0,
+            overlap=int(plan.overlap) if plan is not None else 0,
+            mode=mode_text,
+        )
+        if self._tile_selection is not None:
+            row, column = self._tile_selection
+            hint = f"{hint} | {self._t('details.tile_view.selected')}: r{row + 1}, c{column + 1}"
+        self.zoom_hint_label.setText(hint)
+        self.zoom_hint_label.show()
+
+    def _update_tile_lod(self) -> None:
+        if self._subpixel_selection is not None:
+            self.original_item.setVisible(True)
+            self.tile_preview_item.setVisible(False)
+            self.tile_grid_item.setVisible(False)
+            self.tile_selection_item.setVisible(False)
+            self._update_tile_hint()
+            return
+        plan = self._tile_plan
+        if plan is None:
+            self.tile_preview_item.setVisible(False)
+            self.tile_grid_item.setVisible(False)
+            self.tile_selection_item.setVisible(False)
+            self._update_tile_hint()
+            return
+        if self._tile_selection is not None:
+            self.tile_preview_item.setVisible(False)
+            self.tile_grid_item.setVisible(False)
+            self.tile_selection_item.setVisible(False)
+            self._update_tile_hint()
+            return
+        base_visible = self.original_item.isVisible()
+        if not base_visible:
+            self.original_item.setVisible(False)
+            self.tile_preview_item.setVisible(False)
+            self.tile_grid_item.setVisible(False)
+            self.tile_selection_item.setVisible(False)
+            self._update_tile_hint()
+            return
+        scale = max(0.01, float(self.overlay_view.transform().m11()))
+        tile_screen_size = min(int(plan.tile_width), int(plan.tile_height)) * scale
+        show_pixel_view = tile_screen_size >= DETAIL_PIXEL_VIEW_THRESHOLD
+        self.original_item.setVisible(show_pixel_view)
+        self.tile_preview_item.setVisible(not show_pixel_view)
+        self.tile_preview_item.setOpacity(self.original_item.opacity())
+        self.tile_grid_item.setVisible(show_pixel_view)
+        self.tile_grid_item.setOpacity(0.85)
+        if self._tile_selection is not None and show_pixel_view:
+            row, column = self._tile_selection
+            rect = self._tile_rect_for_index(row, column, plan)
+            self.tile_selection_item.setRect(rect)
+            self.tile_selection_item.setVisible(True)
+            self.tile_selection_item.setOpacity(1.0)
+        else:
+            self.tile_selection_item.setVisible(False)
+        self._update_tile_hint()
+
+    def _on_view_clicked(self, scene_pos: QPointF) -> None:
+        plan = self._tile_plan
+        if plan is None or not self.original_item.isVisible() or self._tile_selection is not None:
+            return
+        scale = max(0.01, float(self.overlay_view.transform().m11()))
+        if min(int(plan.tile_width), int(plan.tile_height)) * scale < DETAIL_PIXEL_VIEW_THRESHOLD:
+            return
+        position = QPointF(float(scene_pos.x()), float(scene_pos.y()))
+        if position.x() < 0.0 or position.y() < 0.0:
+            return
+        row_guess = min(max(int(position.y() // max(1, int(plan.stride_y))), 0), max(0, int(plan.rows) - 1))
+        column_guess = min(max(int(position.x() // max(1, int(plan.stride_x))), 0), max(0, int(plan.columns) - 1))
+        candidates: list[tuple[float, int, int]] = []
+        for row in range(max(0, row_guess - 1), min(int(plan.rows), row_guess + 2)):
+            for column in range(max(0, column_guess - 1), min(int(plan.columns), column_guess + 2)):
+                rect = self._tile_rect_for_index(row, column, plan)
+                if rect.contains(position):
+                    center = rect.center()
+                    distance = abs(center.x() - position.x()) + abs(center.y() - position.y())
+                    candidates.append((distance, row, column))
+        if not candidates:
+            return
+        _distance, row, column = min(candidates, key=lambda item: (item[0], item[1], item[2]))
+        self._tile_selection = (int(row), int(column))
+        self._update_tile_lod()
+
+    def _refresh_tile_overlays(self, base_array: np.ndarray) -> None:
+        if self._subpixel_selection is not None:
+            self._tile_plan = None
+            self.tile_preview_item.setPixmap(QPixmap())
+            self.tile_grid_item.setPixmap(QPixmap())
+            self._update_tile_lod()
+            return
+        self._tile_plan = self._tile_plan_for_view()
+        plan = self._tile_plan
+        if plan is None:
+            self._tile_selection = None
+            self.tile_preview_item.setPixmap(QPixmap())
+            self.tile_grid_item.setPixmap(QPixmap())
+            self.tile_selection_item.setVisible(False)
+            self._update_tile_hint()
+            return
+        if self._tile_selection is not None:
+            row, column = self._tile_selection
+            if row < 0 or column < 0 or row >= int(plan.rows) or column >= int(plan.columns):
+                self._tile_selection = None
+        if self._tile_selection is not None:
+            self.tile_preview_item.setPixmap(QPixmap())
+            self.tile_grid_item.setPixmap(QPixmap())
+            self.tile_selection_item.setVisible(False)
+            self._update_tile_hint()
+            return
+        self.tile_preview_item.setPixmap(self._tile_mosaic_pixmap(base_array, plan))
+        self.tile_grid_item.setPixmap(self._tile_grid_pixmap(plan))
+        self._update_tile_lod()
 
     def _quick_confidence_score(self, model_id: str | None) -> dict[str, float] | None:
         if model_id is None:
@@ -2135,21 +2819,40 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _refresh_info(self) -> None:
         if self._payload_loading and not self._payload:
-            self.comparison_score_caption.setText(self._t("details.selected_comparison_score"))
-            self.comparison_score_value_label.setText("Loading...")
-            self.comparison_score_value_label.setStyleSheet(self._comparison_score_style(None))
-            self.comparison_label.setText("Loading frame details...")
+            self.comparison_score_card.set_payload(
+                self._t("details.selected_comparison_score"),
+                "Loading...",
+                self._comparison_score_style(None),
+                "Loading frame details...",
+            )
             return
+        if self._subpixel_selection is not None:
+            selection = self._subpixel_selection
+            self.comparison_score_card.hide()
+            self.subpixel_score_card.show()
+            spec = selection.spec or self._default_subpixel_spec()
+            self.subpixel_selection_value.setText(
+                self._t(
+                    "details.subpixel_selection_value",
+                    parent_row=int(selection.parent_row) + 1,
+                    parent_column=int(selection.parent_column) + 1,
+                    sub_row=int(selection.sub_row) + 1,
+                    sub_column=int(selection.sub_column) + 1,
+                    rows=int(spec.rows),
+                    columns=int(spec.columns),
+                    parent_value=float(selection.parent_value),
+                )
+            )
+            self.subpixel_selection_value.show()
+        else:
+            self.comparison_score_card.show()
+            self.subpixel_selection_value.hide()
+            self.subpixel_score_card.hide()
         _preset_key, first_key, second_key = self._current_comparison_tuple()
-        source_a = self._source_display_name(first_key)
-        source_b = self._source_display_name(second_key)
         result_kind = self._selected_result_kind()
 
         score_title, score_value, score_lines = self._selected_comparison_score_info()
-        score_metric_key = self._comparison_score_metric_key()
-        self.comparison_score_caption.setText(score_title)
-        self.comparison_score_value_label.setText(self._comparison_score_text(score_value, score_metric_key))
-        self.comparison_score_value_label.setStyleSheet(self._comparison_score_style(score_value, score_metric_key))
+        score_metric_key = str(self._comparison_score_metric_key() or "overall_frame_score")
 
         comparison_lines: list[str] = []
         comparison_lines.append(f"{self._t('details.frame_type')}: {self._frame_type_label()}")
@@ -2160,7 +2863,26 @@ class ExtendFrameDetailsDialog(QDialog):
         comparison_lines.extend(self._localize_metric_lines(score_lines))
         if self._loading_confidence_model_id is not None and self._result_kind_requires_confidence(result_kind):
             comparison_lines.append("Loading confidence visualization...")
-        self.comparison_label.setText("\n".join(comparison_lines))
+        self.comparison_score_card.set_payload(
+            score_title,
+            self._comparison_score_text(score_value, score_metric_key),
+            self._comparison_score_style(score_value, score_metric_key),
+            "\n".join(comparison_lines),
+            self._selected_score_hint() or "",
+        )
+        if self._subpixel_selection is not None:
+            selection = self._subpixel_selection
+            subpixel_metric_key = str(selection.metric_key or score_metric_key)
+            subpixel_title, subpixel_value, subpixel_lines = self._selected_subpixel_score_info()
+            self.subpixel_score_card.set_payload(
+                subpixel_title,
+                self._comparison_score_text(subpixel_value, subpixel_metric_key),
+                self._comparison_score_style(subpixel_value, subpixel_metric_key),
+                "\n".join(self._localize_metric_lines(subpixel_lines)),
+                self._selected_score_hint() or "",
+            )
+        else:
+            self.subpixel_score_card.hide()
 
 
     def _update_layer_states(self) -> None:
@@ -2177,6 +2899,7 @@ class ExtendFrameDetailsDialog(QDialog):
                 self.hold_preview_item.setOpacity(1.0)
             else:
                 self.hold_preview_item.setVisible(False)
+            self._update_tile_lod()
             return
         self.hold_preview_item.setVisible(False)
         self.original_item.setVisible(self.original_visible.isChecked())
@@ -2187,6 +2910,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.second_source_item.setOpacity(self.second_source_opacity.value() / 100.0)
         self.result_item.setVisible(self.result_visible.isChecked())
         self.result_item.setOpacity(self.result_opacity.value() / 100.0)
+        self._update_tile_lod()
 
     def _grayscale_to_pixmap(self, array: np.ndarray) -> QPixmap:
         contiguous = np.ascontiguousarray(np.asarray(array, dtype=np.uint8))
@@ -2299,7 +3023,7 @@ class ExtendFrameDetailsDialog(QDialog):
             )
 
     def _build_view_settings_payload(self) -> dict[str, object]:
-        return {
+        payload = {
             "layer_view": self._selected_layer_view(),
             "result_kind": self._selected_result_kind(),
             "grayscale_diff": bool(self.grayscale_diff_checkbox.isChecked()),
@@ -2313,6 +3037,30 @@ class ExtendFrameDetailsDialog(QDialog):
             "result_opacity": int(self.result_opacity.value()),
             "colors": dict(self._session_view_state.get("colors") or {}),
         }
+        if self._tile_selection is not None:
+            payload["tile_selection"] = {
+                "row": int(self._tile_selection[0]),
+                "column": int(self._tile_selection[1]),
+            }
+        if self._subpixel_selection is not None:
+            payload["subpixel_selection"] = {
+                "parent_row": int(self._subpixel_selection.parent_row),
+                "parent_column": int(self._subpixel_selection.parent_column),
+                "sub_row": int(self._subpixel_selection.sub_row),
+                "sub_column": int(self._subpixel_selection.sub_column),
+                "parent_value": float(self._subpixel_selection.parent_value),
+                "subpixel_value": float(self._subpixel_selection.subpixel_value),
+                "subpixel_confidence": None if self._subpixel_selection.subpixel_confidence is None else float(self._subpixel_selection.subpixel_confidence),
+                "aggregation": str(self._subpixel_selection.aggregation),
+                "metric_key": str(self._subpixel_selection.metric_key),
+                "spec_rows": int(self._subpixel_selection.spec.rows if self._subpixel_selection.spec is not None else 0),
+                "spec_columns": int(self._subpixel_selection.spec.columns if self._subpixel_selection.spec is not None else 0),
+                "spec_mode": str(self._subpixel_selection.spec.mode if self._subpixel_selection.spec is not None else "grid"),
+                "spec_tile_width": int(self._subpixel_selection.spec.tile_width if self._subpixel_selection.spec is not None else 0),
+                "spec_tile_height": int(self._subpixel_selection.spec.tile_height if self._subpixel_selection.spec is not None else 0),
+                "spec_overlap": int(self._subpixel_selection.spec.overlap if self._subpixel_selection.spec is not None else 0),
+            }
+        return payload
 
     def _restore_view_settings(self) -> None:
         payload = dict(self._session_view_state or {})
@@ -2322,6 +3070,7 @@ class ExtendFrameDetailsDialog(QDialog):
             if index >= 0:
                 self.layer_view_combo.setCurrentIndex(index)
         self._restored_result_kind = str(payload.get("result_kind") or "") or None
+        self._sticky_result_kind = self._restored_result_kind
         self.grayscale_diff_checkbox.setChecked(bool(payload.get("grayscale_diff", False)))
         self.original_visible.setChecked(bool(payload.get("original_visible", self.original_visible.isChecked())))
         self.first_source_visible.setChecked(bool(payload.get("first_visible", self.first_source_visible.isChecked())))
@@ -2337,6 +3086,7 @@ class ExtendFrameDetailsDialog(QDialog):
         payload = self._build_view_settings_payload()
         self._session_view_state.clear()
         self._session_view_state.update(payload)
+        self._sticky_result_kind = str(payload.get("result_kind") or "") or self._sticky_result_kind
         callback = self._on_view_state_changed
         if callable(callback):
             callback(dict(self._session_view_state))

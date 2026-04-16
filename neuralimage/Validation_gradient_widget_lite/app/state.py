@@ -18,14 +18,11 @@ class ExtendPreviewPanel:
     group: QGroupBox
     frame_title: QLabel
     frame_value: QLabel
-    overall_title: QLabel
-    overall_value: QLabel
-    metric_title: QLabel
-    metric_value: QLabel
-    labeled_title: QLabel
-    labeled_value: QLabel
-    acquisition_title: QLabel
-    acquisition_value: QLabel
+    subpixel_group: QGroupBox | None = None
+    subpixel_value: QLabel | None = None
+    subpixel_score_card: QWidget | None = None
+    overall_group: QGroupBox | None = None
+    component_group: QGroupBox | None = None
     score_cards: dict[str, QWidget] = field(default_factory=dict)
     histogram_cards: dict[str, QWidget] = field(default_factory=dict)
 

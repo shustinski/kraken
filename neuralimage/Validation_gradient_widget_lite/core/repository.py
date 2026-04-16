@@ -140,11 +140,6 @@ from .backend_constants import (
     EXPORT_SELECTION_MODE_PERCENT,
     EXPORT_SELECTION_MODE_PERCENTILE,
 )
-from .analysis_modes import (
-    confidence_quality_level_key,
-    confidence_quality_percentile_band,
-    metric_uses_within_group_percentiles,
-)
 from .domain import (
     BuildOptions,
     BuildResult,
@@ -288,6 +283,7 @@ def _resolve_aux_path(key: str, index: dict[str, Path]) -> Path | None:
     return None
 
 
+@lru_cache(maxsize=65536)
 def natural_sort_key(value: str) -> tuple[object, ...]:
     """Split a string into digit and text chunks for natural sorting."""
 
@@ -6231,6 +6227,7 @@ def _collect_frame_records_modern(
     original_folder: FolderSpec | None = None,
     gt_folder: FolderSpec | None = None,
     cancel_check=None,
+    progress_callback=None,
 ) -> BuildResult:
     if not model_specs:
         raise ValueError("At least one model folder must be selected.")
@@ -6239,10 +6236,14 @@ def _collect_frame_records_modern(
     base_spec = model_specs[0]
     if cancel_check is not None and cancel_check():
         raise BuildCancelledError("Build cancelled")
+    if progress_callback is not None:
+        progress_callback(0, 0, "Indexing base folder")
     base_index = build_folder_index(base_spec.mask_folder, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check)
     if not base_index:
         raise ValueError("Selected model folders do not contain matching image frames.")
 
+    if progress_callback is not None:
+        progress_callback(0, len(base_index), "Indexing auxiliary folders")
     original_index = build_folder_index(original_folder.path, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check) if original_folder is not None else {}
     gt_index = build_folder_index(gt_folder.path, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check) if gt_folder is not None else {}
     fallback_model_indexes: dict[str, dict[str, Path]] = {}
@@ -6309,6 +6310,8 @@ def _collect_frame_records_modern(
             model_mask_paths=model_mask_paths,
             model_prob_paths=model_prob_paths,
         ))
+        if progress_callback is not None and (index == 0 or (index + 1) % max(1, int(options.progress_update_interval)) == 0 or index + 1 == len(sorted_keys)):
+            progress_callback(index + 1, len(sorted_keys), key)
     return BuildResult(
         records=tuple(records),
         model_specs=model_specs,
@@ -6339,6 +6342,7 @@ def collect_frame_records(
     gt_folder: FolderSpec | None = None,
     base_folder: FolderSpec | None = None,
     cancel_check=None,
+    progress_callback=None,
 ) -> BuildResult:
     """Collect matched frame records in modern or legacy-lite mode."""
 
@@ -6358,6 +6362,7 @@ def collect_frame_records(
             original_folder=base_folder,
             gt_folder=None,
             cancel_check=cancel_check,
+            progress_callback=progress_callback,
         )
         records: list[FrameRecord] = []
         for record in modern.records:
@@ -6389,6 +6394,7 @@ def collect_frame_records(
         original_folder=original_folder,
         gt_folder=gt_folder,
         cancel_check=cancel_check,
+        progress_callback=progress_callback,
     )
 
 
@@ -6538,8 +6544,23 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
 def compute_comparison_score(first: np.ndarray, second: np.ndarray, mode: ComparisonMode) -> float:
     """Legacy-lite helper that returns only scalar score for a comparison mode."""
 
-    _heatmap, score = compute_comparison(first, second, mode)
-    return float(score)
+    if mode == ComparisonMode.GRAYSCALE_DIFF:
+        first_gray = np.asarray(first, dtype=np.float32)
+        second_gray = np.asarray(second, dtype=np.float32)
+        if first_gray.size == 0 or second_gray.size == 0:
+            return 0.0
+        diff = np.abs(first_gray - second_gray)
+        scale = 255.0 if max(float(np.max(first_gray)), float(np.max(second_gray))) > 1.0 else 1.0
+        return float(np.mean(diff, dtype=np.float64) / scale)
+    first_bool = np.asarray(first, dtype=bool)
+    second_bool = np.asarray(second, dtype=bool)
+    if first_bool.size == 0 or second_bool.size == 0 or mode == ComparisonMode.OVERLAY_ONLY:
+        return 0.0
+    if mode in {ComparisonMode.XOR, ComparisonMode.DISAGREEMENT}:
+        return float(np.mean(np.not_equal(first_bool, second_bool), dtype=np.float64))
+    if mode == ComparisonMode.FIRST_MINUS_SECOND:
+        return float(np.mean(np.logical_and(first_bool, np.logical_not(second_bool)), dtype=np.float64))
+    return float(np.mean(np.logical_and(np.logical_not(first_bool), second_bool), dtype=np.float64))
 
 
 def load_frame_layers(record: FrameRecord) -> dict[str, object]:
@@ -6759,51 +6780,7 @@ def _ranked_percentile_map(ranked: list[FrameRecord]) -> dict[str, float]:
     return {record.key: float(100.0 * (denominator - index) / denominator) for index, record in enumerate(ranked)}
 
 
-def _remap_percentile_into_band(percentile: float, band: tuple[float, float] | None) -> float:
-    if band is None:
-        return float(max(0.0, min(float(percentile), 100.0)))
-    low_bound, high_bound = float(band[0]), float(band[1])
-    clipped = float(max(0.0, min(float(percentile), 100.0)))
-    if high_bound <= low_bound + EPS:
-        return low_bound
-    # Non-terminal percentile bands in the UI are half-open [low, high),
-    # so confidence frames must stay visibly below the next band's boundary.
-    safe_high = high_bound if high_bound >= (100.0 - EPS) else max(low_bound, high_bound - 0.1)
-    return float(low_bound + (safe_high - low_bound) * (clipped / 100.0))
-
-
-def _compute_metric_percentiles_within_quality_group(
-    records: tuple[FrameRecord, ...] | list[FrameRecord],
-    metric_key: str,
-) -> dict[str, float]:
-    grouped_records: dict[str, list[FrameRecord]] = {}
-    for record in records:
-        value = metric_value_for_record(record, metric_key)
-        if value is None or not np.isfinite(float(value)):
-            continue
-        group_key = confidence_quality_level_key(float(value))
-        if group_key is None:
-            continue
-        grouped_records.setdefault(str(group_key), []).append(record)
-    if not grouped_records:
-        return {}
-    percentile_map: dict[str, float] = {}
-    for group_key, group_records in grouped_records.items():
-        band = confidence_quality_percentile_band(group_key)
-        ranked_group = rank_records_by_metric(group_records, metric_key)
-        group_percentiles = _ranked_percentile_map(ranked_group)
-        for record in group_records:
-            raw_percentile = float(group_percentiles.get(record.key, 100.0))
-            percentile_map[record.key] = _remap_percentile_into_band(raw_percentile, band)
-    return percentile_map
-
-
 def compute_metric_percentiles(records: tuple[FrameRecord, ...] | list[FrameRecord], metric_key: str) -> dict[str, float]:
-    # Confidence risk percentiles are group-aware: first assign an absolute
-    # quality band from the badness score, then rank only inside that band.
-    # Other metrics keep the original global percentile behavior.
-    if metric_uses_within_group_percentiles(metric_key):
-        return _compute_metric_percentiles_within_quality_group(records, metric_key)
     ranked = rank_records_by_metric(records, metric_key)
     return _ranked_percentile_map(ranked)
 
@@ -7156,20 +7133,23 @@ def compute_comparison(first: np.ndarray, second: np.ndarray, mode: ComparisonMo
         first_gray = np.asarray(first, dtype=np.float32)
         second_gray = np.asarray(second, dtype=np.float32)
         heatmap = np.abs(first_gray - second_gray)
-        if heatmap.max() > 1.0:
-            heatmap /= 255.0
-        return heatmap.astype(np.float32), float(np.mean(heatmap, dtype=np.float64))
+        if heatmap.size == 0:
+            return heatmap.astype(np.float32), 0.0
+        scale = 255.0 if max(float(np.max(first_gray)), float(np.max(second_gray))) > 1.0 else 1.0
+        if scale > 1.0:
+            heatmap = heatmap / scale
+        return heatmap.astype(np.float32, copy=False), float(np.mean(heatmap, dtype=np.float64))
     first_bool = np.asarray(first, dtype=bool)
     second_bool = np.asarray(second, dtype=bool)
     if mode == ComparisonMode.OVERLAY_ONLY:
-        heatmap = np.zeros_like(first_bool, dtype=np.float32)
+        return np.zeros_like(first_bool, dtype=np.float32), 0.0
     elif mode in {ComparisonMode.XOR, ComparisonMode.DISAGREEMENT}:
-        heatmap = np.logical_xor(first_bool, second_bool).astype(np.float32)
+        mask = np.logical_xor(first_bool, second_bool)
     elif mode == ComparisonMode.FIRST_MINUS_SECOND:
-        heatmap = np.logical_and(first_bool, np.logical_not(second_bool)).astype(np.float32)
+        mask = np.logical_and(first_bool, np.logical_not(second_bool))
     else:
-        heatmap = np.logical_and(np.logical_not(first_bool), second_bool).astype(np.float32)
-    return heatmap, float(np.mean(heatmap, dtype=np.float64))
+        mask = np.logical_and(np.logical_not(first_bool), second_bool)
+    return mask.astype(np.float32), float(np.mean(mask, dtype=np.float64))
 
 
 

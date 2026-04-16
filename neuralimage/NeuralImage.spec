@@ -1,25 +1,25 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-import os
 import sys
+from importlib.util import find_spec
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+
+APP_NAME = 'NeuralImage'
+INCLUDE_WEBUI = True
+BUILD_TARGET = 'auto'  # Supported values: 'auto', 'linux', 'windows', 'native'.
 
 block_cipher = None
 _spec_file = globals().get('__file__')
 project_root = Path(_spec_file).resolve().parent if _spec_file else Path.cwd()
 
 
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw = str(os.getenv(name, '') or '').strip().lower()
-    if not raw:
-        return bool(default)
-    return raw in {'1', 'true', 'yes', 'on'}
+include_webui = bool(INCLUDE_WEBUI)
 
 
 def _resolve_build_target() -> str:
-    raw = str(os.getenv('NEURALIMAGE_BUILD_TARGET', '') or '').strip().lower()
-    if raw in {'linux', 'windows'}:
+    raw = str(BUILD_TARGET or 'auto').strip().lower()
+    if raw in {'linux', 'windows', 'native'}:
         return raw
     if sys.platform.startswith('linux'):
         return 'linux'
@@ -29,10 +29,7 @@ def _resolve_build_target() -> str:
 
 
 build_target = _resolve_build_target()
-app_name = str(os.getenv('NEURALIMAGE_APP_NAME', 'NeuralImage') or 'NeuralImage').strip() or 'NeuralImage'
-
-# Build-time flag: set via env to bundle optional Django WebUI assets/deps.
-include_webui = _env_flag('NEURALIMAGE_INCLUDE_WEBUI', default=False)
+app_name = str(APP_NAME or 'NeuralImage').strip() or 'NeuralImage'
 
 datas = [
     # NOTE:
@@ -75,14 +72,24 @@ if offline_timm_root.exists():
 if include_webui:
     # WebUI assets for optional --web mode.
     datas += collect_data_files('webui', includes=['templates/**/*.html', 'static/**/*'])
+    datas += collect_data_files('django', includes=['contrib/admin/templates/**/*', 'contrib/admin/static/**/*'])
+    datas += copy_metadata('django')
 
 hiddenimports = []
 if include_webui:
     hiddenimports += [
         'django',
+        'django.core.management',
+        'webui',
         'webui_project',
         'webui_project.settings',
+        'webui_project.urls',
     ]
+    hiddenimports += collect_submodules('django')
+    hiddenimports += collect_submodules('webui')
+    hiddenimports += collect_submodules('webui_project')
+    if find_spec('ldap3') is not None:
+        hiddenimports += collect_submodules('ldap3')
 
 base_excludes = []
 
@@ -111,8 +118,7 @@ a = Analysis(
     binaries=[],          # <-- torch DLLs / pyds
     datas=datas ,
     hiddenimports=hiddenimports,
-    # Disable local hook overrides and rely on PyInstaller's built-in torch hook behavior.
-    hookspath=[],
+    hookspath=[str(project_root / 'hooks')],
     hooksconfig={},
     runtime_hooks=['hooks/rth_set_workdir.py'],  # ensure relative resource paths resolve from exe dir
     excludes=base_excludes,

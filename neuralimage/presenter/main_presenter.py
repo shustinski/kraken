@@ -75,6 +75,7 @@ from model.NeuralNetwork import get_registered_model_names_by_type
 from model.general_neural_handler import GeneralNeuralHandler
 from lib.ui_texts import get_ui_section
 from view import MainView, SettingsPanel
+from view.developer_tools_dialog import DeveloperToolsDialog
 from view.task_properties_dialog import TaskPropertiesDialog
 import presenter.dialogs as presenter_dialogs
 import presenter.plugin_flow as plugin_flow
@@ -183,6 +184,7 @@ class MainPresenter(QObject):
         self._update_download_thread: AppUpdateDownloadThread | None = None
         self._validation_gradient_plugin = None
         self._validation_gradient_window: _ValidationGradientPluginWindow | None = None
+        self._developer_tools_dialog: DeveloperToolsDialog | None = None
         self._update_check_manual = False
         self._sample_count_worker_thread: threading.Thread | None = None
         self._sample_count_request_serial = 0
@@ -249,6 +251,7 @@ class MainPresenter(QObject):
         v.batch_preview_visibility_changed.connect(self._on_batch_preview_visibility_changed)
         v.release_memory_requested.connect(self._on_release_memory_requested)
         v.open_validation_gradient_requested.connect(self._on_open_validation_gradient_requested)
+        v.developer_tools_requested.connect(self._on_developer_tools_requested)
         v.update_check_requested.connect(self._on_update_check_requested)
         v.update_channel_selected.connect(self._on_update_channel_selected)
         v.ui_language_selected.connect(self._on_ui_language_selected)
@@ -1262,6 +1265,17 @@ class MainPresenter(QObject):
     def _shutdown_validation_gradient_plugin(self) -> None:
         plugin_flow.shutdown_validation_gradient_plugin(self)
 
+    def _on_developer_tools_requested(self) -> None:
+        if self._developer_tools_dialog is None:
+            self._developer_tools_dialog = DeveloperToolsDialog(self.view)
+        self._developer_tools_dialog.show()
+        self._developer_tools_dialog.raise_()
+        self._developer_tools_dialog.activateWindow()
+
+    def _shutdown_developer_tools(self) -> None:
+        if self._developer_tools_dialog is not None:
+            self._developer_tools_dialog.shutdown()
+
     def _on_close_requested(self):
         ui_texts = get_ui_section('main_window')
         reply = QMessageBox.question(
@@ -1274,6 +1288,7 @@ class MainPresenter(QObject):
         if reply == QMessageBox.StandardButton.Yes:
             self._save_windows_to_qsettings()
             self._shutdown_validation_gradient_plugin()
+            self._shutdown_developer_tools()
             self.view.allow_close()
 
     # ------------------------------------------------------------------ #

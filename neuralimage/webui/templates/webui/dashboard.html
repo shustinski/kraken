@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="{% static 'webui/dashboard.css' %}">
 </head>
 <body>
-<div class="app-shell" id="app-shell">
+<div class="app-shell {% if ui_mode == 'advanced' %}is-advanced{% else %}is-simple{% endif %}" id="app-shell" data-ui-mode="{{ ui_mode }}">
     <header class="topbar">
         <div class="title-wrap">
             <h1>{{ app_name }} <small>v{{ app_version }}</small></h1>
@@ -19,10 +19,70 @@
                 <a href="?lang=ru" class="{% if ui_language == 'ru' %}is-active{% endif %}">{{ texts.language_ru }}</a>
                 <a href="?lang=en" class="{% if ui_language == 'en' %}is-active{% endif %}">{{ texts.language_en }}</a>
             </div>
+            <div class="status-chip">{{ auth_texts.current_user }}: <span>{{ current_user_display_name }}</span></div>
             <div class="status-chip">{{ texts.status_label }}: <span id="run-status">{{ status_display }}</span></div>
-            <button type="button" id="toggle-settings" class="ghost-btn" title="{{ texts.toggle_settings_tip }}">{{ texts.toggle_settings }}</button>
+            <form method="post" action="{% url 'webui:auth_logout' %}" class="inline-form">
+                {% csrf_token %}
+                <button type="submit" class="ghost-btn">{{ auth_texts.logout_button }}</button>
+            </form>
         </div>
     </header>
+
+    <nav class="qt-menubar" aria-label="{{ desktop_texts.menu_view }}">
+        <div class="qt-menu">
+            <button type="button" class="qt-menu-button">{{ desktop_texts.menu_file }}</button>
+            <div class="qt-menu-panel">
+                <button type="button" data-menu-action="import-workflow">{{ desktop_texts.menu_open_config }}</button>
+            </div>
+        </div>
+        <div class="qt-menu">
+            <button type="button" class="qt-menu-button">{{ desktop_texts.menu_settings }}</button>
+            <div class="qt-menu-panel">
+                <button type="button" data-menu-action="settings-sample">{{ desktop_texts.menu_sample }}</button>
+                <button type="button" data-menu-action="settings-train">{{ desktop_texts.menu_train }}</button>
+                <button type="button" data-menu-action="settings-pred">{{ desktop_texts.menu_pred }}</button>
+            </div>
+        </div>
+        <div class="qt-menu">
+            <button type="button" class="qt-menu-button">{{ desktop_texts.menu_view }}</button>
+            <div class="qt-menu-panel">
+                <button type="button" data-menu-action="toggle-metrics">{{ desktop_texts.menu_metrics }}</button>
+                <button type="button" data-menu-action="toggle-logs">{{ desktop_texts.menu_log_panel }}</button>
+                <button type="button" data-menu-action="toggle-settings">{{ desktop_texts.menu_settings_panel }}</button>
+                <button type="button" data-menu-action="toggle-preview">{{ desktop_texts.menu_batch_preview }}</button>
+                <button type="button" data-menu-action="release-memory">{{ desktop_texts.menu_release_memory }}</button>
+                <div class="qt-menu-separator"></div>
+                <button type="button" data-menu-action="theme-dark">{{ desktop_texts.theme_dark }}</button>
+                <button type="button" data-menu-action="theme-light">{{ desktop_texts.theme_light }}</button>
+                <div class="qt-menu-separator"></div>
+                <button type="button" data-menu-action="ui-simple">{{ desktop_texts.menu_ui_mode_simple }}</button>
+                <button type="button" data-menu-action="ui-advanced">{{ desktop_texts.menu_ui_mode_advanced }}</button>
+            </div>
+        </div>
+        <div class="qt-menu">
+            <button type="button" class="qt-menu-button">{{ desktop_texts.menu_plugins }}</button>
+            <div class="qt-menu-panel">
+                <button type="button" data-menu-action="validation-gradient">{{ desktop_texts.menu_open_validation_gradient }}</button>
+            </div>
+        </div>
+        <div class="qt-menu">
+            <button type="button" class="qt-menu-button">{{ desktop_texts.menu_tools }}</button>
+            <div class="qt-menu-panel">
+                <button type="button" data-menu-action="augmentation-preview">{{ js_texts.augmentation_preview_button }}</button>
+                <button type="button" data-menu-action="rare-patch-editor">{{ js_texts.rare_patch_editor }}</button>
+                <div class="qt-menu-separator"></div>
+                <button type="button" data-menu-action="developer">{{ desktop_texts.menu_developer }}</button>
+            </div>
+        </div>
+        <div class="qt-menu">
+            <button type="button" class="qt-menu-button">{{ desktop_texts.menu_help }}</button>
+            <div class="qt-menu-panel">
+                <button type="button" data-menu-action="open-help">{{ desktop_texts.menu_open_help }}</button>
+                <button type="button" data-menu-action="open-changelog">{{ desktop_texts.menu_open_changelog }}</button>
+                <button type="button" data-menu-action="check-updates">{{ desktop_texts.menu_check_updates }}</button>
+            </div>
+        </div>
+    </nav>
 
     {% if messages %}
         <section class="alerts">
@@ -31,6 +91,21 @@
             {% endfor %}
         </section>
     {% endif %}
+    <section class="panel action-panel">
+        <div class="action-row">
+            <div class="action-group">
+                <div class="sample-count-chip" id="sample-count-value">{{ desktop_texts.samples_count }}</div>
+            </div>
+            <div class="action-group">
+                <span class="action-label">{{ desktop_texts.simple_workflows_group }}</span>
+                {% for preset in workflow_presets %}
+                    <button type="button" class="ghost-btn workflow-preset-btn" data-preset="{{ preset.key }}">{{ preset.label }}</button>
+                {% endfor %}
+                <span class="preset-label" id="simple-workflow-label">{{ desktop_texts.simple_workflow_selected_template|default:"Current profile: {profile}" }}</span>
+            </div>
+        </div>
+        <input type="file" id="workflow-import-input" accept=".json,application/json" hidden>
+    </section>
 
     <div class="content-grid">
         <main class="main-col">
@@ -141,11 +216,6 @@
                         </div>
                         {% if main_form.model_path.errors %}<div class="field-error">{{ main_form.model_path.errors|striptags }}</div>{% endif %}
                     </div>
-                    <div class="field compact" data-role="epochs">
-                        <label>{{ main_form.epochs.label }}</label>
-                        {{ main_form.epochs }}
-                        {% if main_form.epochs.errors %}<div class="field-error">{{ main_form.epochs.errors|striptags }}</div>{% endif %}
-                    </div>
                 </section>
 
                 {% if main_form.non_field_errors or settings_form.non_field_errors %}
@@ -171,6 +241,7 @@
                 <div class="section-head">
                     <h2>{{ desktop_texts.queue }}</h2>
                     <div class="queue-actions">
+                        <button type="button" class="ghost-btn" id="queue-properties-btn">{{ desktop_texts.queue_properties }}</button>
                         <button type="button" class="ghost-btn" id="queue-pause-btn">{{ desktop_texts.queue_pause }}</button>
                         <button type="button" class="ghost-btn" id="queue-remove-btn">{{ desktop_texts.queue_remove }}</button>
                     </div>
@@ -178,7 +249,7 @@
                 <div id="queue-list" class="queue-list"></div>
             </section>
 
-            <section class="panel runtime-panel">
+            <section class="panel runtime-panel" id="runtime-panel">
                 <div class="runtime-grid">
                     <article class="runtime-card">
                         <h2>{{ desktop_texts.progress_group }}</h2>
@@ -213,7 +284,7 @@
                         </div>
                     </article>
 
-                    <article class="runtime-card">
+                    <article class="runtime-card" id="preview-card">
                         <h2>{{ desktop_texts.preview_group }}</h2>
                         <p id="preview-frame-name" class="preview-frame-name">{{ desktop_texts.preview_current_frame_default }}</p>
                         <div class="preview-grid">
@@ -243,7 +314,7 @@
                 </div>
             </section>
 
-            <section class="panel metrics-panel">
+            <section class="panel metrics-panel" id="metrics-panel">
                 <h2>{{ texts.metrics_title }}</h2>
                 <div class="metrics-grid">
                     <article class="metric-card">
@@ -284,7 +355,7 @@
                 </div>
             </section>
 
-            <section class="panel logs-panel">
+            <section class="panel logs-panel" id="logs-panel">
                 <h2>{{ texts.logs_title }}</h2>
                 <div id="logs-container" class="log-list"></div>
             </section>
@@ -292,10 +363,20 @@
 
         <aside class="side-col" id="settings-pane" aria-hidden="false">
             <div class="panel settings-panel">
-                <h2>{{ texts.training_params_title }}</h2>
+                <div class="section-head">
+                    <h2>{{ texts.training_params_title }}</h2>
+                </div>
+                <nav class="settings-nav" aria-label="{{ desktop_texts.menu_settings }}">
+                    <button type="button" class="settings-nav-btn" data-target="#settings-section-sample">{{ desktop_texts.menu_sample }}</button>
+                    <button type="button" class="settings-nav-btn" data-target="#settings-section-optimizer">{{ desktop_texts.menu_train }}</button>
+                    <button type="button" class="settings-nav-btn" data-target="#settings-section-recognition">{{ desktop_texts.menu_pred }}</button>
+                    <button type="button" class="settings-nav-btn" data-target="#settings-section-spatial">{{ settings_panel_texts.spatial_group }}</button>
+                    <button type="button" class="settings-nav-btn" data-target="#settings-section-rare">{{ settings_panel_texts.rare_patch_group }}</button>
+                    <button type="button" class="settings-nav-btn" data-target="#settings-section-preprocessing">{{ texts.preprocessing_section }}</button>
+                </nav>
 
-                <section class="section">
-                    <h3>{{ texts.base_section }}</h3>
+                <section class="section" id="settings-section-sample">
+                    <h3>{{ settings_panel_texts.general_group }}</h3>
                     <div class="field compact">
                         <label>{{ settings_form.model.label }}</label>
                         {{ settings_form.model }}
@@ -306,36 +387,59 @@
                         </datalist>
                         {% if settings_form.model.errors %}<div class="field-error">{{ settings_form.model.errors|striptags }}</div>{% endif %}
                     </div>
-                    <div class="inline-2">
-                        <div class="field compact">
-                            <label>{{ settings_form.sample_x.label }}</label>
-                            {{ settings_form.sample_x }}
-                            {% if settings_form.sample_x.errors %}<div class="field-error">{{ settings_form.sample_x.errors|striptags }}</div>{% endif %}
-                        </div>
-                        <div class="field compact">
-                            <label>{{ settings_form.sample_y.label }}</label>
-                            {{ settings_form.sample_y }}
-                            {% if settings_form.sample_y.errors %}<div class="field-error">{{ settings_form.sample_y.errors|striptags }}</div>{% endif %}
-                        </div>
-                    </div>
-                    <div class="field compact" data-role="step-field">
-                        <label>{{ settings_form.step.label }}</label>
-                        {{ settings_form.step }}
-                        {% if settings_form.step.errors %}<div class="field-error">{{ settings_form.step.errors|striptags }}</div>{% endif %}
+                    <div class="field compact" data-role="epochs">
+                        <label>{{ main_form.epochs.label }}</label>
+                        {{ main_form.epochs }}
+                        {% if main_form.epochs.errors %}<div class="field-error">{{ main_form.epochs.errors|striptags }}</div>{% endif %}
                     </div>
                     <div class="field compact">
                         <label>{{ settings_form.color_mode.label }}</label>
                         {{ settings_form.color_mode }}
                         {% if settings_form.color_mode.errors %}<div class="field-error">{{ settings_form.color_mode.errors|striptags }}</div>{% endif %}
                     </div>
-                    <label class="check-row" title="{{ settings_form.horizontal_rotation.help_text }}">{{ settings_form.horizontal_rotation }} {{ settings_form.horizontal_rotation.label }}</label>
-                    <label class="check-row" title="{{ settings_form.vertical_rotation.help_text }}">{{ settings_form.vertical_rotation }} {{ settings_form.vertical_rotation.label }}</label>
-                    <label class="check-row" title="{{ settings_form.additional_augmentation.help_text }}">{{ settings_form.additional_augmentation }} {{ settings_form.additional_augmentation.label }}</label>
+                    <label class="check-row" title="{{ settings_form.sync_patch_sizes.help_text }}">{{ settings_form.sync_patch_sizes }} {{ settings_form.sync_patch_sizes.label }}</label>
+                    <div class="field">
+                        <label>{{ settings_panel_texts.train_patch_size }}</label>
+                        <div class="size-row">
+                            {{ settings_form.sample_x }}
+                            <span>X</span>
+                            {{ settings_form.sample_y }}
+                        </div>
+                        {% if settings_form.sample_x.errors %}<div class="field-error">{{ settings_form.sample_x.errors|striptags }}</div>{% endif %}
+                        {% if settings_form.sample_y.errors %}<div class="field-error">{{ settings_form.sample_y.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field" data-role="recognition-patch-size">
+                        <label>{{ settings_panel_texts.recognition_patch_size }}</label>
+                        <div class="size-row">
+                            {{ settings_form.recognition_sample_x }}
+                            <span>X</span>
+                            {{ settings_form.recognition_sample_y }}
+                        </div>
+                        {% if settings_form.recognition_sample_x.errors %}<div class="field-error">{{ settings_form.recognition_sample_x.errors|striptags }}</div>{% endif %}
+                        {% if settings_form.recognition_sample_y.errors %}<div class="field-error">{{ settings_form.recognition_sample_y.errors|striptags }}</div>{% endif %}
+                    </div>
+                </section>
+
+                <section class="section" id="settings-section-spatial">
+                    <h3>{{ settings_panel_texts.spatial_group }}</h3>
+                    <div class="qt-checkbox-grid">
+                        <label class="check-row" title="{{ settings_form.horizontal_rotation.help_text }}">{{ settings_form.horizontal_rotation }} {{ settings_form.horizontal_rotation.label }}</label>
+                        <label class="check-row" title="{{ settings_form.flip_x.help_text }}">{{ settings_form.flip_x }} {{ settings_form.flip_x.label }}</label>
+                        <label class="check-row" title="{{ settings_form.vertical_rotation.help_text }}">{{ settings_form.vertical_rotation }} {{ settings_form.vertical_rotation.label }}</label>
+                        <label class="check-row" title="{{ settings_form.flip_y.help_text }}">{{ settings_form.flip_y }} {{ settings_form.flip_y.label }}</label>
+                    </div>
                     <label class="check-row" title="{{ settings_form.random_crop.help_text }}">{{ settings_form.random_crop }} {{ settings_form.random_crop.label }}</label>
-                    <div class="field compact" data-role="crops-per-image-field">
-                        <label>{{ settings_form.crops_per_image.label }}</label>
-                        {{ settings_form.crops_per_image }}
-                        {% if settings_form.crops_per_image.errors %}<div class="field-error">{{ settings_form.crops_per_image.errors|striptags }}</div>{% endif %}
+                    <div class="inline-2">
+                        <div class="field compact" data-role="step-field">
+                            <label>{{ settings_form.step.label }}</label>
+                            {{ settings_form.step }}
+                            {% if settings_form.step.errors %}<div class="field-error">{{ settings_form.step.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="field compact" data-role="crops-per-image-field">
+                            <label>{{ settings_form.crops_per_image.label }}</label>
+                            {{ settings_form.crops_per_image }}
+                            {% if settings_form.crops_per_image.errors %}<div class="field-error">{{ settings_form.crops_per_image.errors|striptags }}</div>{% endif %}
+                        </div>
                     </div>
                     <label class="check-row" title="{{ settings_form.scale_augmentation.help_text }}">{{ settings_form.scale_augmentation }} {{ settings_form.scale_augmentation.label }}</label>
                     <div class="field compact" data-role="scale-augmentation-strength">
@@ -343,6 +447,110 @@
                         {{ settings_form.scale_augmentation_strength }}
                         {% if settings_form.scale_augmentation_strength.errors %}<div class="field-error">{{ settings_form.scale_augmentation_strength.errors|striptags }}</div>{% endif %}
                     </div>
+                </section>
+
+                <section class="section" id="settings-section-rare">
+                    <h3>{{ settings_panel_texts.rare_patch_group }}</h3>
+                    <label class="check-row" title="{{ settings_form.skip_uniform_labels.help_text }}">{{ settings_form.skip_uniform_labels }} {{ settings_form.skip_uniform_labels.label }}</label>
+                    <label class="check-row" title="{{ settings_form.rare_patch_oversampling_enabled.help_text }}">{{ settings_form.rare_patch_oversampling_enabled }} {{ settings_form.rare_patch_oversampling_enabled.label }}</label>
+                    <div class="field compact" data-role="rare-patch-fields">
+                        <label>{{ settings_form.rare_patch_oversampling_factor.label }}</label>
+                        {{ settings_form.rare_patch_oversampling_factor }}
+                        {% if settings_form.rare_patch_oversampling_factor.errors %}<div class="field-error">{{ settings_form.rare_patch_oversampling_factor.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <button type="button" class="btn-start qt-tool-btn" data-tool="rare_patch_editor">{{ settings_panel_texts.edit_rare_regions }}</button>
+                </section>
+
+                <section class="section" id="settings-section-optimizer">
+                    <h3>{{ settings_panel_texts.optimizer_group }}</h3>
+                    <div class="preset-row">
+                        <button type="button" class="preset-btn" data-optimizer="adam" data-lr="0.001" data-wd="0.0">Adam</button>
+                        <button type="button" class="preset-btn" data-optimizer="adamw" data-lr="0.0005" data-wd="0.01">AdamW</button>
+                    </div>
+                    <details class="qt-details">
+                        <summary>{{ settings_panel_texts.advanced_group }}</summary>
+                        <div class="field compact">
+                            <label>{{ settings_form.optimizer_name.label }}</label>
+                            {{ settings_form.optimizer_name }}
+                            {% if settings_form.optimizer_name.errors %}<div class="field-error">{{ settings_form.optimizer_name.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="inline-2">
+                            <div class="field compact">
+                                <label>{{ settings_form.learning_rate.label }}</label>
+                                {{ settings_form.learning_rate }}
+                                {% if settings_form.learning_rate.errors %}<div class="field-error">{{ settings_form.learning_rate.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.weight_decay.label }}</label>
+                                {{ settings_form.weight_decay }}
+                                {% if settings_form.weight_decay.errors %}<div class="field-error">{{ settings_form.weight_decay.errors|striptags }}</div>{% endif %}
+                            </div>
+                        </div>
+                        <div class="field compact">
+                            <label>{{ settings_form.mixed_precision.label }}</label>
+                            {{ settings_form.mixed_precision }}
+                            {% if settings_form.mixed_precision.errors %}<div class="field-error">{{ settings_form.mixed_precision.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="inline-2">
+                            <div class="field compact">
+                                <label>{{ settings_form.batch_size.label }}</label>
+                                {{ settings_form.batch_size }}
+                                {% if settings_form.batch_size.errors %}<div class="field-error">{{ settings_form.batch_size.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.dataloader_num_workers.label }}</label>
+                                {{ settings_form.dataloader_num_workers }}
+                                {% if settings_form.dataloader_num_workers.errors %}<div class="field-error">{{ settings_form.dataloader_num_workers.errors|striptags }}</div>{% endif %}
+                            </div>
+                        </div>
+                        <div class="inline-2">
+                            <div class="field compact">
+                                <label>{{ settings_form.overlap.label }}</label>
+                                {{ settings_form.overlap }}
+                                {% if settings_form.overlap.errors %}<div class="field-error">{{ settings_form.overlap.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.log_update_frequency.label }}</label>
+                                {{ settings_form.log_update_frequency }}
+                                {% if settings_form.log_update_frequency.errors %}<div class="field-error">{{ settings_form.log_update_frequency.errors|striptags }}</div>{% endif %}
+                            </div>
+                        </div>
+                        <label class="check-row" title="{{ settings_form.torch_compile_enabled.help_text }}">{{ settings_form.torch_compile_enabled }} {{ settings_form.torch_compile_enabled.label }}</label>
+                        <label class="check-row" title="{{ settings_form.use_multi_gpu.help_text }}">{{ settings_form.use_multi_gpu }} {{ settings_form.use_multi_gpu.label }}</label>
+                    </details>
+                </section>
+
+                <section class="section" id="settings-section-loss">
+                    <h3>{{ settings_panel_texts.loss_precision_group }}</h3>
+                    <div class="preset-row">
+                        <button type="button" class="ghost-btn loss-preset-btn" data-loss="bce">{{ settings_panel_texts.loss_preset_conductors }}</button>
+                        <button type="button" class="ghost-btn loss-preset-btn" data-loss="focal_tversky">{{ settings_panel_texts.loss_preset_contacts }}</button>
+                    </div>
+                    <details class="qt-details">
+                        <summary>{{ settings_panel_texts.advanced_group }}</summary>
+                        <div class="field compact">
+                            <label>{{ settings_form.loss_function.label }}</label>
+                            {{ settings_form.loss_function }}
+                            {% if settings_form.loss_function.errors %}<div class="field-error">{{ settings_form.loss_function.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <div class="inline-2">
+                            <div class="field compact" data-role="dice-loss-weight">
+                                <label>{{ settings_form.dice_loss_weight.label }}</label>
+                                {{ settings_form.dice_loss_weight }}
+                                {% if settings_form.dice_loss_weight.errors %}<div class="field-error">{{ settings_form.dice_loss_weight.errors|striptags }}</div>{% endif %}
+                            </div>
+                            <div class="field compact" data-role="iou-loss-weight">
+                                <label>{{ settings_form.iou_loss_weight.label }}</label>
+                                {{ settings_form.iou_loss_weight }}
+                                {% if settings_form.iou_loss_weight.errors %}<div class="field-error">{{ settings_form.iou_loss_weight.errors|striptags }}</div>{% endif %}
+                            </div>
+                        </div>
+                    </details>
+                </section>
+
+                <details class="section qt-details" id="settings-section-expert">
+                    <summary>{{ settings_panel_texts.expert_group }}</summary>
+                    <label class="check-row" title="{{ settings_form.additional_augmentation.help_text }}">{{ settings_form.additional_augmentation }} {{ settings_form.additional_augmentation.label }}</label>
                     <div class="inline-2" data-role="extra-aug-fields">
                         <div class="field compact">
                             <label>{{ settings_form.augmentation_brightness_strength.label }}</label>
@@ -421,9 +629,9 @@
                             {% if settings_form.mixup_alpha.errors %}<div class="field-error">{{ settings_form.mixup_alpha.errors|striptags }}</div>{% endif %}
                         </div>
                     </div>
-                </section>
+                </details>
 
-                <section class="section">
+                <section class="section" id="settings-section-recognition">
                     <h3>{{ texts.validation_section }}</h3>
                     <label class="check-row" title="{{ settings_form.shuffle.help_text }}">{{ settings_form.shuffle }} {{ settings_form.shuffle.label }}</label>
                     <label class="check-row" title="{{ settings_form.use_validation.help_text }}">{{ settings_form.use_validation }} {{ settings_form.use_validation.label }}</label>
@@ -485,82 +693,7 @@
                     {% if settings_form.sample_cut_mode.errors %}<div class="field-error">{{ settings_form.sample_cut_mode.errors|striptags }}</div>{% endif %}
                 </section>
 
-                <section class="section">
-                    <h3>{{ texts.optimizer_section }}</h3>
-                    <div class="preset-row">
-                        <button type="button" class="preset-btn" data-optimizer="adam" data-lr="0.001" data-wd="0.0">Adam</button>
-                        <button type="button" class="preset-btn" data-optimizer="adamw" data-lr="0.0005" data-wd="0.01">AdamW</button>
-                        <button type="button" class="preset-btn" data-optimizer="adamw_muon" data-lr="0.0003" data-wd="0.02">AdamW + Muon</button>
-                    </div>
-
-                    <div class="field compact">
-                        <label>{{ settings_form.optimizer_name.label }}</label>
-                        {{ settings_form.optimizer_name }}
-                        {% if settings_form.optimizer_name.errors %}<div class="field-error">{{ settings_form.optimizer_name.errors|striptags }}</div>{% endif %}
-                    </div>
-                    <div class="field compact">
-                        <label>{{ settings_form.mixed_precision.label }}</label>
-                        {{ settings_form.mixed_precision }}
-                        {% if settings_form.mixed_precision.errors %}<div class="field-error">{{ settings_form.mixed_precision.errors|striptags }}</div>{% endif %}
-                    </div>
-                    <div class="inline-2">
-                        <div class="field compact">
-                            <label>{{ settings_form.loss_function.label }}</label>
-                            {{ settings_form.loss_function }}
-                            {% if settings_form.loss_function.errors %}<div class="field-error">{{ settings_form.loss_function.errors|striptags }}</div>{% endif %}
-                        </div>
-                        <div class="field compact" data-role="dice-loss-weight">
-                            <label>{{ settings_form.dice_loss_weight.label }}</label>
-                            {{ settings_form.dice_loss_weight }}
-                            {% if settings_form.dice_loss_weight.errors %}<div class="field-error">{{ settings_form.dice_loss_weight.errors|striptags }}</div>{% endif %}
-                        </div>
-                        <div class="field compact" data-role="iou-loss-weight">
-                            <label>{{ settings_form.iou_loss_weight.label }}</label>
-                            {{ settings_form.iou_loss_weight }}
-                            {% if settings_form.iou_loss_weight.errors %}<div class="field-error">{{ settings_form.iou_loss_weight.errors|striptags }}</div>{% endif %}
-                        </div>
-                    </div>
-                    <div class="inline-2">
-                        <div class="field compact">
-                            <label>{{ settings_form.learning_rate.label }}</label>
-                            {{ settings_form.learning_rate }}
-                            {% if settings_form.learning_rate.errors %}<div class="field-error">{{ settings_form.learning_rate.errors|striptags }}</div>{% endif %}
-                        </div>
-                        <div class="field compact">
-                            <label>{{ settings_form.weight_decay.label }}</label>
-                            {{ settings_form.weight_decay }}
-                            {% if settings_form.weight_decay.errors %}<div class="field-error">{{ settings_form.weight_decay.errors|striptags }}</div>{% endif %}
-                        </div>
-                    </div>
-                    <div class="inline-2">
-                        <div class="field compact">
-                            <label>{{ settings_form.batch_size.label }}</label>
-                            {{ settings_form.batch_size }}
-                            {% if settings_form.batch_size.errors %}<div class="field-error">{{ settings_form.batch_size.errors|striptags }}</div>{% endif %}
-                        </div>
-                        <div class="field compact">
-                            <label>{{ settings_form.dataloader_num_workers.label }}</label>
-                            {{ settings_form.dataloader_num_workers }}
-                            {% if settings_form.dataloader_num_workers.errors %}<div class="field-error">{{ settings_form.dataloader_num_workers.errors|striptags }}</div>{% endif %}
-                        </div>
-                    </div>
-                    <div class="inline-2">
-                        <div class="field compact">
-                            <label>{{ settings_form.overlap.label }}</label>
-                            {{ settings_form.overlap }}
-                            {% if settings_form.overlap.errors %}<div class="field-error">{{ settings_form.overlap.errors|striptags }}</div>{% endif %}
-                        </div>
-                    </div>
-                    <div class="field compact">
-                        <label>{{ settings_form.log_update_frequency.label }}</label>
-                        {{ settings_form.log_update_frequency }}
-                        {% if settings_form.log_update_frequency.errors %}<div class="field-error">{{ settings_form.log_update_frequency.errors|striptags }}</div>{% endif %}
-                    </div>
-                    <label class="check-row" title="{{ settings_form.torch_compile_enabled.help_text }}">{{ settings_form.torch_compile_enabled }} {{ settings_form.torch_compile_enabled.label }}</label>
-                    <label class="check-row" title="{{ settings_form.use_multi_gpu.help_text }}">{{ settings_form.use_multi_gpu }} {{ settings_form.use_multi_gpu.label }}</label>
-                </section>
-
-                <section class="section">
+                <section class="section" id="settings-section-strategy">
                     <h3>{{ texts.strategy_section }}</h3>
                     <label class="check-row" title="{{ settings_form.warmup_enabled.help_text }}">{{ settings_form.warmup_enabled }} {{ settings_form.warmup_enabled.label }}</label>
                     <div class="inline-2">
@@ -702,7 +835,7 @@
                     <label class="check-row" title="{{ settings_form.show_batch_preview.help_text }}">{{ settings_form.show_batch_preview }} {{ settings_form.show_batch_preview.label }}</label>
                 </section>
 
-                <section class="section">
+                <section class="section" id="settings-section-preprocessing">
                     <h3>{{ texts.preprocessing_section }}</h3>
                     <label class="check-row" title="{{ settings_form.crop_enabled.help_text }}">{{ settings_form.crop_enabled }} {{ settings_form.crop_enabled.label }}</label>
                     <label class="check-row" title="{{ settings_form.resize_enabled.help_text }}">{{ settings_form.resize_enabled }} {{ settings_form.resize_enabled.label }}</label>
@@ -724,12 +857,43 @@
                         </div>
                     </div>
                 </section>
+                <div class="settings-footer">
+                    <button type="button" class="btn-start" id="reset-defaults-btn" title="{{ js_texts.reset_defaults_tip }}">{{ js_texts.reset_defaults }}</button>
+                </div>
             </div>
         </aside>
     </div>
 </div>
 
+<div class="modal-shell" id="modal-shell" hidden>
+    <div class="modal-backdrop" id="modal-backdrop"></div>
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+            <h2 id="modal-title"></h2>
+            <button type="button" class="ghost-btn" id="modal-close-btn">{{ js_texts.close_button }}</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+        <div class="modal-actions" id="modal-actions"></div>
+    </section>
+</div>
+
 {{ js_texts|json_script:"webui-texts-data" }}
+<script id="webui-endpoints-data" type="application/json">{
+  "workflowImportUrl": "{{ workflow_import_url|escapejs }}",
+  "workflowPresetUrl": "{{ workflow_preset_url|escapejs }}",
+  "streamingRecognitionUrl": "{{ streaming_recognition_url|escapejs }}",
+  "queuePropertiesUrl": "{{ queue_properties_url|escapejs }}",
+  "queueRestoreUrl": "{{ queue_restore_url|escapejs }}",
+  "helpContentUrl": "{{ help_content_url|escapejs }}",
+  "changelogContentUrl": "{{ changelog_content_url|escapejs }}",
+  "updateInfoUrl": "{{ update_info_url|escapejs }}",
+  "uiModeUrl": "{{ ui_mode_url|escapejs }}",
+  "sampleCountUrl": "{{ sample_count_url|escapejs }}",
+  "pickPathUrl": "{{ pick_path_url|escapejs }}",
+  "releaseMemoryUrl": "{{ release_memory_url|escapejs }}",
+  "resetDefaultsUrl": "{{ reset_defaults_url|escapejs }}",
+  "toolStatusUrl": "{{ tool_status_url|escapejs }}"
+}</script>
 <script src="{% static 'webui/dashboard.js' %}"></script>
 </body>
 </html>

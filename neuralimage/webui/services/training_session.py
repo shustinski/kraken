@@ -351,7 +351,8 @@ class TrainingSessionService:
             return self._start_next_task_if_possible()
 
         self._clear_runtime_metrics()
-        self._append_event('logging', f'Запуск задачи #{task.task_id}...')
+        owner_suffix = f' ({task.owner_display_name})' if getattr(task, 'owner_display_name', '') else ''
+        self._append_event('logging', f'Запуск задачи #{task.task_id}{owner_suffix}...')
         with self._lock:
             self._handler = build_result.handler
             self._runner_thread = threading.Thread(target=self._run_handler, args=(task.task_id,), daemon=True)
@@ -363,6 +364,13 @@ class TrainingSessionService:
             if item.task_id == int(task_id):
                 return index
         return None
+
+    def get_task(self, task_id: int):
+        with self._lock:
+            row = self._queue_index_by_task_id(task_id)
+            if row is None:
+                return None
+            return self._processing_session.get_task_by_index(row)
 
     def _question_yes(
         self,
@@ -379,7 +387,14 @@ class TrainingSessionService:
     def _on_finished(self) -> None:
         self._append_event('logging', 'Обработка завершена.')
 
-    def start(self, main_state: MainWindowState, settings_state: SettingsState) -> tuple[bool, str | None, str | None]:
+    def start(
+        self,
+        main_state: MainWindowState,
+        settings_state: SettingsState,
+        *,
+        owner_username: str,
+        owner_display_name: str,
+    ) -> tuple[bool, str | None, str | None]:
         validation_error = build_processing_start_error_message(main_state, settings_state)
         if validation_error:
             return False, validation_error, None
@@ -388,19 +403,24 @@ class TrainingSessionService:
             task = self._processing_session.enqueue_task(
                 main_state=clone_main_window_state(main_state),
                 settings_state=replace(settings_state),
+                owner_username=owner_username,
+                owner_display_name=owner_display_name,
             )
-        self._append_event('logging', f'Задача #{task.task_id} добавлена в очередь.')
+        self._append_event('logging', f'Задача #{task.task_id} добавлена в очередь пользователем {owner_display_name}.')
         started = self._start_next_task_if_possible()
         if started:
             return True, None, f'Задача #{task.task_id} запущена.'
         return True, None, f'Задача #{task.task_id} добавлена в очередь.'
 
-    def stop(self) -> tuple[bool, str | None]:
+    def stop(self, *, owner_username: str) -> tuple[bool, str | None]:
         with self._lock:
             handler = self._handler
-            active_task = self._processing_session.request_stop()
+            active_task = self._processing_session.active_task
             if self._status != 'running' or handler is None or active_task is None:
                 return False, 'Нет активной обработки.'
+            if str(active_task.owner_username or '') != str(owner_username or ''):
+                return False, 'Можно останавливать только свою активную задачу.'
+            self._processing_session.request_stop()
             self._status = 'stopping'
 
         try:
@@ -413,12 +433,17 @@ class TrainingSessionService:
                 self._status = 'idle'
             return False, f'Ошибка остановки: {error}'
 
-    def remove_task(self, task_id: int) -> tuple[bool, str | None]:
+    def remove_task(self, task_id: int, *, owner_username: str) -> tuple[bool, str | None]:
         try:
             with self._lock:
                 row = self._queue_index_by_task_id(task_id)
                 if row is None:
                     return False, 'Задача не найдена.'
+                current_task = self._processing_session.get_task_by_index(row)
+                if current_task is None:
+                    return False, 'Задача не найдена.'
+                if str(current_task.owner_username or '') != str(owner_username or ''):
+                    return False, 'Можно изменять только свои задачи.'
                 task = self._processing_session.remove_task_by_index(row)
         except ActiveTaskMutationError as error:
             return False, f'Нельзя удалить активную задачу #{error.task_id}.'
@@ -428,12 +453,17 @@ class TrainingSessionService:
         self._append_event('logging', f'Задача #{task.task_id} удалена из очереди.')
         return True, None
 
-    def toggle_pause_task(self, task_id: int) -> tuple[bool, str | None]:
+    def toggle_pause_task(self, task_id: int, *, owner_username: str) -> tuple[bool, str | None]:
         try:
             with self._lock:
                 row = self._queue_index_by_task_id(task_id)
                 if row is None:
                     return False, 'Задача не найдена.'
+                current_task = self._processing_session.get_task_by_index(row)
+                if current_task is None:
+                    return False, 'Задача не найдена.'
+                if str(current_task.owner_username or '') != str(owner_username or ''):
+                    return False, 'Можно изменять только свои задачи.'
                 task = self._processing_session.toggle_pause_by_index(row)
         except ActiveTaskMutationError as error:
             return False, f'Нельзя поставить на паузу активную задачу #{error.task_id}.'
@@ -446,16 +476,21 @@ class TrainingSessionService:
             self._start_next_task_if_possible()
         return True, None
 
-    def snapshot(self, after_event_id: int = 0) -> dict[str, Any]:
+    def snapshot(self, after_event_id: int = 0, *, current_username: str = '') -> dict[str, Any]:
         with self._lock:
             new_events = [e for e in self._events if e['id'] > after_event_id]
             latest_epoch = self._train_epoch[-1]['epoch'] if self._train_epoch else 0
             batch_points = self._batch_by_epoch.get(latest_epoch, [])
+            active_task = self._processing_session.active_task
+            active_owner_username = str(getattr(active_task, 'owner_username', '') or '')
             queue_items = [
                 {
                     'task_id': item.task_id,
                     'work_mode': item.work_mode,
                     'status': item.status,
+                    'owner_username': item.owner_username,
+                    'owner_display_name': item.owner_display_name,
+                    'is_owner': bool(item.owner_username and item.owner_username == current_username),
                 }
                 for item in self._processing_session.queue_snapshot()
             ]
@@ -463,6 +498,14 @@ class TrainingSessionService:
                 'status': self._status,
                 'events': new_events,
                 'last_event_id': self._events[-1]['id'] if self._events else 0,
+                'permissions': {
+                    'can_stop_active_task': bool(
+                        active_owner_username
+                        and current_username
+                        and active_owner_username == current_username
+                        and self._status in {'running', 'stopping'}
+                    ),
+                },
                 'queue': queue_items,
                 'metrics': {
                     'train_epoch': list(self._train_epoch),

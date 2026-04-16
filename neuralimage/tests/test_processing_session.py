@@ -11,18 +11,18 @@ def _make_states(work_mode: str) -> tuple[MainWindowState, SettingsState]:
 def test_queue_snapshot_reflects_running_paused_and_queued_tasks():
     session = ProcessingSession()
 
-    first = session.enqueue_task(*_make_states('train_only'))
-    second = session.enqueue_task(*_make_states('recognition_only'))
+    first = session.enqueue_task(*_make_states('train_only'), owner_username='alice', owner_display_name='Alice')
+    second = session.enqueue_task(*_make_states('recognition_only'), owner_username='bob', owner_display_name='Bob')
     third = session.enqueue_task(*_make_states('further_training'))
     session.toggle_pause_by_index(1)
 
     decision = session.next_task_to_start(worker_running=False)
 
     assert decision.task is first
-    assert [(item.task_id, item.status) for item in session.queue_snapshot()] == [
-        (first.task_id, 'running'),
-        (second.task_id, 'paused'),
-        (third.task_id, 'queued'),
+    assert [(item.task_id, item.status, item.owner_username, item.owner_display_name) for item in session.queue_snapshot()] == [
+        (first.task_id, 'running', 'alice', 'Alice'),
+        (second.task_id, 'paused', 'bob', 'Bob'),
+        (third.task_id, 'queued', '', ''),
     ]
 
 

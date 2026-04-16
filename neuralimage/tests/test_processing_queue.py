@@ -12,11 +12,19 @@ def test_enqueue_assigns_incrementing_task_ids():
     queue = ProcessingTaskQueue[MainWindowState, SettingsState]()
 
     first = queue.enqueue(*_make_states('train_only'))
-    second = queue.enqueue(*_make_states('recognition_only'))
+    second = queue.enqueue(
+        *_make_states('recognition_only'),
+        owner_username='alice',
+        owner_display_name='Alice',
+    )
 
     assert first.task_id == 1
     assert second.task_id == 2
     assert len(queue.tasks) == 2
+    assert first.owner_username == ''
+    assert first.owner_display_name == ''
+    assert second.owner_username == 'alice'
+    assert second.owner_display_name == 'Alice'
 
 
 def test_remove_by_index_is_noop_for_invalid_row():

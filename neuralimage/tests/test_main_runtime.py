@@ -35,3 +35,22 @@ def test_configure_multiprocessing_start_method_keeps_existing_mode(monkeypatch)
 
     assert resolved == 'forkserver'
     assert recorded == []
+
+
+def test_run_web_ui_applies_migrations_before_runserver(monkeypatch):
+    calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+    class _ManagementModule:
+        @staticmethod
+        def execute_from_command_line(args):
+            calls.append(('execute_from_command_line', tuple(args), {}))
+
+    monkeypatch.setattr(main_module.importlib, 'import_module', lambda name: _ManagementModule)
+    monkeypatch.delenv('DJANGO_SETTINGS_MODULE', raising=False)
+
+    main_module._run_web_ui('0.0.0.0', 8123)
+
+    assert calls == [
+        ('execute_from_command_line', ('manage.py', 'migrate', '--noinput'), {}),
+        ('execute_from_command_line', ('manage.py', 'runserver', '0.0.0.0:8123', '--noreload'), {}),
+    ]

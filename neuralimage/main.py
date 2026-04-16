@@ -103,10 +103,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_web_ui(host: str, port: int) -> None:
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'webui_project.settings')
     try:
-        execute_from_command_line = importlib.import_module('django.core.management').execute_from_command_line
+        management = importlib.import_module('django.core.management')
     except ImportError as exc:
         raise RuntimeError('Django is not installed. Install requirements-dev.txt first.') from exc
-    execute_from_command_line(['manage.py', 'runserver', f'{host}:{port}'])
+    management.execute_from_command_line(['manage.py', 'migrate', '--noinput'])
+    management.execute_from_command_line(['manage.py', 'runserver', f'{host}:{port}', '--noreload'])
 
 
 def _run_desktop_ui(*, ui_only: bool) -> None:

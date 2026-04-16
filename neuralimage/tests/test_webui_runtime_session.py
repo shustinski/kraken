@@ -9,6 +9,8 @@ def test_training_session_snapshot_exposes_queue_progress_and_preview():
     task = service._processing_session.enqueue_task(
         MainWindowState(work_mode='train_only'),
         SettingsState(),
+        owner_username='alice',
+        owner_display_name='Alice',
     )
 
     service._on_metrics({'type': 'train_epoch_progress', 'current': 2, 'total': 5})
@@ -42,9 +44,17 @@ def test_training_session_snapshot_exposes_queue_progress_and_preview():
         'outputs': np.full((8, 8), 127, dtype=np.uint8),
     })
 
-    snapshot = service.snapshot()
+    snapshot = service.snapshot(current_username='alice')
 
-    assert snapshot['queue'] == [{'task_id': task.task_id, 'work_mode': 'train_only', 'status': 'queued'}]
+    assert snapshot['queue'] == [{
+        'task_id': task.task_id,
+        'work_mode': 'train_only',
+        'status': 'queued',
+        'owner_username': 'alice',
+        'owner_display_name': 'Alice',
+        'is_owner': True,
+    }]
+    assert snapshot['permissions']['can_stop_active_task'] is False
     assert snapshot['metrics']['progress']['epoch']['text'] == '40% (2/5)'
     assert snapshot['metrics']['progress']['batch']['text'] == '40% (8/20)'
     assert snapshot['metrics']['progress']['recognition']['text'] == '30% (3/10)'
@@ -63,14 +73,56 @@ def test_training_session_queue_actions_change_snapshot_state():
     task = service._processing_session.enqueue_task(
         MainWindowState(work_mode='recognition_only'),
         SettingsState(),
+        owner_username='alice',
+        owner_display_name='Alice',
     )
 
-    ok, error = service.toggle_pause_task(task.task_id)
+    ok, error = service.toggle_pause_task(task.task_id, owner_username='alice')
     assert ok is True
     assert error is None
-    assert service.snapshot()['queue'][0]['status'] == 'paused'
+    assert service.snapshot(current_username='alice')['queue'][0]['status'] == 'paused'
 
-    ok, error = service.remove_task(task.task_id)
+    ok, error = service.remove_task(task.task_id, owner_username='alice')
     assert ok is True
     assert error is None
-    assert service.snapshot()['queue'] == []
+    assert service.snapshot(current_username='alice')['queue'] == []
+
+
+def test_training_session_rejects_queue_changes_for_foreign_user():
+    service = TrainingSessionService(presenter=object())
+    task = service._processing_session.enqueue_task(
+        MainWindowState(work_mode='recognition_only'),
+        SettingsState(),
+        owner_username='alice',
+        owner_display_name='Alice',
+    )
+
+    ok, error = service.toggle_pause_task(task.task_id, owner_username='bob')
+
+    assert ok is False
+    assert error is not None
+    assert service.snapshot(current_username='bob')['queue'][0]['status'] == 'queued'
+
+
+def test_training_session_stop_rejects_foreign_active_task_without_marking_stop():
+    class _Handler:
+        def stop_execution(self) -> None:
+            raise AssertionError('stop_execution must not be called for a foreign user')
+
+    service = TrainingSessionService(presenter=object())
+    service._processing_session.enqueue_task(
+        MainWindowState(work_mode='train_only'),
+        SettingsState(),
+        owner_username='alice',
+        owner_display_name='Alice',
+    )
+    service._processing_session.next_task_to_start(worker_running=False)
+    service._handler = _Handler()
+    service._status = 'running'
+
+    ok, error = service.stop(owner_username='bob')
+    result = service._processing_session.complete_active_task()
+
+    assert ok is False
+    assert error is not None
+    assert result.stop_requested is False

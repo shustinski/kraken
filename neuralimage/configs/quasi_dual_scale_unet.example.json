@@ -10,6 +10,8 @@
       256,
       256
     ],
+    "use_context_branch": true,
+    "use_cross_attention": true,
     "context_crop_size": [
       512,
       512
@@ -52,6 +54,10 @@
     ],
     "fusion_type": "concat",
     "use_context_branch": true,
+    "use_cross_attention": true,
+    "attention_dim": 128,
+    "attention_heads": 4,
+    "attention_max_global_tokens": 1024,
     "generation": {
       "step": 128,
       "segment_size": [

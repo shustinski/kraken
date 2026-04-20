@@ -50,6 +50,8 @@ _MODEL_CATALOG: Dict[str, tuple[str, ModelType]] = {
     'UNET++': ('cnn_models', ModelType.experimental),
     'Transformer': ('cnn_models', ModelType.experimental),
     'FrameUnet': ('dual_scale_models', ModelType.experimental),
+    'quasi_dual_scale_unet': ('dual_scale_models', ModelType.experimental),
+    'UNetWithContextBranch': ('dual_scale_models', ModelType.experimental),
     'Swin UPerNet B': ('transformer_segmentation', ModelType.experimental),
     'Swin UPerNet L': ('transformer_segmentation', ModelType.experimental),
     'Mask2Former Swin B': ('transformer_segmentation', ModelType.experimental),

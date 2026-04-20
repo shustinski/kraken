@@ -285,6 +285,13 @@ class MainView(QMainWindow):
         self.btn_simple_memory = QPushButton(
             t.get("simple_workflow_memory", "Memory recognition")
         )
+        for button in (
+            self.btn_simple_conductors,
+            self.btn_simple_contacts,
+            self.btn_simple_memory,
+        ):
+            button.setCheckable(True)
+            button.setProperty("selectionRole", "mode")
         simple_workflows_layout.addWidget(self.btn_simple_conductors)
         simple_workflows_layout.addWidget(self.btn_simple_contacts)
         simple_workflows_layout.addWidget(self.btn_simple_memory)
@@ -1243,6 +1250,13 @@ class MainView(QMainWindow):
 
     def set_simple_workflow_profile(self, profile_key: str | None) -> None:
         self._selected_simple_workflow = str(profile_key) if profile_key else None
+        profile_buttons = {
+            'conductors': self.btn_simple_conductors,
+            'contacts': self.btn_simple_contacts,
+            'memory': self.btn_simple_memory,
+        }
+        for key, button in profile_buttons.items():
+            button.setChecked(key == self._selected_simple_workflow)
         self._update_simple_workflow_label()
 
     def _simple_workflow_display_name(self, profile_key: str | None) -> str:

@@ -2334,6 +2334,7 @@ class TrainerProcess(mp.Process):
                     'segment_shape': (channels, int(segment_size[0]), int(segment_size[1])),
                     'overlap': overlap,
                     'use_context_branch': bool(getattr(base_dataset, '_use_context_branch', False)),
+                    'use_cross_attention': bool(getattr(base_dataset, '_use_cross_attention', True)),
                     'context_crop_size': getattr(base_dataset, '_context_crop_size', None),
                     'context_input_size': getattr(base_dataset, '_context_input_size', None),
                 }
@@ -2356,6 +2357,7 @@ class TrainerProcess(mp.Process):
                         'segment_shape': (channels, int(width), int(height)),
                         'overlap': 0,
                         'use_context_branch': False,
+                        'use_cross_attention': False,
                         'context_crop_size': None,
                         'context_input_size': None,
                     }
@@ -2723,6 +2725,7 @@ class TrainerProcess(mp.Process):
                             tuple(export_item['segment_shape']),
                             int(export_item['overlap']),
                             use_context_branch=bool(export_item['use_context_branch']),
+                            use_cross_attention=bool(export_item.get('use_cross_attention', True)),
                             context_crop_size=export_item['context_crop_size'],
                             context_input_size=export_item['context_input_size'],
                         ),
@@ -3765,6 +3768,11 @@ class TrainerProcess(mp.Process):
         enabled, probability, alpha = self._resolved_mixup_parameters()
         local_image = self._extract_local_image(image)
         batch_size = int(local_image.size(0))
+        if isinstance(image, Mapping) and torch.is_tensor(image.get('patch_coords_norm')):
+            # A mixed local patch cannot be assigned one physically correct
+            # full-frame coordinate. Keep coordinate-aware batches geometrically
+            # well-defined and leave mixup to models without spatial metadata.
+            return image, label, None, None
         if (not enabled) or batch_size <= 1 or probability <= 0.0 or alpha <= 0.0:
             return image, label, None, None
         if float(np.random.random()) > probability:
@@ -3893,6 +3901,81 @@ class TrainerProcess(mp.Process):
                 )
         return artifact_image
 
+    @staticmethod
+    def _inject_local_batch_into_global_context(
+        global_image: torch.Tensor,
+        local_image: torch.Tensor,
+        patch_coords_norm: torch.Tensor,
+    ) -> torch.Tensor:
+        if global_image.ndim != 4 or local_image.ndim != 4:
+            return global_image
+        batch_size = int(local_image.shape[0])
+        if int(global_image.shape[0]) == 1 and batch_size > 1:
+            global_image = global_image.expand(batch_size, -1, -1, -1)
+        if int(global_image.shape[0]) != batch_size:
+            return global_image
+        if patch_coords_norm.ndim == 1:
+            patch_coords_norm = patch_coords_norm.view(1, 4)
+        if patch_coords_norm.ndim != 2 or int(patch_coords_norm.shape[-1]) != 4:
+            return global_image
+        if int(patch_coords_norm.shape[0]) == 1 and batch_size > 1:
+            patch_coords_norm = patch_coords_norm.expand(batch_size, -1)
+        if int(patch_coords_norm.shape[0]) != batch_size:
+            return global_image
+
+        _, _, global_h, global_w = global_image.shape
+        updated = global_image.clone()
+        coords = torch.clamp(
+            patch_coords_norm.detach().to(device='cpu', dtype=torch.float32),
+            0.0,
+            1.0,
+        )
+        for sample_index in range(batch_size):
+            x0, y0, x1, y1 = [float(value) for value in coords[sample_index].tolist()]
+            left = max(0, min(global_w, int(round(x0 * global_w))))
+            right = max(0, min(global_w, int(round(x1 * global_w))))
+            top = max(0, min(global_h, int(round(y0 * global_h))))
+            bottom = max(0, min(global_h, int(round(y1 * global_h))))
+            if right <= left:
+                right = min(global_w, left + 1)
+            if bottom <= top:
+                bottom = min(global_h, top + 1)
+            if right <= left or bottom <= top:
+                continue
+            resized_local = F.interpolate(
+                local_image[sample_index:sample_index + 1],
+                size=(bottom - top, right - left),
+                mode='bilinear',
+                align_corners=False,
+            )
+            updated[sample_index:sample_index + 1, :, top:bottom, left:right] = resized_local
+        return updated
+
+    def _sync_global_context_with_local_patch(self, image: Any) -> Any:
+        if not isinstance(image, Mapping):
+            return image
+        local_image = image.get('local_image')
+        global_image = image.get('global_image')
+        patch_coords_norm = image.get('patch_coords_norm')
+        if (
+            not torch.is_tensor(local_image)
+            or not torch.is_tensor(global_image)
+            or not torch.is_tensor(patch_coords_norm)
+        ):
+            return image
+
+        updated_global = self._inject_local_batch_into_global_context(
+            global_image,
+            local_image,
+            patch_coords_norm,
+        )
+        updated = dict(image)
+        updated['global_image'] = updated_global
+        context_image = updated.get('context_image')
+        if torch.is_tensor(context_image) and tuple(context_image.shape) == tuple(updated_global.shape):
+            updated['context_image'] = updated_global
+        return updated
+
     def _apply_cutout_to_input(self, image: Any) -> Any:
         if not isinstance(image, Mapping):
             return self._apply_cutout_to_batch(image)
@@ -3901,7 +3984,7 @@ class TrainerProcess(mp.Process):
             return image
         updated = dict(image)
         updated['local_image'] = self._apply_cutout_to_batch(local_image)
-        return updated
+        return self._sync_global_context_with_local_patch(updated)
 
     def _apply_random_artifacts_to_input(self, image: Any) -> Any:
         if not isinstance(image, Mapping):
@@ -3911,7 +3994,7 @@ class TrainerProcess(mp.Process):
             return image
         updated = dict(image)
         updated['local_image'] = self._apply_random_artifacts_to_batch(local_image)
-        return updated
+        return self._sync_global_context_with_local_patch(updated)
 
     def _apply_training_batch_augmentations(
         self,
@@ -4959,6 +5042,7 @@ class NeuralRecognizer(threading.Thread):
         self.stop_event = mp.Event()
         self._resolved_output_threshold: float | None = 0.5
         self._use_context_branch = False
+        self._use_cross_attention = True
         self._context_crop_size: tuple[int, int] | None = None
         self._context_input_size: tuple[int, int] | None = None
 
@@ -5122,9 +5206,17 @@ class NeuralRecognizer(threading.Thread):
         )
         if not requested_context_branch:
             self._use_context_branch = False
+            self._use_cross_attention = False
             self._context_crop_size = None
             self._context_input_size = None
             return
+
+        use_cross_override = getattr(self._parameters, 'use_cross_attention', None)
+        self._use_cross_attention = (
+            bool(model_kwargs.get('use_cross_attention', True))
+            if use_cross_override is None
+            else bool(use_cross_override)
+        )
 
         fallback_local = tuple(getattr(self._parameters, 'part_size', (256, 256)))
         context_crop_raw = getattr(self._parameters, 'context_crop_size', None)
@@ -5136,6 +5228,7 @@ class NeuralRecognizer(threading.Thread):
 
         if context_crop_raw is None or context_input_raw is None:
             self._use_context_branch = False
+            self._use_cross_attention = False
             self._context_crop_size = None
             self._context_input_size = None
             self._bus.publish(
@@ -5157,7 +5250,8 @@ class NeuralRecognizer(threading.Thread):
             'logging',
             (
                 'Recognition context branch enabled: '
-                f'crop={self._context_crop_size}, input={self._context_input_size}.'
+                f'crop={self._context_crop_size}, input={self._context_input_size}, '
+                f'cross_attention={bool(self._use_cross_attention)}.'
             ),
         )
 
@@ -5231,6 +5325,7 @@ class NeuralRecognizer(threading.Thread):
             devices=list(self.devices_list),
             model_source=cast(str | Path, self._parameters.model),
             use_context_branch=bool(self._use_context_branch),
+            use_cross_attention=bool(self._use_cross_attention),
             context_crop_size=self._context_crop_size,
             context_input_size=self._context_input_size,
         )
@@ -5274,6 +5369,7 @@ class NeuralRecognizer(threading.Thread):
             confidence_tta_enabled=bool(getattr(self._parameters, 'confidence_tta_enabled', False)),
             confidence_save_mode=str(getattr(self._parameters, 'confidence_save_mode', 'off') or 'off'),
             use_context_branch=bool(self._use_context_branch),
+            use_cross_attention=bool(self._use_cross_attention),
             context_crop_size=self._context_crop_size,
             context_input_size=self._context_input_size,
         )
@@ -5451,6 +5547,7 @@ def cut_image_process(
     overlap,
     stop_event,
     use_context_branch: bool = False,
+    use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
 ):
@@ -5461,6 +5558,7 @@ def cut_image_process(
         overlap,
         stop_event,
         use_context_branch=use_context_branch,
+        use_cross_attention=use_cross_attention,
         context_crop_size=context_crop_size,
         context_input_size=context_input_size,
         stop_token=STOP_TOKEN,
@@ -5473,6 +5571,7 @@ def cut_image_prepare(
     overlap: int,
     *,
     use_context_branch: bool = False,
+    use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
 ):
@@ -5481,6 +5580,7 @@ def cut_image_prepare(
         segment_size,
         overlap,
         use_context_branch=use_context_branch,
+        use_cross_attention=use_cross_attention,
         context_crop_size=context_crop_size,
         context_input_size=context_input_size,
     )

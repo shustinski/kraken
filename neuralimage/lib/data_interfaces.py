@@ -1348,6 +1348,10 @@ class TrainingParameters:
     context_branch_channels: tuple[int, ...] = (16, 32, 64, 128)
     fusion_type: str = 'concat'
     use_context_branch: bool | None = None
+    use_cross_attention: bool = True
+    attention_dim: int = 128
+    attention_heads: int = 4
+    attention_max_global_tokens: int = 1024
     deep_supervision: bool = False
     artifact_dir: Path | None = None
     dataloader_num_workers: int = -1
@@ -1376,6 +1380,7 @@ class RecognitionParameters:
     confidence_tta_enabled: bool = False
     confidence_save_mode: str = ConfidenceSaveMode.off.value
     use_context_branch: bool | None = None
+    use_cross_attention: bool | None = None
     context_crop_size: tuple[int, int] | None = None
     context_input_size: tuple[int, int] | None = None
 

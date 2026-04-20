@@ -19,7 +19,11 @@ from PIL import Image
 from lib.file_retry import retry_file_read
 from lib.image_processing import cut_image, sew_image
 from model.NeuralNetwork.model_io import load_model_artifact
-from model.NeuralNetwork.context_utils import build_context_batch
+from model.NeuralNetwork.context_utils import (
+    build_context_batch,
+    build_global_context_image,
+    build_patch_coordinate_batch,
+)
 from model.NeuralNetwork.blocks import extract_confidence_output, extract_mask_outputs
 
 
@@ -47,6 +51,7 @@ class RecognitionWorkload:
     devices: list[torch.device]
     model_source: str | Path
     use_context_branch: bool = False
+    use_cross_attention: bool = True
     context_crop_size: tuple[int, int] | None = None
     context_input_size: tuple[int, int] | None = None
 
@@ -176,6 +181,7 @@ def _run_cut_worker(
     overlap: int,
     stop_event: MpEvent,
     use_context_branch: bool = False,
+    use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
     stop_token: str = '__STOP__',
@@ -188,6 +194,7 @@ def _run_cut_worker(
             overlap,
             stop_event,
             use_context_branch,
+            use_cross_attention,
             context_crop_size,
             context_input_size,
             stop_token,
@@ -357,6 +364,7 @@ class MultiprocessingRecognitionRunner:
                     self._config.workload.overlap,
                     self._stop_event,
                     self._config.workload.use_context_branch,
+                    self._config.workload.use_cross_attention,
                     self._config.workload.context_crop_size,
                     self._config.workload.context_input_size,
                     self._config.stop_token,
@@ -559,6 +567,7 @@ def run_single_thread_recognition(
     confidence_tta_enabled: bool = False,
     confidence_save_mode: str = 'off',
     use_context_branch: bool = False,
+    use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
 ) -> None:
@@ -580,6 +589,7 @@ def run_single_thread_recognition(
             shape,
             overlap,
             use_context_branch=use_context_branch,
+            use_cross_attention=use_cross_attention,
             context_crop_size=context_crop_size,
             context_input_size=context_input_size,
         )
@@ -695,6 +705,7 @@ def cut_image_process(
     overlap: int,
     stop_event: MpEvent,
     use_context_branch: bool = False,
+    use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
     stop_token: str = '__STOP__',
@@ -710,11 +721,16 @@ def cut_image_process(
             size,
             overlap,
             use_context_branch=use_context_branch,
+            use_cross_attention=use_cross_attention,
             context_crop_size=context_crop_size,
             context_input_size=context_input_size,
         )
         _store_payload_array_for_multiprocessing(image_payload, 'cutted_image')
         _store_payload_array_for_multiprocessing(image_payload, 'context_image')
+        _store_payload_array_for_multiprocessing(image_payload, 'global_image')
+        _store_payload_array_for_multiprocessing(image_payload, 'patch_coords_norm')
+        _store_payload_array_for_multiprocessing(image_payload, 'patch_coords_px')
+        _store_payload_array_for_multiprocessing(image_payload, 'source_size_hw')
         cutted_queue.put(image_payload)
 
 
@@ -724,6 +740,7 @@ def cut_image_prepare(
     overlap: int,
     *,
     use_context_branch: bool = False,
+    use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
@@ -733,6 +750,10 @@ def cut_image_prepare(
         'overlap': overlap,
         'cutted_image': None,
         'context_image': None,
+        'global_image': None,
+        'patch_coords_norm': None,
+        'patch_coords_px': None,
+        'source_size_hw': None,
         'name': img_path.name,
         'source_path': img_path,
     }
@@ -748,16 +769,38 @@ def cut_image_prepare(
     work_image = _to_channel_first(work_image, channels=channels)
     payload['cutted_image'] = cut_image(work_image, segment_size, overlap)
     if use_context_branch and context_crop_size is not None and context_input_size is not None:
-        payload['context_image'] = (
-            build_context_batch(
-                work_image,
+        base_shape_hw = (int(work_image.shape[1]), int(work_image.shape[2]))
+        if bool(use_cross_attention):
+            global_image = (
+                build_global_context_image(
+                    work_image,
+                    output_size_xy=tuple(context_input_size),
+                    interpolation_mode='bilinear',
+                )
+                / 255.0
+            ).astype(np.float32, copy=False)
+            coords_px, coords_norm = build_patch_coordinate_batch(
+                base_shape_hw,
                 local_patch_size_xy=(int(segment_size[1]), int(segment_size[2])),
                 overlap=overlap,
-                context_crop_size_xy=tuple(context_crop_size),
-                context_input_size_xy=tuple(context_input_size),
             )
-            / 255.0
-        ).astype(np.float32, copy=False)
+            patch_count = int(payload['cutted_image'].shape[0])
+            payload['global_image'] = global_image
+            payload['context_image'] = np.repeat(global_image[None, :, :, :], patch_count, axis=0)
+            payload['patch_coords_px'] = coords_px.astype(np.float32, copy=False)
+            payload['patch_coords_norm'] = coords_norm.astype(np.float32, copy=False)
+            payload['source_size_hw'] = np.asarray(base_shape_hw, dtype=np.float32)
+        else:
+            payload['context_image'] = (
+                build_context_batch(
+                    work_image,
+                    local_patch_size_xy=(int(segment_size[1]), int(segment_size[2])),
+                    overlap=overlap,
+                    context_crop_size_xy=tuple(context_crop_size),
+                    context_input_size_xy=tuple(context_input_size),
+                )
+                / 255.0
+            ).astype(np.float32, copy=False)
     return payload
 
 
@@ -822,6 +865,10 @@ def imgpredict(
             break
         restored = _restore_payload_array_from_multiprocessing(item, 'cutted_image')
         restored = _restore_payload_array_from_multiprocessing(restored, 'context_image')
+        restored = _restore_payload_array_from_multiprocessing(restored, 'global_image')
+        restored = _restore_payload_array_from_multiprocessing(restored, 'patch_coords_norm')
+        restored = _restore_payload_array_from_multiprocessing(restored, 'patch_coords_px')
+        restored = _restore_payload_array_from_multiprocessing(restored, 'source_size_hw')
         predicted = gpu_predict(
             restored,
             model,
@@ -832,6 +879,10 @@ def imgpredict(
         )
         predicted.pop('cutted_image', None)
         predicted.pop('context_image', None)
+        predicted.pop('global_image', None)
+        predicted.pop('patch_coords_norm', None)
+        predicted.pop('patch_coords_px', None)
+        predicted.pop('source_size_hw', None)
         _store_payload_array_for_multiprocessing(predicted, 'predicted_image')
         _store_payload_array_for_multiprocessing(predicted, 'confidence_image')
         predicted_queue.put(predicted)
@@ -862,6 +913,20 @@ def gpu_predict(
             context_tensor_data = context_batches.float()
         else:
             context_tensor_data = torch.from_numpy(context_batches).float()
+    global_batches = img.get('global_image')
+    global_tensor_data: torch.Tensor | None = None
+    if global_batches is not None:
+        if torch.is_tensor(global_batches):
+            global_tensor_data = global_batches.float()
+        else:
+            global_tensor_data = torch.from_numpy(global_batches).float()
+    coords_batches = img.get('patch_coords_norm')
+    coords_tensor_data: torch.Tensor | None = None
+    if coords_batches is not None:
+        if torch.is_tensor(coords_batches):
+            coords_tensor_data = coords_batches.float()
+        else:
+            coords_tensor_data = torch.from_numpy(coords_batches).float()
     use_amp = device.type == 'cuda'
     if use_amp and hasattr(tensor_data, 'pin_memory'):
         with suppress(Exception):
@@ -869,6 +934,12 @@ def gpu_predict(
     if use_amp and context_tensor_data is not None and hasattr(context_tensor_data, 'pin_memory'):
         with suppress(Exception):
             context_tensor_data = context_tensor_data.pin_memory()
+    if use_amp and global_tensor_data is not None and hasattr(global_tensor_data, 'pin_memory'):
+        with suppress(Exception):
+            global_tensor_data = global_tensor_data.pin_memory()
+    if use_amp and coords_tensor_data is not None and hasattr(coords_tensor_data, 'pin_memory'):
+        with suppress(Exception):
+            coords_tensor_data = coords_tensor_data.pin_memory()
     min_prob = float('inf')
     max_prob = float('-inf')
     mean_acc = 0.0
@@ -903,18 +974,57 @@ def gpu_predict(
         confidence = extract_confidence_output(outputs)
         return primary, confidence
 
+    def _select_global_batch(
+        global_tensor: torch.Tensor | None,
+        start_index: int,
+        end_index: int,
+    ) -> torch.Tensor | None:
+        if global_tensor is None:
+            return None
+        if global_tensor.ndim == 3:
+            batch_len = int(end_index - start_index)
+            return global_tensor.unsqueeze(0).expand(batch_len, -1, -1, -1)
+        if global_tensor.ndim == 4:
+            if int(global_tensor.shape[0]) == 1:
+                batch_len = int(end_index - start_index)
+                return global_tensor.expand(batch_len, -1, -1, -1)
+            return global_tensor[start_index:end_index]
+        raise ValueError(f'global_image must be CHW or NCHW, got {tuple(global_tensor.shape)!r}.')
+
+    def _flip_patch_coords_norm_x(coords: torch.Tensor | None) -> torch.Tensor | None:
+        if coords is None:
+            return None
+        flipped = coords.clone()
+        x0 = coords[:, 0].clone()
+        x1 = coords[:, 2].clone()
+        flipped[:, 0] = 1.0 - x1
+        flipped[:, 2] = 1.0 - x0
+        return torch.clamp(flipped, 0.0, 1.0)
+
     def _predict_once(
         batch_tensor: torch.Tensor,
         context_batch_tensor: torch.Tensor | None = None,
+        global_batch_tensor: torch.Tensor | None = None,
+        patch_coords_tensor: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
-            if context_batch_tensor is None:
+            if context_batch_tensor is None and global_batch_tensor is None and patch_coords_tensor is None:
                 return _extract_prediction_tensors(model(batch_tensor))
-            return _extract_prediction_tensors(model({'local_image': batch_tensor, 'context_image': context_batch_tensor}))
+            model_input: dict[str, torch.Tensor] = {'local_image': batch_tensor}
+            if context_batch_tensor is not None:
+                model_input['context_image'] = context_batch_tensor
+            if global_batch_tensor is not None:
+                model_input['global_image'] = global_batch_tensor
+                model_input.setdefault('context_image', global_batch_tensor)
+            if patch_coords_tensor is not None:
+                model_input['patch_coords_norm'] = patch_coords_tensor
+            return _extract_prediction_tensors(model(model_input))
 
     def _predict_with_multi_scale_and_tta(
         batch_tensor: torch.Tensor,
         context_batch_tensor: torch.Tensor | None = None,
+        global_batch_tensor: torch.Tensor | None = None,
+        patch_coords_tensor: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         base_h, base_w = int(batch_tensor.shape[-2]), int(batch_tensor.shape[-1])
         mask_acc = None
@@ -934,7 +1044,12 @@ def gpu_predict(
                     mode='bilinear',
                     align_corners=False,
                 )
-            logits, confidence_logits = _predict_once(scaled, context_batch_tensor)
+            logits, confidence_logits = _predict_once(
+                scaled,
+                context_batch_tensor,
+                global_batch_tensor,
+                patch_coords_tensor,
+            )
             if logits.shape[-2:] != (base_h, base_w):
                 logits = F.interpolate(logits, size=(base_h, base_w), mode='bilinear', align_corners=False)
             if mask_acc is None:
@@ -959,9 +1074,20 @@ def gpu_predict(
             confidence_weight += 1.0
             if tta_flip:
                 flipped_context = None
-                if context_batch_tensor is not None:
+                flipped_global = None
+                flipped_coords = None
+                if global_batch_tensor is not None:
+                    flipped_global = torch.flip(global_batch_tensor, dims=[-1])
+                    flipped_context = flipped_global
+                    flipped_coords = _flip_patch_coords_norm_x(patch_coords_tensor)
+                elif context_batch_tensor is not None:
                     flipped_context = torch.flip(context_batch_tensor, dims=[-1])
-                logits_h, confidence_h = _predict_once(torch.flip(scaled, dims=[-1]), flipped_context)
+                logits_h, confidence_h = _predict_once(
+                    torch.flip(scaled, dims=[-1]),
+                    flipped_context,
+                    flipped_global,
+                    flipped_coords,
+                )
                 logits_h = torch.flip(logits_h, dims=[-1])
                 if logits_h.shape[-2:] != (base_h, base_w):
                     logits_h = F.interpolate(logits_h, size=(base_h, base_w), mode='bilinear', align_corners=False)
@@ -1005,21 +1131,27 @@ def gpu_predict(
             context_batch = None
             if context_tensor_data is not None:
                 context_batch = context_tensor_data[start:end].to(device, non_blocking=use_amp)
-            outputs, confidence_outputs = _predict_with_multi_scale_and_tta(batch, context_batch)
+            global_batch = _select_global_batch(global_tensor_data, start, end)
+            if global_batch is not None:
+                global_batch = global_batch.to(device, non_blocking=use_amp)
+            coords_batch = None
+            if coords_tensor_data is not None:
+                coords_batch = coords_tensor_data[start:end].to(device, non_blocking=use_amp)
+            outputs, confidence_outputs = _predict_with_multi_scale_and_tta(
+                batch,
+                context_batch,
+                global_batch,
+                coords_batch,
+            )
 
             if not bool(torch.isfinite(outputs).all()):
                 fp32_retries += 1
-                if context_batch is None:
-                    outputs, confidence_outputs = _extract_prediction_tensors(model(batch.float()))
-                else:
-                    outputs, confidence_outputs = _extract_prediction_tensors(
-                        model(
-                            {
-                                'local_image': batch.float(),
-                                'context_image': context_batch.float(),
-                            }
-                        )
-                    )
+                outputs, confidence_outputs = _predict_once(
+                    batch.float(),
+                    context_batch.float() if context_batch is not None else None,
+                    global_batch.float() if global_batch is not None else None,
+                    coords_batch.float() if coords_batch is not None else None,
+                )
 
             finite_mask = torch.isfinite(outputs)
             if not bool(finite_mask.all()):

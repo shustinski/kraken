@@ -136,6 +136,7 @@ def test_settings_panel_optimizer_presets_apply_values_and_highlight_active(qapp
     assert panel.optimizer_type.currentText() == 'adamw'
     assert panel.learning_rate_spinbox.value() == pytest.approx(0.0005)
     assert panel.weight_decay_spinbox.value() == pytest.approx(0.01)
+    assert adamw_btn.property('selectionRole') == 'mode'
     assert adamw_btn.isChecked() is True
     assert adam_btn.isChecked() is False
 
@@ -385,9 +386,13 @@ def test_settings_panel_applies_loss_presets_for_conductors_and_contacts(qapp):
 
     panel.loss_preset_buttons['conductors'].click()
     assert panel.get_loss_term_weights() == {'bce': 0.5, 'dice': 0.5}
+    assert panel.loss_preset_buttons['conductors'].isChecked() is True
+    assert panel.loss_preset_buttons['contacts'].isChecked() is False
 
     panel.loss_preset_buttons['contacts'].click()
     assert panel.get_loss_term_weights() == {'bce': 0.5, 'focal_tversky': 0.5}
+    assert panel.loss_preset_buttons['contacts'].isChecked() is True
+    assert panel.loss_preset_buttons['conductors'].isChecked() is False
 
 
 def test_settings_panel_uses_single_visible_label_inside_each_labeled_row(qapp):

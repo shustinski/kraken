@@ -25,7 +25,13 @@ from lib.data_interfaces import (
 from lib.file_retry import retry_file_read
 from lib.images import ImagePreparator, SampleCalculator, SampleFastCutter
 from lib.rare_patch_masks import resolve_rare_patch_mask_path
-from model.NeuralNetwork.context_utils import PatchWindow, extract_centered_crop, normalize_size_pair
+from model.NeuralNetwork.context_utils import (
+    PatchWindow,
+    build_global_context_image,
+    extract_centered_crop,
+    normalize_patch_coords,
+    normalize_size_pair,
+)
 
 
 def _unwrap_tech_augmented_mask(result: np.ndarray | tuple[np.ndarray, np.ndarray]) -> np.ndarray:
@@ -199,6 +205,7 @@ class NoCutDataset(Dataset):
             int(getattr(settings, 'rare_patch_oversampling_factor', 2)),
         )
         self._use_context_branch = bool(getattr(settings, 'use_context_branch', False))
+        self._use_cross_attention = bool(getattr(settings, 'use_cross_attention', True))
         self._local_crop_size = normalize_size_pair(
             getattr(settings, 'local_crop_size', None),
             fallback=tuple(self._cut_settings.segment_size),
@@ -240,6 +247,7 @@ class NoCutDataset(Dataset):
         self._current_frame_index: int | None = None
         self._current_image_cutter: SampleFastCutter | None = None
         self._frame_cache: OrderedDict[tuple[int, int, bool], SampleFastCutter] = OrderedDict()
+        self._global_context_cache: OrderedDict[tuple[int, str, tuple[int, int]], np.ndarray] = OrderedDict()
         self._frame_cache_limit = self._resolve_frame_cache_limit()
 
         self._create_files_list()
@@ -256,6 +264,7 @@ class NoCutDataset(Dataset):
         self._current_frame_index = None
         self._current_image_cutter = None
         self._frame_cache.clear()
+        self._global_context_cache.clear()
 
     def __getitem__(self, index):
         if index < 0 or index >= self._samples_amount:
@@ -276,13 +285,36 @@ class NoCutDataset(Dataset):
         )
         if not self._use_context_branch:
             return image, label
+        patch_metadata = self._build_patch_metadata(self._current_image_cutter, part)
+        if self._use_cross_attention:
+            global_image = self._build_global_context_image(
+                self._current_image_cutter,
+                part,
+                patch_metadata=patch_metadata,
+                augmented_local_image=augmented_local_image,
+            )
+            return {
+                'local_image': image,
+                'global_image': global_image,
+                'context_image': global_image,
+                'patch_coords_norm': patch_metadata['patch_coords_norm'],
+                'patch_coords_px': patch_metadata['patch_coords_px'],
+                'source_size_hw': patch_metadata['source_size_hw'],
+            }, label
+
         context_image = self._build_context_crop(self._current_image_cutter, part)
         if augmented_local_image is not None:
             context_image = self._inject_local_patch_into_context(
                 context_image,
                 augmented_local_image,
             )
-        return {'local_image': image, 'context_image': context_image}, label
+        return {
+            'local_image': image,
+            'context_image': context_image,
+            'patch_coords_norm': patch_metadata['patch_coords_norm'],
+            'patch_coords_px': patch_metadata['patch_coords_px'],
+            'source_size_hw': patch_metadata['source_size_hw'],
+        }, label
 
     def __len__(self):
         return self._samples_amount
@@ -438,6 +470,78 @@ class NoCutDataset(Dataset):
             interpolation_mode='bilinear',
         )
 
+    def _build_patch_metadata(self, cutter: SampleFastCutter, part: int) -> dict[str, np.ndarray | str]:
+        geometry = cutter.resolve_part_geometry(part)
+        coords_px = np.asarray(geometry['coords_px'], dtype=np.float32)
+        source_size_hw_tuple = tuple(int(value) for value in geometry['source_size_hw'])
+        return {
+            'patch_coords_px': coords_px,
+            'patch_coords_norm': normalize_patch_coords(coords_px, source_size_hw_tuple),
+            'source_size_hw': np.asarray(source_size_hw_tuple, dtype=np.float32),
+            'transform_variant': str(geometry['transform_variant']),
+        }
+
+    def _build_global_context_image(
+        self,
+        cutter: SampleFastCutter,
+        part: int,
+        *,
+        patch_metadata: dict[str, np.ndarray | str],
+        augmented_local_image: np.ndarray | None = None,
+    ) -> np.ndarray:
+        transform_variant = str(patch_metadata['transform_variant'])
+        cache_key = (id(cutter), transform_variant, tuple(self._context_input_size))
+        if augmented_local_image is None:
+            cached = self._global_context_cache.get(cache_key)
+            if cached is not None:
+                self._global_context_cache.move_to_end(cache_key)
+                return cached
+
+        source = cutter.resolve_transformed_image_matrix(part)
+        if augmented_local_image is not None:
+            source = self._inject_local_patch_into_global(
+                source,
+                augmented_local_image,
+                coords_px=np.asarray(patch_metadata['patch_coords_px'], dtype=np.float32),
+            )
+        global_image = build_global_context_image(
+            source,
+            output_size_xy=self._context_input_size,
+            interpolation_mode='bilinear',
+        )
+        if augmented_local_image is None:
+            self._global_context_cache[cache_key] = global_image
+            self._global_context_cache.move_to_end(cache_key)
+            while len(self._global_context_cache) > max(2, self._frame_cache_limit * 4):
+                self._global_context_cache.popitem(last=False)
+        return global_image
+
+    def _inject_local_patch_into_global(
+        self,
+        global_image: np.ndarray,
+        local_image: np.ndarray,
+        *,
+        coords_px: np.ndarray,
+    ) -> np.ndarray:
+        if global_image.ndim != 3 or local_image.ndim != 3:
+            return global_image
+        left, top, right, bottom = [int(round(float(value))) for value in coords_px.tolist()]
+        height, width = int(global_image.shape[1]), int(global_image.shape[2])
+        left = max(0, min(width, left))
+        right = max(0, min(width, right))
+        top = max(0, min(height, top))
+        bottom = max(0, min(height, bottom))
+        if right <= left or bottom <= top:
+            return global_image
+        global_copy = global_image.copy()
+        resized_local = SampleFastCutter._resize_patch_tensor(
+            local_image,
+            (right - left, bottom - top),
+            resample=Image.Resampling.BILINEAR,
+        )
+        global_copy[:, top:bottom, left:right] = resized_local[:, :bottom - top, :right - left]
+        return global_copy
+
     def _apply_pcb_defects(
         self,
         image: np.ndarray,
@@ -512,6 +616,7 @@ class SyntheticDefectDataset(Dataset):
             getattr(self._generation, 'shuffle_patches_in_frame', self.shuffle_frames)
         )
         self._use_context_branch = bool(getattr(settings, 'use_context_branch', False))
+        self._use_cross_attention = bool(getattr(settings, 'use_cross_attention', True))
         self._local_crop_size = normalize_size_pair(
             getattr(settings, 'local_crop_size', None),
             fallback=tuple(settings.generation.segment_size),
@@ -549,6 +654,7 @@ class SyntheticDefectDataset(Dataset):
         self._current_frame_index: int | None = None
         self._current_frame_cutter: SampleFastCutter | None = None
         self._frame_cache: OrderedDict[tuple[int, int, bool], SampleFastCutter] = OrderedDict()
+        self._global_context_cache: OrderedDict[tuple[int, str, tuple[int, int]], np.ndarray] = OrderedDict()
         self._frame_cache_limit = 2
         defect_augmentor_cls = ICDefectAugmentor if self._config.topology_domain == 'ic' else PCBDefectAugmentor
         self._defect_augmentor = (
@@ -572,6 +678,7 @@ class SyntheticDefectDataset(Dataset):
         self._current_frame_index = None
         self._current_frame_cutter = None
         self._frame_cache.clear()
+        self._global_context_cache.clear()
 
     def describe_sample(self, idx: int) -> str:
         frame, part = self._resolve_index(int(idx))
@@ -596,10 +703,29 @@ class SyntheticDefectDataset(Dataset):
         if not self._use_context_branch:
             return image_tensor, label_tensor
 
+        patch_metadata = self._build_patch_metadata(self._current_frame_cutter, part)
+        if self._use_cross_attention:
+            global_image = self._build_global_context_image(
+                self._current_frame_cutter,
+                part,
+                patch_metadata=patch_metadata,
+            )
+            return {
+                'local_image': image_tensor,
+                'global_image': torch.from_numpy(np.ascontiguousarray(global_image)).float(),
+                'context_image': torch.from_numpy(np.ascontiguousarray(global_image)).float(),
+                'patch_coords_norm': torch.from_numpy(np.ascontiguousarray(patch_metadata['patch_coords_norm'])).float(),
+                'patch_coords_px': torch.from_numpy(np.ascontiguousarray(patch_metadata['patch_coords_px'])).float(),
+                'source_size_hw': torch.from_numpy(np.ascontiguousarray(patch_metadata['source_size_hw'])).float(),
+            }, label_tensor
+
         context_image = self._build_context_crop(self._current_frame_cutter, part)
         return {
             'local_image': image_tensor,
             'context_image': torch.from_numpy(np.ascontiguousarray(context_image)).float(),
+            'patch_coords_norm': torch.from_numpy(np.ascontiguousarray(patch_metadata['patch_coords_norm'])).float(),
+            'patch_coords_px': torch.from_numpy(np.ascontiguousarray(patch_metadata['patch_coords_px'])).float(),
+            'source_size_hw': torch.from_numpy(np.ascontiguousarray(patch_metadata['source_size_hw'])).float(),
         }, label_tensor
 
     def _resolve_index(self, idx: int) -> tuple[int, int]:
@@ -696,6 +822,42 @@ class SyntheticDefectDataset(Dataset):
             output_size_xy=self._context_input_size,
             interpolation_mode='bilinear',
         )
+
+    def _build_patch_metadata(self, cutter: SampleFastCutter, part: int) -> dict[str, np.ndarray | str]:
+        geometry = cutter.resolve_part_geometry(part)
+        coords_px = np.asarray(geometry['coords_px'], dtype=np.float32)
+        source_size_hw_tuple = tuple(int(value) for value in geometry['source_size_hw'])
+        return {
+            'patch_coords_px': coords_px,
+            'patch_coords_norm': normalize_patch_coords(coords_px, source_size_hw_tuple),
+            'source_size_hw': np.asarray(source_size_hw_tuple, dtype=np.float32),
+            'transform_variant': str(geometry['transform_variant']),
+        }
+
+    def _build_global_context_image(
+        self,
+        cutter: SampleFastCutter,
+        part: int,
+        *,
+        patch_metadata: dict[str, np.ndarray | str],
+    ) -> np.ndarray:
+        transform_variant = str(patch_metadata['transform_variant'])
+        cache_key = (id(cutter), transform_variant, tuple(self._context_input_size))
+        cached = self._global_context_cache.get(cache_key)
+        if cached is not None:
+            self._global_context_cache.move_to_end(cache_key)
+            return cached
+
+        global_image = build_global_context_image(
+            cutter.resolve_transformed_image_matrix(part),
+            output_size_xy=self._context_input_size,
+            interpolation_mode='bilinear',
+        )
+        self._global_context_cache[cache_key] = global_image
+        self._global_context_cache.move_to_end(cache_key)
+        while len(self._global_context_cache) > max(2, self._frame_cache_limit * 4):
+            self._global_context_cache.popitem(last=False)
+        return global_image
 
     def _apply_defects(
         self,

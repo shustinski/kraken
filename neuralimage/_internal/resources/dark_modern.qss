@@ -185,6 +185,28 @@ QToolButton:checked {
     border-color: #2e6fce;
 }
 
+QPushButton[selectionRole="mode"]:checked {
+    background-color: #2e7d32;
+    border-color: #43a047;
+    color: #ffffff;
+}
+
+QPushButton[selectionRole="mode"]:checked:hover {
+    background-color: #388e3c;
+    border-color: #66bb6a;
+}
+
+QPushButton[selectionRole="mode"]:checked:pressed {
+    background-color: #1b5e20;
+    border-color: #2e7d32;
+}
+
+QPushButton[selectionRole="mode"]:checked:disabled {
+    background-color: #243f2b;
+    border-color: #31593a;
+    color: #9fb5a4;
+}
+
 QPushButton:disabled,
 QToolButton:disabled {
     background-color: #1a2330;

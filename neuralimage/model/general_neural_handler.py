@@ -454,6 +454,12 @@ class GeneralNeuralHandler:
                     'context_branch_channels': context_branch_channels,
                     'fusion_type': str(getattr(self.tranining_parameters, 'fusion_type', 'concat')),
                     'use_context_branch': bool(requested_context_branch),
+                    'use_cross_attention': bool(getattr(self.tranining_parameters, 'use_cross_attention', True)),
+                    'attention_dim': int(getattr(self.tranining_parameters, 'attention_dim', 128)),
+                    'attention_heads': int(getattr(self.tranining_parameters, 'attention_heads', 4)),
+                    'attention_max_global_tokens': int(
+                        getattr(self.tranining_parameters, 'attention_max_global_tokens', 1024)
+                    ),
                 }
             )
 

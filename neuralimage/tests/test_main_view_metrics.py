@@ -311,6 +311,8 @@ def test_main_view_simple_mode_hides_docks_and_shows_presets(qapp):
 
     view.btn_simple_contacts.click()
     assert view.btn_simple_contacts.text() in view.simple_workflow_label.text()
+    assert view.btn_simple_contacts.isChecked() is True
+    assert view.btn_simple_conductors.isChecked() is False
 
     view.apply_ui_mode('advanced')
     qapp.processEvents()

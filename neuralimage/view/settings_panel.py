@@ -65,6 +65,7 @@ FORM_VERTICAL_SPACING = 6
 CONTENT_LAYOUT_MARGINS = (8, 8, 8, 8)
 CONTENT_LAYOUT_SPACING = 10
 OPTIMIZER_PRESET_FLOAT_TOLERANCE = 1e-12
+LOSS_PRESET_FLOAT_TOLERANCE = 1e-12
 EDGE_CUT_RANGE = (0, 500)
 EDGE_CUT_STEP = 10
 TARGET_SIZE_RANGE = (0, 4000)
@@ -699,6 +700,8 @@ class SettingsPanel(QDockWidget):
         self.loss_presets_layout.setSpacing(8)
         for preset_name in ('conductors', 'contacts'):
             button = QPushButton('')
+            button.setCheckable(True)
+            button.setProperty("selectionRole", "mode")
             button.clicked.connect(lambda _checked=False, name=preset_name: self._apply_loss_preset(name))
             self.loss_presets_layout.addWidget(button)
             self.loss_preset_buttons[preset_name] = button
@@ -1150,6 +1153,7 @@ class SettingsPanel(QDockWidget):
                 continue
             btn = QPushButton(title)
             btn.setCheckable(True)
+            btn.setProperty("selectionRole", "mode")
             btn.clicked.connect(
                 lambda _checked=False, n=optimizer_name, lr=learning_rate, wd=weight_decay: self._apply_optimizer_preset(
                     n, lr, wd
@@ -2514,6 +2518,24 @@ class SettingsPanel(QDockWidget):
             )
             btn.setChecked(is_active)
 
+    @staticmethod
+    def _loss_weights_match_preset(
+        current_weights: dict[str, float],
+        preset_weights: dict[str, float],
+    ) -> bool:
+        if set(current_weights) != set(preset_weights):
+            return False
+        for loss_name, preset_value in preset_weights.items():
+            if abs(float(current_weights.get(loss_name, 0.0)) - float(preset_value)) > LOSS_PRESET_FLOAT_TOLERANCE:
+                return False
+        return True
+
+    def _sync_active_loss_preset(self) -> None:
+        current_weights = self.get_loss_term_weights()
+        for preset_name, button in self.loss_preset_buttons.items():
+            preset_weights = LOSS_PRESET_WEIGHTS.get(preset_name, {})
+            button.setChecked(self._loss_weights_match_preset(current_weights, preset_weights))
+
     def _sync_validation_controls(self, enabled: bool) -> None:
         validation_enabled = self._training_controls_applicable and bool(enabled)
         external_mode = self.get_validation_source_value() == 'external'
@@ -2613,6 +2635,7 @@ class SettingsPanel(QDockWidget):
             "</span>"
         )
         self.loss_formula_label.setText(f'{formula_html}<br>{total_html}')
+        self._sync_active_loss_preset()
 
     def _sync_early_stopping_controls(self, enabled: bool) -> None:
         control_enabled = self._training_controls_applicable and bool(enabled)

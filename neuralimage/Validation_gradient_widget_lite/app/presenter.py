@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from dataclasses import replace
 from datetime import datetime
 from math import isfinite
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSignalBlocker, QThread, Qt
+from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, Qt
+from PyQt6.QtGui import QImageReader
 from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMessageBox
 
 from ..core.analysis_modes import (
@@ -111,6 +113,7 @@ class ValidationGradientExtendPresenter(QObject):
         self._active_progress_total = 0
         self._active_progress_key = ""
         self._deferred_analytics_restart: tuple[ExtendMatrixTabState, bool] | None = None
+        self._histogram_update_generation = 0
 
     def __getattr__(self, name: str):
         return getattr(self._view, name)
@@ -316,21 +319,31 @@ class ValidationGradientExtendPresenter(QObject):
             row.setEnabled(bool(enabled))
 
     @staticmethod
+    def _image_shape(path: Path) -> tuple[int, int] | None:
+        try:
+            reader = QImageReader(str(path))
+            size = reader.size()
+            if size.isValid() and size.width() > 0 and size.height() > 0:
+                return int(size.height()), int(size.width())
+        except Exception:
+            pass
+        try:
+            return tuple(int(v) for v in load_grayscale_image(path).shape)
+        except Exception:
+            return None
+
+    @staticmethod
     def _first_image_shape(folder_path: Path) -> tuple[int, int] | None:
         allowed = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
         try:
             if folder_path.is_file() and folder_path.suffix.lower() in allowed:
-                try:
-                    return tuple(int(v) for v in load_grayscale_image(folder_path).shape)
-                except Exception:
-                    return None
+                return ValidationGradientExtendPresenter._image_shape(folder_path)
             for image_path in Path(folder_path).rglob("*"):
                 if not image_path.is_file() or image_path.suffix.lower() not in allowed:
                     continue
-                try:
-                    return tuple(int(v) for v in load_grayscale_image(image_path).shape)
-                except Exception:
-                    continue
+                shape = ValidationGradientExtendPresenter._image_shape(image_path)
+                if shape is not None:
+                    return shape
         except Exception:
             return None
         return None
@@ -338,18 +351,18 @@ class ValidationGradientExtendPresenter(QObject):
     def _tile_source_shape_for_result(self, build_result: BuildResult | None) -> tuple[int, int] | None:
         if build_result is None or not build_result.records:
             return None
-        original_folder = getattr(build_result, "original_folder", None)
-        if original_folder is not None:
-            shape = self._first_image_shape(Path(original_folder.path))
-            if shape is not None:
-                return shape
         for record in build_result.records:
             candidate_path = record.original_path or record.base_path
             if not candidate_path and record.model_mask_paths:
                 candidate_path = next(iter(record.model_mask_paths.values()), None)
             if not candidate_path:
                 continue
-            shape = self._first_image_shape(Path(candidate_path))
+            shape = self._image_shape(Path(candidate_path))
+            if shape is not None:
+                return shape
+        original_folder = getattr(build_result, "original_folder", None)
+        if original_folder is not None:
+            shape = self._first_image_shape(Path(original_folder.path))
             if shape is not None:
                 return shape
         return None
@@ -864,27 +877,39 @@ class ValidationGradientExtendPresenter(QObject):
         self.metric_combo.blockSignals(False)
 
     def _attach_matrix_coordinates(self, records: tuple[FrameRecord, ...] | list[FrameRecord], layout_config: MatrixLayoutConfig) -> tuple[FrameRecord, ...]:
-        placements, _columns, _rows = build_matrix_layout(list(records), layout_config)
+        records_tuple = tuple(records)
+        placements, _columns, _rows = build_matrix_layout(list(records_tuple), layout_config)
         records_by_key: dict[str, FrameRecord] = {}
+        changed = False
         for placement_index, (record, row, column) in enumerate(placements):
             identity = record.identity
             if identity is None:
                 identity = FrameIdentity(frame_id=placement_index, base_id=placement_index, tile_x=column, tile_y=row, source_key=record.key)
+                records_by_key[record.key] = replace(record, identity=identity)
+                changed = True
+                continue
+            if int(identity.tile_x if identity.tile_x is not None else -1) == int(column) and int(identity.tile_y if identity.tile_y is not None else -1) == int(row):
+                records_by_key[record.key] = record
+                continue
             else:
                 identity = replace(identity, tile_x=column, tile_y=row)
             records_by_key[record.key] = replace(record, identity=identity)
-        return tuple(records_by_key.get(record.key, record) for record in records)
+            changed = True
+        if not changed:
+            return records_tuple
+        return tuple(records_by_key.get(record.key, record) for record in records_tuple)
 
     def _sync_state_record_coordinates(self, state: ExtendMatrixTabState) -> None:
         attached_records = self._attach_matrix_coordinates(state.build_result.records, state.layout_config)
-        state.build_result = replace(state.build_result, records=tuple(attached_records))
+        if attached_records is not state.build_result.records:
+            state.build_result = replace(state.build_result, records=tuple(attached_records))
 
     def _apply_pending_display_controls(self, state: ExtendMatrixTabState) -> None:
         state.layout_config = self._build_layout_config()
         state.matrix_score_view_mode = str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE)
         state.frame_type_filter = str(self.frame_type_filter_combo.currentData() or 'all')
 
-    def _apply_tab_visual_settings(self, state: ExtendMatrixTabState, *, reset_view: bool = False) -> bool:
+    def _apply_tab_visual_settings(self, state: ExtendMatrixTabState, *, reset_view: bool = False, update_histograms: bool = True) -> bool:
         try:
             self._sync_state_record_coordinates(state)
             display_records = self._display_records_for_state(state)
@@ -912,7 +937,8 @@ class ValidationGradientExtendPresenter(QObject):
             sort_mode = "input_order" if str(state.layout_config.mode or "indexed_grid") == "manual_grid" else "name"
             state.matrix_view.set_records(list(display_records), sort_mode=sort_mode, reset_view=reset_view)
             self._update_matrix_preview(state)
-            self._update_metric_histograms(state)
+            if update_histograms:
+                self._update_metric_histograms(state)
         except ValueError as error:
             QMessageBox.warning(self._view, self._t("errors.layout"), str(error))
             return False
@@ -1313,8 +1339,7 @@ class ValidationGradientExtendPresenter(QObject):
 
     def _percentile_map_for_metric(self, state: ExtendMatrixTabState, metric_key: str) -> dict[str, float]:
         base_records = self._base_records_for_state(state)
-        record_keys = tuple(record.key for record in base_records)
-        cache_key = (str(metric_key), record_keys)
+        cache_key = (str(metric_key), id(base_records))
         cached = state.percentile_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1325,15 +1350,11 @@ class ValidationGradientExtendPresenter(QObject):
     def _percentile_histogram_counts(self, state: ExtendMatrixTabState, metric_key: str) -> list[int]:
         percentiles = self._percentile_map_for_metric(state, metric_key)
         counts = [0] * len(PERCENTILE_BAND_BOUNDS)
+        upper_bounds = [float(high) for _low, high in PERCENTILE_BAND_BOUNDS[:-1]]
+        last_index = len(counts) - 1
         for value in percentiles.values():
             clipped = max(0.0, min(float(value), 100.0))
-            index = len(PERCENTILE_BAND_BOUNDS) - 1
-            for candidate_index, (low_bound, high_bound) in enumerate(PERCENTILE_BAND_BOUNDS):
-                is_last = candidate_index >= len(PERCENTILE_BAND_BOUNDS) - 1
-                if (low_bound <= clipped <= high_bound) if is_last else (low_bound <= clipped < high_bound):
-                    index = candidate_index
-                    break
-            counts[index] += 1
+            counts[min(last_index, bisect_right(upper_bounds, clipped))] += 1
         return counts
 
     def _repeated_percentile_entries(self, state: ExtendMatrixTabState, *, band: str) -> list[tuple[FrameRecord, int, float, list[str]]]:
@@ -1407,6 +1428,36 @@ class ValidationGradientExtendPresenter(QObject):
             tooltip = self._metric_hint_fallback(metric_key, state.build_result)
             card.set_payload(self._metric_label(metric_key, state.build_result), counts, base_record_count, visible=True, active_bin=active_bin, tooltip=tooltip)
         self._update_repeated_percentile_lists(state)
+
+    def _schedule_metric_histogram_update(self, state: ExtendMatrixTabState) -> None:
+        self._histogram_update_generation += 1
+        generation = int(self._histogram_update_generation)
+        QTimer.singleShot(0, lambda s=state, g=generation: self._update_metric_histograms_chunked(s, g, 0))
+
+    def _update_metric_histograms_chunked(self, state: ExtendMatrixTabState, generation: int, index: int) -> None:
+        if generation != self._histogram_update_generation or state.widget not in self._tab_states:
+            return
+        preview = state.preview
+        if preview is None:
+            return
+        base_record_count = len(self._base_records_for_state(state))
+        available_keys = set(self._percentile_basis_keys_for_state(state, state.build_result))
+        if state.percentile_filter_metric_key not in available_keys:
+            state.percentile_filter_metric_key = None
+            state.percentile_filter_bin_index = None
+        histogram_items = list(preview.histogram_cards.items())
+        if index >= len(histogram_items):
+            QTimer.singleShot(0, lambda s=state, g=generation: self._update_repeated_percentile_lists(s) if g == self._histogram_update_generation and s.widget in self._tab_states else None)
+            return
+        metric_key, card = histogram_items[index]
+        if metric_key not in available_keys:
+            card.setVisible(False)
+        else:
+            counts = self._percentile_histogram_counts(state, metric_key)
+            active_bin = state.percentile_filter_bin_index if state.percentile_filter_metric_key == metric_key else None
+            tooltip = self._metric_hint_fallback(metric_key, state.build_result)
+            card.set_payload(self._metric_label(metric_key, state.build_result), counts, base_record_count, visible=True, active_bin=active_bin, tooltip=tooltip)
+        QTimer.singleShot(0, lambda s=state, g=generation, i=index + 1: self._update_metric_histograms_chunked(s, g, i))
 
     def _connect_histogram_cards(self, state: ExtendMatrixTabState) -> None:
         preview = state.preview
@@ -1911,7 +1962,7 @@ class ValidationGradientExtendPresenter(QObject):
         snapshot["metric_key"] = str(self.metric_combo.currentData() or self._default_metric_key_for_state(None, result))
         state = self._create_matrix_tab(result, snapshot)
         self._connect_histogram_cards(state)
-        ok = self._apply_tab_visual_settings(state, reset_view=True)
+        ok = self._apply_tab_visual_settings(state, reset_view=True, update_histograms=False)
         self._show_progress_bar(visible=False)
         if not ok:
             state.widget.deleteLater()
@@ -1923,6 +1974,7 @@ class ValidationGradientExtendPresenter(QObject):
         if result.records:
             state.matrix_view.select_record_by_key(result.records[0].key, ensure_visible=False)
             self._update_matrix_preview(state, result.records[0])
+        self._schedule_metric_histogram_update(state)
         self._sync_action_buttons()
 
     def _on_analytics_finished(self, result: BuildResult, *, generation: int | None = None, request_signature: tuple[object, ...] | None = None) -> None:

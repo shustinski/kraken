@@ -7,6 +7,7 @@ import json
 import math
 import pickle
 import shutil
+import ctypes
 from collections import OrderedDict
 from time import perf_counter
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
@@ -167,8 +168,21 @@ from .domain import (
 )
 
 EPS = 1e-8
-
-
+ANALYTICS_MAX_BATCH_SIZE = 16
+ANALYTICS_BATCH_TARGETS_PER_WORKER = 32
+ANALYTICS_WAIT_TIMEOUT_SECONDS = 0.25
+ANALYTICS_STALL_TIMEOUT_SECONDS = 180.0
+ANALYTICS_STALL_PROGRESS_SECONDS = 5.0
+WINDOWS_THREAD_ANALYTICS_MAX_WORKERS = 64
+WINDOWS_THREAD_CONFIDENCE_MAX_WORKERS = 32
+WINDOWS_PROCESS_ANALYTICS_MAX_WORKERS = 4
+ANALYTICS_WORKER_ENV = "VALIDATION_MATRIX_ANALYTICS_WORKERS"
+ANALYTICS_MEMORY_FRACTION = 0.45
+ANALYSIS_CACHE_MAX_FILES = 100000
+DETAIL_CACHE_MAX_FILES = 20000
+CACHE_TRIM_INTERVAL_SECONDS = 300.0
+_CACHE_TRIM_LAST_BY_DIR: dict[str, float] = {}
+_LAST_ANALYTICS_WORKER_PLAN: dict[str, object] = {}
 
 
 class BuildCancelledError(RuntimeError):
@@ -268,19 +282,241 @@ def _weighted_mean(pairs: list[tuple[float, float]]) -> float:
     return float(numerator / max(EPS, denominator))
 
 
-def _resolve_aux_path(key: str, index: dict[str, Path]) -> Path | None:
+def _analytics_batch_size(total_items: int, worker_count: int) -> int:
+    total = max(1, int(total_items))
+    workers = max(1, int(worker_count))
+    target_batches = max(1, workers * ANALYTICS_BATCH_TARGETS_PER_WORKER)
+    return max(1, min(ANALYTICS_MAX_BATCH_SIZE, math.ceil(total / target_batches)))
+
+
+def _use_thread_pool_for_analytics() -> bool:
+    # ProcessPoolExecutor is fragile inside a PyQt worker thread on Windows:
+    # child process spawn/import or pickle stalls look like a frozen progress bar.
+    return os.name == "nt"
+
+
+def _analytics_worker_env_override() -> int | None:
+    value = os.environ.get(ANALYTICS_WORKER_ENV)
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _available_memory_bytes() -> int | None:
+    if os.name == "nt":
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(status)
+        try:
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullAvailPhys)
+        except Exception:
+            return None
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        available_pages = int(os.sysconf("SC_AVPHYS_PAGES"))
+        if page_size > 0 and available_pages > 0:
+            return page_size * available_pages
+    except Exception:
+        return None
+    return None
+
+
+def _estimated_analytics_worker_memory_bytes(
+    *,
+    analysis_max_side: int | None,
+    model_count: int,
+    include_model_confidence: bool,
+    include_pairwise_metrics: bool,
+    include_model_metrics: bool,
+) -> int:
+    side = int(analysis_max_side or 2048)
+    side = max(64, min(side, 8192))
+    pixels = int(side) * int(side)
+    models = max(1, int(model_count))
+    layer_factor = 4 + min(models, 8)
+    if include_pairwise_metrics:
+        layer_factor += min(models * 2, 12)
+    if include_model_metrics:
+        layer_factor += min(models, 8)
+    if include_model_confidence:
+        layer_factor += min(models * 3, 16)
+    return max(64 * 1024 * 1024, int(pixels * layer_factor * 4))
+
+
+def _memory_limited_worker_count(
+    *,
+    analysis_max_side: int | None,
+    model_count: int,
+    include_model_confidence: bool,
+    include_pairwise_metrics: bool,
+    include_model_metrics: bool,
+) -> int | None:
+    available = _available_memory_bytes()
+    if available is None or available <= 0:
+        return None
+    per_worker = _estimated_analytics_worker_memory_bytes(
+        analysis_max_side=analysis_max_side,
+        model_count=model_count,
+        include_model_confidence=include_model_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+        include_model_metrics=include_model_metrics,
+    )
+    budget = max(per_worker, int(float(available) * ANALYTICS_MEMORY_FRACTION))
+    return max(1, int(budget // max(1, per_worker)))
+
+
+def _cpu_limited_thread_worker_count(
+    *,
+    cpu_limit: int,
+    analysis_max_side: int | None,
+    include_model_confidence: bool,
+) -> int:
+    side_limit = int(analysis_max_side or 0)
+    if include_model_confidence:
+        if side_limit == 0 or side_limit > 1024:
+            return min(cpu_limit, WINDOWS_THREAD_CONFIDENCE_MAX_WORKERS)
+        return min(cpu_limit, max(WINDOWS_THREAD_CONFIDENCE_MAX_WORKERS, cpu_limit // 2))
+    if side_limit > 0 and side_limit <= 512:
+        return min(cpu_limit, max(16, cpu_limit))
+    if side_limit > 0 and side_limit <= 1024:
+        return min(cpu_limit, WINDOWS_THREAD_ANALYTICS_MAX_WORKERS)
+    return min(cpu_limit, max(16, WINDOWS_THREAD_CONFIDENCE_MAX_WORKERS))
+
+
+def _analytics_worker_count(
+    max_workers: int,
+    *,
+    geometry_mode: GeometryMode,
+    analysis_max_side: int | None,
+    include_model_confidence: bool,
+    include_pairwise_metrics: bool = True,
+    include_model_metrics: bool = True,
+    model_count: int = 1,
+    use_thread_pool: bool,
+) -> int:
+    requested = max(1, int(max_workers))
+    override = _analytics_worker_env_override()
+    if override is not None:
+        return min(requested, max(1, int(override)))
+    if os.name != "nt" or geometry_mode == GeometryMode.POINT:
+        return requested
+    cpu_limit = max(1, os.cpu_count() or requested)
+    if use_thread_pool:
+        safe_limit = _cpu_limited_thread_worker_count(
+            cpu_limit=cpu_limit,
+            analysis_max_side=analysis_max_side,
+            include_model_confidence=include_model_confidence,
+        )
+        memory_limit = _memory_limited_worker_count(
+            analysis_max_side=analysis_max_side,
+            model_count=model_count,
+            include_model_confidence=include_model_confidence,
+            include_pairwise_metrics=include_pairwise_metrics,
+            include_model_metrics=include_model_metrics,
+        )
+        if memory_limit is not None:
+            safe_limit = min(safe_limit, memory_limit)
+        return min(requested, max(1, safe_limit))
+    safe_limit = min(cpu_limit, WINDOWS_PROCESS_ANALYTICS_MAX_WORKERS)
+    side_limit = int(analysis_max_side or 0)
+    if include_model_confidence and side_limit > 0 and side_limit <= 768:
+        safe_limit = min(cpu_limit, 5)
+    return min(requested, max(1, safe_limit))
+
+
+def _remember_analytics_worker_plan(
+    *,
+    requested: int,
+    selected: int,
+    use_thread_pool: bool,
+    geometry_mode: GeometryMode,
+    analysis_max_side: int | None,
+    model_count: int,
+    include_model_confidence: bool,
+    include_pairwise_metrics: bool,
+    include_model_metrics: bool,
+) -> None:
+    _LAST_ANALYTICS_WORKER_PLAN.clear()
+    _LAST_ANALYTICS_WORKER_PLAN.update(
+        {
+            "requested": int(requested),
+            "selected": int(selected),
+            "use_thread_pool": bool(use_thread_pool),
+            "geometry_mode": str(getattr(geometry_mode, "value", geometry_mode)),
+            "analysis_max_side": None if analysis_max_side is None else int(analysis_max_side),
+            "model_count": int(model_count),
+            "include_model_confidence": bool(include_model_confidence),
+            "include_pairwise_metrics": bool(include_pairwise_metrics),
+            "include_model_metrics": bool(include_model_metrics),
+        }
+    )
+
+
+def last_analytics_worker_plan() -> dict[str, object]:
+    return dict(_LAST_ANALYTICS_WORKER_PLAN)
+
+
+_FolderPathLookup = tuple[dict[str, Path], dict[str, Path], dict[str, Path]]
+
+
+def _unique_path_lookup(index: dict[str, Path], key_fn) -> dict[str, Path]:
+    lookup: dict[str, Path] = {}
+    duplicates: set[str] = set()
+    for path in index.values():
+        key = str(key_fn(path)).lower()
+        if key in duplicates:
+            continue
+        if key in lookup:
+            lookup.pop(key, None)
+            duplicates.add(key)
+            continue
+        lookup[key] = path
+    return lookup
+
+
+def _build_folder_path_lookup(index: dict[str, Path]) -> _FolderPathLookup:
+    return (
+        index,
+        _unique_path_lookup(index, lambda path: Path(path).name),
+        _unique_path_lookup(index, lambda path: Path(path).stem),
+    )
+
+
+def _resolve_aux_path_from_lookup(key: str, lookup: _FolderPathLookup) -> Path | None:
+    index, name_lookup, stem_lookup = lookup
     exact = index.get(key)
     if exact is not None:
         return exact
     name = Path(key).name.lower()
     stem = Path(key).stem.lower()
-    name_matches = [path for path in index.values() if path.name.lower() == name]
-    if len(name_matches) == 1:
-        return name_matches[0]
-    stem_matches = [path for path in index.values() if path.stem.lower() == stem]
-    if len(stem_matches) == 1:
-        return stem_matches[0]
+    name_match = name_lookup.get(name)
+    if name_match is not None:
+        return name_match
+    stem_match = stem_lookup.get(stem)
+    if stem_match is not None:
+        return stem_match
     return None
+
+
+def _resolve_aux_path(key: str, index: dict[str, Path]) -> Path | None:
+    return _resolve_aux_path_from_lookup(key, _build_folder_path_lookup(index))
 
 
 @lru_cache(maxsize=65536)
@@ -315,14 +551,34 @@ def build_folder_index(
     recursive: bool,
     extensions: tuple[str, ...],
     cancel_check=None,
+    progress_callback=None,
+    progress_interval: int = 2048,
 ) -> dict[str, Path]:
     """Index frame files in one folder by relative path."""
 
+    folder = Path(folder)
+    normalized_extensions = {str(ext).lower() for ext in extensions}
+    iterator = folder.rglob("*") if recursive else folder.glob("*")
+    paths: list[Path] = []
+    accepted = 0
+    interval = max(1, int(progress_interval))
+    for path in iterator:
+        if cancel_check is not None and cancel_check():
+            raise BuildCancelledError("Build cancelled")
+        if not path.is_file() or path.suffix.lower() not in normalized_extensions:
+            continue
+        paths.append(path)
+        accepted += 1
+        if progress_callback is not None and accepted % interval == 0:
+            progress_callback(accepted, 0, path.name)
+    paths.sort(key=lambda item: natural_sort_key(item.as_posix()))
     index: dict[str, Path] = {}
-    for image_path in iter_image_paths(folder, recursive=recursive, extensions=extensions):
+    for image_path in paths:
         if cancel_check is not None and cancel_check():
             raise BuildCancelledError("Build cancelled")
         index[image_path.relative_to(folder).as_posix()] = image_path
+    if progress_callback is not None:
+        progress_callback(len(index), len(index), Path(folder).name)
     return index
 
 
@@ -556,22 +812,31 @@ def _resolve_model_path_for_key(
     folder: Path,
     key: str,
     extensions: tuple[str, ...],
-    fallback_index_cache: dict[str, dict[str, Path]],
+    fallback_index_cache: dict[str, _FolderPathLookup],
     *,
     recursive: bool,
     cancel_check=None,
+    progress_callback=None,
 ) -> Path | None:
+    cache_key = str(folder.resolve())
+    lookup = fallback_index_cache.get(cache_key)
+    if lookup is not None:
+        return _resolve_aux_path_from_lookup(key, lookup)
     resolved = _resolve_model_path_from_known_key(folder, key, extensions)
     if resolved is not None:
         return resolved
-    cache_key = str(folder.resolve())
-    index = fallback_index_cache.get(cache_key)
-    if index is None:
-        if cancel_check is not None and cancel_check():
-            raise BuildCancelledError('Build cancelled')
-        index = build_folder_index(folder, recursive=recursive, extensions=extensions, cancel_check=cancel_check)
-        fallback_index_cache[cache_key] = index
-    return _resolve_aux_path(key, index)
+    if cancel_check is not None and cancel_check():
+        raise BuildCancelledError('Build cancelled')
+    index = build_folder_index(
+        folder,
+        recursive=recursive,
+        extensions=extensions,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+    )
+    lookup = _build_folder_path_lookup(index)
+    fallback_index_cache[cache_key] = lookup
+    return _resolve_aux_path_from_lookup(key, lookup)
 
 
 def _fit_shape_to_max_side(shape: tuple[int, int], max_side: int | None) -> tuple[int, int]:
@@ -674,6 +939,31 @@ def _record_payload_cache_path(cache_key: str) -> Path:
     return ANALYSIS_CACHE_DIR / f"{cache_key}.pickle"
 
 
+def _trim_pickle_cache_dir(cache_dir: Path, *, max_files: int) -> None:
+    directory_key = str(Path(cache_dir))
+    now = perf_counter()
+    last_trim = _CACHE_TRIM_LAST_BY_DIR.get(directory_key, 0.0)
+    if now - last_trim < CACHE_TRIM_INTERVAL_SECONDS:
+        return
+    _CACHE_TRIM_LAST_BY_DIR[directory_key] = now
+    try:
+        cache_files = list(Path(cache_dir).glob("*.pickle"))
+    except Exception:
+        return
+    extra_count = len(cache_files) - int(max_files)
+    if extra_count <= 0:
+        return
+    try:
+        removable = sorted(cache_files, key=lambda path: path.stat().st_mtime_ns)[:extra_count]
+    except Exception:
+        return
+    for path in removable:
+        try:
+            path.unlink()
+        except Exception:
+            continue
+
+
 def _load_cached_record_payload(cache_key: str) -> dict[str, object] | None:
     cache_path = _record_payload_cache_path(cache_key)
     if not cache_path.is_file():
@@ -693,6 +983,7 @@ def _store_cached_record_payload(cache_key: str, payload: dict[str, object]) -> 
         with tmp_path.open("wb") as handle:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
         tmp_path.replace(cache_path)
+        _trim_pickle_cache_dir(ANALYSIS_CACHE_DIR, max_files=ANALYSIS_CACHE_MAX_FILES)
     except Exception:
         try:
             if tmp_path.exists():
@@ -742,6 +1033,7 @@ def _store_cached_detail_payload(cache_key: str, payload: object) -> None:
         with tmp_path.open("wb") as handle:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
         tmp_path.replace(cache_path)
+        _trim_pickle_cache_dir(DETAIL_CACHE_DIR, max_files=DETAIL_CACHE_MAX_FILES)
     except Exception:
         try:
             if tmp_path.exists():
@@ -5938,22 +6230,28 @@ def _iter_record_payloads(
 ):
     """Yield per-record analytics payloads without retaining the whole dataset in RAM."""
 
-    worker_count = max(1, int(max_workers))
-    if os.name == 'nt' and geometry_mode != GeometryMode.POINT:
-        # Mask analytics keeps several full-frame arrays alive per task; on Windows
-        # too many parallel workers lead to paging and eventual OOM before any speedup.
-        # The old fixed limit of 2 heavily underutilized modern CPUs on large batches.
-        cpu_limit = max(1, os.cpu_count() or worker_count)
-        safe_limit = min(cpu_limit, 4)
-        side_limit = int(analysis_max_side or 0)
-        if not include_model_confidence:
-            if side_limit > 0 and side_limit <= 1024:
-                safe_limit = min(cpu_limit, 6)
-            elif side_limit == 0:
-                safe_limit = min(cpu_limit, 5)
-        elif side_limit > 0 and side_limit <= 768:
-            safe_limit = min(cpu_limit, 5)
-        worker_count = min(worker_count, safe_limit)
+    use_thread_pool = _use_thread_pool_for_analytics()
+    worker_count = _analytics_worker_count(
+        max_workers,
+        geometry_mode=geometry_mode,
+        analysis_max_side=analysis_max_side,
+        include_model_confidence=include_model_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+        include_model_metrics=include_model_metrics,
+        model_count=len(model_specs),
+        use_thread_pool=use_thread_pool,
+    )
+    _remember_analytics_worker_plan(
+        requested=max_workers,
+        selected=worker_count,
+        use_thread_pool=use_thread_pool,
+        geometry_mode=geometry_mode,
+        analysis_max_side=analysis_max_side,
+        model_count=len(model_specs),
+        include_model_confidence=include_model_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+        include_model_metrics=include_model_metrics,
+    )
 
     def run_sequential():
         for index, record in enumerate(records, start=1):
@@ -5987,10 +6285,13 @@ def _iter_record_payloads(
         return
 
     try:
-        use_thread_pool = False
         executor_cls = ThreadPoolExecutor if use_thread_pool else ProcessPoolExecutor
-        work_items = [
-            (
+        total_records = len(records)
+        batch_size = 1 if use_thread_pool else _analytics_batch_size(total_records, worker_count)
+        batch_count = int(math.ceil(float(total_records) / float(batch_size)))
+
+        def make_work_item(record: FrameRecord):
+            return (
                 record,
                 model_specs,
                 analysis_max_side,
@@ -6005,78 +6306,102 @@ def _iter_record_payloads(
                 include_pairwise_metrics,
                 include_model_metrics,
             )
-            for record in records
-        ]
-        batch_size = 1
-        if not use_thread_pool:
-            batch_size = max(1, min(32, math.ceil(len(work_items) / max(1, worker_count * 4))))
-        work_batches = [
-            tuple(work_items[index:index + batch_size])
-            for index in range(0, len(work_items), batch_size)
-        ]
-        with executor_cls(max_workers=worker_count) as executor:
-            try:
-                completed = 0
-                # Keep the queue aligned with the number of active workers so the UI
-                # reflects actual parallel execution instead of pre-buffered tasks.
-                max_in_flight = max(1, worker_count)
-                next_index = 0
-                future_to_order: dict[object, int] = {}
-                ordered_results: dict[int, tuple[tuple[str, dict[str, object] | None], ...]] = {}
-                next_yield_index = 0
 
-                def submit_work_item(order_index: int) -> None:
-                    batch = work_batches[order_index]
-                    if use_thread_pool:
-                        future = executor.submit(_analyze_record_payload_for_executor, batch[0])
-                    else:
-                        future = executor.submit(_analyze_record_payload_batch_for_executor, batch)
-                    future_to_order[future] = order_index
+        def make_batch(order_index: int):
+            start = int(order_index) * int(batch_size)
+            stop = min(total_records, start + int(batch_size))
+            return tuple(make_work_item(records[index]) for index in range(start, stop))
+
+        executor = executor_cls(max_workers=worker_count)
+        shutdown_wait = True
+        executor_shutdown = False
+        try:
+            completed = 0
+            max_in_flight = max(1, worker_count)
+            next_index = 0
+            future_to_batch: dict[object, tuple[tuple[object, ...], ...]] = {}
+            last_result_at = perf_counter()
+            last_stall_progress_at = last_result_at
+
+            def submit_work_item(order_index: int) -> None:
+                batch = make_batch(order_index)
+                if use_thread_pool:
+                    future = executor.submit(_analyze_record_payload_for_executor, batch[0])
+                else:
+                    future = executor.submit(_analyze_record_payload_batch_for_executor, batch)
+                future_to_batch[future] = batch
+                if state_callback is not None:
+                    for item in batch:
+                        state_callback(item[0].key, "running")
+
+            while next_index < batch_count and len(future_to_batch) < max_in_flight:
+                submit_work_item(next_index)
+                next_index += 1
+
+            while future_to_batch:
+                if cancel_check is not None and cancel_check():
                     if state_callback is not None:
-                        for item in batch:
-                            state_callback(item[0].key, "running")
-
-                while next_index < len(work_batches) and len(future_to_order) < max_in_flight:
+                        for batch in future_to_batch.values():
+                            for item in batch:
+                                state_callback(item[0].key, "stale")
+                    shutdown_wait = False
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    executor_shutdown = True
+                    raise BuildCancelledError("Build cancelled")
+                done, _pending = wait(
+                    tuple(future_to_batch.keys()),
+                    timeout=ANALYTICS_WAIT_TIMEOUT_SECONDS,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    now = perf_counter()
+                    if progress_callback is not None and now - last_stall_progress_at >= ANALYTICS_STALL_PROGRESS_SECONDS:
+                        last_stall_progress_at = now
+                        progress_callback(completed, len(records), "Waiting for analytics workers")
+                    if now - last_result_at >= ANALYTICS_STALL_TIMEOUT_SECONDS:
+                        if state_callback is not None:
+                            for batch in future_to_batch.values():
+                                for item in batch:
+                                    state_callback(item[0].key, "stale")
+                        shutdown_wait = False
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        executor_shutdown = True
+                        raise TimeoutError(
+                            "Analytics workers stalled: no completed frame payloads within "
+                            f"{ANALYTICS_STALL_TIMEOUT_SECONDS:.0f}s."
+                        )
+                    continue
+                last_result_at = perf_counter()
+                for future in done:
+                    future_to_batch.pop(future)
+                    result = future.result()
+                    batch_result = (result,) if use_thread_pool else tuple(result)
+                    if state_callback is not None:
+                        for record_key, _payload in batch_result:
+                            state_callback(record_key, "done")
+                    for record_key, payload in batch_result:
+                        completed += 1
+                        if progress_callback is not None:
+                            progress_callback(completed, len(records), record_key)
+                        yield record_key, payload
+                    if completed % 32 == 0:
+                        _clear_runtime_image_caches()
+                while next_index < batch_count and len(future_to_batch) < max_in_flight:
                     submit_work_item(next_index)
                     next_index += 1
-
-                while future_to_order:
-                    if cancel_check is not None and cancel_check():
-                        if state_callback is not None:
-                            for pending_order in future_to_order.values():
-                                for item in work_batches[pending_order]:
-                                    state_callback(item[0].key, "stale")
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise BuildCancelledError("Build cancelled")
-                    done, _pending = wait(tuple(future_to_order.keys()), return_when=FIRST_COMPLETED)
-                    for future in done:
-                        order_index = future_to_order.pop(future)
-                        result = future.result()
-                        batch_result = result if not use_thread_pool else (result,)
-                        ordered_results[order_index] = tuple(batch_result)
-                        if state_callback is not None:
-                            for record_key, _payload in batch_result:
-                                state_callback(record_key, "done")
-                    while next_yield_index in ordered_results:
-                        batch_result = ordered_results.pop(next_yield_index)
-                        for record_key, payload in batch_result:
-                            completed += 1
-                            if progress_callback is not None:
-                                progress_callback(completed, len(records), record_key)
-                            yield record_key, payload
-                        next_yield_index += 1
-                        if completed % 32 == 0:
-                            _clear_runtime_image_caches()
-                    while next_index < len(work_batches) and len(future_to_order) < max_in_flight:
-                        submit_work_item(next_index)
-                        next_index += 1
-            except Exception:
-                if state_callback is not None:
-                    for pending_order in future_to_order.values():
-                        for item in work_batches[pending_order]:
-                            state_callback(item[0].key, "stale")
+        except Exception:
+            shutdown_wait = False
+            if state_callback is not None:
+                for batch in future_to_batch.values():
+                    for item in batch:
+                        state_callback(item[0].key, "stale")
+            if not executor_shutdown:
                 executor.shutdown(wait=False, cancel_futures=True)
-                raise
+                executor_shutdown = True
+            raise
+        finally:
+            if not executor_shutdown:
+                executor.shutdown(wait=shutdown_wait, cancel_futures=not shutdown_wait)
     except (PermissionError, OSError):
         yield from run_sequential()
 
@@ -6238,16 +6563,39 @@ def _collect_frame_records_modern(
         raise BuildCancelledError("Build cancelled")
     if progress_callback is not None:
         progress_callback(0, 0, "Indexing base folder")
-    base_index = build_folder_index(base_spec.mask_folder, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check)
+    base_index = build_folder_index(
+        base_spec.mask_folder,
+        recursive=options.recursive,
+        extensions=extensions,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+        progress_interval=max(1, int(options.progress_update_interval)),
+    )
     if not base_index:
         raise ValueError("Selected model folders do not contain matching image frames.")
 
     if progress_callback is not None:
         progress_callback(0, len(base_index), "Indexing auxiliary folders")
-    original_index = build_folder_index(original_folder.path, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check) if original_folder is not None else {}
-    gt_index = build_folder_index(gt_folder.path, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check) if gt_folder is not None else {}
-    fallback_model_indexes: dict[str, dict[str, Path]] = {}
-    fallback_prob_indexes: dict[str, dict[str, Path]] = {}
+    original_index = build_folder_index(
+        original_folder.path,
+        recursive=options.recursive,
+        extensions=extensions,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+        progress_interval=max(1, int(options.progress_update_interval)),
+    ) if original_folder is not None else {}
+    gt_index = build_folder_index(
+        gt_folder.path,
+        recursive=options.recursive,
+        extensions=extensions,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+        progress_interval=max(1, int(options.progress_update_interval)),
+    ) if gt_folder is not None else {}
+    original_lookup = _build_folder_path_lookup(original_index)
+    gt_lookup = _build_folder_path_lookup(gt_index)
+    fallback_model_indexes: dict[str, _FolderPathLookup] = {}
+    fallback_prob_indexes: dict[str, _FolderPathLookup] = {}
 
     records: list[FrameRecord] = []
     sorted_keys = sorted(base_index.keys(), key=natural_sort_key)
@@ -6264,6 +6612,7 @@ def _collect_frame_records_modern(
                 fallback_prob_indexes,
                 recursive=options.recursive,
                 cancel_check=cancel_check,
+                progress_callback=progress_callback,
             )
             model_prob_paths[base_spec.model_id] = str(resolved_prob) if resolved_prob is not None else ""
         else:
@@ -6277,6 +6626,7 @@ def _collect_frame_records_modern(
                 fallback_model_indexes,
                 recursive=options.recursive,
                 cancel_check=cancel_check,
+                progress_callback=progress_callback,
             )
             if resolved is None:
                 missing_required_model = True
@@ -6290,14 +6640,15 @@ def _collect_frame_records_modern(
                     fallback_prob_indexes,
                     recursive=options.recursive,
                     cancel_check=cancel_check,
+                    progress_callback=progress_callback,
                 )
                 model_prob_paths[spec.model_id] = str(resolved_prob) if resolved_prob is not None else ""
             else:
                 model_prob_paths[spec.model_id] = ""
         if missing_required_model:
             continue
-        original_path = _resolve_aux_path(key, original_index)
-        gt_path = _resolve_aux_path(key, gt_index)
+        original_path = _resolve_aux_path_from_lookup(key, original_lookup)
+        gt_path = _resolve_aux_path_from_lookup(key, gt_lookup)
         records.append(FrameRecord(
             key=key,
             display_name=Path(key).name,
@@ -6419,7 +6770,8 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
     include_pairwise_metrics = _metric_requires_pairwise_metrics(active_metric)
     include_model_metrics = _metric_requires_model_metrics(active_metric)
 
-    updated_records: list[FrameRecord] = []
+    records_by_key = {str(record.key): record for record in records}
+    updated_records_by_key: dict[str, FrameRecord] = {}
     try:
         payload_iter = _iter_record_payloads(
             records,
@@ -6440,10 +6792,11 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
             state_callback=state_callback,
             cancel_check=cancel_check,
         )
-        for record, (record_key, payload) in zip(records, payload_iter):
+        for record_key, payload in payload_iter:
             if payload is None:
                 continue
-            if record.key != record_key:
+            record = records_by_key.get(str(record_key))
+            if record is None:
                 continue
             vector = dict(payload.get('vector') or {})
             disagreement = float(payload.get('disagreement', 0.0))
@@ -6498,10 +6851,11 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
                 notes=(('labeled' if labeled_best is not None else 'unlabeled'),),
                 frame_type=frame_type,
             )
-            updated_records.append(replace(record, summary=summary))
+            updated_records_by_key[str(record.key)] = replace(record, summary=summary)
     finally:
         _clear_runtime_image_caches()
 
+    updated_records = [updated_records_by_key[str(record.key)] for record in records if str(record.key) in updated_records_by_key]
     absolute_scores = [float(_record_metric_value(record.summary, active_metric) or 0.0) for record in updated_records]
     min_absolute = min(absolute_scores) if absolute_scores else 0.0
     max_absolute = max(absolute_scores) if absolute_scores else 0.0
@@ -6743,32 +7097,32 @@ def metric_percentile_high_is_bad(metric_key: str) -> bool:
 
 def rank_records_by_metric(records: tuple[FrameRecord, ...] | list[FrameRecord], metric_key: str) -> list[FrameRecord]:
     higher_is_better = metric_higher_is_better(metric_key)
-    scored: list[FrameRecord] = []
+    scored: list[tuple[float, FrameRecord]] = []
     for record in records:
         value = metric_value_for_record(record, metric_key)
-        if value is None or not np.isfinite(float(value)):
+        if value is None:
             continue
-        scored.append(record)
-    return sorted(
-        scored,
-        key=lambda item: float(metric_value_for_record(item, metric_key) or 0.0),
-        reverse=bool(higher_is_better),
-    )
+        value_float = float(value)
+        if not np.isfinite(value_float):
+            continue
+        scored.append((value_float, record))
+    ranked = sorted(scored, key=lambda item: item[0], reverse=bool(higher_is_better))
+    return [record for _value, record in ranked]
 
 
 def rank_records_by_metric_badness(records: tuple[FrameRecord, ...] | list[FrameRecord], metric_key: str) -> list[FrameRecord]:
     higher_is_better = metric_higher_is_better(metric_key)
-    scored: list[FrameRecord] = []
+    scored: list[tuple[float, FrameRecord]] = []
     for record in records:
         value = metric_value_for_record(record, metric_key)
-        if value is None or not np.isfinite(float(value)):
+        if value is None:
             continue
-        scored.append(record)
-    return sorted(
-        scored,
-        key=lambda item: float(metric_value_for_record(item, metric_key) or 0.0),
-        reverse=not bool(higher_is_better),
-    )
+        value_float = float(value)
+        if not np.isfinite(value_float):
+            continue
+        scored.append((value_float, record))
+    ranked = sorted(scored, key=lambda item: item[0], reverse=not bool(higher_is_better))
+    return [record for _value, record in ranked]
 
 
 def _ranked_percentile_map(ranked: list[FrameRecord]) -> dict[str, float]:

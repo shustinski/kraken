@@ -49,7 +49,7 @@ class ExtendMatrixTabState:
     percentile_filter_metric_key: str | None = None
     percentile_filter_bin_index: int | None = None
     correlation_filter_band: str | None = None
-    percentile_cache: dict[tuple[str, tuple[str, ...]], dict[str, float]] = field(default_factory=dict)
+    percentile_cache: dict[tuple[str, int], dict[str, float]] = field(default_factory=dict)
     metric_result_cache: dict[str, BuildResult] = field(default_factory=dict)
     base_records_cache: dict[tuple[str, int], tuple] = field(default_factory=dict)
     repeated_percentile_cache: dict[tuple[str, tuple[str, ...], int], tuple] = field(default_factory=dict)

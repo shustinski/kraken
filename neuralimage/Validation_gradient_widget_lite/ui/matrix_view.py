@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import pickle
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -27,7 +30,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..core.backend_constants import FRAME_NUMBER_PATTERN
+from ..core.backend_constants import CACHE_DIR, FRAME_NUMBER_PATTERN
 from ..core.analysis_modes import confidence_metric_family, metric_level_key, metric_visual_ratio
 from ..core.domain import FrameRecord
 from ..core.repository import (
@@ -130,13 +133,23 @@ VIEW_LOD_OVERVIEW = "overview"
 VIEW_LOD_PIXEL = "pixel"
 VIEW_LOD_SUBPIXEL = "subpixel"
 TILE_VIEWPORT_DEBOUNCE_MS = 90
+TILE_HOVER_PREFETCH_MS = 120
 TILE_LOAD_SLICE_BUDGET_MS = 12.0
 TILE_LOAD_MAX_PER_SLICE = 2
+TILE_LOAD_MAX_KEYS_PER_SLICE = 16
 TILE_PREFETCH_MARGIN_CELLS = 1
 SUBPIXEL_GRID_CACHE_MAX_ITEMS = 2048
+SUBPIXEL_GRID_DISK_CACHE_DIR = CACHE_DIR / "matrix_subpixel_grids"
+SUBPIXEL_GRID_DISK_CACHE_VERSION = "v2"
+SUBPIXEL_GRID_DISK_CACHE_MAX_FILES = 20000
+SUBPIXEL_GRID_DISK_CACHE_TRIM_INTERVAL_SECONDS = 300.0
+SUBPIXEL_GRID_WORKER_COUNT = 2
+SUBPIXEL_GRID_MAX_IN_FLIGHT = 4
 MATRIX_VIRTUALIZE_RECORD_THRESHOLD = 5000
 MATRIX_ITEM_KEEP_MARGIN_CELLS = 2
 MATRIX_MAX_MATERIALIZED_ITEMS = 2000
+SUBPIXEL_VISIBILITY_EXIT_THRESHOLD = 2.20
+_subpixel_grid_disk_cache_last_trim = 0.0
 
 
 def _tile_rect_for_cell(cell_rect: QRectF, tile_row: int, tile_column: int, spec: SubpixelGridSpec) -> QRectF:
@@ -265,6 +278,203 @@ def _score_fill_color(
     position = map_score_to_palette_position(float(value), 0.0, 1.0)
     position = enhance_palette_position(position)
     return interpolate_gradient_color(gradient_name, position)
+
+
+def _path_cache_identity(path_text: str | None) -> tuple[str, int, int]:
+    text = str(path_text or "")
+    if not text:
+        return "", 0, 0
+    try:
+        path = Path(text)
+        stat = path.stat()
+        return str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size)
+    except Exception:
+        return text, 0, 0
+
+
+def _record_path_signature(record: FrameRecord) -> tuple[object, ...]:
+    model_masks = tuple(
+        sorted((str(key), _path_cache_identity(str(value))) for key, value in (getattr(record, "model_mask_paths", {}) or {}).items())
+    )
+    model_probs = tuple(
+        sorted((str(key), _path_cache_identity(str(value))) for key, value in (getattr(record, "model_prob_paths", {}) or {}).items())
+    )
+    return (
+        _path_cache_identity(getattr(record, "first_path", None)),
+        _path_cache_identity(getattr(record, "second_path", None)),
+        _path_cache_identity(getattr(record, "original_path", None)),
+        _path_cache_identity(getattr(record, "base_path", None)),
+        model_masks,
+        model_probs,
+    )
+
+
+def _subpixel_cache_key_for_record(
+    record: FrameRecord,
+    spec: SubpixelGridSpec,
+    *,
+    aggregation: str,
+    metric_key: str | None,
+    comparison_mode,
+) -> tuple[object, ...]:
+    return (
+        SUBPIXEL_GRID_DISK_CACHE_VERSION,
+        str(record.key),
+        str(spec.mode),
+        int(spec.rows),
+        int(spec.columns),
+        int(spec.tile_width),
+        int(spec.tile_height),
+        int(spec.overlap),
+        str(aggregation or "mean"),
+        str(metric_key or ""),
+        str(getattr(comparison_mode, "value", comparison_mode)),
+        _record_path_signature(record),
+    )
+
+
+def _subpixel_disk_cache_path(cache_key: tuple[object, ...]) -> Path:
+    digest = hashlib.sha1(repr(cache_key).encode("utf-8", errors="ignore")).hexdigest()
+    return SUBPIXEL_GRID_DISK_CACHE_DIR / f"{digest}.pickle"
+
+
+def _load_subpixel_grid_from_disk(cache_key: tuple[object, ...]) -> SubpixelGrid | None:
+    cache_path = _subpixel_disk_cache_path(cache_key)
+    if not cache_path.is_file():
+        return None
+    try:
+        with cache_path.open("rb") as handle:
+            payload = pickle.load(handle)
+        spec = SubpixelGridSpec(**payload["spec"]).normalized()
+        return SubpixelGrid(
+            spec=spec,
+            values=np.asarray(payload["values"], dtype=np.float32),
+            confidences=None if payload.get("confidences") is None else np.asarray(payload["confidences"], dtype=np.float32),
+            aggregation=str(payload.get("aggregation") or "mean"),
+            value_kind=str(payload.get("value_kind") or "value"),
+        )
+    except Exception:
+        return None
+
+
+def _trim_subpixel_grid_disk_cache() -> None:
+    global _subpixel_grid_disk_cache_last_trim
+    now = time.monotonic()
+    if now - _subpixel_grid_disk_cache_last_trim < SUBPIXEL_GRID_DISK_CACHE_TRIM_INTERVAL_SECONDS:
+        return
+    _subpixel_grid_disk_cache_last_trim = now
+    try:
+        cache_files = list(SUBPIXEL_GRID_DISK_CACHE_DIR.glob("*.pickle"))
+    except Exception:
+        return
+    extra_count = len(cache_files) - int(SUBPIXEL_GRID_DISK_CACHE_MAX_FILES)
+    if extra_count <= 0:
+        return
+    try:
+        removable = sorted(cache_files, key=lambda path: path.stat().st_mtime_ns)[:extra_count]
+    except Exception:
+        return
+    for path in removable:
+        try:
+            path.unlink()
+        except Exception:
+            continue
+
+
+def _store_subpixel_grid_to_disk(cache_key: tuple[object, ...], grid: SubpixelGrid) -> None:
+    try:
+        SUBPIXEL_GRID_DISK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path = _subpixel_disk_cache_path(cache_key)
+        tmp_path = cache_path.with_suffix(".tmp")
+        payload = {
+            "spec": {
+                "rows": int(grid.spec.rows),
+                "columns": int(grid.spec.columns),
+                "mode": str(grid.spec.mode),
+                "tile_width": int(grid.spec.tile_width),
+                "tile_height": int(grid.spec.tile_height),
+                "overlap": int(grid.spec.overlap),
+            },
+            "values": np.asarray(grid.values, dtype=np.float32),
+            "confidences": None if grid.confidences is None else np.asarray(grid.confidences, dtype=np.float32),
+            "aggregation": str(grid.aggregation),
+            "value_kind": str(grid.value_kind),
+        }
+        with tmp_path.open("wb") as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp_path.replace(cache_path)
+        _trim_subpixel_grid_disk_cache()
+    except Exception:
+        return
+
+
+def _build_subpixel_grid_for_record(
+    record: FrameRecord,
+    spec: SubpixelGridSpec,
+    *,
+    aggregation: str,
+    metric_key: str | None,
+    comparison_mode,
+) -> SubpixelGrid:
+    metric_family = confidence_metric_family(metric_key)
+    if metric_family is not None:
+        family, model_id = metric_family
+        probability_path = str((getattr(record, "model_prob_paths", {}) or {}).get(model_id) or "")
+        probability_array = None
+        try:
+            if probability_path:
+                probability_array = np.asarray(load_grayscale_image(Path(probability_path)), dtype=np.float32) / 255.0
+            elif model_id and model_id in (getattr(record, "model_mask_paths", {}) or {}):
+                mask_path = str((getattr(record, "model_mask_paths", {}) or {}).get(model_id) or "")
+                if mask_path:
+                    probability_array = np.asarray(load_grayscale_image(Path(mask_path)), dtype=np.float32) / 255.0
+        except Exception:
+            probability_array = None
+        if probability_array is not None and probability_array.ndim == 2 and probability_array.size > 0:
+            try:
+                if family == "model_confidence":
+                    return build_subpixel_grid_from_array(
+                        probability_array,
+                        spec,
+                        score_fn=lambda prob_tile: _frame_uncertainty_components_from_probability(
+                            np.asarray(prob_tile, dtype=np.float32),
+                            support_threshold=float(POLYGON_SUPPORT_THRESHOLD),
+                        )[0],
+                        aggregation=aggregation,
+                        value_kind="risk",
+                    )
+                if family == "model_uncertain_fraction":
+                    return build_subpixel_grid_from_array(
+                        probability_array,
+                        spec,
+                        score_fn=lambda prob_tile: _frame_uncertainty_components_from_probability(
+                            np.asarray(prob_tile, dtype=np.float32),
+                            support_threshold=float(POLYGON_SUPPORT_THRESHOLD),
+                        )[2],
+                        aggregation=aggregation,
+                        value_kind="risk",
+                    )
+            except Exception:
+                pass
+    try:
+        layers = load_frame_layers(record)
+        first_layer = np.asarray(layers.get("first_binary"), dtype=bool)
+        second_layer = np.asarray(layers.get("second_binary"), dtype=bool)
+        if first_layer.shape == second_layer.shape and first_layer.ndim == 2 and first_layer.size > 0:
+            return build_subpixel_grid_from_pair(
+                first_layer,
+                second_layer,
+                spec,
+                score_fn=lambda first_tile, second_tile: compute_comparison_score(first_tile, second_tile, comparison_mode),
+                aggregation=aggregation,
+                value_kind="risk",
+            )
+    except Exception:
+        pass
+    parent_score = float(record.score if bool(getattr(record, "score_ready", False)) else 0.0)
+    values = np.full((max(1, int(spec.rows)), max(1, int(spec.columns))), parent_score, dtype=np.float32)
+    confidences = np.ones_like(values, dtype=np.float32)
+    return SubpixelGrid(spec=spec.normalized(), values=values, confidences=confidences, aggregation=aggregation, value_kind="score")
 
 
 class _MatrixCellItem(QGraphicsRectItem):
@@ -490,12 +700,23 @@ def compute_auto_color_window(scores: list[float] | tuple[float, ...]) -> tuple[
     finite = values[np.isfinite(values)]
     if finite.size <= 1:
         return DEFAULT_ERROR_WINDOW
-    low = float(np.quantile(finite, 0.08))
-    high = float(np.quantile(finite, 0.92))
+    robust = np.sort(finite)
+    if robust.size >= 4:
+        diffs = np.diff(robust)
+        positive_diffs = diffs[diffs > 0]
+        median_gap = float(np.median(positive_diffs)) if positive_diffs.size > 0 else 0.0
+        gap_threshold = max(0.05, median_gap * 6.0)
+        start = 1 if float(diffs[0]) > gap_threshold else 0
+        stop = robust.size - 1 if float(diffs[-1]) > gap_threshold else robust.size
+        if stop - start >= 2:
+            robust = robust[start:stop]
+    low = float(np.quantile(robust, 0.08))
+    high = float(np.quantile(robust, 0.92))
     if high <= low:
         return DEFAULT_ERROR_WINDOW
     min_span = 0.14
-    if (high - low) < min_span:
+    finite_range = float(np.max(finite) - np.min(finite))
+    if (high - low) < min_span and finite_range < min_span:
         center = float(np.median(finite))
         half = min_span * 0.5
         low = max(0.0, center - half)
@@ -1045,15 +1266,37 @@ class MatrixListWidget(QGraphicsView):
         self._active_lod_band = VIEW_LOD_PIXEL
         self._tile_request_generation = 0
         self._tile_load_generation: int | None = None
-        self._pending_tile_keys: list[str] = []
+        self._pending_tile_keys: deque[str] = deque()
         self._pending_tile_key_set: set[str] = set()
+        self._visible_record_key_cache_signature: tuple[object, ...] | None = None
+        self._visible_record_key_cache: tuple[str, ...] = tuple()
+        self._focus_scene_pos: QPointF | None = None
+        self._hover_scene_pos: QPointF | None = None
+        self._zoom_anchor_scene_pos: QPointF | None = None
+        self._last_viewport_center_scene_pos: QPointF | None = None
+        self._pan_bias: tuple[float, float] = (0.0, 0.0)
         self._tile_viewport_timer = QTimer(self)
         self._tile_viewport_timer.setSingleShot(True)
         self._tile_viewport_timer.setInterval(TILE_VIEWPORT_DEBOUNCE_MS)
         self._tile_viewport_timer.timeout.connect(self._prepare_visible_tile_queue)
+        self._hover_prefetch_timer = QTimer(self)
+        self._hover_prefetch_timer.setSingleShot(True)
+        self._hover_prefetch_timer.setInterval(TILE_HOVER_PREFETCH_MS)
+        self._hover_prefetch_timer.timeout.connect(self._on_hover_prefetch_timeout)
         self._tile_load_timer = QTimer(self)
         self._tile_load_timer.setSingleShot(True)
         self._tile_load_timer.timeout.connect(self._process_pending_tile_queue)
+        self._tile_result_timer = QTimer(self)
+        self._tile_result_timer.setInterval(30)
+        self._tile_result_timer.timeout.connect(self._poll_tile_futures)
+        self._tile_executor = ThreadPoolExecutor(max_workers=max(1, int(SUBPIXEL_GRID_WORKER_COUNT)), thread_name_prefix="matrix-tile")
+        self._tile_futures: dict[str, tuple[int, tuple[object, ...], Future]] = {}
+        self._tile_cache_hits = 0
+        self._tile_disk_cache_hits = 0
+        self._tile_cache_misses = 0
+        self._tile_jobs_submitted = 0
+        self._tile_jobs_completed = 0
+        self._tile_jobs_discarded = 0
         self._pan_active = False
         self._pan_start = None
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -1067,8 +1310,15 @@ class MatrixListWidget(QGraphicsView):
         self.horizontalScrollBar().valueChanged.connect(self._on_viewport_scroll_changed)
         self.verticalScrollBar().valueChanged.connect(self._on_viewport_scroll_changed)
 
+    def _clear_visible_record_key_cache(self) -> None:
+        self._visible_record_key_cache_signature = None
+        self._visible_record_key_cache = tuple()
+
     def _clear_subpixel_grid_cache(self) -> None:
         self._subpixel_grid_cache.clear()
+        self._tile_cache_hits = 0
+        self._tile_disk_cache_hits = 0
+        self._tile_cache_misses = 0
 
     def _clear_record_subpixel_grids(self) -> None:
         for record in self._records:
@@ -1081,6 +1331,7 @@ class MatrixListWidget(QGraphicsView):
         cached = self._subpixel_grid_cache.get(cache_key)
         if cached is not None:
             self._subpixel_grid_cache.move_to_end(cache_key)
+            self._tile_cache_hits += 1
         return cached
 
     def _subpixel_cache_put(self, cache_key: tuple[object, ...], grid: SubpixelGrid) -> None:
@@ -1089,41 +1340,48 @@ class MatrixListWidget(QGraphicsView):
         while len(self._subpixel_grid_cache) > SUBPIXEL_GRID_CACHE_MAX_ITEMS:
             self._subpixel_grid_cache.popitem(last=False)
 
-    @staticmethod
-    def _record_path_signature(record: FrameRecord) -> tuple[object, ...]:
-        model_masks = tuple(sorted((str(key), str(value)) for key, value in (getattr(record, "model_mask_paths", {}) or {}).items()))
-        model_probs = tuple(sorted((str(key), str(value)) for key, value in (getattr(record, "model_prob_paths", {}) or {}).items()))
-        return (
-            str(getattr(record, "first_path", None) or ""),
-            str(getattr(record, "second_path", None) or ""),
-            str(getattr(record, "original_path", None) or ""),
-            str(getattr(record, "base_path", None) or ""),
-            model_masks,
-            model_probs,
-        )
-
     def _subpixel_cache_key_for_record(self, record: FrameRecord, spec: SubpixelGridSpec) -> tuple[object, ...]:
-        return (
-            str(record.key),
-            str(spec.mode),
-            int(spec.rows),
-            int(spec.columns),
-            int(spec.tile_width),
-            int(spec.tile_height),
-            int(spec.overlap),
-            str(self._subpixel_aggregation),
-            str(self._metric_key or ""),
-            str(getattr(self._subpixel_comparison_mode, "value", self._subpixel_comparison_mode)),
-            self._record_path_signature(record),
+        return _subpixel_cache_key_for_record(
+            record,
+            spec,
+            aggregation=self._subpixel_aggregation,
+            metric_key=self._metric_key,
+            comparison_mode=self._subpixel_comparison_mode,
         )
 
     def _on_viewport_scroll_changed(self, *_args) -> None:
+        self._update_pan_bias()
+        self._clear_visible_record_key_cache()
         self._emit_overview_state()
         self._sync_visible_matrix_items()
-        self._schedule_visible_tile_request()
+        self._schedule_visible_tile_request(preserve_generation=True)
+
+    def _viewport_center_scene_pos(self) -> QPointF:
+        return self.mapToScene(self.viewport().rect().center())
+
+    def _update_pan_bias(self) -> None:
+        center = self._viewport_center_scene_pos()
+        previous = self._last_viewport_center_scene_pos
+        if previous is not None:
+            dx = float(center.x() - previous.x())
+            dy = float(center.y() - previous.y())
+            if abs(dx) > 0.01 or abs(dy) > 0.01:
+                self._pan_bias = (dx, dy)
+        self._last_viewport_center_scene_pos = center
+
+    def _set_focus_scene_pos(self, scene_pos: QPointF | None, *, schedule: bool = True) -> None:
+        self._focus_scene_pos = scene_pos
+        self._clear_visible_record_key_cache()
+        if schedule and self._tile_overlay_visible:
+            self._schedule_visible_tile_request(immediate=False, preserve_generation=True)
+
+    def _on_hover_prefetch_timeout(self) -> None:
+        if self._hover_scene_pos is not None:
+            self._set_focus_scene_pos(self._hover_scene_pos, schedule=True)
 
     def set_cell_size(self, cell_size: int) -> None:
         self._cell_size = max(MATRIX_MIN_CELL_SIZE, int(cell_size))
+        self._clear_visible_record_key_cache()
 
     def set_gradient_preset(self, gradient_name: str) -> None:
         self._gradient_name = gradient_name if gradient_name in GRADIENT_PRESETS else DEFAULT_GRADIENT_NAME
@@ -1153,6 +1411,7 @@ class MatrixListWidget(QGraphicsView):
 
     def set_layout_config(self, layout_config: MatrixLayoutConfig) -> None:
         self._layout_config = layout_config
+        self._clear_visible_record_key_cache()
 
     def set_subpixel_grid_spec(self, spec: SubpixelGridSpec | None, *, aggregation: str = "mean") -> None:
         previous_spec = self._subpixel_spec
@@ -1222,81 +1481,25 @@ class MatrixListWidget(QGraphicsView):
         cached = self._subpixel_cache_get(cache_key)
         if cached is not None:
             return cached
-        metric_family = confidence_metric_family(self._metric_key)
-        if metric_family is not None:
-            family, model_id = metric_family
-            probability_path = str((getattr(record, "model_prob_paths", {}) or {}).get(model_id) or "")
-            probability_array = None
+        disk_cached = _load_subpixel_grid_from_disk(cache_key)
+        if disk_cached is not None:
+            self._tile_disk_cache_hits += 1
+            self._subpixel_cache_put(cache_key, disk_cached)
             try:
-                if probability_path:
-                    probability_array = np.asarray(load_grayscale_image(Path(probability_path)), dtype=np.float32) / 255.0
-                elif model_id and model_id in (getattr(record, "model_mask_paths", {}) or {}):
-                    mask_path = str((getattr(record, "model_mask_paths", {}) or {}).get(model_id) or "")
-                    if mask_path:
-                        probability_array = np.asarray(load_grayscale_image(Path(mask_path)), dtype=np.float32) / 255.0
+                record.subpixel_grid = disk_cached
             except Exception:
-                probability_array = None
-            if probability_array is not None and probability_array.ndim == 2 and probability_array.size > 0:
-                try:
-                    if family == "model_confidence":
-                        grid = build_subpixel_grid_from_array(
-                            probability_array,
-                            spec,
-                            score_fn=lambda prob_tile: _frame_uncertainty_components_from_probability(
-                                np.asarray(prob_tile, dtype=np.float32),
-                                support_threshold=float(POLYGON_SUPPORT_THRESHOLD),
-                            )[0],
-                            aggregation=self._subpixel_aggregation,
-                            value_kind="risk",
-                        )
-                    elif family == "model_uncertain_fraction":
-                        grid = build_subpixel_grid_from_array(
-                            probability_array,
-                            spec,
-                            score_fn=lambda prob_tile: _frame_uncertainty_components_from_probability(
-                                np.asarray(prob_tile, dtype=np.float32),
-                                support_threshold=float(POLYGON_SUPPORT_THRESHOLD),
-                            )[2],
-                            aggregation=self._subpixel_aggregation,
-                            value_kind="risk",
-                        )
-                    else:
-                        grid = None
-                    if grid is not None:
-                        self._subpixel_cache_put(cache_key, grid)
-                        try:
-                            record.subpixel_grid = grid
-                        except Exception:
-                            pass
-                        return grid
-                except Exception:
-                    pass
-        try:
-            layers = load_frame_layers(record)
-            first_layer = np.asarray(layers.get("first_binary"), dtype=bool)
-            second_layer = np.asarray(layers.get("second_binary"), dtype=bool)
-            if first_layer.shape == second_layer.shape and first_layer.ndim == 2 and first_layer.size > 0:
-                grid = build_subpixel_grid_from_pair(
-                    first_layer,
-                    second_layer,
-                    spec,
-                    score_fn=lambda first_tile, second_tile: compute_comparison_score(first_tile, second_tile, self._subpixel_comparison_mode),
-                    aggregation=self._subpixel_aggregation,
-                    value_kind="risk",
-                )
-                self._subpixel_cache_put(cache_key, grid)
-                try:
-                    record.subpixel_grid = grid
-                except Exception:
-                    pass
-                return grid
-        except Exception:
-            pass
-        parent_score = float(record.score if bool(getattr(record, "score_ready", False)) else 0.0)
-        values = np.full((max(1, int(spec.rows)), max(1, int(spec.columns))), parent_score, dtype=np.float32)
-        confidences = np.ones_like(values, dtype=np.float32)
-        grid = SubpixelGrid(spec=spec.normalized(), values=values, confidences=confidences, aggregation=self._subpixel_aggregation, value_kind="score")
+                pass
+            return disk_cached
+        self._tile_cache_misses += 1
+        grid = _build_subpixel_grid_for_record(
+            record,
+            spec,
+            aggregation=self._subpixel_aggregation,
+            metric_key=self._metric_key,
+            comparison_mode=self._subpixel_comparison_mode,
+        )
         self._subpixel_cache_put(cache_key, grid)
+        _store_subpixel_grid_to_disk(cache_key, grid)
         try:
             record.subpixel_grid = grid
         except Exception:
@@ -1338,14 +1541,19 @@ class MatrixListWidget(QGraphicsView):
     def refresh_scene(self) -> None:
         if not self._records:
             return
-        ordered_items = sorted(self._item_by_key.values(), key=lambda item: item.index)
-        for item in ordered_items:
+        for item in sorted(self._item_by_key.values(), key=lambda item: item.index):
             item.setToolTip(self._tooltip_for_record(item.record))
             self._apply_item_style(item, sync_tile_state=False)
         self._sync_tile_state_for_keys(self._item_by_key.keys())
-        placements = [(item.record, item.row, item.column) for item in ordered_items]
+        placements = [
+            (record, position[0], position[1])
+            for record in self._records
+            for position in [self._record_positions.get(str(record.key))]
+            if position is not None
+        ]
         self._overview_image = self._build_overview_image(placements)
         self._refresh_overview_layer_pixmap()
+        self._sync_visible_matrix_items()
         self._scene.update()
         self.viewport().update()
         self._emit_overview_state()
@@ -1427,8 +1635,13 @@ class MatrixListWidget(QGraphicsView):
         self._tile_load_generation = None
         self._pending_tile_keys.clear()
         self._pending_tile_key_set.clear()
+        for _key, (_generation, _cache_key, future) in list(self._tile_futures.items()):
+            future.cancel()
+        self._tile_futures.clear()
         self._tile_viewport_timer.stop()
+        self._hover_prefetch_timer.stop()
         self._tile_load_timer.stop()
+        self._tile_result_timer.stop()
 
     def _lod_band_for_current_view(self) -> str:
         if self._overview_layer_should_be_active():
@@ -1437,15 +1650,16 @@ class MatrixListWidget(QGraphicsView):
             return VIEW_LOD_SUBPIXEL
         return VIEW_LOD_PIXEL
 
-    def _schedule_visible_tile_request(self, *, immediate: bool = False) -> None:
+    def _schedule_visible_tile_request(self, *, immediate: bool = False, preserve_generation: bool = False) -> None:
         if self._subpixel_spec is None or not self._tile_overlay_visible:
             self._invalidate_tile_requests()
             return
-        self._tile_request_generation += 1
-        self._tile_load_generation = None
-        self._pending_tile_keys.clear()
-        self._pending_tile_key_set.clear()
-        self._tile_load_timer.stop()
+        if not preserve_generation:
+            self._tile_request_generation += 1
+            self._tile_load_generation = None
+            self._pending_tile_keys.clear()
+            self._pending_tile_key_set.clear()
+            self._tile_load_timer.stop()
         if immediate:
             self._tile_viewport_timer.stop()
             self._prepare_visible_tile_queue()
@@ -1453,6 +1667,59 @@ class MatrixListWidget(QGraphicsView):
             self._tile_viewport_timer.start()
 
     def _visible_record_keys(self, *, margin_cells: int = TILE_PREFETCH_MARGIN_CELLS) -> tuple[str, ...]:
+        signature = self._visible_record_key_signature(margin_cells=margin_cells)
+        if signature == self._visible_record_key_cache_signature:
+            return self._visible_record_key_cache
+        prioritized = self._prioritized_record_keys(margin_cells=margin_cells)
+        keys = tuple(key for _priority, key in prioritized)
+        self._visible_record_key_cache_signature = signature
+        self._visible_record_key_cache = keys
+        return keys
+
+    def _visible_record_key_signature(self, *, margin_cells: int) -> tuple[object, ...]:
+        focus_row, focus_column = self._active_focus_grid_position()
+        return (
+            int(margin_cells),
+            int(self.horizontalScrollBar().value()),
+            int(self.verticalScrollBar().value()),
+            int(self.viewport().width()),
+            int(self.viewport().height()),
+            round(float(self.transform().m11()), 4),
+            int(self._rows),
+            int(self._columns),
+            int(len(self._record_positions)),
+            int(self._cell_size),
+            int(self._gap),
+            int(self._scene_padding),
+            round(float(focus_row), 3),
+            round(float(focus_column), 3),
+            round(float(self._pan_bias[0]), 3),
+            round(float(self._pan_bias[1]), 3),
+        )
+
+    def _grid_position_for_scene_pos(self, scene_pos: QPointF | None) -> tuple[float, float] | None:
+        if scene_pos is None:
+            return None
+        span = float(self._cell_size + self._gap)
+        if span <= 0.0:
+            return None
+        column = (float(scene_pos.x()) - float(self._scene_padding)) / span
+        row = (float(scene_pos.y()) - float(self._scene_padding)) / span
+        if row < -1.0 or column < -1.0 or row > float(self._rows) or column > float(self._columns):
+            return None
+        return row, column
+
+    def _active_focus_grid_position(self) -> tuple[float, float]:
+        for candidate in (self._hover_scene_pos, self._zoom_anchor_scene_pos, self._focus_scene_pos):
+            resolved = self._grid_position_for_scene_pos(candidate)
+            if resolved is not None:
+                return resolved
+        resolved = self._grid_position_for_scene_pos(self._viewport_center_scene_pos())
+        if resolved is not None:
+            return resolved
+        return max(0.0, (self._rows - 1) * 0.5), max(0.0, (self._columns - 1) * 0.5)
+
+    def _prioritized_record_keys(self, *, margin_cells: int = TILE_PREFETCH_MARGIN_CELLS) -> tuple[tuple[tuple[float, float, float, float, tuple[object, ...]], str], ...]:
         if not self._record_by_position or self._columns <= 0 or self._rows <= 0:
             return tuple()
         visible_scene_rect = self.mapToScene(self.viewport().rect()).boundingRect()
@@ -1472,18 +1739,36 @@ class MatrixListWidget(QGraphicsView):
         max_row = min(self._rows - 1, int(math.floor(bottom / span)) + margin)
         if min_column > max_column or min_row > max_row:
             return tuple()
-        center_row = (min_row + max_row) * 0.5
-        center_column = (min_column + max_column) * 0.5
-        candidates: list[tuple[float, str]] = []
+        visible_min_column = max(0, int(math.floor(left / span)))
+        visible_max_column = min(self._columns - 1, int(math.floor(right / span)))
+        visible_min_row = max(0, int(math.floor(top / span)))
+        visible_max_row = min(self._rows - 1, int(math.floor(bottom / span)))
+        focus_row, focus_column = self._active_focus_grid_position()
+        pan_dx, pan_dy = self._pan_bias
+        candidates: list[tuple[tuple[float, float, float, float, tuple[object, ...]], str]] = []
         for row in range(min_row, max_row + 1):
             for column in range(min_column, max_column + 1):
                 record = self._record_by_position.get((row, column))
                 if record is None:
                     continue
-                distance = abs(float(row) - center_row) + abs(float(column) - center_column)
-                candidates.append((distance, str(record.key)))
-        candidates.sort(key=lambda item: (item[0], natural_sort_key(item[1])))
-        return tuple(key for _distance, key in candidates)
+                inside_viewport = visible_min_row <= row <= visible_max_row and visible_min_column <= column <= visible_max_column
+                d_row = float(row) - float(focus_row)
+                d_col = float(column) - float(focus_column)
+                ring = max(abs(d_row), abs(d_col))
+                distance = abs(d_row) + abs(d_col)
+                direction_bias = 0.0
+                if abs(pan_dx) > 0.01 or abs(pan_dy) > 0.01:
+                    direction_bias = -0.01 * ((float(column) - float(focus_column)) * pan_dx + (float(row) - float(focus_row)) * pan_dy)
+                priority = (
+                    0.0 if inside_viewport else 1.0,
+                    float(ring),
+                    float(distance),
+                    float(direction_bias),
+                    natural_sort_key(str(record.key)),
+                )
+                candidates.append((priority, str(record.key)))
+        candidates.sort(key=lambda item: item[0])
+        return tuple(candidates)
 
     def _assign_cached_subpixel_grid(self, item: _MatrixCellItem) -> bool:
         spec = self._subpixel_spec
@@ -1492,8 +1777,18 @@ class MatrixListWidget(QGraphicsView):
         cached = self._subpixel_cache_get(self._subpixel_cache_key_for_record(item.record, spec))
         if cached is None:
             return False
-        item.subpixel_grid = cached
+        self._apply_subpixel_grid_to_item(item, cached, update=False)
         return True
+
+    @staticmethod
+    def _apply_subpixel_grid_to_item(item: _MatrixCellItem, grid: SubpixelGrid, *, update: bool = True) -> None:
+        item.subpixel_grid = grid
+        try:
+            item.record.subpixel_grid = grid
+        except Exception:
+            pass
+        if update:
+            item.update()
 
     def _overlay_record_keys(self) -> set[str]:
         keys = set(self._overview_overlay_keys())
@@ -1510,7 +1805,9 @@ class MatrixListWidget(QGraphicsView):
         item.subpixel_spec = self._subpixel_spec
         item.subpixel_overlay_enabled = self._subpixel_spec is not None
         item.subpixel_grid_provider = self._subpixel_grid_for_record if self._subpixel_spec is not None else None
-        grid = self._subpixel_cache_get(self._subpixel_cache_key_for_record(record, self._subpixel_spec)) if self._subpixel_spec is not None else None
+        grid = None
+        if self._subpixel_spec is not None and self._tile_overlay_visible:
+            grid = self._subpixel_cache_get(self._subpixel_cache_key_for_record(record, self._subpixel_spec))
         if grid is None:
             grid = getattr(record, "subpixel_grid", None)
         if not isinstance(grid, SubpixelGrid) or self._subpixel_spec is None:
@@ -1558,24 +1855,29 @@ class MatrixListWidget(QGraphicsView):
             self._hovered_item = None
         self._scene.removeItem(item)
 
-    def _keys_to_materialize(self) -> set[str]:
+    def _keys_to_materialize(self) -> tuple[str, ...]:
         if not self._virtualized_items_enabled:
-            return set(self._record_positions)
+            return tuple(self._record_positions)
         visible_keys = self._visible_record_keys(margin_cells=MATRIX_ITEM_KEEP_MARGIN_CELLS)
         max_items = max(1, int(MATRIX_MAX_MATERIALIZED_ITEMS))
-        keys = set(visible_keys[:max_items])
-        keys.update(self._overlay_record_keys())
-        return keys
+        ordered_keys = list(visible_keys[:max_items])
+        key_set = set(ordered_keys)
+        for key in self._overlay_record_keys():
+            if key not in key_set:
+                ordered_keys.append(key)
+                key_set.add(key)
+        return tuple(ordered_keys)
 
     def _sync_visible_matrix_items(self, *, force: bool = False) -> None:
         if not self._virtualized_items_enabled:
             return
         keep_keys = self._keys_to_materialize()
-        for key in sorted(keep_keys, key=natural_sort_key):
+        keep_key_set = set(keep_keys)
+        for key in keep_keys:
             self._ensure_item_for_key(key)
         overlay_keys = self._overlay_record_keys()
         for key in list(self._item_by_key):
-            if key not in keep_keys and key not in overlay_keys:
+            if key not in keep_key_set and key not in overlay_keys:
                 self._remove_matrix_item(key)
         self._sync_overview_layer_visibility(force=True)
 
@@ -1591,10 +1893,13 @@ class MatrixListWidget(QGraphicsView):
                 continue
             if item.subpixel_grid is not None or self._assign_cached_subpixel_grid(item):
                 continue
+            if key in self._tile_futures:
+                continue
             pending.append(key)
             pending_set.add(key)
-        self._pending_tile_keys = pending
-        self._pending_tile_key_set = pending_set
+        existing_pending = [key for key in self._pending_tile_keys if key not in pending_set and key in self._item_by_key]
+        self._pending_tile_keys = deque(pending + existing_pending)
+        self._pending_tile_key_set = set(self._pending_tile_keys)
         self._tile_load_generation = generation
         if self._pending_tile_keys:
             self._tile_load_timer.start(0)
@@ -1609,28 +1914,99 @@ class MatrixListWidget(QGraphicsView):
             self._pending_tile_key_set.clear()
             return
         visible_keys = set(self._visible_record_keys(margin_cells=TILE_PREFETCH_MARGIN_CELLS))
-        started = time.perf_counter()
+        submitted = 0
         processed = 0
-        while self._pending_tile_keys and processed < TILE_LOAD_MAX_PER_SLICE:
-            if (time.perf_counter() - started) * 1000.0 >= TILE_LOAD_SLICE_BUDGET_MS:
-                break
-            key = self._pending_tile_keys.pop(0)
+        slice_started = time.perf_counter()
+        while (
+            self._pending_tile_keys
+            and len(self._tile_futures) < SUBPIXEL_GRID_MAX_IN_FLIGHT
+            and submitted < TILE_LOAD_MAX_PER_SLICE
+            and processed < TILE_LOAD_MAX_KEYS_PER_SLICE
+            and (time.perf_counter() - slice_started) * 1000.0 < TILE_LOAD_SLICE_BUDGET_MS
+        ):
+            key = self._pending_tile_keys.popleft()
             self._pending_tile_key_set.discard(key)
+            processed += 1
             if key not in visible_keys:
                 continue
             item = self._item_by_key.get(key)
             if item is None or item.subpixel_grid is not None or self._assign_cached_subpixel_grid(item):
                 continue
-            grid = self._subpixel_grid_for_record(item.record)
-            if self._tile_load_generation != self._tile_request_generation:
-                return
-            if grid is None:
+            spec = self._subpixel_spec
+            if spec is None:
                 continue
-            item.subpixel_grid = grid
-            item.update()
-            processed += 1
+            cache_key = self._subpixel_cache_key_for_record(item.record, spec)
+            disk_cached = _load_subpixel_grid_from_disk(cache_key)
+            if disk_cached is not None:
+                self._tile_disk_cache_hits += 1
+                self._subpixel_cache_put(cache_key, disk_cached)
+                self._apply_subpixel_grid_to_item(item, disk_cached)
+                continue
+            future = self._tile_executor.submit(
+                _build_subpixel_grid_for_record,
+                item.record,
+                spec,
+                aggregation=self._subpixel_aggregation,
+                metric_key=self._metric_key,
+                comparison_mode=self._subpixel_comparison_mode,
+            )
+            self._tile_futures[key] = (int(self._tile_load_generation or 0), cache_key, future)
+            self._tile_jobs_submitted += 1
+            submitted += 1
+        if self._tile_futures and not self._tile_result_timer.isActive():
+            self._tile_result_timer.start()
         if self._pending_tile_keys:
             self._tile_load_timer.start(0)
+
+    def _poll_tile_futures(self) -> None:
+        if not self._tile_futures:
+            self._tile_result_timer.stop()
+            return
+        for key, (generation, cache_key, future) in list(self._tile_futures.items()):
+            if not future.done():
+                continue
+            self._tile_futures.pop(key, None)
+            if generation != self._tile_request_generation or generation != self._tile_load_generation:
+                self._tile_jobs_discarded += 1
+                continue
+            try:
+                grid = future.result()
+            except Exception:
+                self._tile_jobs_discarded += 1
+                continue
+            if not isinstance(grid, SubpixelGrid):
+                self._tile_jobs_discarded += 1
+                continue
+            self._subpixel_cache_put(cache_key, grid)
+            _store_subpixel_grid_to_disk(cache_key, grid)
+            item = self._item_by_key.get(key)
+            if item is None:
+                self._tile_jobs_discarded += 1
+                continue
+            self._apply_subpixel_grid_to_item(item, grid)
+            self._tile_jobs_completed += 1
+        if not self._tile_futures:
+            self._tile_result_timer.stop()
+        if self._pending_tile_keys and self._tile_load_generation == self._tile_request_generation:
+            self._tile_load_timer.start(0)
+
+    def tile_debug_stats(self) -> dict[str, int | str]:
+        return {
+            "lod_band": str(self._active_lod_band),
+            "materialized_items": int(len(self._item_by_key)),
+            "records": int(len(self._records)),
+            "ram_cache_items": int(len(self._subpixel_grid_cache)),
+            "ram_cache_hits": int(self._tile_cache_hits),
+            "disk_cache_hits": int(self._tile_disk_cache_hits),
+            "cache_misses": int(self._tile_cache_misses),
+            "pending_tile_keys": int(len(self._pending_tile_keys)),
+            "in_flight_tile_jobs": int(len(self._tile_futures)),
+            "tile_jobs_submitted": int(self._tile_jobs_submitted),
+            "tile_jobs_completed": int(self._tile_jobs_completed),
+            "tile_jobs_discarded": int(self._tile_jobs_discarded),
+            "focus_row": int(round(self._active_focus_grid_position()[0])),
+            "focus_column": int(round(self._active_focus_grid_position()[1])),
+        }
 
     def _sort_records(self, records: list[FrameRecord], sort_mode: str) -> list[FrameRecord]:
         mode = str(sort_mode or "name")
@@ -1653,6 +2029,12 @@ class MatrixListWidget(QGraphicsView):
         factor = 1.15 if delta_y > 0 else (1.0 / 1.15)
         next_scale = self.transform().m11() * factor
         if MATRIX_MIN_SCALE <= next_scale <= MATRIX_MAX_SCALE:
+            try:
+                self._zoom_anchor_scene_pos = self.mapToScene(event.position().toPoint())
+                self._set_focus_scene_pos(self._zoom_anchor_scene_pos, schedule=False)
+            except Exception:
+                self._zoom_anchor_scene_pos = self._viewport_center_scene_pos()
+                self._set_focus_scene_pos(self._zoom_anchor_scene_pos, schedule=False)
             self.scale(factor, factor)
             self._emit_overview_state()
         event.accept()
@@ -1663,6 +2045,14 @@ class MatrixListWidget(QGraphicsView):
             self._update_tile_lod()
             return
         super().wheelEvent(event)
+
+    def closeEvent(self, event) -> None:
+        self._invalidate_tile_requests()
+        try:
+            self._tile_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -1730,6 +2120,7 @@ class MatrixListWidget(QGraphicsView):
         if self._pan_active and self._pan_start is not None:
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
+            self._pan_bias = (-float(delta.x()) / max(1.0, float(self.transform().m11())), -float(delta.y()) / max(1.0, float(self.transform().m11())))
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(delta.x()))
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(delta.y()))
             self._emit_overview_state()
@@ -1737,6 +2128,8 @@ class MatrixListWidget(QGraphicsView):
             return
         item = self._item_for_view_pos(event.pos())
         if item is not None:
+            self._hover_scene_pos = self.mapToScene(event.pos())
+            self._hover_prefetch_timer.start()
             selection = self._tile_selection_for_cell(item, event.pos())
             if selection is not None:
                 self._set_hover_tile_selection(selection)
@@ -1747,6 +2140,8 @@ class MatrixListWidget(QGraphicsView):
                 self._set_hover_item(item)
                 QToolTip.showText(event.globalPosition().toPoint(), self._hover_text(item.record), self.viewport())
         else:
+            self._hover_scene_pos = None
+            self._hover_prefetch_timer.stop()
             self._set_hover_tile_selection(None)
             self._set_hover_item(None)
             QToolTip.hideText()
@@ -1762,17 +2157,21 @@ class MatrixListWidget(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event) -> None:
+        self._hover_scene_pos = None
+        self._hover_prefetch_timer.stop()
         self._set_hover_item(None)
         QToolTip.hideText()
         super().leaveEvent(event)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._clear_visible_record_key_cache()
         self._emit_overview_state()
         self._update_tile_lod()
 
     def _rebuild_scene(self, records: list[FrameRecord]) -> None:
         self._invalidate_tile_requests()
+        self._clear_visible_record_key_cache()
         self._records = list(records)
         ready_scores = [float(record.score) for record in self._records if bool(getattr(record, "score_ready", False))]
         self._auto_color_window_low, self._auto_color_window_high = compute_auto_color_window(ready_scores)
@@ -1831,11 +2230,18 @@ class MatrixListWidget(QGraphicsView):
         self._update_tile_lod(force=True)
 
     def _build_overview_image(self, placements: list[tuple[FrameRecord, int, int]]) -> QImage:
-        image = QImage(max(1, self._columns), max(1, self._rows), QImage.Format.Format_RGB888)
-        image.fill(MATRIX_BACKGROUND_ALT)
+        width = max(1, int(self._columns))
+        height = max(1, int(self._rows))
+        background = MATRIX_BACKGROUND_ALT
+        pixels = np.empty((height, width, 3), dtype=np.uint8)
+        pixels[:, :, 0] = int(background.red())
+        pixels[:, :, 1] = int(background.green())
+        pixels[:, :, 2] = int(background.blue())
         for record, row, column in placements:
-            image.setPixelColor(column, row, self._background_color_for_record(record))
-        return image
+            if 0 <= int(row) < height and 0 <= int(column) < width:
+                color = self._background_color_for_record(record)
+                pixels[int(row), int(column)] = (int(color.red()), int(color.green()), int(color.blue()))
+        return QImage(pixels.data, width, height, int(pixels.strides[0]), QImage.Format.Format_RGB888).copy()
 
     def _matrix_scene_rect(self) -> QRectF:
         matrix_width = self._columns * (self._cell_size + self._gap)
@@ -2018,18 +2424,21 @@ class MatrixListWidget(QGraphicsView):
         if active_spec is None:
             return False
         zoom_level = max(0.01, abs(float(self.transform().m11())))
+        threshold = SUBPIXEL_VISIBILITY_EXIT_THRESHOLD if self._tile_overlay_visible else self._tile_zoom_threshold
         probe_rect = QRectF(0.0, 0.0, float(self._cell_size), float(self._cell_size))
         return _subpixel_overlay_visible_for_rect(
             probe_rect,
             active_spec,
             zoom_level,
-            zoom_threshold=self._tile_zoom_threshold,
+            zoom_threshold=threshold,
         )
 
     def _update_tile_lod(self, *, force: bool = False) -> None:
         show_tiles = self._subpixel_overlay_visible()
         previous_visibility = self._tile_overlay_visible
         previous_lod_band = self._active_lod_band
+        if show_tiles and self._focus_scene_pos is None:
+            self._set_focus_scene_pos(self._zoom_anchor_scene_pos or self._viewport_center_scene_pos(), schedule=False)
         self._tile_overlay_visible = show_tiles
         if not show_tiles:
             self._set_hover_tile_selection(None)
@@ -2040,7 +2449,10 @@ class MatrixListWidget(QGraphicsView):
             self.viewport().update()
         self._sync_visible_matrix_items()
         if show_tiles:
-            self._schedule_visible_tile_request(immediate=force or show_tiles != previous_visibility or lod_changed)
+            self._schedule_visible_tile_request(
+                immediate=force or show_tiles != previous_visibility or lod_changed,
+                preserve_generation=show_tiles == previous_visibility and not lod_changed and not force,
+            )
         else:
             self._invalidate_tile_requests()
 

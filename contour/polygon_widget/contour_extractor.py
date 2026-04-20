@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import acos, degrees
+from math import acos, degrees, pi
 
 import cv2
 import numpy as np
@@ -36,6 +36,7 @@ class _IntermediateContour:
     bbox: tuple[int, int, int, int]
     solidity: float
     extent: float
+    output_bbox: tuple[int, int, int, int] | None = None
 
 
 def _depth(index: int, hierarchy: np.ndarray, cache: dict[int, int]) -> int:
@@ -86,12 +87,65 @@ def _suppress_overlapping_vias(polygons: list[PolygonData]) -> list[PolygonData]
     return reindexed
 
 
+def _centered_bbox(
+    bbox: tuple[int, int, int, int],
+    target_width: int,
+    target_height: int,
+) -> tuple[int, int, int, int]:
+    x_coord, y_coord, width, height = bbox
+    center_x = x_coord + width / 2.0
+    center_y = y_coord + height / 2.0
+    left = int(round(center_x - target_width / 2.0))
+    top = int(round(center_y - target_height / 2.0))
+    return (left, top, max(1, int(target_width)), max(1, int(target_height)))
+
+
+def _size_matches_with_tolerance(actual: int, target: int) -> bool:
+    tolerance = max(2, int(round(target * 0.25)))
+    return abs(actual - target) <= tolerance
+
+
+def _aspect_matches_with_tolerance(
+    bbox_width: int,
+    bbox_height: int,
+    target_width: int,
+    target_height: int,
+) -> bool:
+    actual_aspect = bbox_width / max(1, bbox_height)
+    target_aspect = target_width / max(1, target_height)
+    return abs(actual_aspect - target_aspect) / max(target_aspect, 1e-6) <= 0.15
+
+
+def _matched_fixed_via_bbox(
+    bbox: tuple[int, int, int, int],
+    config: ContourExtractionSettings,
+) -> tuple[int, int, int, int] | None:
+    size_pairs = list(zip(config.fixed_via_widths, config.fixed_via_heights, strict=False))
+    if not size_pairs:
+        return bbox if not config.fixed_via_widths and not config.fixed_via_heights else None
+
+    bbox_width = int(bbox[2])
+    bbox_height = int(bbox[3])
+    best_match: tuple[float, int, int] | None = None
+    for target_width, target_height in size_pairs:
+        if (
+            _size_matches_with_tolerance(bbox_width, target_width)
+            and _size_matches_with_tolerance(bbox_height, target_height)
+            and _aspect_matches_with_tolerance(bbox_width, bbox_height, target_width, target_height)
+        ):
+            score = (abs(bbox_width - target_width) / max(1, target_width)) + (
+                abs(bbox_height - target_height) / max(1, target_height)
+            )
+            if best_match is None or score < best_match[0]:
+                best_match = (score, target_width, target_height)
+    if best_match is None:
+        return None
+    return _centered_bbox(bbox, best_match[1], best_match[2])
+
+
 def _matches_via_size_constraints(bbox_width: int, bbox_height: int, config: ContourExtractionSettings) -> bool:
     if config.via_size_mode == "fixed":
-        size_pairs = list(zip(config.fixed_via_widths, config.fixed_via_heights, strict=False))
-        if not size_pairs:
-            return not config.fixed_via_widths and not config.fixed_via_heights
-        return (bbox_width, bbox_height) in size_pairs
+        return _matched_fixed_via_bbox((0, 0, bbox_width, bbox_height), config) is not None
 
     if bbox_width < config.min_via_width:
         return False
@@ -102,6 +156,16 @@ def _matches_via_size_constraints(bbox_width: int, bbox_height: int, config: Con
     if config.max_via_height is not None and bbox_height > config.max_via_height:
         return False
     return True
+
+
+def _via_roundness_score(contour: np.ndarray, bbox_width: int, bbox_height: int) -> float:
+    contour_area = abs(float(cv2.contourArea(contour)))
+    contour_perimeter = float(cv2.arcLength(contour, True))
+    if contour_area <= 0.0 or contour_perimeter <= 0.0:
+        return 0.0
+    circularity = 100.0 * (4.0 * pi * contour_area / max(1e-6, contour_perimeter * contour_perimeter))
+    aspect_roundness = 100.0 * min(bbox_width, bbox_height) / max(1, max(bbox_width, bbox_height))
+    return max(0.0, min(100.0, circularity, aspect_roundness))
 
 
 def _nearest_contour_index(points: np.ndarray, target: np.ndarray) -> int:
@@ -212,9 +276,16 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
         if config.max_bbox_height is not None and bbox_height > config.max_bbox_height:
             continue
 
+        output_bbox: tuple[int, int, int, int] | None = None
         if config.object_type == "via" or config.output_mode == "box":
             if not _matches_via_size_constraints(bbox_width, bbox_height, config):
                 continue
+            if _via_roundness_score(contour, bbox_width, bbox_height) < config.via_min_roundness:
+                continue
+            if config.via_size_mode == "fixed":
+                output_bbox = _matched_fixed_via_bbox(bbox, config)
+                if output_bbox is None:
+                    continue
 
         aspect_ratio = float(bbox_width / max(1, bbox_height))
         if aspect_ratio < config.min_aspect_ratio:
@@ -268,6 +339,7 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
                 bbox=bbox,
                 solidity=solidity,
                 extent=extent,
+                output_bbox=output_bbox,
             )
         )
 
@@ -284,7 +356,7 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
         polygon_perimeter = intermediate.perimeter
         polygon_bbox = intermediate.bbox
         if config.object_type == "via" or config.output_mode == "box":
-            polygon_points = _bbox_box_points(intermediate.bbox)
+            polygon_points = _bbox_box_points(intermediate.output_bbox or intermediate.bbox)
             polygon_area, polygon_perimeter, polygon_bbox = compute_polygon_metrics(polygon_points)
             shape_hint = "box"
             category = "via"

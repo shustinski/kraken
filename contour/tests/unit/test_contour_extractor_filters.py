@@ -53,6 +53,44 @@ class ContourExtractorFilterTests(unittest.TestCase):
         self.assertEqual(by_solidity, [])
         self.assertEqual(by_extent, [])
 
+    def test_via_profile_filters_by_roundness(self) -> None:
+        mask = np.zeros((96, 96), dtype=np.uint8)
+        cv2.circle(mask, (24, 48), 8, 255, thickness=-1)
+        cv2.rectangle(mask, (50, 44), (85, 48), 255, thickness=-1)
+
+        vias = extract_polygons(
+            mask,
+            ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                min_area=1.0,
+                via_min_roundness=50.0,
+            ),
+        )
+
+        self.assertEqual(len(vias), 1)
+        self.assertLess(vias[0].bbox[0], 40)
+
+    def test_via_roundness_rejects_moderately_elongated_boxes(self) -> None:
+        mask = np.zeros((80, 80), dtype=np.uint8)
+        cv2.circle(mask, (20, 40), 8, 255, thickness=-1)
+        cv2.rectangle(mask, (44, 35), (63, 44), 255, thickness=-1)
+
+        vias = extract_polygons(
+            mask,
+            ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                min_area=1.0,
+                via_min_roundness=60.0,
+            ),
+        )
+
+        self.assertEqual(len(vias), 1)
+        self.assertLess(vias[0].bbox[0], 35)
+
     def test_filters_by_hierarchy_depth_and_hole_ratio(self) -> None:
         mask = np.zeros((96, 96), dtype=np.uint8)
         cv2.rectangle(mask, (10, 10), (80, 80), 255, thickness=-1)

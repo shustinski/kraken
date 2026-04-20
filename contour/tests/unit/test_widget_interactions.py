@@ -133,6 +133,34 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertEqual(process_calls, [True])
 
+    def test_via_roundness_is_included_in_current_settings(self) -> None:
+        self.widget.extraction_profile_combo.setCurrentIndex(self.widget.extraction_profile_combo.findData("vias"))
+        self.widget.via_roundness_spin.setValue(73.0)
+
+        settings = self.widget._current_contour_settings()
+
+        self.assertEqual(settings.extraction_profile, "vias")
+        self.assertEqual(settings.object_type, "via")
+        self.assertEqual(settings.output_mode, "box")
+        self.assertEqual(settings.via_min_roundness, 73.0)
+
+    def test_via_threshold_ui_exposes_only_white_and_black_ranges(self) -> None:
+        self.widget.extraction_profile_combo.setCurrentIndex(self.widget.extraction_profile_combo.findData("vias"))
+        self.widget.via_white_range_min_spin.setValue(150)
+        self.widget.via_white_range_max_spin.setValue(230)
+        self.widget.via_black_range_checkbox.setChecked(True)
+        self.widget.via_black_range_min_spin.setValue(5)
+        self.widget.via_black_range_max_spin.setValue(40)
+
+        settings = self.widget._current_contour_settings()
+
+        self.assertFalse(hasattr(self.widget, "via_threshold_range_widget"))
+        self.assertEqual(settings.via_white_range_min, 150)
+        self.assertEqual(settings.via_white_range_max, 230)
+        self.assertTrue(settings.via_black_range_enabled)
+        self.assertEqual(settings.via_black_range_min, 5)
+        self.assertEqual(settings.via_black_range_max, 40)
+
     def test_build_preview_request_reuses_cached_preprocessed_image_for_same_pipeline(self) -> None:
         pipeline_config = self.widget.get_pipeline()
         preprocessed = np.ones((32, 32), dtype=np.uint8)

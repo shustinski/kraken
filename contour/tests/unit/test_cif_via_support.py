@@ -96,6 +96,26 @@ class CifViaSupportTests(unittest.TestCase):
         self.assertEqual(len(polygons), 1)
         self.assertEqual(polygons[0].bbox[2:], (11, 9))
 
+    def test_via_profile_fixed_size_allows_small_mask_variation(self) -> None:
+        mask = np.zeros((120, 120), dtype=np.uint8)
+        cv2.rectangle(mask, (20, 20), (27, 28), 255, thickness=-1)
+
+        polygons = extract_polygons(
+            mask,
+            ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                via_size_mode="fixed",
+                fixed_via_widths=[7],
+                fixed_via_heights=[7],
+                min_area=10.0,
+            ),
+        )
+
+        self.assertEqual(len(polygons), 1)
+        self.assertEqual(polygons[0].bbox[2:], (8, 8))
+
     def test_via_profile_applies_fixed_size_sets(self) -> None:
         mask = np.zeros((160, 160), dtype=np.uint8)
         cv2.rectangle(mask, (10, 10), (19, 17), 255, thickness=-1)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen, QPolygonF
+from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen
 from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsSimpleTextItem
 
 from .application.processing import DisplaySettings
@@ -15,12 +15,16 @@ class VertexHandleItem(QGraphicsEllipseItem):
         self.vertex_index = vertex_index
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.setZValue(6)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
 
     def update_geometry(self, point: tuple[float, float], size: float, color: QColor) -> None:
         radius = size / 2.0
-        self.setRect(QRectF(point[0] - radius, point[1] - radius, size, size))
+        self.setPos(QPointF(point[0], point[1]))
+        self.setRect(QRectF(-radius, -radius, size, size))
         self.setBrush(QBrush(color))
-        self.setPen(QPen(color, 1.0))
+        pen = QPen(color, 1.0)
+        pen.setCosmetic(True)
+        self.setPen(pen)
 
 
 class EditablePolygonItem(QGraphicsPathItem):
@@ -29,6 +33,7 @@ class EditablePolygonItem(QGraphicsPathItem):
         self.polygon_id = polygon.id
         self._polygon = polygon.clone()
         self._label_item = QGraphicsSimpleTextItem(str(polygon.id), self)
+        self._label_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self._handles: list[VertexHandleItem] = []
         self.setZValue(3)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
@@ -43,11 +48,9 @@ class EditablePolygonItem(QGraphicsPathItem):
     ) -> None:
         self._polygon = polygon.clone()
         path = QPainterPath()
-        qpolygon = QPolygonF([QPointF(x_coord, y_coord) for x_coord, y_coord in self._polygon.points])
-        path.addPolygon(qpolygon)
+        path.addPath(_closed_polygon_path(self._polygon.points))
         for cutout in cutout_polygons or []:
-            cutout_polygon = QPolygonF([QPointF(x_coord, y_coord) for x_coord, y_coord in cutout.points])
-            path.addPolygon(cutout_polygon)
+            path.addPath(_closed_polygon_path(cutout.points))
         path.setFillRule(Qt.FillRule.OddEvenFill)
         self.setPath(path)
 
@@ -61,7 +64,9 @@ class EditablePolygonItem(QGraphicsPathItem):
         else:
             fill.setAlphaF(max(0.0, min(1.0, display_settings.fill_opacity)))
 
-        self.setPen(QPen(outline, max(1.0, display_settings.line_width)))
+        pen = QPen(outline, max(1.0, display_settings.line_width))
+        pen.setCosmetic(True)
+        self.setPen(pen)
         self.setBrush(QBrush(fill))
         self._label_item.setText(str(polygon.id))
         self._label_item.setBrush(QBrush(outline))
@@ -91,3 +96,16 @@ class EditablePolygonItem(QGraphicsPathItem):
     @property
     def polygon(self) -> PolygonData:
         return self._polygon.clone()
+
+
+def _closed_polygon_path(points: list[tuple[float, float]]) -> QPainterPath:
+    path = QPainterPath()
+    if not points:
+        return path
+    first_x, first_y = points[0]
+    path.moveTo(first_x, first_y)
+    for x_coord, y_coord in points[1:]:
+        path.lineTo(x_coord, y_coord)
+    if len(points) > 2:
+        path.closeSubpath()
+    return path

@@ -10,10 +10,26 @@ from ..domain import PolygonData
 
 VIA_SIZE_MODE_RANGE = "range"
 VIA_SIZE_MODE_FIXED = "fixed"
+VIA_CHANNEL_MODE_COLUMNS = "columns"
+VIA_CHANNEL_MODE_GRAYSCALE = "grayscale"
+VIA_CHANNEL_MODE_RED_BLUE = "red_blue"
 
 
 def normalize_via_size_mode(value: Any) -> str:
     return VIA_SIZE_MODE_FIXED if str(value).strip().lower() == VIA_SIZE_MODE_FIXED else VIA_SIZE_MODE_RANGE
+
+
+def normalize_via_channel_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return VIA_CHANNEL_MODE_GRAYSCALE
+    if text == VIA_CHANNEL_MODE_COLUMNS:
+        return VIA_CHANNEL_MODE_COLUMNS
+    if text in {"gray", "grey", "grayscale"}:
+        return VIA_CHANNEL_MODE_GRAYSCALE
+    if text in {"rb", "red_blue", "red-blue", "redblue"}:
+        return VIA_CHANNEL_MODE_RED_BLUE
+    return VIA_CHANNEL_MODE_GRAYSCALE
 
 
 def parse_integer_value_list(payload: Any) -> list[int]:
@@ -120,6 +136,23 @@ class ContourExtractionSettings:
     via_size_mode: str = VIA_SIZE_MODE_RANGE
     fixed_via_widths: list[int] = field(default_factory=list)
     fixed_via_heights: list[int] = field(default_factory=list)
+    via_channel_mode: str = VIA_CHANNEL_MODE_GRAYSCALE
+    via_auto_threshold_enabled: bool = False
+    via_auto_threshold_radius: int = 3
+    via_white_range_enabled: bool = True
+    via_white_range_min: int = 200
+    via_white_range_max: int = 255
+    via_black_range_enabled: bool = False
+    via_black_range_min: int = 0
+    via_black_range_max: int = 30
+    via_white_threshold_enabled: bool = True
+    via_white_threshold: int = 200
+    via_black_threshold_enabled: bool = False
+    via_black_threshold: int = 30
+    via_threshold_range_enabled: bool = False
+    via_threshold_range_min: int = 0
+    via_threshold_range_max: int = 255
+    via_min_roundness: float = 5.0
     min_hierarchy_depth: int = 0
     max_hierarchy_depth: int | None = None
     max_hole_area_ratio: float | None = None
@@ -155,6 +188,14 @@ class ContourExtractionSettings:
             "via_size_mode": normalize_via_size_mode(self.via_size_mode),
             "fixed_via_widths": list(self.fixed_via_widths),
             "fixed_via_heights": list(self.fixed_via_heights),
+            "via_channel_mode": normalize_via_channel_mode(self.via_channel_mode),
+            "via_white_range_enabled": self.via_white_range_enabled,
+            "via_white_range_min": self.via_white_range_min,
+            "via_white_range_max": self.via_white_range_max,
+            "via_black_range_enabled": self.via_black_range_enabled,
+            "via_black_range_min": self.via_black_range_min,
+            "via_black_range_max": self.via_black_range_max,
+            "via_min_roundness": self.via_min_roundness,
             "min_hierarchy_depth": self.min_hierarchy_depth,
             "max_hierarchy_depth": self.max_hierarchy_depth,
             "max_hole_area_ratio": self.max_hole_area_ratio,
@@ -171,6 +212,16 @@ class ContourExtractionSettings:
         max_via_height = payload.get("max_via_height")
         max_hierarchy_depth = payload.get("max_hierarchy_depth")
         max_hole_area_ratio = payload.get("max_hole_area_ratio")
+        white_range_enabled = payload.get("via_white_range_enabled", payload.get("via_white_threshold_enabled", True))
+        white_range_min = payload.get("via_white_range_min", payload.get("via_white_threshold", 200))
+        white_range_max = payload.get("via_white_range_max", 255)
+        black_range_enabled = payload.get("via_black_range_enabled", payload.get("via_black_threshold_enabled", False))
+        black_range_min = payload.get("via_black_range_min", 0)
+        black_range_max = payload.get("via_black_range_max", payload.get("via_black_threshold", 30))
+        if payload.get("via_threshold_range_enabled", False) and "via_white_range_min" not in payload:
+            white_range_enabled = True
+            white_range_min = payload.get("via_threshold_range_min", white_range_min)
+            white_range_max = payload.get("via_threshold_range_max", white_range_max)
         return cls(
             extraction_profile=str(payload.get("extraction_profile", "conductors")),
             object_type=str(payload.get("object_type", "conductor")),
@@ -201,6 +252,23 @@ class ContourExtractionSettings:
             via_size_mode=normalize_via_size_mode(payload.get("via_size_mode", VIA_SIZE_MODE_RANGE)),
             fixed_via_widths=parse_integer_value_list(payload.get("fixed_via_widths")),
             fixed_via_heights=parse_integer_value_list(payload.get("fixed_via_heights")),
+            via_channel_mode=normalize_via_channel_mode(payload.get("via_channel_mode", VIA_CHANNEL_MODE_GRAYSCALE)),
+            via_auto_threshold_enabled=bool(payload.get("via_auto_threshold_enabled", False)),
+            via_auto_threshold_radius=max(1, int(payload.get("via_auto_threshold_radius", 3))),
+            via_white_range_enabled=bool(white_range_enabled),
+            via_white_range_min=max(0, min(255, int(white_range_min))),
+            via_white_range_max=max(0, min(255, int(white_range_max))),
+            via_black_range_enabled=bool(black_range_enabled),
+            via_black_range_min=max(0, min(255, int(black_range_min))),
+            via_black_range_max=max(0, min(255, int(black_range_max))),
+            via_white_threshold_enabled=bool(payload.get("via_white_threshold_enabled", True)),
+            via_white_threshold=max(0, min(255, int(payload.get("via_white_threshold", 200)))),
+            via_black_threshold_enabled=bool(payload.get("via_black_threshold_enabled", False)),
+            via_black_threshold=max(0, min(255, int(payload.get("via_black_threshold", 30)))),
+            via_threshold_range_enabled=bool(payload.get("via_threshold_range_enabled", False)),
+            via_threshold_range_min=max(0, min(255, int(payload.get("via_threshold_range_min", 0)))),
+            via_threshold_range_max=max(0, min(255, int(payload.get("via_threshold_range_max", 255)))),
+            via_min_roundness=max(0.0, float(payload.get("via_min_roundness", 5.0))),
             min_hierarchy_depth=max(0, int(payload.get("min_hierarchy_depth", 0))),
             max_hierarchy_depth=None
             if max_hierarchy_depth in (None, "", 0, 0.0)

@@ -18,6 +18,7 @@ from PyQt6.QtGui import (
     QUndoStack,
 )
 from PyQt6.QtWidgets import (
+    QGraphicsEllipseItem,
     QGraphicsPathItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
@@ -46,6 +47,7 @@ class EditorTool(str, Enum):
     RULER = "ruler"
     ADD_POLYGON = "add_polygon"
     BRUSH = "brush"
+    ADD_VIA = "add_via"
     ADD_VERTEX = "add_vertex"
     DELETE_VERTEX = "delete_vertex"
     MOVE_VERTEX = "move_vertex"
@@ -92,34 +94,73 @@ class PolygonEditorScene(QGraphicsScene):
         self._pending_path_item = QGraphicsPathItem()
         self._pending_path_item.setZValue(10)
         pending_pen = QPen(QColor("#F7B801"), 1.5, Qt.PenStyle.DashLine)
+        pending_pen.setCosmetic(True)
         self._pending_path_item.setPen(pending_pen)
         self._pending_path_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.addItem(self._pending_path_item)
         self._preview_rect_item = QGraphicsPathItem()
         self._preview_rect_item.setZValue(11)
         preview_pen = QPen(QColor("#38BDF8"), 1.5, Qt.PenStyle.DashLine)
+        preview_pen.setCosmetic(True)
         self._preview_rect_item.setPen(preview_pen)
         preview_brush = QColor("#38BDF8")
         preview_brush.setAlpha(48)
         self._preview_rect_item.setBrush(QBrush(preview_brush))
         self.addItem(self._preview_rect_item)
+        self._via_cursor_item = QGraphicsPathItem()
+        self._via_cursor_item.setZValue(12)
+        via_cursor_pen = QPen(QColor("#A78BFA"), 1.5, Qt.PenStyle.DashLine)
+        via_cursor_pen.setCosmetic(True)
+        self._via_cursor_item.setPen(via_cursor_pen)
+        via_cursor_brush = QColor("#A78BFA")
+        via_cursor_brush.setAlpha(42)
+        self._via_cursor_item.setBrush(QBrush(via_cursor_brush))
+        self.addItem(self._via_cursor_item)
+        self._via_cursor_item.hide()
+        self._brush_cursor_item = QGraphicsEllipseItem()
+        self._brush_cursor_item.setZValue(12)
+        brush_cursor_pen = QPen(QColor("#4ADE80"), 1.5, Qt.PenStyle.DashLine)
+        brush_cursor_pen.setCosmetic(True)
+        self._brush_cursor_item.setPen(brush_cursor_pen)
+        self._brush_cursor_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self.addItem(self._brush_cursor_item)
+        self._brush_cursor_item.hide()
         self._measurement_item = QGraphicsPathItem()
-        self._measurement_item.setZValue(12)
+        self._measurement_item.setZValue(13)
         measurement_pen = QPen(QColor("#F59E0B"), 2.0, Qt.PenStyle.DashLine)
+        measurement_pen.setCosmetic(True)
         self._measurement_item.setPen(measurement_pen)
         self._measurement_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.addItem(self._measurement_item)
+        self._measurement_start_marker = QGraphicsEllipseItem()
+        self._measurement_start_marker.setZValue(14)
+        self._measurement_start_marker.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self._measurement_start_marker.setBrush(QBrush(QColor("#F59E0B")))
+        marker_pen = QPen(QColor("#F8FAFC"), 1.0)
+        marker_pen.setCosmetic(True)
+        self._measurement_start_marker.setPen(marker_pen)
+        self.addItem(self._measurement_start_marker)
+        self._measurement_start_marker.hide()
+        self._measurement_end_marker = QGraphicsEllipseItem()
+        self._measurement_end_marker.setZValue(14)
+        self._measurement_end_marker.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self._measurement_end_marker.setBrush(QBrush(QColor("#F59E0B")))
+        self._measurement_end_marker.setPen(marker_pen)
+        self.addItem(self._measurement_end_marker)
+        self._measurement_end_marker.hide()
         self._measurement_label_item = QGraphicsSimpleTextItem()
-        self._measurement_label_item.setZValue(13)
+        self._measurement_label_item.setZValue(15)
         self._measurement_label_item.setBrush(QBrush(QColor("#F8FAFC")))
         self._measurement_label_item.setFlag(QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.addItem(self._measurement_label_item)
         self._measurement_label_item.hide()
         self.setSceneRect(QRectF(0, 0, 1, 1))
 
-    def set_pending_path_width(self, width: float) -> None:
+    def set_pending_path_width(self, width: float, cosmetic: bool | None = None) -> None:
         pen = self._pending_path_item.pen()
         pen.setWidthF(max(1.0, float(width)))
+        if cosmetic is not None:
+            pen.setCosmetic(bool(cosmetic))
         self._pending_path_item.setPen(pen)
 
     def set_image(self, image) -> None:
@@ -312,10 +353,9 @@ class PolygonEditorScene(QGraphicsScene):
         path = QPainterPath()
         path.moveTo(start)
         path.lineTo(end)
-        marker_radius = 2.4
-        path.addEllipse(start, marker_radius, marker_radius)
-        path.addEllipse(end, marker_radius, marker_radius)
         self._measurement_item.setPath(path)
+        self._set_measurement_marker(self._measurement_start_marker, start)
+        self._set_measurement_marker(self._measurement_end_marker, end)
         if label_text:
             self._measurement_label_item.setText(label_text)
             self._measurement_label_item.setPos(_measurement_label_position(start, end))
@@ -325,7 +365,57 @@ class PolygonEditorScene(QGraphicsScene):
 
     def clear_measurement(self) -> None:
         self._measurement_item.setPath(QPainterPath())
+        self._measurement_start_marker.hide()
+        self._measurement_end_marker.hide()
         self._measurement_label_item.hide()
+
+    def set_brush_cursor(self, scene_pos: QPointF | None, thickness: float, visible: bool) -> None:
+        if not visible or scene_pos is None:
+            self._brush_cursor_item.hide()
+            return
+        radius = max(1.0, float(thickness)) / 2.0
+        self._brush_cursor_item.setRect(QRectF(scene_pos.x() - radius, scene_pos.y() - radius, radius * 2.0, radius * 2.0))
+        self._brush_cursor_item.show()
+
+    def set_via_cursor(self, scene_pos: QPointF | None, width: float, height: float, visible: bool) -> None:
+        if not visible or scene_pos is None:
+            self._via_cursor_item.hide()
+            return
+        rect = _centered_rect(scene_pos, width, height)
+        path = QPainterPath()
+        path.addRect(rect)
+        self._via_cursor_item.setPath(path)
+        self._via_cursor_item.show()
+
+    def hide_tool_cursors(self) -> None:
+        self._brush_cursor_item.hide()
+        self._via_cursor_item.hide()
+
+    def add_via_at(self, scene_pos: QPointF, width: float, height: float) -> bool:
+        rect = _centered_rect(scene_pos, width, height).normalized()
+        if rect.width() < 1.0 or rect.height() < 1.0:
+            return False
+        points = [
+            (rect.left(), rect.top()),
+            (rect.right(), rect.top()),
+            (rect.right(), rect.bottom()),
+            (rect.left(), rect.bottom()),
+        ]
+        area, perimeter, bbox = compute_polygon_metrics(points)
+        polygon = PolygonData(
+            id=self._next_polygon_id,
+            points=points,
+            is_hole=False,
+            parent_id=None,
+            category="via",
+            shape_hint="box",
+            area=area,
+            perimeter=perimeter,
+            bbox=bbox,
+        )
+        self.undo_stack.push(AddPolygonCommand(self, polygon))
+        self.select_polygon(polygon.id)
+        return True
 
     def add_rectangle_polygon(self, start: QPointF, end: QPointF, erase: bool = False) -> bool:
         rect = QRectF(start, end).normalized()
@@ -833,6 +923,12 @@ class PolygonEditorScene(QGraphicsScene):
                 best_index = index + 1
         return best_index
 
+    def _set_measurement_marker(self, marker: QGraphicsEllipseItem, point: QPointF) -> None:
+        radius = 3.0
+        marker.setPos(point)
+        marker.setRect(QRectF(-radius, -radius, radius * 2.0, radius * 2.0))
+        marker.show()
+
 
 class PolygonEditorView(QGraphicsView):
     polygonsEdited = pyqtSignal()
@@ -851,11 +947,14 @@ class PolygonEditorView(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setBackgroundBrush(QBrush(QColor("#171B22")))
+        self.setMouseTracking(True)
 
         self._tool = EditorTool.SELECT
         self._polygon_create_mode = PolygonCreateMode.POINTS
         self._brush_mode = BrushMode.FREEFORM
         self._brush_thickness = 12.0
+        self._via_width = 12.0
+        self._via_height = 12.0
         self._delete_vertex_mode = DeleteVertexMode.SINGLE
         self._drag_kind: str | None = None
         self._drag_polygon_id: int | None = None
@@ -886,6 +985,10 @@ class PolygonEditorView(QGraphicsView):
     def set_tool(self, tool: EditorTool) -> None:
         self._tool = tool
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag if tool == EditorTool.PAN else QGraphicsView.DragMode.NoDrag)
+        if tool == EditorTool.ADD_POLYGON:
+            self._editor_scene.set_pending_path_width(1.5, cosmetic=True)
+        elif tool == EditorTool.BRUSH:
+            self._editor_scene.set_pending_path_width(self._brush_thickness, cosmetic=False)
         if tool not in (EditorTool.ADD_POLYGON, EditorTool.BRUSH):
             self._editor_scene.cancel_pending_polygon()
             self._pending_polygon_erases = None
@@ -894,6 +997,7 @@ class PolygonEditorView(QGraphicsView):
         if tool != EditorTool.RULER:
             self._editor_scene.clear_measurement()
             self.rulerMeasurementChanged.emit("")
+        self._update_tool_cursors()
         self.toolChanged.emit(tool)
 
     def set_polygon_create_mode(self, mode: PolygonCreateMode) -> None:
@@ -907,15 +1011,25 @@ class PolygonEditorView(QGraphicsView):
 
     def set_brush_thickness(self, thickness: float) -> None:
         self._brush_thickness = max(1.0, float(thickness))
-        self._editor_scene.set_pending_path_width(self._brush_thickness)
+        if self._tool == EditorTool.BRUSH:
+            self._editor_scene.set_pending_path_width(self._brush_thickness, cosmetic=False)
+        self._update_tool_cursors()
+
+    def set_via_size(self, width: float, height: float) -> None:
+        self._via_width = max(1.0, float(width))
+        self._via_height = max(1.0, float(height))
+        self._update_tool_cursors()
 
     def set_delete_vertex_mode(self, mode: DeleteVertexMode) -> None:
         self._delete_vertex_mode = mode
         self._editor_scene.clear_preview_rect()
 
     def set_image(self, image) -> None:
+        previous_rect = QRectF(self._editor_scene.sceneRect())
         self._editor_scene.set_image(image)
-        self.fit_to_view()
+        previous_was_placeholder = previous_rect.width() <= 1.0 and previous_rect.height() <= 1.0
+        if previous_was_placeholder:
+            self.fit_to_view()
 
     def set_polygons(self, polygons: list[PolygonData]) -> None:
         self._editor_scene.set_polygons(polygons)
@@ -950,10 +1064,25 @@ class PolygonEditorView(QGraphicsView):
         self.undo_stack.redo()
 
     def wheelEvent(self, event) -> None:
-        if event.angleDelta().y() > 0:
-            self.zoom_in()
-        else:
-            self.zoom_out()
+        delta = event.angleDelta()
+        modifiers = event.modifiers()
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            if delta.y() == 0:
+                event.accept()
+                return
+            factor = 1.15 ** (delta.y() / 120.0)
+            self.scale(factor, factor)
+            self._update_tool_cursors()
+            event.accept()
+            return
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            delta_value = delta.x() if delta.x() else delta.y()
+            scrollbar = self.horizontalScrollBar()
+            scrollbar.setValue(scrollbar.value() - delta_value)
+            event.accept()
+            return
+        super().wheelEvent(event)
+        self._update_tool_cursors()
         event.accept()
 
     def mousePressEvent(self, event) -> None:
@@ -1011,8 +1140,14 @@ class PolygonEditorView(QGraphicsView):
             self._drag_start_scene_pos = scene_pos
             self._drag_erases = event.button() == Qt.MouseButton.RightButton
             self._editor_scene.start_pending_polygon()
-            self._editor_scene.set_pending_path_width(self._brush_thickness)
+            self._editor_scene.set_pending_path_width(self._brush_thickness, cosmetic=False)
             self._append_brush_point(scene_pos)
+            event.accept()
+            return
+
+        if self._tool == EditorTool.ADD_VIA and event.button() == Qt.MouseButton.LeftButton:
+            self._editor_scene.add_via_at(scene_pos, self._via_width, self._via_height)
+            self._update_tool_cursors()
             event.accept()
             return
 
@@ -1077,6 +1212,7 @@ class PolygonEditorView(QGraphicsView):
     def mouseMoveEvent(self, event) -> None:
         scene_pos = self.mapToScene(event.position().toPoint())
         self._last_pointer_scene_pos = scene_pos
+        self._update_tool_cursors()
         if self._tool == EditorTool.PAN:
             super().mouseMoveEvent(event)
             return
@@ -1187,6 +1323,7 @@ class PolygonEditorView(QGraphicsView):
             self._drag_origin_points = None
             self._drag_start_scene_pos = None
             self._drag_erases = False
+            self._update_tool_cursors()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -1219,6 +1356,7 @@ class PolygonEditorView(QGraphicsView):
             self._drag_kind = None
             self._drag_erases = False
             self._pending_polygon_erases = None
+            self._update_tool_cursors()
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete:
@@ -1244,6 +1382,10 @@ class PolygonEditorView(QGraphicsView):
             return
         super().keyReleaseEvent(event)
 
+    def leaveEvent(self, event) -> None:
+        self._editor_scene.hide_tool_cursors()
+        super().leaveEvent(event)
+
     def _scene_tolerance(self, pixels: int) -> float:
         start = self.mapToScene(QPoint(0, 0))
         end = self.mapToScene(QPoint(pixels, 0))
@@ -1256,6 +1398,19 @@ class PolygonEditorView(QGraphicsView):
             if last_point is not None:
                 target = _snap_to_45(last_point, scene_pos)
         self._editor_scene.append_pending_point(target)
+
+    def _update_tool_cursors(self) -> None:
+        self._editor_scene.set_brush_cursor(
+            self._last_pointer_scene_pos,
+            self._brush_thickness,
+            self._tool == EditorTool.BRUSH,
+        )
+        self._editor_scene.set_via_cursor(
+            self._last_pointer_scene_pos,
+            self._via_width,
+            self._via_height,
+            self._tool == EditorTool.ADD_VIA,
+        )
 
     def _finish_pending_polygon(self) -> None:
         if self._pending_polygon_erases:
@@ -1314,6 +1469,17 @@ def _snap_to_45(start: QPointF, target: QPointF) -> QPointF:
     snapped_angle = round(angle / (pi / 4.0)) * (pi / 4.0)
     distance = hypot(dx, dy)
     return QPointF(start.x() + cos(snapped_angle) * distance, start.y() + sin(snapped_angle) * distance)
+
+
+def _centered_rect(center: QPointF, width: float, height: float) -> QRectF:
+    safe_width = max(1.0, float(width))
+    safe_height = max(1.0, float(height))
+    return QRectF(
+        center.x() - safe_width / 2.0,
+        center.y() - safe_height / 2.0,
+        safe_width,
+        safe_height,
+    )
 
 
 def _measurement_label_position(start: QPointF, end: QPointF) -> QPointF:

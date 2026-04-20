@@ -9,12 +9,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
 from polygon_widget.application.processing import ImageProcessingState
 from polygon_widget.application.services.workspace_session import WorkspaceLoadResult
 from polygon_widget.domain import PolygonData, compute_polygon_metrics
-from polygon_widget.graphics_view import EditorTool, PolygonEditorView
+from polygon_widget.graphics_view import EditorTool, PolygonCreateMode, PolygonEditorView
+import polygon_widget.widget as widget_module
 from polygon_widget.widget import PolygonExtractionWidget
 
 
@@ -244,6 +245,238 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         dy = snapped.y() - start.y()
         self.assertAlmostEqual(abs(dx), abs(dy), delta=1e-6)
 
+    def test_right_button_brush_erases_existing_polygon_area(self) -> None:
+        self.view.set_tool(EditorTool.BRUSH)
+        initial_area = sum(polygon.area for polygon in self.view.get_polygons())
+        start_pos = self.view.mapFromScene(QPointF(50.0, 20.0))
+        end_pos = self.view.mapFromScene(QPointF(50.0, 80.0))
+
+        QTest.mousePress(
+            self.view.viewport(),
+            Qt.MouseButton.RightButton,
+            Qt.KeyboardModifier.NoModifier,
+            start_pos,
+        )
+        QTest.mouseMove(self.view.viewport(), end_pos)
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.RightButton,
+            Qt.KeyboardModifier.NoModifier,
+            end_pos,
+        )
+        self._app.processEvents()
+
+        final_area = sum(polygon.area for polygon in self.view.get_polygons())
+        self.assertLess(final_area, initial_area)
+
+    def test_right_button_rectangle_polygon_erases_existing_polygon_area(self) -> None:
+        self.view.set_tool(EditorTool.ADD_POLYGON)
+        self.view.set_polygon_create_mode(PolygonCreateMode.RECTANGLE)
+        initial_area = sum(polygon.area for polygon in self.view.get_polygons())
+        start_pos = self.view.mapFromScene(QPointF(42.0, 20.0))
+        end_pos = self.view.mapFromScene(QPointF(58.0, 80.0))
+
+        QTest.mousePress(
+            self.view.viewport(),
+            Qt.MouseButton.RightButton,
+            Qt.KeyboardModifier.NoModifier,
+            start_pos,
+        )
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.RightButton,
+            Qt.KeyboardModifier.NoModifier,
+            end_pos,
+        )
+        self._app.processEvents()
+
+        final_area = sum(polygon.area for polygon in self.view.get_polygons())
+        self.assertLess(final_area, initial_area)
+
+    def test_closed_brush_contour_preserves_empty_center(self) -> None:
+        self.view.set_polygons([])
+        points = [
+            (30.0, 30.0),
+            (70.0, 30.0),
+            (70.0, 70.0),
+            (30.0, 70.0),
+            (30.0, 30.0),
+        ]
+
+        changed = self.view._editor_scene.add_brush_stroke(points, thickness=10.0)
+        self._app.processEvents()
+
+        self.assertTrue(changed)
+        polygons = self.view.get_polygons()
+        self.assertTrue(any(polygon.is_hole for polygon in polygons))
+        outer_item = next(
+            item
+            for item in self.view._editor_scene._polygon_items.values()
+            if not item.polygon.is_hole
+        )
+        self.assertFalse(outer_item.contains(QPointF(50.0, 50.0)))
+
+    def test_can_draw_polygon_inside_existing_cutout(self) -> None:
+        self.view.set_polygons([])
+        ring_points = [
+            (30.0, 30.0),
+            (70.0, 30.0),
+            (70.0, 70.0),
+            (30.0, 70.0),
+            (30.0, 30.0),
+        ]
+        self.view._editor_scene.add_brush_stroke(ring_points, thickness=10.0)
+
+        added = self.view._editor_scene.add_rectangle_polygon(QPointF(44.0, 44.0), QPointF(56.0, 56.0))
+        self._app.processEvents()
+
+        self.assertTrue(added)
+        polygons = self.view.get_polygons()
+        self.assertEqual(sum(1 for polygon in polygons if polygon.is_hole), 1)
+        self.assertGreaterEqual(sum(1 for polygon in polygons if not polygon.is_hole), 2)
+        self.assertTrue(
+            any(
+                not polygon.is_hole and polygon.bbox[0] >= 44 and polygon.bbox[1] >= 44
+                for polygon in polygons
+            )
+        )
+
+    def test_brush_crossing_inner_contour_updates_hole_geometry(self) -> None:
+        self.view.set_polygons([])
+        ring_points = [
+            (30.0, 30.0),
+            (70.0, 30.0),
+            (70.0, 70.0),
+            (30.0, 70.0),
+            (30.0, 30.0),
+        ]
+        self.view._editor_scene.add_brush_stroke(ring_points, thickness=10.0)
+        before_holes = [polygon.clone() for polygon in self.view.get_polygons() if polygon.is_hole]
+
+        changed = self.view._editor_scene.add_brush_stroke(
+            [(28.0, 50.0), (72.0, 50.0)],
+            thickness=12.0,
+        )
+        self._app.processEvents()
+
+        self.assertTrue(changed)
+        after_holes = [polygon.clone() for polygon in self.view.get_polygons() if polygon.is_hole]
+        self.assertNotEqual(
+            [(polygon.bbox, polygon.points) for polygon in before_holes],
+            [(polygon.bbox, polygon.points) for polygon in after_holes],
+        )
+
+    def test_brush_editing_outer_ring_keeps_inner_object_if_not_touched(self) -> None:
+        self.view.set_polygons([])
+        ring_points = [
+            (30.0, 30.0),
+            (70.0, 30.0),
+            (70.0, 70.0),
+            (30.0, 70.0),
+            (30.0, 30.0),
+        ]
+        self.view._editor_scene.add_brush_stroke(ring_points, thickness=10.0)
+        self.view._editor_scene.add_rectangle_polygon(QPointF(44.0, 44.0), QPointF(56.0, 56.0))
+        before_polygons = self.view.get_polygons()
+
+        changed = self.view._editor_scene.add_brush_stroke(
+            [(20.0, 28.0), (80.0, 28.0)],
+            thickness=8.0,
+        )
+        self._app.processEvents()
+
+        self.assertTrue(changed)
+        after_polygons = self.view.get_polygons()
+        self.assertGreaterEqual(sum(1 for polygon in after_polygons if not polygon.is_hole), 2)
+        self.assertTrue(
+            any(
+                not polygon.is_hole and polygon.bbox[0] >= 44 and polygon.bbox[1] >= 44
+                for polygon in after_polygons
+            )
+        )
+        self.assertGreaterEqual(len(after_polygons), len(before_polygons))
+
+    def test_repeated_outer_edits_do_not_expand_untouched_inner_contour(self) -> None:
+        self.view.set_polygons([])
+        ring_points = [
+            (30.0, 30.0),
+            (70.0, 30.0),
+            (70.0, 70.0),
+            (30.0, 70.0),
+            (30.0, 30.0),
+        ]
+        self.view._editor_scene.add_brush_stroke(ring_points, thickness=10.0)
+        initial_holes = [polygon.clone() for polygon in self.view.get_polygons() if polygon.is_hole]
+        self.assertEqual(len(initial_holes), 1)
+
+        for y_coord in (28.0, 26.0, 24.0):
+            changed = self.view._editor_scene.add_brush_stroke(
+                [(20.0, y_coord), (80.0, y_coord)],
+                thickness=4.0,
+            )
+            self.assertTrue(changed)
+
+        final_holes = [polygon.clone() for polygon in self.view.get_polygons() if polygon.is_hole]
+        self.assertEqual(len(final_holes), 1)
+        self.assertEqual(final_holes[0].bbox, initial_holes[0].bbox)
+        self.assertEqual(final_holes[0].points, initial_holes[0].points)
+
+    def test_repeated_inner_edge_edits_do_not_expand_hole_bbox(self) -> None:
+        self.view.set_polygons([])
+        ring_points = [
+            (30.0, 30.0),
+            (90.0, 30.0),
+            (90.0, 90.0),
+            (30.0, 90.0),
+            (30.0, 30.0),
+        ]
+        self.view._editor_scene.add_brush_stroke(ring_points, thickness=10.0)
+        initial_holes = [polygon.clone() for polygon in self.view.get_polygons() if polygon.is_hole]
+        self.assertEqual(len(initial_holes), 1)
+        initial_bbox = initial_holes[0].bbox
+
+        for _index in range(4):
+            changed = self.view._editor_scene.add_brush_stroke(
+                [(20.0, 34.0), (100.0, 34.0)],
+                thickness=2.0,
+            )
+            self.assertTrue(changed)
+
+        final_holes = [polygon.clone() for polygon in self.view.get_polygons() if polygon.is_hole]
+        self.assertEqual(len(final_holes), 1)
+        self.assertGreaterEqual(final_holes[0].bbox[0], initial_bbox[0])
+        self.assertGreaterEqual(final_holes[0].bbox[1], initial_bbox[1])
+        self.assertLessEqual(final_holes[0].bbox[2], initial_bbox[2])
+        self.assertLessEqual(final_holes[0].bbox[3], initial_bbox[3])
+
+    def test_cutting_shape_with_hole_keeps_center_empty(self) -> None:
+        self.view.set_polygons([])
+        ring_points = [
+            (30.0, 30.0),
+            (70.0, 30.0),
+            (70.0, 70.0),
+            (30.0, 70.0),
+            (30.0, 30.0),
+        ]
+        self.view._editor_scene.add_brush_stroke(ring_points, thickness=10.0)
+
+        changed = self.view._editor_scene.add_rectangle_polygon(
+            QPointF(22.0, 38.0),
+            QPointF(30.0, 62.0),
+            erase=True,
+        )
+        self._app.processEvents()
+
+        self.assertTrue(changed)
+        polygons = self.view.get_polygons()
+        self.assertTrue(any(polygon.is_hole for polygon in polygons))
+        outer_item = next(
+            item
+            for item in self.view._editor_scene._polygon_items.values()
+            if not item.polygon.is_hole
+        )
+        self.assertFalse(outer_item.contains(QPointF(50.0, 50.0)))
+
 
 class PolygonExtractionWidgetColorPickTests(unittest.TestCase):
     @classmethod
@@ -279,6 +512,129 @@ class PolygonExtractionWidgetColorPickTests(unittest.TestCase):
         entries = self.widget._pipeline.steps[0].parameters.get("selected_colors", [])
         self.assertEqual(entries, [{"rgb": [16, 32, 48], "enabled": True}])
         self.assertEqual(self.widget._color_pick_pipeline_row, 0)
+
+
+class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = _app()
+
+    def setUp(self) -> None:
+        self.widget = PolygonExtractionWidget()
+
+    def tearDown(self) -> None:
+        self.widget.close()
+        self.widget.deleteLater()
+        self._app.processEvents()
+
+    def test_switching_frames_autosaves_loaded_cif_when_polygons_changed(self) -> None:
+        first_path = "frame_1.png"
+        second_path = "frame_2.png"
+        first_polygon = _rectangle_polygon(4, 4, 20, 20)
+        changed_polygon = _rectangle_polygon(4, 4, 24, 20)
+        first_state = ImageProcessingState(
+            image_path=first_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[changed_polygon.clone()],
+            loaded_cif_path="frame_1.cif",
+            reference_polygons=[first_polygon.clone()],
+        )
+        second_state = ImageProcessingState(
+            image_path=second_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[],
+            reference_polygons=[],
+        )
+        self.widget._workspace._state_cache = {
+            first_path: first_state,
+            second_path: second_state,
+        }
+        self.widget._workspace._current_image_path = first_path
+        self.widget._workspace._current_state = first_state
+        self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
+        self.widget.polygon_editor.set_polygons([changed_polygon.clone()])
+        self.widget.image_list.clear()
+        for path in (first_path, second_path):
+            item = QListWidgetItem(path)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.widget.image_list.addItem(item)
+        self.widget._refresh_image_list_item_states()
+        first_item = self.widget.image_list.item(0)
+        second_item = self.widget.image_list.item(1)
+
+        saved_calls: list[tuple[str, str, tuple[int, int], int]] = []
+        original_save_polygons_cif = widget_module.save_polygons_cif
+        original_load_image = self.widget.load_image
+        try:
+            widget_module.save_polygons_cif = (
+                lambda path, image_path, polygons, image_size, layer_name="NM": saved_calls.append(
+                    (str(path), image_path, image_size, len(polygons))
+                )
+            )
+            self.widget.load_image = lambda path: None  # type: ignore[method-assign]
+
+            self.widget._on_image_item_changed(second_item, first_item)
+        finally:
+            widget_module.save_polygons_cif = original_save_polygons_cif
+            self.widget.load_image = original_load_image  # type: ignore[method-assign]
+
+        self.assertEqual(saved_calls, [("frame_1.cif", first_path, (32, 32), 1)])
+        self.assertEqual(first_item.background().color().name().lower(), "#86efac")
+        self.assertEqual(second_item.background().color().name().lower(), "#d1d5db")
+
+    def test_dataset_mode_exports_changed_frame_when_switching_frames(self) -> None:
+        first_path = "frame_1.png"
+        second_path = "frame_2.png"
+        first_polygon = _rectangle_polygon(4, 4, 20, 20)
+        changed_polygon = _rectangle_polygon(4, 4, 24, 20)
+        first_state = ImageProcessingState(
+            image_path=first_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[changed_polygon.clone()],
+            reference_polygons=[first_polygon.clone()],
+        )
+        second_state = ImageProcessingState(
+            image_path=second_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[],
+            reference_polygons=[],
+        )
+        self.widget._workspace._state_cache = {
+            first_path: first_state,
+            second_path: second_state,
+        }
+        self.widget._workspace._current_image_path = first_path
+        self.widget._workspace._current_state = first_state
+        self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
+        self.widget.polygon_editor.set_polygons([changed_polygon.clone()])
+        self.widget.dataset_dir_edit.setText("dataset")
+        self.widget.dataset_mode_checkbox.setChecked(True)
+        self.widget.image_list.clear()
+        for path in (first_path, second_path):
+            item = QListWidgetItem(path)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.widget.image_list.addItem(item)
+        first_item = self.widget.image_list.item(0)
+        second_item = self.widget.image_list.item(1)
+
+        exported_calls: list[tuple[str, str, int]] = []
+        original_export_dataset_frame = widget_module.export_dataset_frame
+        original_load_image = self.widget.load_image
+        try:
+            widget_module.export_dataset_frame = (
+                lambda dataset_directory, image_path, polygons, source_image: exported_calls.append(
+                    (str(dataset_directory), image_path, len(polygons))
+                )
+                or {"image": "dataset/images/frame_1.png", "cif": "dataset/cif/frame_1.cif"}
+            )
+            self.widget.load_image = lambda path: None  # type: ignore[method-assign]
+
+            self.widget._on_image_item_changed(second_item, first_item)
+        finally:
+            widget_module.export_dataset_frame = original_export_dataset_frame
+            self.widget.load_image = original_load_image  # type: ignore[method-assign]
+
+        self.assertEqual(exported_calls, [("dataset", first_path, 1)])
 
 
 if __name__ == "__main__":

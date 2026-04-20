@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -310,6 +311,44 @@ def save_overlay_preview(
     preview = draw_polygon_overlay(source_image, polygons, display_settings)
     imwrite_unicode_safe(output, preview)
     return output
+
+
+def _copy_or_write_dataset_image(source_path: Path, target_path: Path, source_image: np.ndarray | None) -> Path:
+    if source_path.exists() and source_path.is_file():
+        if source_path.resolve() != target_path.resolve():
+            shutil.copy2(source_path, target_path)
+        return target_path
+    if source_image is None:
+        raise FileNotFoundError(tr("unable_to_load_image", path=source_path))
+    imwrite_unicode_safe(target_path, source_image)
+    return target_path
+
+
+def export_dataset_frame(
+    dataset_directory: str | Path,
+    image_path: str,
+    polygons: list[PolygonData],
+    source_image: np.ndarray | None,
+) -> dict[str, str]:
+    root = ensure_directory(dataset_directory)
+    images_root = ensure_directory(root / "images")
+    cif_root = ensure_directory(root / "cif")
+    source_path = Path(image_path)
+    image_name = source_path.name
+    if not source_path.suffix:
+        image_name = f"{source_path.stem}.png"
+    image_target = images_root / image_name
+    cif_target = cif_root / f"{source_path.stem}.cif"
+
+    image_size: tuple[int, int] | None = None
+    if source_image is not None:
+        image_size = (int(source_image.shape[1]), int(source_image.shape[0]))
+    if image_size is None:
+        raise ValueError(tr("dataset_source_image_missing", path=image_path))
+
+    saved_image = _copy_or_write_dataset_image(source_path, image_target, source_image)
+    saved_cif = save_polygons_cif(cif_target, str(saved_image), polygons, image_size=image_size)
+    return {"image": str(saved_image), "cif": str(saved_cif)}
 
 
 def save_result_bundle(

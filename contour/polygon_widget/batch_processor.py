@@ -27,6 +27,7 @@ def process_image_path(
         output_directory=output_directory,
         save_options=save_options,
         display_settings=display_settings,
+        include_images_in_result=False,
     )
 
 

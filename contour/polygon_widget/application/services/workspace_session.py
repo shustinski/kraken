@@ -18,6 +18,28 @@ class WorkspaceLoadResult:
     prepared_image_required: bool = False
 
 
+def _normalize_polygon_points(points: list[tuple[float, float]]) -> tuple[tuple[float, float], ...]:
+    return tuple((round(float(x_coord), 6), round(float(y_coord), 6)) for x_coord, y_coord in points)
+
+
+def _polygon_signature(polygon: PolygonData) -> tuple[object, ...]:
+    return (
+        bool(polygon.is_hole),
+        polygon.parent_id,
+        str(polygon.category),
+        str(polygon.shape_hint),
+        _normalize_polygon_points(polygon.points),
+    )
+
+
+def _polygons_equal(first: list[PolygonData], second: list[PolygonData]) -> bool:
+    if len(first) != len(second):
+        return False
+    first_signatures = sorted(_polygon_signature(polygon) for polygon in first)
+    second_signatures = sorted(_polygon_signature(polygon) for polygon in second)
+    return first_signatures == second_signatures
+
+
 class WorkspaceSession:
     def __init__(self) -> None:
         self._image_paths: list[str] = []
@@ -117,6 +139,7 @@ class WorkspaceSession:
         return self._current_image_path == image_path and self._current_state is state
 
     def apply_processing_result(self, result: BatchImageResult) -> bool:
+        existing_state = self._state_cache.get(result.image_path)
         new_state = ImageProcessingState(
             image_path=result.image_path,
             source_image=result.source_image,
@@ -124,6 +147,8 @@ class WorkspaceSession:
             pipeline_config=None if result.pipeline_config is None else dict(result.pipeline_config),
             mask_image=result.mask_image,
             polygons=result.polygons,
+            loaded_cif_path=None if existing_state is None else existing_state.loaded_cif_path,
+            reference_polygons=[] if existing_state is None else [polygon.clone() for polygon in existing_state.reference_polygons],
         )
         self._state_cache[result.image_path] = new_state
         if self._current_image_path != result.image_path:
@@ -137,6 +162,17 @@ class WorkspaceSession:
         self._current_state.polygons = polygons
         self._state_cache[self._current_image_path] = self._current_state
         return True
+
+    def image_has_changes(self, image_path: str | Path) -> bool:
+        state = self._state_cache.get(str(Path(image_path)))
+        if state is None:
+            return False
+        return not _polygons_equal(state.polygons, state.reference_polygons)
+
+    def current_image_has_changes(self) -> bool:
+        if self._current_image_path is None:
+            return False
+        return self.image_has_changes(self._current_image_path)
 
     def current_display_image(self) -> Any | None:
         if self._current_state is None:

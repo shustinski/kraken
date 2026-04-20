@@ -190,6 +190,38 @@ def _build_pipeline_candidates(image_shape: tuple[int, ...], stats: dict[str, An
             )
 
     edge_candidates = [
+        [
+            _step(
+                "edge_guided_threshold",
+                threshold_mode="otsu",
+                threshold_type=preferred_threshold_type,
+                edge_detector="canny",
+                correction_radius=2,
+                threshold1=40.0,
+                threshold2=120.0,
+                aperture_size=3,
+                l2gradient=False,
+                fill_holes=True,
+            )
+        ],
+        [
+            _step(
+                "edge_guided_threshold",
+                threshold_mode="adaptive",
+                max_value=255.0,
+                adaptive_method="gaussian",
+                threshold_type=preferred_threshold_type,
+                block_size=block_sizes[0],
+                c_value=0.0,
+                edge_detector="canny",
+                correction_radius=2,
+                threshold1=40.0,
+                threshold2=120.0,
+                aperture_size=3,
+                l2gradient=False,
+                fill_holes=True,
+            )
+        ],
         [_step("canny", threshold1=25.0, threshold2=80.0, aperture_size=3, l2gradient=False), _step("dilate", kernel_size=3, iterations=1, shape="ellipse"), _step("binary_fill_holes")],
         [_step("canny", threshold1=40.0, threshold2=120.0, aperture_size=3, l2gradient=False), _step("morph_close", kernel_size=3, iterations=1, shape="ellipse"), _step("binary_fill_holes")],
         [_step("canny", threshold1=60.0, threshold2=160.0, aperture_size=3, l2gradient=True), _step("morph_close", kernel_size=5, iterations=1, shape="ellipse"), _step("binary_fill_holes")],

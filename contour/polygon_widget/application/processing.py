@@ -221,7 +221,7 @@ class DisplaySettings:
     vertex_size: float = 7.0
     fill_opacity: float = 0.18
     show_vertices: bool = True
-    show_labels: bool = True
+    show_labels: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -247,7 +247,7 @@ class DisplaySettings:
             vertex_size=float(payload.get("vertex_size", 7.0)),
             fill_opacity=float(payload.get("fill_opacity", 0.18)),
             show_vertices=bool(payload.get("show_vertices", True)),
-            show_labels=bool(payload.get("show_labels", True)),
+            show_labels=bool(payload.get("show_labels", False)),
         )
 
 
@@ -290,6 +290,8 @@ class ImageProcessingState:
     pipeline_config: dict[str, Any] | None = None
     mask_image: Any | None = None
     polygons: list[PolygonData] = field(default_factory=list)
+    loaded_cif_path: str | None = None
+    reference_polygons: list[PolygonData] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -3,7 +3,13 @@ from __future__ import annotations
 import unittest
 
 from polygon_widget.application.services import WorkspaceSession
-from polygon_widget.domain import PolygonData
+from polygon_widget.domain import PolygonData, compute_polygon_metrics
+
+
+def _triangle_polygon() -> PolygonData:
+    points = [(0.0, 0.0), (4.0, 0.0), (0.0, 4.0)]
+    area, perimeter, bbox = compute_polygon_metrics(points)
+    return PolygonData(id=1, points=points, area=area, perimeter=perimeter, bbox=bbox)
 
 
 class WorkspaceSessionTests(unittest.TestCase):
@@ -68,6 +74,30 @@ class WorkspaceSessionTests(unittest.TestCase):
         self.assertEqual(loader_calls, ["sample.png", "sample.png"])
         self.assertEqual(len(reloaded.state.polygons), 1)
         self.assertEqual(reloaded.state.polygons[0].id, 1)
+
+    def test_image_has_changes_compares_against_reference_polygons(self) -> None:
+        session = WorkspaceSession()
+        polygon = _triangle_polygon()
+        session.load_image(
+            "sample.png",
+            load_source_image=lambda _path: "source",
+            load_cif_overlay=lambda _path: [polygon.clone()],
+        )
+        session.current_state.reference_polygons = [polygon.clone()]
+
+        self.assertFalse(session.current_image_has_changes())
+
+        changed_polygon = polygon.clone()
+        changed_polygon.points[1] = (6.0, 0.0)
+        changed_polygon.area, changed_polygon.perimeter, changed_polygon.bbox = compute_polygon_metrics(changed_polygon.points)
+        session.update_current_polygons([changed_polygon])
+
+        self.assertTrue(session.current_image_has_changes())
+        self.assertTrue(session.image_has_changes("sample.png"))
+
+        session.update_current_polygons([polygon.clone()])
+
+        self.assertFalse(session.current_image_has_changes())
 
 
 if __name__ == "__main__":

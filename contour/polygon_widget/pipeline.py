@@ -369,6 +369,165 @@ def _otsu_threshold(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray
     return result
 
 
+def _binary_threshold_mode(parameters: dict[str, Any]) -> int:
+    threshold_type = str(parameters.get("threshold_type", "binary"))
+    if threshold_type == "binary_inv":
+        return cv2.THRESH_BINARY_INV
+    return cv2.THRESH_BINARY
+
+
+def _base_threshold_mask(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    threshold_mode = str(parameters.get("threshold_mode", "otsu"))
+    threshold_type = _binary_threshold_mode(parameters)
+    max_value = float(parameters.get("max_value", 255))
+    if threshold_mode == "adaptive":
+        return cv2.adaptiveThreshold(
+            image,
+            max_value,
+            _adaptive_mode(str(parameters.get("adaptive_method", "gaussian"))),
+            threshold_type,
+            _odd(int(parameters.get("block_size", 11)), minimum=3),
+            float(parameters.get("c_value", 2.0)),
+        )
+    if threshold_mode == "manual":
+        _, result = cv2.threshold(
+            image,
+            float(parameters.get("threshold", 127)),
+            max_value,
+            threshold_type,
+        )
+        return result
+    _, result = cv2.threshold(image, 0, max_value, threshold_type | cv2.THRESH_OTSU)
+    return result
+
+
+def _edge_elevation(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    detector = str(parameters.get("edge_detector", "canny"))
+    aperture_size = max(3, min(7, _odd(int(parameters.get("aperture_size", 3)), minimum=3)))
+    blurred = cv2.GaussianBlur(image, (3, 3), 0)
+    if detector == "canny":
+        edges = cv2.Canny(
+            blurred,
+            float(parameters.get("threshold1", 50)),
+            float(parameters.get("threshold2", 150)),
+            apertureSize=aperture_size,
+            L2gradient=bool(parameters.get("l2gradient", False)),
+        )
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        edges = cv2.dilate(edges, kernel, iterations=1)
+        return cv2.GaussianBlur(edges, (3, 3), 0)
+
+    grad_x = cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=aperture_size)
+    grad_y = cv2.Sobel(blurred, cv2.CV_32F, 0, 1, ksize=aperture_size)
+    magnitude = cv2.magnitude(grad_x, grad_y)
+    if float(magnitude.max()) <= 0.0:
+        return np.zeros_like(image, dtype=np.uint8)
+    return cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+
+def _edge_mask(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    detector = str(parameters.get("edge_detector", "canny"))
+    if detector == "canny":
+        aperture_size = max(3, min(7, _odd(int(parameters.get("aperture_size", 3)), minimum=3)))
+        return cv2.Canny(
+            cv2.GaussianBlur(image, (3, 3), 0),
+            float(parameters.get("threshold1", 50)),
+            float(parameters.get("threshold2", 150)),
+            apertureSize=aperture_size,
+            L2gradient=bool(parameters.get("l2gradient", False)),
+        )
+
+    elevation = _edge_elevation(image, parameters)
+    if cv2.countNonZero(elevation) == 0:
+        return np.zeros_like(image, dtype=np.uint8)
+    nonzero = elevation[elevation > 0]
+    percentile = max(1.0, min(99.0, float(parameters.get("edge_percentile", 80.0))))
+    threshold_value = float(np.percentile(nonzero, percentile)) if nonzero.size else 255.0
+    return np.where(elevation >= threshold_value, 255, 0).astype(np.uint8)
+
+
+def _edge_contour_refined_mask(
+    image: np.ndarray,
+    base_mask: np.ndarray,
+    correction_band: np.ndarray,
+    correction_radius: int,
+    parameters: dict[str, Any],
+) -> np.ndarray | None:
+    edges = _edge_mask(image, parameters)
+    if cv2.countNonZero(edges) == 0:
+        return None
+
+    close_radius = max(1, correction_radius)
+    kernel_size = close_radius * 2 + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=1)
+    contours, _hierarchy = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    edge_regions = np.zeros_like(base_mask)
+    base_area = float(cv2.countNonZero(base_mask))
+    min_overlap = max(1.0, base_area * 0.02)
+    for contour in contours:
+        if contour is None or len(contour) < 3:
+            continue
+        candidate = np.zeros_like(base_mask)
+        cv2.fillPoly(candidate, [contour], 255)
+        overlap = float(cv2.countNonZero(cv2.bitwise_and(candidate, base_mask)))
+        if overlap < min_overlap:
+            continue
+        edge_regions = cv2.bitwise_or(edge_regions, candidate)
+
+    if cv2.countNonZero(edge_regions) == 0:
+        return None
+
+    result = base_mask.copy()
+    result[correction_band > 0] = edge_regions[correction_band > 0]
+    if cv2.countNonZero(result) == 0:
+        return None
+    return result
+
+
+def _edge_guided_threshold(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    gray = _as_gray(image)
+    base_mask = ensure_binary_mask(_base_threshold_mask(gray, parameters))
+    correction_radius = max(0, int(parameters.get("correction_radius", 2)))
+    if correction_radius <= 0 or cv2.countNonZero(base_mask) == 0:
+        return base_mask
+
+    kernel_size = correction_radius * 2 + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    foreground_seed = cv2.erode(base_mask, kernel, iterations=1)
+    background_seed = cv2.erode(cv2.bitwise_not(base_mask), kernel, iterations=1)
+    if cv2.countNonZero(foreground_seed) == 0 or cv2.countNonZero(background_seed) == 0:
+        return base_mask
+
+    markers = np.zeros(gray.shape[:2], dtype=np.int32)
+    markers[background_seed > 0] = 1
+    _component_count, foreground_labels = cv2.connectedComponents((foreground_seed > 0).astype(np.uint8), connectivity=8)
+    markers[foreground_labels > 0] = foreground_labels[foreground_labels > 0] + 1
+
+    elevation = _edge_elevation(gray, parameters)
+    marker_image = cv2.cvtColor(elevation, cv2.COLOR_GRAY2BGR)
+    markers = cv2.watershed(marker_image, markers)
+    refined = np.where(markers > 1, 255, 0).astype(np.uint8)
+
+    dilated = cv2.dilate(base_mask, kernel, iterations=1)
+    eroded = cv2.erode(base_mask, kernel, iterations=1)
+    correction_band = cv2.bitwise_xor(dilated, eroded)
+    contour_refined = _edge_contour_refined_mask(gray, base_mask, correction_band, correction_radius, parameters)
+    if contour_refined is not None:
+        if bool(parameters.get("fill_holes", True)):
+            contour_refined = _binary_fill_holes(contour_refined, {})
+        return contour_refined
+
+    result = base_mask.copy()
+    result[correction_band > 0] = refined[correction_band > 0]
+    if bool(parameters.get("fill_holes", True)):
+        result = _binary_fill_holes(result, {})
+    return result
+
+
 def _morph_op(image: np.ndarray, op_code: int, parameters: dict[str, Any]) -> np.ndarray:
     return cv2.morphologyEx(
         image,
@@ -563,6 +722,28 @@ def _register_builtin_operations() -> None:
             "Otsu Threshold",
             (OperationParameterSpec("threshold_type", "Type", "choice", "binary", options=["binary", "binary_inv"]),),
             _otsu_threshold,
+        ),
+        OperationDescriptor(
+            "edge_guided_threshold",
+            "Edge-guided Threshold",
+            (
+                OperationParameterSpec("threshold_mode", "Base mode", "choice", "otsu", options=["otsu", "adaptive", "manual"]),
+                OperationParameterSpec("threshold", "Threshold", "float", 127.0, minimum=0.0, maximum=255.0, step=1.0),
+                OperationParameterSpec("max_value", "Max value", "float", 255.0, minimum=1.0, maximum=255.0, step=1.0),
+                OperationParameterSpec("threshold_type", "Type", "choice", "binary", options=["binary", "binary_inv"]),
+                OperationParameterSpec("adaptive_method", "Method", "choice", "gaussian", options=["mean", "gaussian"]),
+                OperationParameterSpec("block_size", "Block size", "int", 11, minimum=3, maximum=99, step=2),
+                OperationParameterSpec("c_value", "C", "float", 2.0, minimum=-50.0, maximum=50.0, step=0.5),
+                OperationParameterSpec("edge_detector", "Edge detector", "choice", "canny", options=["canny", "sobel"]),
+                OperationParameterSpec("edge_percentile", "Sobel percentile", "float", 80.0, minimum=1.0, maximum=99.0, step=1.0),
+                OperationParameterSpec("correction_radius", "Correction radius", "int", 2, minimum=0, maximum=25, step=1),
+                OperationParameterSpec("threshold1", "Threshold 1", "float", 50.0, minimum=0.0, maximum=500.0, step=1.0),
+                OperationParameterSpec("threshold2", "Threshold 2", "float", 150.0, minimum=0.0, maximum=500.0, step=1.0),
+                OperationParameterSpec("aperture_size", "Aperture", "int", 3, minimum=3, maximum=7, step=2),
+                OperationParameterSpec("l2gradient", "L2 gradient", "bool", False),
+                OperationParameterSpec("fill_holes", "Fill holes", "bool", True),
+            ),
+            _edge_guided_threshold,
         ),
         OperationDescriptor("binary_fill_holes", "Fill Holes", (), _binary_fill_holes),
         OperationDescriptor(

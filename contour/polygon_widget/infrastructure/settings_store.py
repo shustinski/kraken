@@ -31,6 +31,7 @@ class WidgetPathSettingsStore:
             input_directory=settings.value("paths/input_directory", "", type=str),
             cif_directory=settings.value("paths/cif_directory", "", type=str),
             output_directory=settings.value("paths/output_directory", "", type=str),
+            dataset_directory=settings.value("paths/dataset_directory", "", type=str),
         )
         settings.sync()
         return paths
@@ -40,4 +41,5 @@ class WidgetPathSettingsStore:
         settings.setValue("paths/input_directory", paths.input_directory)
         settings.setValue("paths/cif_directory", paths.cif_directory)
         settings.setValue("paths/output_directory", paths.output_directory)
+        settings.setValue("paths/dataset_directory", paths.dataset_directory)
         settings.sync()

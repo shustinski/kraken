@@ -9,6 +9,15 @@ from polygon_widget.application.processing import PipelineStepConfig
 from polygon_widget.pipeline import PreprocessingPipeline
 
 
+def _mask_iou(first_mask: np.ndarray, second_mask: np.ndarray) -> float:
+    first = first_mask > 0
+    second = second_mask > 0
+    union = np.logical_or(first, second).sum()
+    if union == 0:
+        return 1.0
+    return float(np.logical_and(first, second).sum() / union)
+
+
 class BinaryPipelineOperationTests(unittest.TestCase):
     def test_color_binarize_selects_pixels_within_delta(self) -> None:
         image = np.zeros((4, 4, 3), dtype=np.uint8)
@@ -107,6 +116,49 @@ class BinaryPipelineOperationTests(unittest.TestCase):
         count, _labels = cv2.connectedComponents((result > 0).astype(np.uint8), connectivity=8)
 
         self.assertEqual(count - 1, 2)
+
+    def test_edge_guided_threshold_refines_filled_mask_to_intensity_edges(self) -> None:
+        image = np.full((80, 80), 25, dtype=np.uint8)
+        cv2.rectangle(image, (22, 18), (57, 61), 220, thickness=-1)
+        image = cv2.GaussianBlur(image, (11, 11), 0)
+
+        expected = np.zeros_like(image)
+        cv2.rectangle(expected, (22, 18), (57, 61), 255, thickness=-1)
+        plain_pipeline = PreprocessingPipeline(
+            [
+                PipelineStepConfig(
+                    operation="threshold",
+                    name="Threshold",
+                    parameters={"threshold": 180.0, "max_value": 255.0, "threshold_type": "binary"},
+                )
+            ]
+        )
+        refined_pipeline = PreprocessingPipeline(
+            [
+                PipelineStepConfig(
+                    operation="edge_guided_threshold",
+                    name="Edge-guided Threshold",
+                    parameters={
+                        "threshold_mode": "manual",
+                        "threshold": 180.0,
+                        "max_value": 255.0,
+                        "threshold_type": "binary",
+                        "edge_detector": "canny",
+                        "correction_radius": 5,
+                        "aperture_size": 3,
+                        "fill_holes": True,
+                    },
+                )
+            ]
+        )
+
+        plain = plain_pipeline.apply(image)
+        refined = refined_pipeline.apply(image)
+
+        self.assertGreater(cv2.countNonZero(refined), cv2.countNonZero(plain))
+        self.assertGreater(_mask_iou(expected, refined), _mask_iou(expected, plain))
+        contours, _hierarchy = cv2.findContours(refined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        self.assertEqual(len(contours), 1)
 
 
 if __name__ == "__main__":

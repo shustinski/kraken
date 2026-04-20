@@ -41,6 +41,23 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertEqual(result.pipeline_config, {"steps": []})
         self.assertEqual(len(result.polygons), 1)
 
+    def test_process_image_path_can_drop_images_from_result(self) -> None:
+        source_image = np.zeros((32, 32), dtype=np.uint8)
+        source_image[8:24, 8:24] = 255
+
+        result = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(min_area=1.0),
+            source_image=source_image,
+            include_images_in_result=False,
+        )
+
+        self.assertIsNone(result.source_image)
+        self.assertIsNone(result.preprocessed_image)
+        self.assertIsNone(result.mask_image)
+        self.assertEqual(len(result.polygons), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

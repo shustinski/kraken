@@ -134,12 +134,14 @@ def _corner_indices(points: np.ndarray, *, step: int = 2, max_angle: float = 145
 
 
 def _adaptive_approximate_contour(contour: np.ndarray, epsilon: float, preserve_corners: bool) -> np.ndarray:
-    if epsilon <= 0.0 or not preserve_corners or contour is None or len(contour) < 5:
+    if epsilon <= 0.0 or contour is None or len(contour) < 3:
         return contour
 
     simplified = cv2.approxPolyDP(contour, epsilon, True)
     if simplified is None or len(simplified) < 3:
         return contour
+    if not preserve_corners or len(contour) < 5:
+        return simplified
 
     contour_points = contour.reshape((-1, 2)).astype(np.float32, copy=False)
     simplified_points = simplified.reshape((-1, 2)).astype(np.float32, copy=False)

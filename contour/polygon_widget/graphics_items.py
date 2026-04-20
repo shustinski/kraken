@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QPen, QPolygonF
-from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPolygonItem, QGraphicsSimpleTextItem
+from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen, QPolygonF
+from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsSimpleTextItem
 
 from .application.processing import DisplaySettings
 from .domain import PolygonData
 
 
 class VertexHandleItem(QGraphicsEllipseItem):
-    def __init__(self, polygon_id: int, vertex_index: int, parent: QGraphicsPolygonItem | None = None) -> None:
+    def __init__(self, polygon_id: int, vertex_index: int, parent: QGraphicsItem | None = None) -> None:
         super().__init__(parent)
         self.polygon_id = polygon_id
         self.vertex_index = vertex_index
@@ -22,7 +22,8 @@ class VertexHandleItem(QGraphicsEllipseItem):
         self.setBrush(QBrush(color))
         self.setPen(QPen(color, 1.0))
 
-class EditablePolygonItem(QGraphicsPolygonItem):
+
+class EditablePolygonItem(QGraphicsPathItem):
     def __init__(self, polygon: PolygonData, display_settings: DisplaySettings) -> None:
         super().__init__()
         self.polygon_id = polygon.id
@@ -33,17 +34,32 @@ class EditablePolygonItem(QGraphicsPolygonItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
         self.update_from_polygon(self._polygon, display_settings, selected=False)
 
-    def update_from_polygon(self, polygon: PolygonData, display_settings: DisplaySettings, selected: bool) -> None:
+    def update_from_polygon(
+        self,
+        polygon: PolygonData,
+        display_settings: DisplaySettings,
+        selected: bool,
+        cutout_polygons: list[PolygonData] | None = None,
+    ) -> None:
         self._polygon = polygon.clone()
+        path = QPainterPath()
         qpolygon = QPolygonF([QPointF(x_coord, y_coord) for x_coord, y_coord in self._polygon.points])
-        self.setPolygon(qpolygon)
+        path.addPolygon(qpolygon)
+        for cutout in cutout_polygons or []:
+            cutout_polygon = QPolygonF([QPointF(x_coord, y_coord) for x_coord, y_coord in cutout.points])
+            path.addPolygon(cutout_polygon)
+        path.setFillRule(Qt.FillRule.OddEvenFill)
+        self.setPath(path)
 
         color_name = display_settings.selected_color if selected else (
             display_settings.hole_color if polygon.is_hole else display_settings.external_color
         )
         outline = QColor(color_name)
         fill = QColor(color_name)
-        fill.setAlphaF(max(0.0, min(1.0, display_settings.fill_opacity)))
+        if polygon.is_hole:
+            fill.setAlpha(0)
+        else:
+            fill.setAlphaF(max(0.0, min(1.0, display_settings.fill_opacity)))
 
         self.setPen(QPen(outline, max(1.0, display_settings.line_width)))
         self.setBrush(QBrush(fill))

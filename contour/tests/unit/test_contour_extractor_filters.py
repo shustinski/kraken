@@ -100,18 +100,52 @@ class ContourExtractorFilterTests(unittest.TestCase):
 
         simplified = extract_polygons(
             mask,
-            ContourExtractionSettings(epsilon=8.0, preserve_corners=False),
+            ContourExtractionSettings(epsilon=20.0, preserve_corners=False, approximation_mode="CHAIN_APPROX_NONE"),
         )
         preserved = extract_polygons(
             mask,
-            ContourExtractionSettings(epsilon=8.0, preserve_corners=True),
+            ContourExtractionSettings(epsilon=20.0, preserve_corners=True, approximation_mode="CHAIN_APPROX_NONE"),
         )
 
         self.assertEqual(len(simplified), 1)
         self.assertEqual(len(preserved), 1)
-        self.assertGreater(len(simplified[0].points), len(preserved[0].points))
+        self.assertLess(len(simplified[0].points), len(preserved[0].points))
         self.assertTrue(any(abs(x_coord - 72.0) <= 1.5 and abs(y_coord - 37.0) <= 1.5 for x_coord, y_coord in preserved[0].points))
         self.assertTrue(any(abs(x_coord - 72.0) <= 1.5 and abs(y_coord - 71.0) <= 1.5 for x_coord, y_coord in preserved[0].points))
+
+    def test_epsilon_simplifies_binary_contours_without_corner_preservation(self) -> None:
+        mask = np.zeros((128, 128), dtype=np.uint8)
+        points = np.array(
+            [
+                [16, 16],
+                [112, 16],
+                [112, 32],
+                [96, 32],
+                [96, 48],
+                [112, 48],
+                [112, 64],
+                [96, 64],
+                [96, 80],
+                [112, 80],
+                [112, 112],
+                [16, 112],
+            ],
+            dtype=np.int32,
+        )
+        cv2.fillPoly(mask, [points], 255)
+
+        baseline = extract_polygons(
+            mask,
+            ContourExtractionSettings(epsilon=0.0, approximation_mode="CHAIN_APPROX_NONE"),
+        )
+        simplified = extract_polygons(
+            mask,
+            ContourExtractionSettings(epsilon=6.0, approximation_mode="CHAIN_APPROX_NONE"),
+        )
+
+        self.assertEqual(len(baseline), 1)
+        self.assertEqual(len(simplified), 1)
+        self.assertLess(len(simplified[0].points), len(baseline[0].points))
 
 
 if __name__ == "__main__":

@@ -2,13 +2,26 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import cv2
 import numpy as np
 
 from polygon_widget.application.processing import ContourExtractionSettings
 from polygon_widget.contour_extractor import extract_polygons
-from polygon_widget.serializers import load_polygons_cif, save_polygons_cif
+from polygon_widget.domain import PolygonData, compute_polygon_metrics
+from polygon_widget.serializers import export_dataset_frame, load_polygons_cif, save_polygons_cif
+
+
+def _rectangle_polygon(left: int, top: int, right: int, bottom: int) -> PolygonData:
+    points = [
+        (float(left), float(top)),
+        (float(right), float(top)),
+        (float(right), float(bottom)),
+        (float(left), float(bottom)),
+    ]
+    area, perimeter, bbox = compute_polygon_metrics(points)
+    return PolygonData(id=1, points=points, area=area, perimeter=perimeter, bbox=bbox)
 
 
 class CifViaSupportTests(unittest.TestCase):
@@ -184,6 +197,25 @@ class CifViaSupportTests(unittest.TestCase):
 
         self.assertIn("B ", payload)
         self.assertNotIn("P ", payload)
+
+    def test_dataset_export_writes_image_and_cif_subdirectories(self) -> None:
+        with TemporaryDirectory() as temp_root:
+            root = Path(temp_root)
+            image = np.zeros((32, 32, 3), dtype=np.uint8)
+            image_path = root / "frame_1.png"
+            cv2.imwrite(str(image_path), image)
+            polygon = _rectangle_polygon(4, 4, 20, 20)
+
+            saved_files = export_dataset_frame(root / "dataset", str(image_path), [polygon], image)
+
+            saved_image = Path(saved_files["image"])
+            saved_cif = Path(saved_files["cif"])
+            self.assertEqual(saved_image.parent.name, "images")
+            self.assertEqual(saved_cif.parent.name, "cif")
+            self.assertTrue(saved_image.exists())
+            self.assertTrue(saved_cif.exists())
+            payload = saved_cif.read_text(encoding="utf-8")
+            self.assertIn("( R frame_1.png );", payload)
 
 
 if __name__ == "__main__":

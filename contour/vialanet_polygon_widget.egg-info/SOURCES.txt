@@ -47,6 +47,8 @@ polygon_widget/resources/styles/style.qss
 polygon_widget/resources/styles/icons/check_light.svg
 polygon_widget/resources/styles/icons/chevron_down_light.svg
 polygon_widget/resources/styles/icons/chevron_up_light.svg
+polygon_widget/resources/styles/icons/icon.ico
+polygon_widget/resources/styles/icons/icon.png
 vialanet_polygon_widget.egg-info/PKG-INFO
 vialanet_polygon_widget.egg-info/SOURCES.txt
 vialanet_polygon_widget.egg-info/dependency_links.txt

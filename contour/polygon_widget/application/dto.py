@@ -8,6 +8,7 @@ class PersistedPaths:
     input_directory: str = ""
     cif_directory: str = ""
     output_directory: str = ""
+    dataset_directory: str = ""
 
 
 @dataclass(frozen=True, slots=True)

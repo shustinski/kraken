@@ -75,11 +75,16 @@ from .pipeline import (
     get_operation_display_name,
     get_parameter_display_label,
 )
-from .serializers import load_polygons_cif, save_result_bundle
+from .serializers import export_dataset_frame, load_polygons_cif, save_polygons_cif, save_result_bundle
 from .utils import is_image_path, load_image_color, scan_image_files
 
 
 LocalizedTextMap = dict[str, tuple[str, str]]
+
+
+FRAME_STATUS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+FRAME_STATUS_UNCHANGED = "unchanged"
+FRAME_STATUS_MODIFIED = "modified"
 
 
 EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
@@ -295,6 +300,26 @@ PIPELINE_PARAMETER_HELP_TEXTS: LocalizedTextMap = {
         "Смещение локального порога. Меняет агрессивность отделения объекта от фона.",
         "Local threshold offset. Changes how aggressively foreground is separated from background.",
     ),
+    "threshold_mode": (
+        "Способ построения первичной маски перед уточнением по границам.",
+        "How the initial mask is built before edge-guided refinement.",
+    ),
+    "edge_detector": (
+        "Метод поиска резких перепадов яркости для уточнения границы маски.",
+        "Method used to find intensity edges for mask boundary refinement.",
+    ),
+    "edge_percentile": (
+        "Порог силы градиента для Sobel. Больше значение оставляет только более резкие края.",
+        "Sobel gradient-strength cutoff. Higher values keep only sharper edges.",
+    ),
+    "correction_radius": (
+        "Максимальный сдвиг границы маски в пикселях при поиске ближайшего яркостного края.",
+        "Maximum mask-boundary shift in pixels while looking for the nearest intensity edge.",
+    ),
+    "fill_holes": (
+        "Заполняет внутренние отверстия после уточнения границы.",
+        "Fills inner holes after boundary refinement.",
+    ),
     "threshold1": (
         "Нижний порог Canny. Определяет чувствительность к слабым границам.",
         "Lower Canny threshold. Controls sensitivity to weak edges.",
@@ -372,7 +397,7 @@ PIPELINE_OPERATION_GROUPS: tuple[tuple[str, tuple[str, str], tuple[str, ...]], .
     (
         "thresholding",
         ("Пороговая обработка", "Thresholding"),
-        ("color_binarize", "threshold", "adaptive_threshold", "otsu_threshold", "invert"),
+        ("color_binarize", "threshold", "adaptive_threshold", "otsu_threshold", "edge_guided_threshold", "invert"),
     ),
     (
         "binary",
@@ -571,6 +596,16 @@ PIPELINE_OPERATION_HELP_TEXTS: dict[str, dict[str, tuple[str, str]]] = {
         "use": (
             "Используйте, когда объект хорошо описывается линиями границ.",
             "Use it when the object is best represented by edge lines.",
+        ),
+    },
+    "edge_guided_threshold": {
+        "summary": (
+            "Строит заполненную бинарную маску и уточняет её границу по яркостным краям Sobel или Canny.",
+            "Builds a filled binary mask and refines its boundary using Sobel or Canny intensity edges.",
+        ),
+        "use": (
+            "Используйте, когда обычный порог видит объект, но граница уезжает из-за размытия или неоднородной яркости.",
+            "Use it when thresholding sees the object but blur or uneven intensity shifts the boundary.",
         ),
     },
     "invert": {
@@ -790,26 +825,32 @@ class PolygonExtractionWidget(QWidget):
         self.input_dir_edit = QLineEdit()
         self.cif_dir_edit = QLineEdit()
         self.output_dir_edit = QLineEdit()
+        self.dataset_dir_edit = QLineEdit()
         self.input_dir_label = QLabel("Input directory")
         self.cif_dir_label = QLabel("CIF overlay directory")
         self.output_dir_label = QLabel("Output directory")
+        self.dataset_dir_label = QLabel("Dataset directory")
         self.browse_input_button = QPushButton("Browse input")
         self.browse_cif_button = QPushButton("Browse CIF")
         self.browse_output_button = QPushButton("Browse output")
+        self.browse_dataset_button = QPushButton("Browse dataset")
         self.refresh_button = QPushButton("Refresh files")
 
         self.browse_input_button.clicked.connect(self._select_input_directory)
         self.browse_cif_button.clicked.connect(self._select_cif_directory)
         self.browse_output_button.clicked.connect(self._select_output_directory)
+        self.browse_dataset_button.clicked.connect(self._select_dataset_directory)
         self.refresh_button.clicked.connect(self.refresh_image_list)
         self.input_dir_edit.editingFinished.connect(self._apply_input_directory_edit)
         self.cif_dir_edit.editingFinished.connect(self._apply_cif_directory_edit)
         self.output_dir_edit.editingFinished.connect(self._apply_output_directory_edit)
+        self.dataset_dir_edit.editingFinished.connect(self._apply_dataset_directory_edit)
 
         for label, edit, button in [
             (self.input_dir_label, self.input_dir_edit, self.browse_input_button),
             (self.cif_dir_label, self.cif_dir_edit, self.browse_cif_button),
             (self.output_dir_label, self.output_dir_edit, self.browse_output_button),
+            (self.dataset_dir_label, self.dataset_dir_edit, self.browse_dataset_button),
         ]:
             layout.addWidget(label)
             layout.addWidget(edit)
@@ -845,6 +886,8 @@ class PolygonExtractionWidget(QWidget):
 
         if paths.output_directory:
             self.set_output_directory(paths.output_directory)
+        if paths.dataset_directory:
+            self.set_dataset_directory(paths.dataset_directory)
         if paths.cif_directory:
             self.set_cif_directory(paths.cif_directory)
         if paths.input_directory:
@@ -856,6 +899,7 @@ class PolygonExtractionWidget(QWidget):
                 input_directory=self.input_dir_edit.text().strip(),
                 cif_directory=self.cif_dir_edit.text().strip(),
                 output_directory=self.output_dir_edit.text().strip(),
+                dataset_directory=self.dataset_dir_edit.text().strip(),
             )
         )
 
@@ -880,6 +924,9 @@ class PolygonExtractionWidget(QWidget):
         self.stop_batch_button.clicked.connect(self.stop_batch_processing)
         self.save_current_button = QPushButton("Save current result")
         self.save_current_button.clicked.connect(self.save_current_result)
+        self.export_dataset_button = QPushButton("Export frame to dataset")
+        self.export_dataset_button.clicked.connect(self.export_current_frame_to_dataset)
+        self.dataset_mode_checkbox = QCheckBox("Dataset mode")
         self.max_workers_spin = QSpinBox()
         self.max_workers_spin.setRange(1, 32)
         self.max_workers_spin.setValue(4)
@@ -890,6 +937,8 @@ class PolygonExtractionWidget(QWidget):
         run_layout.addWidget(self.max_workers_label, 3, 0)
         run_layout.addWidget(self.max_workers_spin, 3, 1)
         run_layout.addWidget(self.save_current_button, 4, 0, 1, 2)
+        run_layout.addWidget(self.export_dataset_button, 5, 0, 1, 2)
+        run_layout.addWidget(self.dataset_mode_checkbox, 6, 0, 1, 2)
         layout.addWidget(self.run_group)
         self.batch_progress_bar = QProgressBar()
         self.batch_progress_bar.setRange(0, 100)
@@ -2233,9 +2282,11 @@ class PolygonExtractionWidget(QWidget):
         self.input_dir_label.setText(self._tr("input_directory_label"))
         self.cif_dir_label.setText(self._tr("cif_overlay_directory_label"))
         self.output_dir_label.setText(self._tr("output_directory_label"))
+        self.dataset_dir_label.setText(self._tr("dataset_directory_label"))
         self.browse_input_button.setText(self._tr("browse_input_button"))
         self.browse_cif_button.setText(self._tr("browse_cif_button"))
         self.browse_output_button.setText(self._tr("browse_output_button"))
+        self.browse_dataset_button.setText(self._tr("browse_dataset_button"))
         self.refresh_button.setText(self._tr("refresh_files_button"))
 
         self.control_tabs.setTabText(0, self._tr("tab_paths"))
@@ -2250,6 +2301,8 @@ class PolygonExtractionWidget(QWidget):
         self.batch_button.setText(self._tr("start_batch_button"))
         self.stop_batch_button.setText(self._tr("stop_batch_button"))
         self.save_current_button.setText(self._tr("save_current_button"))
+        self.export_dataset_button.setText(self._tr("export_dataset_button"))
+        self.dataset_mode_checkbox.setText(self._tr("dataset_mode_checkbox"))
         self.max_workers_label.setText(self._tr("max_workers_label"))
 
         self.available_filters_group.setTitle(
@@ -2917,7 +2970,8 @@ class PolygonExtractionWidget(QWidget):
         self._append_log(self._tr("pipeline_loaded_log", path=path))
 
     def _on_image_item_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
-        del previous
+        if previous is not None:
+            self._autosave_current_overlay_if_needed()
         if current is None:
             return
         image_path = current.data(Qt.ItemDataRole.UserRole)
@@ -2955,6 +3009,15 @@ class PolygonExtractionWidget(QWidget):
         if path:
             self.set_output_directory(path)
 
+    def _select_dataset_directory(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            self._tr("select_dataset_directory_dialog"),
+            self.dataset_dir_edit.text(),
+        )
+        if path:
+            self.set_dataset_directory(path)
+
     def _apply_input_directory_edit(self) -> None:
         path = self.input_dir_edit.text().strip()
         if path:
@@ -2980,6 +3043,9 @@ class PolygonExtractionWidget(QWidget):
 
     def _apply_output_directory_edit(self) -> None:
         self.set_output_directory(self.output_dir_edit.text().strip())
+
+    def _apply_dataset_directory_edit(self) -> None:
+        self.set_dataset_directory(self.dataset_dir_edit.text().strip())
 
     def _choose_external_color(self) -> None:
         self._choose_color("external_color", self.external_color_button)
@@ -3217,6 +3283,85 @@ class PolygonExtractionWidget(QWidget):
             save_preview=self.save_preview_checkbox.isChecked(),
         )
 
+    def _frame_status_for_image(self, image_path: str) -> str:
+        return FRAME_STATUS_MODIFIED if self._workspace.image_has_changes(image_path) else FRAME_STATUS_UNCHANGED
+
+    def _frame_status_brush(self, status: str) -> QBrush:
+        if status == FRAME_STATUS_MODIFIED:
+            return QBrush(QColor("#86EFAC"))
+        return QBrush(QColor("#D1D5DB"))
+
+    def _apply_frame_status_to_item(self, item: QListWidgetItem, status: str) -> None:
+        item.setData(FRAME_STATUS_ROLE, status)
+        item.setBackground(self._frame_status_brush(status))
+
+    def _find_image_list_item(self, image_path: str) -> QListWidgetItem | None:
+        for index in range(self.image_list.count()):
+            item = self.image_list.item(index)
+            if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == image_path:
+                return item
+        return None
+
+    def _update_frame_item_status(self, image_path: str | None) -> None:
+        if not image_path:
+            return
+        item = self._find_image_list_item(image_path)
+        if item is None:
+            return
+        self._apply_frame_status_to_item(item, self._frame_status_for_image(image_path))
+
+    def _refresh_image_list_item_states(self) -> None:
+        for index in range(self.image_list.count()):
+            item = self.image_list.item(index)
+            if item is None:
+                continue
+            image_path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            self._apply_frame_status_to_item(item, self._frame_status_for_image(image_path))
+
+    def _autosave_current_overlay_if_needed(self) -> None:
+        current_state = self._workspace.current_state
+        current_image_path = self._workspace.current_image_path
+        if current_state is None or current_image_path is None:
+            return
+        current_polygons = self.get_polygons()
+        self._workspace.update_current_polygons(current_polygons)
+        current_has_changes = self._workspace.current_image_has_changes()
+        if current_has_changes and self.dataset_mode_checkbox.isChecked():
+            self._export_dataset_frame_for_state(current_image_path, current_state, current_polygons)
+        if not current_state.loaded_cif_path or current_state.source_image is None:
+            self._update_frame_item_status(current_image_path)
+            return
+        if not current_has_changes:
+            self._update_frame_item_status(current_image_path)
+            return
+        image_size = (int(current_state.source_image.shape[1]), int(current_state.source_image.shape[0]))
+        try:
+            save_polygons_cif(
+                current_state.loaded_cif_path,
+                current_image_path,
+                current_polygons,
+                image_size=image_size,
+            )
+            self._append_log(
+                self._tr(
+                    "autosaved_cif_log",
+                    "Автосохранен CIF: {path}" if self._ui_language == "ru" else "Autosaved CIF: {path}",
+                    path=current_state.loaded_cif_path,
+                )
+            )
+        except Exception as exc:
+            self._append_log(
+                self._tr(
+                    "autosave_failed_log",
+                    "Не удалось автосохранить CIF {path}: {error}"
+                    if self._ui_language == "ru"
+                    else "Failed to autosave CIF {path}: {error}",
+                    path=current_state.loaded_cif_path,
+                    error=exc,
+                )
+            )
+        self._update_frame_item_status(current_image_path)
+
     def _sync_current_state_views(self) -> None:
         self._updating_views = True
         try:
@@ -3413,6 +3558,7 @@ class PolygonExtractionWidget(QWidget):
 
         if self._workspace.apply_processing_result(result):
             self._sync_current_state_views()
+        self._update_frame_item_status(result.image_path)
         self._set_progress_status("current_image_processed_status")
         self._append_log(
             self._tr(
@@ -3453,6 +3599,7 @@ class PolygonExtractionWidget(QWidget):
         if self._updating_views:
             return
         if self._workspace.update_current_polygons(self.get_polygons()):
+            self._update_frame_item_status(self._workspace.current_image_path)
             self.polygonsEdited.emit()
 
     def _on_batch_result(self, result) -> None:
@@ -3499,6 +3646,7 @@ class PolygonExtractionWidget(QWidget):
         self.cif_dir_edit.setText(directory_state.directory)
         self._save_persisted_paths()
         self._workspace.set_cif_index(directory_state.indexed_paths)
+        self._refresh_image_list_item_states()
         if directory_state.available:
             self._append_log(self._tr("cif_indexed_log", count=len(directory_state.indexed_paths)))
         else:
@@ -3514,6 +3662,10 @@ class PolygonExtractionWidget(QWidget):
         self.output_dir_edit.setText(path)
         self._save_persisted_paths()
 
+    def set_dataset_directory(self, path: str) -> None:
+        self.dataset_dir_edit.setText(path)
+        self._save_persisted_paths()
+
     def load_images(self, paths: list[str]) -> None:
         normalized_paths = self._workspace.replace_image_selection(paths, is_supported_image=is_image_path)
         self._preview_update_timer.stop()
@@ -3527,6 +3679,7 @@ class PolygonExtractionWidget(QWidget):
             item = QListWidgetItem(Path(path).name)
             item.setToolTip(path)
             item.setData(Qt.ItemDataRole.UserRole, path)
+            self._apply_frame_status_to_item(item, self._frame_status_for_image(path))
             self.image_list.addItem(item)
         if normalized_paths:
             self.image_list.setCurrentRow(0)
@@ -3579,9 +3732,14 @@ class PolygonExtractionWidget(QWidget):
             load_source_image=load_image_color,
             load_cif_overlay=self._load_cif_overlay_polygons,
         )
+        if image_result.state is not None and not image_result.cache_hit and not image_result.reused_current_state:
+            image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
+            image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
         if image_result.reused_current_state:
+            self._update_frame_item_status(image_result.image_path)
             return
         self._sync_current_state_views()
+        self._update_frame_item_status(image_result.image_path)
         if image_result.prepared_image_required and image_result.state is not None and image_result.state.source_image is not None:
             self._queue_prepared_image_update(image_result.image_path, image_result.state.source_image)
         if image_result.cache_hit:
@@ -3602,6 +3760,46 @@ class PolygonExtractionWidget(QWidget):
 
     def process_current_image(self, *_args, debounced: bool = False) -> None:
         self._queue_preview_processing(debounced=debounced)
+
+    def _export_dataset_frame_for_state(
+        self,
+        image_path: str,
+        state: ImageProcessingState,
+        polygons: list[PolygonData],
+        dataset_directory: str | None = None,
+    ) -> dict[str, str]:
+        target_directory = dataset_directory or self.dataset_dir_edit.text().strip()
+        if not target_directory:
+            self._append_log(self._tr("dataset_directory_not_set_log"))
+            return {}
+        try:
+            saved_files = export_dataset_frame(
+                dataset_directory=target_directory,
+                image_path=image_path,
+                polygons=polygons,
+                source_image=state.source_image,
+            )
+        except Exception as exc:
+            self._append_log(self._tr("dataset_export_failed_log", image_name=Path(image_path).name, error=exc))
+            return {}
+        self._append_log(self._tr("dataset_exported_log", image_name=Path(image_path).name, saved_files=saved_files))
+        return saved_files
+
+    def export_current_frame_to_dataset(self, dataset_directory: str | None = None) -> dict[str, str]:
+        current_state = self._workspace.current_state
+        current_image_path = self._workspace.current_image_path
+        if current_state is None or current_image_path is None:
+            self._append_log(self._tr("nothing_to_save_log"))
+            return {}
+        current_polygons = self.get_polygons()
+        self._workspace.update_current_polygons(current_polygons)
+        self._update_frame_item_status(current_image_path)
+        return self._export_dataset_frame_for_state(
+            current_image_path,
+            current_state,
+            current_polygons,
+            dataset_directory=dataset_directory,
+        )
 
     def save_current_result(
         self,

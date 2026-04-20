@@ -58,6 +58,7 @@ def process_image_path(
     preprocessed_image: Any | None = None,
     image_loader: Callable[[str], Any] = load_image_color,
     save_bundle: Callable[..., dict[str, str]] = save_result_bundle,
+    include_images_in_result: bool = True,
 ) -> BatchImageResult:
     pipeline = PreprocessingPipeline.from_dict(pipeline_config)
     source = source_image if source_image is not None else image_loader(image_path)
@@ -78,12 +79,15 @@ def process_image_path(
                 "pipeline": pipeline_config,
             },
         )
+    result_source = source if include_images_in_result else None
+    result_preprocessed = preprocessed if include_images_in_result else None
+    result_mask = mask if include_images_in_result else None
     return BatchImageResult(
         image_path=image_path,
-        source_image=source,
-        preprocessed_image=preprocessed,
+        source_image=result_source,
+        preprocessed_image=result_preprocessed,
         pipeline_config=dict(pipeline_config),
-        mask_image=mask,
+        mask_image=result_mask,
         polygons=polygons,
         saved_files=saved_files,
     )

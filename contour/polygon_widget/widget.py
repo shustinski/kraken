@@ -491,6 +491,70 @@ EXTRACTION_HELP_TEXTS.update(
             "Добавляет в маску via пиксели, яркость которых попадает в диапазон для черных переходных отверстий.",
             "Adds pixels whose brightness falls inside the black-via range to the via mask.",
         ),
+        "via_detector_methods": (
+            "Включает методы поиска via. Градиент ищет круговой перепад яркости, Hough ищет окружности, остальные методы помогают на бинарных и шумных кадрах.",
+            "Enables via detection methods. Gradient finds circular brightness edges, Hough finds circles, and the other methods help on binary and noisy frames.",
+        ),
+        "via_gradient_min_strength": (
+            "Минимальная сила кругового перепада яркости. Увеличьте значение, если появляются ложные via на шуме; уменьшите, если слабые контакты пропадают.",
+            "Minimum circular edge strength. Increase it to remove noisy false vias; decrease it when weak contacts disappear.",
+        ),
+        "via_gradient_min_coverage": (
+            "Какая часть окружности должна иметь заметный перепад яркости. Больше значение требует более замкнутую круглую границу via.",
+            "How much of the circle must have a visible brightness edge. Higher values require a more complete circular via boundary.",
+        ),
+        "via_spot_min_contrast": (
+            "Минимальная локальная яркость точки относительно ближайшего фона. Увеличьте, если находятся шум и дорожки; уменьшите, если слабые контакты пропадают.",
+            "Minimum local brightness of a dot relative to nearby background. Increase it when noise and traces are detected; decrease it when weak contacts are missed.",
+        ),
+        "via_spot_min_roundness": (
+            "Минимальная компактность яркой точки. Увеличьте, чтобы отсеять вытянутые участки дорожек и края; уменьшите для размытых контактов.",
+            "Minimum compactness of the bright dot. Increase it to reject elongated traces and edges; decrease it for blurred contacts.",
+        ),
+        "via_spot_line_suppression": (
+            "\u041f\u043e\u0434\u0430\u0432\u043b\u044f\u0435\u0442 \u0434\u043b\u0438\u043d\u043d\u044b\u0435 \u0433\u043e\u0440\u0438\u0437\u043e\u043d\u0442\u0430\u043b\u044c\u043d\u044b\u0435 \u0438 \u0432\u0435\u0440\u0442\u0438\u043a\u0430\u043b\u044c\u043d\u044b\u0435 \u0434\u043e\u0440\u043e\u0436\u043a\u0438 \u043f\u0435\u0440\u0435\u0434 \u043f\u043e\u0438\u0441\u043a\u043e\u043c \u043a\u0440\u0443\u0433\u043b\u044b\u0445 \u0442\u043e\u0447\u0435\u043a. \u0423\u0432\u0435\u043b\u0438\u0447\u044c\u0442\u0435, \u0435\u0441\u043b\u0438 \u043d\u0430 \u0434\u043e\u0440\u043e\u0436\u043a\u0430\u0445 \u043f\u043e\u044f\u0432\u043b\u044f\u044e\u0442\u0441\u044f \u043b\u043e\u0436\u043d\u044b\u0435 via; \u0443\u043c\u0435\u043d\u044c\u0448\u0438\u0442\u0435, \u0435\u0441\u043b\u0438 via \u0441\u043b\u0438\u0448\u043a\u043e\u043c \u0432\u044b\u0442\u0435\u0440\u043b\u0438\u0441\u044c.",
+            "Suppresses long horizontal and vertical traces before round-dot detection. Increase it when traces create false vias; decrease it if real vias are erased.",
+        ),
+        "via_hough_edge_threshold": (
+            "Порог сильного края для HoughCircles. Увеличьте, чтобы игнорировать слабый шум; уменьшите, чтобы находить менее контрастные окружности.",
+            "Strong-edge threshold for HoughCircles. Increase it to ignore weak noise; decrease it to find lower-contrast circles.",
+        ),
+        "via_hough_accumulator_threshold": (
+            "Сколько голосов нужно окружности в HoughCircles. Больше значение дает меньше, но надежнее кандидатов; меньше значение ищет слабые via.",
+            "How many votes a Hough circle needs. Higher values produce fewer, stronger candidates; lower values find weaker vias.",
+        ),
+        "via_component_min_score": (
+            "Минимальный отклик для кандидатов, найденных связанными компонентами. Увеличьте, чтобы убрать слабые пятна после бинаризации.",
+            "Minimum response for connected-component candidates. Increase it to remove weak spots after binarization.",
+        ),
+        "via_contour_min_score": (
+            "Минимальный отклик для кандидатов, найденных по контурам. Увеличьте, чтобы оставить только контуры с выраженным локальным сигналом.",
+            "Minimum response for contour candidates. Increase it to keep only contours with a clear local signal.",
+        ),
+        "via_morphology_peak_scale": (
+            "Минимальный размер центра via при поиске морфологических пиков относительно ожидаемого размера. Больше значение отсекает мелкие шумовые центры.",
+            "Minimum via-center peak size relative to the expected size. Higher values reject small noisy centers.",
+        ),
+        "via_template_min_score": (
+            "Минимальное совпадение с круглым шаблоном. Больше значение требует более похожую на круг область.",
+            "Minimum circular-template match. Higher values require an area that looks more like a circle.",
+        ),
+        "via_templates": (
+            "Список шаблонов via. Нажмите выбор шаблона и протяните рамку по переходному отверстию на изображении; все шаблоны используются при поиске.",
+            "List of via templates. Click pick template and drag a rectangle over a via in the image; all templates are used during detection.",
+        ),
+        "via_blob_min_circularity": (
+            "Минимальная округлость для Blob detector. Больше значение сильнее отбрасывает вытянутые и рваные пятна.",
+            "Minimum circularity for Blob detector. Higher values reject elongated and ragged spots more strongly.",
+        ),
+        "reset_via_search": (
+            "Возвращает методы поиска via и их параметры к значениям по умолчанию. Сохраненные шаблоны не удаляются.",
+            "Restores via search methods and their parameters to defaults. Saved templates are not removed.",
+        ),
+        "via_noisy_traces_preset": (
+            "Быстро настраивает поиск для кадров, где яркие круглые via находятся на фоне длинных дорожек и шума. Включает методы Точки и Градиент, усиливает подавление дорожек и отключает методы, которые часто дают лишние срабатывания.",
+            "Quick setup for frames where bright round vias sit on long traces and noisy background. Enables Spots and Gradient, increases trace suppression, and disables methods that often create extra false hits.",
+        ),
         "debug_candidates": (
             "Показывает найденные кандидаты via: зеленые прошли фильтры, красные были отброшены. Подпись показывает причину отбраковки и оценку округлости.",
             "Shows via candidates: green boxes passed the filters, red boxes were rejected. The label shows the rejection reason and roundness score.",
@@ -1340,6 +1404,7 @@ class PolygonExtractionWidget(QWidget):
         self._preview_pending_signature: tuple[str, str, str] | None = None
         self._help_menu: QMenu | None = None
         self._color_pick_pipeline_row: int | None = None
+        self._via_template_images: list[np.ndarray] = []
         self._prepared_image_thread_pool = QThreadPool(self)
         self._prepared_image_thread_pool.setMaxThreadCount(1)
         self._prepared_image_thread_pool.setExpiryTimeout(-1)
@@ -1634,9 +1699,7 @@ class PolygonExtractionWidget(QWidget):
         self.operation_tree.setHeaderHidden(True)
         self.operation_tree.setRootIsDecorated(True)
         self.operation_tree.setUniformRowHeights(True)
-        self.operation_tree.setMouseTracking(True)
         self.operation_tree.currentItemChanged.connect(self._on_available_operation_selected)
-        self.operation_tree.itemEntered.connect(self._on_available_operation_hovered)
         self.operation_tree.itemDoubleClicked.connect(self._on_available_operation_activated)
         self.operation_tree.setMinimumHeight(180)
         available_layout.addWidget(self.operation_tree, 1)
@@ -1705,21 +1768,28 @@ class PolygonExtractionWidget(QWidget):
         help_layout = QVBoxLayout(self.pipeline_help_group)
         self.pipeline_help_title = QLabel()
         self.pipeline_help_title.setWordWrap(True)
+        self.pipeline_help_title.setFixedHeight(28)
         self.pipeline_help_summary = QLabel()
         self.pipeline_help_summary.setWordWrap(True)
+        self.pipeline_help_summary.setFixedHeight(58)
         self.pipeline_help_use = QLabel()
         self.pipeline_help_use.setWordWrap(True)
+        self.pipeline_help_use.setFixedHeight(74)
         preview_row = QWidget()
         preview_layout = QHBoxLayout(preview_row)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         before_column = QVBoxLayout()
         self.pipeline_help_before_title = QLabel("Before")
         self.pipeline_help_before_image = QLabel()
+        self.pipeline_help_before_image.setFixedSize(190, 132)
+        self.pipeline_help_before_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         before_column.addWidget(self.pipeline_help_before_title)
         before_column.addWidget(self.pipeline_help_before_image)
         after_column = QVBoxLayout()
         self.pipeline_help_after_title = QLabel("After")
         self.pipeline_help_after_image = QLabel()
+        self.pipeline_help_after_image.setFixedSize(190, 132)
+        self.pipeline_help_after_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         after_column.addWidget(self.pipeline_help_after_title)
         after_column.addWidget(self.pipeline_help_after_image)
         preview_layout.addLayout(before_column)
@@ -1856,6 +1926,117 @@ class PolygonExtractionWidget(QWidget):
             self.via_black_range_min_spin,
             self.via_black_range_max_spin,
         )
+        self.via_detector_methods_widget = QWidget()
+        self.via_detector_methods_layout = QGridLayout(self.via_detector_methods_widget)
+        self.via_detector_methods_layout.setContentsMargins(0, 0, 0, 0)
+        self.via_detector_methods_layout.setHorizontalSpacing(10)
+        self.via_detector_methods_layout.setVerticalSpacing(4)
+        self.via_detector_gradient_checkbox = QCheckBox("Gradient")
+        self.via_detector_gradient_checkbox.setChecked(True)
+        self.via_detector_spot_checkbox = QCheckBox("Spots")
+        self.via_detector_spot_checkbox.setChecked(True)
+        self.via_detector_hough_checkbox = QCheckBox("Hough")
+        self.via_detector_hough_checkbox.setChecked(True)
+        self.via_detector_components_checkbox = QCheckBox("Components")
+        self.via_detector_components_checkbox.setChecked(True)
+        self.via_detector_contours_checkbox = QCheckBox("Contours")
+        self.via_detector_contours_checkbox.setChecked(True)
+        self.via_detector_morphology_checkbox = QCheckBox("Morphology")
+        self.via_detector_morphology_checkbox.setChecked(True)
+        self.via_detector_template_checkbox = QCheckBox("Template")
+        self.via_detector_template_checkbox.setChecked(True)
+        self.via_detector_blob_checkbox = QCheckBox("Blob")
+        self.via_detector_blob_checkbox.setChecked(True)
+        for row_index, (left_checkbox, right_checkbox) in enumerate(
+            [
+                (self.via_detector_gradient_checkbox, self.via_detector_spot_checkbox),
+                (self.via_detector_hough_checkbox, self.via_detector_components_checkbox),
+                (self.via_detector_contours_checkbox, self.via_detector_morphology_checkbox),
+                (self.via_detector_template_checkbox, self.via_detector_blob_checkbox),
+            ]
+        ):
+            self.via_detector_methods_layout.addWidget(left_checkbox, row_index, 0)
+            if right_checkbox is not None:
+                self.via_detector_methods_layout.addWidget(right_checkbox, row_index, 1)
+        self.via_spot_min_contrast_spin = QDoubleSpinBox()
+        self.via_spot_min_contrast_spin.setRange(0.0, 255.0)
+        self.via_spot_min_contrast_spin.setDecimals(1)
+        self.via_spot_min_contrast_spin.setSingleStep(1.0)
+        self.via_spot_min_contrast_spin.setValue(18.0)
+        self.via_spot_min_roundness_spin = QDoubleSpinBox()
+        self.via_spot_min_roundness_spin.setRange(0.0, 100.0)
+        self.via_spot_min_roundness_spin.setDecimals(1)
+        self.via_spot_min_roundness_spin.setSingleStep(1.0)
+        self.via_spot_min_roundness_spin.setValue(45.0)
+        self.via_spot_line_suppression_spin = QDoubleSpinBox()
+        self.via_spot_line_suppression_spin.setRange(0.0, 1.0)
+        self.via_spot_line_suppression_spin.setDecimals(2)
+        self.via_spot_line_suppression_spin.setSingleStep(0.05)
+        self.via_spot_line_suppression_spin.setValue(0.65)
+        self.via_gradient_min_strength_spin = QDoubleSpinBox()
+        self.via_gradient_min_strength_spin.setRange(0.0, 255.0)
+        self.via_gradient_min_strength_spin.setDecimals(1)
+        self.via_gradient_min_strength_spin.setSingleStep(1.0)
+        self.via_gradient_min_strength_spin.setValue(12.0)
+        self.via_gradient_min_coverage_spin = QDoubleSpinBox()
+        self.via_gradient_min_coverage_spin.setRange(0.0, 1.0)
+        self.via_gradient_min_coverage_spin.setDecimals(3)
+        self.via_gradient_min_coverage_spin.setSingleStep(0.01)
+        self.via_gradient_min_coverage_spin.setValue(0.24)
+        self.via_hough_edge_threshold_spin = QDoubleSpinBox()
+        self.via_hough_edge_threshold_spin.setRange(1.0, 1000.0)
+        self.via_hough_edge_threshold_spin.setDecimals(1)
+        self.via_hough_edge_threshold_spin.setSingleStep(5.0)
+        self.via_hough_edge_threshold_spin.setValue(80.0)
+        self.via_hough_accumulator_threshold_spin = QDoubleSpinBox()
+        self.via_hough_accumulator_threshold_spin.setRange(1.0, 1000.0)
+        self.via_hough_accumulator_threshold_spin.setDecimals(1)
+        self.via_hough_accumulator_threshold_spin.setSingleStep(1.0)
+        self.via_hough_accumulator_threshold_spin.setValue(10.0)
+        self.via_component_min_score_spin = QDoubleSpinBox()
+        self.via_component_min_score_spin.setRange(0.0, 255.0)
+        self.via_component_min_score_spin.setDecimals(1)
+        self.via_component_min_score_spin.setSingleStep(1.0)
+        self.via_component_min_score_spin.setValue(0.0)
+        self.via_contour_min_score_spin = QDoubleSpinBox()
+        self.via_contour_min_score_spin.setRange(0.0, 255.0)
+        self.via_contour_min_score_spin.setDecimals(1)
+        self.via_contour_min_score_spin.setSingleStep(1.0)
+        self.via_contour_min_score_spin.setValue(0.0)
+        self.via_morphology_peak_scale_spin = QDoubleSpinBox()
+        self.via_morphology_peak_scale_spin.setRange(0.01, 2.0)
+        self.via_morphology_peak_scale_spin.setDecimals(3)
+        self.via_morphology_peak_scale_spin.setSingleStep(0.01)
+        self.via_morphology_peak_scale_spin.setValue(0.18)
+        self.via_template_min_score_spin = QDoubleSpinBox()
+        self.via_template_min_score_spin.setRange(0.0, 1.0)
+        self.via_template_min_score_spin.setDecimals(3)
+        self.via_template_min_score_spin.setSingleStep(0.01)
+        self.via_template_min_score_spin.setValue(0.35)
+        self.via_templates_widget = QWidget()
+        self.via_templates_layout = QVBoxLayout(self.via_templates_widget)
+        self.via_templates_layout.setContentsMargins(0, 0, 0, 0)
+        self.via_templates_layout.setSpacing(6)
+        self.via_template_list = QListWidget()
+        self.via_template_list.setMaximumHeight(96)
+        self.via_template_list.setIconSize(QSize(56, 56))
+        self.via_templates_layout.addWidget(self.via_template_list)
+        via_template_buttons = QWidget()
+        via_template_buttons_layout = QHBoxLayout(via_template_buttons)
+        via_template_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self.add_via_template_button = QPushButton("Pick template")
+        self.add_via_template_button.setCheckable(True)
+        self.clear_via_templates_button = QPushButton("Clear templates")
+        via_template_buttons_layout.addWidget(self.add_via_template_button)
+        via_template_buttons_layout.addWidget(self.clear_via_templates_button)
+        self.via_templates_layout.addWidget(via_template_buttons)
+        self.via_blob_min_circularity_spin = QDoubleSpinBox()
+        self.via_blob_min_circularity_spin.setRange(0.0, 1.0)
+        self.via_blob_min_circularity_spin.setDecimals(3)
+        self.via_blob_min_circularity_spin.setSingleStep(0.01)
+        self.via_blob_min_circularity_spin.setValue(0.35)
+        self.noisy_traces_via_preset_button = QPushButton("Noisy traces preset")
+        self.reset_via_search_button = QPushButton("Reset via search")
         self.debug_candidates_checkbox = QCheckBox("Debug recognition")
         self.via_roundness_spin = QDoubleSpinBox()
         self.via_roundness_spin.setRange(0.0, 100.0)
@@ -1938,6 +2119,30 @@ class PolygonExtractionWidget(QWidget):
         self.via_black_range_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
         self.via_black_range_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
         self.via_black_range_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_detector_gradient_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+        self.via_detector_spot_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+        self.via_detector_hough_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+        self.via_detector_components_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+        self.via_detector_contours_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+        self.via_detector_morphology_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+        self.via_detector_template_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+        self.via_detector_blob_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+        self.via_spot_min_contrast_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_spot_min_roundness_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_spot_line_suppression_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_gradient_min_strength_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_gradient_min_coverage_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_hough_edge_threshold_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_hough_accumulator_threshold_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_component_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_contour_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_morphology_peak_scale_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_template_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.via_blob_min_circularity_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.add_via_template_button.toggled.connect(self._set_via_template_pick_active)
+        self.clear_via_templates_button.clicked.connect(self._clear_via_templates)
+        self.noisy_traces_via_preset_button.clicked.connect(self._apply_noisy_traces_via_preset)
+        self.reset_via_search_button.clicked.connect(self._reset_via_search_parameters)
         self.debug_candidates_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
         self.via_roundness_spin.valueChanged.connect(self._on_extraction_settings_changed)
         self.min_via_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -1992,6 +2197,38 @@ class PolygonExtractionWidget(QWidget):
         self.via_white_range_label_widget = self.via_form.labelForField(self.via_white_range_widget)
         self.via_form.addRow("Black range", self.via_black_range_widget)
         self.via_black_range_label_widget = self.via_form.labelForField(self.via_black_range_widget)
+        self.via_form.addRow("Detection methods", self.via_detector_methods_widget)
+        self.via_detector_methods_label_widget = self.via_form.labelForField(self.via_detector_methods_widget)
+        self.via_form.addRow("Spot contrast", self.via_spot_min_contrast_spin)
+        self.via_spot_min_contrast_label_widget = self.via_form.labelForField(self.via_spot_min_contrast_spin)
+        self.via_form.addRow("Spot roundness", self.via_spot_min_roundness_spin)
+        self.via_spot_min_roundness_label_widget = self.via_form.labelForField(self.via_spot_min_roundness_spin)
+        self.via_form.addRow("Spot trace suppression", self.via_spot_line_suppression_spin)
+        self.via_spot_line_suppression_label_widget = self.via_form.labelForField(self.via_spot_line_suppression_spin)
+        self.via_form.addRow("Gradient edge", self.via_gradient_min_strength_spin)
+        self.via_gradient_min_strength_label_widget = self.via_form.labelForField(self.via_gradient_min_strength_spin)
+        self.via_form.addRow("Gradient coverage", self.via_gradient_min_coverage_spin)
+        self.via_gradient_min_coverage_label_widget = self.via_form.labelForField(self.via_gradient_min_coverage_spin)
+        self.via_form.addRow("Hough edge", self.via_hough_edge_threshold_spin)
+        self.via_hough_edge_threshold_label_widget = self.via_form.labelForField(self.via_hough_edge_threshold_spin)
+        self.via_form.addRow("Hough votes", self.via_hough_accumulator_threshold_spin)
+        self.via_hough_accumulator_threshold_label_widget = self.via_form.labelForField(self.via_hough_accumulator_threshold_spin)
+        self.via_form.addRow("Components score", self.via_component_min_score_spin)
+        self.via_component_min_score_label_widget = self.via_form.labelForField(self.via_component_min_score_spin)
+        self.via_form.addRow("Contours score", self.via_contour_min_score_spin)
+        self.via_contour_min_score_label_widget = self.via_form.labelForField(self.via_contour_min_score_spin)
+        self.via_form.addRow("Morphology peaks", self.via_morphology_peak_scale_spin)
+        self.via_morphology_peak_scale_label_widget = self.via_form.labelForField(self.via_morphology_peak_scale_spin)
+        self.via_form.addRow("Template score", self.via_template_min_score_spin)
+        self.via_template_min_score_label_widget = self.via_form.labelForField(self.via_template_min_score_spin)
+        self.via_form.addRow("Templates", self.via_templates_widget)
+        self.via_templates_label_widget = self.via_form.labelForField(self.via_templates_widget)
+        self.via_form.addRow("Blob circularity", self.via_blob_min_circularity_spin)
+        self.via_blob_min_circularity_label_widget = self.via_form.labelForField(self.via_blob_min_circularity_spin)
+        self.via_form.addRow("Preset", self.noisy_traces_via_preset_button)
+        self.noisy_traces_via_preset_label_widget = self.via_form.labelForField(self.noisy_traces_via_preset_button)
+        self.via_form.addRow("Reset", self.reset_via_search_button)
+        self.reset_via_search_label_widget = self.via_form.labelForField(self.reset_via_search_button)
         self.via_form.addRow("Debug", self.debug_candidates_checkbox)
         self.debug_candidates_label_widget = self.via_form.labelForField(self.debug_candidates_checkbox)
         self.via_form.addRow("Roundness", self.via_roundness_spin)
@@ -2386,11 +2623,6 @@ class PolygonExtractionWidget(QWidget):
         operation_name = current.data(0, Qt.ItemDataRole.UserRole) if current is not None else None
         self._update_pipeline_help_preview(str(operation_name) if operation_name else None)
 
-    def _on_available_operation_hovered(self, item: QTreeWidgetItem, _column: int) -> None:
-        operation_name = item.data(0, Qt.ItemDataRole.UserRole)
-        if operation_name:
-            self._update_pipeline_help_preview(str(operation_name))
-
     def _on_available_operation_activated(self, item: QTreeWidgetItem, _column: int) -> None:
         if item.data(0, Qt.ItemDataRole.UserRole):
             self._add_pipeline_step()
@@ -2515,6 +2747,62 @@ class PolygonExtractionWidget(QWidget):
         self._set_field_tooltip(self.via_size_mode_label_widget, self.via_size_mode_combo, "via_size_mode")
         self._set_field_tooltip(self.via_white_range_label_widget, self.via_white_range_widget, "via_white_range")
         self._set_field_tooltip(self.via_black_range_label_widget, self.via_black_range_widget, "via_black_range")
+        self._set_field_tooltip(self.via_detector_methods_label_widget, self.via_detector_methods_widget, "via_detector_methods")
+        self._set_field_tooltip(
+            self.via_gradient_min_strength_label_widget,
+            self.via_gradient_min_strength_spin,
+            "via_gradient_min_strength",
+        )
+        self._set_field_tooltip(
+            self.via_gradient_min_coverage_label_widget,
+            self.via_gradient_min_coverage_spin,
+            "via_gradient_min_coverage",
+        )
+        self._set_field_tooltip(self.via_spot_min_contrast_label_widget, self.via_spot_min_contrast_spin, "via_spot_min_contrast")
+        self._set_field_tooltip(self.via_spot_min_roundness_label_widget, self.via_spot_min_roundness_spin, "via_spot_min_roundness")
+        self._set_field_tooltip(
+            self.via_spot_line_suppression_label_widget,
+            self.via_spot_line_suppression_spin,
+            "via_spot_line_suppression",
+        )
+        self._set_field_tooltip(
+            self.via_hough_edge_threshold_label_widget,
+            self.via_hough_edge_threshold_spin,
+            "via_hough_edge_threshold",
+        )
+        self._set_field_tooltip(
+            self.via_hough_accumulator_threshold_label_widget,
+            self.via_hough_accumulator_threshold_spin,
+            "via_hough_accumulator_threshold",
+        )
+        self._set_field_tooltip(self.via_component_min_score_label_widget, self.via_component_min_score_spin, "via_component_min_score")
+        self._set_field_tooltip(self.via_contour_min_score_label_widget, self.via_contour_min_score_spin, "via_contour_min_score")
+        self._set_field_tooltip(self.via_morphology_peak_scale_label_widget, self.via_morphology_peak_scale_spin, "via_morphology_peak_scale")
+        self._set_field_tooltip(self.via_template_min_score_label_widget, self.via_template_min_score_spin, "via_template_min_score")
+        self._set_field_tooltip(self.via_templates_label_widget, self.via_templates_widget, "via_templates")
+        self._set_field_tooltip(self.via_blob_min_circularity_label_widget, self.via_blob_min_circularity_spin, "via_blob_min_circularity")
+        self._set_field_tooltip(
+            self.noisy_traces_via_preset_label_widget,
+            self.noisy_traces_via_preset_button,
+            "via_noisy_traces_preset",
+        )
+        self._set_field_tooltip(self.reset_via_search_label_widget, self.reset_via_search_button, "reset_via_search")
+        self.add_via_template_button.setToolTip(_localized_text(EXTRACTION_HELP_TEXTS, "via_templates", self._ui_language))
+        self.clear_via_templates_button.setToolTip(
+            "Удаляет все сохраненные шаблоны via из списка." if self._ui_language == "ru" else "Removes all saved via templates from the list."
+        )
+        detector_tooltip = _localized_text(EXTRACTION_HELP_TEXTS, "via_detector_methods", self._ui_language)
+        for checkbox in [
+            self.via_detector_gradient_checkbox,
+            self.via_detector_spot_checkbox,
+            self.via_detector_hough_checkbox,
+            self.via_detector_components_checkbox,
+            self.via_detector_contours_checkbox,
+            self.via_detector_morphology_checkbox,
+            self.via_detector_template_checkbox,
+            self.via_detector_blob_checkbox,
+        ]:
+            checkbox.setToolTip(detector_tooltip)
         self._set_field_tooltip(self.debug_candidates_label_widget, self.debug_candidates_checkbox, "debug_candidates")
         self._set_field_tooltip(self.via_roundness_label_widget, self.via_roundness_spin, "via_min_roundness")
         self._set_field_tooltip(self.min_via_width_label_widget, self.min_via_width_spin, "min_via_width")
@@ -2573,6 +2861,47 @@ class PolygonExtractionWidget(QWidget):
         black_enabled = self.via_black_range_checkbox.isChecked()
         self.via_black_range_min_spin.setEnabled(black_enabled)
         self.via_black_range_max_spin.setEnabled(black_enabled)
+        detector_rows = [
+            (
+                self.via_detector_gradient_checkbox.isChecked(),
+                [
+                    (self.via_gradient_min_strength_label_widget, self.via_gradient_min_strength_spin),
+                    (self.via_gradient_min_coverage_label_widget, self.via_gradient_min_coverage_spin),
+                ],
+            ),
+            (
+                self.via_detector_spot_checkbox.isChecked(),
+                [
+                    (self.via_spot_min_contrast_label_widget, self.via_spot_min_contrast_spin),
+                    (self.via_spot_min_roundness_label_widget, self.via_spot_min_roundness_spin),
+                    (self.via_spot_line_suppression_label_widget, self.via_spot_line_suppression_spin),
+                ],
+            ),
+            (
+                self.via_detector_hough_checkbox.isChecked(),
+                [
+                    (self.via_hough_edge_threshold_label_widget, self.via_hough_edge_threshold_spin),
+                    (self.via_hough_accumulator_threshold_label_widget, self.via_hough_accumulator_threshold_spin),
+                ],
+            ),
+            (self.via_detector_components_checkbox.isChecked(), [(self.via_component_min_score_label_widget, self.via_component_min_score_spin)]),
+            (self.via_detector_contours_checkbox.isChecked(), [(self.via_contour_min_score_label_widget, self.via_contour_min_score_spin)]),
+            (self.via_detector_morphology_checkbox.isChecked(), [(self.via_morphology_peak_scale_label_widget, self.via_morphology_peak_scale_spin)]),
+            (
+                self.via_detector_template_checkbox.isChecked(),
+                [
+                    (self.via_template_min_score_label_widget, self.via_template_min_score_spin),
+                    (self.via_templates_label_widget, self.via_templates_widget),
+                ],
+            ),
+            (self.via_detector_blob_checkbox.isChecked(), [(self.via_blob_min_circularity_label_widget, self.via_blob_min_circularity_spin)]),
+        ]
+        for visible, rows in detector_rows:
+            for label_widget, field_widget in rows:
+                if label_widget is not None:
+                    label_widget.setVisible(visible)
+                field_widget.setVisible(visible)
+                field_widget.setEnabled(visible)
 
     def _update_extraction_profile_controls_state(self) -> None:
         is_via_profile = self._active_extraction_profile == "vias"
@@ -2590,6 +2919,7 @@ class PolygonExtractionWidget(QWidget):
         self.polygon_editor.polygonsEdited.connect(self._on_polygons_edited)
         self.polygon_editor.logRequested.connect(self._append_log)
         self.polygon_editor.imageClicked.connect(self._on_editor_image_clicked)
+        self.polygon_editor.imageRegionSelected.connect(self._on_editor_image_region_selected)
         self.polygon_editor.rulerMeasurementChanged.connect(self._update_ruler_status)
         self.polygon_editor.toolChanged.connect(self._on_editor_tool_changed)
         self.polygon_editor.zoomChanged.connect(lambda _zoom: self._sync_neighbor_frames())
@@ -3271,6 +3601,100 @@ class PolygonExtractionWidget(QWidget):
                 self._tr("via_black_range_label", "Диапазон чёрных" if self._ui_language == "ru" else "Black range")
             )
         self.via_black_range_checkbox.setText("Вкл." if self._ui_language == "ru" else "Enabled")
+        if self.via_detector_methods_label_widget is not None:
+            self.via_detector_methods_label_widget.setText(
+                self._tr("via_detector_methods_label", "Методы поиска" if self._ui_language == "ru" else "Detection methods")
+            )
+        self.via_detector_gradient_checkbox.setText(
+            self._tr("via_detector_gradient", "Градиент" if self._ui_language == "ru" else "Gradient")
+        )
+        self.via_detector_spot_checkbox.setText(self._tr("via_detector_spot", "Точки" if self._ui_language == "ru" else "Spots"))
+        self.via_detector_hough_checkbox.setText(self._tr("via_detector_hough", "Hough" if self._ui_language == "ru" else "Hough"))
+        self.via_detector_components_checkbox.setText(
+            self._tr("via_detector_components", "Компоненты" if self._ui_language == "ru" else "Components")
+        )
+        self.via_detector_contours_checkbox.setText(
+            self._tr("via_detector_contours", "Контуры" if self._ui_language == "ru" else "Contours")
+        )
+        self.via_detector_morphology_checkbox.setText(
+            self._tr("via_detector_morphology", "Морфология" if self._ui_language == "ru" else "Morphology")
+        )
+        self.via_detector_template_checkbox.setText(
+            self._tr("via_detector_template", "Шаблон" if self._ui_language == "ru" else "Template")
+        )
+        self.via_detector_blob_checkbox.setText(self._tr("via_detector_blob", "Blob" if self._ui_language == "ru" else "Blob"))
+        if self.via_gradient_min_strength_label_widget is not None:
+            self.via_gradient_min_strength_label_widget.setText(
+                self._tr("via_gradient_min_strength_label", "Мин. перепад" if self._ui_language == "ru" else "Min edge")
+            )
+        if self.via_gradient_min_coverage_label_widget is not None:
+            self.via_gradient_min_coverage_label_widget.setText(
+                self._tr("via_gradient_min_coverage_label", "Доля окружности" if self._ui_language == "ru" else "Circle coverage")
+            )
+        if self.via_spot_min_contrast_label_widget is not None:
+            self.via_spot_min_contrast_label_widget.setText(
+                self._tr("via_spot_min_contrast_label", "Точки: контраст" if self._ui_language == "ru" else "Spots contrast")
+            )
+        if self.via_spot_min_roundness_label_widget is not None:
+            self.via_spot_min_roundness_label_widget.setText(
+                self._tr("via_spot_min_roundness_label", "Точки: компактность" if self._ui_language == "ru" else "Spots compactness")
+            )
+        if self.via_spot_line_suppression_label_widget is not None:
+            self.via_spot_line_suppression_label_widget.setText(
+                self._tr(
+                    "via_spot_line_suppression_label",
+                    "\u0422\u043e\u0447\u043a\u0438: \u0434\u043e\u0440\u043e\u0436\u043a\u0438" if self._ui_language == "ru" else "Spots traces",
+                )
+            )
+        if self.via_hough_edge_threshold_label_widget is not None:
+            self.via_hough_edge_threshold_label_widget.setText(
+                self._tr("via_hough_edge_threshold_label", "Hough: край" if self._ui_language == "ru" else "Hough edge")
+            )
+        if self.via_hough_accumulator_threshold_label_widget is not None:
+            self.via_hough_accumulator_threshold_label_widget.setText(
+                self._tr("via_hough_accumulator_threshold_label", "Hough: голоса" if self._ui_language == "ru" else "Hough votes")
+            )
+        if self.via_component_min_score_label_widget is not None:
+            self.via_component_min_score_label_widget.setText(
+                self._tr("via_component_min_score_label", "Компоненты: отклик" if self._ui_language == "ru" else "Components score")
+            )
+        if self.via_contour_min_score_label_widget is not None:
+            self.via_contour_min_score_label_widget.setText(
+                self._tr("via_contour_min_score_label", "Контуры: отклик" if self._ui_language == "ru" else "Contours score")
+            )
+        if self.via_morphology_peak_scale_label_widget is not None:
+            self.via_morphology_peak_scale_label_widget.setText(
+                self._tr("via_morphology_peak_scale_label", "Морфология: пик" if self._ui_language == "ru" else "Morphology peak")
+            )
+        if self.via_template_min_score_label_widget is not None:
+            self.via_template_min_score_label_widget.setText(
+                self._tr("via_template_min_score_label", "Шаблон: совпадение" if self._ui_language == "ru" else "Template score")
+            )
+        if self.via_templates_label_widget is not None:
+            self.via_templates_label_widget.setText(self._tr("via_templates_label", "Шаблоны" if self._ui_language == "ru" else "Templates"))
+        self.add_via_template_button.setText(
+            self._tr("add_via_template_button", "Выделить шаблон" if self._ui_language == "ru" else "Pick template")
+        )
+        self.clear_via_templates_button.setText(
+            self._tr("clear_via_templates_button", "Удалить все" if self._ui_language == "ru" else "Clear all")
+        )
+        if self.via_blob_min_circularity_label_widget is not None:
+            self.via_blob_min_circularity_label_widget.setText(
+                self._tr("via_blob_min_circularity_label", "Blob: округлость" if self._ui_language == "ru" else "Blob circularity")
+            )
+        if self.noisy_traces_via_preset_label_widget is not None:
+            self.noisy_traces_via_preset_label_widget.setText("")
+        self.noisy_traces_via_preset_button.setText(
+            self._tr(
+                "noisy_traces_via_preset_button",
+                "Пресет: яркие via на дорожках" if self._ui_language == "ru" else "Preset: bright vias on traces",
+            )
+        )
+        if self.reset_via_search_label_widget is not None:
+            self.reset_via_search_label_widget.setText("")
+        self.reset_via_search_button.setText(
+            self._tr("reset_via_search_button", "Сбросить параметры поиска via" if self._ui_language == "ru" else "Reset via search parameters")
+        )
         if self.debug_candidates_label_widget is not None:
             self.debug_candidates_label_widget.setText(
                 self._tr("debug_candidates_label", "Отладка" if self._ui_language == "ru" else "Debug")
@@ -3863,6 +4287,211 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_image_click_mode(row is not None)
 
+    def _set_via_template_pick_active(self, enabled: bool) -> None:
+        if enabled:
+            self._set_color_pick_active(None)
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_image_region_selection_mode(enabled)
+
+    def _refresh_via_template_list(self) -> None:
+        if not hasattr(self, "via_template_list"):
+            return
+        self.via_template_list.clear()
+        for index, template in enumerate(self._via_template_images, start=1):
+            height, width = template.shape[:2]
+            item = QListWidgetItem(f"{index}: {width}x{height}")
+            preview_pixmap = QPixmap.fromImage(cv_to_qimage(template)).scaled(
+                56,
+                56,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            item.setIcon(QIcon(preview_pixmap))
+            item.setToolTip(
+                (
+                    f"Шаблон via #{index}: {width}x{height} пикс."
+                    if self._ui_language == "ru"
+                    else f"Via template #{index}: {width}x{height} px"
+                )
+            )
+            self.via_template_list.addItem(item)
+
+    def _normalize_via_template_images(self, payload: list[object]) -> list[np.ndarray]:
+        templates: list[np.ndarray] = []
+        for item in payload:
+            try:
+                image = np.asarray(item, dtype=np.uint8)
+            except (TypeError, ValueError):
+                continue
+            if image.ndim == 3:
+                if image.shape[2] >= 3:
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                else:
+                    image = image[:, :, 0]
+            if image.ndim != 2 or image.shape[0] < 2 or image.shape[1] < 2:
+                continue
+            templates.append(image.copy())
+        return templates
+
+    def _on_editor_image_region_selected(self, x_coord: float, y_coord: float, width: float, height: float) -> None:
+        if hasattr(self, "add_via_template_button"):
+            self.add_via_template_button.setChecked(False)
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_image_region_selection_mode(False)
+        image = self._workspace.current_display_image()
+        if image is None:
+            return
+        data = np.asarray(image)
+        if data.size == 0:
+            return
+        left = max(0, int(np.floor(x_coord)))
+        top = max(0, int(np.floor(y_coord)))
+        right = min(data.shape[1], int(np.ceil(x_coord + width)))
+        bottom = min(data.shape[0], int(np.ceil(y_coord + height)))
+        if right - left < 2 or bottom - top < 2:
+            return
+        template = data[top:bottom, left:right].copy()
+        if template.ndim == 3:
+            if template.shape[2] >= 3:
+                template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+            else:
+                template = template[:, :, 0]
+        self._via_template_images.append(template.astype(np.uint8, copy=False))
+        self._refresh_via_template_list()
+        self._on_extraction_settings_changed()
+        self._append_log(
+            self._tr(
+                "via_template_added_log",
+                "Добавлен шаблон via {width}x{height}. Всего шаблонов: {count}."
+                if self._ui_language == "ru"
+                else "Added via template {width}x{height}. Total templates: {count}.",
+                width=right - left,
+                height=bottom - top,
+                count=len(self._via_template_images),
+            )
+        )
+
+    def _clear_via_templates(self, *_args) -> None:
+        self._via_template_images.clear()
+        self._refresh_via_template_list()
+        self._on_extraction_settings_changed()
+
+    def _apply_noisy_traces_via_preset(self, *_args) -> None:
+        blockers = [
+            QSignalBlocker(self.via_white_range_checkbox),
+            QSignalBlocker(self.via_white_range_min_spin),
+            QSignalBlocker(self.via_white_range_max_spin),
+            QSignalBlocker(self.via_black_range_checkbox),
+            QSignalBlocker(self.via_black_range_min_spin),
+            QSignalBlocker(self.via_black_range_max_spin),
+            QSignalBlocker(self.via_detector_gradient_checkbox),
+            QSignalBlocker(self.via_detector_hough_checkbox),
+            QSignalBlocker(self.via_detector_components_checkbox),
+            QSignalBlocker(self.via_detector_contours_checkbox),
+            QSignalBlocker(self.via_detector_morphology_checkbox),
+            QSignalBlocker(self.via_detector_template_checkbox),
+            QSignalBlocker(self.via_detector_blob_checkbox),
+            QSignalBlocker(self.via_detector_spot_checkbox),
+            QSignalBlocker(self.via_spot_min_contrast_spin),
+            QSignalBlocker(self.via_spot_min_roundness_spin),
+            QSignalBlocker(self.via_spot_line_suppression_spin),
+            QSignalBlocker(self.via_gradient_min_strength_spin),
+            QSignalBlocker(self.via_gradient_min_coverage_spin),
+            QSignalBlocker(self.via_hough_edge_threshold_spin),
+            QSignalBlocker(self.via_hough_accumulator_threshold_spin),
+            QSignalBlocker(self.via_component_min_score_spin),
+            QSignalBlocker(self.via_contour_min_score_spin),
+            QSignalBlocker(self.via_morphology_peak_scale_spin),
+            QSignalBlocker(self.via_template_min_score_spin),
+            QSignalBlocker(self.via_blob_min_circularity_spin),
+            QSignalBlocker(self.debug_candidates_checkbox),
+            QSignalBlocker(self.via_roundness_spin),
+        ]
+        try:
+            self.via_white_range_checkbox.setChecked(True)
+            self.via_white_range_min_spin.setValue(180)
+            self.via_white_range_max_spin.setValue(255)
+            self.via_black_range_checkbox.setChecked(False)
+            self.via_black_range_min_spin.setValue(0)
+            self.via_black_range_max_spin.setValue(30)
+
+            self.via_detector_gradient_checkbox.setChecked(True)
+            self.via_detector_spot_checkbox.setChecked(True)
+            self.via_detector_hough_checkbox.setChecked(False)
+            self.via_detector_components_checkbox.setChecked(False)
+            self.via_detector_contours_checkbox.setChecked(False)
+            self.via_detector_morphology_checkbox.setChecked(False)
+            self.via_detector_template_checkbox.setChecked(False)
+            self.via_detector_blob_checkbox.setChecked(False)
+
+            self.via_spot_min_contrast_spin.setValue(24.0)
+            self.via_spot_min_roundness_spin.setValue(55.0)
+            self.via_spot_line_suppression_spin.setValue(0.85)
+            self.via_gradient_min_strength_spin.setValue(14.0)
+            self.via_gradient_min_coverage_spin.setValue(0.28)
+            self.via_hough_edge_threshold_spin.setValue(100.0)
+            self.via_hough_accumulator_threshold_spin.setValue(20.0)
+            self.via_component_min_score_spin.setValue(0.0)
+            self.via_contour_min_score_spin.setValue(0.0)
+            self.via_morphology_peak_scale_spin.setValue(0.20)
+            self.via_template_min_score_spin.setValue(0.35)
+            self.via_blob_min_circularity_spin.setValue(0.60)
+            self.via_roundness_spin.setValue(40.0)
+            self.debug_candidates_checkbox.setChecked(True)
+        finally:
+            del blockers
+        self._update_via_threshold_controls_state()
+        self._on_extraction_settings_changed()
+
+    def _reset_via_search_parameters(self, *_args) -> None:
+        blockers = [
+            QSignalBlocker(self.via_detector_gradient_checkbox),
+            QSignalBlocker(self.via_detector_hough_checkbox),
+            QSignalBlocker(self.via_detector_components_checkbox),
+            QSignalBlocker(self.via_detector_contours_checkbox),
+            QSignalBlocker(self.via_detector_morphology_checkbox),
+            QSignalBlocker(self.via_detector_template_checkbox),
+            QSignalBlocker(self.via_detector_blob_checkbox),
+            QSignalBlocker(self.via_detector_spot_checkbox),
+            QSignalBlocker(self.via_spot_min_contrast_spin),
+            QSignalBlocker(self.via_spot_min_roundness_spin),
+            QSignalBlocker(self.via_spot_line_suppression_spin),
+            QSignalBlocker(self.via_gradient_min_strength_spin),
+            QSignalBlocker(self.via_gradient_min_coverage_spin),
+            QSignalBlocker(self.via_hough_edge_threshold_spin),
+            QSignalBlocker(self.via_hough_accumulator_threshold_spin),
+            QSignalBlocker(self.via_component_min_score_spin),
+            QSignalBlocker(self.via_contour_min_score_spin),
+            QSignalBlocker(self.via_morphology_peak_scale_spin),
+            QSignalBlocker(self.via_template_min_score_spin),
+            QSignalBlocker(self.via_blob_min_circularity_spin),
+        ]
+        try:
+            self.via_detector_gradient_checkbox.setChecked(True)
+            self.via_detector_spot_checkbox.setChecked(True)
+            self.via_detector_hough_checkbox.setChecked(True)
+            self.via_detector_components_checkbox.setChecked(True)
+            self.via_detector_contours_checkbox.setChecked(True)
+            self.via_detector_morphology_checkbox.setChecked(True)
+            self.via_detector_template_checkbox.setChecked(True)
+            self.via_detector_blob_checkbox.setChecked(True)
+            self.via_spot_min_contrast_spin.setValue(18.0)
+            self.via_spot_min_roundness_spin.setValue(45.0)
+            self.via_spot_line_suppression_spin.setValue(0.65)
+            self.via_gradient_min_strength_spin.setValue(12.0)
+            self.via_gradient_min_coverage_spin.setValue(0.24)
+            self.via_hough_edge_threshold_spin.setValue(80.0)
+            self.via_hough_accumulator_threshold_spin.setValue(10.0)
+            self.via_component_min_score_spin.setValue(0.0)
+            self.via_contour_min_score_spin.setValue(0.0)
+            self.via_morphology_peak_scale_spin.setValue(0.18)
+            self.via_template_min_score_spin.setValue(0.35)
+            self.via_blob_min_circularity_spin.setValue(0.35)
+        finally:
+            del blockers
+        self._update_via_threshold_controls_state()
+        self._on_extraction_settings_changed()
+
     def _add_color_selection(self, row: int, rgb: tuple[int, int, int]) -> None:
         entries = self._color_selection_entries(row)
         for entry in entries:
@@ -4217,6 +4846,26 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.via_black_range_checkbox),
             QSignalBlocker(self.via_black_range_min_spin),
             QSignalBlocker(self.via_black_range_max_spin),
+            QSignalBlocker(self.via_detector_gradient_checkbox),
+            QSignalBlocker(self.via_detector_hough_checkbox),
+            QSignalBlocker(self.via_detector_components_checkbox),
+            QSignalBlocker(self.via_detector_contours_checkbox),
+            QSignalBlocker(self.via_detector_morphology_checkbox),
+            QSignalBlocker(self.via_detector_template_checkbox),
+            QSignalBlocker(self.via_detector_blob_checkbox),
+            QSignalBlocker(self.via_detector_spot_checkbox),
+            QSignalBlocker(self.via_spot_min_contrast_spin),
+            QSignalBlocker(self.via_spot_min_roundness_spin),
+            QSignalBlocker(self.via_spot_line_suppression_spin),
+            QSignalBlocker(self.via_gradient_min_strength_spin),
+            QSignalBlocker(self.via_gradient_min_coverage_spin),
+            QSignalBlocker(self.via_hough_edge_threshold_spin),
+            QSignalBlocker(self.via_hough_accumulator_threshold_spin),
+            QSignalBlocker(self.via_component_min_score_spin),
+            QSignalBlocker(self.via_contour_min_score_spin),
+            QSignalBlocker(self.via_morphology_peak_scale_spin),
+            QSignalBlocker(self.via_template_min_score_spin),
+            QSignalBlocker(self.via_blob_min_circularity_spin),
             QSignalBlocker(self.debug_candidates_checkbox),
             QSignalBlocker(self.via_roundness_spin),
             QSignalBlocker(self.min_via_width_spin),
@@ -4265,6 +4914,28 @@ class PolygonExtractionWidget(QWidget):
             self.via_black_range_checkbox.setChecked(bool(settings.via_black_range_enabled))
             self.via_black_range_min_spin.setValue(int(settings.via_black_range_min))
             self.via_black_range_max_spin.setValue(int(settings.via_black_range_max))
+            self.via_detector_gradient_checkbox.setChecked(bool(settings.via_detector_gradient_enabled))
+            self.via_detector_spot_checkbox.setChecked(bool(settings.via_detector_spot_enabled))
+            self.via_detector_hough_checkbox.setChecked(bool(settings.via_detector_hough_enabled))
+            self.via_detector_components_checkbox.setChecked(bool(settings.via_detector_components_enabled))
+            self.via_detector_contours_checkbox.setChecked(bool(settings.via_detector_contours_enabled))
+            self.via_detector_morphology_checkbox.setChecked(bool(settings.via_detector_morphology_enabled))
+            self.via_detector_template_checkbox.setChecked(bool(settings.via_detector_template_enabled))
+            self.via_detector_blob_checkbox.setChecked(bool(settings.via_detector_blob_enabled))
+            self.via_spot_min_contrast_spin.setValue(float(settings.via_spot_min_contrast))
+            self.via_spot_min_roundness_spin.setValue(float(settings.via_spot_min_roundness))
+            self.via_gradient_min_strength_spin.setValue(float(settings.via_gradient_min_strength))
+            self.via_gradient_min_coverage_spin.setValue(float(settings.via_gradient_min_coverage))
+            self.via_hough_edge_threshold_spin.setValue(float(settings.via_hough_edge_threshold))
+            self.via_hough_accumulator_threshold_spin.setValue(float(settings.via_hough_accumulator_threshold))
+            self.via_component_min_score_spin.setValue(float(settings.via_component_min_score))
+            self.via_contour_min_score_spin.setValue(float(settings.via_contour_min_score))
+            self.via_morphology_peak_scale_spin.setValue(float(settings.via_morphology_peak_scale))
+            self.via_template_min_score_spin.setValue(float(settings.via_template_min_score))
+            self.via_blob_min_circularity_spin.setValue(float(settings.via_blob_min_circularity))
+            self.via_spot_line_suppression_spin.setValue(float(settings.via_spot_line_suppression))
+            self._via_template_images = self._normalize_via_template_images(settings.via_template_images)
+            self._refresh_via_template_list()
             self.debug_candidates_checkbox.setChecked(bool(settings.debug_enabled))
             self.via_roundness_spin.setValue(float(settings.via_min_roundness))
             self.min_via_width_spin.setValue(int(settings.min_via_width))
@@ -4333,6 +5004,27 @@ class PolygonExtractionWidget(QWidget):
             via_black_range_enabled=self.via_black_range_checkbox.isChecked(),
             via_black_range_min=self.via_black_range_min_spin.value(),
             via_black_range_max=self.via_black_range_max_spin.value(),
+            via_detector_gradient_enabled=self.via_detector_gradient_checkbox.isChecked(),
+            via_detector_spot_enabled=self.via_detector_spot_checkbox.isChecked(),
+            via_detector_hough_enabled=self.via_detector_hough_checkbox.isChecked(),
+            via_detector_components_enabled=self.via_detector_components_checkbox.isChecked(),
+            via_detector_contours_enabled=self.via_detector_contours_checkbox.isChecked(),
+            via_detector_morphology_enabled=self.via_detector_morphology_checkbox.isChecked(),
+            via_detector_template_enabled=self.via_detector_template_checkbox.isChecked(),
+            via_detector_blob_enabled=self.via_detector_blob_checkbox.isChecked(),
+            via_spot_min_contrast=self.via_spot_min_contrast_spin.value(),
+            via_spot_min_roundness=self.via_spot_min_roundness_spin.value(),
+            via_gradient_min_strength=self.via_gradient_min_strength_spin.value(),
+            via_gradient_min_coverage=self.via_gradient_min_coverage_spin.value(),
+            via_hough_edge_threshold=self.via_hough_edge_threshold_spin.value(),
+            via_hough_accumulator_threshold=self.via_hough_accumulator_threshold_spin.value(),
+            via_component_min_score=self.via_component_min_score_spin.value(),
+            via_contour_min_score=self.via_contour_min_score_spin.value(),
+            via_morphology_peak_scale=self.via_morphology_peak_scale_spin.value(),
+            via_template_min_score=self.via_template_min_score_spin.value(),
+            via_blob_min_circularity=self.via_blob_min_circularity_spin.value(),
+            via_spot_line_suppression=self.via_spot_line_suppression_spin.value(),
+            via_template_images=[template.copy() for template in self._via_template_images],
             debug_enabled=self.debug_candidates_checkbox.isChecked(),
             via_min_roundness=self.via_roundness_spin.value(),
             min_via_width=self.min_via_width_spin.value(),

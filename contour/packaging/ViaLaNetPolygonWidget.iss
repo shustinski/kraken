@@ -1,8 +1,8 @@
 #define MyAppName "Contour"
-#define MyAppVersion "0.1.0"
-#define MyAppPublisher "ViaLaNet"
-#define MyAppExeName "ViaLaNetPolygonWidget.exe"
-#define MyAppDistDir "..\\dist\\ViaLaNetPolygonWidget"
+#define MyAppVersion "0.2.0"
+#define MyAppPublisher "Contour"
+#define MyAppExeName "Contour.exe"
+#define MyAppDistDir "..\\dist\\Contour"
 #define MyAppIcon "..\\polygon_widget\\resources\\styles\\icons\\icon.ico"
 
 [Setup]
@@ -19,7 +19,7 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 OutputDir=.
-OutputBaseFilename=ViaLaNetPolygonWidget-setup
+OutputBaseFilename=Contour-setup-{#MyAppVersion}
 SetupIconFile={#MyAppIcon}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 

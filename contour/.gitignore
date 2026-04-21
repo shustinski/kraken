@@ -11,5 +11,6 @@ dist/
 polygon_widget/__pycache__/
 
 *.cif
+*.exe
 
 

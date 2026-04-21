@@ -58,6 +58,24 @@ def parse_integer_value_list(payload: Any) -> list[int]:
     return sorted(values)
 
 
+def _serialize_template_images(payload: Any) -> list[Any]:
+    if not isinstance(payload, list):
+        return []
+    serialized: list[Any] = []
+    for item in payload:
+        if hasattr(item, "tolist"):
+            item = item.tolist()
+        if isinstance(item, list):
+            serialized.append(item)
+    return serialized
+
+
+def _parse_template_images(payload: Any) -> list[Any]:
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, list)]
+
+
 @dataclass(frozen=True, slots=True)
 class OperationParameterSpec:
     name: str
@@ -164,6 +182,27 @@ class ContourExtractionSettings:
     via_threshold_range_min: int = 0
     via_threshold_range_max: int = 255
     via_min_roundness: float = 5.0
+    via_detector_gradient_enabled: bool = True
+    via_detector_spot_enabled: bool = True
+    via_detector_hough_enabled: bool = True
+    via_detector_components_enabled: bool = True
+    via_detector_contours_enabled: bool = True
+    via_detector_morphology_enabled: bool = True
+    via_detector_template_enabled: bool = True
+    via_detector_blob_enabled: bool = True
+    via_gradient_min_strength: float = 12.0
+    via_gradient_min_coverage: float = 0.24
+    via_spot_min_contrast: float = 18.0
+    via_spot_min_roundness: float = 45.0
+    via_spot_line_suppression: float = 0.65
+    via_hough_edge_threshold: float = 80.0
+    via_hough_accumulator_threshold: float = 10.0
+    via_component_min_score: float = 0.0
+    via_contour_min_score: float = 0.0
+    via_morphology_peak_scale: float = 0.18
+    via_template_min_score: float = 0.35
+    via_blob_min_circularity: float = 0.35
+    via_template_images: list[Any] = field(default_factory=list)
     debug_enabled: bool = False
     min_hierarchy_depth: int = 0
     max_hierarchy_depth: int | None = None
@@ -208,6 +247,27 @@ class ContourExtractionSettings:
             "via_black_range_min": self.via_black_range_min,
             "via_black_range_max": self.via_black_range_max,
             "via_min_roundness": self.via_min_roundness,
+            "via_detector_gradient_enabled": self.via_detector_gradient_enabled,
+            "via_detector_spot_enabled": self.via_detector_spot_enabled,
+            "via_detector_hough_enabled": self.via_detector_hough_enabled,
+            "via_detector_components_enabled": self.via_detector_components_enabled,
+            "via_detector_contours_enabled": self.via_detector_contours_enabled,
+            "via_detector_morphology_enabled": self.via_detector_morphology_enabled,
+            "via_detector_template_enabled": self.via_detector_template_enabled,
+            "via_detector_blob_enabled": self.via_detector_blob_enabled,
+            "via_gradient_min_strength": self.via_gradient_min_strength,
+            "via_gradient_min_coverage": self.via_gradient_min_coverage,
+            "via_spot_min_contrast": self.via_spot_min_contrast,
+            "via_spot_min_roundness": self.via_spot_min_roundness,
+            "via_spot_line_suppression": self.via_spot_line_suppression,
+            "via_hough_edge_threshold": self.via_hough_edge_threshold,
+            "via_hough_accumulator_threshold": self.via_hough_accumulator_threshold,
+            "via_component_min_score": self.via_component_min_score,
+            "via_contour_min_score": self.via_contour_min_score,
+            "via_morphology_peak_scale": self.via_morphology_peak_scale,
+            "via_template_min_score": self.via_template_min_score,
+            "via_blob_min_circularity": self.via_blob_min_circularity,
+            "via_template_images": _serialize_template_images(self.via_template_images),
             "debug_enabled": self.debug_enabled,
             "min_hierarchy_depth": self.min_hierarchy_depth,
             "max_hierarchy_depth": self.max_hierarchy_depth,
@@ -282,6 +342,27 @@ class ContourExtractionSettings:
             via_threshold_range_min=max(0, min(255, int(payload.get("via_threshold_range_min", 0)))),
             via_threshold_range_max=max(0, min(255, int(payload.get("via_threshold_range_max", 255)))),
             via_min_roundness=max(0.0, float(payload.get("via_min_roundness", 5.0))),
+            via_detector_gradient_enabled=bool(payload.get("via_detector_gradient_enabled", True)),
+            via_detector_spot_enabled=bool(payload.get("via_detector_spot_enabled", True)),
+            via_detector_hough_enabled=bool(payload.get("via_detector_hough_enabled", True)),
+            via_detector_components_enabled=bool(payload.get("via_detector_components_enabled", True)),
+            via_detector_contours_enabled=bool(payload.get("via_detector_contours_enabled", True)),
+            via_detector_morphology_enabled=bool(payload.get("via_detector_morphology_enabled", True)),
+            via_detector_template_enabled=bool(payload.get("via_detector_template_enabled", True)),
+            via_detector_blob_enabled=bool(payload.get("via_detector_blob_enabled", True)),
+            via_gradient_min_strength=max(0.0, min(255.0, float(payload.get("via_gradient_min_strength", 12.0)))),
+            via_gradient_min_coverage=max(0.0, min(1.0, float(payload.get("via_gradient_min_coverage", 0.24)))),
+            via_hough_edge_threshold=max(1.0, min(1000.0, float(payload.get("via_hough_edge_threshold", 80.0)))),
+            via_hough_accumulator_threshold=max(1.0, min(1000.0, float(payload.get("via_hough_accumulator_threshold", 10.0)))),
+            via_component_min_score=max(0.0, min(255.0, float(payload.get("via_component_min_score", 0.0)))),
+            via_contour_min_score=max(0.0, min(255.0, float(payload.get("via_contour_min_score", 0.0)))),
+            via_morphology_peak_scale=max(0.01, min(2.0, float(payload.get("via_morphology_peak_scale", 0.18)))),
+            via_template_min_score=max(0.0, min(1.0, float(payload.get("via_template_min_score", 0.35)))),
+            via_blob_min_circularity=max(0.0, min(1.0, float(payload.get("via_blob_min_circularity", 0.35)))),
+            via_template_images=_parse_template_images(payload.get("via_template_images", [])),
+            via_spot_min_contrast=max(0.0, min(255.0, float(payload.get("via_spot_min_contrast", 18.0)))),
+            via_spot_min_roundness=max(0.0, min(100.0, float(payload.get("via_spot_min_roundness", 45.0)))),
+            via_spot_line_suppression=max(0.0, min(1.0, float(payload.get("via_spot_line_suppression", 0.65)))),
             debug_enabled=bool(payload.get("debug_enabled", False)),
             min_hierarchy_depth=max(0, int(payload.get("min_hierarchy_depth", 0))),
             max_hierarchy_depth=None

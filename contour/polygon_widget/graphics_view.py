@@ -1048,6 +1048,7 @@ class PolygonEditorView(QGraphicsView):
     activePolygonChanged = pyqtSignal(object)
     logRequested = pyqtSignal(str)
     imageClicked = pyqtSignal(float, float)
+    imageRegionSelected = pyqtSignal(float, float, float, float)
     rulerMeasurementChanged = pyqtSignal(str)
     toolChanged = pyqtSignal(object)
     zoomChanged = pyqtSignal(float)
@@ -1080,6 +1081,7 @@ class PolygonEditorView(QGraphicsView):
         self._pending_polygon_erases: bool | None = None
         self._middle_button_hides_overlays = False
         self._image_click_mode = False
+        self._image_region_selection_mode = False
 
         self._editor_scene.polygonsChanged.connect(self.polygonsEdited.emit)
         self._editor_scene.activePolygonChanged.connect(self.activePolygonChanged.emit)
@@ -1175,6 +1177,11 @@ class PolygonEditorView(QGraphicsView):
     def set_image_click_mode(self, enabled: bool) -> None:
         self._image_click_mode = bool(enabled)
 
+    def set_image_region_selection_mode(self, enabled: bool) -> None:
+        self._image_region_selection_mode = bool(enabled)
+        if not enabled:
+            self._editor_scene.clear_preview_rect()
+
     def fit_to_view(self) -> None:
         rect = self._editor_scene.main_image_rect()
         if rect.width() > 0 and rect.height() > 0:
@@ -1222,6 +1229,13 @@ class PolygonEditorView(QGraphicsView):
         scene_pos = self.mapToScene(event.position().toPoint())
         self._last_pointer_scene_pos = scene_pos
         tolerance = self._scene_tolerance(8)
+
+        if self._image_region_selection_mode and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_kind = "image_region"
+            self._drag_start_scene_pos = scene_pos
+            self._editor_scene.set_preview_rect(scene_pos, scene_pos)
+            event.accept()
+            return
 
         if self._image_click_mode and event.button() == Qt.MouseButton.LeftButton:
             self.imageClicked.emit(scene_pos.x(), scene_pos.y())
@@ -1368,6 +1382,10 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.set_preview_rect(self._drag_start_scene_pos, scene_pos)
             event.accept()
             return
+        if self._drag_kind == "image_region" and self._drag_start_scene_pos is not None:
+            self._editor_scene.set_preview_rect(self._drag_start_scene_pos, scene_pos)
+            event.accept()
+            return
         if self._drag_kind == "brush":
             if self._brush_mode == BrushMode.ANGLED and self._drag_start_scene_pos is not None:
                 self._editor_scene.update_pending_cursor(_snap_to_45(self._drag_start_scene_pos, scene_pos))
@@ -1425,6 +1443,13 @@ class PolygonEditorView(QGraphicsView):
             elif self._drag_kind == "delete_area" and self._drag_start_scene_pos is not None:
                 self._editor_scene.delete_vertices_in_rect(QRectF(self._drag_start_scene_pos, self.mapToScene(event.position().toPoint())))
                 self._editor_scene.clear_preview_rect()
+            elif self._drag_kind == "image_region" and self._drag_start_scene_pos is not None:
+                rect = QRectF(self._drag_start_scene_pos, self.mapToScene(event.position().toPoint())).normalized()
+                image_rect = self._editor_scene.main_image_rect()
+                clipped = rect.intersected(image_rect)
+                self._editor_scene.clear_preview_rect()
+                if clipped.width() >= 2.0 and clipped.height() >= 2.0:
+                    self.imageRegionSelected.emit(clipped.x(), clipped.y(), clipped.width(), clipped.height())
             elif self._drag_kind == "vertex" and self._drag_polygon_id is not None and self._drag_vertex_index is not None and self._drag_origin_points is not None:
                 new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
                 old_point = self._drag_origin_points[self._drag_vertex_index]

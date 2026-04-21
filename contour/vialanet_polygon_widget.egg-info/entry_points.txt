@@ -1,2 +1,3 @@
 [console_scripts]
+contour = polygon_widget.application.cli:main
 polygon-widget = polygon_widget.application.cli:main

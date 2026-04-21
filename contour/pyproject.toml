@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
+contour = "polygon_widget.application.cli:main"
 polygon-widget = "polygon_widget.application.cli:main"
 
 [tool.setuptools]

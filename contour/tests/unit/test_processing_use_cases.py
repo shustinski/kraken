@@ -172,6 +172,33 @@ class ProcessingUseCasesTests(unittest.TestCase):
 
         self.assertEqual(len(result.polygons), 12)
 
+    def test_via_profile_returns_debug_candidates_when_enabled(self) -> None:
+        source_image = np.zeros((60, 60), dtype=np.uint8)
+        cv2.circle(source_image, (20, 20), 4, 230, thickness=-1)
+        cv2.rectangle(source_image, (38, 18), (52, 22), 230, thickness=-1)
+
+        result = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                min_area=4.0,
+                via_white_range_enabled=True,
+                via_white_range_min=200,
+                via_white_range_max=255,
+                via_black_range_enabled=False,
+                via_min_roundness=60.0,
+                debug_enabled=True,
+            ),
+            source_image=source_image,
+        )
+
+        self.assertTrue(result.debug_candidates)
+        self.assertTrue(any(candidate.accepted for candidate in result.debug_candidates))
+        self.assertTrue(any(candidate.reason == "roundness" for candidate in result.debug_candidates))
+
 
 if __name__ == "__main__":
     unittest.main()

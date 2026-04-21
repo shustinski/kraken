@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_data_files
 
 
 PROJECT_ROOT = Path(SPECPATH).resolve().parent
-APP_NAME = "ViaLaNetPolygonWidget"
+APP_NAME = "Contour"
 APP_ICON = PROJECT_ROOT / "polygon_widget" / "resources" / "styles" / "icons" / "icon.ico"
 
 datas = collect_data_files(

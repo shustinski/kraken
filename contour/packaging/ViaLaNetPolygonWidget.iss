@@ -1,4 +1,4 @@
-#define MyAppName "ViaLaNet"
+#define MyAppName "Contour"
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "ViaLaNet"
 #define MyAppExeName "ViaLaNetPolygonWidget.exe"

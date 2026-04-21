@@ -6,7 +6,7 @@ from math import acos, degrees, pi
 import cv2
 import numpy as np
 
-from .application.processing import ContourExtractionSettings
+from .application.processing import ContourDebugCandidate, ContourExtractionSettings
 from .domain import PolygonData, compute_polygon_metrics
 from .utils import ensure_binary_mask
 
@@ -166,6 +166,129 @@ def _via_roundness_score(contour: np.ndarray, bbox_width: int, bbox_height: int)
     circularity = 100.0 * (4.0 * pi * contour_area / max(1e-6, contour_perimeter * contour_perimeter))
     aspect_roundness = 100.0 * min(bbox_width, bbox_height) / max(1, max(bbox_width, bbox_height))
     return max(0.0, min(100.0, circularity, aspect_roundness))
+
+
+def _bbox_center_inside(inner_bbox: tuple[int, int, int, int], outer_bbox: tuple[int, int, int, int]) -> bool:
+    center_x = inner_bbox[0] + inner_bbox[2] / 2.0
+    center_y = inner_bbox[1] + inner_bbox[3] / 2.0
+    return (
+        outer_bbox[0] <= center_x <= outer_bbox[0] + outer_bbox[2]
+        and outer_bbox[1] <= center_y <= outer_bbox[1] + outer_bbox[3]
+    )
+
+
+def _debug_candidates_for_mask(mask: np.ndarray, config: ContourExtractionSettings, polygons: list[PolygonData]) -> list[ContourDebugCandidate]:
+    binary_mask = ensure_binary_mask(mask)
+    image_height, image_width = binary_mask.shape[:2]
+    contours, hierarchy = cv2.findContours(
+        binary_mask.copy(),
+        RETRIEVAL_MODE_MAP.get(config.retrieval_mode, cv2.RETR_EXTERNAL),
+        APPROXIMATION_MODE_MAP.get(config.approximation_mode, cv2.CHAIN_APPROX_SIMPLE),
+    )
+    if not contours:
+        return []
+
+    hierarchy_array = hierarchy[0] if hierarchy is not None else np.full((len(contours), 4), -1, dtype=np.int32)
+    depth_cache: dict[int, int] = {}
+    contour_areas: dict[int, float] = {
+        index: abs(float(cv2.contourArea(contour))) for index, contour in enumerate(contours) if contour is not None
+    }
+    accepted_bboxes = [polygon.bbox for polygon in polygons]
+    candidates: list[ContourDebugCandidate] = []
+
+    for contour_index, contour in enumerate(contours):
+        if contour is None or len(contour) < 3:
+            continue
+        epsilon = float(config.epsilon)
+        if config.epsilon_relative:
+            epsilon *= cv2.arcLength(contour, True)
+        approx = _adaptive_approximate_contour(contour, epsilon, config.preserve_corners) if epsilon > 0 else contour
+        points = [(float(point[0][0]), float(point[0][1])) for point in approx]
+        if len(points) < 3:
+            continue
+
+        area, perimeter, bbox = compute_polygon_metrics(points)
+        bbox_width = int(bbox[2])
+        bbox_height = int(bbox[3])
+        roundness = _via_roundness_score(contour, bbox_width, bbox_height) if config.object_type == "via" or config.output_mode == "box" else 0.0
+        candidate = ContourDebugCandidate(
+            contour_index=contour_index,
+            bbox=bbox,
+            area=area,
+            perimeter=perimeter,
+            roundness=roundness,
+        )
+
+        reason = ""
+        if len(points) < max(3, config.min_points):
+            reason = "min_points"
+        elif area <= 0.0 or perimeter <= 0.0:
+            reason = "empty_geometry"
+        elif area < config.min_area:
+            reason = "min_area"
+        elif config.max_area is not None and area > config.max_area:
+            reason = "max_area"
+        elif perimeter < config.min_perimeter:
+            reason = "min_perimeter"
+        elif config.max_perimeter is not None and perimeter > config.max_perimeter:
+            reason = "max_perimeter"
+        elif bbox_width < config.min_bbox_width:
+            reason = "min_bbox_width"
+        elif config.max_bbox_width is not None and bbox_width > config.max_bbox_width:
+            reason = "max_bbox_width"
+        elif bbox_height < config.min_bbox_height:
+            reason = "min_bbox_height"
+        elif config.max_bbox_height is not None and bbox_height > config.max_bbox_height:
+            reason = "max_bbox_height"
+        elif (config.object_type == "via" or config.output_mode == "box") and not _matches_via_size_constraints(bbox_width, bbox_height, config):
+            reason = "via_size"
+        elif (config.object_type == "via" or config.output_mode == "box") and roundness < config.via_min_roundness:
+            reason = "roundness"
+        else:
+            aspect_ratio = float(bbox_width / max(1, bbox_height))
+            if aspect_ratio < config.min_aspect_ratio:
+                reason = "min_aspect_ratio"
+            elif config.max_aspect_ratio is not None and aspect_ratio > config.max_aspect_ratio:
+                reason = "max_aspect_ratio"
+            elif config.exclude_border_touching and (
+                bbox[0] <= 0
+                or bbox[1] <= 0
+                or bbox[0] + bbox_width >= image_width
+                or bbox[1] + bbox_height >= image_height
+            ):
+                reason = "border"
+            else:
+                parent_index = int(hierarchy_array[contour_index][3])
+                depth = _depth(contour_index, hierarchy_array, depth_cache)
+                if depth < config.min_hierarchy_depth:
+                    reason = "min_hierarchy_depth"
+                elif config.max_hierarchy_depth is not None and depth > config.max_hierarchy_depth:
+                    reason = "max_hierarchy_depth"
+                else:
+                    hull = cv2.convexHull(approx)
+                    hull_area = abs(float(cv2.contourArea(hull))) if hull is not None and len(hull) >= 3 else 0.0
+                    solidity = float(area / hull_area) if hull_area > 0.0 else 0.0
+                    bbox_area = float(max(1, bbox_width * bbox_height))
+                    extent = float(area / bbox_area)
+                    is_hole = bool(depth % 2)
+                    if solidity < config.min_solidity:
+                        reason = "min_solidity"
+                    elif extent < config.min_extent:
+                        reason = "min_extent"
+                    elif config.max_hole_area_ratio is not None and is_hole and parent_index != -1:
+                        parent_area = contour_areas.get(parent_index, 0.0)
+                        if parent_area > 0.0 and (area / parent_area) > config.max_hole_area_ratio:
+                            reason = "max_hole_area_ratio"
+
+        if reason:
+            candidate.accepted = False
+            candidate.reason = reason
+        else:
+            candidate.accepted = any(_bboxes_overlap(candidate.bbox, bbox) or _bbox_center_inside(candidate.bbox, bbox) for bbox in accepted_bboxes)
+            candidate.reason = "accepted" if candidate.accepted else "overlap_suppressed"
+        candidates.append(candidate)
+
+    return candidates
 
 
 def _nearest_contour_index(points: np.ndarray, target: np.ndarray) -> int:
@@ -383,3 +506,12 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
         polygons = _suppress_overlapping_vias(polygons)
 
     return polygons
+
+
+def extract_polygons_with_debug(
+    mask: np.ndarray,
+    settings: ContourExtractionSettings | None = None,
+) -> tuple[list[PolygonData], list[ContourDebugCandidate]]:
+    config = settings or ContourExtractionSettings()
+    polygons = extract_polygons(mask, config)
+    return polygons, _debug_candidates_for_mask(mask, config, polygons)

@@ -147,6 +147,7 @@ class WorkspaceSession:
             pipeline_config=None if result.pipeline_config is None else dict(result.pipeline_config),
             mask_image=result.mask_image,
             polygons=result.polygons,
+            debug_candidates=list(result.debug_candidates),
             loaded_cif_path=None if existing_state is None else existing_state.loaded_cif_path,
             reference_polygons=[] if existing_state is None else [polygon.clone() for polygon in existing_state.reference_polygons],
         )

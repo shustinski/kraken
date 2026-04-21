@@ -15,6 +15,7 @@ from PyQt6.QtGui import (
     QPen,
     QPixmap,
     QShortcut,
+    QTransform,
     QUndoStack,
 )
 from PyQt6.QtWidgets import (
@@ -88,6 +89,19 @@ class PolygonEditorScene(QGraphicsScene):
         self._image_item = QGraphicsPixmapItem()
         self._image_item.setZValue(0)
         self.addItem(self._image_item)
+        self._image_rect = QRectF(0, 0, 1, 1)
+        self._neighbor_frame_items: list[QGraphicsPixmapItem] = []
+        self._neighbor_grid_bounds: QRectF | None = None
+        self._debug_candidate_items: list[QGraphicsPathItem | QGraphicsSimpleTextItem] = []
+
+        self._main_frame_item = QGraphicsPathItem()
+        self._main_frame_item.setZValue(2)
+        main_frame_pen = QPen(QColor("#FACC15"), 2.0)
+        main_frame_pen.setCosmetic(True)
+        self._main_frame_item.setPen(main_frame_pen)
+        self._main_frame_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self.addItem(self._main_frame_item)
+        self._main_frame_item.hide()
 
         self._pending_points: list[tuple[float, float]] = []
         self._pending_cursor: tuple[float, float] | None = None
@@ -166,11 +180,110 @@ class PolygonEditorScene(QGraphicsScene):
     def set_image(self, image) -> None:
         if image is None:
             self._image_item.setPixmap(QPixmap())
-            self.setSceneRect(QRectF(0, 0, 1, 1))
+            self._image_rect = QRectF(0, 0, 1, 1)
+            self._main_frame_item.setPath(QPainterPath())
+            self._main_frame_item.hide()
+            self.clear_neighbor_frames()
+            self.set_debug_candidates([])
+            self._update_scene_rect()
             return
         pixmap = QPixmap.fromImage(cv_to_qimage(image))
         self._image_item.setPixmap(pixmap)
-        self.setSceneRect(QRectF(pixmap.rect()))
+        self._image_rect = QRectF(pixmap.rect())
+        self._update_main_frame()
+        self._update_scene_rect()
+
+    def main_image_rect(self) -> QRectF:
+        return QRectF(self._image_rect)
+
+    def clear_neighbor_frames(self) -> None:
+        for item in self._neighbor_frame_items:
+            self.removeItem(item)
+        self._neighbor_frame_items.clear()
+        self._neighbor_grid_bounds = None
+        self._main_frame_item.hide()
+        self._update_scene_rect()
+
+    def set_neighbor_frames(
+        self,
+        frames: list[tuple[int, int, object, str]],
+        opacity: float,
+        overlap_pixels: int = 0,
+        show_main_frame: bool = True,
+    ) -> None:
+        self.clear_neighbor_frames()
+        self._main_frame_item.setVisible(bool(show_main_frame))
+        if self._image_rect.width() <= 1.0 or self._image_rect.height() <= 1.0:
+            return
+        main_width = float(self._image_rect.width())
+        main_height = float(self._image_rect.height())
+        overlap = max(0.0, min(float(overlap_pixels), min(main_width, main_height) - 1.0))
+        step_x = max(1.0, main_width - overlap)
+        step_y = max(1.0, main_height - overlap)
+        bounds = QRectF(self._image_rect)
+        for column_offset, row_offset, image, image_path in frames:
+            if column_offset == 0 and row_offset == 0:
+                continue
+            pixmap = QPixmap.fromImage(cv_to_qimage(image))
+            if pixmap.isNull():
+                continue
+            item = QGraphicsPixmapItem(pixmap)
+            item.setZValue(-20)
+            item.setOpacity(max(0.05, min(1.0, float(opacity))))
+            item.setToolTip(str(image_path))
+            scale_x = main_width / max(1, pixmap.width())
+            scale_y = main_height / max(1, pixmap.height())
+            item.setTransform(QTransform.fromScale(scale_x, scale_y))
+            item.setPos(float(column_offset) * step_x, float(row_offset) * step_y)
+            self.addItem(item)
+            self._neighbor_frame_items.append(item)
+            bounds = bounds.united(QRectF(item.pos().x(), item.pos().y(), main_width, main_height))
+        self._neighbor_grid_bounds = bounds if self._neighbor_frame_items else None
+        self._update_scene_rect()
+
+    def set_debug_candidates(self, candidates: list[object]) -> None:
+        for item in self._debug_candidate_items:
+            self.removeItem(item)
+        self._debug_candidate_items.clear()
+        for candidate in candidates[:300]:
+            bbox = getattr(candidate, "bbox", None)
+            if not bbox or len(bbox) != 4:
+                continue
+            accepted = bool(getattr(candidate, "accepted", False))
+            reason = str(getattr(candidate, "reason", ""))
+            roundness = float(getattr(candidate, "roundness", 0.0))
+            x_coord, y_coord, width, height = bbox
+            path = QPainterPath()
+            path.addRect(QRectF(float(x_coord), float(y_coord), float(width), float(height)))
+            item = QGraphicsPathItem(path)
+            item.setZValue(30)
+            color = QColor("#22C55E" if accepted else "#EF4444")
+            pen = QPen(color, 1.5, Qt.PenStyle.SolidLine if accepted else Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            item.setPen(pen)
+            item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            item.setToolTip(f"{'accepted' if accepted else 'rejected'}: {reason}, roundness={roundness:.1f}")
+            self.addItem(item)
+            self._debug_candidate_items.append(item)
+
+            label = QGraphicsSimpleTextItem(f"{roundness:.0f} {reason}")
+            label.setZValue(31)
+            label.setBrush(QBrush(color))
+            label.setFlag(QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+            label.setPos(float(x_coord), float(y_coord) - 12.0)
+            self.addItem(label)
+            self._debug_candidate_items.append(label)
+
+    def _update_main_frame(self) -> None:
+        path = QPainterPath()
+        path.addRect(self._image_rect)
+        self._main_frame_item.setPath(path)
+
+    def _update_scene_rect(self) -> None:
+        rect = QRectF(self._image_rect)
+        if self._neighbor_grid_bounds is not None:
+            rect = rect.united(self._neighbor_grid_bounds)
+        self.setSceneRect(rect)
 
     def set_ui_language(self, language: str | None) -> None:
         self._ui_language = active_language(language)
@@ -937,6 +1050,7 @@ class PolygonEditorView(QGraphicsView):
     imageClicked = pyqtSignal(float, float)
     rulerMeasurementChanged = pyqtSignal(str)
     toolChanged = pyqtSignal(object)
+    zoomChanged = pyqtSignal(float)
 
     def __init__(self, parent=None) -> None:
         self._editor_scene = PolygonEditorScene()
@@ -1037,6 +1151,21 @@ class PolygonEditorView(QGraphicsView):
     def get_polygons(self) -> list[PolygonData]:
         return self._editor_scene.get_polygons()
 
+    def set_neighbor_frames(
+        self,
+        frames: list[tuple[int, int, object, str]],
+        opacity: float,
+        overlap_pixels: int = 0,
+        show_main_frame: bool = True,
+    ) -> None:
+        self._editor_scene.set_neighbor_frames(frames, opacity, overlap_pixels, show_main_frame)
+
+    def set_debug_candidates(self, candidates: list[object]) -> None:
+        self._editor_scene.set_debug_candidates(candidates)
+
+    def zoom_factor(self) -> float:
+        return max(1e-6, float(self.transform().m11()))
+
     def set_display_settings(self, settings: DisplaySettings) -> None:
         self._editor_scene.set_display_settings(settings)
 
@@ -1047,15 +1176,18 @@ class PolygonEditorView(QGraphicsView):
         self._image_click_mode = bool(enabled)
 
     def fit_to_view(self) -> None:
-        rect = self._editor_scene.sceneRect()
+        rect = self._editor_scene.main_image_rect()
         if rect.width() > 0 and rect.height() > 0:
             self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+            self.zoomChanged.emit(self.zoom_factor())
 
     def zoom_in(self) -> None:
         self.scale(1.15, 1.15)
+        self.zoomChanged.emit(self.zoom_factor())
 
     def zoom_out(self) -> None:
         self.scale(1 / 1.15, 1 / 1.15)
+        self.zoomChanged.emit(self.zoom_factor())
 
     def undo(self) -> None:
         self.undo_stack.undo()
@@ -1073,6 +1205,7 @@ class PolygonEditorView(QGraphicsView):
             factor = 1.15 ** (delta.y() / 120.0)
             self.scale(factor, factor)
             self._update_tool_cursors()
+            self.zoomChanged.emit(self.zoom_factor())
             event.accept()
             return
         if modifiers & Qt.KeyboardModifier.ShiftModifier:

@@ -23,8 +23,8 @@ class PolygonWidgetApplicationComponents:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="polygon-widget",
-        description="Standalone launcher for PolygonExtractionWidget.",
+        prog="contour",
+        description="Standalone launcher for Contour.",
     )
     parser.add_argument(
         "paths",
@@ -105,7 +105,7 @@ def assemble_application(argv: Sequence[str] | None = None) -> PolygonWidgetAppl
     qt_argv = sys.argv if argv is None else [sys.argv[0], *argv]
     app = QApplication.instance() or QApplication(qt_argv)
     app.setOrganizationName("ViaLaNet")
-    app.setApplicationName("PolygonWidget")
+    app.setApplicationName("Contour")
     if not args.no_qss:
         _try_apply_app_qss(app)
 

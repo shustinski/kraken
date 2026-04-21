@@ -65,7 +65,7 @@ from .batch_processor import BatchProcessor
 from .contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
 from .domain import PolygonData
 from .graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
-from .infrastructure import WidgetPathSettingsStore
+from .infrastructure import WidgetDisplaySettingsStore, WidgetPathSettingsStore
 from .i18n import active_language, tr
 from .pipeline import (
     PreprocessingPipeline,
@@ -490,6 +490,10 @@ EXTRACTION_HELP_TEXTS.update(
         "via_black_range": (
             "Добавляет в маску via пиксели, яркость которых попадает в диапазон для черных переходных отверстий.",
             "Adds pixels whose brightness falls inside the black-via range to the via mask.",
+        ),
+        "debug_candidates": (
+            "Показывает найденные кандидаты via: зеленые прошли фильтры, красные были отброшены. Подпись показывает причину отбраковки и оценку округлости.",
+            "Shows via candidates: green boxes passed the filters, red boxes were rejected. The label shows the rejection reason and roundness score.",
         ),
         "via_threshold_range": (
             "Добавляет в маску via пиксели, яркость которых попадает в заданный диапазон. Удобно, когда via имеет средний тон.",
@@ -1291,6 +1295,7 @@ class PolygonExtractionWidget(QWidget):
         self.setObjectName("polygonExtractionWidget")
         self._ui_language = active_language()
         self._path_settings_store = WidgetPathSettingsStore()
+        self._display_settings_store = WidgetDisplaySettingsStore()
         self._workspace = WorkspaceSession()
         self._pipeline = PreprocessingPipeline()
         self._display_settings = DisplaySettings()
@@ -1314,6 +1319,7 @@ class PolygonExtractionWidget(QWidget):
         self._ignore_extraction_profile_change = False
         self._ignore_pipeline_item_change = False
         self._suspend_fixed_via_updates = False
+        self._restoring_display_settings = False
         self._fixed_via_rows: list[dict[str, QWidget]] = []
         self._parameter_widgets: dict[str, QWidget] = {}
         self._updating_views = False
@@ -1347,6 +1353,7 @@ class PolygonExtractionWidget(QWidget):
         self._auto_tune_thread_pool.setExpiryTimeout(-1)
         self._auto_tune_request_serial = 0
         self._auto_tune_running_request_id: int | None = None
+        self._neighbor_image_cache: dict[str, object] = {}
 
         self._batch_processor = BatchProcessor(self)
         self._batch_processor.set_ui_language(self._ui_language)
@@ -1360,6 +1367,7 @@ class PolygonExtractionWidget(QWidget):
         self._apply_compact_ui_style()
         self._disable_spinbox_wheel_changes()
         self._restore_persisted_paths()
+        self._restore_persisted_display_settings()
         self._populate_pipeline_operations()
         self._populate_pipeline_list()
         self._apply_display_settings()
@@ -1515,6 +1523,60 @@ class PolygonExtractionWidget(QWidget):
                 dataset_directory=self.dataset_dir_edit.text().strip(),
             )
         )
+
+    def _restore_persisted_display_settings(self) -> None:
+        payload = self._display_settings_store.load()
+        self._display_settings = DisplaySettings.from_dict(payload)
+        if not hasattr(self, "line_width_spin"):
+            return
+
+        blockers = [
+            QSignalBlocker(self.line_width_spin),
+            QSignalBlocker(self.vertex_size_spin),
+            QSignalBlocker(self.fill_opacity_spin),
+            QSignalBlocker(self.show_vertices_checkbox),
+            QSignalBlocker(self.show_labels_checkbox),
+            QSignalBlocker(self.show_neighbor_frames_checkbox),
+            QSignalBlocker(self.neighbor_columns_spin),
+            QSignalBlocker(self.neighbor_max_grid_spin),
+            QSignalBlocker(self.neighbor_opacity_spin),
+            QSignalBlocker(self.neighbor_overlap_spin),
+        ]
+        self._restoring_display_settings = True
+        try:
+            self._update_color_button(self.external_color_button, self._display_settings.external_color)
+            self._update_color_button(self.hole_color_button, self._display_settings.hole_color)
+            self._update_color_button(self.selected_color_button, self._display_settings.selected_color)
+            self._update_color_button(self.vertex_color_button, self._display_settings.vertex_color)
+            self.line_width_spin.setValue(float(self._display_settings.line_width))
+            self.vertex_size_spin.setValue(float(self._display_settings.vertex_size))
+            self.fill_opacity_spin.setValue(float(self._display_settings.fill_opacity))
+            self.show_vertices_checkbox.setChecked(bool(self._display_settings.show_vertices))
+            self.show_labels_checkbox.setChecked(bool(self._display_settings.show_labels))
+            self.show_neighbor_frames_checkbox.setChecked(bool(payload.get("show_neighbor_frames", False)))
+            self.neighbor_columns_spin.setValue(max(1, int(payload.get("neighbor_columns", 3))))
+            self.neighbor_max_grid_spin.setValue(self._odd_neighbor_grid_size(int(payload.get("neighbor_max_grid", 7))))
+            self.neighbor_opacity_spin.setValue(float(payload.get("neighbor_opacity", 0.35)))
+            self.neighbor_overlap_spin.setValue(max(0, int(payload.get("neighbor_overlap_pixels", 0))))
+        finally:
+            self._restoring_display_settings = False
+            del blockers
+        self._sync_neighbor_frames()
+
+    def _current_display_settings_payload(self) -> dict[str, object]:
+        return {
+            **self._display_settings.to_dict(),
+            "show_neighbor_frames": bool(self.show_neighbor_frames_checkbox.isChecked()),
+            "neighbor_columns": int(self.neighbor_columns_spin.value()),
+            "neighbor_max_grid": int(self.neighbor_max_grid_spin.value()),
+            "neighbor_opacity": float(self.neighbor_opacity_spin.value()),
+            "neighbor_overlap_pixels": int(self.neighbor_overlap_spin.value()),
+        }
+
+    def _save_persisted_display_settings(self) -> None:
+        if self._restoring_display_settings or not hasattr(self, "line_width_spin"):
+            return
+        self._display_settings_store.save(self._current_display_settings_payload())
 
     def _build_files_tab(self) -> QWidget:
         tab = QWidget()
@@ -1794,6 +1856,7 @@ class PolygonExtractionWidget(QWidget):
             self.via_black_range_min_spin,
             self.via_black_range_max_spin,
         )
+        self.debug_candidates_checkbox = QCheckBox("Debug recognition")
         self.via_roundness_spin = QDoubleSpinBox()
         self.via_roundness_spin.setRange(0.0, 100.0)
         self.via_roundness_spin.setDecimals(1)
@@ -1875,6 +1938,7 @@ class PolygonExtractionWidget(QWidget):
         self.via_black_range_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
         self.via_black_range_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
         self.via_black_range_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
+        self.debug_candidates_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
         self.via_roundness_spin.valueChanged.connect(self._on_extraction_settings_changed)
         self.min_via_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
         self.max_via_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -1928,6 +1992,8 @@ class PolygonExtractionWidget(QWidget):
         self.via_white_range_label_widget = self.via_form.labelForField(self.via_white_range_widget)
         self.via_form.addRow("Black range", self.via_black_range_widget)
         self.via_black_range_label_widget = self.via_form.labelForField(self.via_black_range_widget)
+        self.via_form.addRow("Debug", self.debug_candidates_checkbox)
+        self.debug_candidates_label_widget = self.via_form.labelForField(self.debug_candidates_checkbox)
         self.via_form.addRow("Roundness", self.via_roundness_spin)
         self.via_roundness_label_widget = self.via_form.labelForField(self.via_roundness_spin)
         self.via_form.addRow("Min via width", self.min_via_width_spin)
@@ -2004,6 +2070,21 @@ class PolygonExtractionWidget(QWidget):
         self.show_vertices_checkbox.setChecked(self._display_settings.show_vertices)
         self.show_labels_checkbox = QCheckBox("Show polygon IDs")
         self.show_labels_checkbox.setChecked(self._display_settings.show_labels)
+        self.show_neighbor_frames_checkbox = QCheckBox("Show neighboring frames")
+        self.neighbor_columns_spin = QSpinBox()
+        self.neighbor_columns_spin.setRange(1, 1000)
+        self.neighbor_columns_spin.setValue(3)
+        self.neighbor_max_grid_spin = QSpinBox()
+        self.neighbor_max_grid_spin.setRange(3, 7)
+        self.neighbor_max_grid_spin.setSingleStep(2)
+        self.neighbor_max_grid_spin.setValue(7)
+        self.neighbor_opacity_spin = QDoubleSpinBox()
+        self.neighbor_opacity_spin.setRange(0.05, 1.0)
+        self.neighbor_opacity_spin.setSingleStep(0.05)
+        self.neighbor_opacity_spin.setValue(0.35)
+        self.neighbor_overlap_spin = QSpinBox()
+        self.neighbor_overlap_spin.setRange(0, 100_000)
+        self.neighbor_overlap_spin.setValue(0)
 
         for widget in [
             self.line_width_spin,
@@ -2016,6 +2097,11 @@ class PolygonExtractionWidget(QWidget):
                 widget.stateChanged.connect(self._apply_display_settings)
             else:
                 widget.valueChanged.connect(self._apply_display_settings)
+        self.show_neighbor_frames_checkbox.stateChanged.connect(self._on_neighbor_display_settings_changed)
+        self.neighbor_columns_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
+        self.neighbor_max_grid_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
+        self.neighbor_opacity_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
+        self.neighbor_overlap_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
 
         self.display_form.addRow("External contour", self.external_color_button)
         self.external_color_label_widget = self.display_form.labelForField(self.external_color_button)
@@ -2033,6 +2119,15 @@ class PolygonExtractionWidget(QWidget):
         self.fill_opacity_label_widget = self.display_form.labelForField(self.fill_opacity_spin)
         self.display_form.addRow(self.show_vertices_checkbox)
         self.display_form.addRow(self.show_labels_checkbox)
+        self.display_form.addRow(self.show_neighbor_frames_checkbox)
+        self.display_form.addRow("Frames per row", self.neighbor_columns_spin)
+        self.neighbor_columns_label_widget = self.display_form.labelForField(self.neighbor_columns_spin)
+        self.display_form.addRow("Max neighbor grid", self.neighbor_max_grid_spin)
+        self.neighbor_max_grid_label_widget = self.display_form.labelForField(self.neighbor_max_grid_spin)
+        self.display_form.addRow("Neighbor opacity", self.neighbor_opacity_spin)
+        self.neighbor_opacity_label_widget = self.display_form.labelForField(self.neighbor_opacity_spin)
+        self.display_form.addRow("Frame overlap", self.neighbor_overlap_spin)
+        self.neighbor_overlap_label_widget = self.display_form.labelForField(self.neighbor_overlap_spin)
         return tab
 
     def _build_help_tab(self) -> QWidget:
@@ -2420,6 +2515,7 @@ class PolygonExtractionWidget(QWidget):
         self._set_field_tooltip(self.via_size_mode_label_widget, self.via_size_mode_combo, "via_size_mode")
         self._set_field_tooltip(self.via_white_range_label_widget, self.via_white_range_widget, "via_white_range")
         self._set_field_tooltip(self.via_black_range_label_widget, self.via_black_range_widget, "via_black_range")
+        self._set_field_tooltip(self.debug_candidates_label_widget, self.debug_candidates_checkbox, "debug_candidates")
         self._set_field_tooltip(self.via_roundness_label_widget, self.via_roundness_spin, "via_min_roundness")
         self._set_field_tooltip(self.min_via_width_label_widget, self.min_via_width_spin, "min_via_width")
         self._set_field_tooltip(self.max_via_width_label_widget, self.max_via_width_spin, "max_via_width")
@@ -2496,6 +2592,7 @@ class PolygonExtractionWidget(QWidget):
         self.polygon_editor.imageClicked.connect(self._on_editor_image_clicked)
         self.polygon_editor.rulerMeasurementChanged.connect(self._update_ruler_status)
         self.polygon_editor.toolChanged.connect(self._on_editor_tool_changed)
+        self.polygon_editor.zoomChanged.connect(lambda _zoom: self._sync_neighbor_frames())
         self.editor_toolbar = self._build_editor_toolbar()
         editor_layout.addWidget(self.editor_toolbar)
         editor_layout.addWidget(self.polygon_editor, 1)
@@ -3174,6 +3271,13 @@ class PolygonExtractionWidget(QWidget):
                 self._tr("via_black_range_label", "Диапазон чёрных" if self._ui_language == "ru" else "Black range")
             )
         self.via_black_range_checkbox.setText("Вкл." if self._ui_language == "ru" else "Enabled")
+        if self.debug_candidates_label_widget is not None:
+            self.debug_candidates_label_widget.setText(
+                self._tr("debug_candidates_label", "Отладка" if self._ui_language == "ru" else "Debug")
+            )
+        self.debug_candidates_checkbox.setText(
+            self._tr("debug_candidates_checkbox", "Показать кандидаты" if self._ui_language == "ru" else "Show candidates")
+        )
         if self.via_roundness_label_widget is not None:
             self.via_roundness_label_widget.setText(self._tr("via_roundness_label", "Округлость" if self._ui_language == "ru" else "Roundness"))
         if self.min_via_width_label_widget is not None:
@@ -3219,6 +3323,25 @@ class PolygonExtractionWidget(QWidget):
             self.fill_opacity_label_widget.setText(self._tr("fill_opacity_label"))
         self.show_vertices_checkbox.setText(self._tr("show_vertices_checkbox"))
         self.show_labels_checkbox.setText(self._tr("show_labels_checkbox"))
+        self.show_neighbor_frames_checkbox.setText(
+            self._tr("show_neighbor_frames_checkbox", "Показывать соседние кадры" if self._ui_language == "ru" else "Show neighboring frames")
+        )
+        if self.neighbor_columns_label_widget is not None:
+            self.neighbor_columns_label_widget.setText(
+                self._tr("neighbor_columns_label", "Кадров в строке" if self._ui_language == "ru" else "Frames per row")
+            )
+        if self.neighbor_max_grid_label_widget is not None:
+            self.neighbor_max_grid_label_widget.setText(
+                self._tr("neighbor_max_grid_label", "Макс. сетка" if self._ui_language == "ru" else "Max grid")
+            )
+        if self.neighbor_opacity_label_widget is not None:
+            self.neighbor_opacity_label_widget.setText(
+                self._tr("neighbor_opacity_label", "Прозрачность соседей" if self._ui_language == "ru" else "Neighbor opacity")
+            )
+        if self.neighbor_overlap_label_widget is not None:
+            self.neighbor_overlap_label_widget.setText(
+                self._tr("neighbor_overlap_label", "Пересечение кадров" if self._ui_language == "ru" else "Frame overlap")
+            )
         for widget, tooltip_key in (
             (self.external_color_label_widget, "external_color"),
             (self.external_color_button, "external_color"),
@@ -3238,6 +3361,40 @@ class PolygonExtractionWidget(QWidget):
             (self.show_labels_checkbox, "show_labels"),
         ):
             self._set_common_tooltip(widget, tooltip_key)
+        for widget, tooltip in (
+            (
+                self.show_neighbor_frames_checkbox,
+                "Показывает соседние изображения вокруг текущего кадра на фоне. Текущий кадр остается в центре и отмечается желтой рамкой."
+                if self._ui_language == "ru"
+                else "Shows neighboring images around the current frame in the background. The current frame stays centered and has a yellow border.",
+            ),
+            (
+                self.neighbor_columns_spin,
+                "Сколько кадров в одной строке исходной последовательности. Это нужно, чтобы правильно найти соседей сверху, снизу и по диагонали."
+                if self._ui_language == "ru"
+                else "How many frames are in one row of the source sequence. Used to locate top, bottom, and diagonal neighbors.",
+            ),
+            (
+                self.neighbor_max_grid_spin,
+                "Максимальный размер фоновой матрицы: 3, 5 или 7 кадров по стороне. При уменьшении масштаба сетка раскрывается до этого значения."
+                if self._ui_language == "ru"
+                else "Maximum background matrix size: 3, 5, or 7 frames per side. Zooming out expands the grid up to this value.",
+            ),
+            (
+                self.neighbor_opacity_spin,
+                "Прозрачность соседних кадров на фоне. Меньше значение делает их менее заметными относительно основного кадра."
+                if self._ui_language == "ru"
+                else "Opacity of neighboring background frames. Lower values make them less prominent than the main frame.",
+            ),
+            (
+                self.neighbor_overlap_spin,
+                "Сколько пикселей соседние кадры заходят друг на друга. Ноль размещает кадры вплотную без пересечения."
+                if self._ui_language == "ru"
+                else "How many pixels neighboring frames overlap. Zero places frames edge to edge without overlap.",
+            ),
+        ):
+            widget.setToolTip(tooltip)
+            widget.setStatusTip(tooltip)
 
         self.editor_group.setTitle(self._tr("editor_group_title"))
         self._update_tool_button_texts()
@@ -3799,6 +3956,9 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "via_white_range_checkbox"):
             self._update_via_threshold_controls_state()
         self._store_active_extraction_profile_settings()
+        if hasattr(self, "polygon_editor") and self._workspace.current_state is not None:
+            candidates = self._workspace.current_state.debug_candidates if self._debug_candidates_visible() else []
+            self.polygon_editor.set_debug_candidates(candidates)
         if self.auto_apply_checkbox.isChecked() and self._workspace.current_image_path:
             self.process_current_image(debounced=True)
 
@@ -3960,6 +4120,11 @@ class PolygonExtractionWidget(QWidget):
             self._display_settings.show_labels = bool(self.show_labels_checkbox.isChecked())
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_display_settings(self._display_settings)
+        self._save_persisted_display_settings()
+
+    def _on_neighbor_display_settings_changed(self, *_args) -> None:
+        self._sync_neighbor_frames()
+        self._save_persisted_display_settings()
 
     def _auto_apply_pipeline(self) -> None:
         if self.auto_apply_checkbox.isChecked() and self._workspace.current_image_path:
@@ -4052,6 +4217,7 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.via_black_range_checkbox),
             QSignalBlocker(self.via_black_range_min_spin),
             QSignalBlocker(self.via_black_range_max_spin),
+            QSignalBlocker(self.debug_candidates_checkbox),
             QSignalBlocker(self.via_roundness_spin),
             QSignalBlocker(self.min_via_width_spin),
             QSignalBlocker(self.max_via_width_spin),
@@ -4099,6 +4265,7 @@ class PolygonExtractionWidget(QWidget):
             self.via_black_range_checkbox.setChecked(bool(settings.via_black_range_enabled))
             self.via_black_range_min_spin.setValue(int(settings.via_black_range_min))
             self.via_black_range_max_spin.setValue(int(settings.via_black_range_max))
+            self.debug_candidates_checkbox.setChecked(bool(settings.debug_enabled))
             self.via_roundness_spin.setValue(float(settings.via_min_roundness))
             self.min_via_width_spin.setValue(int(settings.min_via_width))
             self.max_via_width_spin.setValue(0 if settings.max_via_width is None else int(settings.max_via_width))
@@ -4166,6 +4333,7 @@ class PolygonExtractionWidget(QWidget):
             via_black_range_enabled=self.via_black_range_checkbox.isChecked(),
             via_black_range_min=self.via_black_range_min_spin.value(),
             via_black_range_max=self.via_black_range_max_spin.value(),
+            debug_enabled=self.debug_candidates_checkbox.isChecked(),
             via_min_roundness=self.via_roundness_spin.value(),
             min_via_width=self.min_via_width_spin.value(),
             max_via_width=None if max_via_width <= 0 else max_via_width,
@@ -4272,13 +4440,91 @@ class PolygonExtractionWidget(QWidget):
             display_image = self._display_image_for_current_state()
             current_state = self._workspace.current_state
             polygons = current_state.polygons if current_state else []
+            debug_candidates = current_state.debug_candidates if current_state else []
             self.polygon_editor.set_image(display_image)
             self.polygon_editor.set_polygons(polygons)
+            self.polygon_editor.set_debug_candidates(debug_candidates if self._debug_candidates_visible() else [])
+            self._sync_neighbor_frames()
         finally:
             self._updating_views = False
 
     def _display_image_for_current_state(self):
         return self._workspace.current_display_image()
+
+    def _debug_candidates_visible(self) -> bool:
+        return bool(hasattr(self, "debug_candidates_checkbox") and self.debug_candidates_checkbox.isChecked())
+
+    def _neighbor_frame_image(self, image_path: str):
+        state = getattr(self._workspace, "_state_cache", {}).get(image_path)
+        if state is not None:
+            return state.preprocessed_image if state.preprocessed_image is not None else state.source_image
+        cached = self._neighbor_image_cache.get(image_path)
+        if cached is not None:
+            return cached
+        try:
+            image = load_image_color(image_path)
+        except Exception as exc:
+            self._append_log(
+                self._tr(
+                    "neighbor_frame_load_failed_log",
+                    "Не удалось загрузить соседний кадр {path}: {error}" if self._ui_language == "ru" else "Failed to load neighbor frame {path}: {error}",
+                    path=image_path,
+                    error=exc,
+                )
+            )
+            return None
+        self._neighbor_image_cache[image_path] = image
+        return image
+
+    def _odd_neighbor_grid_size(self, value: int) -> int:
+        size = max(3, min(7, int(value)))
+        return size if size % 2 else size - 1
+
+    def _neighbor_grid_size_for_zoom(self) -> int:
+        max_grid = self._odd_neighbor_grid_size(self.neighbor_max_grid_spin.value())
+        zoom = self.polygon_editor.zoom_factor() if hasattr(self, "polygon_editor") else 1.0
+        requested = 7 if zoom < 0.25 else 5 if zoom < 0.45 else 3
+        return min(max_grid, requested)
+
+    def _sync_neighbor_frames(self) -> None:
+        if not hasattr(self, "polygon_editor"):
+            return
+        if not hasattr(self, "show_neighbor_frames_checkbox") or not self.show_neighbor_frames_checkbox.isChecked():
+            self.polygon_editor.set_neighbor_frames([], 0.0, 0, False)
+            return
+        current_path = self._workspace.current_image_path
+        image_paths = list(self._workspace.image_paths)
+        if not current_path or current_path not in image_paths:
+            self.polygon_editor.set_neighbor_frames([], 0.0, 0, False)
+            return
+        current_index = image_paths.index(current_path)
+        columns = max(1, int(self.neighbor_columns_spin.value()))
+        current_row = current_index // columns
+        current_column = current_index % columns
+        radius = self._neighbor_grid_size_for_zoom() // 2
+        frames: list[tuple[int, int, object, str]] = []
+        for row_offset in range(-radius, radius + 1):
+            for column_offset in range(-radius, radius + 1):
+                if row_offset == 0 and column_offset == 0:
+                    continue
+                row = current_row + row_offset
+                column = current_column + column_offset
+                if row < 0 or column < 0 or column >= columns:
+                    continue
+                index = row * columns + column
+                if index < 0 or index >= len(image_paths):
+                    continue
+                image_path = image_paths[index]
+                image = self._neighbor_frame_image(image_path)
+                if image is None:
+                    continue
+                frames.append((column_offset, row_offset, image, image_path))
+        self.polygon_editor.set_neighbor_frames(
+            frames,
+            float(self.neighbor_opacity_spin.value()),
+            int(self.neighbor_overlap_spin.value()),
+            True,
+        )
 
     def _queue_prepared_image_update(self, image_path: str, source_image) -> None:
         request = PreparedImageRequest(
@@ -4572,6 +4818,7 @@ class PolygonExtractionWidget(QWidget):
 
     def load_images(self, paths: list[str]) -> None:
         normalized_paths = self._workspace.replace_image_selection(paths, is_supported_image=is_image_path)
+        self._neighbor_image_cache.clear()
         self._preview_update_timer.stop()
         self._preview_pending_request = None
         self._preview_pending_signature = None

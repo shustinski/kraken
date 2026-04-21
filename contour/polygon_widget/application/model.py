@@ -48,7 +48,7 @@ class PolygonWidgetApplicationModel:
     language: str | None = None
     width: int = 1680
     height: int = 980
-    window_title: str = "Polygon Extraction"
+    window_title: str = "Contour"
     startup: StartupConfiguration = field(default_factory=StartupConfiguration)
 
     @property

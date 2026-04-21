@@ -291,11 +291,27 @@ def save_svg_preview(
     ]
     for polygon in polygons:
         color = display_settings.hole_color if polygon.is_hole else display_settings.external_color
-        points_attr = " ".join(f"{x:.3f},{y:.3f}" for x, y in polygon.points)
-        svg_lines.append(
-            f'<polygon points="{escape(points_attr)}" fill="{color}" fill-opacity="{alpha:.3f}" '
-            f'stroke="{color}" stroke-width="{display_settings.line_width:.2f}"/>'
-        )
+        if _is_ellipse_display_polygon(polygon):
+            x_values = [float(point[0]) for point in polygon.points]
+            y_values = [float(point[1]) for point in polygon.points]
+            if len(x_values) < 3 or len(y_values) < 3:
+                continue
+            left = min(x_values)
+            right = max(x_values)
+            top = min(y_values)
+            bottom = max(y_values)
+            svg_lines.append(
+                f'<ellipse cx="{(left + right) / 2.0:.3f}" cy="{(top + bottom) / 2.0:.3f}" '
+                f'rx="{max(0.5, (right - left) / 2.0):.3f}" ry="{max(0.5, (bottom - top) / 2.0):.3f}" '
+                f'fill="{color}" fill-opacity="{alpha:.3f}" stroke="{color}" '
+                f'stroke-width="{display_settings.line_width:.2f}"/>'
+            )
+        else:
+            points_attr = " ".join(f"{x:.3f},{y:.3f}" for x, y in polygon.points)
+            svg_lines.append(
+                f'<polygon points="{escape(points_attr)}" fill="{color}" fill-opacity="{alpha:.3f}" '
+                f'stroke="{color}" stroke-width="{display_settings.line_width:.2f}"/>'
+            )
     svg_lines.append("</svg>")
     output.write_text("\n".join(svg_lines), encoding="utf-8")
     return output
@@ -311,6 +327,10 @@ def save_overlay_preview(
     preview = draw_polygon_overlay(source_image, polygons, display_settings)
     imwrite_unicode_safe(output, preview)
     return output
+
+
+def _is_ellipse_display_polygon(polygon: PolygonData) -> bool:
+    return polygon.shape_hint == "box" or polygon.category == "via"
 
 
 def _copy_or_write_dataset_image(source_path: Path, target_path: Path, source_image: np.ndarray | None) -> Path:

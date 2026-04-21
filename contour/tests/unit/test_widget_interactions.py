@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 
+import cv2
 import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -12,9 +14,12 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
 from polygon_widget.application.processing import ImageProcessingState
+from polygon_widget.application.processing import DisplaySettings
 from polygon_widget.application.services.workspace_session import WorkspaceLoadResult
 from polygon_widget.domain import PolygonData, compute_polygon_metrics
+from polygon_widget.graphics_items import EditablePolygonItem
 from polygon_widget.graphics_view import EditorTool, PolygonCreateMode, PolygonEditorView
+from polygon_widget.utils import draw_polygon_overlay
 import polygon_widget.widget as widget_module
 from polygon_widget.widget import PolygonExtractionWidget
 
@@ -188,6 +193,72 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertIsNotNone(request)
         self.assertIsNone(request.preprocessed_image)
+
+    def test_neighbor_frames_render_around_current_image(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths: list[str] = []
+            for index in range(25):
+                path = os.path.join(directory, f"frame_{index:02d}.png")
+                image = np.full((12, 12), index, dtype=np.uint8)
+                cv2.imwrite(path, image)
+                paths.append(path)
+
+            self.widget.load_images(paths)
+            self.widget.neighbor_columns_spin.setValue(5)
+            self.widget.neighbor_max_grid_spin.setValue(3)
+            self.widget.show_neighbor_frames_checkbox.setChecked(True)
+            self.widget.image_list.setCurrentRow(12)
+            self._app.processEvents()
+
+            neighbor_items = self.widget.polygon_editor._editor_scene._neighbor_frame_items
+            self.assertEqual(len(neighbor_items), 8)
+            self.assertFalse(self.widget.polygon_editor._editor_scene._main_frame_item.path().isEmpty())
+            self.assertTrue(self.widget.polygon_editor._editor_scene._main_frame_item.isVisible())
+
+    def test_neighbor_grid_expands_when_zoomed_out(self) -> None:
+        self.widget.neighbor_max_grid_spin.setValue(7)
+        self.widget.polygon_editor.resetTransform()
+        self.widget.polygon_editor.scale(0.2, 0.2)
+
+        self.assertEqual(self.widget._neighbor_grid_size_for_zoom(), 7)
+
+    def test_neighbor_frame_border_is_hidden_when_neighbors_are_disabled(self) -> None:
+        self.widget.polygon_editor.set_image(np.zeros((24, 24), dtype=np.uint8))
+
+        self.widget.show_neighbor_frames_checkbox.setChecked(False)
+        self.widget._sync_neighbor_frames()
+
+        self.assertFalse(self.widget.polygon_editor._editor_scene._main_frame_item.isVisible())
+
+    def test_neighbor_frame_overlap_moves_tiles_closer(self) -> None:
+        self.widget.polygon_editor.set_image(np.zeros((12, 12), dtype=np.uint8))
+        frames = [
+            (-1, 0, np.zeros((12, 12), dtype=np.uint8), "left.png"),
+            (1, 0, np.zeros((12, 12), dtype=np.uint8), "right.png"),
+        ]
+
+        self.widget.polygon_editor.set_neighbor_frames(frames, 0.5, overlap_pixels=3, show_main_frame=True)
+
+        positions = sorted(round(item.pos().x()) for item in self.widget.polygon_editor._editor_scene._neighbor_frame_items)
+        self.assertEqual(positions, [-9, 9])
+
+    def test_display_settings_are_saved_when_changed(self) -> None:
+        saved_payloads: list[dict[str, object]] = []
+
+        class _Store:
+            def load(self) -> dict[str, object]:
+                return {}
+
+            def save(self, payload: dict[str, object]) -> None:
+                saved_payloads.append(dict(payload))
+
+        self.widget._display_settings_store = _Store()  # type: ignore[assignment]
+        self.widget.neighbor_overlap_spin.setValue(5)
+        self.widget.show_neighbor_frames_checkbox.setChecked(True)
+
+        self.assertTrue(saved_payloads)
+        self.assertEqual(saved_payloads[-1]["neighbor_overlap_pixels"], 5)
+        self.assertTrue(saved_payloads[-1]["show_neighbor_frames"])
 
 
 class PolygonEditorViewMiddleClickTests(unittest.TestCase):
@@ -504,6 +575,31 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
             if not item.polygon.is_hole
         )
         self.assertFalse(outer_item.contains(QPointF(50.0, 50.0)))
+
+    def test_box_and_via_items_display_as_ellipses(self) -> None:
+        polygon = _rectangle_polygon(20, 20, 80, 60)
+        polygon.category = "via"
+        polygon.shape_hint = "box"
+
+        item = EditablePolygonItem(polygon, DisplaySettings(show_vertices=True))
+
+        self.assertGreater(item.path().elementCount(), len(polygon.points) + 1)
+        self.assertEqual(len(item._handles), 0)
+
+    def test_overlay_preview_draws_box_and_via_as_ellipse(self) -> None:
+        polygon = _rectangle_polygon(10, 10, 30, 30)
+        polygon.category = "via"
+        polygon.shape_hint = "box"
+        image = np.zeros((48, 48, 3), dtype=np.uint8)
+
+        overlay = draw_polygon_overlay(
+            image,
+            [polygon],
+            DisplaySettings(external_color="#00FF00", fill_opacity=1.0, show_vertices=False),
+        )
+
+        self.assertEqual(int(overlay[20, 20, 1]), 255)
+        self.assertEqual(int(overlay[10, 10, 1]), 0)
 
 
 class PolygonExtractionWidgetColorPickTests(unittest.TestCase):

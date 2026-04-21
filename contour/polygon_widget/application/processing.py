@@ -106,6 +106,17 @@ class PipelineStepConfig:
 
 
 @dataclass(slots=True)
+class ContourDebugCandidate:
+    contour_index: int
+    bbox: tuple[int, int, int, int]
+    area: float = 0.0
+    perimeter: float = 0.0
+    roundness: float = 0.0
+    accepted: bool = False
+    reason: str = ""
+
+
+@dataclass(slots=True)
 class ContourExtractionSettings:
     extraction_profile: str = "conductors"
     object_type: str = "conductor"
@@ -153,6 +164,7 @@ class ContourExtractionSettings:
     via_threshold_range_min: int = 0
     via_threshold_range_max: int = 255
     via_min_roundness: float = 5.0
+    debug_enabled: bool = False
     min_hierarchy_depth: int = 0
     max_hierarchy_depth: int | None = None
     max_hole_area_ratio: float | None = None
@@ -196,6 +208,7 @@ class ContourExtractionSettings:
             "via_black_range_min": self.via_black_range_min,
             "via_black_range_max": self.via_black_range_max,
             "via_min_roundness": self.via_min_roundness,
+            "debug_enabled": self.debug_enabled,
             "min_hierarchy_depth": self.min_hierarchy_depth,
             "max_hierarchy_depth": self.max_hierarchy_depth,
             "max_hole_area_ratio": self.max_hole_area_ratio,
@@ -269,6 +282,7 @@ class ContourExtractionSettings:
             via_threshold_range_min=max(0, min(255, int(payload.get("via_threshold_range_min", 0)))),
             via_threshold_range_max=max(0, min(255, int(payload.get("via_threshold_range_max", 255)))),
             via_min_roundness=max(0.0, float(payload.get("via_min_roundness", 5.0))),
+            debug_enabled=bool(payload.get("debug_enabled", False)),
             min_hierarchy_depth=max(0, int(payload.get("min_hierarchy_depth", 0))),
             max_hierarchy_depth=None
             if max_hierarchy_depth in (None, "", 0, 0.0)
@@ -358,6 +372,7 @@ class ImageProcessingState:
     pipeline_config: dict[str, Any] | None = None
     mask_image: Any | None = None
     polygons: list[PolygonData] = field(default_factory=list)
+    debug_candidates: list[ContourDebugCandidate] = field(default_factory=list)
     loaded_cif_path: str | None = None
     reference_polygons: list[PolygonData] = field(default_factory=list)
 
@@ -370,6 +385,7 @@ class BatchImageResult:
     pipeline_config: dict[str, Any] | None
     mask_image: Any | None
     polygons: list[PolygonData]
+    debug_candidates: list[ContourDebugCandidate] = field(default_factory=list)
     saved_files: dict[str, str] = field(default_factory=dict)
     error: str | None = None
 

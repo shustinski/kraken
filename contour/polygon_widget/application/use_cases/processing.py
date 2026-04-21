@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from ..processing import BatchImageResult, ContourExtractionSettings, DisplaySettings, SaveOptions
-from ...contour_extractor import extract_polygons
+from ...contour_extractor import extract_polygons, extract_polygons_with_debug
 from ...pipeline import PreprocessingPipeline
 from ...serializers import save_result_bundle
 from ...utils import ensure_binary_mask, ensure_uint8, load_image_color
@@ -112,28 +112,28 @@ def _expected_via_span(settings: ContourExtractionSettings) -> int:
 
 
 def _via_local_range_mask(gray: np.ndarray, low: int, high: int, settings: ContourExtractionSettings, *, bright: bool) -> np.ndarray:
-    column_normalized = _normalize_columns(gray)
-    intensity_mask = cv2.bitwise_or(_range_mask(gray, low, high), _range_mask(column_normalized, low, high))
-
     expected_span = _expected_via_span(settings)
-    background_size = _odd_kernel_size(expected_span * 2.5, minimum=9)
-    background_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (background_size, background_size))
-    smoothed = cv2.medianBlur(column_normalized, 3)
-    operation = cv2.MORPH_TOPHAT if bright else cv2.MORPH_BLACKHAT
-    response = cv2.morphologyEx(smoothed, operation, background_kernel)
+    column_normalized = _normalize_columns(gray)
+    row_normalized = _normalize_rows(gray)
+    clahe_gray = _clahe_gray(gray)
+    clahe_columns = _clahe_gray(column_normalized)
 
-    nonzero = response[response > 0]
-    if nonzero.size:
-        cutoff = max(6.0, min(45.0, float(np.percentile(nonzero, 92)) * 0.45))
-        response_mask = np.where(response >= cutoff, 255, 0).astype(np.uint8)
-    else:
-        response_mask = np.zeros_like(gray, dtype=np.uint8)
+    intensity_mask = np.zeros_like(gray, dtype=np.uint8)
+    for candidate in (gray, column_normalized):
+        intensity_mask = cv2.bitwise_or(intensity_mask, _range_mask(candidate, low, high))
+
+    response = _via_multiscale_response(
+        [gray, column_normalized, row_normalized, clahe_gray, clahe_columns],
+        expected_span,
+        bright=bright,
+    )
+    response_mask = _response_threshold_mask(response, intensity_mask)
 
     seed_mask = cv2.bitwise_and(response_mask, cv2.dilate(intensity_mask, np.ones((3, 3), dtype=np.uint8), iterations=1))
     if cv2.countNonZero(seed_mask) == 0:
         seed_mask = intensity_mask
 
-    support_size = _odd_kernel_size(max(3, expected_span * 1.2), minimum=3)
+    support_size = _odd_kernel_size(max(3, expected_span * 1.35), minimum=3)
     support_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (support_size, support_size))
     support_mask = cv2.bitwise_and(intensity_mask, cv2.dilate(seed_mask, support_kernel, iterations=1))
     if cv2.countNonZero(support_mask) > 0:
@@ -143,6 +143,65 @@ def _via_local_range_mask(gray: np.ndarray, low: int, high: int, settings: Conto
     object_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (object_size, object_size))
     mask = cv2.morphologyEx(seed_mask, cv2.MORPH_CLOSE, object_kernel, iterations=1)
     return ensure_binary_mask(mask)
+
+
+def _clahe_gray(gray: np.ndarray) -> np.ndarray:
+    data = ensure_uint8(gray)
+    tile = max(4, min(16, _odd_kernel_size(min(data.shape[:2]) / 8.0, minimum=5)))
+    return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(tile, tile)).apply(data)
+
+
+def _normalize_rows(gray: np.ndarray) -> np.ndarray:
+    data = ensure_uint8(gray)
+    normalized = np.zeros_like(data, dtype=np.uint8)
+    for row_index in range(data.shape[0]):
+        row = data[row_index, :].astype(np.float32)
+        minimum = float(row.min())
+        maximum = float(row.max())
+        if maximum - minimum < 1e-6:
+            normalized[row_index, :] = data[row_index, :]
+            continue
+        normalized[row_index, :] = np.clip((row - minimum) * (255.0 / (maximum - minimum)), 0, 255).astype(np.uint8)
+    return normalized
+
+
+def _via_multiscale_response(images: list[np.ndarray], expected_span: int, *, bright: bool) -> np.ndarray:
+    response = np.zeros_like(images[0], dtype=np.uint8)
+    kernel_scales = (1.7, 2.5, 3.4)
+    operation = cv2.MORPH_TOPHAT if bright else cv2.MORPH_BLACKHAT
+    for image in images:
+        smoothed = cv2.medianBlur(ensure_uint8(image), 3)
+        for scale in kernel_scales:
+            kernel_size = _odd_kernel_size(expected_span * scale, minimum=7)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            local = cv2.morphologyEx(smoothed, operation, kernel)
+            response = cv2.max(response, local)
+        response = cv2.max(response, _local_zscore_response(smoothed, expected_span, bright=bright))
+    return response
+
+
+def _local_zscore_response(gray: np.ndarray, expected_span: int, *, bright: bool) -> np.ndarray:
+    data = ensure_uint8(gray).astype(np.float32)
+    window = _odd_kernel_size(expected_span * 3.0, minimum=9)
+    mean = cv2.blur(data, (window, window))
+    mean_square = cv2.blur(data * data, (window, window))
+    variance = np.maximum(mean_square - mean * mean, 1.0)
+    std = np.sqrt(variance)
+    delta = data - mean if bright else mean - data
+    zscore = np.clip((delta / std) * 42.0, 0.0, 255.0)
+    return zscore.astype(np.uint8)
+
+
+def _response_threshold_mask(response: np.ndarray, intensity_mask: np.ndarray) -> np.ndarray:
+    response_values = response[response > 0]
+    if response_values.size == 0:
+        return np.zeros_like(response, dtype=np.uint8)
+    in_range_values = response[intensity_mask > 0]
+    sample = in_range_values[in_range_values > 0]
+    if sample.size == 0:
+        sample = response_values
+    cutoff = max(5.0, min(52.0, float(np.percentile(sample, 82)) * 0.55))
+    return np.where(response >= cutoff, 255, 0).astype(np.uint8)
 
 
 def process_image_path(
@@ -163,7 +222,11 @@ def process_image_path(
     source = source_image if source_image is not None else image_loader(image_path)
     preprocessed = preprocessed_image if preprocessed_image is not None else pipeline.apply(source)
     mask = apply_via_vectorization_mask(preprocessed, contour_settings)
-    polygons = extract_polygons(mask, contour_settings)
+    if contour_settings.debug_enabled:
+        polygons, debug_candidates = extract_polygons_with_debug(mask, contour_settings)
+    else:
+        polygons = extract_polygons(mask, contour_settings)
+        debug_candidates = []
     saved_files: dict[str, str] = {}
     if output_directory:
         saved_files = save_bundle(
@@ -188,6 +251,7 @@ def process_image_path(
         pipeline_config=dict(pipeline_config),
         mask_image=result_mask,
         polygons=polygons,
+        debug_candidates=debug_candidates,
         saved_files=saved_files,
     )
 

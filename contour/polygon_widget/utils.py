@@ -138,9 +138,14 @@ def draw_polygon_overlay(
         if points.shape[0] < 3:
             continue
         color = hex_to_bgr(display_settings.hole_color if polygon.is_hole else display_settings.external_color)
-        cv2.polylines(overlay, [points], True, color, thickness=line_width, lineType=cv2.LINE_AA)
-        cv2.fillPoly(overlay, [points], color)
-        if display_settings.show_vertices:
+        if _is_ellipse_display_polygon(polygon):
+            center, axes = _ellipse_geometry_from_points(points)
+            cv2.ellipse(overlay, center, axes, 0.0, 0.0, 360.0, color, thickness=line_width, lineType=cv2.LINE_AA)
+            cv2.ellipse(overlay, center, axes, 0.0, 0.0, 360.0, color, thickness=-1, lineType=cv2.LINE_AA)
+        else:
+            cv2.polylines(overlay, [points], True, color, thickness=line_width, lineType=cv2.LINE_AA)
+            cv2.fillPoly(overlay, [points], color)
+        if display_settings.show_vertices and not _is_ellipse_display_polygon(polygon):
             for x_coord, y_coord in polygon.points:
                 cv2.circle(
                     overlay,
@@ -167,6 +172,20 @@ def draw_polygon_overlay(
     else:
         base = overlay
     return base
+
+
+def _is_ellipse_display_polygon(polygon: PolygonData) -> bool:
+    return polygon.shape_hint == "box" or polygon.category == "via"
+
+
+def _ellipse_geometry_from_points(points: np.ndarray) -> tuple[tuple[int, int], tuple[int, int]]:
+    x_min = int(points[:, 0].min())
+    x_max = int(points[:, 0].max())
+    y_min = int(points[:, 1].min())
+    y_max = int(points[:, 1].max())
+    center = (int(round((x_min + x_max) / 2.0)), int(round((y_min + y_max) / 2.0)))
+    axes = (max(1, int(round((x_max - x_min) / 2.0))), max(1, int(round((y_max - y_min) / 2.0))))
+    return center, axes
 
 
 def hex_to_bgr(value: str) -> tuple[int, int, int]:

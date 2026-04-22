@@ -1,5 +1,5 @@
 #define MyAppName "Contour"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.3.5"
 #define MyAppPublisher "Contour"
 #define MyAppExeName "Contour.exe"
 #define MyAppDistDir "..\\dist\\Contour"

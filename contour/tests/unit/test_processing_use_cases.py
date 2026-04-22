@@ -115,6 +115,32 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertIsNone(result.mask_image)
         self.assertEqual(len(result.polygons), 1)
 
+    def test_conductor_gradient_refines_mask_to_source_edges(self) -> None:
+        source_image = np.zeros((80, 100), dtype=np.uint8)
+        cv2.rectangle(source_image, (25, 20), (74, 59), 220, thickness=-1)
+        loose_mask = np.zeros_like(source_image)
+        cv2.rectangle(loose_mask, (20, 15), (79, 64), 255, thickness=-1)
+
+        result = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(
+                object_type="conductor",
+                output_mode="polygon",
+                min_area=10.0,
+                epsilon=1.0,
+                min_polygon_angle=0.0,
+                conductor_gradient_enabled=True,
+                conductor_gradient_min_strength=10.0,
+                conductor_gradient_band_radius=8,
+            ),
+            source_image=source_image,
+            preprocessed_image=loose_mask,
+        )
+
+        self.assertEqual(len(result.polygons), 1)
+        self.assertEqual(result.polygons[0].bbox, (25, 20, 50, 40))
+
     def test_via_profile_uses_white_range_parameters(self) -> None:
         source_image = np.zeros((40, 40), dtype=np.uint8)
         source_image[15:24, 16:25] = 220
@@ -347,6 +373,131 @@ class ProcessingUseCasesTests(unittest.TestCase):
 
         self.assertEqual(len(result.polygons), 1)
         self.assertTrue(any(candidate.accepted and candidate.reason.startswith("accepted:gradient") for candidate in result.debug_candidates))
+
+    def test_via_profile_gradient_detects_bright_spot_with_ui_coverage(self) -> None:
+        source_image = np.full((64, 64), 90, dtype=np.uint8)
+        cv2.circle(source_image, (32, 32), 4, 210, thickness=-1)
+
+        result = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                via_size_mode="fixed",
+                fixed_via_widths=[9],
+                fixed_via_heights=[9],
+                min_area=3.0,
+                via_white_range_enabled=True,
+                via_white_range_min=0,
+                via_white_range_max=255,
+                via_black_range_enabled=False,
+                via_detector_gradient_enabled=True,
+                via_detector_spot_enabled=False,
+                via_detector_hough_enabled=False,
+                via_detector_components_enabled=False,
+                via_detector_contours_enabled=False,
+                via_detector_morphology_enabled=False,
+                via_detector_template_enabled=False,
+                via_detector_blob_enabled=False,
+                via_gradient_min_strength=19.0,
+                via_gradient_min_coverage=0.20,
+                via_min_roundness=40.0,
+                debug_enabled=True,
+            ),
+            source_image=source_image,
+        )
+
+        self.assertEqual(len(result.polygons), 1)
+        self.assertTrue(any(candidate.accepted and candidate.reason.startswith("accepted:gradient") for candidate in result.debug_candidates))
+
+    def test_via_profile_gradient_detects_bright_spots_on_trace(self) -> None:
+        rng = np.random.default_rng(2)
+        source_image = np.full((120, 220), 75, dtype=np.uint8)
+        source_image = np.clip(source_image + rng.normal(0, 10, source_image.shape), 0, 255).astype(np.uint8)
+        cv2.rectangle(source_image, (0, 70), (219, 88), 145, thickness=-1)
+        expected_x = (25, 48, 72, 98, 130, 158, 190)
+        for x_coord in expected_x:
+            cv2.circle(source_image, (x_coord, 79), 5, 235, thickness=-1)
+        source_image = cv2.GaussianBlur(source_image, (3, 3), 0)
+
+        result = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                via_size_mode="fixed",
+                fixed_via_widths=[12],
+                fixed_via_heights=[12],
+                min_area=3.0,
+                via_white_range_enabled=False,
+                via_black_range_enabled=False,
+                via_detector_gradient_enabled=True,
+                via_detector_spot_enabled=False,
+                via_detector_hough_enabled=False,
+                via_detector_components_enabled=False,
+                via_detector_contours_enabled=False,
+                via_detector_morphology_enabled=False,
+                via_detector_template_enabled=False,
+                via_detector_blob_enabled=False,
+                via_gradient_min_strength=10.0,
+                via_gradient_min_coverage=0.22,
+                via_min_roundness=0.0,
+                debug_enabled=True,
+            ),
+            source_image=source_image,
+        )
+
+        accepted_centers = [
+            (candidate.bbox[0] + candidate.bbox[2] / 2.0, candidate.bbox[1] + candidate.bbox[3] / 2.0)
+            for candidate in result.debug_candidates
+            if candidate.accepted
+        ]
+        self.assertEqual(len(result.polygons), len(expected_x))
+        for x_coord in expected_x:
+            self.assertTrue(any(abs(center_x - x_coord) <= 3.0 and abs(center_y - 79) <= 3.0 for center_x, center_y in accepted_centers))
+
+    def test_via_profile_gradient_rejects_linear_edges(self) -> None:
+        source_image = np.full((96, 96), 80, dtype=np.uint8)
+        cv2.line(source_image, (8, 48), (88, 48), 205, thickness=3)
+        cv2.line(source_image, (48, 8), (48, 88), 205, thickness=3)
+
+        result = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                via_size_mode="fixed",
+                fixed_via_widths=[21],
+                fixed_via_heights=[21],
+                min_area=5.0,
+                via_white_range_enabled=True,
+                via_white_range_min=0,
+                via_white_range_max=255,
+                via_black_range_enabled=False,
+                via_detector_gradient_enabled=True,
+                via_detector_spot_enabled=False,
+                via_detector_hough_enabled=False,
+                via_detector_components_enabled=False,
+                via_detector_contours_enabled=False,
+                via_detector_morphology_enabled=False,
+                via_detector_template_enabled=False,
+                via_detector_blob_enabled=False,
+                via_gradient_min_strength=8.0,
+                via_gradient_min_coverage=0.24,
+                via_min_roundness=40.0,
+                debug_enabled=True,
+            ),
+            source_image=source_image,
+        )
+
+        self.assertEqual(len(result.polygons), 0)
+        self.assertTrue(all(not candidate.accepted for candidate in result.debug_candidates))
 
     def test_via_profile_detects_contacts_with_saved_templates_only(self) -> None:
         source_image = np.full((80, 120), 60, dtype=np.uint8)

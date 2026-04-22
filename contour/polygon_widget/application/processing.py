@@ -132,6 +132,8 @@ class ContourDebugCandidate:
     roundness: float = 0.0
     accepted: bool = False
     reason: str = ""
+    source: str = ""
+    score: float = 0.0
 
 
 @dataclass(slots=True)
@@ -144,6 +146,7 @@ class ContourExtractionSettings:
     epsilon: float = 2.0
     epsilon_relative: bool = False
     preserve_corners: bool = False
+    min_polygon_angle: float = 0.0
     min_area: float = 10.0
     max_area: float | None = None
     min_perimeter: float = 10.0
@@ -207,6 +210,9 @@ class ContourExtractionSettings:
     min_hierarchy_depth: int = 0
     max_hierarchy_depth: int | None = None
     max_hole_area_ratio: float | None = None
+    conductor_gradient_enabled: bool = False
+    conductor_gradient_min_strength: float = 18.0
+    conductor_gradient_band_radius: int = 3
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -218,6 +224,7 @@ class ContourExtractionSettings:
             "epsilon": self.epsilon,
             "epsilon_relative": self.epsilon_relative,
             "preserve_corners": self.preserve_corners,
+            "min_polygon_angle": self.min_polygon_angle,
             "min_area": self.min_area,
             "max_area": self.max_area,
             "min_perimeter": self.min_perimeter,
@@ -272,6 +279,9 @@ class ContourExtractionSettings:
             "min_hierarchy_depth": self.min_hierarchy_depth,
             "max_hierarchy_depth": self.max_hierarchy_depth,
             "max_hole_area_ratio": self.max_hole_area_ratio,
+            "conductor_gradient_enabled": self.conductor_gradient_enabled,
+            "conductor_gradient_min_strength": self.conductor_gradient_min_strength,
+            "conductor_gradient_band_radius": self.conductor_gradient_band_radius,
         }
 
     @classmethod
@@ -304,6 +314,7 @@ class ContourExtractionSettings:
             epsilon=float(payload.get("epsilon", 2.0)),
             epsilon_relative=bool(payload.get("epsilon_relative", False)),
             preserve_corners=bool(payload.get("preserve_corners", False)),
+            min_polygon_angle=max(0.0, min(180.0, float(payload.get("min_polygon_angle", 0.0)))),
             min_area=float(payload.get("min_area", 10.0)),
             max_area=None if max_area in (None, "", 0, 0.0) else float(max_area),
             min_perimeter=float(payload.get("min_perimeter", 10.0)),
@@ -371,6 +382,9 @@ class ContourExtractionSettings:
             max_hole_area_ratio=None
             if max_hole_area_ratio in (None, "", 0, 0.0)
             else max(0.0, float(max_hole_area_ratio)),
+            conductor_gradient_enabled=bool(payload.get("conductor_gradient_enabled", False)),
+            conductor_gradient_min_strength=max(0.0, min(255.0, float(payload.get("conductor_gradient_min_strength", 18.0)))),
+            conductor_gradient_band_radius=max(0, min(25, int(payload.get("conductor_gradient_band_radius", 3)))),
         )
 
 

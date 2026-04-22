@@ -45,6 +45,7 @@ class EditablePolygonItem(QGraphicsPathItem):
         display_settings: DisplaySettings,
         selected: bool,
         cutout_polygons: list[PolygonData] | None = None,
+        custom_color: str | None = None,
     ) -> None:
         self._polygon = polygon.clone()
         path = QPainterPath()
@@ -54,7 +55,7 @@ class EditablePolygonItem(QGraphicsPathItem):
         path.setFillRule(Qt.FillRule.OddEvenFill)
         self.setPath(path)
 
-        color_name = display_settings.selected_color if selected else (
+        color_name = display_settings.selected_color if selected else custom_color or (
             display_settings.hole_color if polygon.is_hole else display_settings.external_color
         )
         outline = QColor(color_name)

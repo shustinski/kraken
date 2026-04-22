@@ -9,6 +9,18 @@ from polygon_widget.application.processing import ContourExtractionSettings
 from polygon_widget.contour_extractor import extract_polygons
 
 
+def _angle(prev_point: tuple[float, float], current_point: tuple[float, float], next_point: tuple[float, float]) -> float:
+    first = np.asarray(prev_point, dtype=np.float32) - np.asarray(current_point, dtype=np.float32)
+    second = np.asarray(next_point, dtype=np.float32) - np.asarray(current_point, dtype=np.float32)
+    first_norm = float(np.linalg.norm(first))
+    second_norm = float(np.linalg.norm(second))
+    if first_norm <= 1e-6 or second_norm <= 1e-6:
+        return 180.0
+    cosine = float(np.dot(first, second) / (first_norm * second_norm))
+    cosine = max(-1.0, min(1.0, cosine))
+    return float(np.degrees(np.arccos(cosine)))
+
+
 class ContourExtractorFilterTests(unittest.TestCase):
     def test_excludes_border_touching_contours(self) -> None:
         mask = np.zeros((64, 64), dtype=np.uint8)
@@ -184,6 +196,31 @@ class ContourExtractorFilterTests(unittest.TestCase):
         self.assertEqual(len(baseline), 1)
         self.assertEqual(len(simplified), 1)
         self.assertLess(len(simplified[0].points), len(baseline[0].points))
+
+    def test_min_polygon_angle_removes_acute_vertices(self) -> None:
+        mask = np.zeros((80, 100), dtype=np.uint8)
+        points = np.array([[10, 10], [80, 10], [80, 40], [50, 40], [45, 20], [40, 40], [10, 40]], dtype=np.int32)
+        cv2.fillPoly(mask, [points], 255)
+
+        polygons = extract_polygons(
+            mask,
+            ContourExtractionSettings(
+                object_type="conductor",
+                output_mode="polygon",
+                epsilon=1.0,
+                min_area=1.0,
+                min_polygon_angle=90.0,
+            ),
+        )
+
+        self.assertEqual(len(polygons), 1)
+        polygon_points = polygons[0].points
+        self.assertTrue(
+            all(
+                _angle(polygon_points[index - 1], polygon_points[index], polygon_points[(index + 1) % len(polygon_points)]) >= 90.0
+                for index in range(len(polygon_points))
+            )
+        )
 
 
 if __name__ == "__main__":

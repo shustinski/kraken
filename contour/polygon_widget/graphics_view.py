@@ -44,6 +44,7 @@ from .i18n import active_language, tr
 
 class EditorTool(str, Enum):
     SELECT = "select"
+    SELECT_AREA = "select_area"
     PAN = "pan"
     RULER = "ruler"
     ADD_POLYGON = "add_polygon"
@@ -83,6 +84,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygons: dict[int, PolygonData] = {}
         self._polygon_items: dict[int, EditablePolygonItem] = {}
         self._selected_polygon_id: int | None = None
+        self._selected_polygon_ids: set[int] = set()
         self._next_polygon_id = 1
         self._polygon_overlays_visible = True
 
@@ -91,8 +93,12 @@ class PolygonEditorScene(QGraphicsScene):
         self.addItem(self._image_item)
         self._image_rect = QRectF(0, 0, 1, 1)
         self._neighbor_frame_items: list[QGraphicsPixmapItem] = []
+        self._neighbor_frame_paths: dict[QGraphicsPixmapItem, str] = {}
         self._neighbor_grid_bounds: QRectF | None = None
         self._debug_candidate_items: list[QGraphicsPathItem | QGraphicsSimpleTextItem] = []
+        self._extra_layer_items: list[QGraphicsPixmapItem] = []
+        self._random_object_colors_enabled = False
+        self._object_colors: dict[int, str] = {}
 
         self._main_frame_item = QGraphicsPathItem()
         self._main_frame_item.setZValue(2)
@@ -200,6 +206,7 @@ class PolygonEditorScene(QGraphicsScene):
         for item in self._neighbor_frame_items:
             self.removeItem(item)
         self._neighbor_frame_items.clear()
+        self._neighbor_frame_paths.clear()
         self._neighbor_grid_bounds = None
         self._main_frame_item.hide()
         self._update_scene_rect()
@@ -237,42 +244,22 @@ class PolygonEditorScene(QGraphicsScene):
             item.setPos(float(column_offset) * step_x, float(row_offset) * step_y)
             self.addItem(item)
             self._neighbor_frame_items.append(item)
+            self._neighbor_frame_paths[item] = str(image_path)
             bounds = bounds.united(QRectF(item.pos().x(), item.pos().y(), main_width, main_height))
         self._neighbor_grid_bounds = bounds if self._neighbor_frame_items else None
         self._update_scene_rect()
+
+    def neighbor_frame_path_at(self, scene_pos: QPointF) -> str | None:
+        for item in self.items(scene_pos):
+            if isinstance(item, QGraphicsPixmapItem) and item in self._neighbor_frame_paths:
+                return self._neighbor_frame_paths[item]
+        return None
 
     def set_debug_candidates(self, candidates: list[object]) -> None:
         for item in self._debug_candidate_items:
             self.removeItem(item)
         self._debug_candidate_items.clear()
-        for candidate in candidates[:300]:
-            bbox = getattr(candidate, "bbox", None)
-            if not bbox or len(bbox) != 4:
-                continue
-            accepted = bool(getattr(candidate, "accepted", False))
-            reason = str(getattr(candidate, "reason", ""))
-            roundness = float(getattr(candidate, "roundness", 0.0))
-            x_coord, y_coord, width, height = bbox
-            path = QPainterPath()
-            path.addRect(QRectF(float(x_coord), float(y_coord), float(width), float(height)))
-            item = QGraphicsPathItem(path)
-            item.setZValue(30)
-            color = QColor("#22C55E" if accepted else "#EF4444")
-            pen = QPen(color, 1.5, Qt.PenStyle.SolidLine if accepted else Qt.PenStyle.DashLine)
-            pen.setCosmetic(True)
-            item.setPen(pen)
-            item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-            item.setToolTip(f"{'accepted' if accepted else 'rejected'}: {reason}, roundness={roundness:.1f}")
-            self.addItem(item)
-            self._debug_candidate_items.append(item)
-
-            label = QGraphicsSimpleTextItem(f"{roundness:.0f} {reason}")
-            label.setZValue(31)
-            label.setBrush(QBrush(color))
-            label.setFlag(QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
-            label.setPos(float(x_coord), float(y_coord) - 12.0)
-            self.addItem(label)
-            self._debug_candidate_items.append(label)
+        _ = candidates
 
     def _update_main_frame(self) -> None:
         path = QPainterPath()
@@ -291,6 +278,31 @@ class PolygonEditorScene(QGraphicsScene):
     def set_display_settings(self, settings: DisplaySettings) -> None:
         self._display_settings = settings
         self._refresh_all_items()
+
+    def set_random_object_colors_enabled(self, enabled: bool) -> None:
+        self._random_object_colors_enabled = bool(enabled)
+        self._refresh_all_items()
+
+    def set_extra_layers(self, layers: list[dict[str, object]]) -> None:
+        for item in self._extra_layer_items:
+            self.removeItem(item)
+        self._extra_layer_items.clear()
+        for layer in layers:
+            if not bool(layer.get("visible", True)):
+                continue
+            pixmap = layer.get("pixmap")
+            if not isinstance(pixmap, QPixmap) or pixmap.isNull():
+                continue
+            dx = float(layer.get("dx", 0.0) or 0.0)
+            dy = float(layer.get("dy", 0.0) or 0.0)
+            opacity = max(0.0, min(1.0, float(layer.get("opacity", 0.35) or 0.35)))
+            item = QGraphicsPixmapItem(pixmap)
+            item.setZValue(0.8)
+            item.setOpacity(opacity)
+            item.setPos(dx, dy)
+            item.setToolTip(str(layer.get("name", "")))
+            self.addItem(item)
+            self._extra_layer_items.append(item)
 
     def set_polygon_overlays_visible(self, visible: bool) -> None:
         self._polygon_overlays_visible = bool(visible)
@@ -312,12 +324,14 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygon_items.clear()
         self._polygons.clear()
         self._selected_polygon_id = None
+        self._selected_polygon_ids.clear()
         self._next_polygon_id = 1
         for polygon in polygons:
             self._add_polygon_internal(polygon.clone(), emit_signal=False, refresh=False)
         if polygons:
             self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
             self._selected_polygon_id = polygons[0].id
+            self._selected_polygon_ids = {polygons[0].id}
         self._refresh_all_items()
         self.polygonsChanged.emit()
         self.activePolygonChanged.emit(self._selected_polygon_id)
@@ -325,12 +339,52 @@ class PolygonEditorScene(QGraphicsScene):
     def selected_polygon_id(self) -> int | None:
         return self._selected_polygon_id
 
-    def select_polygon(self, polygon_id: int | None) -> None:
+    def select_polygon(self, polygon_id: int | None, *, additive: bool = False) -> None:
         if polygon_id is not None and polygon_id not in self._polygons:
             polygon_id = None
-        self._selected_polygon_id = polygon_id
+        if polygon_id is None:
+            if not additive:
+                self._selected_polygon_ids.clear()
+            self._selected_polygon_id = None
+        elif additive:
+            if polygon_id in self._selected_polygon_ids:
+                self._selected_polygon_ids.remove(polygon_id)
+                self._selected_polygon_id = next(iter(sorted(self._selected_polygon_ids)), None)
+            else:
+                self._selected_polygon_ids.add(polygon_id)
+                self._selected_polygon_id = polygon_id
+        else:
+            self._selected_polygon_ids = {polygon_id}
+            self._selected_polygon_id = polygon_id
         self._refresh_all_items()
-        self.activePolygonChanged.emit(polygon_id)
+        self.activePolygonChanged.emit(self._selected_polygon_id)
+
+    def select_polygons(self, polygon_ids: list[int]) -> None:
+        selected_ids = {polygon_id for polygon_id in polygon_ids if polygon_id in self._polygons}
+        self._selected_polygon_ids = selected_ids
+        self._selected_polygon_id = min(selected_ids) if selected_ids else None
+        self._refresh_all_items()
+        self.activePolygonChanged.emit(self._selected_polygon_id)
+
+    def select_polygons_in_rect(self, rect: QRectF, *, additive: bool = False) -> None:
+        normalized = rect.normalized()
+        if normalized.width() <= 0.0 or normalized.height() <= 0.0:
+            if not additive:
+                self.select_polygon(None)
+            return
+        selected_ids = {
+            polygon_id
+            for polygon_id, polygon in self._polygons.items()
+            if _polygon_data_rect(polygon).intersects(normalized)
+        }
+        if additive:
+            selected_ids.update(self._selected_polygon_ids)
+        self.select_polygons(sorted(selected_ids))
+
+    def polygon_snapshot(self, polygon_id: int | None) -> PolygonData | None:
+        if polygon_id is None or polygon_id not in self._polygons:
+            return None
+        return self._polygons[polygon_id].clone()
 
     def polygon_at(self, scene_pos: QPointF) -> int | None:
         for item in self.items(scene_pos):
@@ -347,7 +401,16 @@ class PolygonEditorScene(QGraphicsScene):
         candidate_ids = []
         if self._selected_polygon_id is not None:
             candidate_ids.append(self._selected_polygon_id)
-        candidate_ids.extend([polygon_id for polygon_id in sorted(self._polygons) if polygon_id != self._selected_polygon_id])
+        candidate_ids.extend(
+            polygon_id
+            for polygon_id in sorted(self._selected_polygon_ids)
+            if polygon_id != self._selected_polygon_id
+        )
+        candidate_ids.extend(
+            polygon_id
+            for polygon_id in sorted(self._polygons)
+            if polygon_id not in self._selected_polygon_ids
+        )
         for polygon_id in candidate_ids:
             polygon = self._polygons[polygon_id]
             for index, (x_coord, y_coord) in enumerate(polygon.points):
@@ -363,11 +426,69 @@ class PolygonEditorScene(QGraphicsScene):
         return True
 
     def delete_polygon(self, polygon_id: int | None = None) -> bool:
-        target_id = polygon_id if polygon_id is not None else self._selected_polygon_id
-        if target_id is None or target_id not in self._polygons:
+        target_ids = [polygon_id] if polygon_id is not None else sorted(self._selected_polygon_ids)
+        if not target_ids and self._selected_polygon_id is not None:
+            target_ids = [self._selected_polygon_id]
+        target_polygons = [self._polygons[target_id].clone() for target_id in target_ids if target_id in self._polygons]
+        if not target_polygons:
             return False
-        self.undo_stack.push(DeletePolygonCommand(self, self._polygons[target_id]))
+        self.undo_stack.beginMacro("Delete polygons")
+        try:
+            for target_polygon in target_polygons:
+                self.undo_stack.push(DeletePolygonCommand(self, target_polygon))
+        finally:
+            self.undo_stack.endMacro()
         return True
+
+    def selected_polygons(self) -> list[PolygonData]:
+        return [
+            self._polygons[polygon_id].clone()
+            for polygon_id in sorted(self._selected_polygon_ids)
+            if polygon_id in self._polygons
+        ]
+
+    def add_cloned_polygons_at(
+        self,
+        polygons: list[PolygonData],
+        source_anchor: QPointF,
+        target_anchor: QPointF,
+    ) -> list[int]:
+        if not polygons:
+            return []
+        dx = target_anchor.x() - source_anchor.x()
+        dy = target_anchor.y() - source_anchor.y()
+        id_map: dict[int, int] = {}
+        new_polygons: list[PolygonData] = []
+        for polygon in polygons:
+            shifted_points = [(float(x) + dx, float(y) + dy) for x, y in polygon.points]
+            area, perimeter, bbox = compute_polygon_metrics(shifted_points)
+            new_id = self._next_polygon_id
+            self._next_polygon_id += 1
+            id_map[polygon.id] = new_id
+            new_polygons.append(
+                PolygonData(
+                    id=new_id,
+                    points=shifted_points,
+                    is_hole=polygon.is_hole,
+                    parent_id=polygon.parent_id,
+                    category=polygon.category,
+                    shape_hint=polygon.shape_hint,
+                    area=area,
+                    perimeter=perimeter,
+                    bbox=bbox,
+                )
+            )
+        for polygon in new_polygons:
+            polygon.parent_id = None if polygon.parent_id is None else id_map.get(polygon.parent_id)
+        self.undo_stack.beginMacro("Paste polygons")
+        try:
+            for polygon in new_polygons:
+                self.undo_stack.push(AddPolygonCommand(self, polygon))
+        finally:
+            self.undo_stack.endMacro()
+        if new_polygons:
+            self.select_polygons([polygon.id for polygon in new_polygons])
+        return [polygon.id for polygon in new_polygons]
 
     def add_vertex_at(self, polygon_id: int, scene_pos: QPointF) -> bool:
         if polygon_id not in self._polygons:
@@ -807,9 +928,17 @@ class PolygonEditorScene(QGraphicsScene):
             item.update_from_polygon(
                 self._polygons[polygon_id],
                 self._display_settings,
-                selected=polygon_id == self._selected_polygon_id,
+                selected=polygon_id in self._selected_polygon_ids,
                 cutout_polygons=self._cutout_polygons_for(polygon_id),
+                custom_color=self._object_color_for(polygon_id),
             )
+
+    def _object_color_for(self, polygon_id: int) -> str | None:
+        if not self._random_object_colors_enabled:
+            return None
+        if polygon_id not in self._object_colors:
+            self._object_colors[polygon_id] = _stable_object_color(polygon_id)
+        return self._object_colors[polygon_id]
 
     def _cutout_polygons_for(self, polygon_id: int) -> list[PolygonData]:
         polygon = self._polygons.get(polygon_id)
@@ -885,16 +1014,27 @@ class PolygonEditorScene(QGraphicsScene):
         reserved_ids: set[int] | None = None,
     ) -> list[PolygonData]:
         reserved = reserved_ids or set()
-        reusable_ids = [polygon_id for polygon_id in sorted(replaced_ids) if polygon_id not in reserved]
-        allocated_ids = self._allocate_polygon_ids(reusable_ids, len(polygons))
+        reusable_ids = [
+            polygon_id
+            for polygon_id in sorted(
+                replaced_ids,
+                key=lambda current_id: (
+                    -abs(float(self._polygons[current_id].area)) if current_id in self._polygons else 0.0,
+                    current_id,
+                ),
+            )
+            if polygon_id not in reserved
+        ]
+        sorted_polygons = sorted(polygons, key=lambda polygon: -abs(float(polygon.area)))
+        allocated_ids = self._allocate_polygon_ids(reusable_ids, len(sorted_polygons))
         id_map = {
             polygon.id: allocated_id
-            for polygon, allocated_id in zip(polygons, allocated_ids, strict=False)
+            for polygon, allocated_id in zip(sorted_polygons, allocated_ids, strict=False)
         }
-        for polygon, allocated_id in zip(polygons, allocated_ids, strict=False):
+        for polygon, allocated_id in zip(sorted_polygons, allocated_ids, strict=False):
             polygon.parent_id = None if polygon.parent_id is None else id_map.get(polygon.parent_id)
             polygon.id = allocated_id
-        return polygons
+        return sorted(sorted_polygons, key=lambda polygon: polygon.id)
 
     def _restore_preserved_polygons(
         self,
@@ -974,6 +1114,7 @@ class PolygonEditorScene(QGraphicsScene):
         if self._selected_polygon_id == polygon_id:
             self._selected_polygon_id = None
             self.activePolygonChanged.emit(None)
+        self._selected_polygon_ids.discard(polygon_id)
         if refresh:
             self._refresh_all_items()
         if emit_signal:
@@ -1052,6 +1193,8 @@ class PolygonEditorView(QGraphicsView):
     rulerMeasurementChanged = pyqtSignal(str)
     toolChanged = pyqtSignal(object)
     zoomChanged = pyqtSignal(float)
+    neighborFrameActivated = pyqtSignal(str)
+    viaDebugRequested = pyqtSignal(object)
 
     def __init__(self, parent=None) -> None:
         self._editor_scene = PolygonEditorScene()
@@ -1082,6 +1225,11 @@ class PolygonEditorView(QGraphicsView):
         self._middle_button_hides_overlays = False
         self._image_click_mode = False
         self._image_region_selection_mode = False
+        self._via_debug_inspection_enabled = False
+        self._clipboard_polygons: list[PolygonData] = []
+        self._clipboard_anchor = QPointF(0.0, 0.0)
+        self._paste_mode = False
+        self._paste_preview_items: list[QGraphicsPathItem] = []
 
         self._editor_scene.polygonsChanged.connect(self.polygonsEdited.emit)
         self._editor_scene.activePolygonChanged.connect(self.activePolygonChanged.emit)
@@ -1089,6 +1237,9 @@ class PolygonEditorView(QGraphicsView):
 
         QShortcut(QKeySequence.StandardKey.Undo, self, activated=self.undo)
         QShortcut(QKeySequence.StandardKey.Redo, self, activated=self.redo)
+        QShortcut(QKeySequence.StandardKey.Copy, self, activated=self.copy_selected)
+        QShortcut(QKeySequence.StandardKey.Cut, self, activated=self.cut_selected)
+        QShortcut(QKeySequence.StandardKey.Paste, self, activated=self.start_paste_mode)
 
     @property
     def undo_stack(self) -> QUndoStack:
@@ -1165,11 +1316,21 @@ class PolygonEditorView(QGraphicsView):
     def set_debug_candidates(self, candidates: list[object]) -> None:
         self._editor_scene.set_debug_candidates(candidates)
 
+    def set_via_debug_inspection_enabled(self, enabled: bool) -> None:
+        self._via_debug_inspection_enabled = bool(enabled)
+        self._editor_scene.set_debug_candidates([])
+
     def zoom_factor(self) -> float:
         return max(1e-6, float(self.transform().m11()))
 
     def set_display_settings(self, settings: DisplaySettings) -> None:
         self._editor_scene.set_display_settings(settings)
+
+    def set_random_object_colors_enabled(self, enabled: bool) -> None:
+        self._editor_scene.set_random_object_colors_enabled(enabled)
+
+    def set_extra_layers(self, layers: list[dict[str, object]]) -> None:
+        self._editor_scene.set_extra_layers(layers)
 
     def set_ui_language(self, language: str | None) -> None:
         self._editor_scene.set_ui_language(language)
@@ -1202,6 +1363,65 @@ class PolygonEditorView(QGraphicsView):
     def redo(self) -> None:
         self.undo_stack.redo()
 
+    def copy_selected(self) -> None:
+        polygons = self._editor_scene.selected_polygons()
+        if not polygons:
+            return
+        self._clipboard_polygons = [polygon.clone() for polygon in polygons]
+        self._clipboard_anchor = _polygons_center(self._clipboard_polygons)
+
+    def cut_selected(self) -> None:
+        self.copy_selected()
+        if self._clipboard_polygons:
+            self._editor_scene.delete_polygon()
+
+    def start_paste_mode(self) -> None:
+        if not self._clipboard_polygons:
+            return
+        self._paste_mode = True
+        self._update_paste_preview(self._last_pointer_scene_pos or self.mapToScene(self.viewport().rect().center()))
+
+    def _clear_paste_preview(self) -> None:
+        for item in self._paste_preview_items:
+            if item.scene() is not None:
+                self._editor_scene.removeItem(item)
+        self._paste_preview_items.clear()
+
+    def _exit_paste_mode(self) -> None:
+        self._paste_mode = False
+        self._clear_paste_preview()
+
+    def _update_paste_preview(self, scene_pos: QPointF | None) -> None:
+        self._clear_paste_preview()
+        if not self._paste_mode or scene_pos is None:
+            return
+        dx = scene_pos.x() - self._clipboard_anchor.x()
+        dy = scene_pos.y() - self._clipboard_anchor.y()
+        pen = QPen(QColor("#38BDF8"), 1.5, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        brush = QColor("#38BDF8")
+        brush.setAlpha(42)
+        for polygon in self._clipboard_polygons:
+            shifted = polygon.clone()
+            shifted.points = [(x + dx, y + dy) for x, y in shifted.points]
+            path = QPainterPath()
+            if shifted.shape_hint == "box" or shifted.category == "via":
+                x_values = [point[0] for point in shifted.points]
+                y_values = [point[1] for point in shifted.points]
+                path.addEllipse(QRectF(min(x_values), min(y_values), max(x_values) - min(x_values), max(y_values) - min(y_values)))
+            else:
+                if shifted.points:
+                    path.moveTo(shifted.points[0][0], shifted.points[0][1])
+                    for x_coord, y_coord in shifted.points[1:]:
+                        path.lineTo(x_coord, y_coord)
+                    path.closeSubpath()
+            item = QGraphicsPathItem(path)
+            item.setZValue(40)
+            item.setPen(pen)
+            item.setBrush(QBrush(brush))
+            self._editor_scene.addItem(item)
+            self._paste_preview_items.append(item)
+
     def wheelEvent(self, event) -> None:
         delta = event.angleDelta()
         modifiers = event.modifiers()
@@ -1229,6 +1449,12 @@ class PolygonEditorView(QGraphicsView):
         scene_pos = self.mapToScene(event.position().toPoint())
         self._last_pointer_scene_pos = scene_pos
         tolerance = self._scene_tolerance(8)
+
+        if self._paste_mode and event.button() == Qt.MouseButton.LeftButton:
+            self._editor_scene.add_cloned_polygons_at(self._clipboard_polygons, self._clipboard_anchor, scene_pos)
+            self._update_paste_preview(scene_pos)
+            event.accept()
+            return
 
         if self._image_region_selection_mode and event.button() == Qt.MouseButton.LeftButton:
             self._drag_kind = "image_region"
@@ -1316,6 +1542,13 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
 
+        if self._tool == EditorTool.SELECT_AREA:
+            self._drag_kind = "select_area"
+            self._drag_start_scene_pos = scene_pos
+            self._editor_scene.set_preview_rect(scene_pos, scene_pos)
+            event.accept()
+            return
+
         if self._tool == EditorTool.ADD_VERTEX:
             polygon_id = self._editor_scene.selected_polygon_id() or self._editor_scene.polygon_at(scene_pos)
             if polygon_id is not None:
@@ -1348,8 +1581,18 @@ class PolygonEditorView(QGraphicsView):
             return
 
         polygon_id = self._editor_scene.polygon_at(scene_pos)
-        self._editor_scene.select_polygon(polygon_id)
-        if polygon_id is not None:
+        additive_selection = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        self._editor_scene.select_polygon(polygon_id, additive=additive_selection)
+        if self._via_debug_inspection_enabled and polygon_id is not None:
+            polygon = self._editor_scene.polygon_snapshot(polygon_id)
+            if polygon is not None and (polygon.category == "via" or polygon.shape_hint == "box"):
+                self.viaDebugRequested.emit(polygon)
+                event.accept()
+                return
+        if self._via_debug_inspection_enabled:
+            event.accept()
+            return
+        if polygon_id is not None and event.modifiers() & Qt.KeyboardModifier.AltModifier:
             self._drag_kind = "polygon"
             self._drag_polygon_id = polygon_id
             self._drag_origin_points = self._editor_scene.polygon_points(polygon_id)
@@ -1360,6 +1603,10 @@ class PolygonEditorView(QGraphicsView):
         scene_pos = self.mapToScene(event.position().toPoint())
         self._last_pointer_scene_pos = scene_pos
         self._update_tool_cursors()
+        if self._paste_mode:
+            self._update_paste_preview(scene_pos)
+            event.accept()
+            return
         if self._tool == EditorTool.PAN:
             super().mouseMoveEvent(event)
             return
@@ -1379,6 +1626,10 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if self._drag_kind == "delete_area" and self._drag_start_scene_pos is not None:
+            self._editor_scene.set_preview_rect(self._drag_start_scene_pos, scene_pos)
+            event.accept()
+            return
+        if self._drag_kind == "select_area" and self._drag_start_scene_pos is not None:
             self._editor_scene.set_preview_rect(self._drag_start_scene_pos, scene_pos)
             event.accept()
             return
@@ -1443,6 +1694,18 @@ class PolygonEditorView(QGraphicsView):
             elif self._drag_kind == "delete_area" and self._drag_start_scene_pos is not None:
                 self._editor_scene.delete_vertices_in_rect(QRectF(self._drag_start_scene_pos, self.mapToScene(event.position().toPoint())))
                 self._editor_scene.clear_preview_rect()
+            elif self._drag_kind == "select_area" and self._drag_start_scene_pos is not None:
+                release_pos = self.mapToScene(event.position().toPoint())
+                rect = QRectF(self._drag_start_scene_pos, release_pos).normalized()
+                self._editor_scene.clear_preview_rect()
+                if rect.width() < self._scene_tolerance(3) and rect.height() < self._scene_tolerance(3):
+                    polygon_id = self._editor_scene.polygon_at(release_pos)
+                    self._editor_scene.select_polygon(polygon_id, additive=bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier))
+                else:
+                    self._editor_scene.select_polygons_in_rect(
+                        rect,
+                        additive=bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier),
+                    )
             elif self._drag_kind == "image_region" and self._drag_start_scene_pos is not None:
                 rect = QRectF(self._drag_start_scene_pos, self.mapToScene(event.position().toPoint())).normalized()
                 image_rect = self._editor_scene.main_image_rect()
@@ -1487,6 +1750,12 @@ class PolygonEditorView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            neighbor_path = self._editor_scene.neighbor_frame_path_at(self.mapToScene(event.position().toPoint()))
+            if neighbor_path:
+                self.neighborFrameActivated.emit(neighbor_path)
+                event.accept()
+                return
         if (
             self._tool == EditorTool.ADD_POLYGON
             and self._polygon_create_mode == PolygonCreateMode.POINTS
@@ -1509,6 +1778,10 @@ class PolygonEditorView(QGraphicsView):
         if event.key() == Qt.Key.Key_Escape:
             self._editor_scene.cancel_pending_polygon()
             self._editor_scene.clear_measurement()
+            self._editor_scene.clear_preview_rect()
+            self._exit_paste_mode()
+            if self._tool in (EditorTool.SELECT, EditorTool.SELECT_AREA):
+                self._editor_scene.select_polygon(None)
             if self._tool == EditorTool.RULER:
                 self.rulerMeasurementChanged.emit("")
             self._drag_kind = None
@@ -1616,6 +1889,62 @@ def _polygon_points_different(first: list[tuple[float, float]], second: list[tup
     if len(first) != len(second):
         return True
     return any(_points_different(p0, p1) for p0, p1 in zip(first, second, strict=False))
+
+
+def _polygon_data_rect(polygon: PolygonData) -> QRectF:
+    if polygon.points:
+        x_values = [point[0] for point in polygon.points]
+        y_values = [point[1] for point in polygon.points]
+        return QRectF(
+            min(x_values),
+            min(y_values),
+            max(x_values) - min(x_values),
+            max(y_values) - min(y_values),
+        ).normalized()
+    x_coord, y_coord, width, height = polygon.bbox
+    return QRectF(float(x_coord), float(y_coord), float(width), float(height)).normalized()
+
+
+def _polygons_center(polygons: list[PolygonData]) -> QPointF:
+    if not polygons:
+        return QPointF(0.0, 0.0)
+    boxes = [polygon.bbox for polygon in polygons]
+    x_min = min(box[0] for box in boxes)
+    y_min = min(box[1] for box in boxes)
+    x_max = max(box[0] + box[2] for box in boxes)
+    y_max = max(box[1] + box[3] for box in boxes)
+    return QPointF((x_min + x_max) / 2.0, (y_min + y_max) / 2.0)
+
+
+def _path_for_polygon(polygon: PolygonData) -> QPainterPath:
+    path = QPainterPath()
+    if not polygon.points:
+        return path
+    if polygon.shape_hint == "box" or polygon.category == "via":
+        x_values = [point[0] for point in polygon.points]
+        y_values = [point[1] for point in polygon.points]
+        path.addEllipse(QRectF(min(x_values), min(y_values), max(x_values) - min(x_values), max(y_values) - min(y_values)))
+        return path
+    path.moveTo(polygon.points[0][0], polygon.points[0][1])
+    for x_coord, y_coord in polygon.points[1:]:
+        path.lineTo(x_coord, y_coord)
+    if len(polygon.points) > 2:
+        path.closeSubpath()
+    return path
+
+
+def _stable_object_color(polygon_id: int) -> str:
+    hue = (int(polygon_id) * 137) % 360
+    color = QColor()
+    color.setHsv(hue, 190, 245)
+    return color.name()
+
+
+def _stable_layer_color(layer_index: int) -> str:
+    hue = (45 + int(layer_index) * 97) % 360
+    color = QColor()
+    color.setHsv(hue, 170, 255)
+    return color.name()
 
 
 def _snap_to_45(start: QPointF, target: QPointF) -> QPointF:

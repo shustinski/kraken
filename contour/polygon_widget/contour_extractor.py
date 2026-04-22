@@ -204,6 +204,8 @@ def _debug_candidates_for_mask(mask: np.ndarray, config: ContourExtractionSettin
             epsilon *= cv2.arcLength(contour, True)
         approx = _adaptive_approximate_contour(contour, epsilon, config.preserve_corners) if epsilon > 0 else contour
         points = [(float(point[0][0]), float(point[0][1])) for point in approx]
+        if config.object_type != "via" and config.output_mode != "box":
+            points = _remove_acute_polygon_vertices(points, config.min_polygon_angle)
         if len(points) < 3:
             continue
 
@@ -320,6 +322,37 @@ def _corner_indices(points: np.ndarray, *, step: int = 2, max_angle: float = 145
     return result
 
 
+def _polygon_vertex_angle(prev_point: tuple[float, float], current_point: tuple[float, float], next_point: tuple[float, float]) -> float:
+    first = np.asarray(prev_point, dtype=np.float32) - np.asarray(current_point, dtype=np.float32)
+    second = np.asarray(next_point, dtype=np.float32) - np.asarray(current_point, dtype=np.float32)
+    first_norm = float(np.linalg.norm(first))
+    second_norm = float(np.linalg.norm(second))
+    if first_norm < 1e-6 or second_norm < 1e-6:
+        return 180.0
+    cosine = float(np.dot(first, second) / (first_norm * second_norm))
+    cosine = max(-1.0, min(1.0, cosine))
+    return degrees(acos(cosine))
+
+
+def _remove_acute_polygon_vertices(points: list[tuple[float, float]], min_angle: float) -> list[tuple[float, float]]:
+    angle_limit = max(0.0, min(180.0, float(min_angle)))
+    if angle_limit <= 0.0 or len(points) <= 3:
+        return points
+
+    cleaned = list(points)
+    changed = True
+    while changed and len(cleaned) > 3:
+        changed = False
+        for index, current_point in enumerate(list(cleaned)):
+            prev_point = cleaned[(index - 1) % len(cleaned)]
+            next_point = cleaned[(index + 1) % len(cleaned)]
+            if _polygon_vertex_angle(prev_point, current_point, next_point) < angle_limit:
+                del cleaned[index]
+                changed = True
+                break
+    return cleaned
+
+
 def _adaptive_approximate_contour(contour: np.ndarray, epsilon: float, preserve_corners: bool) -> np.ndarray:
     if epsilon <= 0.0 or contour is None or len(contour) < 3:
         return contour
@@ -373,6 +406,8 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
             epsilon *= cv2.arcLength(contour, True)
         approx = _adaptive_approximate_contour(contour, epsilon, config.preserve_corners) if epsilon > 0 else contour
         points = [(float(point[0][0]), float(point[0][1])) for point in approx]
+        if config.object_type != "via" and config.output_mode != "box":
+            points = _remove_acute_polygon_vertices(points, config.min_polygon_angle)
         if len(points) < max(3, config.min_points):
             continue
 

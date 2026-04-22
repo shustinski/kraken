@@ -68,6 +68,7 @@ class WidgetDisplaySettingsStore:
             "neighbor_max_grid": settings.value("display/neighbor_max_grid", 7, type=int),
             "neighbor_opacity": settings.value("display/neighbor_opacity", 0.35, type=float),
             "neighbor_overlap_pixels": settings.value("display/neighbor_overlap_pixels", 0, type=int),
+            "main_splitter_sizes": settings.value("display/main_splitter_sizes", []),
         }
         settings.sync()
         return payload

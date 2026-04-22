@@ -77,6 +77,7 @@ from ..ui.ui_constants import (
     DEFAULT_TILE_WIDTH,
     DEFAULT_TOTAL_FRAMES,
     FOLDER_CHECKED_ROLE,
+    FOLDER_CONFIDENCE_ROLE,
     FOLDER_LABEL_ROLE,
     FOLDER_ROW_MIN_HEIGHT,
     MATRIX_METRIC_GROUP_OPTIONS,
@@ -174,11 +175,23 @@ class ValidationGradientExtendPresenter(QObject):
         for candidate in self._percentile_basis_keys_for_state(state, build_result):
             if candidate in available:
                 return candidate
-        return key
+        for candidate in ("overall_frame_score", "export_priority_score", "model_model_score", "disagreement_score"):
+            if candidate in available:
+                return candidate
+        return next(iter(sorted(available)), "overall_frame_score")
+
+    def _fallback_metric_keys_for_build_result(self, build_result: BuildResult | None) -> list[str]:
+        available = set(build_result.available_metric_keys if build_result is not None else ())
+        candidates = ("overall_frame_score", "export_priority_score", "model_model_score", "disagreement_score")
+        keys = [key for key in candidates if not available or key in available]
+        return keys or [next(iter(sorted(available)), "overall_frame_score")]
+
+    def _confidence_context_available(self, context, build_result: BuildResult | None) -> bool:
+        return context.analysis_mode == INTRA_MODEL_CONFIDENCE_MODE and context.confidence_model_id is not None
 
     def _sync_mode_controls(self, state: ExtendMatrixTabState | None = None, build_result: BuildResult | None = None) -> None:
         context = self._analysis_context_for_state(state, build_result)
-        is_confidence = context.analysis_mode == INTRA_MODEL_CONFIDENCE_MODE
+        is_confidence = self._confidence_context_available(context, build_result)
         is_point = context.object_type == POINT_OBJECT_TYPE
         tile_mode_enabled = self._selected_subpixel_view_mode() == "tile"
         self._set_row_visible(getattr(self, "_matrix_pixel_size_row", None), False)
@@ -216,8 +229,16 @@ class ValidationGradientExtendPresenter(QObject):
                 continue
             folder_path = Path(item.data(Qt.ItemDataRole.UserRole))
             label = str(item.data(FOLDER_LABEL_ROLE) or folder_path.name)
+            confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "").strip()
+            confidence_folder = Path(confidence_path_text) if confidence_path_text else None
             model_id = re.sub(r"[^a-zA-Z0-9_]+", "_", label.strip().lower()).strip("_") or f"model_{row + 1}"
-            specs.append(ModelSpec(model_id=model_id, display_name=label, mask_folder=folder_path, threshold=threshold))
+            specs.append(ModelSpec(
+                model_id=model_id,
+                display_name=label,
+                mask_folder=folder_path,
+                prob_folder=confidence_folder,
+                threshold=threshold,
+            ))
         return tuple(specs)
 
     def _selected_confidence_uncertainty_profile(self) -> str:
@@ -419,7 +440,11 @@ class ValidationGradientExtendPresenter(QObject):
             self.tile_plan_label.setStyleSheet("")
             return
         aggregation_label = self._t(f"subpixel_aggregation.{self._selected_subpixel_aggregation()}")
-        self.tile_plan_label.setText(f"{int(spec.rows)} x {int(spec.columns)} • {int(spec.tile_width)}x{int(spec.tile_height)} • overlap {int(spec.overlap)} • {aggregation_label}")
+        self.tile_plan_label.setText(
+            f"{int(spec.rows)}x{int(spec.columns)} | "
+            f"{int(spec.tile_width)}x{int(spec.tile_height)} | "
+            f"ovl {int(spec.overlap)} | {aggregation_label}"
+        )
         self.tile_plan_label.setToolTip(self._t("matrix.subpixel_plan.tooltip"))
         self.tile_plan_label.setStyleSheet("")
 
@@ -456,6 +481,7 @@ class ValidationGradientExtendPresenter(QObject):
         item.setData(Qt.ItemDataRole.UserRole, str(folder_path))
         item.setData(FOLDER_CHECKED_ROLE, bool(checked))
         item.setData(FOLDER_LABEL_ROLE, folder_path.name)
+        item.setData(FOLDER_CONFIDENCE_ROLE, "")
         item.setToolTip(str(folder_path))
         self.folder_list.addItem(item)
         return item
@@ -478,19 +504,29 @@ class ValidationGradientExtendPresenter(QObject):
             item = self.folder_list.item(row)
             path_text = str(item.data(Qt.ItemDataRole.UserRole))
             display_text = str(item.data(FOLDER_LABEL_ROLE) or (Path(path_text).name or path_text))
+            confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "")
+            confidence_display_text = self._compact_path_text(confidence_path_text)
             row_widget = FolderRowWidget(
                 self.folder_list,
                 path_text=path_text,
                 display_text=display_text,
                 checked=bool(item.data(FOLDER_CHECKED_ROLE)),
+                confidence_display_text=confidence_display_text,
+                confidence_path_text=confidence_path_text,
                 can_move_up=row > 0,
                 can_move_down=row < self.folder_list.count() - 1,
                 on_checked_changed=lambda checked, item=item: self._set_folder_item_checked(item, checked),
                 on_label_changed=lambda text, item=item: self._set_folder_item_label(item, text),
+                on_confidence_folder=lambda _checked=False, item=item: self._set_folder_item_confidence_folder(item),
+                on_clear_confidence_folder=lambda _checked=False, item=item: self._clear_folder_item_confidence_folder(item),
                 on_remove=lambda _checked=False, item=item: self._remove_folder_item(item),
                 on_move_up=lambda _checked=False, item=item: self._move_folder_item(item, -1),
                 on_move_down=lambda _checked=False, item=item: self._move_folder_item(item, 1),
                 checkbox_tooltip="Use model in analytics",
+                confidence_placeholder=self._t("folders.confidence_not_set"),
+                confidence_tooltip=confidence_path_text,
+                confidence_select_tooltip=self._t("folders.select_confidence"),
+                confidence_clear_tooltip=self._t("folders.clear_confidence"),
                 remove_tooltip="Remove model folder",
                 move_up_tooltip="Move up",
                 move_down_tooltip="Move down",
@@ -510,6 +546,29 @@ class ValidationGradientExtendPresenter(QObject):
         folder_path = Path(item.data(Qt.ItemDataRole.UserRole))
         item.setData(FOLDER_LABEL_ROLE, text or folder_path.name)
         self._refresh_folder_rows()
+
+    def _set_folder_item_confidence_folder(self, item: QListWidgetItem) -> None:
+        if self._worker_thread is not None:
+            return
+        folder = QFileDialog.getExistingDirectory(self._view, self._t("dialog.select_model_confidence_folder"))
+        if not folder:
+            return
+        folder_path = Path(folder)
+        if not self._folder_has_supported_images(folder_path):
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                f"Confidence folder has no supported images: {folder_path}",
+            )
+            return
+        item.setData(FOLDER_CONFIDENCE_ROLE, str(folder_path))
+        self._refresh_folder_rows()
+        self._sync_action_buttons()
+
+    def _clear_folder_item_confidence_folder(self, item: QListWidgetItem) -> None:
+        item.setData(FOLDER_CONFIDENCE_ROLE, "")
+        self._refresh_folder_rows()
+        self._sync_action_buttons()
 
     def _remove_folder_item(self, item: QListWidgetItem) -> None:
         row = self.folder_list.row(item)
@@ -861,6 +920,8 @@ class ValidationGradientExtendPresenter(QObject):
                 confidence_model_id=selected_confidence_model_id,
             )
         basis_keys = [str(key) for key in percentile_basis_keys(context) if build_result is None or key in set(build_result.available_metric_keys)]
+        if build_result is not None and not basis_keys:
+            basis_keys = self._fallback_metric_keys_for_build_result(build_result)
         if metric_key not in basis_keys:
             metric_key = basis_keys[0] if basis_keys else default_metric_key(context)
 
@@ -1722,6 +1783,15 @@ class ValidationGradientExtendPresenter(QObject):
         short = f"{parent}/{tail}" if parent else tail
         return short, str(path)
 
+    @staticmethod
+    def _compact_path_text(path_text: str | None) -> str:
+        if not path_text:
+            return ""
+        path = Path(str(path_text))
+        tail = path.name or str(path)
+        parent = path.parent.name if path.parent != path else ""
+        return f"{parent}/{tail}" if parent else tail
+
     def _update_source_labels(self) -> None:
         original_text, original_tooltip = self._compact_folder_label(self._original_folder)
         gt_text, gt_tooltip = self._compact_folder_label(self._gt_folder)
@@ -2016,6 +2086,9 @@ class ValidationGradientExtendPresenter(QObject):
         QMessageBox.critical(self._view, self._t("dialog.warning_title"), message or self._t("errors.background_failed"))
 
     def _apply_metric_to_state(self, state: ExtendMatrixTabState, metric_key: str) -> None:
+        available = set(state.build_result.available_metric_keys or ())
+        if available and metric_key not in available:
+            metric_key = self._default_metric_key_for_state(state, state.build_result)
         state.metric_key = metric_key
         self._invalidate_state_runtime_caches(state, clear_metric_results=False)
         self.metric_combo.setToolTip(self._metric_hint_fallback(metric_key, state.build_result))
@@ -2420,6 +2493,7 @@ class ValidationGradientExtendPresenter(QObject):
                     "path": str(self.folder_list.item(row).data(Qt.ItemDataRole.UserRole)),
                     "checked": bool(self.folder_list.item(row).data(FOLDER_CHECKED_ROLE)),
                     "label": str(self.folder_list.item(row).data(FOLDER_LABEL_ROLE) or ""),
+                    "confidence_path": str(self.folder_list.item(row).data(FOLDER_CONFIDENCE_ROLE) or ""),
                 }
                 for row in range(self.folder_list.count())
             ],
@@ -2447,6 +2521,9 @@ class ValidationGradientExtendPresenter(QObject):
                     continue
                 item = self._append_folder_item(folder_path, checked=bool(folder_entry.get("checked", False)))
                 item.setData(FOLDER_LABEL_ROLE, str(folder_entry.get("label") or folder_path.name))
+                confidence_path = folder_entry.get("confidence_path")
+                if confidence_path and Path(confidence_path).exists():
+                    item.setData(FOLDER_CONFIDENCE_ROLE, str(confidence_path))
             original_folder = payload.get("original_folder")
             gt_folder = payload.get("gt_folder")
             if original_folder and Path(original_folder).exists():

@@ -141,6 +141,7 @@ from .backend_constants import (
     EXPORT_SELECTION_MODE_PERCENT,
     EXPORT_SELECTION_MODE_PERCENTILE,
 )
+from .confidence_maps import build_model_uncertainty, normalize_algorithmic_confidence
 from .domain import (
     BuildOptions,
     BuildResult,
@@ -1150,8 +1151,7 @@ def _internal_confidence_probability_map(
 
 
 def _confidence_map_from_probability(probability: np.ndarray) -> np.ndarray:
-    probability_array = np.asarray(probability, dtype=np.float32)
-    return np.clip(2.0 * np.abs(probability_array - 0.5), 0.0, 1.0).astype(np.float32)
+    return normalize_algorithmic_confidence(probability)
 
 
 def _robust_normalize_display_map(
@@ -1215,7 +1215,7 @@ def _support_weights_from_probability(probability: np.ndarray, support_threshold
 
 
 def _uncertainty_map_from_probability(probability: np.ndarray) -> np.ndarray:
-    return np.clip(1.0 - _confidence_map_from_probability(probability), 0.0, 1.0).astype(np.float32)
+    return build_model_uncertainty(probability)
 
 
 def _confidence_display_map_from_probability(
@@ -5870,6 +5870,7 @@ def _build_model_payloads(
     dict[str, object],
     dict[str, object],
     dict[str, object],
+    dict[str, bool],
     np.ndarray | None,
     np.ndarray | None,
     dict[str, object] | None,
@@ -5899,6 +5900,7 @@ def _build_model_payloads(
     model_diagnostics: dict[str, object] = {}
     model_metrics: dict[str, object] = {}
     model_confidence: dict[str, object] = {}
+    model_confidence_output_available: dict[str, bool] = {}
     model_views: dict[str, object] = {}
 
     target_shape = tuple(int(v) for v in gt_gray.shape) if gt_gray is not None else None
@@ -5925,6 +5927,7 @@ def _build_model_payloads(
             ) if gt_mask is not None else None
         prob_gray = _load_optional_gray(record.model_prob_paths.get(spec.model_id), target_shape=target_shape, max_side=analysis_max_side)
         uses_binary_probability_proxy = prob_gray is None
+        model_confidence_output_available[spec.model_id] = not uses_binary_probability_proxy
         if prob_gray is None:
             prob_gray = mask_gray
         loaded_rows.append((spec, mask_gray, prob_gray, uses_binary_probability_proxy))
@@ -6013,7 +6016,21 @@ def _build_model_payloads(
                 boundary_radius=boundary_radius,
             )
 
-    return probabilities, masks, model_structures, model_diagnostics, model_metrics, model_confidence, original_gray, gt_mask, gt_structure, resolved_geometry_mode, model_views, gt_point_view
+    return (
+        probabilities,
+        masks,
+        model_structures,
+        model_diagnostics,
+        model_metrics,
+        model_confidence,
+        model_confidence_output_available,
+        original_gray,
+        gt_mask,
+        gt_structure,
+        resolved_geometry_mode,
+        model_views,
+        gt_point_view,
+    )
 
 
 def _metric_requires_model_confidence(metric_key: str | None) -> bool:
@@ -6104,7 +6121,7 @@ def _analyze_record_payload(
             return cached
 
     load_started = perf_counter()
-    probabilities_by_model, masks_by_model, model_structures, model_diagnostics, model_metrics, model_confidence, _original_gray, gt_mask, _gt_structure, resolved_geometry_mode, model_views, gt_point_view = _build_model_payloads(
+    probabilities_by_model, masks_by_model, model_structures, model_diagnostics, model_metrics, model_confidence, model_confidence_output_available, _original_gray, gt_mask, _gt_structure, resolved_geometry_mode, model_views, gt_point_view = _build_model_payloads(
         record,
         model_specs,
         analysis_max_side=analysis_max_side,
@@ -6170,6 +6187,7 @@ def _analyze_record_payload(
         'model_diagnostics': model_diagnostics,
         'model_metrics': model_metrics,
         'model_confidence': model_confidence,
+        'model_confidence_output_available': model_confidence_output_available,
         'pairwise_rows': pairwise_rows,
         'timings_ms': timings_ms,
     }
@@ -6766,6 +6784,8 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
         return replace(build_result, scores_computed=True)
 
     active_metric = metric_key or build_result.selected_metric_key or 'overall_frame_score'
+    if _metric_requires_model_confidence(active_metric) and active_metric not in set(build_result.available_metric_keys or ()):
+        active_metric = 'overall_frame_score'
     include_model_confidence = _metric_requires_model_confidence(active_metric)
     include_pairwise_metrics = _metric_requires_pairwise_metrics(active_metric)
     include_model_metrics = _metric_requires_model_metrics(active_metric)
@@ -6856,7 +6876,14 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
         _clear_runtime_image_caches()
 
     updated_records = [updated_records_by_key[str(record.key)] for record in records if str(record.key) in updated_records_by_key]
-    absolute_scores = [float(_record_metric_value(record.summary, active_metric) or 0.0) for record in updated_records]
+    metric_is_required = _metric_requires_model_confidence(active_metric)
+    metric_values_by_key: dict[str, float] = {}
+    for record in updated_records:
+        value = _record_metric_value(record.summary, active_metric)
+        if value is None and metric_is_required:
+            continue
+        metric_values_by_key[str(record.key)] = float(value or 0.0)
+    absolute_scores = list(metric_values_by_key.values())
     min_absolute = min(absolute_scores) if absolute_scores else 0.0
     max_absolute = max(absolute_scores) if absolute_scores else 0.0
     span = max(EPS, max_absolute - min_absolute)
@@ -6865,7 +6892,18 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
     scored_records: list[FrameRecord] = []
     best_key = None
     best_value = None
-    for record, absolute in zip(updated_records, absolute_scores):
+    for record in updated_records:
+        absolute = metric_values_by_key.get(str(record.key))
+        if absolute is None:
+            scored_records.append(replace(
+                record,
+                score=0.0,
+                absolute_score=None,
+                relative_score=None,
+                score_percentile=None,
+                score_ready=False,
+            ))
+            continue
         relative = 0.0 if abs(max_absolute - min_absolute) <= EPS else (absolute - min_absolute) / span
         display = relative if higher_is_better else (1.0 - relative)
         scored = replace(record, score=float(display), absolute_score=float(absolute), relative_score=float(relative), score_ready=True)
@@ -7225,7 +7263,7 @@ def load_frame_detail_base(
     include_model_metrics = False
     include_model_diagnostics = bool(active_build_result.options.geometry_mode in {GeometryMode.POINT, GeometryMode.AUTO})
 
-    probabilities, masks, _model_structures, model_diagnostics, model_metrics, model_confidence, original_gray, gt_mask, _gt_structure, detail_geometry_mode, model_views, gt_point_view = _build_model_payloads(
+    probabilities, masks, _model_structures, model_diagnostics, model_metrics, model_confidence, model_confidence_output_available, original_gray, gt_mask, _gt_structure, detail_geometry_mode, model_views, gt_point_view = _build_model_payloads(
         active_record,
         active_build_result.model_specs,
         analysis_max_side=max_side,
@@ -7282,6 +7320,7 @@ def load_frame_detail_base(
         "frame_metrics": dict(active_record.summary.metric_values) if active_record.summary is not None else {},
         "model_metrics": model_metrics,
         "model_confidence": model_confidence,
+        "model_confidence_output_available": model_confidence_output_available,
         "model_diagnostics": model_diagnostics,
         "geometry_mode": detail_geometry_mode.value,
         "point_match_radius": float(active_build_result.options.point_match_radius),

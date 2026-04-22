@@ -50,6 +50,13 @@ from ..core.repository import (
     compute_comparison,
     compute_comparison_score,
 )
+from ..core.confidence_maps import (
+    DEFAULT_CONFIDENCE_BAD_AREA_THRESHOLD,
+    build_algorithmic_uncertainty,
+    build_model_uncertainty,
+    combine_uncertainty_maps,
+    confidence_bad_area_intensity,
+)
 from ..core.tile_grid import TileGridPlan, plan_tile_grid, tile_bounds_for_index
 from ..core.workers import DetailConfidenceWorker, DetailPayloadWorker
 from ..ui.i18n import Translator
@@ -202,7 +209,10 @@ class ExtendFrameDetailsDialog(QDialog):
         self._detail_worker: DetailPayloadWorker | None = None
         self._confidence_thread: QThread | None = None
         self._confidence_worker: DetailConfidenceWorker | None = None
+        self._retired_confidence_workers: list[tuple[DetailConfidenceWorker, QThread]] = []
         self._loading_confidence_model_id: str | None = None
+        self._detail_request_generation = 0
+        self._confidence_request_generation = 0
         self._payload_loading = False
         self._legacy_base_hold_active = False
         self._hold_preview_mode: str | None = None
@@ -804,6 +814,10 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("hint.boundary_difference")
         if (not self._is_point_geometry()) and result_kind == "confidence":
             return self._t("hint.polygon_confidence")
+        if result_kind == "confidence_bad_areas":
+            return self._t("hint.confidence_bad_areas")
+        if result_kind == "confidence_mix":
+            return self._t("hint.confidence_mix")
         if result_kind == 'confidence_low_mask':
             return self._t('hint.confidence_low_mask')
         if result_kind == 'confidence_high_mask':
@@ -996,6 +1010,8 @@ class ExtendFrameDetailsDialog(QDialog):
     def _start_loading_payload(self, *, reset_view: bool, preserve_selection: bool) -> None:
         self._stop_detail_worker()
         self._stop_confidence_worker()
+        self._detail_request_generation += 1
+        generation = int(self._detail_request_generation)
         self._payload_loading = True
         previous_result_kind = self._selected_result_kind() if preserve_selection else self._sticky_result_kind
         default_model_id = self._preferred_confidence_model_id() or (self._build_result.model_specs[0].model_id if self._build_result.model_specs else None)
@@ -1013,20 +1029,31 @@ class ExtendFrameDetailsDialog(QDialog):
         self._detail_worker.moveToThread(self._detail_thread)
         self._detail_thread.started.connect(self._detail_worker.run)
         self._detail_worker.finished.connect(
-            lambda payload, rv=reset_view, ps=preserve_selection, prk=previous_result_kind: self._on_payload_loaded(
+            lambda payload, rv=reset_view, ps=preserve_selection, prk=previous_result_kind, g=generation: self._on_payload_loaded(
                 payload,
                 reset_view=rv,
                 preserve_selection=ps,
                 previous_result_kind=prk,
+                generation=g,
             )
         )
-        self._detail_worker.failed.connect(self._on_detail_worker_failed)
+        self._detail_worker.failed.connect(lambda message, g=generation: self._on_detail_worker_failed(message, generation=g, worker_kind="detail"))
         self._detail_worker.finished.connect(self._detail_thread.quit)
         self._detail_worker.failed.connect(self._detail_thread.quit)
         self._detail_thread.finished.connect(self._cleanup_detail_worker)
         self._detail_thread.start()
 
-    def _on_payload_loaded(self, payload: dict[str, object], *, reset_view: bool, preserve_selection: bool, previous_result_kind: str | None) -> None:
+    def _on_payload_loaded(
+        self,
+        payload: dict[str, object],
+        *,
+        reset_view: bool,
+        preserve_selection: bool,
+        previous_result_kind: str | None,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and int(generation) != int(self._detail_request_generation):
+            return
         self._payload_loading = False
         self._payload = payload
         self._overlay_cache.clear()
@@ -1166,15 +1193,30 @@ class ExtendFrameDetailsDialog(QDialog):
             if thread.isRunning():
                 thread.wait(30000)
 
-    def _cleanup_confidence_worker(self) -> None:
-        if self._confidence_worker is not None:
-            self._confidence_worker.deleteLater()
-        if self._confidence_thread is not None:
-            self._confidence_thread.deleteLater()
-        self._confidence_worker = None
-        self._confidence_thread = None
-        self._loading_confidence_model_id = None
-        self._set_confidence_loading_state(False)
+    def _cleanup_confidence_worker(
+        self,
+        worker: DetailConfidenceWorker | None = None,
+        thread: QThread | None = None,
+        generation: int | None = None,
+    ) -> None:
+        target_worker = worker or self._confidence_worker
+        target_thread = thread or self._confidence_thread
+        if target_worker is not None:
+            target_worker.deleteLater()
+        if target_thread is not None:
+            target_thread.deleteLater()
+        self._retired_confidence_workers = [
+            (retired_worker, retired_thread)
+            for retired_worker, retired_thread in self._retired_confidence_workers
+            if retired_worker is not target_worker and retired_thread is not target_thread
+        ]
+        if generation is None or int(generation) == int(self._confidence_request_generation):
+            if worker is None or worker is self._confidence_worker:
+                self._confidence_worker = None
+            if thread is None or thread is self._confidence_thread:
+                self._confidence_thread = None
+            self._loading_confidence_model_id = None
+            self._set_confidence_loading_state(False)
 
     def _cancel_confidence_worker(self) -> None:
         if self._confidence_worker is not None:
@@ -1183,17 +1225,36 @@ class ExtendFrameDetailsDialog(QDialog):
                 request_cancel()
 
     def _stop_confidence_worker(self) -> None:
-        self._cancel_confidence_worker()
-        thread = self._confidence_thread
-        if thread is not None:
+        active_pairs: list[tuple[DetailConfidenceWorker | None, QThread | None]] = [
+            (self._confidence_worker, self._confidence_thread),
+            *list(self._retired_confidence_workers),
+        ]
+        for worker, _thread in active_pairs:
+            if worker is None:
+                continue
+            request_cancel = getattr(worker, "request_cancel", None)
+            if callable(request_cancel):
+                request_cancel()
+        for _worker, thread in active_pairs:
+            if thread is None:
+                continue
             try:
                 thread.quit()
             except Exception:
                 pass
             if thread.isRunning():
                 thread.wait(30000)
+        self._retired_confidence_workers.clear()
+        self._confidence_worker = None
+        self._confidence_thread = None
+        self._loading_confidence_model_id = None
+        self._set_confidence_loading_state(False)
 
-    def _on_detail_worker_failed(self, message: str) -> None:
+    def _on_detail_worker_failed(self, message: str, *, generation: int | None = None, worker_kind: str = "detail") -> None:
+        if generation is not None:
+            active_generation = self._confidence_request_generation if worker_kind == "confidence" else self._detail_request_generation
+            if int(generation) != int(active_generation):
+                return
         self._payload_loading = False
         self._set_confidence_loading_state(False)
         self.comparison_score_card.set_payload(
@@ -1224,22 +1285,34 @@ class ExtendFrameDetailsDialog(QDialog):
             return
         if self._loading_confidence_model_id == model_id and self._confidence_thread is not None:
             return
+        previous_worker = self._confidence_worker
+        previous_thread = self._confidence_thread
         self._cancel_confidence_worker()
+        if previous_worker is not None and previous_thread is not None:
+            self._retired_confidence_workers.append((previous_worker, previous_thread))
+        self._confidence_request_generation += 1
+        generation = int(self._confidence_request_generation)
         max_side = int(getattr(self._build_result.options, "analysis_max_side", 0) or 0) or None
-        self._confidence_thread = QThread(self)
-        self._confidence_worker = DetailConfidenceWorker(self._record, self._build_result, model_id, max_side, self._payload)
+        thread = QThread(self)
+        worker = DetailConfidenceWorker(self._record, self._build_result, model_id, max_side, self._payload)
+        self._confidence_thread = thread
+        self._confidence_worker = worker
         self._loading_confidence_model_id = model_id
         self._set_confidence_loading_state(True, model_id)
-        self._confidence_worker.moveToThread(self._confidence_thread)
-        self._confidence_thread.started.connect(self._confidence_worker.run)
-        self._confidence_worker.finished.connect(lambda row, mid=model_id: self._on_confidence_loaded(mid, row))
-        self._confidence_worker.failed.connect(self._on_detail_worker_failed)
-        self._confidence_worker.finished.connect(self._confidence_thread.quit)
-        self._confidence_worker.failed.connect(self._confidence_thread.quit)
-        self._confidence_thread.finished.connect(self._cleanup_confidence_worker)
-        self._confidence_thread.start()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda row, mid=model_id, g=generation: self._on_confidence_loaded(mid, row, generation=g))
+        worker.failed.connect(lambda message, g=generation: self._on_detail_worker_failed(message, generation=g, worker_kind="confidence"))
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(lambda w=worker, t=thread, g=generation: self._cleanup_confidence_worker(w, t, g))
+        thread.start()
 
-    def _on_confidence_loaded(self, model_id: str | None, confidence_row) -> None:
+    def _on_confidence_loaded(self, model_id: str | None, confidence_row, *, generation: int | None = None) -> None:
+        if generation is not None and int(generation) != int(self._confidence_request_generation):
+            return
+        if self._loading_confidence_model_id is not None and model_id != self._loading_confidence_model_id:
+            return
         if model_id is None or confidence_row is None:
             return
         (self._payload.setdefault("model_confidence", {}))[model_id] = confidence_row
@@ -1294,6 +1367,14 @@ class ExtendFrameDetailsDialog(QDialog):
         if model_id is None:
             return None
         return (self._payload.get("model_confidence") or {}).get(model_id)
+
+    def _model_confidence_output_available(self, model_id: str | None) -> bool:
+        if model_id is None:
+            return False
+        availability = self._payload.get("model_confidence_output_available")
+        if isinstance(availability, dict) and model_id in availability:
+            return bool(availability.get(model_id))
+        return bool((getattr(self._record, "model_prob_paths", {}) or {}).get(model_id))
 
     def _confidence_debug_for_model(self, model_id: str | None):
         confidence_row = self._confidence_metrics_for_model(model_id)
@@ -1468,6 +1549,136 @@ class ExtendFrameDetailsDialog(QDialog):
         display_confidence, _support_weights, _support_mask = render_data
         display_confidence = np.asarray(display_confidence, dtype=np.float32)
         return np.clip(1.0 - display_confidence if uncertainty else display_confidence, 0.0, 1.0).astype(np.float32, copy=False)
+
+    def _confidence_bad_area_threshold(self) -> float:
+        delta = float(self._payload.get("confidence_uncertainty_delta") or MODEL_CONFIDENCE_UNCERTAIN_DELTA)
+        if not np.isfinite(delta):
+            return float(DEFAULT_CONFIDENCE_BAD_AREA_THRESHOLD)
+        return float(np.clip(1.0 - 2.0 * max(0.0, delta), 0.0, 0.999))
+
+    def _model_output_uncertainty_map(self, model_id: str | None) -> np.ndarray:
+        if model_id is None:
+            return np.zeros_like(self._base_array(), dtype=np.float32)
+        if not self._model_confidence_output_available(model_id):
+            return np.zeros_like(self._base_array(), dtype=np.float32)
+        probabilities = self._payload.get("model_probabilities") or {}
+        confidence_map = probabilities.get(model_id)
+        if confidence_map is None:
+            return np.zeros_like(self._base_array(), dtype=np.float32)
+        values = np.asarray(confidence_map, dtype=np.float32)
+        tile_rect = self._selection_crop_rect()
+        if tile_rect is not None:
+            values = np.asarray(self._crop_ndarray(values, tile_rect), dtype=np.float32)
+        return build_model_uncertainty(values)
+
+    def _algorithmic_uncertainty_map(self, model_id: str | None) -> np.ndarray:
+        if model_id is None:
+            return np.zeros_like(self._base_array(), dtype=np.float32)
+        if self._is_point_geometry():
+            point_map = self._source_point_map(f"model:{model_id}")
+            source = np.asarray(point_map, dtype=np.float32) if point_map is not None else None
+        else:
+            masks = self._payload.get("model_masks") or {}
+            source = masks.get(model_id)
+        if source is None:
+            return np.zeros_like(self._base_array(), dtype=np.float32)
+        values = np.asarray(source, dtype=np.float32)
+        tile_rect = self._selection_crop_rect()
+        if tile_rect is not None:
+            values = np.asarray(self._crop_ndarray(values, tile_rect), dtype=np.float32)
+        return build_algorithmic_uncertainty(values, boundary_radius=float(self._payload.get("boundary_radius") or 1.0) + 2.0)
+
+    def _bad_area_intensity_pixmap(self, intensity: np.ndarray, color: QColor, *, alpha_scale: float = 245.0) -> QPixmap:
+        alpha = np.clip(np.asarray(intensity, dtype=np.float32), 0.0, 1.0)
+        if alpha.ndim != 2 or alpha.size == 0:
+            return QPixmap()
+        height, width = alpha.shape
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        rgba[..., 0] = color.red()
+        rgba[..., 1] = color.green()
+        rgba[..., 2] = color.blue()
+        rgba[..., 3] = np.clip(np.round(alpha * float(alpha_scale)), 0.0, 255.0).astype(np.uint8)
+        image = QImage(rgba.data, width, height, int(rgba.strides[0]), QImage.Format.Format_RGBA8888).copy()
+        return QPixmap.fromImage(image)
+
+    def _confidence_bad_areas_pixmap(self, model_id: str | None) -> QPixmap:
+        threshold = self._confidence_bad_area_threshold()
+        cache_key = (
+            "confidence_bad_areas",
+            model_id,
+            round(float(threshold), 4),
+            self._selection_cache_key(),
+        )
+        cached = self._overlay_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        uncertainty = self._model_output_uncertainty_map(model_id)
+        intensity = confidence_bad_area_intensity(uncertainty, threshold=threshold)
+        pixmap = self._bad_area_intensity_pixmap(intensity, QColor(255, 48, 80, 255), alpha_scale=250.0)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
+    def _confidence_mix_pixmap(self, model_id: str | None) -> QPixmap:
+        threshold = self._confidence_bad_area_threshold()
+        cache_key = (
+            "confidence_mix",
+            model_id,
+            round(float(threshold), 4),
+            self._selection_cache_key(),
+        )
+        cached = self._overlay_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        algorithmic_uncertainty = self._algorithmic_uncertainty_map(model_id)
+        model_uncertainty = self._model_output_uncertainty_map(model_id)
+        combined = combine_uncertainty_maps(
+            algorithmic_uncertainty,
+            model_uncertainty,
+            algorithmic_threshold=threshold,
+            model_threshold=threshold,
+        )
+        agreement = np.asarray(combined.agreement, dtype=np.float32)
+        algorithmic_only = np.asarray(combined.algorithmic_only, dtype=np.float32)
+        model_only = np.asarray(combined.model_only, dtype=np.float32)
+        if agreement.ndim != 2 or agreement.size == 0:
+            return QPixmap()
+        height, width = agreement.shape
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        both_color = np.asarray([255.0, 216.0, 32.0], dtype=np.float32)
+        algorithmic_color = np.asarray([0.0, 210.0, 255.0], dtype=np.float32)
+        model_color = np.asarray([255.0, 0.0, 160.0], dtype=np.float32)
+        both_weight = 1.45 * agreement
+        algorithmic_weight = 0.85 * algorithmic_only
+        model_weight = 0.95 * model_only
+        total = both_weight + algorithmic_weight + model_weight
+        active = total > 1e-6
+        red = np.zeros_like(total, dtype=np.float32)
+        green = np.zeros_like(total, dtype=np.float32)
+        blue = np.zeros_like(total, dtype=np.float32)
+        red[active] = (
+            both_weight[active] * both_color[0]
+            + algorithmic_weight[active] * algorithmic_color[0]
+            + model_weight[active] * model_color[0]
+        ) / total[active]
+        green[active] = (
+            both_weight[active] * both_color[1]
+            + algorithmic_weight[active] * algorithmic_color[1]
+            + model_weight[active] * model_color[1]
+        ) / total[active]
+        blue[active] = (
+            both_weight[active] * both_color[2]
+            + algorithmic_weight[active] * algorithmic_color[2]
+            + model_weight[active] * model_color[2]
+        ) / total[active]
+        alpha = np.clip(0.95 * agreement + 0.62 * algorithmic_only + 0.68 * model_only, 0.0, 1.0)
+        rgba[..., 0] = np.clip(np.round(red), 0.0, 255.0).astype(np.uint8)
+        rgba[..., 1] = np.clip(np.round(green), 0.0, 255.0).astype(np.uint8)
+        rgba[..., 2] = np.clip(np.round(blue), 0.0, 255.0).astype(np.uint8)
+        rgba[..., 3] = np.clip(np.round(alpha * 255.0), 0.0, 255.0).astype(np.uint8)
+        image = QImage(rgba.data, width, height, int(rgba.strides[0]), QImage.Format.Format_RGBA8888).copy()
+        pixmap = QPixmap.fromImage(image)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
 
     def _confidence_color(self, value: float) -> tuple[int, int, int]:
         score = float(max(0.0, min(1.0, value)))
@@ -2097,12 +2308,19 @@ class ExtendFrameDetailsDialog(QDialog):
                 current_kind = "point_matches"
             else:
                 current_kind = "diff"
+        confidence_model_id = self._confidence_model_id()
+        confidence_output_available = self._model_confidence_output_available(confidence_model_id)
+        if not confidence_output_available and current_kind in {"confidence_bad_areas", "confidence_mix"}:
+            current_kind = "point_matches" if self._is_point_geometry() else "diff"
         items: list[tuple[str, str]] = [(self._t("details.comparison_difference"), "diff")]
         if self._is_point_geometry():
             items.append((self._t("details.point_matches"), "point_matches"))
         else:
             items.append((self._t("details.boundary_difference"), "boundary"))
         items.append((self._t("details.model_confidence_map"), "confidence"))
+        if confidence_output_available:
+            items.append((self._t("details.confidence_bad_areas"), "confidence_bad_areas"))
+            items.append((self._t("details.confidence_mix"), "confidence_mix"))
         self.result_kind_combo.blockSignals(True)
         self.result_kind_combo.clear()
         for label, key in items:
@@ -2184,6 +2402,7 @@ class ExtendFrameDetailsDialog(QDialog):
             first_key,
             second_key,
             float(self._payload.get("point_match_radius") or 3.0),
+            self._selection_cache_key(),
             self._named_color("difference_mask").name(QColor.NameFormat.HexArgb),
             self._named_color("first_mask").name(QColor.NameFormat.HexArgb),
             self._named_color("second_mask").name(QColor.NameFormat.HexArgb),
@@ -2279,6 +2498,10 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("details.point_matches")
         if kind == "confidence":
             return self._t("details.model_confidence_map")
+        if kind == "confidence_bad_areas":
+            return self._t("details.confidence_bad_areas")
+        if kind == "confidence_mix":
+            return self._t("details.confidence_mix")
         return self._t("details.difference_heatmap")
 
     def _refresh_dynamic_labels(self) -> None:
@@ -2304,6 +2527,7 @@ class ExtendFrameDetailsDialog(QDialog):
             self._selected_layer_view(),
             bool(prefer_grayscale),
             bool(self._is_point_geometry()),
+            self._selection_cache_key(),
             color.name(QColor.NameFormat.HexArgb),
         )
         cached = self._overlay_cache.get(cache_key)
@@ -2373,6 +2597,7 @@ class ExtendFrameDetailsDialog(QDialog):
             first_key,
             second_key,
             str(mode.value),
+            self._selection_cache_key(),
             color.name(QColor.NameFormat.HexArgb),
         )
         cached = self._derived_cache.get(cache_key)
@@ -2392,6 +2617,7 @@ class ExtendFrameDetailsDialog(QDialog):
             "boundary_overlay",
             first_key,
             second_key,
+            self._selection_cache_key(),
             color.name(QColor.NameFormat.HexArgb),
         )
         cached = self._derived_cache.get(cache_key)
@@ -2475,6 +2701,12 @@ class ExtendFrameDetailsDialog(QDialog):
         if kind == "confidence":
             self._comparison_score = None
             self.result_item.setPixmap(self._confidence_overlay_pixmap(confidence_model_id))
+        elif kind == "confidence_bad_areas":
+            self._comparison_score = None
+            self.result_item.setPixmap(self._confidence_bad_areas_pixmap(confidence_model_id))
+        elif kind == "confidence_mix":
+            self._comparison_score = None
+            self.result_item.setPixmap(self._confidence_mix_pixmap(confidence_model_id))
         elif kind == "boundary":
             pixmap, score = self._boundary_overlay_result(first_key, second_key, self._named_color("boundary_mask"))
             self._comparison_score = float(score)
@@ -3092,7 +3324,7 @@ class ExtendFrameDetailsDialog(QDialog):
             callback(dict(self._session_view_state))
 
     def _activate_context_hold(self) -> None:
-        if self._selected_result_kind() == "confidence":
+        if self._result_kind_requires_confidence():
             model_id = self._confidence_model_id()
             source_key = f"model:{model_id}" if model_id else None
             pixmap = self._source_pixmap(source_key, self._named_color("first_mask"), prefer_grayscale=True) if source_key else QPixmap()

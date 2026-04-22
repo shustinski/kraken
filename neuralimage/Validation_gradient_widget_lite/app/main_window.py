@@ -89,7 +89,6 @@ from ..ui.ui_constants import (
     MATRIX_COLUMNS_RANGE,
     METRIC_SETTINGS_COMBO_MIN_CONTENTS_LENGTH,
     METRIC_SETTINGS_LABEL_MIN_WIDTH,
-    METRIC_SETTINGS_WIDGET_MIN_WIDTH,
     MATRIX_METRIC_GROUP_OPTIONS,
     MATRIX_METRIC_OPTIONS,
     MATRIX_SCORE_VIEW_OPTIONS,
@@ -624,19 +623,19 @@ class ValidationGradientExtendWidget(QWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes(list(CONTROL_PANEL_SPLITTER_SIZES))
 
+        self.metric_settings_group = QGroupBox(self._t("ui.metric_focus"), control_host)
+        metric_settings_layout = QVBoxLayout(self.metric_settings_group)
+        metric_settings_layout.setContentsMargins(4, 4, 4, 4)
+        metric_settings_layout.setSpacing(0)
+        metric_settings_layout.addWidget(self._build_metric_settings_widget())
+        control_layout.addWidget(self.metric_settings_group)
+
         self.analysis_settings_group = QGroupBox(self._t("ui.analysis_setup"), control_host)
         analysis_settings_layout = QVBoxLayout(self.analysis_settings_group)
         analysis_settings_layout.setContentsMargins(6, 6, 6, 6)
         analysis_settings_layout.setSpacing(0)
         analysis_settings_layout.addWidget(self._build_matrix_settings_widget())
         control_layout.addWidget(self.analysis_settings_group)
-
-        self.metric_settings_group = QGroupBox(self._t("ui.metric_focus"), control_host)
-        metric_settings_layout = QVBoxLayout(self.metric_settings_group)
-        metric_settings_layout.setContentsMargins(6, 6, 6, 6)
-        metric_settings_layout.setSpacing(0)
-        metric_settings_layout.addWidget(self._build_metric_settings_widget())
-        control_layout.addWidget(self.metric_settings_group)
 
         self.language_toggle_button = QToolButton(self._menu_bar)
         self.language_toggle_button.setAutoRaise(True)
@@ -735,7 +734,7 @@ class ValidationGradientExtendWidget(QWidget):
         if build_result is not None:
             for spec in build_result.model_specs:
                 self.metric_scope_combo.addItem(str(spec.display_name), str(spec.model_id))
-        if self.metric_scope_combo.count() <= 0 and current:
+        if build_result is None and self.metric_scope_combo.count() <= 0 and current:
             self.metric_scope_combo.addItem(current, current)
         index = self.metric_scope_combo.findData(current)
         if index < 0 and build_result is not None:
@@ -939,27 +938,26 @@ class ValidationGradientExtendWidget(QWidget):
     def _build_metric_settings_widget(self) -> QWidget:
         widget = QWidget(self)
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(8)
-        self.metric_scope_combo.setMinimumContentsLength(METRIC_SETTINGS_COMBO_MIN_CONTENTS_LENGTH)
-        self.metric_scope_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContentsOnFirstShow)
-        self.metric_scope_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.metric_combo.setMinimumContentsLength(METRIC_SETTINGS_COMBO_MIN_CONTENTS_LENGTH)
-        self.metric_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContentsOnFirstShow)
-        self.metric_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
+        for combo in (self.metric_scope_combo, self.metric_combo):
+            combo.setMinimumContentsLength(max(8, min(10, METRIC_SETTINGS_COMBO_MIN_CONTENTS_LENGTH)))
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._metric_scope_row = self._build_setting_row(
             self._t("analysis.confidence_model"),
             self.metric_scope_combo,
             label_min_width=METRIC_SETTINGS_LABEL_MIN_WIDTH,
+            compact=True,
         )
         layout.addWidget(self._metric_scope_row)
         self._metric_select_row = self._build_setting_row(
             self._t("menu.metric.select"),
             self.metric_combo,
             label_min_width=METRIC_SETTINGS_LABEL_MIN_WIDTH,
+            compact=True,
         )
         layout.addWidget(self._metric_select_row)
-        layout.addStretch(1)
         return widget
 
     def _update_language_toggle_button(self) -> None:
@@ -1085,18 +1083,26 @@ class ValidationGradientExtendWidget(QWidget):
         self._settings_service.save_language(language)
         self.retranslate_ui()
 
-    def _build_setting_row(self, title: str, control: QWidget, *, label_min_width: int = SETTINGS_LABEL_MIN_WIDTH) -> QWidget:
+    def _build_setting_row(
+        self,
+        title: str,
+        control: QWidget,
+        *,
+        label_min_width: int = SETTINGS_LABEL_MIN_WIDTH,
+        compact: bool = False,
+    ) -> QWidget:
         row = QWidget(self)
         layout = QVBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(2 if compact else 4)
         label = QLabel(title, row)
         label.setMinimumWidth(0)
         label.setMaximumWidth(int(label_min_width * 3))
         label.setWordWrap(True)
         label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         control.setMinimumWidth(0)
-        control.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        if not compact:
+            control.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout.addWidget(label)
         layout.addWidget(control)
         row._title_label = label  # type: ignore[attr-defined]

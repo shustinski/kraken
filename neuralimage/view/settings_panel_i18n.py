@@ -172,8 +172,8 @@ def apply_settings_panel_texts(panel: Any) -> None:
     recognition_threshold_key = 'recognition_threshold'
     deprecated_models_key = 'deprecated_models'
     experimental_models_key = 'experimental_models'
+    epochs_key = 'epochs'
     recognition_tta_key = 'recognition_tta'
-    confidence_tta_key = 'confidence_tta'
     confidence_save_mode_key = 'confidence_save_mode'
     deep_supervision_key = 'deep_supervision'
     recognition_postprocess_kernel_size_key = 'recognition_postprocess_kernel_size'
@@ -273,6 +273,12 @@ def apply_settings_panel_texts(panel: Any) -> None:
                 'Architectures under evaluation that may require extra validation before production use.',
             )
         )
+    if epochs_key not in labels_map:
+        labels_map[epochs_key] = str(t.get('epochs', 'Epoch count'))
+    if epochs_key not in descriptions:
+        descriptions[epochs_key] = str(
+            t.get('epochs_tip', 'How many full passes over the training data to run.')
+        )
     if confidence_save_mode_key not in labels_map:
         labels_map[confidence_save_mode_key] = str(t.get('confidence_save_mode_label', 'Confidence map'))
     if confidence_save_mode_key not in descriptions:
@@ -289,15 +295,6 @@ def apply_settings_panel_texts(panel: Any) -> None:
             t.get(
                 'recognition_tta_tip',
                 'Apply test-time augmentation to the main recognition mask during inference.',
-            )
-        )
-    if confidence_tta_key not in labels_map:
-        labels_map[confidence_tta_key] = str(t.get('confidence_tta', 'Use TTA for confidence map'))
-    if confidence_tta_key not in descriptions:
-        descriptions[confidence_tta_key] = str(
-            t.get(
-                'confidence_tta_tip',
-                'Apply test-time augmentation when forming the confidence map during inference.',
             )
         )
     if deep_supervision_key not in labels_map:
@@ -1065,6 +1062,8 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.nn_auxilary_settings_groupbox.setTitle(str(t.get('aux_group', 'Additional settings')))
     panel.optimizer_groupbox.setTitle(str(t.get('optimizer_group', 'Optimizer and batch')))
     panel.precision_loss_groupbox.setTitle(str(t.get('loss_precision_group', 'Loss function')))
+    panel.optimizer_advanced_groupbox.setTitle(str(t.get('advanced_group', 'Advanced settings')))
+    panel.loss_advanced_groupbox.setTitle(str(t.get('advanced_group', 'Advanced settings')))
     panel.rare_patch_groupbox.setTitle(str(t.get('rare_patch_group', 'Rare patch oversampling')))
     panel.expert_groupbox.setTitle(str(t.get('expert_group', 'Expert settings')))
     panel.model_variants_groupbox.setTitle(str(t.get('model_variants_group', 'Additional model families')))
@@ -1075,12 +1074,15 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.hard_mining_groupbox.setTitle(str(t.get('hard_mining_group', 'Hard mining')))
     panel.early_stopping_groupbox.setTitle(str(t.get('early_stopping_group', 'Early stopping')))
     if hasattr(panel, 'settings_tabs'):
-        panel.settings_tabs.setTabText(panel._page_indexes.get('base', 0), str(t.get('tab_base', 'Базовые')))
-        panel.settings_tabs.setTabText(panel._page_indexes.get('training', 1), str(t.get('tab_training', 'Обучение')))
-        panel.settings_tabs.setTabText(
-            panel._page_indexes.get('recognition', 2),
-            str(t.get('tab_recognition', 'Распознавание')),
-        )
+        training_index = panel._page_indexes.get('training')
+        recognition_index = panel._page_indexes.get('recognition')
+        if training_index is not None:
+            panel.settings_tabs.setTabText(training_index, str(t.get('tab_training', 'Обучение')))
+        if recognition_index is not None:
+            panel.settings_tabs.setTabText(
+                recognition_index,
+                str(t.get('tab_recognition', 'Распознавание')),
+            )
     panel.optimizer_type.setToolTip(str(t.get('optimizer_tip', '')))
     panel.learning_rate_spinbox.setToolTip(str(t.get('lr_tip', '')))
     panel.weight_decay_spinbox.setToolTip(str(t.get('wd_tip', '')))
@@ -1188,22 +1190,11 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
-    panel.confidence_tta_check_box.setText(
-        str(t.get('confidence_tta', 'Use TTA for confidence map'))
-    )
-    panel.confidence_tta_check_box.setToolTip(
-        str(
-            t.get(
-                'confidence_tta_tip',
-                'Apply test-time augmentation when forming the confidence map during inference.',
-            )
-        )
-    )
     panel.confidence_save_mode_combo.setToolTip(
         str(
             t.get(
                 'confidence_save_mode_tip',
-                'Choose whether to save a separate confidence map next to the main recognition mask.',
+                'Choose whether to skip confidence output or save it from the model output or TTA result.',
             )
         )
     )
@@ -1213,7 +1204,11 @@ def apply_settings_panel_texts(panel: Any) -> None:
     )
     panel.confidence_save_mode_combo.setItemText(
         1,
-        str(t.get('confidence_save_mode_separate_grayscale', 'Save separate grayscale map')),
+        str(t.get('confidence_save_mode_model_output', 'From model output')),
+    )
+    panel.confidence_save_mode_combo.setItemText(
+        2,
+        str(t.get('confidence_save_mode_tta', 'From TTA')),
     )
     panel.recognition_postprocess_check_box.setText(
         str(t.get('recognition_postprocess', 'Postprocess binary mask'))

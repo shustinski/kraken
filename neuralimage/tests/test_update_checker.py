@@ -88,7 +88,9 @@ def test_load_update_client_config_supports_channels(monkeypatch, tmp_path) -> N
 
     assert config.default_channel == 'stable'
     assert config.available_channels == ('stable', 'beta')
-    assert config.get_manifest_url('beta').endswith('beta\\version.json')
+    beta_manifest = Path(config.get_manifest_url('beta'))
+    assert beta_manifest.parent.name == 'beta'
+    assert beta_manifest.name == 'version.json'
 
 
 def test_load_selected_update_channel_falls_back_to_available(monkeypatch, tmp_path) -> None:
@@ -236,6 +238,28 @@ def test_launch_update_installer_creates_cleanup_launcher(monkeypatch, tmp_path)
     assert 'rmdir /s /q "%~2"' in launcher_body
     assert 'goto retry_cleanup' in launcher_body
     launcher_path.unlink(missing_ok=True)
+
+
+def test_resolve_installer_name_preserves_posix_source_filename(monkeypatch) -> None:
+    monkeypatch.setattr(update_checker.os, 'name', 'posix')
+
+    resolved = update_checker._resolve_installer_name(  # type: ignore[attr-defined]
+        UpdateInfo(version='6.2.0', download_url='https://example.test/NeuralImage-6.2.0.AppImage'),
+        'https://example.test/NeuralImage-6.2.0.AppImage',
+    )
+
+    assert resolved == 'NeuralImage-6.2.0.AppImage'
+
+
+def test_resolve_installer_name_uses_platform_specific_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(update_checker.os, 'name', 'posix')
+
+    resolved = update_checker._resolve_installer_name(  # type: ignore[attr-defined]
+        UpdateInfo(version='6.2.0'),
+        '',
+    )
+
+    assert resolved == 'NeuralImage-6.2.0'
 
 
 def test_collect_release_history_returns_all_server_releases() -> None:

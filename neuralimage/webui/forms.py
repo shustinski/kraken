@@ -95,7 +95,7 @@ class MainWindowForm(forms.Form):
         self.fields['model_path'].widget.attrs.update(
             _BASE_TEXT_INPUT_ATTRS | {'placeholder': _read_text(placeholders, 'model_path', r'D:\models\model.pth')}
         )
-        self.fields['epochs'].widget.attrs.update(_BASE_NUM_INPUT_ATTRS)
+        self.fields['epochs'].widget.attrs.update(_BASE_NUM_INPUT_ATTRS | _START_FORM_ATTRS)
         self._apply_localized_texts()
 
     def _apply_localized_texts(self) -> None:
@@ -239,6 +239,8 @@ class SettingsForm(forms.Form):
     step = forms.IntegerField(label='Step', min_value=4, max_value=1024)
     vertical_rotation = forms.BooleanField(label='Rotate 180°', required=False)
     horizontal_rotation = forms.BooleanField(label='Rotate 90°', required=False)
+    flip_x = forms.BooleanField(label='Flip X', required=False)
+    flip_y = forms.BooleanField(label='Flip Y', required=False)
     additional_augmentation = forms.BooleanField(label='Additional augmentation', required=False)
     random_crop = forms.BooleanField(label='Random crop in online mode', required=False)
     crops_per_image = forms.IntegerField(label='Crops per image', min_value=1, max_value=5000, required=False)
@@ -260,6 +262,9 @@ class SettingsForm(forms.Form):
     )
     sample_x = forms.IntegerField(label='Sample X', min_value=8, max_value=4096)
     sample_y = forms.IntegerField(label='Sample Y', min_value=8, max_value=4096)
+    sync_patch_sizes = forms.BooleanField(label='Use the same patch size', required=False)
+    recognition_sample_x = forms.IntegerField(label='Recognition sample X', min_value=8, max_value=4096, required=False)
+    recognition_sample_y = forms.IntegerField(label='Recognition sample Y', min_value=8, max_value=4096, required=False)
     model = forms.CharField(label='Model architecture')
     color_mode = forms.ChoiceField(label='Color mode', choices=[('RGB', 'RGB'), ('ЧБ', 'ЧБ')])
     use_validation = forms.BooleanField(label='Use validation', required=False)
@@ -401,6 +406,13 @@ class SettingsForm(forms.Form):
     mixup_probability = forms.FloatField(label='Mixup probability', min_value=0.0, max_value=1.0, required=False)
     mixup_alpha = forms.FloatField(label='Mixup alpha', min_value=0.0, max_value=10.0, required=False)
     skip_uniform_labels = forms.BooleanField(label='Skip all-0/all-1 labels in training', required=False)
+    rare_patch_oversampling_enabled = forms.BooleanField(label='Enable rare patch oversampling', required=False)
+    rare_patch_oversampling_factor = forms.IntegerField(
+        label='Rare patch oversampling factor',
+        min_value=1,
+        max_value=100,
+        required=False,
+    )
     early_stopping_enabled = forms.BooleanField(label='Enable early stopping', required=False)
     early_stopping_patience = forms.IntegerField(label='Early stopping patience', min_value=0, max_value=2000)
     early_stopping_min_delta = forms.FloatField(label='Early stopping min delta', min_value=0.0, max_value=10.0)
@@ -424,6 +436,8 @@ class SettingsForm(forms.Form):
             'scale_augmentation_strength',
             'sample_x',
             'sample_y',
+            'recognition_sample_x',
+            'recognition_sample_y',
             'validation_percent',
             'batch_size',
             'dataloader_num_workers',
@@ -466,6 +480,7 @@ class SettingsForm(forms.Form):
             'random_artifacts_size_ratio',
             'mixup_probability',
             'mixup_alpha',
+            'rare_patch_oversampling_factor',
             'early_stopping_patience',
             'early_stopping_min_delta',
         ):
@@ -624,6 +639,8 @@ class SettingsForm(forms.Form):
             step=cleaned['step'],
             vertical_rotation=cleaned.get('vertical_rotation', False),
             horizontal_rotation=cleaned.get('horizontal_rotation', False),
+            flip_x=cleaned.get('flip_x', False),
+            flip_y=cleaned.get('flip_y', False),
             additional_augmentation=cleaned.get('additional_augmentation', False),
             random_crop=cleaned.get('random_crop', False),
             crops_per_image=_with_default('crops_per_image'),
@@ -634,6 +651,15 @@ class SettingsForm(forms.Form):
             augmentation_noise_probability=_with_default('augmentation_noise_probability'),
             augmentation_noise_sigma=_with_default('augmentation_noise_sigma'),
             sample_size=(cleaned['sample_x'], cleaned['sample_y']),
+            train_patch_size=(cleaned['sample_x'], cleaned['sample_y']),
+            recognition_patch_size=(
+                (cleaned['sample_x'], cleaned['sample_y'])
+                if cleaned.get('sync_patch_sizes')
+                else (
+                    cleaned.get('recognition_sample_x') or cleaned['sample_x'],
+                    cleaned.get('recognition_sample_y') or cleaned['sample_y'],
+                )
+            ),
             model=cleaned['model'],
             color_mode=cleaned['color_mode'],
             shuffle=cleaned.get('shuffle', False),
@@ -646,6 +672,7 @@ class SettingsForm(forms.Form):
             sample_cut_mode=cleaned['sample_cut_mode'],
             batch_size=cleaned['batch_size'],
             dataloader_num_workers=_with_default('dataloader_num_workers'),
+            sync_patch_sizes=cleaned.get('sync_patch_sizes', False),
             overlap=cleaned['overlap'],
             recognition_tta_enabled=cleaned.get('recognition_tta_enabled', False),
             confidence_tta_enabled=cleaned.get('confidence_tta_enabled', False),
@@ -669,7 +696,7 @@ class SettingsForm(forms.Form):
             iou_loss_weight=_with_default('iou_loss_weight'),
             learning_rate=cleaned['learning_rate'],
             weight_decay=cleaned['weight_decay'],
-            deep_supervision=cleaned.get('deep_supervision', True),
+            deep_supervision=cleaned.get('deep_supervision', False),
             warmup_enabled=cleaned.get('warmup_enabled', False),
             warmup_epochs=cleaned['warmup_epochs'],
             warmup_start_factor=cleaned['warmup_start_factor'],
@@ -717,6 +744,8 @@ class SettingsForm(forms.Form):
             mixup_probability=_with_default('mixup_probability'),
             mixup_alpha=_with_default('mixup_alpha'),
             skip_uniform_labels=cleaned.get('skip_uniform_labels', False),
+            rare_patch_oversampling_enabled=cleaned.get('rare_patch_oversampling_enabled', False),
+            rare_patch_oversampling_factor=_with_default('rare_patch_oversampling_factor'),
             early_stopping_enabled=cleaned.get('early_stopping_enabled', False),
             early_stopping_patience=cleaned['early_stopping_patience'],
             early_stopping_min_delta=cleaned['early_stopping_min_delta'],
@@ -750,6 +779,8 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'step': state.step,
         'vertical_rotation': state.vertical_rotation,
         'horizontal_rotation': state.horizontal_rotation,
+        'flip_x': getattr(state, 'flip_x', False),
+        'flip_y': getattr(state, 'flip_y', False),
         'additional_augmentation': state.additional_augmentation,
         'random_crop': getattr(state, 'random_crop', False),
         'crops_per_image': getattr(state, 'crops_per_image', 64),
@@ -761,6 +792,9 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'augmentation_noise_sigma': state.augmentation_noise_sigma,
         'sample_x': state.sample_size[0],
         'sample_y': state.sample_size[1],
+        'sync_patch_sizes': getattr(state, 'sync_patch_sizes', True),
+        'recognition_sample_x': (getattr(state, 'recognition_patch_size', None) or state.sample_size)[0],
+        'recognition_sample_y': (getattr(state, 'recognition_patch_size', None) or state.sample_size)[1],
         'model': state.model,
         'color_mode': state.color_mode,
         'shuffle': state.shuffle,
@@ -793,7 +827,7 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'iou_loss_weight': state.iou_loss_weight,
         'learning_rate': state.learning_rate,
         'weight_decay': state.weight_decay,
-        'deep_supervision': getattr(state, 'deep_supervision', True),
+        'deep_supervision': getattr(state, 'deep_supervision', False),
         'warmup_enabled': state.warmup_enabled,
         'warmup_epochs': state.warmup_epochs,
         'warmup_start_factor': state.warmup_start_factor,
@@ -847,6 +881,8 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'mixup_probability': getattr(state, 'mixup_probability', 1.0),
         'mixup_alpha': getattr(state, 'mixup_alpha', 0.2),
         'skip_uniform_labels': state.skip_uniform_labels,
+        'rare_patch_oversampling_enabled': getattr(state, 'rare_patch_oversampling_enabled', False),
+        'rare_patch_oversampling_factor': getattr(state, 'rare_patch_oversampling_factor', 2),
         'early_stopping_enabled': state.early_stopping_enabled,
         'early_stopping_patience': state.early_stopping_patience,
         'early_stopping_min_delta': state.early_stopping_min_delta,

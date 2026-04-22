@@ -3,6 +3,7 @@ import importlib
 import multiprocessing as mp
 import os
 import platform
+import sys
 from importlib.util import find_spec
 from typing import Sequence
 
@@ -25,6 +26,47 @@ from typing import Sequence
 
 # _preload_windows_torch_dll()
 from lib.version import get_app_title
+
+
+_STD_STREAM_FALLBACKS: list[object] = []
+
+
+def _ensure_standard_streams() -> None:
+    for stream_name, original_name in (('stdout', '__stdout__'), ('stderr', '__stderr__')):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None:
+            continue
+        original_stream = getattr(sys, original_name, None)
+        if original_stream is not None:
+            setattr(sys, stream_name, original_stream)
+            continue
+        fallback_stream = open(os.devnull, 'w', encoding='utf-8', buffering=1)
+        _STD_STREAM_FALLBACKS.append(fallback_stream)
+        setattr(sys, stream_name, fallback_stream)
+
+
+_ensure_standard_streams()
+
+
+def _configure_multiprocessing_start_method() -> str | None:
+    override = str(os.getenv('NEURALIMAGE_MP_START_METHOD', '') or '').strip().lower()
+    if override:
+        requested_method = override
+    elif sys.platform.startswith('linux'):
+        # Linux defaults to "fork", which is fragile once Qt and CUDA-enabled
+        # torch objects exist in the parent process. Prefer spawn for desktop
+        # runtime stability and parity with Windows behavior.
+        requested_method = 'spawn'
+    else:
+        requested_method = ''
+    if not requested_method:
+        return mp.get_start_method(allow_none=True)
+
+    current_method = mp.get_start_method(allow_none=True)
+    if current_method is None:
+        mp.set_start_method(requested_method, force=False)
+        return requested_method
+    return current_method
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -61,10 +103,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_web_ui(host: str, port: int) -> None:
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'webui_project.settings')
     try:
-        execute_from_command_line = importlib.import_module('django.core.management').execute_from_command_line
+        management = importlib.import_module('django.core.management')
     except ImportError as exc:
         raise RuntimeError('Django is not installed. Install requirements-dev.txt first.') from exc
-    execute_from_command_line(['manage.py', 'runserver', f'{host}:{port}'])
+    management.execute_from_command_line(['manage.py', 'migrate', '--noinput'])
+    management.execute_from_command_line(['manage.py', 'runserver', f'{host}:{port}', '--noreload'])
 
 
 def _run_desktop_ui(*, ui_only: bool) -> None:
@@ -75,6 +118,7 @@ def _run_desktop_ui(*, ui_only: bool) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    _configure_multiprocessing_start_method()
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.web:

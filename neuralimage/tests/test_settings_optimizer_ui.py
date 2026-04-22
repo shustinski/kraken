@@ -48,7 +48,7 @@ def test_settings_panel_emits_optimizer_settings_changed(qapp):
     panel.optimizer_settings_changed.connect(lambda: calls.__setitem__('count', calls['count'] + 1))
 
     panel.optimizer_type.setCurrentText('adamw')
-    panel.mixed_precision_type.setCurrentText('fp16')
+    panel.mixed_precision_type.setCurrentText('off')
     panel.learning_rate_spinbox.setValue(0.0002)
     panel.weight_decay_spinbox.setValue(0.01)
 
@@ -127,32 +127,27 @@ def test_settings_panel_optimizer_presets_apply_values_and_highlight_active(qapp
     panel = SettingsPanel()
     panel.connect_internal_signals()
 
-    adam_btn, adamw_btn, muon_btn = panel.optimizer_preset_buttons
+    adam_btn, adamw_btn = panel.optimizer_preset_buttons
+    assert len(panel.optimizer_preset_buttons) == 2
+    assert panel.optimizer_advanced_content_widget.isHidden() is True
+    assert panel.loss_advanced_content_widget.isHidden() is True
 
     adamw_btn.click()
     assert panel.optimizer_type.currentText() == 'adamw'
     assert panel.learning_rate_spinbox.value() == pytest.approx(0.0005)
     assert panel.weight_decay_spinbox.value() == pytest.approx(0.01)
+    assert adamw_btn.property('selectionRole') == 'mode'
     assert adamw_btn.isChecked() is True
     assert adam_btn.isChecked() is False
-    assert muon_btn.isChecked() is False
-
-    muon_btn.click()
-    assert panel.optimizer_type.currentText() == 'adamw_muon'
-    assert panel.learning_rate_spinbox.value() == pytest.approx(0.0003)
-    assert panel.weight_decay_spinbox.value() == pytest.approx(0.02)
-    assert muon_btn.isChecked() is True
-    assert adam_btn.isChecked() is False
-    assert adamw_btn.isChecked() is False
 
     panel.learning_rate_spinbox.setValue(0.00031)
     assert adam_btn.isChecked() is False
     assert adamw_btn.isChecked() is False
-    assert muon_btn.isChecked() is False
 
 
 def test_settings_panel_toggles_validation_spinbox(qapp):
     panel = SettingsPanel()
+    panel.expert_groupbox.setChecked(True)
 
     panel.validation_check_box.setChecked(False)
     assert panel.validation_spinbox.isEnabled() is False
@@ -184,6 +179,7 @@ def test_settings_panel_shows_only_selected_scheduler_fields(qapp):
 
 def test_settings_panel_switches_between_split_and_external_validation_controls(qapp):
     panel = SettingsPanel()
+    panel.expert_groupbox.setChecked(True)
 
     panel.validation_check_box.setChecked(True)
     panel.set_validation_source_value('split')
@@ -199,6 +195,7 @@ def test_settings_panel_switches_between_split_and_external_validation_controls(
 
 def test_settings_panel_disables_field_rows_and_descriptions(qapp):
     panel = SettingsPanel()
+    panel.expert_groupbox.setChecked(True)
 
     panel.validation_check_box.setChecked(False)
     validation_row = panel._field_rows[panel.validation_spinbox]
@@ -232,32 +229,37 @@ def test_settings_panel_disables_field_rows_and_descriptions(qapp):
 def test_settings_panel_toggles_augmentation_groupboxes(qapp):
     panel = SettingsPanel()
     panel.sync_business_logic_controls(WorkMode.train_only.value)
+    panel.expert_groupbox.setChecked(True)
 
     assert panel.spatial_groupbox.isHidden() is False
 
     panel.additional_augmentation_check_box.setChecked(False)
     panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
-    assert panel.photometric_groupbox.isHidden() is True
+    assert panel.photometric_groupbox.isHidden() is False
+    assert panel._field_rows[panel.augmentation_brightness_spinbox].isEnabled() is False
 
     panel.additional_augmentation_check_box.setChecked(True)
     panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
-    assert panel.photometric_groupbox.isHidden() is False
+    assert panel._field_rows[panel.augmentation_brightness_spinbox].isEnabled() is True
 
     panel.cutout_check_box.setChecked(False)
     panel.random_artifacts_check_box.setChecked(False)
     panel.mixup_check_box.setChecked(False)
     panel._sync_training_augmentation_controls()
-    assert panel.cutout_groupbox.isHidden() is True
-    assert panel.random_artifacts_groupbox.isHidden() is True
-    assert panel.mixup_groupbox.isHidden() is True
+    assert panel.cutout_groupbox.isHidden() is False
+    assert panel.random_artifacts_groupbox.isHidden() is False
+    assert panel.mixup_groupbox.isHidden() is False
+    assert panel._field_rows[panel.cutout_probability_spinbox].isEnabled() is False
+    assert panel._field_rows[panel.random_artifacts_probability_spinbox].isEnabled() is False
+    assert panel._field_rows[panel.mixup_probability_spinbox].isEnabled() is False
 
     panel.cutout_check_box.setChecked(True)
     panel.random_artifacts_check_box.setChecked(True)
     panel.mixup_check_box.setChecked(True)
     panel._sync_training_augmentation_controls()
-    assert panel.cutout_groupbox.isHidden() is False
-    assert panel.random_artifacts_groupbox.isHidden() is False
-    assert panel.mixup_groupbox.isHidden() is False
+    assert panel._field_rows[panel.cutout_probability_spinbox].isEnabled() is True
+    assert panel._field_rows[panel.random_artifacts_probability_spinbox].isEnabled() is True
+    assert panel._field_rows[panel.mixup_probability_spinbox].isEnabled() is True
 
 
 def test_settings_panel_uses_photometric_and_spatial_labels_and_shared_sampling_row(qapp):
@@ -274,17 +276,17 @@ def test_settings_panel_uses_photometric_and_spatial_labels_and_shared_sampling_
 def test_settings_panel_places_mixed_precision_in_runtime_and_rare_patch_on_training_tab(qapp):
     panel = SettingsPanel()
 
+    train_batch_row = panel._field_rows[panel.train_batch_spinbox]
     mixed_precision_row = panel._field_rows[panel.mixed_precision_type]
     log_update_frequency_row = panel._field_rows[panel.log_update_frequency_spinbox]
     rare_patch_factor_row = panel._field_rows[panel.rare_patch_oversampling_factor_spinbox]
 
+    assert panel.runtime_groupbox.isAncestorOf(train_batch_row) is True
     assert panel.runtime_groupbox.isAncestorOf(mixed_precision_row) is True
     assert panel.precision_loss_groupbox.isAncestorOf(mixed_precision_row) is False
     assert panel.runtime_groupbox.isAncestorOf(log_update_frequency_row) is True
     assert panel.optimizer_groupbox.isAncestorOf(log_update_frequency_row) is False
-    assert panel.training_page_layout.indexOf(panel.shuffle_groupbox) != -1
     assert panel.training_page_layout.indexOf(panel.rare_patch_groupbox) != -1
-    assert panel.training_page_layout.indexOf(panel.warmup_groupbox) != -1
     assert panel.training_page_layout.indexOf(panel.expert_groupbox) != -1
     assert panel.expert_groupbox.isCheckable() is True
     assert panel.expert_groupbox.isChecked() is False
@@ -301,7 +303,7 @@ def test_settings_panel_places_mixed_precision_in_runtime_and_rare_patch_on_trai
     assert panel.runtime_groupbox.isAncestorOf(panel.rare_patch_oversampling_check_box) is False
     assert panel.general_groupbox.isAncestorOf(panel.shuffle_frames_check_box) is False
     assert panel.general_groupbox.isAncestorOf(panel.deprecated_model_type) is False
-    assert panel.expert_groupbox.isAncestorOf(panel.warmup_groupbox) is False
+    assert panel.expert_groupbox.isAncestorOf(panel.warmup_groupbox) is True
 
 
 def test_settings_panel_syncs_tech_aug_controls(qapp):
@@ -339,7 +341,6 @@ def test_settings_panel_syncs_recognition_output_controls(qapp):
     panel.recognition_use_auto_threshold_check_box.setChecked(True)
     assert panel._field_rows[panel.recognition_threshold_spinbox].isEnabled() is False
     assert panel.recognition_tta_check_box.isEnabled() is True
-    assert panel.confidence_tta_check_box.isEnabled() is True
     assert panel._field_rows[panel.confidence_save_mode_combo].isEnabled() is True
 
     panel.recognition_use_auto_threshold_check_box.setChecked(False)
@@ -352,7 +353,6 @@ def test_settings_panel_syncs_recognition_output_controls(qapp):
     assert panel._field_rows[panel.recognition_threshold_spinbox].isEnabled() is False
     assert panel._field_rows[panel.recognition_postprocess_kernel_size_spinbox].isEnabled() is False
     assert panel.recognition_tta_check_box.isEnabled() is True
-    assert panel.confidence_tta_check_box.isEnabled() is True
     assert panel._field_rows[panel.confidence_save_mode_combo].isEnabled() is True
 
 
@@ -386,22 +386,27 @@ def test_settings_panel_applies_loss_presets_for_conductors_and_contacts(qapp):
 
     panel.loss_preset_buttons['conductors'].click()
     assert panel.get_loss_term_weights() == {'bce': 0.5, 'dice': 0.5}
+    assert panel.loss_preset_buttons['conductors'].isChecked() is True
+    assert panel.loss_preset_buttons['contacts'].isChecked() is False
 
     panel.loss_preset_buttons['contacts'].click()
     assert panel.get_loss_term_weights() == {'bce': 0.5, 'focal_tversky': 0.5}
+    assert panel.loss_preset_buttons['contacts'].isChecked() is True
+    assert panel.loss_preset_buttons['conductors'].isChecked() is False
 
 
 def test_settings_panel_uses_single_visible_label_inside_each_labeled_row(qapp):
     panel = SettingsPanel()
 
     cases = (
+        (panel.general_form, 'epochs', panel.epochs_spinbox),
         (panel.general_form, 'sync_patch_sizes', panel.sync_patch_sizes_check_box),
         (panel.general_form, 'train_patch_size', panel.train_patch_size_widget),
         (panel.general_form, 'recognition_patch_size', panel.recognition_patch_size_widget),
-        (panel.augmentation_form, 'scale_augmentation_strength', panel.scale_augmentation_strength_spinbox),
-        (panel.optimizer_form, 'train_batch_size', panel.train_batch_spinbox),
-        (panel.optimizer_form, 'dataloader_num_workers', panel.dataloader_num_workers_spinbox),
-        (panel.optimizer_form, 'recognition_batch_size', panel.recognition_batch_spinbox),
+        (panel.spatial_form, 'scale_augmentation_strength', panel.scale_augmentation_strength_spinbox),
+        (panel.runtime_form, 'train_batch_size', panel.train_batch_spinbox),
+        (panel.runtime_form, 'dataloader_num_workers', panel.dataloader_num_workers_spinbox),
+        (panel.recognition_form, 'recognition_batch_size', panel.recognition_batch_spinbox),
         (panel.runtime_form, 'multi_gpu', panel.multi_gpu_mode_combo),
         (panel.scheduler_form, 'scheduler_name', panel.scheduler_type_combo),
     )
@@ -419,15 +424,13 @@ def test_settings_panel_keeps_color_mode_value_stable_when_language_changes(qapp
 
     panel.set_ui_language('en')
     assert panel.get_color_mode_value() == 'ЧБ'
-    assert panel.settings_tabs.tabText(panel._page_indexes['base']) == 'Basic'
     assert panel.settings_tabs.tabText(panel._page_indexes['training']) == 'Training'
     assert panel.settings_tabs.tabText(panel._page_indexes['recognition']) == 'Recognition'
-    assert len(panel._page_indexes) == 3
+    assert len(panel._page_indexes) == 2
     assert panel.expert_groupbox.title() == 'Expert settings'
 
     panel.set_ui_language('ru')
     assert panel.get_color_mode_value() == 'ЧБ'
-    assert panel.settings_tabs.tabText(panel._page_indexes['base']) == 'Базовые'
     assert panel.settings_tabs.tabText(panel._page_indexes['training']) == 'Обучение'
     assert panel.settings_tabs.tabText(panel._page_indexes['recognition']) == 'Распознавание'
     assert panel.expert_groupbox.title() == 'Экспертные настройки'
@@ -446,6 +449,7 @@ def test_settings_panel_disables_irrelevant_controls_by_work_mode(qapp):
     panel = SettingsPanel()
 
     panel.sync_business_logic_controls(WorkMode.recognition_only.value)
+    panel.expert_groupbox.setChecked(True)
     assert panel.sample_type_groupbox.isEnabled() is False
     assert panel.additional_augmentation_check_box.isEnabled() is False
     assert panel.tech_augmentation_check_box.isEnabled() is False
@@ -454,17 +458,18 @@ def test_settings_panel_disables_irrelevant_controls_by_work_mode(qapp):
     assert panel.mixup_check_box.isEnabled() is False
     assert panel.pcb_defects_check_box.isEnabled() is False
     assert panel.validation_check_box.isEnabled() is False
-    assert panel._field_rows[panel.optimizer_type].isEnabled() is False
+    assert panel.optimizer_presets_widget.isEnabled() is False
     assert panel._field_rows[panel.overlap_spinbox].isEnabled() is True
-    assert panel._field_rows[panel.batch_spinbox].isEnabled() is True
+    assert panel._field_rows[panel.batch_spinbox].isEnabled() is False
     assert panel._field_rows[panel.nn_model_type].isEnabled() is False
     assert panel._field_rows[panel.deprecated_model_type].isEnabled() is False
     assert panel._field_rows[panel.experimental_model_type].isEnabled() is False
     assert panel.multi_gpu_check_box.isEnabled() is False
-    assert panel.torch_compile_check_box.isEnabled() is False
+    assert panel.torch_compile_check_box.isEnabled() is True
     assert panel.edit_rare_regions_button.isEnabled() is False
 
     panel.sync_business_logic_controls(WorkMode.train_only.value)
+    panel.expert_groupbox.setChecked(True)
     assert panel.sample_type_groupbox.isEnabled() is True
     assert panel.additional_augmentation_check_box.isEnabled() is True
     assert panel.tech_augmentation_check_box.isEnabled() is True
@@ -472,12 +477,11 @@ def test_settings_panel_disables_irrelevant_controls_by_work_mode(qapp):
     assert panel.random_artifacts_check_box.isEnabled() is True
     assert panel.mixup_check_box.isEnabled() is True
     assert panel.pcb_defects_check_box.isEnabled() is True
-    assert panel._field_rows[panel.optimizer_type].isEnabled() is True
+    assert panel.optimizer_presets_widget.isEnabled() is True
     assert panel._field_rows[panel.overlap_spinbox].isEnabled() is False
     assert panel._field_rows[panel.nn_model_type].isEnabled() is True
-    assert panel._field_rows[panel.deprecated_model_type].isEnabled() is False
-    assert panel._field_rows[panel.experimental_model_type].isEnabled() is False
-    panel.expert_groupbox.setChecked(True)
+    assert panel._field_rows[panel.deprecated_model_type].isEnabled() is True
+    assert panel._field_rows[panel.experimental_model_type].isEnabled() is True
     assert panel._field_rows[panel.deprecated_model_type].isEnabled() is True
     assert panel._field_rows[panel.experimental_model_type].isEnabled() is True
     assert panel.edit_rare_regions_button.isEnabled() is True
@@ -536,10 +540,11 @@ def test_settings_panel_splits_model_groups_into_three_comboboxes(qapp):
 def test_settings_panel_toggles_pcb_defect_controls(qapp):
     panel = SettingsPanel()
     panel.sync_business_logic_controls(WorkMode.train_only.value)
+    panel.expert_groupbox.setChecked(True)
 
     panel.synthetic_defect_generator_check_box.setChecked(False)
     panel._sync_synthetic_defect_generator_controls()
-    assert panel.synthetic_defect_generator_groupbox.isHidden() is True
+    assert panel.synthetic_defect_generator_groupbox.isHidden() is False
     assert panel._field_rows[panel.pcb_defects_probability_spinbox].isEnabled() is False
     assert panel._field_rows[panel.pcb_defects_min_count_spinbox].isEnabled() is False
     assert panel._field_rows[panel.pcb_defect_type_checkboxes['break']].isEnabled() is False
@@ -561,6 +566,7 @@ def test_settings_panel_toggles_pcb_defect_controls(qapp):
 def test_settings_panel_shows_ic_synthetic_defect_controls(qapp):
     panel = SettingsPanel()
     panel.sync_business_logic_controls(WorkMode.train_only.value)
+    panel.expert_groupbox.setChecked(True)
     panel.synthetic_defect_generator_check_box.setChecked(True)
     panel.set_synthetic_topology_domain_value('ic')
     panel._sync_synthetic_domain_controls()
@@ -616,6 +622,7 @@ def test_settings_panel_emits_reset_defaults_requested(qapp):
 def test_settings_panel_emits_augmentation_preview_requested(qapp):
     panel = SettingsPanel()
     panel.connect_internal_signals()
+    panel.expert_groupbox.setChecked(True)
     calls = {'count': 0}
     panel.augmentation_preview_requested.connect(lambda: calls.__setitem__('count', calls['count'] + 1))
 
@@ -1082,6 +1089,7 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
 
     presenter.view.set_batch_preview_enabled = _set_batch_preview_enabled
     presenter.view.is_batch_preview_enabled = _is_batch_preview_enabled
+    presenter.main_window_state = module.MainWindowState(epochs=1)
     presenter.settings_state = SettingsState(
         model='MockNet',
         validation_source='external',
@@ -1232,6 +1240,7 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
 
     module.MainPresenter._apply_settings_to_panel(presenter)
     assert panel.optimizer_type.currentText() == 'adamw'
+    assert panel.epochs_spinbox.value() == 1
     assert panel.shuffle_frames_check_box.isChecked() is False
     assert panel.shuffle_patches_in_frame_check_box.isChecked() is True
     assert panel.random_crop_check_box.isChecked() is True
@@ -1296,7 +1305,7 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert panel.recognition_use_auto_threshold_check_box.isChecked() is False
     assert panel.recognition_threshold_spinbox.value() == pytest.approx(0.67)
     assert panel.recognition_tta_check_box.isChecked() is True
-    assert panel.confidence_tta_check_box.isChecked() is False
+    assert panel.get_confidence_export_mode_value() == 'model_output'
     assert panel.recognition_postprocess_check_box.isChecked() is True
     assert panel.recognition_postprocess_kernel_size_spinbox.value() == 5
     assert panel.get_confidence_save_mode_value() == 'separate_grayscale'
@@ -1392,10 +1401,9 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     panel.recognition_use_auto_threshold_check_box.setChecked(False)
     panel.recognition_threshold_spinbox.setValue(0.59)
     panel.recognition_tta_check_box.setChecked(True)
-    panel.confidence_tta_check_box.setChecked(True)
     panel.recognition_postprocess_check_box.setChecked(True)
     panel.recognition_postprocess_kernel_size_spinbox.setValue(7)
-    panel.set_confidence_save_mode_value('separate_grayscale')
+    panel.set_confidence_export_mode_value('tta')
     panel.torch_compile_check_box.setChecked(True)
     panel.early_stopping_check_box.setChecked(False)
     panel.early_stopping_patience_spinbox.setValue(2)

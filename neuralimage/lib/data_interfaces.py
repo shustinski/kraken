@@ -1323,7 +1323,7 @@ class TrainingParameters:
     validation_label_path: Path | None = None
     save_validation_binary_images: bool = False
     optimizer: OptimizerParameters = field(default_factory=OptimizerParameters)
-    mixed_precision: MixedPrecisionMode = MixedPrecisionMode.bf16
+    mixed_precision: MixedPrecisionMode = MixedPrecisionMode.fp16
     loss_function: str = 'bce'
     loss_term_weights: dict[str, float] = field(default_factory=dict)
     dice_loss_weight: float = 0.5
@@ -1348,7 +1348,11 @@ class TrainingParameters:
     context_branch_channels: tuple[int, ...] = (16, 32, 64, 128)
     fusion_type: str = 'concat'
     use_context_branch: bool | None = None
-    deep_supervision: bool = True
+    use_cross_attention: bool = True
+    attention_dim: int = 128
+    attention_heads: int = 4
+    attention_max_global_tokens: int = 1024
+    deep_supervision: bool = False
     artifact_dir: Path | None = None
     dataloader_num_workers: int = -1
     pcb_defects: PCBDefectParameters = field(default_factory=PCBDefectParameters)
@@ -1376,6 +1380,7 @@ class RecognitionParameters:
     confidence_tta_enabled: bool = False
     confidence_save_mode: str = ConfidenceSaveMode.off.value
     use_context_branch: bool | None = None
+    use_cross_attention: bool | None = None
     context_crop_size: tuple[int, int] | None = None
     context_input_size: tuple[int, int] | None = None
 

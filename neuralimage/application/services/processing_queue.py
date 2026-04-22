@@ -13,6 +13,8 @@ class QueuedTask(Generic[MainStateT, SettingsStateT]):
     task_id: int
     main_window_state: MainStateT
     settings_state: SettingsStateT
+    owner_username: str = ''
+    owner_display_name: str = ''
     paused: bool = False
 
 
@@ -47,11 +49,16 @@ class ProcessingTaskQueue(Generic[MainStateT, SettingsStateT]):
         self,
         main_window_state: MainStateT,
         settings_state: SettingsStateT,
+        *,
+        owner_username: str = '',
+        owner_display_name: str = '',
     ) -> QueuedTask[MainStateT, SettingsStateT]:
         task = QueuedTask(
             task_id=self._next_task_id,
             main_window_state=main_window_state,
             settings_state=settings_state,
+            owner_username=str(owner_username or ''),
+            owner_display_name=str(owner_display_name or owner_username or ''),
         )
         self._next_task_id += 1
         self._tasks.append(task)

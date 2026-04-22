@@ -1,4 +1,19 @@
-from .CNN_Models import *
-from .dual_scale_models import *
-from .transformer_segmentation import *
-from .registrator import *
+from .registrator import (
+    ModelType,
+    create_model,
+    get_registered_model_names_by_type,
+    get_registered_model_registry,
+    get_registered_models,
+    model_supports_init_kwarg,
+    register_model,
+)
+
+__all__ = [
+    "ModelType",
+    "create_model",
+    "get_registered_model_names_by_type",
+    "get_registered_model_registry",
+    "get_registered_models",
+    "model_supports_init_kwarg",
+    "register_model",
+]

@@ -73,7 +73,7 @@ class SettingsState:
     edge_cut_size: int = 0
     target_size: tuple[int, int] = (2000, 2000)
     optimizer_name: str = 'adam'
-    mixed_precision: str = 'bf16'
+    mixed_precision: str = 'fp16'
     loss_function: str = 'bce'
     loss_term_weights: dict[str, float] = field(default_factory=lambda: {'bce': 1.0})
     dice_loss_weight: float = 0.5
@@ -138,7 +138,7 @@ class SettingsState:
     context_branch_channels: tuple[int, ...] = (16, 32, 64, 128)
     fusion_type: str = 'concat'
     use_context_branch: bool | None = None
-    deep_supervision: bool = True
+    deep_supervision: bool = False
     synthetic_defect_generator: dict[str, Any] = field(default_factory=dict)
     tech_aug: dict[str, Any] = field(default_factory=dict)
     pcb_defects: dict[str, Any] = field(default_factory=dict)

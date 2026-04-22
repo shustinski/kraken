@@ -26,13 +26,14 @@ class _Bus:
 class _ContextAwareModel(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.seen_batches: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+        self.seen_batches: list[tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]] = []
 
     def forward(self, batch):
         assert isinstance(batch, dict)
         local = batch['local_image']
         context = batch['context_image']
-        self.seen_batches.append((tuple(local.shape), tuple(context.shape)))
+        coords = batch['patch_coords_norm']
+        self.seen_batches.append((tuple(local.shape), tuple(context.shape), tuple(coords.shape)))
         return local.mean(dim=1, keepdim=True)
 
 
@@ -100,9 +101,14 @@ def test_no_cut_dataset_returns_context_input_when_enabled():
 
     assert isinstance(batch_input, dict)
     assert tuple(batch_input['local_image'].shape) == (1, 4, 4)
+    assert tuple(batch_input['global_image'].shape) == (1, 4, 4)
     assert tuple(batch_input['context_image'].shape) == (1, 4, 4)
+    assert tuple(batch_input['patch_coords_norm'].shape) == (4,)
+    assert tuple(batch_input['patch_coords_px'].shape) == (4,)
+    assert np.allclose(batch_input['patch_coords_px'], np.asarray([0, 0, 4, 4], dtype=np.float32))
+    assert np.allclose(batch_input['patch_coords_norm'], np.asarray([0.0, 0.0, 4.0 / 6.0, 4.0 / 6.0], dtype=np.float32))
+    assert np.allclose(batch_input['source_size_hw'], np.asarray([6, 6], dtype=np.float32))
     assert tuple(label.shape) == (1, 4, 4)
-    assert float(batch_input['context_image'].min()) < float(batch_input['local_image'].min())
 
 
 def test_general_handler_passes_quasi_dual_scale_model_kwargs(monkeypatch):
@@ -156,6 +162,11 @@ def test_general_handler_passes_quasi_dual_scale_model_kwargs(monkeypatch):
             'context_branch_channels': (16, 32, 64, 128),
             'fusion_type': 'concat',
             'use_context_branch': True,
+            'use_cross_attention': True,
+            'attention_dim': 128,
+            'attention_heads': 4,
+            'attention_max_global_tokens': 1024,
+            'deep_supervision': True,
         },
     }
     assert getattr(model, '_neuralimage_model_kwargs') == captured['kwargs']
@@ -179,9 +190,14 @@ def test_gpu_predict_uses_context_batch_when_present():
     predicted = gpu_predict(payload, model, torch.device('cpu'), batch_size=2)
 
     assert payload['context_image'] is not None
+    assert payload['global_image'] is not None
+    assert payload['patch_coords_norm'] is not None
     assert payload['context_image'].shape == payload['cutted_image'].shape
+    assert tuple(payload['global_image'].shape) == (1, 4, 4)
+    assert tuple(payload['patch_coords_norm'].shape) == (16, 4)
     assert predicted['predicted_image'].shape == payload['cutted_image'].shape
     assert predicted['confidence_image'].shape == payload['cutted_image'].shape
     assert model.seen_batches
     assert model.seen_batches[0][0][-2:] == (4, 4)
     assert model.seen_batches[0][1][-2:] == (4, 4)
+    assert model.seen_batches[0][2][-1] == 4

@@ -14,6 +14,8 @@ class QueueTaskSnapshot:
     task_id: int
     work_mode: str
     status: str
+    owner_username: str = ''
+    owner_display_name: str = ''
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +39,20 @@ class ProcessingSession:
     def active_task(self) -> TaskType | None:
         return self._queue.active_task
 
-    def enqueue_task(self, main_state: MainWindowState, settings_state: SettingsState) -> TaskType:
-        return self._queue.enqueue(main_state, settings_state)
+    def enqueue_task(
+        self,
+        main_state: MainWindowState,
+        settings_state: SettingsState,
+        *,
+        owner_username: str = '',
+        owner_display_name: str = '',
+    ) -> TaskType:
+        return self._queue.enqueue(
+            main_state,
+            settings_state,
+            owner_username=owner_username,
+            owner_display_name=owner_display_name,
+        )
 
     def get_task_by_index(self, index: int) -> TaskType | None:
         return self._queue.task_by_index(index)
@@ -92,6 +106,8 @@ class ProcessingSession:
                     task_id=task.task_id,
                     work_mode=str(task.main_window_state.work_mode or 'unknown'),
                     status=status,
+                    owner_username=str(task.owner_username or ''),
+                    owner_display_name=str(task.owner_display_name or task.owner_username or ''),
                 )
             )
         return tuple(items)

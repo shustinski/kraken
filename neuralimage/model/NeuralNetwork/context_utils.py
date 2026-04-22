@@ -70,6 +70,31 @@ def normalize_channel_sequence(
     return channels
 
 
+def normalize_patch_coords(
+    coords_px: Sequence[float] | np.ndarray,
+    source_size_hw: tuple[int, int],
+) -> np.ndarray:
+    """Normalize ``[x0, y0, x1, y1]`` crop coordinates to the source frame."""
+
+    source_height, source_width = int(source_size_hw[0]), int(source_size_hw[1])
+    if source_height <= 0 or source_width <= 0:
+        raise ValueError(f'Invalid source size: {source_size_hw!r}.')
+
+    coords = np.asarray(coords_px, dtype=np.float32)
+    if coords.shape != (4,):
+        coords = coords.reshape(4)
+    normalized = np.array(
+        [
+            coords[0] / float(source_width),
+            coords[1] / float(source_height),
+            coords[2] / float(source_width),
+            coords[3] / float(source_height),
+        ],
+        dtype=np.float32,
+    )
+    return np.clip(normalized, 0.0, 1.0)
+
+
 def resolve_sliding_windows(
     base_shape_hw: tuple[int, int],
     patch_size_xy: tuple[int, int],
@@ -105,6 +130,39 @@ def resolve_sliding_windows(
                 )
             )
     return windows
+
+
+def build_patch_coordinate_batch(
+    base_shape_hw: tuple[int, int],
+    *,
+    local_patch_size_xy: tuple[int, int],
+    overlap: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return pixel and normalized coordinates aligned with ``cut_image`` order."""
+
+    windows = resolve_sliding_windows(
+        base_shape_hw=base_shape_hw,
+        patch_size_xy=local_patch_size_xy,
+        overlap=overlap,
+    )
+    coords_px = np.asarray(
+        [
+            [window.left, window.top, window.right, window.bottom]
+            for window in windows
+        ],
+        dtype=np.float32,
+    )
+    if coords_px.size == 0:
+        return coords_px.reshape(0, 4), coords_px.reshape(0, 4)
+
+    coords_norm = np.stack(
+        [
+            normalize_patch_coords(coords, base_shape_hw)
+            for coords in coords_px
+        ],
+        axis=0,
+    ).astype(np.float32, copy=False)
+    return coords_px, coords_norm
 
 
 def extract_centered_crop(
@@ -184,6 +242,21 @@ def resize_chw_image(
             align_corners=False,
         )
     return resized.squeeze(0).cpu().numpy().astype(image_chw.dtype, copy=False)
+
+
+def build_global_context_image(
+    image_chw: np.ndarray,
+    *,
+    output_size_xy: tuple[int, int],
+    interpolation_mode: str = 'bilinear',
+) -> np.ndarray:
+    """Resize the full source frame for the global encoder."""
+
+    return resize_chw_image(
+        image_chw,
+        output_size_xy=output_size_xy,
+        interpolation_mode=interpolation_mode,
+    )
 
 
 def build_context_batch(

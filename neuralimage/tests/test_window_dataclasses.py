@@ -36,7 +36,8 @@ def test_settings_state_defaults():
     assert state.confidence_save_mode == 'off'
     assert state.dice_loss_weight == 0.5
     assert state.iou_loss_weight == 0.5
-    assert state.deep_supervision is True
+    assert state.mixed_precision == 'fp16'
+    assert state.deep_supervision is False
     assert state.warmup_enabled is False
     assert state.scheduler_name == 'off'
     assert state.scheduler_plateau_factor == 0.5

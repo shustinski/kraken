@@ -32,6 +32,7 @@ import numpy as np
 from lib.data_interfaces import WorkMode
 from lib.logging_policy import MAX_LOG_MESSAGES
 from lib.runtime_paths import resolve_internal_path
+from lib.shared_styles import load_stylesheet, resolve_shared_style_path
 from lib.ui_texts import get_ui_language, get_ui_section
 from lib.version import get_app_title
 from view.changelog_dialog import show_changelog_dialog
@@ -67,13 +68,20 @@ def _save_persisted_ui_mode(mode: str) -> None:
     settings.setValue('ui_mode', 'advanced' if mode == 'advanced' else 'simple')
     settings.sync()
 
+
+def _modal_dialogs_enabled() -> bool:
+    disabled_flag = str(os.getenv('NEURALIMAGE_DISABLE_MODAL_DIALOGS', '') or '').strip().lower()
+    if disabled_flag in {'1', 'true', 'yes', 'on'}:
+        return False
+    return not bool(os.getenv('PYTEST_CURRENT_TEST'))
+
+
 def load_qss_from_resource(qss_path: str):
-    if not qss_path:
-        return ""
-    if not os.path.exists(qss_path):
-        return ""
-    with open(qss_path, "r", encoding="utf-8") as file:
-        return file.read()
+    return load_stylesheet(qss_path)
+
+
+def _load_menu_icon() -> QIcon:
+    return QIcon(str(resolve_internal_path('settings_icon.png')))
 
 
 class MainView(QMainWindow):
@@ -109,6 +117,7 @@ class MainView(QMainWindow):
     release_memory_requested: pyqtSignal = pyqtSignal()
     open_tic_tac_toe_requested: pyqtSignal = pyqtSignal()
     open_validation_gradient_requested: pyqtSignal = pyqtSignal()
+    developer_tools_requested: pyqtSignal = pyqtSignal()
     update_check_requested: pyqtSignal = pyqtSignal()
     update_channel_selected: pyqtSignal = pyqtSignal(str)
     ui_language_selected: pyqtSignal = pyqtSignal(str)
@@ -150,6 +159,7 @@ class MainView(QMainWindow):
         self._settings_menu = None
         self._view_menu = None
         self._plugins_menu = None
+        self._tools_menu = None
         self._info_menu = None
         self._language_menu = None
         self._theme_menu = None
@@ -169,9 +179,12 @@ class MainView(QMainWindow):
         self._available_update_channels: list[str] = []
         self._selected_update_channel = 'stable'
         self._open_validation_gradient_action = None
+        self._developer_tools_action = None
         self._ui_mode_menu = None
         self._ui_mode_simple_action = None
         self._ui_mode_advanced_action = None
+        self._central_scroll: QScrollArea | None = None
+        self._central_content: QWidget | None = None
         self._ui_mode = _load_persisted_ui_mode()
         self._current_work_mode = ''
         self._selected_simple_workflow: str | None = None
@@ -182,17 +195,15 @@ class MainView(QMainWindow):
 
         t = get_ui_section("main_window")
         self._texts = t
-        central = QWidget(self)
-        self.main_grid = QGridLayout(central)
+        self._central_content = QWidget(self)
+        self.main_grid = QGridLayout(self._central_content)
 
         row = 0
         self.main_grid.setColumnStretch(0, 1)
         self.main_grid.setColumnStretch(1, 10)
         self.sample_count_top_label = QLabel(t.get("samples_count", "Кадров в выборке: 0"))
-        self.sample_count_top_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.main_grid.addWidget(self.sample_count_top_label, row, 0, 1, 2)
+        self.sample_count_top_label.hide()
 
-        row += 1
         self.work_mode_group = QGroupBox(t["mode"])
         sample_type_layout = QHBoxLayout(self.work_mode_group)
 
@@ -240,11 +251,10 @@ class MainView(QMainWindow):
         self.model_path = ClickableLabel()
         self.main_grid.addWidget(self.model_path, row, 1)
 
-        row += 1
         self.epochs_title_label = QLabel(t["epochs"])
-        self.main_grid.addWidget(self.epochs_title_label, row, 0)
+        self.epochs_title_label.hide()
         self.le_epochs = create_spinbox((0, 1000), 1, 40)
-        self.main_grid.addWidget(self.le_epochs, row, 1)
+        self.le_epochs.hide()
 
         row += 1
         self.buttons_row = QWidget()
@@ -275,6 +285,13 @@ class MainView(QMainWindow):
         self.btn_simple_memory = QPushButton(
             t.get("simple_workflow_memory", "Memory recognition")
         )
+        for button in (
+            self.btn_simple_conductors,
+            self.btn_simple_contacts,
+            self.btn_simple_memory,
+        ):
+            button.setCheckable(True)
+            button.setProperty("selectionRole", "mode")
         simple_workflows_layout.addWidget(self.btn_simple_conductors)
         simple_workflows_layout.addWidget(self.btn_simple_contacts)
         simple_workflows_layout.addWidget(self.btn_simple_memory)
@@ -384,7 +401,10 @@ class MainView(QMainWindow):
 
         self.main_grid.setRowStretch(row, 10)
 
-        self.setCentralWidget(central)
+        self._central_scroll = QScrollArea(self)
+        self._central_scroll.setWidgetResizable(True)
+        self._central_scroll.setWidget(self._central_content)
+        self.setCentralWidget(self._central_scroll)
         self.statusBar().showMessage("")
 
         self.metrics_panel = TrainingMetricsDock(self)
@@ -414,18 +434,21 @@ class MainView(QMainWindow):
         view_menu = self._view_menu
         self._plugins_menu = menubar.addMenu(t.get("menu_plugins", "Plugins"))
         plugins_menu = self._plugins_menu
+        self._tools_menu = menubar.addMenu(t.get("menu_tools", "Инструменты"))
+        tools_menu = self._tools_menu
         info_menu = menubar.addMenu(t["menu_help"])
         self._file_menu = file_menu
         self._settings_menu = settings_menu
         self._info_menu = info_menu
-        if file_menu is None or settings_menu is None or view_menu is None or plugins_menu is None or info_menu is None:
+        if file_menu is None or settings_menu is None or view_menu is None or plugins_menu is None or tools_menu is None or info_menu is None:
             return
 
         self._open_config_action = QAction(t.get("menu_open_config", "Открыть"), self)
         file_menu.addAction(self._open_config_action)
-        self._settings_sample_action = QAction(QIcon("./assets/new.png"), t["menu_sample"], self)
-        self._settings_train_action = QAction(QIcon("./assets/new.png"), t["menu_train"], self)
-        self._settings_pred_action = QAction(QIcon("./assets/new.png"), t["menu_pred"], self)
+        menu_icon = _load_menu_icon()
+        self._settings_sample_action = QAction(menu_icon, t["menu_sample"], self)
+        self._settings_train_action = QAction(menu_icon, t["menu_train"], self)
+        self._settings_pred_action = QAction(menu_icon, t["menu_pred"], self)
         settings_menu.addAction(self._settings_sample_action)
         settings_menu.addAction(self._settings_train_action)
         settings_menu.addAction(self._settings_pred_action)
@@ -461,6 +484,8 @@ class MainView(QMainWindow):
             self,
         )
         plugins_menu.addAction(self._open_validation_gradient_action)
+        self._developer_tools_action = QAction(t.get("menu_developer", "Разработчик"), self)
+        tools_menu.addAction(self._developer_tools_action)
         view_menu.addSeparator()
         self._language_menu = view_menu.addMenu(t.get("menu_language", "Язык"))
         language_group = QActionGroup(self)
@@ -520,57 +545,6 @@ class MainView(QMainWindow):
         menu_action = info_menu.menuAction()
         if menu_action is not None:
             menu_action.setVisible(True)
-
-    def configure_update_channels(self, channels: list[str] | tuple[str, ...], selected_channel: str) -> None:
-        normalized_channels: list[str] = []
-        for channel in channels:
-            value = str(channel or '').strip().lower()
-            if value and value not in normalized_channels:
-                normalized_channels.append(value)
-        if not normalized_channels:
-            normalized_channels = ['stable']
-        self._available_update_channels = list(normalized_channels)
-        normalized_selected = str(selected_channel or '').strip().lower()
-        if normalized_selected not in self._available_update_channels:
-            normalized_selected = self._available_update_channels[0]
-        self._selected_update_channel = normalized_selected
-        menu = self._update_channel_menu
-        if menu is None:
-            return
-        menu.clear()
-        self._update_channel_actions = {}
-        self._update_channel_action_group = QActionGroup(self)
-        self._update_channel_action_group.setExclusive(True)
-        for channel in self._available_update_channels:
-            action = QAction(self._format_update_channel_label(channel), self)
-            action.setCheckable(True)
-            action.setData(channel)
-            action.triggered.connect(lambda _checked=False, value=channel: self._handle_update_channel_action(value))
-            self._update_channel_action_group.addAction(action)
-            menu.addAction(action)
-            self._update_channel_actions[channel] = action
-        self._sync_update_channel_menu_checks()
-
-    def _format_update_channel_label(self, channel: str) -> str:
-        normalized = str(channel or '').strip().lower()
-        t = self._main_texts()
-        if normalized == 'stable':
-            return str(t.get('update_channel_stable', 'Stable'))
-        if normalized == 'beta':
-            return str(t.get('update_channel_beta', 'Beta'))
-        return normalized or str(t.get('update_channel_unknown', 'Unknown'))
-
-    def _handle_update_channel_action(self, channel: str) -> None:
-        normalized = str(channel or '').strip().lower()
-        if not normalized:
-            return
-        self._selected_update_channel = normalized
-        self._sync_update_channel_menu_checks()
-        self.update_channel_selected.emit(normalized)
-
-    def _sync_update_channel_menu_checks(self) -> None:
-        for channel, action in self._update_channel_actions.items():
-            action.setChecked(channel == self._selected_update_channel)
 
     def set_batch_preview_enabled(self, enabled: bool) -> None:
         action = getattr(self, "batch_preview_action", None)
@@ -652,7 +626,7 @@ class MainView(QMainWindow):
             self.model_path.setEnabled(uses_model)
 
         show_model = True if not resolved_mode else uses_model
-        show_epochs = (self._ui_mode != 'simple') and (uses_epochs if resolved_mode else True)
+        show_epochs = False
         self.model_title_label.setVisible(show_model)
         self.model_path.setVisible(show_model)
         self.epochs_title_label.setVisible(show_epochs)
@@ -704,6 +678,8 @@ class MainView(QMainWindow):
             self.open_tic_tac_toe_action.triggered.connect(self.open_tic_tac_toe_requested.emit)
         if self._open_validation_gradient_action is not None:
             self._open_validation_gradient_action.triggered.connect(self.open_validation_gradient_requested.emit)
+        if self._developer_tools_action is not None:
+            self._developer_tools_action.triggered.connect(self.developer_tools_requested.emit)
         if self._check_updates_action is not None:
             self._check_updates_action.triggered.connect(self.update_check_requested.emit)
         if hasattr(self, "ui_language_ru_action"):
@@ -760,10 +736,70 @@ class MainView(QMainWindow):
         texts = getattr(self, "_texts", None)
         return texts if isinstance(texts, dict) else get_ui_section("main_window")
 
+    def _format_update_channel_label(self, channel: str) -> str:
+        normalized_channel = str(channel or "").strip().lower()
+        if not normalized_channel:
+            normalized_channel = "stable"
+        default_label = normalized_channel.replace("_", " ").title()
+        return str(
+            self._main_texts().get(
+                f"update_channel_{normalized_channel}",
+                default_label,
+            )
+        )
+
+    def configure_update_channels(
+        self,
+        available_channels: list[str] | tuple[str, ...] | None,
+        selected_channel: str | None,
+    ) -> None:
+        normalized_channels: list[str] = []
+        for channel in available_channels or ("stable",):
+            normalized = str(channel or "").strip().lower()
+            if normalized and normalized not in normalized_channels:
+                normalized_channels.append(normalized)
+        if not normalized_channels:
+            normalized_channels = ["stable"]
+
+        resolved_selected = str(selected_channel or "").strip().lower()
+        if resolved_selected not in normalized_channels:
+            resolved_selected = normalized_channels[0]
+
+        self._available_update_channels = normalized_channels
+        self._selected_update_channel = resolved_selected
+        self._update_channel_actions = {}
+
+        if self._update_channel_menu is None:
+            return
+
+        self._update_channel_menu.clear()
+        self._update_channel_action_group = QActionGroup(self)
+        self._update_channel_action_group.setExclusive(True)
+
+        for channel in normalized_channels:
+            action = QAction(self._format_update_channel_label(channel), self)
+            action.setCheckable(True)
+            action.setData(channel)
+            action.setChecked(channel == resolved_selected)
+            action.triggered.connect(
+                lambda checked=False, selected=channel: (
+                    self.update_channel_selected.emit(selected) if checked else None
+                )
+            )
+            self._update_channel_action_group.addAction(action)
+            self._update_channel_menu.addAction(action)
+            self._update_channel_actions[channel] = action
+
     def _show_info_message(self, text: str) -> None:
+        if not _modal_dialogs_enabled():
+            self.statusBar().showMessage(str(text))
+            return
         QMessageBox.information(self, str(self._main_texts().get("info", "Информация")), text)
 
     def _show_warning_message(self, text: str) -> None:
+        if not _modal_dialogs_enabled():
+            self.statusBar().showMessage(str(text))
+            return
         QMessageBox.warning(self, str(self._main_texts().get("warning", "Предупреждение")), text)
 
     def _format_validation_quality_text(self, iou: float, dice: float, f1: float) -> str:
@@ -1146,8 +1182,8 @@ class MainView(QMainWindow):
 
     def _theme_qss_path(self, theme: str) -> str:
         if theme == "light":
-            return str(resolve_internal_path('resources', 'style.qss'))
-        return str(resolve_internal_path('resources', 'dark_modern.qss'))
+            return str(resolve_shared_style_path('style.qss'))
+        return str(resolve_shared_style_path('dark_modern.qss'))
 
     def _sync_language_menu_checks(self) -> None:
         if hasattr(self, "ui_language_ru_action"):
@@ -1214,6 +1250,13 @@ class MainView(QMainWindow):
 
     def set_simple_workflow_profile(self, profile_key: str | None) -> None:
         self._selected_simple_workflow = str(profile_key) if profile_key else None
+        profile_buttons = {
+            'conductors': self.btn_simple_conductors,
+            'contacts': self.btn_simple_contacts,
+            'memory': self.btn_simple_memory,
+        }
+        for key, button in profile_buttons.items():
+            button.setChecked(key == self._selected_simple_workflow)
         self._update_simple_workflow_label()
 
     def _simple_workflow_display_name(self, profile_key: str | None) -> str:
@@ -1287,6 +1330,8 @@ class MainView(QMainWindow):
             self._info_menu.setTitle(t["menu_help"])
         if self._plugins_menu is not None:
             self._plugins_menu.setTitle(t.get("menu_plugins", "Plugins"))
+        if self._tools_menu is not None:
+            self._tools_menu.setTitle(t.get("menu_tools", "Инструменты"))
         if self._update_channel_menu is not None:
             self._update_channel_menu.setTitle(t.get("menu_update_channel", "Update channel"))
         if self._open_config_action is not None:
@@ -1321,6 +1366,8 @@ class MainView(QMainWindow):
             self._open_validation_gradient_action.setText(
                 t.get("menu_open_validation_gradient", "Open Validation gradient")
             )
+        if self._developer_tools_action is not None:
+            self._developer_tools_action.setText(t.get("menu_developer", "Разработчик"))
         if self._help_action is not None:
             self._help_action.setText(t.get("menu_open_help", "Открыть справку"))
         if self._changelog_action is not None:

@@ -3,7 +3,7 @@ import importlib
 import os
 from pathlib import Path
 
-from lib.runtime_paths import resolve_internal_path
+from lib.shared_styles import load_shared_stylesheet
 
 
 _DLL_DIR_HANDLES: list[object] = []
@@ -12,11 +12,11 @@ _DLL_DIR_HANDLES: list[object] = []
 def format_backend_unavailable_message(error: Exception | str) -> str:
     technical_reason = str(error).strip() or 'Unknown backend initialization error.'
     return (
-        "Не удалось инициализировать вычислительный backend PyTorch.\n\n"
-        "Приложение запущено только в режиме интерфейса, поэтому кнопка 'Запуск' недоступна.\n\n"
-        "Проверьте наличие Microsoft Visual C++ Redistributable, совместимость torch/драйверов "
-        "и целостность файлов приложения.\n\n"
-        f"Техническая причина: {technical_reason}"
+        "РќРµ СѓРґР°Р»РѕСЃСЊ РёРЅРёС†РёР°Р»РёР·РёСЂРѕРІР°С‚СЊ РІС‹С‡РёСЃР»РёС‚РµР»СЊРЅС‹Р№ backend PyTorch.\n\n"
+        "РџСЂРёР»РѕР¶РµРЅРёРµ Р·Р°РїСѓС‰РµРЅРѕ С‚РѕР»СЊРєРѕ РІ СЂРµР¶РёРјРµ РёРЅС‚РµСЂС„РµР№СЃР°, РїРѕСЌС‚РѕРјСѓ РєРЅРѕРїРєР° 'Р—Р°РїСѓСЃРє' РЅРµРґРѕСЃС‚СѓРїРЅР°.\n\n"
+        "РџСЂРѕРІРµСЂСЊС‚Рµ РЅР°Р»РёС‡РёРµ Microsoft Visual C++ Redistributable, СЃРѕРІРјРµСЃС‚РёРјРѕСЃС‚СЊ torch/РґСЂР°Р№РІРµСЂРѕРІ "
+        "Рё С†РµР»РѕСЃС‚РЅРѕСЃС‚СЊ С„Р°Р№Р»РѕРІ РїСЂРёР»РѕР¶РµРЅРёСЏ.\n\n"
+        f"РўРµС…РЅРёС‡РµСЃРєР°СЏ РїСЂРёС‡РёРЅР°: {technical_reason}"
     )
 
 
@@ -32,7 +32,7 @@ def apply_backend_unavailable_ui_state(window, message: str) -> None:
     log_signal = getattr(window, 'log_message', None)
     can_log = log_signal is not None and hasattr(log_signal, 'emit')
     if can_log:
-        log_signal.emit(f'Запуск недоступен: {message}')
+        log_signal.emit(f'Р—Р°РїСѓСЃРє РЅРµРґРѕСЃС‚СѓРїРµРЅ: {message}')
 
     warning_signal = getattr(window, 'show_warning', None)
     can_warn = warning_signal is not None and hasattr(warning_signal, 'emit')
@@ -55,10 +55,11 @@ def apply_backend_unavailable_ui_state(window, message: str) -> None:
                 if can_warn:
                     warning_signal.emit(message)
                 if can_log:
-                    log_signal.emit(f'Запуск недоступен: {message}')
+                    log_signal.emit(f'Р—Р°РїСѓСЃРє РЅРµРґРѕСЃС‚СѓРїРµРЅ: {message}')
 
             clicked_signal.connect(_show_backend_unavailable_reason)
             setattr(window, '_backend_unavailable_click_handler_installed', True)
+
 
 class AppController:
 
@@ -127,6 +128,12 @@ class AppController:
             _prepare_windows_dll_paths()
         try:
             importlib.import_module("torch")
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "PyTorch is not installed. "
+                "Run with '--ui-only' or install project dependencies first.\n"
+                f"Original error: {exc}"
+            ) from exc
         except OSError as exc:
             raise RuntimeError(
                 "PyTorch failed to initialize native DLLs before Qt startup. "
@@ -134,25 +141,9 @@ class AppController:
                 f"Original error: {exc}"
             ) from exc
 
+
 def load_qss_from_resource() -> str:
-    """Читает style.qss из Qt‑ресурса."""
-    from PyQt6.QtCore import QFile, QIODevice, QTextStream
-
-    qfile = QFile(str(resolve_internal_path('resources', 'dark_modern.qss')))
-    # qfile = QFile("_internal/resources//style.qss")
-    # qfile = QFile("_internal/resources//new_style.qss")
-    # Открываем в режиме «только чтение» + «текстовый» (чтобы Qt
-    # понимал, что это текст, а не бинарные данные)
-    if not qfile.open(
-            QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Text
-    ):
-        raise IOError(f"Cannot open QSS file")
-
-    stream = QTextStream(qfile)
-
-    qss = stream.readAll()
-    qfile.close()
-    return qss
+    return load_shared_stylesheet("dark_modern.qss")
 
 
 def _prepare_windows_dll_paths() -> None:

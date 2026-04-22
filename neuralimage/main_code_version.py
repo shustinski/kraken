@@ -83,7 +83,7 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
     mixup_raw = raw.get('mixup', {})
     pcb_defects_raw = raw.get('pcb_defects', {})
     resolved_model_name = str(model_name or raw.get('model_name', '')).strip()
-    default_context_branch = resolved_model_name in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}
+    default_context_branch = resolved_model_name in {'FrameUnet', 'quasi_dual_scale_unet', 'UNetWithContextBranch'}
     local_crop_size = _to_tuple2(
         raw.get('local_crop_size', generation_raw.get('segment_size', [256, 256])),
         'tranining_parameters.local_crop_size',
@@ -223,6 +223,10 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
         context_branch_channels=tuple(int(value) for value in raw.get('context_branch_channels', [16, 32, 64, 128])),
         fusion_type=str(raw.get('fusion_type', 'concat')),
         use_context_branch=bool(raw.get('use_context_branch', default_context_branch)),
+        use_cross_attention=bool(raw.get('use_cross_attention', True)),
+        attention_dim=int(raw.get('attention_dim', 128)),
+        attention_heads=int(raw.get('attention_heads', 4)),
+        attention_max_global_tokens=int(raw.get('attention_max_global_tokens', 1024)),
         deep_supervision=bool(raw.get('deep_supervision', True)),
         dataloader_num_workers=int(raw.get('dataloader_num_workers', -1)),
         pcb_defects=build_pcb_defect_parameters(pcb_defects_raw),
@@ -248,6 +252,11 @@ def _build_recognition_parameters(raw: dict[str, Any]) -> RecognitionParameters:
         use_context_branch=(
             bool(raw.get('use_context_branch'))
             if 'use_context_branch' in raw
+            else None
+        ),
+        use_cross_attention=(
+            bool(raw.get('use_cross_attention'))
+            if 'use_cross_attention' in raw
             else None
         ),
         context_crop_size=(
@@ -281,6 +290,8 @@ def _config_template() -> dict[str, Any]:
             'result_folder': 'D:/data/inference/results',
             'model_name': 'quasi_dual_scale_unet',
             'local_crop_size': [256, 256],
+            'use_context_branch': True,
+            'use_cross_attention': True,
             'context_crop_size': [512, 512],
             'context_input_size': [256, 256],
             'batch_size': 8,
@@ -304,6 +315,10 @@ def _config_template() -> dict[str, Any]:
             'context_branch_channels': [16, 32, 64, 128],
             'fusion_type': 'concat',
             'use_context_branch': True,
+            'use_cross_attention': True,
+            'attention_dim': 128,
+            'attention_heads': 4,
+            'attention_max_global_tokens': 1024,
             'deep_supervision': True,
             'generation': {
                 'step': 128,

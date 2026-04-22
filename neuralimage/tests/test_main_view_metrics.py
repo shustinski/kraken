@@ -4,7 +4,7 @@ import numpy as np
 
 pytest.importorskip('PyQt6')
 
-from PyQt6.QtWidgets import QApplication, QSizePolicy, QWidget
+from PyQt6.QtWidgets import QApplication, QSizePolicy, QScrollArea, QWidget
 
 from UI.clickable_label import ClickableLabel
 from lib.logging_policy import MAX_LOG_MESSAGES
@@ -115,17 +115,28 @@ def test_main_view_recognition_preview_uses_two_columns(qapp):
     assert view.preview_label_label.pixmap() is not None
 
 
-def test_main_view_shows_sample_count_at_top(qapp):
+def test_main_view_keeps_sample_count_label_hidden(qapp):
     view = MainView(QWidget())
 
     view.set_samples_count_loading()
     assert view.sample_count_top_label.text().strip()
+    assert view.sample_count_top_label.isHidden() is True
 
     view.set_samples_count(42)
     assert "42" in view.sample_count_top_label.text()
+    assert view.sample_count_top_label.isHidden() is True
 
     view.apply_ui_language('en')
     assert "42" in view.sample_count_top_label.text()
+
+
+def test_main_view_wraps_central_content_in_scroll_area(qapp):
+    view = MainView(QWidget())
+
+    central_widget = view.centralWidget()
+
+    assert isinstance(central_widget, QScrollArea)
+    assert central_widget.widget() is view._central_content
 
 
 def test_clickable_label_does_not_force_window_width(qapp):
@@ -300,6 +311,8 @@ def test_main_view_simple_mode_hides_docks_and_shows_presets(qapp):
 
     view.btn_simple_contacts.click()
     assert view.btn_simple_contacts.text() in view.simple_workflow_label.text()
+    assert view.btn_simple_contacts.isChecked() is True
+    assert view.btn_simple_conductors.isChecked() is False
 
     view.apply_ui_mode('advanced')
     qapp.processEvents()
@@ -309,18 +322,20 @@ def test_main_view_simple_mode_hides_docks_and_shows_presets(qapp):
     assert not view.metrics_panel.isHidden()
     assert not view.log_dock.isHidden()
     assert not view.model_path.isHidden()
-    assert not view.le_epochs.isHidden()
+    assert view.le_epochs.isHidden()
 
 
 def test_main_view_work_mode_visibility_tracks_model_and_epochs(qapp):
     view = MainView(QWidget())
     view.show()
     qapp.processEvents()
+    view.apply_ui_mode('advanced')
+    qapp.processEvents()
 
     view.apply_work_mode('train_only')
     qapp.processEvents()
     assert view.model_path.isHidden()
-    assert not view.le_epochs.isHidden()
+    assert view.le_epochs.isHidden()
     assert not view.sample_path_group.isHidden()
 
     view.apply_work_mode('recognition_only')
@@ -332,7 +347,7 @@ def test_main_view_work_mode_visibility_tracks_model_and_epochs(qapp):
     view.apply_work_mode('further_training')
     qapp.processEvents()
     assert not view.model_path.isHidden()
-    assert not view.le_epochs.isHidden()
+    assert view.le_epochs.isHidden()
     assert not view.sample_path_group.isHidden()
 
 

@@ -536,6 +536,64 @@ class SampleFastCutter:
         bottom = top + self._sample_y
         return left, top, right, bottom
 
+    @staticmethod
+    def _transformed_source_size(
+        source_size_hw: tuple[int, int],
+        transform_variant: str,
+    ) -> tuple[int, int]:
+        height, width = int(source_size_hw[0]), int(source_size_hw[1])
+        if transform_variant in {'rotate_90', 'rotate_270'}:
+            return width, height
+        return height, width
+
+    @staticmethod
+    def _transform_bbox(
+        coords_px: tuple[int, int, int, int],
+        source_size_hw: tuple[int, int],
+        transform_variant: str,
+    ) -> tuple[int, int, int, int]:
+        left, top, right, bottom = (int(value) for value in coords_px)
+        height, width = int(source_size_hw[0]), int(source_size_hw[1])
+
+        if transform_variant == 'rotate_180':
+            return width - right, height - bottom, width - left, height - top
+        if transform_variant == 'rotate_90':
+            return top, width - right, bottom, width - left
+        if transform_variant == 'rotate_270':
+            return height - bottom, left, height - top, right
+        if transform_variant == 'flip_x':
+            return left, height - bottom, right, height - top
+        if transform_variant == 'flip_y':
+            return width - right, top, width - left, bottom
+        return left, top, right, bottom
+
+    def resolve_part_geometry(self, item: int) -> dict[str, object]:
+        """Return source-frame geometry for a possibly transformed patch."""
+
+        location, transform_variant, scale_variant, augmentation_variant = self._decode_part_index(item)
+        raw_coords = self._resolve_crop_coordinates(location, scale_variant=scale_variant)
+        raw_source_size_hw = (int(self._base_h), int(self._base_w))
+        transformed_coords = self._transform_bbox(raw_coords, raw_source_size_hw, transform_variant)
+        transformed_size_hw = self._transformed_source_size(raw_source_size_hw, transform_variant)
+        return {
+            'coords_px': tuple(int(value) for value in transformed_coords),
+            'source_size_hw': tuple(int(value) for value in transformed_size_hw),
+            'raw_coords_px': tuple(int(value) for value in raw_coords),
+            'raw_source_size_hw': raw_source_size_hw,
+            'transform_variant': str(transform_variant),
+            'scale_variant': int(scale_variant),
+            'augmentation_variant': int(augmentation_variant),
+        }
+
+    def resolve_transformed_image_matrix(self, item: int) -> np.ndarray:
+        """Return the full image in the same geometric orientation as ``item``."""
+
+        location, transform_variant, _scale_variant, _augmentation_variant = self._decode_part_index(item)
+        _ = location
+        if transform_variant == 'identity':
+            return self.image_matrix
+        return _apply_transform_variant(self.image_matrix, transform_variant)
+
     def _extract_patch(
         self,
         matrix: np.ndarray,

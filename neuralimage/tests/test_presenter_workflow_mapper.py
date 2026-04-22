@@ -120,7 +120,7 @@ def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
     assert training.early_stopping.patience == 7
     assert training.early_stopping.min_delta == 0.005
     assert training.early_stopping.restore_best_weights is False
-    assert training.deep_supervision is True
+    assert training.deep_supervision is False
 
 
 def test_build_workflow_parameters_maps_separate_crop_and_resize_flags():

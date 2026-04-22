@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QGroupBox, QLabel, QTabWidget, QWidget
 from ..core.analysis_modes import INTER_MODEL_ANALYSIS_MODE, POLYGON_OBJECT_TYPE
 from ..core.domain import BuildResult
 from ..ui.matrix_view import MatrixLayoutConfig, MatrixListWidget, MatrixMiniMapWidget
-from ..ui.ui_constants import DEFAULT_CELL_SIZE, DEFAULT_ERROR_WINDOW, DEFAULT_GRADIENT_NAME, DEFAULT_MATRIX_METRIC_KEY, DEFAULT_METRIC_SCOPE
+from ..ui.ui_constants import DEFAULT_CELL_SIZE, DEFAULT_MATRIX_METRIC_KEY, DEFAULT_METRIC_SCOPE, DEFAULT_MATRIX_SCORE_VIEW_MODE
 
 
 @dataclass(slots=True)
@@ -18,14 +18,11 @@ class ExtendPreviewPanel:
     group: QGroupBox
     frame_title: QLabel
     frame_value: QLabel
-    overall_title: QLabel
-    overall_value: QLabel
-    metric_title: QLabel
-    metric_value: QLabel
-    labeled_title: QLabel
-    labeled_value: QLabel
-    acquisition_title: QLabel
-    acquisition_value: QLabel
+    subpixel_group: QGroupBox | None = None
+    subpixel_value: QLabel | None = None
+    subpixel_score_card: QWidget | None = None
+    overall_group: QGroupBox | None = None
+    component_group: QGroupBox | None = None
     score_cards: dict[str, QWidget] = field(default_factory=dict)
     histogram_cards: dict[str, QWidget] = field(default_factory=dict)
 
@@ -41,8 +38,7 @@ class ExtendMatrixTabState:
     content_tabs: QTabWidget | None = None
     cell_size: int = DEFAULT_CELL_SIZE
     layout_config: MatrixLayoutConfig = field(default_factory=MatrixLayoutConfig)
-    gradient_name: str = DEFAULT_GRADIENT_NAME
-    error_window: tuple[float, float] = DEFAULT_ERROR_WINDOW
+    matrix_score_view_mode: str = DEFAULT_MATRIX_SCORE_VIEW_MODE
     metric_key: str = DEFAULT_MATRIX_METRIC_KEY
     metric_scope: str = DEFAULT_METRIC_SCOPE
     analysis_mode: str = INTER_MODEL_ANALYSIS_MODE
@@ -53,7 +49,7 @@ class ExtendMatrixTabState:
     percentile_filter_metric_key: str | None = None
     percentile_filter_bin_index: int | None = None
     correlation_filter_band: str | None = None
-    percentile_cache: dict[tuple[str, tuple[str, ...]], dict[str, float]] = field(default_factory=dict)
+    percentile_cache: dict[tuple[str, int], dict[str, float]] = field(default_factory=dict)
     metric_result_cache: dict[str, BuildResult] = field(default_factory=dict)
     base_records_cache: dict[tuple[str, int], tuple] = field(default_factory=dict)
     repeated_percentile_cache: dict[tuple[str, tuple[str, ...], int], tuple] = field(default_factory=dict)

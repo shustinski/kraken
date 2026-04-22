@@ -92,13 +92,15 @@ from .background_workers import (
 
 
 class _ValidationGradientPluginWindow(QtWidgets.QMainWindow):
-    """Host one lite plugin widget as a standalone child window."""
+    """Host one lite plugin widget as an independent top-level window."""
 
     def __init__(self, plugin, widget, title: str, on_closed: Callable[[], None], parent=None):
         super().__init__(parent)
         self._plugin = plugin
         self._on_closed = on_closed
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.setWindowFlag(QtCore.Qt.WindowType.Window, True)
         self.setWindowTitle(str(title))
         self.setCentralWidget(widget)
         self.resize(1400, 900)

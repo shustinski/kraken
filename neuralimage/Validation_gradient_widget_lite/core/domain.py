@@ -7,6 +7,8 @@ from enum import Enum
 from typing import Any
 from pathlib import Path
 
+from .subpixel_grid import SubpixelGrid
+
 
 class ComparisonMode(str, Enum):
     """Define supported overlay operations in the details dialog."""
@@ -41,7 +43,7 @@ class GeometryMode(str, Enum):
     @property
     def label(self) -> str:
         labels = {
-            self.MASK: "Masks / polygons",
+            self.MASK: "Polygons",
             self.POINT: "Points",
             self.AUTO: "Auto",
         }
@@ -78,6 +80,15 @@ class BuildOptions:
     progress_update_interval: int = 32
     cache_enabled: bool = True
     analysis_max_side: int = 1024
+    tile_mode: str = "pixel"
+    tile_width: int = 256
+    tile_height: int = 256
+    tile_overlap_mode: str = "auto"
+    tile_overlap: int = 0
+    subpixel_view_mode: str = "pixel"
+    subpixel_rows: int = 2
+    subpixel_columns: int = 2
+    subpixel_aggregation: str = "mean"
     comparison_mode: ComparisonMode = ComparisonMode.DISAGREEMENT
     geometry_mode: GeometryMode = GeometryMode.MASK
     mask_threshold: float = 0.5
@@ -366,6 +377,7 @@ class PolygonConfidenceMetrics:
     """Store internal polygon confidence derived from one grayscale mask."""
 
     frame_uncertainty_score: float
+    mean_uncertainty: float
     uncertain_support_fraction: float
     top_uncertainty_mean: float
     largest_uncertain_region_fraction: float
@@ -379,6 +391,9 @@ class PolygonConfidenceMetrics:
     object_area_fraction: float
     polygon_count: int
     summary_metric: str
+    low_conf_fraction: float = 0.0
+    worst_tail_uncertainty: float = 0.0
+    largest_low_conf_component: float = 0.0
     objects: tuple[PolygonObjectConfidence, ...] = ()
     debug_data: PolygonConfidenceDebugData | None = None
 
@@ -402,6 +417,7 @@ class PointConfidenceMetrics:
     """Store internal point confidence derived from one grayscale mask."""
 
     frame_uncertainty_score: float
+    mean_uncertainty: float
     uncertain_support_fraction: float
     top_uncertainty_mean: float
     largest_uncertain_region_fraction: float
@@ -411,6 +427,9 @@ class PointConfidenceMetrics:
     mean_point_probability: float
     mean_point_contrast: float
     point_count: int
+    low_conf_fraction: float = 0.0
+    worst_tail_uncertainty: float = 0.0
+    largest_low_conf_component: float = 0.0
     objects: tuple[PointObjectConfidence, ...] = ()
 
 
@@ -466,6 +485,7 @@ class FrameRecord:
     gt_path: str | None = None
     model_mask_paths: dict[str, str] = field(default_factory=dict)
     model_prob_paths: dict[str, str] = field(default_factory=dict)
+    subpixel_grid: SubpixelGrid | None = None
     summary: FrameAnalysisSummary | None = None
 
 

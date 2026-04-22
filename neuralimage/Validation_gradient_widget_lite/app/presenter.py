@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from dataclasses import replace
 from datetime import datetime
 from math import isfinite
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSignalBlocker, QThread, Qt
+from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, Qt
+from PyQt6.QtGui import QImageReader
 from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMessageBox
 
 from ..core.analysis_modes import (
@@ -21,6 +23,7 @@ from ..core.analysis_modes import (
     default_metric_key,
     display_metric_keys,
     geometry_mode_for_object_type,
+    metric_level_key,
     metric_visual_ratio,
     object_type_from_geometry_mode,
     percentile_basis_keys,
@@ -33,35 +36,55 @@ from ..core.domain import BuildOptions, BuildResult, FolderSpec, FrameIdentity, 
 from ..core.repository import (
     _parse_model_metric_key,
     compute_metric_percentiles,
+    load_grayscale_image,
     metric_higher_is_better,
-    metric_percentile_high_is_bad,
     metric_value_for_record,
 )
+from ..core.subpixel_grid import SubpixelGridSpec, subpixel_spec_from_options
+from ..core.tile_grid import TileGridPlan, plan_tile_grid
 from ..core.workers import AnalyticsWorker, FrameIndexWorker
 from ..infra.services import ValidationGradientLiteSettingsService
 from ..ui.details_dialog import ExtendFrameDetailsDialog
 from ..ui.matrix_view import MatrixLayoutConfig, build_matrix_layout
 from ..ui.ui_components import FolderRowWidget
 from ..ui.ui_constants import (
+    DEFAULT_CELL_SIZE,
+    DEFAULT_BOUNDARY_RADIUS,
     DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA,
-    DEFAULT_ERROR_WINDOW,
+    DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE,
     DEFAULT_FRAMES_PER_ROW,
     DEFAULT_GEOMETRY_MODE,
     DEFAULT_GRADIENT_NAME,
     DEFAULT_MATRIX_COLUMNS,
     DEFAULT_MATRIX_LAYOUT_MODE,
+    DEFAULT_MATRIX_SCORE_VIEW_MODE,
     DEFAULT_MATRIX_METRIC_KEY,
     DEFAULT_METRIC_SCOPE,
+    DEFAULT_MASK_THRESHOLD,
     DEFAULT_MATRIX_ROWS,
+    DEFAULT_SUBPIXEL_AGGREGATION,
+    DEFAULT_SUBPIXEL_COLUMNS,
+    DEFAULT_SUBPIXEL_ROWS,
+    DEFAULT_SUBPIXEL_VIEW_MODE,
     DEFAULT_POINT_CONFIDENCE_RADIUS,
     DEFAULT_POINT_EXTRACTION_MODE,
     DEFAULT_POLYGON_CONFIDENCE_SUMMARY,
+    DEFAULT_POLYGON_COMPARE_PROFILE,
+    DEFAULT_TILE_HEIGHT,
+    DEFAULT_TILE_MODE,
+    DEFAULT_TILE_OVERLAP,
+    DEFAULT_TILE_OVERLAP_MODE,
+    DEFAULT_TILE_WIDTH,
     DEFAULT_TOTAL_FRAMES,
     FOLDER_CHECKED_ROLE,
+    FOLDER_CONFIDENCE_ROLE,
     FOLDER_LABEL_ROLE,
     FOLDER_ROW_MIN_HEIGHT,
     MATRIX_METRIC_GROUP_OPTIONS,
     MATRIX_METRIC_OPTIONS,
+    PERCENTILE_BAND_BOUNDS,
+    CONFIDENCE_UNCERTAINTY_PROFILE_VALUES,
+    POLYGON_COMPARE_PROFILE_VALUES,
 )
 from .state import ExtendMatrixTabState
 
@@ -91,6 +114,7 @@ class ValidationGradientExtendPresenter(QObject):
         self._active_progress_total = 0
         self._active_progress_key = ""
         self._deferred_analytics_restart: tuple[ExtendMatrixTabState, bool] | None = None
+        self._histogram_update_generation = 0
 
     def __getattr__(self, name: str):
         return getattr(self._view, name)
@@ -151,34 +175,297 @@ class ValidationGradientExtendPresenter(QObject):
         for candidate in self._percentile_basis_keys_for_state(state, build_result):
             if candidate in available:
                 return candidate
-        return key
+        for candidate in ("overall_frame_score", "export_priority_score", "model_model_score", "disagreement_score"):
+            if candidate in available:
+                return candidate
+        return next(iter(sorted(available)), "overall_frame_score")
+
+    def _fallback_metric_keys_for_build_result(self, build_result: BuildResult | None) -> list[str]:
+        available = set(build_result.available_metric_keys if build_result is not None else ())
+        candidates = ("overall_frame_score", "export_priority_score", "model_model_score", "disagreement_score")
+        keys = [key for key in candidates if not available or key in available]
+        return keys or [next(iter(sorted(available)), "overall_frame_score")]
+
+    def _confidence_context_available(self, context, build_result: BuildResult | None) -> bool:
+        return context.analysis_mode == INTRA_MODEL_CONFIDENCE_MODE and context.confidence_model_id is not None
 
     def _sync_mode_controls(self, state: ExtendMatrixTabState | None = None, build_result: BuildResult | None = None) -> None:
         context = self._analysis_context_for_state(state, build_result)
-        is_confidence = context.analysis_mode == INTRA_MODEL_CONFIDENCE_MODE
+        is_confidence = self._confidence_context_available(context, build_result)
         is_point = context.object_type == POINT_OBJECT_TYPE
+        tile_mode_enabled = self._selected_subpixel_view_mode() == "tile"
+        self._set_row_visible(getattr(self, "_matrix_pixel_size_row", None), False)
+        self._set_row_enabled(getattr(self, "_matrix_layout_row", None), True)
+        layout_mode = str(self.layout_mode_combo.currentData() or DEFAULT_MATRIX_LAYOUT_MODE)
+        is_indexed_layout = layout_mode == "indexed_grid"
+        self._set_row_enabled(getattr(self, "_matrix_total_frames_row", None), is_indexed_layout)
+        self._set_row_enabled(getattr(self, "_matrix_frames_per_row_row", None), is_indexed_layout)
+        self._set_row_enabled(getattr(self, "_matrix_rows_row", None), not is_indexed_layout)
+        self._set_row_enabled(getattr(self, "_matrix_columns_row", None), not is_indexed_layout)
         self._set_row_visible(getattr(self, "_metric_scope_row", None), is_confidence)
+        self._set_row_visible(getattr(self, "_metric_select_row", None), not is_confidence)
         self._set_row_visible(getattr(self, "_matrix_confidence_delta_row", None), is_confidence)
         self._set_row_visible(getattr(self, "_matrix_polygon_confidence_summary_row", None), is_confidence and not is_point)
-        self._set_row_visible(getattr(self, "_matrix_boundary_row", None), not is_confidence and not is_point)
-        self._set_row_visible(getattr(self, "_matrix_threshold_row", None), not is_confidence)
+        self._set_row_visible(getattr(self, "_matrix_polygon_compare_profile_row", None), not is_confidence and not is_point)
         self._set_row_visible(getattr(self, "_matrix_point_radius_row", None), not is_confidence and is_point)
         self._set_row_visible(getattr(self, "_matrix_point_confidence_radius_row", None), is_confidence and is_point)
         self._set_row_visible(getattr(self, "_matrix_point_mode_row", None), is_point)
         self._set_row_visible(getattr(self, "_matrix_frame_type_filter_row", None), False)
+        self._set_row_visible(getattr(self, "_subpixel_rows_row", None), False)
+        self._set_row_visible(getattr(self, "_subpixel_columns_row", None), False)
+        self._set_row_visible(getattr(self, "_tile_width_row", None), tile_mode_enabled)
+        self._set_row_visible(getattr(self, "_tile_height_row", None), tile_mode_enabled)
+        self._set_row_visible(getattr(self, "_tile_overlap_row", None), tile_mode_enabled)
+        self._set_row_enabled(getattr(self, "_subpixel_aggregation_row", None), tile_mode_enabled)
+        self._set_row_enabled(getattr(self, "_subpixel_plan_row", None), True)
+        self._update_subpixel_plan_label(state.build_result if state is not None else build_result)
 
     def _checked_model_specs(self) -> tuple[ModelSpec, ...]:
         specs: list[ModelSpec] = []
-        threshold = float(self.mask_threshold_spin.value())
+        threshold, _boundary_radius = self._selected_polygon_compare_values()
         for row in range(self.folder_list.count()):
             item = self.folder_list.item(row)
             if not bool(item.data(FOLDER_CHECKED_ROLE)):
                 continue
             folder_path = Path(item.data(Qt.ItemDataRole.UserRole))
             label = str(item.data(FOLDER_LABEL_ROLE) or folder_path.name)
+            confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "").strip()
+            confidence_folder = Path(confidence_path_text) if confidence_path_text else None
             model_id = re.sub(r"[^a-zA-Z0-9_]+", "_", label.strip().lower()).strip("_") or f"model_{row + 1}"
-            specs.append(ModelSpec(model_id=model_id, display_name=label, mask_folder=folder_path, threshold=threshold))
+            specs.append(ModelSpec(
+                model_id=model_id,
+                display_name=label,
+                mask_folder=folder_path,
+                prob_folder=confidence_folder,
+                threshold=threshold,
+            ))
         return tuple(specs)
+
+    def _selected_confidence_uncertainty_profile(self) -> str:
+        return str(self.confidence_uncertainty_profile_combo.currentData() or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
+
+    def _confidence_uncertainty_delta_for_profile(self, profile_key: str | None) -> float:
+        profile = str(profile_key or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
+        value = CONFIDENCE_UNCERTAINTY_PROFILE_VALUES.get(profile, DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA)
+        return float(value)
+
+    def _selected_confidence_uncertainty_delta(self) -> float:
+        return self._confidence_uncertainty_delta_for_profile(self._selected_confidence_uncertainty_profile())
+
+    def _confidence_uncertainty_profile_for_value(self, value: float | None) -> str:
+        if value is None or not isfinite(float(value)):
+            return DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE
+        numeric = float(value)
+        best_key = DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE
+        best_distance = float("inf")
+        for key, candidate in CONFIDENCE_UNCERTAINTY_PROFILE_VALUES.items():
+            distance = abs(float(candidate) - numeric)
+            if distance < best_distance:
+                best_key = str(key)
+                best_distance = float(distance)
+        return best_key
+
+    def _selected_polygon_compare_profile(self) -> str:
+        return str(self.polygon_compare_profile_combo.currentData() or DEFAULT_POLYGON_COMPARE_PROFILE)
+
+    def _polygon_compare_values_for_profile(self, profile_key: str | None) -> tuple[float, int] | None:
+        profile = str(profile_key or DEFAULT_POLYGON_COMPARE_PROFILE)
+        values = POLYGON_COMPARE_PROFILE_VALUES.get(profile)
+        if values is None:
+            return None
+        mask_threshold, boundary_radius = values
+        return float(mask_threshold), int(boundary_radius)
+
+    def _polygon_compare_profile_for_values(self, mask_threshold: float | None, boundary_radius: int | None) -> str:
+        if mask_threshold is None or boundary_radius is None or not isfinite(float(mask_threshold)):
+            return DEFAULT_POLYGON_COMPARE_PROFILE
+        numeric_threshold = float(mask_threshold)
+        numeric_radius = int(boundary_radius)
+        best_key = DEFAULT_POLYGON_COMPARE_PROFILE
+        best_distance = float("inf")
+        for key, (candidate_threshold, candidate_radius) in POLYGON_COMPARE_PROFILE_VALUES.items():
+            distance = abs(float(candidate_threshold) - numeric_threshold) + abs(int(candidate_radius) - numeric_radius)
+            if distance < best_distance:
+                best_key = str(key)
+                best_distance = float(distance)
+        return best_key
+
+    def _selected_polygon_compare_values(self) -> tuple[float, int]:
+        values = self._polygon_compare_values_for_profile(self._selected_polygon_compare_profile())
+        if values is None:
+            values = self._polygon_compare_values_for_profile(DEFAULT_POLYGON_COMPARE_PROFILE)
+        if values is None:
+            return float(DEFAULT_MASK_THRESHOLD), int(DEFAULT_BOUNDARY_RADIUS)
+        return values
+
+    def _selected_tile_mode(self) -> str:
+        return "tile" if self._selected_subpixel_view_mode() == "tile" else "pixel"
+
+    def _selected_subpixel_view_mode(self) -> str:
+        value = str(self.subpixel_view_mode_combo.currentData() or DEFAULT_SUBPIXEL_VIEW_MODE)
+        if value == "tile":
+            return "tile"
+        return "pixel"
+
+    def _selected_subpixel_rows(self) -> int:
+        return int(self.subpixel_rows_spin.value())
+
+    def _selected_subpixel_columns(self) -> int:
+        return int(self.subpixel_columns_spin.value())
+
+    def _selected_subpixel_aggregation(self) -> str:
+        return str(self.subpixel_aggregation_combo.currentData() or DEFAULT_SUBPIXEL_AGGREGATION)
+
+    def _selected_tile_width(self) -> int:
+        return int(self.tile_width_spin.value())
+
+    def _selected_tile_height(self) -> int:
+        return int(self.tile_height_spin.value())
+
+    def _selected_tile_overlap_mode(self) -> str:
+        return str(self.tile_overlap_mode_combo.currentData() or DEFAULT_TILE_OVERLAP_MODE)
+
+    def _selected_tile_overlap(self) -> int:
+        return int(self.tile_overlap_spin.value())
+
+    def _sync_tile_overlap_bounds(self) -> None:
+        maximum = max(0, min(self._selected_tile_width(), self._selected_tile_height()) - 1)
+        self.tile_overlap_spin.setMaximum(int(maximum))
+        if int(self.tile_overlap_spin.value()) > maximum:
+            self.tile_overlap_spin.setValue(int(maximum))
+
+    @staticmethod
+    def _set_row_enabled(row: object | None, enabled: bool) -> None:
+        if row is not None and hasattr(row, "setEnabled"):
+            row.setEnabled(bool(enabled))
+
+    @staticmethod
+    def _image_shape(path: Path) -> tuple[int, int] | None:
+        try:
+            reader = QImageReader(str(path))
+            size = reader.size()
+            if size.isValid() and size.width() > 0 and size.height() > 0:
+                return int(size.height()), int(size.width())
+        except Exception:
+            pass
+        try:
+            return tuple(int(v) for v in load_grayscale_image(path).shape)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _first_image_shape(folder_path: Path) -> tuple[int, int] | None:
+        allowed = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+        try:
+            if folder_path.is_file() and folder_path.suffix.lower() in allowed:
+                return ValidationGradientExtendPresenter._image_shape(folder_path)
+            for image_path in Path(folder_path).rglob("*"):
+                if not image_path.is_file() or image_path.suffix.lower() not in allowed:
+                    continue
+                shape = ValidationGradientExtendPresenter._image_shape(image_path)
+                if shape is not None:
+                    return shape
+        except Exception:
+            return None
+        return None
+
+    def _tile_source_shape_for_result(self, build_result: BuildResult | None) -> tuple[int, int] | None:
+        if build_result is None or not build_result.records:
+            return None
+        for record in build_result.records:
+            candidate_path = record.original_path or record.base_path
+            if not candidate_path and record.model_mask_paths:
+                candidate_path = next(iter(record.model_mask_paths.values()), None)
+            if not candidate_path:
+                continue
+            shape = self._image_shape(Path(candidate_path))
+            if shape is not None:
+                return shape
+        original_folder = getattr(build_result, "original_folder", None)
+        if original_folder is not None:
+            shape = self._first_image_shape(Path(original_folder.path))
+            if shape is not None:
+                return shape
+        return None
+
+    def _tile_grid_plan_for_result(self, build_result: BuildResult | None) -> TileGridPlan | None:
+        if self._selected_tile_mode() != "tile":
+            return None
+        source_shape = self._tile_source_shape_for_result(build_result)
+        if source_shape is None:
+            return None
+        return plan_tile_grid(
+            source_shape,
+            self._selected_tile_width(),
+            self._selected_tile_height(),
+            self._selected_tile_overlap(),
+        )
+
+    def _tile_grid_layout_config_for_result(self, build_result: BuildResult | None) -> MatrixLayoutConfig | None:
+        plan = self._tile_grid_plan_for_result(build_result)
+        if plan is None or not plan.applied_exact:
+            return None
+        return MatrixLayoutConfig(
+            mode="manual_grid",
+            total_frames=max(1, int(plan.rows * plan.columns)),
+            frames_per_row=max(1, int(plan.columns)),
+            rows=max(1, int(plan.rows)),
+            columns=max(1, int(plan.columns)),
+        )
+
+    def _subpixel_grid_spec(self, build_result: BuildResult | None = None) -> SubpixelGridSpec | None:
+        if self._selected_subpixel_view_mode() != "tile":
+            return None
+        source_shape = self._tile_source_shape_for_result(build_result)
+        options = BuildOptions(
+            subpixel_view_mode="tile",
+            subpixel_rows=max(1, self._selected_subpixel_rows()),
+            subpixel_columns=max(1, self._selected_subpixel_columns()),
+            tile_width=self._selected_tile_width(),
+            tile_height=self._selected_tile_height(),
+            tile_overlap=self._selected_tile_overlap(),
+        )
+        return subpixel_spec_from_options(options, source_shape)
+
+    def _update_subpixel_plan_label(self, build_result: BuildResult | None) -> None:
+        if self._selected_subpixel_view_mode() != "tile":
+            self.tile_plan_label.setText(self._t("matrix.subpixel_plan.unavailable"))
+            self.tile_plan_label.setToolTip("")
+            self.tile_plan_label.setStyleSheet("")
+            return
+        spec = self._subpixel_grid_spec(build_result)
+        if spec is None:
+            self.tile_plan_label.setText(self._t("matrix.subpixel_plan.waiting"))
+            self.tile_plan_label.setToolTip("")
+            self.tile_plan_label.setStyleSheet("")
+            return
+        aggregation_label = self._t(f"subpixel_aggregation.{self._selected_subpixel_aggregation()}")
+        self.tile_plan_label.setText(
+            f"{int(spec.rows)}x{int(spec.columns)} | "
+            f"{int(spec.tile_width)}x{int(spec.tile_height)} | "
+            f"ovl {int(spec.overlap)} | {aggregation_label}"
+        )
+        self.tile_plan_label.setToolTip(self._t("matrix.subpixel_plan.tooltip"))
+        self.tile_plan_label.setStyleSheet("")
+
+    def _apply_polygon_compare_profile(self, profile_key: str | None) -> None:
+        profile = str(profile_key or DEFAULT_POLYGON_COMPARE_PROFILE)
+        values = self._polygon_compare_values_for_profile(profile)
+        if values is None:
+            values = self._polygon_compare_values_for_profile(DEFAULT_POLYGON_COMPARE_PROFILE)
+        if values is None:
+            return
+        mask_threshold, boundary_radius = values
+        blockers = [
+            QSignalBlocker(self.polygon_compare_profile_combo),
+        ]
+        _ = blockers
+        self.mask_threshold_spin.setValue(float(mask_threshold))
+        self.boundary_radius_spin.setValue(int(boundary_radius))
+        profile_index = self.polygon_compare_profile_combo.findData(profile)
+        if profile_index < 0:
+            profile_index = self.polygon_compare_profile_combo.findData(DEFAULT_POLYGON_COMPARE_PROFILE)
+        self.polygon_compare_profile_combo.setCurrentIndex(profile_index if profile_index >= 0 else 0)
 
     def _append_folder_item(self, folder_path: Path, *, checked: bool) -> QListWidgetItem:
         folder_path = Path(folder_path)
@@ -194,6 +481,7 @@ class ValidationGradientExtendPresenter(QObject):
         item.setData(Qt.ItemDataRole.UserRole, str(folder_path))
         item.setData(FOLDER_CHECKED_ROLE, bool(checked))
         item.setData(FOLDER_LABEL_ROLE, folder_path.name)
+        item.setData(FOLDER_CONFIDENCE_ROLE, "")
         item.setToolTip(str(folder_path))
         self.folder_list.addItem(item)
         return item
@@ -216,19 +504,29 @@ class ValidationGradientExtendPresenter(QObject):
             item = self.folder_list.item(row)
             path_text = str(item.data(Qt.ItemDataRole.UserRole))
             display_text = str(item.data(FOLDER_LABEL_ROLE) or (Path(path_text).name or path_text))
+            confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "")
+            confidence_display_text = self._compact_path_text(confidence_path_text)
             row_widget = FolderRowWidget(
                 self.folder_list,
                 path_text=path_text,
                 display_text=display_text,
                 checked=bool(item.data(FOLDER_CHECKED_ROLE)),
+                confidence_display_text=confidence_display_text,
+                confidence_path_text=confidence_path_text,
                 can_move_up=row > 0,
                 can_move_down=row < self.folder_list.count() - 1,
                 on_checked_changed=lambda checked, item=item: self._set_folder_item_checked(item, checked),
                 on_label_changed=lambda text, item=item: self._set_folder_item_label(item, text),
+                on_confidence_folder=lambda _checked=False, item=item: self._set_folder_item_confidence_folder(item),
+                on_clear_confidence_folder=lambda _checked=False, item=item: self._clear_folder_item_confidence_folder(item),
                 on_remove=lambda _checked=False, item=item: self._remove_folder_item(item),
                 on_move_up=lambda _checked=False, item=item: self._move_folder_item(item, -1),
                 on_move_down=lambda _checked=False, item=item: self._move_folder_item(item, 1),
                 checkbox_tooltip="Use model in analytics",
+                confidence_placeholder=self._t("folders.confidence_not_set"),
+                confidence_tooltip=confidence_path_text,
+                confidence_select_tooltip=self._t("folders.select_confidence"),
+                confidence_clear_tooltip=self._t("folders.clear_confidence"),
                 remove_tooltip="Remove model folder",
                 move_up_tooltip="Move up",
                 move_down_tooltip="Move down",
@@ -248,6 +546,29 @@ class ValidationGradientExtendPresenter(QObject):
         folder_path = Path(item.data(Qt.ItemDataRole.UserRole))
         item.setData(FOLDER_LABEL_ROLE, text or folder_path.name)
         self._refresh_folder_rows()
+
+    def _set_folder_item_confidence_folder(self, item: QListWidgetItem) -> None:
+        if self._worker_thread is not None:
+            return
+        folder = QFileDialog.getExistingDirectory(self._view, self._t("dialog.select_model_confidence_folder"))
+        if not folder:
+            return
+        folder_path = Path(folder)
+        if not self._folder_has_supported_images(folder_path):
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                f"Confidence folder has no supported images: {folder_path}",
+            )
+            return
+        item.setData(FOLDER_CONFIDENCE_ROLE, str(folder_path))
+        self._refresh_folder_rows()
+        self._sync_action_buttons()
+
+    def _clear_folder_item_confidence_folder(self, item: QListWidgetItem) -> None:
+        item.setData(FOLDER_CONFIDENCE_ROLE, "")
+        self._refresh_folder_rows()
+        self._sync_action_buttons()
 
     def _remove_folder_item(self, item: QListWidgetItem) -> None:
         row = self.folder_list.row(item)
@@ -276,96 +597,17 @@ class ValidationGradientExtendPresenter(QObject):
             columns=int(self.matrix_columns_spin.value()),
         )
 
-    # Legacy export path disabled in UI.
-    # The export backend in core.repository is intentionally preserved.
-    # To restore the old workflow, uncomment the methods below together with
-    # the matching UI controls/signals in app/main_window.py.
-    #
-    # def _current_export_selection_mode(self) -> str:
-    #     return str(self.export_selection_mode_combo.currentData() or DEFAULT_EXPORT_SELECTION_MODE)
-    #
-    # def _set_export_row_visible(self, field: object, visible: bool) -> None:
-    #     layout = self.export_group.layout()
-    #     label = layout.labelForField(field) if layout is not None else None
-    #     if label is not None:
-    #         label.setVisible(bool(visible))
-    #     if hasattr(field, 'setVisible'):
-    #         field.setVisible(bool(visible))
-    #
-    # def _selected_candidate_records(self, build_result: BuildResult, metric_key: str) -> tuple[FrameRecord, ...]:
-    #     return select_candidate_records(
-    #         build_result,
-    #         metric_key=metric_key,
-    #         selection_mode=self._current_export_selection_mode(),
-    #         top_k=int(self.export_top_k_spin.value()),
-    #         top_percent=float(self.export_percent_spin.value()),
-    #         percentile_threshold=float(self.export_percentile_spin.value()),
-    #     )
-    #
-    # def _update_export_selection_preview(self) -> None:
-    #     state = self._current_tab_state()
-    #     if state is None or not state.build_result.scores_computed:
-    #         self.export_selection_preview.setText("Candidates: compute analytics first")
-    #         return
-    #     selected = self._selected_candidate_records(state.build_result, state.metric_key)
-    #     percentiles = compute_metric_percentiles(state.build_result.records, state.metric_key)
-    #     if not selected:
-    #         self.export_selection_preview.setText("Candidates: 0")
-    #         return
-    #     worst_percentile = max(float(percentiles.get(record.key, 0.0)) for record in selected)
-    #     best_percentile = min(float(percentiles.get(record.key, 0.0)) for record in selected)
-    #     self.export_selection_preview.setText(
-    #         f"Candidates: {len(selected)} / {len(state.build_result.records)} | percentile band: P{best_percentile:.1f}-P{worst_percentile:.1f}"
-    #     )
-    #
-    # def _sync_export_selection_controls(self) -> None:
-    #     mode = self._current_export_selection_mode()
-    #     self._set_export_row_visible(self.export_top_k_spin, mode == 'count')
-    #     self._set_export_row_visible(self.export_percent_spin, mode == 'percent')
-    #     self._set_export_row_visible(self.export_percentile_spin, mode == 'percentile')
-    #     self._update_export_selection_preview()
-    #
-    # def _on_export_selection_changed(self, *_args) -> None:
-    #     self._sync_export_selection_controls()
-    #     state = self._current_tab_state()
-    #     if state is None:
-    #         return
-    #     self._apply_tab_visual_settings(state, reset_view=False)
-    #
-    # def _export_ranked(self) -> None:
-    #     state = self._current_tab_state()
-    #     if state is None or not state.build_result.scores_computed:
-    #         QMessageBox.information(self._view, "Validation Gradient Excend", "Build and compute analytics before export.")
-    #         return
-    #     folder = QFileDialog.getExistingDirectory(self._view, "Select export folder")
-    #     if not folder:
-    #         return
-    #     try:
-    #         summary = export_ranked_frames(
-    #             state.build_result,
-    #             Path(folder),
-    #             top_k=int(self.export_top_k_spin.value()),
-    #             neighbor_radius=int(self.export_neighbor_radius_spin.value()),
-    #             metric_key=str(self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY),
-    #             selection_mode=self._current_export_selection_mode(),
-    #             top_percent=float(self.export_percent_spin.value()),
-    #             percentile_threshold=float(self.export_percentile_spin.value()),
-    #         )
-    #     except Exception as error:
-    #         QMessageBox.critical(self._view, "Validation Gradient Excend", str(error))
-    #         return
-    #     QMessageBox.information(self._view, "Validation Gradient Excend", f"Exported {summary['selected_count']} primary and {summary['supplemental_count']} supplemental frames.\nManifest: {summary['manifest_path']}")
-
     def _percentile_bin_bounds(self, bin_index: int) -> tuple[float, float]:
-        normalized = max(0, min(int(bin_index), 4))
-        return float(normalized * 20), float((normalized + 1) * 20)
+        normalized = max(0, min(int(bin_index), len(PERCENTILE_BAND_BOUNDS) - 1))
+        low_bound, high_bound = PERCENTILE_BAND_BOUNDS[normalized]
+        return float(low_bound), float(high_bound)
 
     def _records_in_percentile_bin(self, records: tuple[FrameRecord, ...] | list[FrameRecord], percentile_map: dict[str, float], bin_index: int) -> tuple[FrameRecord, ...]:
         low_bound, high_bound = self._percentile_bin_bounds(bin_index)
         selected: list[FrameRecord] = []
         for record in records:
             percentile = float(percentile_map.get(record.key, 0.0))
-            if bin_index >= 4:
+            if bin_index >= len(PERCENTILE_BAND_BOUNDS) - 1:
                 matches = low_bound <= percentile <= high_bound
             else:
                 matches = low_bound <= percentile < high_bound
@@ -405,21 +647,32 @@ class ValidationGradientExtendPresenter(QObject):
 
     def _capture_view_snapshot(self) -> dict[str, object]:
         confidence_model_id = self._selected_confidence_model_id(None)
+        mask_threshold, boundary_radius = self._selected_polygon_compare_values()
         return {
-            "cell_size": int(self.thumbnail_size_spin.value()),
+            "cell_size": int(DEFAULT_CELL_SIZE),
             "layout_config": self._build_layout_config(),
-            "gradient_name": self.gradient_selector.selected_gradient(),
-            "error_window": self.gradient_range_selector.error_window(),
+            "matrix_score_view_mode": str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE),
             "analysis_mode": self._selected_analysis_mode(),
             "object_type": self._selected_object_type(),
             "geometry_mode": str(self.geometry_mode_combo.currentData() or DEFAULT_GEOMETRY_MODE),
-            "mask_threshold": float(self.mask_threshold_spin.value()),
-            "boundary_radius": int(self.boundary_radius_spin.value()),
-            "confidence_uncertainty_delta": float(self.confidence_uncertainty_delta_spin.value()),
+            "polygon_compare_profile": self._selected_polygon_compare_profile(),
+            "mask_threshold": float(mask_threshold),
+            "boundary_radius": int(boundary_radius),
+            "confidence_uncertainty_profile": self._selected_confidence_uncertainty_profile(),
+            "confidence_uncertainty_delta": self._selected_confidence_uncertainty_delta(),
             "point_match_radius": float(self.point_match_radius_spin.value()),
             "point_confidence_radius": int(self.point_confidence_radius_spin.value()),
             "point_extraction_mode": str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
             "polygon_confidence_summary": str(self.polygon_confidence_summary_combo.currentData() or DEFAULT_POLYGON_CONFIDENCE_SUMMARY),
+            "tile_mode": self._selected_tile_mode(),
+            "tile_width": int(self.tile_width_spin.value()),
+            "tile_height": int(self.tile_height_spin.value()),
+            "tile_overlap_mode": self._selected_tile_overlap_mode(),
+            "tile_overlap": int(self.tile_overlap_spin.value()),
+            "subpixel_view_mode": self._selected_subpixel_view_mode(),
+            "subpixel_rows": self._selected_subpixel_rows(),
+            "subpixel_columns": self._selected_subpixel_columns(),
+            "subpixel_aggregation": self._selected_subpixel_aggregation(),
             "metric_key": str(self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY),
             "metric_scope": str(confidence_model_id or ""),
             "confidence_model_id": confidence_model_id,
@@ -438,13 +691,53 @@ class ValidationGradientExtendPresenter(QObject):
         self.geometry_mode_combo.setCurrentIndex(geometry_index if geometry_index >= 0 else 0)
         del geometry_blocker
 
+        score_view_blocker = QSignalBlocker(self.matrix_score_view_combo)
+        score_view_index = self.matrix_score_view_combo.findData(str(state.matrix_score_view_mode or DEFAULT_MATRIX_SCORE_VIEW_MODE))
+        self.matrix_score_view_combo.setCurrentIndex(score_view_index if score_view_index >= 0 else 0)
+        del score_view_blocker
+
+        layout_blocker = QSignalBlocker(self.layout_mode_combo)
+        layout_index = self.layout_mode_combo.findData(str(state.layout_config.mode or DEFAULT_MATRIX_LAYOUT_MODE))
+        self.layout_mode_combo.setCurrentIndex(layout_index if layout_index >= 0 else 0)
+        del layout_blocker
+
+        total_frames_blocker = QSignalBlocker(self.total_frames_spin)
+        self.total_frames_spin.setValue(int(state.layout_config.total_frames))
+        del total_frames_blocker
+
+        frames_per_row_blocker = QSignalBlocker(self.frames_per_row_spin)
+        self.frames_per_row_spin.setValue(int(state.layout_config.frames_per_row))
+        del frames_per_row_blocker
+
+        rows_blocker = QSignalBlocker(self.matrix_rows_spin)
+        self.matrix_rows_spin.setValue(int(state.layout_config.rows))
+        del rows_blocker
+
+        columns_blocker = QSignalBlocker(self.matrix_columns_spin)
+        self.matrix_columns_spin.setValue(int(state.layout_config.columns))
+        del columns_blocker
+
+        frame_type_filter_blocker = QSignalBlocker(self.frame_type_filter_combo)
+        frame_type_filter_index = self.frame_type_filter_combo.findData(str(state.frame_type_filter or 'all'))
+        self.frame_type_filter_combo.setCurrentIndex(frame_type_filter_index if frame_type_filter_index >= 0 else 0)
+        del frame_type_filter_blocker
+
     def _analysis_options_from_controls(self, state: ExtendMatrixTabState, *, object_type: str) -> BuildOptions:
         return replace(
             state.build_result.options,
             geometry_mode=geometry_mode_for_object_type(object_type),
+            tile_mode=self._selected_tile_mode(),
+            tile_width=int(self.tile_width_spin.value()),
+            tile_height=int(self.tile_height_spin.value()),
+            tile_overlap_mode=self._selected_tile_overlap_mode(),
+            tile_overlap=int(self.tile_overlap_spin.value()),
+            subpixel_view_mode=self._selected_subpixel_view_mode(),
+            subpixel_rows=self._selected_subpixel_rows(),
+            subpixel_columns=self._selected_subpixel_columns(),
+            subpixel_aggregation=self._selected_subpixel_aggregation(),
             mask_threshold=float(self.mask_threshold_spin.value()),
             boundary_radius=int(self.boundary_radius_spin.value()),
-            confidence_uncertainty_delta=float(self.confidence_uncertainty_delta_spin.value()),
+            confidence_uncertainty_delta=self._selected_confidence_uncertainty_delta(),
             point_match_radius=float(self.point_match_radius_spin.value()),
             point_confidence_radius=int(self.point_confidence_radius_spin.value()),
             point_extraction_mode=str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
@@ -531,7 +824,7 @@ class ValidationGradientExtendPresenter(QObject):
 
         state.analysis_mode = selected_analysis_mode
         state.object_type = selected_object_type
-        state.frame_type_filter = selected_object_type
+        state.frame_type_filter = str(self.frame_type_filter_combo.currentData() or state.frame_type_filter or 'all')
         state.build_result = replace(state.build_result, options=updated_options)
         selected_confidence_model_id = self._selected_confidence_model_id(state.build_result)
         state.confidence_model_id = str(selected_confidence_model_id or "") or None
@@ -550,7 +843,7 @@ class ValidationGradientExtendPresenter(QObject):
             return
         requires_analytics = options_changed or self._metric_value_missing_for_build_result(state.build_result, metric_key)
         if requires_analytics:
-            if auto_recompute:
+            if auto_recompute and bool(getattr(state.build_result, "scores_computed", False)):
                 self._start_compute_analytics(state=state, sync_context=False)
             return
         self._apply_metric_to_state(state, metric_key)
@@ -613,7 +906,7 @@ class ValidationGradientExtendPresenter(QObject):
         context_state: ExtendMatrixTabState | None = None,
     ) -> None:
         state = context_state if context_state is not None else self._current_tab_state()
-        self._sync_mode_controls(None, None)
+        self._sync_mode_controls(state, build_result)
         metric_key = str(preferred_metric_key or self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY)
         selected_confidence_model_id = str(preferred_scope_key or self.metric_scope_combo.currentData() or self._metric_scope_for_metric_key(metric_key) or "")
         self._populate_metric_scope_combo(build_result, selected_confidence_model_id)
@@ -627,6 +920,8 @@ class ValidationGradientExtendPresenter(QObject):
                 confidence_model_id=selected_confidence_model_id,
             )
         basis_keys = [str(key) for key in percentile_basis_keys(context) if build_result is None or key in set(build_result.available_metric_keys)]
+        if build_result is not None and not basis_keys:
+            basis_keys = self._fallback_metric_keys_for_build_result(build_result)
         if metric_key not in basis_keys:
             metric_key = basis_keys[0] if basis_keys else default_metric_key(context)
 
@@ -643,34 +938,68 @@ class ValidationGradientExtendPresenter(QObject):
         self.metric_combo.blockSignals(False)
 
     def _attach_matrix_coordinates(self, records: tuple[FrameRecord, ...] | list[FrameRecord], layout_config: MatrixLayoutConfig) -> tuple[FrameRecord, ...]:
-        placements, _columns, _rows = build_matrix_layout(list(records), layout_config)
+        records_tuple = tuple(records)
+        placements, _columns, _rows = build_matrix_layout(list(records_tuple), layout_config)
         records_by_key: dict[str, FrameRecord] = {}
+        changed = False
         for placement_index, (record, row, column) in enumerate(placements):
             identity = record.identity
             if identity is None:
                 identity = FrameIdentity(frame_id=placement_index, base_id=placement_index, tile_x=column, tile_y=row, source_key=record.key)
+                records_by_key[record.key] = replace(record, identity=identity)
+                changed = True
+                continue
+            if int(identity.tile_x if identity.tile_x is not None else -1) == int(column) and int(identity.tile_y if identity.tile_y is not None else -1) == int(row):
+                records_by_key[record.key] = record
+                continue
             else:
                 identity = replace(identity, tile_x=column, tile_y=row)
             records_by_key[record.key] = replace(record, identity=identity)
-        return tuple(records_by_key.get(record.key, record) for record in records)
+            changed = True
+        if not changed:
+            return records_tuple
+        return tuple(records_by_key.get(record.key, record) for record in records_tuple)
 
     def _sync_state_record_coordinates(self, state: ExtendMatrixTabState) -> None:
         attached_records = self._attach_matrix_coordinates(state.build_result.records, state.layout_config)
-        state.build_result = replace(state.build_result, records=tuple(attached_records))
+        if attached_records is not state.build_result.records:
+            state.build_result = replace(state.build_result, records=tuple(attached_records))
 
-    def _apply_tab_visual_settings(self, state: ExtendMatrixTabState, *, reset_view: bool = False) -> bool:
+    def _apply_pending_display_controls(self, state: ExtendMatrixTabState) -> None:
+        state.layout_config = self._build_layout_config()
+        state.matrix_score_view_mode = str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE)
+        state.frame_type_filter = str(self.frame_type_filter_combo.currentData() or 'all')
+
+    def _apply_tab_visual_settings(self, state: ExtendMatrixTabState, *, reset_view: bool = False, update_histograms: bool = True) -> bool:
         try:
             self._sync_state_record_coordinates(state)
             display_records = self._display_records_for_state(state)
-            state.matrix_view.set_gradient_preset(state.gradient_name)
-            state.matrix_view.set_error_window(*state.error_window)
+            self._update_subpixel_plan_label(state.build_result)
+            state.matrix_view.set_gradient_preset(DEFAULT_GRADIENT_NAME)
             state.matrix_view.set_cell_size(int(state.cell_size))
             state.matrix_view.set_layout_config(state.layout_config)
+            state.matrix_view.set_subpixel_comparison_mode(getattr(state.build_result.options, "comparison_mode", None))
+            options = state.build_result.options
+            if str(getattr(options, "subpixel_view_mode", "pixel") or "pixel") == "tile":
+                subpixel_spec = subpixel_spec_from_options(options, self._tile_source_shape_for_result(state.build_result))
+            else:
+                subpixel_spec = None
+            state.matrix_view.set_subpixel_grid_spec(
+                subpixel_spec,
+                aggregation=str(getattr(options, "subpixel_aggregation", DEFAULT_SUBPIXEL_AGGREGATION) or DEFAULT_SUBPIXEL_AGGREGATION),
+            )
+            state.matrix_view.set_score_view_mode(str(state.matrix_score_view_mode or DEFAULT_MATRIX_SCORE_VIEW_MODE))
+            state.matrix_view.set_metric_context(
+                state.metric_key,
+                point_match_radius=float(getattr(state.build_result.options, "point_match_radius", 3.0)),
+                bce_score_cap=float(BCE_SCORE_CAP),
+            )
             state.matrix_view.set_reference_key(state.build_result.best_match_key)
             sort_mode = "input_order" if str(state.layout_config.mode or "indexed_grid") == "manual_grid" else "name"
             state.matrix_view.set_records(list(display_records), sort_mode=sort_mode, reset_view=reset_view)
             self._update_matrix_preview(state)
-            self._update_metric_histograms(state)
+            if update_histograms:
+                self._update_metric_histograms(state)
         except ValueError as error:
             QMessageBox.warning(self._view, self._t("errors.layout"), str(error))
             return False
@@ -710,10 +1039,30 @@ class ValidationGradientExtendPresenter(QObject):
             point_match_radius=float(self.point_match_radius_spin.value()),
             bce_score_cap=float(BCE_SCORE_CAP),
         )
+        level_key = metric_level_key(
+            metric_key,
+            value,
+            point_match_radius=float(self.point_match_radius_spin.value()),
+            bce_score_cap=float(BCE_SCORE_CAP),
+        )
         higher_is_better = self._metric_higher_is_better(metric_key)
-        if ratio is None:
+        family = str(metric_key or "").split("::", 1)[0]
+        if ratio is None or level_key is None:
             background = "#2f3844"
             foreground = "#edf3fb"
+        elif family == "model_confidence":
+            if level_key == "score.level.low":
+                background = "#1f5f3b"
+                foreground = "#e9fff1"
+            elif level_key == "score.level.moderate":
+                background = "#6f7a18"
+                foreground = "#f7ffd8"
+            elif level_key == "score.level.elevated":
+                background = "#a75d12"
+                foreground = "#fff0dc"
+            else:
+                background = "#8c2f39"
+                foreground = "#ffe9ec"
         elif higher_is_better:
             if ratio < 0.33:
                 background = "#8c2f39"
@@ -739,29 +1088,15 @@ class ValidationGradientExtendPresenter(QObject):
     def _metric_score_text(self, value: float | None, metric_key: str) -> str:
         if value is None:
             return "-"
-        ratio = metric_visual_ratio(
+        level_key = metric_level_key(
             metric_key,
             value,
             point_match_radius=float(self.point_match_radius_spin.value()),
             bce_score_cap=float(BCE_SCORE_CAP),
         )
-        if ratio is None:
+        if level_key is None:
             return "-"
-        higher_is_better = self._metric_higher_is_better(metric_key)
-        if higher_is_better:
-            if ratio < 0.33:
-                level = self._t("score.level.poor")
-            elif ratio < 0.66:
-                level = self._t("score.level.fair")
-            else:
-                level = self._t("score.level.good")
-        else:
-            if ratio < 0.33:
-                level = self._t("score.level.low")
-            elif ratio < 0.66:
-                level = self._t("score.level.medium")
-            else:
-                level = self._t("score.level.high")
+        level = self._t(level_key)
         if "::" in str(metric_key):
             return f"{level} {float(value) * 100.0:.1f}%"
         if str(metric_key) in {"overall_polygon_score", "iou_score", "dice_score", "polygon_bce_score", "overall_point_score", "precision_score", "recall_score", "f1_score", "localization_score"}:
@@ -886,6 +1221,10 @@ class ValidationGradientExtendPresenter(QObject):
             'model': 'Model',
             'labeled_best_quality': 'Best labeled quality',
             'frame_uncertainty_score': 'Frame uncertainty score',
+            'mean_uncertainty': 'Mean uncertainty',
+            'low_conf_fraction': 'Low-confidence fraction',
+            'worst_tail_uncertainty': 'Worst-tail uncertainty',
+            'largest_low_conf_component': 'Largest low-confidence component',
             'uncertain_support_fraction': 'Uncertain support fraction',
             'top_uncertainty_mean': 'Top uncertainty mean',
             'largest_uncertain_region_fraction': 'Largest uncertain region fraction',
@@ -1037,14 +1376,22 @@ class ValidationGradientExtendPresenter(QObject):
     def _percentile_style(self, percentile: float | None, metric_key: str | None = None) -> str:
         if percentile is None:
             return self._metric_score_style(None, "overall_polygon_score")
-        metric = str(metric_key or (self._current_tab_state().metric_key if self._current_tab_state() is not None else "overall_polygon_score"))
-        clipped = max(0.0, min(float(percentile), 100.0)) / 100.0
-        high_is_bad = metric_percentile_high_is_bad(metric)
-        if high_is_bad:
-            ratio = 1.0 - clipped
+        clipped = max(0.0, min(float(percentile), 100.0))
+        # Percentiles shown in the UI are always goodness percentiles:
+        # low percentile means a worse frame, high percentile means a better one.
+        if clipped < 15.0:
+            background = "#8c2f39"
+            foreground = "#ffe9ec"
+        elif clipped < 35.0:
+            background = "#a75d12"
+            foreground = "#fff0dc"
+        elif clipped < 60.0:
+            background = "#6f7a18"
+            foreground = "#f7ffd8"
         else:
-            ratio = clipped
-        return self._metric_score_style(float(ratio), "model_model_score")
+            background = "#1f5f3b"
+            foreground = "#e9fff1"
+        return f"padding: 6px 10px; border-radius: 8px; background-color: {background}; color: {foreground}; font-weight: 700;"
 
     def _percentile_text(self, percentile: float | None) -> str:
         if percentile is None:
@@ -1053,8 +1400,7 @@ class ValidationGradientExtendPresenter(QObject):
 
     def _percentile_map_for_metric(self, state: ExtendMatrixTabState, metric_key: str) -> dict[str, float]:
         base_records = self._base_records_for_state(state)
-        record_keys = tuple(record.key for record in base_records)
-        cache_key = (str(metric_key), record_keys)
+        cache_key = (str(metric_key), id(base_records))
         cached = state.percentile_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1064,13 +1410,12 @@ class ValidationGradientExtendPresenter(QObject):
 
     def _percentile_histogram_counts(self, state: ExtendMatrixTabState, metric_key: str) -> list[int]:
         percentiles = self._percentile_map_for_metric(state, metric_key)
-        counts = [0, 0, 0, 0, 0]
+        counts = [0] * len(PERCENTILE_BAND_BOUNDS)
+        upper_bounds = [float(high) for _low, high in PERCENTILE_BAND_BOUNDS[:-1]]
+        last_index = len(counts) - 1
         for value in percentiles.values():
             clipped = max(0.0, min(float(value), 100.0))
-            index = min(4, int(clipped // 20.0))
-            if clipped >= 100.0:
-                index = 4
-            counts[index] += 1
+            counts[min(last_index, bisect_right(upper_bounds, clipped))] += 1
         return counts
 
     def _repeated_percentile_entries(self, state: ExtendMatrixTabState, *, band: str) -> list[tuple[FrameRecord, int, float, list[str]]]:
@@ -1082,14 +1427,13 @@ class ValidationGradientExtendPresenter(QObject):
         metrics_by_record: dict[str, list[tuple[str, float]]] = {record.key: [] for record in state.build_result.records}
         for metric_key in available_keys:
             percentile_map = self._percentile_map_for_metric(state, metric_key)
-            high_is_bad = metric_percentile_high_is_bad(metric_key)
             for record in state.build_result.records:
                 percentile = percentile_map.get(record.key)
                 if percentile is None:
                     continue
-                if band == 'bad' and ((float(percentile) >= 80.0) if high_is_bad else (float(percentile) <= 20.0)):
+                if band == 'bad' and float(percentile) < 15.0:
                     metrics_by_record[record.key].append((self._metric_label(metric_key, state.build_result), float(percentile)))
-                elif band == 'good' and ((float(percentile) <= 20.0) if high_is_bad else (float(percentile) >= 80.0)):
+                elif band == 'good' and float(percentile) >= 60.0:
                     metrics_by_record[record.key].append((self._metric_label(metric_key, state.build_result), float(percentile)))
         entries: list[tuple[FrameRecord, int, float, list[str]]] = []
         records_by_key = {record.key: record for record in state.build_result.records}
@@ -1101,9 +1445,9 @@ class ValidationGradientExtendPresenter(QObject):
             record = records_by_key[key]
             entries.append((record, len(values), average_percentile, metric_labels))
         if band == 'bad':
-            entries.sort(key=lambda item: (-item[1], -item[2] if any(metric_percentile_high_is_bad(metric_key) for metric_key in available_keys) else item[2], item[0].display_name.lower()))
+            entries.sort(key=lambda item: (-item[1], item[2], item[0].display_name.lower()))
         else:
-            entries.sort(key=lambda item: (-item[1], item[2] if any(metric_percentile_high_is_bad(metric_key) for metric_key in available_keys) else -item[2], item[0].display_name.lower()))
+            entries.sort(key=lambda item: (-item[1], -item[2], item[0].display_name.lower()))
         state.repeated_percentile_cache[cache_key] = tuple(entries)
         return entries
 
@@ -1145,6 +1489,36 @@ class ValidationGradientExtendPresenter(QObject):
             tooltip = self._metric_hint_fallback(metric_key, state.build_result)
             card.set_payload(self._metric_label(metric_key, state.build_result), counts, base_record_count, visible=True, active_bin=active_bin, tooltip=tooltip)
         self._update_repeated_percentile_lists(state)
+
+    def _schedule_metric_histogram_update(self, state: ExtendMatrixTabState) -> None:
+        self._histogram_update_generation += 1
+        generation = int(self._histogram_update_generation)
+        QTimer.singleShot(0, lambda s=state, g=generation: self._update_metric_histograms_chunked(s, g, 0))
+
+    def _update_metric_histograms_chunked(self, state: ExtendMatrixTabState, generation: int, index: int) -> None:
+        if generation != self._histogram_update_generation or state.widget not in self._tab_states:
+            return
+        preview = state.preview
+        if preview is None:
+            return
+        base_record_count = len(self._base_records_for_state(state))
+        available_keys = set(self._percentile_basis_keys_for_state(state, state.build_result))
+        if state.percentile_filter_metric_key not in available_keys:
+            state.percentile_filter_metric_key = None
+            state.percentile_filter_bin_index = None
+        histogram_items = list(preview.histogram_cards.items())
+        if index >= len(histogram_items):
+            QTimer.singleShot(0, lambda s=state, g=generation: self._update_repeated_percentile_lists(s) if g == self._histogram_update_generation and s.widget in self._tab_states else None)
+            return
+        metric_key, card = histogram_items[index]
+        if metric_key not in available_keys:
+            card.setVisible(False)
+        else:
+            counts = self._percentile_histogram_counts(state, metric_key)
+            active_bin = state.percentile_filter_bin_index if state.percentile_filter_metric_key == metric_key else None
+            tooltip = self._metric_hint_fallback(metric_key, state.build_result)
+            card.set_payload(self._metric_label(metric_key, state.build_result), counts, base_record_count, visible=True, active_bin=active_bin, tooltip=tooltip)
+        QTimer.singleShot(0, lambda s=state, g=generation, i=index + 1: self._update_metric_histograms_chunked(s, g, i))
 
     def _connect_histogram_cards(self, state: ExtendMatrixTabState) -> None:
         preview = state.preview
@@ -1273,6 +1647,10 @@ class ValidationGradientExtendPresenter(QObject):
                         f"model: {model_name}",
                         f"frame_uncertainty_score: {self._format_component_value(getattr(confidence_row, 'frame_uncertainty_score', None))}",
                         f"summary_metric: {self._format_component_value(getattr(confidence_row, 'summary_metric', None))}",
+                        f"mean_uncertainty: {self._format_component_value(getattr(confidence_row, 'mean_uncertainty', None))}",
+                        f"low_conf_fraction: {self._format_component_value(getattr(confidence_row, 'low_conf_fraction', None))}",
+                        f"worst_tail_uncertainty: {self._format_component_value(getattr(confidence_row, 'worst_tail_uncertainty', None))}",
+                        f"largest_low_conf_component: {self._format_component_value(getattr(confidence_row, 'largest_low_conf_component', None))}",
                         f"mean_object_confidence: {self._format_component_value(getattr(confidence_row, 'mean_object_confidence', None))}",
                         f"uncertain_support_fraction: {self._format_component_value(getattr(confidence_row, 'uncertain_support_fraction', None))}",
                         f"top_uncertainty_mean: {self._format_component_value(getattr(confidence_row, 'top_uncertainty_mean', None))}",
@@ -1288,6 +1666,10 @@ class ValidationGradientExtendPresenter(QObject):
                 return [
                     f"model: {model_name}",
                     f"frame_uncertainty_score: {self._format_component_value(getattr(confidence_row, 'frame_uncertainty_score', None))}",
+                    f"mean_uncertainty: {self._format_component_value(getattr(confidence_row, 'mean_uncertainty', None))}",
+                    f"low_conf_fraction: {self._format_component_value(getattr(confidence_row, 'low_conf_fraction', None))}",
+                    f"worst_tail_uncertainty: {self._format_component_value(getattr(confidence_row, 'worst_tail_uncertainty', None))}",
+                    f"largest_low_conf_component: {self._format_component_value(getattr(confidence_row, 'largest_low_conf_component', None))}",
                     f"mean_point_confidence: {self._format_component_value(getattr(confidence_row, 'mean_point_confidence', None))}",
                     f"uncertain_support_fraction: {self._format_component_value(getattr(confidence_row, 'uncertain_support_fraction', None))}",
                     f"top_uncertainty_mean: {self._format_component_value(getattr(confidence_row, 'top_uncertainty_mean', None))}",
@@ -1401,6 +1783,15 @@ class ValidationGradientExtendPresenter(QObject):
         short = f"{parent}/{tail}" if parent else tail
         return short, str(path)
 
+    @staticmethod
+    def _compact_path_text(path_text: str | None) -> str:
+        if not path_text:
+            return ""
+        path = Path(str(path_text))
+        tail = path.name or str(path)
+        parent = path.parent.name if path.parent != path else ""
+        return f"{parent}/{tail}" if parent else tail
+
     def _update_source_labels(self) -> None:
         original_text, original_tooltip = self._compact_folder_label(self._original_folder)
         gt_text, gt_tooltip = self._compact_folder_label(self._gt_folder)
@@ -1484,14 +1875,25 @@ class ValidationGradientExtendPresenter(QObject):
         if not model_specs:
             QMessageBox.warning(self._view, self._t("dialog.warning_title"), self._t("errors.active_model_required"))
             return
+        self._close_all_details_dialogs()
         geometry_mode = geometry_mode_for_object_type(self._selected_object_type())
+        mask_threshold, boundary_radius = self._selected_polygon_compare_values()
         options = BuildOptions(
-            thumbnail_size=int(self.thumbnail_size_spin.value()),
+            thumbnail_size=int(DEFAULT_CELL_SIZE),
             recursive=True,
+            tile_mode=self._selected_tile_mode(),
+            tile_width=int(self.tile_width_spin.value()),
+            tile_height=int(self.tile_height_spin.value()),
+            tile_overlap_mode=self._selected_tile_overlap_mode(),
+            tile_overlap=int(self.tile_overlap_spin.value()),
+            subpixel_view_mode=self._selected_subpixel_view_mode(),
+            subpixel_rows=self._selected_subpixel_rows(),
+            subpixel_columns=self._selected_subpixel_columns(),
+            subpixel_aggregation=self._selected_subpixel_aggregation(),
             geometry_mode=geometry_mode,
-            mask_threshold=float(self.mask_threshold_spin.value()),
-            boundary_radius=int(self.boundary_radius_spin.value()),
-            confidence_uncertainty_delta=float(self.confidence_uncertainty_delta_spin.value()),
+            mask_threshold=float(mask_threshold),
+            boundary_radius=int(boundary_radius),
+            confidence_uncertainty_delta=self._selected_confidence_uncertainty_delta(),
             point_match_radius=float(self.point_match_radius_spin.value()),
             point_confidence_radius=int(self.point_confidence_radius_spin.value()),
             point_extraction_mode=str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
@@ -1514,12 +1916,20 @@ class ValidationGradientExtendPresenter(QObject):
         self._show_progress_bar(visible=True, format_text="Indexing frames...")
         self._sync_action_buttons()
 
-    def _start_compute_analytics(self, *, state: ExtendMatrixTabState | None = None, sync_context: bool = True) -> None:
+    def _start_compute_analytics(
+        self,
+        *,
+        state: ExtendMatrixTabState | None = None,
+        sync_context: bool = True,
+        apply_pending_controls: bool = False,
+    ) -> None:
         state = state or self._current_tab_state()
         if state is None:
             return
         if sync_context:
             self._sync_current_analysis_context(state, auto_recompute=False)
+        if apply_pending_controls:
+            self._apply_pending_display_controls(state)
         metric_key = str(self.metric_combo.currentData() or state.metric_key or DEFAULT_MATRIX_METRIC_KEY)
         request_signature = self._analytics_request_signature(state, metric_key)
         self._worker_kind = "analytics"
@@ -1540,6 +1950,26 @@ class ValidationGradientExtendPresenter(QObject):
         self._worker_thread.start()
         self._show_progress_bar(visible=True, format_text="Computing analytics...")
         self._sync_action_buttons()
+
+    def _on_compute_requested(self) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        previous_options = state.build_result.options
+        self._sync_current_analysis_context(state, auto_recompute=False)
+        self._apply_pending_display_controls(state)
+        metric_key = str(self.metric_combo.currentData() or state.metric_key or DEFAULT_MATRIX_METRIC_KEY)
+        options_changed = state.build_result.options != previous_options
+        needs_analytics = (
+            not bool(getattr(state.build_result, "scores_computed", False))
+            or options_changed
+            or self._metric_value_missing_for_build_result(state.build_result, metric_key)
+        )
+        if not needs_analytics:
+            self._apply_metric_to_state(state, metric_key)
+            self._sync_action_buttons()
+            return
+        self._start_compute_analytics(state=state, sync_context=False, apply_pending_controls=False)
 
     def _request_cancel_build(self) -> None:
         if self._worker is None:
@@ -1602,7 +2032,7 @@ class ValidationGradientExtendPresenter(QObject):
         snapshot["metric_key"] = str(self.metric_combo.currentData() or self._default_metric_key_for_state(None, result))
         state = self._create_matrix_tab(result, snapshot)
         self._connect_histogram_cards(state)
-        ok = self._apply_tab_visual_settings(state, reset_view=True)
+        ok = self._apply_tab_visual_settings(state, reset_view=True, update_histograms=False)
         self._show_progress_bar(visible=False)
         if not ok:
             state.widget.deleteLater()
@@ -1614,8 +2044,7 @@ class ValidationGradientExtendPresenter(QObject):
         if result.records:
             state.matrix_view.select_record_by_key(result.records[0].key, ensure_visible=False)
             self._update_matrix_preview(state, result.records[0])
-        if self._metric_value_missing_for_build_result(state.build_result, state.metric_key):
-            self._deferred_analytics_restart = (state, False)
+        self._schedule_metric_histogram_update(state)
         self._sync_action_buttons()
 
     def _on_analytics_finished(self, result: BuildResult, *, generation: int | None = None, request_signature: tuple[object, ...] | None = None) -> None:
@@ -1641,7 +2070,6 @@ class ValidationGradientExtendPresenter(QObject):
         state.confidence_model_id = self._selected_confidence_model_id(result)
         state.metric_scope = str(state.confidence_model_id or "")
         state.metric_key = str(self.metric_combo.currentData() or result.selected_metric_key or self._default_metric_key_for_state(state, result))
-        state.frame_type_filter = str(state.object_type)
         self._apply_metric_to_state(state, state.metric_key)
         self._sync_action_buttons()
 
@@ -1658,6 +2086,9 @@ class ValidationGradientExtendPresenter(QObject):
         QMessageBox.critical(self._view, self._t("dialog.warning_title"), message or self._t("errors.background_failed"))
 
     def _apply_metric_to_state(self, state: ExtendMatrixTabState, metric_key: str) -> None:
+        available = set(state.build_result.available_metric_keys or ())
+        if available and metric_key not in available:
+            metric_key = self._default_metric_key_for_state(state, state.build_result)
         state.metric_key = metric_key
         self._invalidate_state_runtime_caches(state, clear_metric_results=False)
         self.metric_combo.setToolTip(self._metric_hint_fallback(metric_key, state.build_result))
@@ -1667,8 +2098,10 @@ class ValidationGradientExtendPresenter(QObject):
             self._apply_tab_visual_settings(state, reset_view=False)
             return
         if self._metric_value_missing_for_build_result(state.build_result, metric_key):
-            if self._worker is None:
+            if self._worker is None and bool(getattr(state.build_result, "scores_computed", False)):
                 self._start_compute_analytics(state=state, sync_context=False)
+            else:
+                self._apply_tab_visual_settings(state, reset_view=False)
             return
         updated_records: list[FrameRecord] = []
         absolute_scores: list[float] = []
@@ -1706,58 +2139,66 @@ class ValidationGradientExtendPresenter(QObject):
         self._sync_metric_controls(build_result, preferred_scope_key=preferred_scope, context_state=state)
         if state is None:
             return
-        state.confidence_model_id = str(self.metric_scope_combo.currentData() or "") or None
-        state.metric_scope = str(state.confidence_model_id or "")
-        self._apply_metric_to_state(state, str(self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY))
+        self.metric_combo.setToolTip(self._metric_hint_fallback(str(self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY), state.build_result))
+        self._sync_action_buttons()
 
     def _on_analysis_mode_changed(self, *_args) -> None:
         state = self._current_tab_state()
-        self._sync_mode_controls(None, None)
-        if state is not None:
-            self._sync_current_analysis_context(state, auto_recompute=True)
+        self._sync_mode_controls(state, None if state is None else state.build_result)
         self._sync_action_buttons()
 
     def _on_object_type_changed(self, *_args) -> None:
         state = self._current_tab_state()
-        self._sync_mode_controls(None, None)
-        if state is not None:
-            self._sync_current_analysis_context(state, auto_recompute=True)
+        self._sync_mode_controls(state, None if state is None else state.build_result)
         self._sync_action_buttons()
+
+    def _on_polygon_compare_profile_changed(self, *_args) -> None:
+        self._apply_polygon_compare_profile(self._selected_polygon_compare_profile())
+        self._sync_action_buttons()
+
+    def _on_subpixel_view_mode_changed(self, *_args) -> None:
+        state = self._current_tab_state()
+        self._sync_tile_overlap_bounds()
+        self._sync_mode_controls(state, None if state is None else state.build_result)
+        self._update_subpixel_plan_label(None if state is None else state.build_result)
+        self._sync_action_buttons()
+
+    def _on_subpixel_grid_parameter_changed(self, *_args) -> None:
+        state = self._current_tab_state()
+        self._sync_tile_overlap_bounds()
+        self._sync_mode_controls(state, None if state is None else state.build_result)
+        self._update_subpixel_plan_label(None if state is None else state.build_result)
+        self._sync_action_buttons()
+
+    def _on_tile_mode_changed(self, *_args) -> None:  # pragma: no cover - compatibility shim
+        self._on_subpixel_view_mode_changed()
+
+    def _on_tile_overlap_mode_changed(self, *_args) -> None:  # pragma: no cover - compatibility shim
+        state = self._current_tab_state()
+        self._sync_action_buttons()
+
+    def _on_tile_grid_parameter_changed(self, *_args) -> None:
+        self._sync_tile_overlap_bounds()
+        self._on_subpixel_grid_parameter_changed()
 
     def _on_metric_changed(self, *_args) -> None:
         state = self._current_tab_state()
         if state is None:
             return
         metric_key = str(self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY)
-        if self._worker is None and self._metric_value_missing_for_build_result(state.build_result, metric_key):
-            self._start_compute_analytics()
-            return
-        self._apply_metric_to_state(state, metric_key)
-
-    def _on_frame_type_filter_changed(self, *_args) -> None:
-        state = self._current_tab_state()
-        if state is None:
-            return
-        state.frame_type_filter = str(self.frame_type_filter_combo.currentData() or 'all')
-        self._apply_tab_visual_settings(state, reset_view=False)
-
-    def _on_matrix_visual_parameter_changed(self, *_args) -> None:
+        self.metric_combo.setToolTip(self._metric_hint_fallback(metric_key, state.build_result))
         self._sync_action_buttons()
 
-    def _on_gradient_preset_changed(self, gradient_name: str) -> None:
-        state = self._current_tab_state()
-        if state is None:
-            return
-        state.gradient_name = str(gradient_name)
-        self.gradient_range_selector.set_gradient_name(state.gradient_name)
-        self._apply_tab_visual_settings(state, reset_view=False)
+    def _on_frame_type_filter_changed(self, *_args) -> None:
+        self._sync_action_buttons()
 
-    def _on_error_window_changed(self, low_bound: float, high_bound: float) -> None:
+    def _on_matrix_score_view_changed(self, *_args) -> None:
+        self._sync_action_buttons()
+
+    def _on_matrix_visual_parameter_changed(self, *_args) -> None:
         state = self._current_tab_state()
-        if state is None:
-            return
-        state.error_window = (float(low_bound), float(high_bound))
-        self._apply_tab_visual_settings(state, reset_view=False)
+        self._sync_mode_controls(state, None if state is None else state.build_result)
+        self._sync_action_buttons()
 
     def _on_current_tab_changed(self, _index: int) -> None:
         state = self._current_tab_state()
@@ -1765,9 +2206,6 @@ class ValidationGradientExtendPresenter(QObject):
             self._sync_action_buttons()
             return
         self._set_ui_context_from_state(state)
-        self.gradient_selector.set_selected_gradient(state.gradient_name, emit_signal=False)
-        self.gradient_range_selector.set_gradient_name(state.gradient_name)
-        self.gradient_range_selector.set_error_window(*state.error_window)
         scope_blocker = QSignalBlocker(self.metric_scope_combo)
         self._populate_metric_scope_combo(state.build_result, state.confidence_model_id or state.metric_scope)
         scope_index = self.metric_scope_combo.findData(str(state.confidence_model_id or state.metric_scope or ""))
@@ -1783,9 +2221,9 @@ class ValidationGradientExtendPresenter(QObject):
         self.metric_combo.setToolTip(self._metric_hint_fallback(state.metric_key, state.build_result))
         if self._metric_value_missing_for_build_result(state.build_result, state.metric_key):
             self._update_matrix_preview(state)
-            if self._worker is None:
+            if self._worker is None and bool(getattr(state.build_result, "scores_computed", False)):
                 self._start_compute_analytics(state=state, sync_context=False)
-            else:
+            elif self._worker is not None and bool(getattr(state.build_result, "scores_computed", False)):
                 self._deferred_analytics_restart = (state, False)
             self._sync_action_buttons()
             return
@@ -1813,15 +2251,56 @@ class ValidationGradientExtendPresenter(QObject):
             self._update_matrix_preview(state, record)
             self._sync_action_buttons()
 
+    def _on_tile_selected(self, state: ExtendMatrixTabState, selection: object | None) -> None:
+        if self._current_tab_state() is state:
+            record = getattr(selection, "record", None)
+            self._update_matrix_preview(state, record if isinstance(record, FrameRecord) else None)
+            self._sync_action_buttons()
+
     def _forget_details_dialog(self, dialog: ExtendFrameDetailsDialog) -> None:
         self._details_dialogs = [opened for opened in self._details_dialogs if opened is not dialog]
 
-    def _open_record_details(self, record: FrameRecord, state: ExtendMatrixTabState) -> None:
+    def _close_all_details_dialogs(self) -> None:
+        for dialog in list(self._details_dialogs):
+            try:
+                dialog.close()
+            except Exception:
+                pass
+        self._details_dialogs.clear()
+
+    def _open_record_details(self, record: FrameRecord, state: ExtendMatrixTabState, tile_selection: object | None = None) -> None:
+        session_view_state = dict(self._details_view_payload)
+        if tile_selection is not None:
+            parent_row = int(getattr(tile_selection, "matrix_row", getattr(tile_selection, "row", 0)))
+            parent_column = int(getattr(tile_selection, "matrix_column", getattr(tile_selection, "column", 0)))
+            sub_row = int(getattr(tile_selection, "sub_row", getattr(tile_selection, "tile_row", getattr(tile_selection, "row", 0))))
+            sub_column = int(getattr(tile_selection, "sub_column", getattr(tile_selection, "tile_column", getattr(tile_selection, "column", 0))))
+            spec = getattr(tile_selection, "spec", None)
+            session_view_state["subpixel_selection"] = {
+                "parent_row": parent_row,
+                "parent_column": parent_column,
+                "sub_row": sub_row,
+                "sub_column": sub_column,
+                "parent_value": float(getattr(tile_selection, "parent_value", getattr(record, "score", 0.0))),
+                "subpixel_value": float(getattr(tile_selection, "subpixel_value", getattr(record, "score", 0.0))),
+                "subpixel_confidence": None if getattr(tile_selection, "subpixel_confidence", None) is None else float(getattr(tile_selection, "subpixel_confidence")),
+                "aggregation": str(getattr(tile_selection, "aggregation", "mean")),
+                "metric_key": str(getattr(tile_selection, "metric_key", state.metric_key or DEFAULT_MATRIX_METRIC_KEY)),
+                "spec_rows": int(getattr(spec, "rows", 0) or 0),
+                "spec_columns": int(getattr(spec, "columns", 0) or 0),
+            }
+            session_view_state["tile_selection"] = {
+                "row": sub_row,
+                "column": sub_column,
+            }
+        else:
+            session_view_state.pop("tile_selection", None)
+            session_view_state.pop("subpixel_selection", None)
         dialog = ExtendFrameDetailsDialog(
             record=record,
             build_result=state.build_result,
             preferred_metric_key=state.metric_key,
-            session_view_state=self._details_view_payload,
+            session_view_state=session_view_state,
             on_view_state_changed=self._store_details_view_payload,
             parent=None,
         )
@@ -1845,13 +2324,94 @@ class ValidationGradientExtendPresenter(QObject):
             return
         if selected is None:
             preview.frame_value.setText("-")
+            if preview.subpixel_group is not None:
+                preview.subpixel_group.hide()
+            if preview.subpixel_value is not None:
+                preview.subpixel_value.setText("-")
+            if getattr(preview, "subpixel_score_card", None) is not None:
+                preview.subpixel_score_card.hide()
             for card in preview.score_cards.values():
                 card.set_payload("-", self._metric_score_style(None, state.metric_key), "", visible=False, percentile_text="", percentile_style=self._percentile_style(None))
+            if preview.overall_group is not None:
+                preview.overall_group.hide()
+            if preview.component_group is not None:
+                preview.component_group.hide()
             return
         preview.frame_value.setText(selected.display_name)
         summary = selected.summary
+        selected_subpixel = None
+        if hasattr(state.matrix_view, "selected_tile_selection"):
+            try:
+                selected_subpixel = state.matrix_view.selected_tile_selection()
+            except Exception:
+                selected_subpixel = None
+        if (
+            preview.subpixel_group is not None
+            and preview.subpixel_value is not None
+            and selected_subpixel is not None
+            and getattr(selected_subpixel, "record", None) is not None
+            and getattr(selected_subpixel.record, "key", None) == selected.key
+        ):
+            parent_row = int(getattr(selected_subpixel, "matrix_row", getattr(selected_subpixel, "row", 0))) + 1
+            parent_column = int(getattr(selected_subpixel, "matrix_column", getattr(selected_subpixel, "column", 0))) + 1
+            sub_row = int(getattr(selected_subpixel, "sub_row", 0)) + 1
+            sub_column = int(getattr(selected_subpixel, "sub_column", 0)) + 1
+            spec = getattr(selected_subpixel, "spec", None)
+            rows = int(getattr(spec, "rows", 0) or 0)
+            columns = int(getattr(spec, "columns", 0) or 0)
+            parent_value = float(getattr(selected_subpixel, "parent_value", selected.score if bool(getattr(selected, "score_ready", False)) else 0.0))
+            subpixel_value = float(getattr(selected_subpixel, "subpixel_value", parent_value))
+            summary = selected.summary
+            frame_type = str(getattr(summary, "frame_type", "") or self._t("details.frame_type"))
+            preview.subpixel_value.setText(
+                self._t(
+                    "details.subpixel_selection_value",
+                    parent_row=parent_row,
+                    parent_column=parent_column,
+                    sub_row=sub_row,
+                    sub_column=sub_column,
+                    rows=rows,
+                    columns=columns,
+                    parent_value=parent_value,
+                )
+            )
+            preview.subpixel_group.setTitle(self._t("details.subpixel_selection"))
+            preview.subpixel_value.show()
+            preview.subpixel_group.show()
+            if getattr(preview, "subpixel_score_card", None) is not None:
+                subpixel_metric_key = str(state.metric_key or state.build_result.selected_metric_key or DEFAULT_MATRIX_METRIC_KEY)
+                subpixel_title = self._metric_text_for_key(subpixel_metric_key, state.build_result)
+                subpixel_details = "\n".join(
+                    [
+                        f"{self._t('details.frame_type')}: {frame_type}",
+                        f"{self._t('details.selected_comparison_score')}: {self._metric_score_text(subpixel_value, subpixel_metric_key)}",
+                        f"{self._t('details.subpixel_selection')}: {subpixel_value:.4f}",
+                        f"{self._t('details.parent_score')}: {float(getattr(selected_subpixel, 'parent_value', selected.score if bool(getattr(selected, 'score_ready', False)) else 0.0)):.4f}",
+                    ]
+                )
+                preview.subpixel_score_card.set_payload(
+                    self._metric_score_text(subpixel_value, subpixel_metric_key),
+                    self._metric_score_style(subpixel_value, subpixel_metric_key),
+                    subpixel_details,
+                    visible=True,
+                    percentile_text="",
+                    percentile_style=self._percentile_style(None),
+                    tooltip=self._metric_hint(subpixel_metric_key, selected.summary) if selected.summary is not None else self._metric_hint_fallback(subpixel_metric_key, state.build_result),
+                )
+                try:
+                    preview.subpixel_score_card.title_label.setText(subpixel_title)
+                except Exception:
+                    pass
+        elif preview.subpixel_group is not None:
+            preview.subpixel_group.hide()
+            if preview.subpixel_value is not None:
+                preview.subpixel_value.setText("-")
+            if getattr(preview, "subpixel_score_card", None) is not None:
+                preview.subpixel_score_card.hide()
         percentile_cache: dict[str, dict[str, float]] = {}
         visible_metric_keys = set(self._display_metric_keys_for_state(state, state.build_result))
+        overall_visible = False
+        component_visible = False
         for metric_key, card in preview.score_cards.items():
             value = metric_value_for_record(selected, metric_key) if summary is not None else None
             visible = metric_key in visible_metric_keys and value is not None
@@ -1868,6 +2428,15 @@ class ValidationGradientExtendPresenter(QObject):
                 percentile_style=self._percentile_style(percentile_value),
                 tooltip=tooltip or "",
             )
+            if visible:
+                if str(metric_key).startswith("overall_"):
+                    overall_visible = True
+                else:
+                    component_visible = True
+        if preview.overall_group is not None:
+            preview.overall_group.setVisible(overall_visible)
+        if preview.component_group is not None:
+            preview.component_group.setVisible(component_visible)
 
     def _sync_action_buttons(self) -> None:
         current_state = self._current_tab_state()
@@ -1880,9 +2449,42 @@ class ValidationGradientExtendPresenter(QObject):
         self.btn_clear_gt.setEnabled(self._gt_folder is not None and not is_busy)
         self.btn_build.setEnabled(active_model_count > 0 and not is_busy)
         self.btn_compute.setEnabled(current_state is not None and not is_busy)
-        # Legacy export action disabled together with export UI.
-        # self.btn_export.setEnabled(current_state is not None and current_state.build_result.scores_computed and not is_busy)
         self.btn_cancel.setEnabled(is_busy)
+        if hasattr(self._view, "set_workflow_summary"):
+            original_state = self._t("workflow.state.ready") if self._original_folder is not None else self._t("workflow.state.pending")
+            gt_state = self._t("workflow.state.ready") if self._gt_folder is not None else self._t("workflow.state.optional")
+            sources_tone = "ready" if self._original_folder is not None else "warn"
+            models_status = self._t("workflow.state.ready") if active_model_count > 0 else self._t("workflow.state.pending")
+            models_tone = "ready" if active_model_count > 0 else "warn"
+            if is_busy:
+                analysis_status = self._t("workflow.state.running")
+                analysis_detail = self.build_progress.format() or self._t("workflow.analysis_running")
+                analysis_tone = "busy"
+            elif current_state is None:
+                analysis_status = self._t("workflow.state.pending")
+                analysis_detail = self._t("workflow.analysis_pending")
+                analysis_tone = "idle"
+            elif bool(getattr(current_state.build_result, "scores_computed", False)):
+                analysis_status = self._t("workflow.state.computed")
+                analysis_detail = self._t("workflow.analysis_computed")
+                analysis_tone = "active"
+            else:
+                analysis_status = self._t("workflow.state.built")
+                analysis_detail = self._t("workflow.analysis_built")
+                analysis_tone = "ready"
+            self._view.set_workflow_summary({
+                "sources": (
+                    self._t("workflow.state.partial") if self._original_folder is None and self._gt_folder is not None else original_state,
+                    self._t("workflow.sources_detail", original=original_state, gt=gt_state),
+                    sources_tone,
+                ),
+                "models": (
+                    models_status,
+                    self._t("workflow.models_detail", count=active_model_count),
+                    models_tone,
+                ),
+                "analysis": (analysis_status, analysis_detail, analysis_tone),
+            })
 
     def _build_folder_manager_payload(self) -> dict:
         return {
@@ -1891,6 +2493,7 @@ class ValidationGradientExtendPresenter(QObject):
                     "path": str(self.folder_list.item(row).data(Qt.ItemDataRole.UserRole)),
                     "checked": bool(self.folder_list.item(row).data(FOLDER_CHECKED_ROLE)),
                     "label": str(self.folder_list.item(row).data(FOLDER_LABEL_ROLE) or ""),
+                    "confidence_path": str(self.folder_list.item(row).data(FOLDER_CONFIDENCE_ROLE) or ""),
                 }
                 for row in range(self.folder_list.count())
             ],
@@ -1901,7 +2504,6 @@ class ValidationGradientExtendPresenter(QObject):
     def _restore_persisted_state(self) -> None:
         self._restore_folder_manager_state()
         self._restore_build_settings()
-        self._restore_error_view_settings()
         self._update_source_labels()
 
     def _restore_folder_manager_state(self) -> None:
@@ -1919,6 +2521,9 @@ class ValidationGradientExtendPresenter(QObject):
                     continue
                 item = self._append_folder_item(folder_path, checked=bool(folder_entry.get("checked", False)))
                 item.setData(FOLDER_LABEL_ROLE, str(folder_entry.get("label") or folder_path.name))
+                confidence_path = folder_entry.get("confidence_path")
+                if confidence_path and Path(confidence_path).exists():
+                    item.setData(FOLDER_CONFIDENCE_ROLE, str(confidence_path))
             original_folder = payload.get("original_folder")
             gt_folder = payload.get("gt_folder")
             if original_folder and Path(original_folder).exists():
@@ -1931,18 +2536,31 @@ class ValidationGradientExtendPresenter(QObject):
             self.folder_list.blockSignals(False)
 
     def _build_build_settings_payload(self) -> dict:
+        mask_threshold, boundary_radius = self._selected_polygon_compare_values()
         return {
-            "thumbnail_size": int(self.thumbnail_size_spin.value()),
+            "thumbnail_size": int(DEFAULT_CELL_SIZE),
+            "matrix_score_view_mode": str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE),
             "analysis_mode": self._selected_analysis_mode(),
             "object_type": self._selected_object_type(),
             "geometry_mode": str(self.geometry_mode_combo.currentData() or DEFAULT_GEOMETRY_MODE),
-            "mask_threshold": float(self.mask_threshold_spin.value()),
-            "boundary_radius": int(self.boundary_radius_spin.value()),
-            "confidence_uncertainty_delta": float(self.confidence_uncertainty_delta_spin.value()),
+            "polygon_compare_profile": self._selected_polygon_compare_profile(),
+            "mask_threshold": float(mask_threshold),
+            "boundary_radius": int(boundary_radius),
+            "confidence_uncertainty_profile": self._selected_confidence_uncertainty_profile(),
+            "confidence_uncertainty_delta": self._selected_confidence_uncertainty_delta(),
             "point_match_radius": float(self.point_match_radius_spin.value()),
             "point_confidence_radius": int(self.point_confidence_radius_spin.value()),
             "point_extraction_mode": str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
             "polygon_confidence_summary": str(self.polygon_confidence_summary_combo.currentData() or DEFAULT_POLYGON_CONFIDENCE_SUMMARY),
+            "tile_mode": self._selected_tile_mode(),
+            "tile_width": int(self.tile_width_spin.value()),
+            "tile_height": int(self.tile_height_spin.value()),
+            "tile_overlap_mode": self._selected_tile_overlap_mode(),
+            "tile_overlap": int(self.tile_overlap_spin.value()),
+            "subpixel_view_mode": self._selected_subpixel_view_mode(),
+            "subpixel_rows": self._selected_subpixel_rows(),
+            "subpixel_columns": self._selected_subpixel_columns(),
+            "subpixel_aggregation": self._selected_subpixel_aggregation(),
             "layout_mode": str(self.layout_mode_combo.currentData() or DEFAULT_MATRIX_LAYOUT_MODE),
             "total_frames": int(self.total_frames_spin.value()),
             "frames_per_row": int(self.frames_per_row_spin.value()),
@@ -1951,21 +2569,32 @@ class ValidationGradientExtendPresenter(QObject):
             "metric_key": str(self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY),
             "metric_scope": str(self.metric_scope_combo.currentData() or ""),
             "confidence_model_id": str(self.metric_scope_combo.currentData() or ""),
-            "frame_type_filter": str(self._selected_object_type()),
+            "frame_type_filter": str(self.frame_type_filter_combo.currentData() or 'all'),
         }
 
     def _restore_build_settings(self) -> None:
         payload = self._settings_service.load_build_settings_payload() or {}
         blockers = [
             QSignalBlocker(self.thumbnail_size_spin),
+            QSignalBlocker(self.matrix_score_view_combo),
             QSignalBlocker(self.analysis_mode_combo),
             QSignalBlocker(self.geometry_mode_combo),
+            QSignalBlocker(self.polygon_compare_profile_combo),
             QSignalBlocker(self.mask_threshold_spin),
             QSignalBlocker(self.boundary_radius_spin),
-            QSignalBlocker(self.confidence_uncertainty_delta_spin),
+            QSignalBlocker(self.confidence_uncertainty_profile_combo),
             QSignalBlocker(self.point_match_radius_spin),
             QSignalBlocker(self.point_confidence_radius_spin),
             QSignalBlocker(self.point_extraction_mode_combo),
+            QSignalBlocker(self.tile_mode_combo),
+            QSignalBlocker(self.subpixel_view_mode_combo),
+            QSignalBlocker(self.subpixel_rows_spin),
+            QSignalBlocker(self.subpixel_columns_spin),
+            QSignalBlocker(self.subpixel_aggregation_combo),
+            QSignalBlocker(self.tile_width_spin),
+            QSignalBlocker(self.tile_height_spin),
+            QSignalBlocker(self.tile_overlap_mode_combo),
+            QSignalBlocker(self.tile_overlap_spin),
             QSignalBlocker(self.polygon_confidence_summary_combo),
             QSignalBlocker(self.layout_mode_combo),
             QSignalBlocker(self.total_frames_spin),
@@ -1978,16 +2607,49 @@ class ValidationGradientExtendPresenter(QObject):
             QSignalBlocker(self.frame_type_filter_combo),
         ]
         _ = blockers
-        self.thumbnail_size_spin.setValue(int(payload.get("thumbnail_size", self.thumbnail_size_spin.value())))
+        self.thumbnail_size_spin.setValue(int(DEFAULT_CELL_SIZE))
+        score_view_mode = str(payload.get("matrix_score_view_mode") or DEFAULT_MATRIX_SCORE_VIEW_MODE)
+        score_view_index = self.matrix_score_view_combo.findData(score_view_mode)
+        self.matrix_score_view_combo.setCurrentIndex(score_view_index if score_view_index >= 0 else 0)
         analysis_mode = str(payload.get("analysis_mode") or self._selected_analysis_mode())
         analysis_index = self.analysis_mode_combo.findData(analysis_mode)
         self.analysis_mode_combo.setCurrentIndex(analysis_index if analysis_index >= 0 else 0)
         geometry_mode = str(payload.get("geometry_mode") or geometry_mode_for_object_type(payload.get("object_type")).value or DEFAULT_GEOMETRY_MODE)
         geometry_index = self.geometry_mode_combo.findData(geometry_mode)
         self.geometry_mode_combo.setCurrentIndex(geometry_index if geometry_index >= 0 else 0)
+        tile_mode = str(payload.get("tile_mode") or DEFAULT_TILE_MODE)
+        if tile_mode == "subpixel":
+            tile_mode = "tile"
+        tile_mode_index = self.tile_mode_combo.findData(tile_mode)
+        self.tile_mode_combo.setCurrentIndex(tile_mode_index if tile_mode_index >= 0 else 0)
+        subpixel_view_mode = str(payload.get("subpixel_view_mode") or DEFAULT_SUBPIXEL_VIEW_MODE)
+        if subpixel_view_mode == "subpixel":
+            subpixel_view_mode = "tile"
+        subpixel_view_mode_index = self.subpixel_view_mode_combo.findData(subpixel_view_mode)
+        self.subpixel_view_mode_combo.setCurrentIndex(subpixel_view_mode_index if subpixel_view_mode_index >= 0 else 0)
+        self.subpixel_rows_spin.setValue(int(payload.get("subpixel_rows", DEFAULT_SUBPIXEL_ROWS)))
+        self.subpixel_columns_spin.setValue(int(payload.get("subpixel_columns", DEFAULT_SUBPIXEL_COLUMNS)))
+        subpixel_aggregation = str(payload.get("subpixel_aggregation") or DEFAULT_SUBPIXEL_AGGREGATION)
+        subpixel_aggregation_index = self.subpixel_aggregation_combo.findData(subpixel_aggregation)
+        self.subpixel_aggregation_combo.setCurrentIndex(subpixel_aggregation_index if subpixel_aggregation_index >= 0 else 0)
+        self.tile_width_spin.setValue(int(payload.get("tile_width", DEFAULT_TILE_WIDTH)))
+        self.tile_height_spin.setValue(int(payload.get("tile_height", DEFAULT_TILE_HEIGHT)))
+        tile_overlap_mode = str(payload.get("tile_overlap_mode") or DEFAULT_TILE_OVERLAP_MODE)
+        tile_overlap_mode_index = self.tile_overlap_mode_combo.findData(tile_overlap_mode)
+        self.tile_overlap_mode_combo.setCurrentIndex(tile_overlap_mode_index if tile_overlap_mode_index >= 0 else 0)
+        self.tile_overlap_spin.setValue(int(payload.get("tile_overlap", DEFAULT_TILE_OVERLAP)))
+        compare_profile = str(payload.get("polygon_compare_profile") or "")
         self.mask_threshold_spin.setValue(float(payload.get("mask_threshold", self.mask_threshold_spin.value())))
         self.boundary_radius_spin.setValue(int(payload.get("boundary_radius", self.boundary_radius_spin.value())))
-        self.confidence_uncertainty_delta_spin.setValue(float(payload.get("confidence_uncertainty_delta", DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA)))
+        if not compare_profile:
+            compare_profile = self._polygon_compare_profile_for_values(self.mask_threshold_spin.value(), self.boundary_radius_spin.value())
+        compare_index = self.polygon_compare_profile_combo.findData(compare_profile)
+        self.polygon_compare_profile_combo.setCurrentIndex(compare_index if compare_index >= 0 else 0)
+        uncertainty_profile = str(payload.get("confidence_uncertainty_profile") or "")
+        if not uncertainty_profile:
+            uncertainty_profile = self._confidence_uncertainty_profile_for_value(payload.get("confidence_uncertainty_delta"))
+        uncertainty_index = self.confidence_uncertainty_profile_combo.findData(uncertainty_profile)
+        self.confidence_uncertainty_profile_combo.setCurrentIndex(uncertainty_index if uncertainty_index >= 0 else 0)
         self.point_match_radius_spin.setValue(float(payload.get("point_match_radius", self.point_match_radius_spin.value())))
         self.point_confidence_radius_spin.setValue(int(payload.get("point_confidence_radius", DEFAULT_POINT_CONFIDENCE_RADIUS)))
         point_extraction_mode = str(payload.get("point_extraction_mode") or DEFAULT_POINT_EXTRACTION_MODE)
@@ -2009,27 +2671,12 @@ class ValidationGradientExtendPresenter(QObject):
         self._sync_metric_controls(None, preferred_metric_key=metric_key, preferred_scope_key=metric_scope)
         index = self.frame_type_filter_combo.findData(frame_type_filter)
         self.frame_type_filter_combo.setCurrentIndex(index if index >= 0 else 0)
-
-    def _build_error_view_payload(self) -> dict:
-        return {
-            "gradient_name": self.gradient_selector.selected_gradient(),
-            "error_window": [float(value) for value in self.gradient_range_selector.error_window()],
-        }
-
-    def _restore_error_view_settings(self) -> None:
-        payload = self._settings_service.load_error_view_payload()
-        if not payload:
-            return
-        self.gradient_selector.set_selected_gradient(str(payload.get("gradient_name") or DEFAULT_GRADIENT_NAME), emit_signal=False)
-        self.gradient_range_selector.set_gradient_name(self.gradient_selector.selected_gradient())
-        error_window = payload.get("error_window") or list(DEFAULT_ERROR_WINDOW)
-        if isinstance(error_window, (list, tuple)) and len(error_window) == 2:
-            self.gradient_range_selector.set_error_window(float(error_window[0]), float(error_window[1]))
+        self._sync_tile_overlap_bounds()
+        self._sync_mode_controls(None, None)
 
     def _persist_state(self) -> None:
         self._settings_service.save_folder_manager_payload(self._build_folder_manager_payload())
         self._settings_service.save_build_settings_payload(self._build_build_settings_payload())
-        self._settings_service.save_error_view_payload(self._build_error_view_payload())
         self._settings_service.sync()
 
     def shutdown(self) -> None:
@@ -2046,18 +2693,17 @@ class ValidationGradientExtendPresenter(QObject):
             if thread.isRunning():
                 thread.wait(30000)
         self._cleanup_worker()
-        for dialog in list(self._details_dialogs):
-            try:
-                dialog.close()
-            except Exception:
-                pass
-        self._details_dialogs.clear()
+        self._close_all_details_dialogs()
         self._persist_state()
 
 
-    # Legacy lite compatibility methods.
-    def _start_compute_mismatches(self) -> None:
+    # Preferred analytics entrypoint.
+    def _start_compute_metrics(self) -> None:
         self._start_compute_analytics()
+
+    # Legacy lite compatibility alias.
+    def _start_compute_mismatches(self) -> None:
+        self._start_compute_metrics()
 
     def _set_base_folder(self) -> None:
         self._set_original_folder()

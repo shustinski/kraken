@@ -34,16 +34,15 @@ from PyQt6.QtWidgets import (
 from ..infra.services import ValidationGradientLiteSettingsService
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
 from ..ui.i18n import Translator, set_current_language
-from ..ui.matrix_view import GradientPresetSelectorWidget, GradientRangeSelectorWidget, MatrixListWidget, MatrixMiniMapWidget
+from ..ui.matrix_view import MatrixListWidget, MatrixMiniMapWidget
 from ..ui.ui_constants import (
     BOUNDARY_RADIUS_RANGE,
-    CONFIDENCE_UNCERTAINTY_DELTA_RANGE,
+    CONFIDENCE_UNCERTAINTY_PROFILE_OPTIONS,
     CONTROL_PANEL_SPLITTER_SIZES,
     DEFAULT_BOUNDARY_RADIUS,
     DEFAULT_CELL_SIZE,
-    DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA,
+    DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE,
     DEFAULT_ANALYSIS_MODE,
-    DEFAULT_ERROR_WINDOW,
     DEFAULT_EXPORT_NEIGHBOR_RADIUS,
     DEFAULT_EXPORT_PERCENT,
     DEFAULT_EXPORT_PERCENTILE,
@@ -51,17 +50,27 @@ from ..ui.ui_constants import (
     DEFAULT_FILTER_TO_EXPORT_CANDIDATES,
     DEFAULT_FRAMES_PER_ROW,
     DEFAULT_GEOMETRY_MODE,
-    DEFAULT_GRADIENT_NAME,
     DEFAULT_MASK_THRESHOLD,
+    DEFAULT_POLYGON_COMPARE_PROFILE,
     DEFAULT_POINT_CONFIDENCE_RADIUS,
     DEFAULT_POINT_EXTRACTION_MODE,
     DEFAULT_POINT_MATCH_RADIUS,
     DEFAULT_POLYGON_CONFIDENCE_SUMMARY,
     DEFAULT_MATRIX_COLUMNS,
     DEFAULT_MATRIX_LAYOUT_MODE,
+    DEFAULT_MATRIX_SCORE_VIEW_MODE,
     DEFAULT_MATRIX_METRIC_KEY,
     DEFAULT_METRIC_SCOPE,
     DEFAULT_MATRIX_ROWS,
+    DEFAULT_SUBPIXEL_AGGREGATION,
+    DEFAULT_SUBPIXEL_COLUMNS,
+    DEFAULT_SUBPIXEL_ROWS,
+    DEFAULT_SUBPIXEL_VIEW_MODE,
+    DEFAULT_TILE_HEIGHT,
+    DEFAULT_TILE_MODE,
+    DEFAULT_TILE_OVERLAP,
+    DEFAULT_TILE_OVERLAP_MODE,
+    DEFAULT_TILE_WIDTH,
     DEFAULT_TOP_K_EXPORT,
     DEFAULT_TOTAL_FRAMES,
     DEFAULT_WINDOW_HEIGHT,
@@ -80,17 +89,30 @@ from ..ui.ui_constants import (
     MATRIX_COLUMNS_RANGE,
     METRIC_SETTINGS_COMBO_MIN_CONTENTS_LENGTH,
     METRIC_SETTINGS_LABEL_MIN_WIDTH,
-    METRIC_SETTINGS_WIDGET_MIN_WIDTH,
     MATRIX_METRIC_GROUP_OPTIONS,
     MATRIX_METRIC_OPTIONS,
+    MATRIX_SCORE_VIEW_OPTIONS,
     MATRIX_ROWS_RANGE,
+    SUBPIXEL_AGGREGATION_OPTIONS,
+    SUBPIXEL_COLUMNS_RANGE,
+    SUBPIXEL_ROWS_RANGE,
+    SUBPIXEL_VIEW_MODE_OPTIONS,
     OVERVIEW_PANEL_MAX_WIDTH,
+    PERCENTILE_BAND_BOUNDS,
+    PERCENTILE_BAND_COLORS,
+    PERCENTILE_BAND_LABELS,
+    PERCENTILE_BAND_TITLES,
     POINT_CONFIDENCE_RADIUS_RANGE,
     POINT_MATCH_RADIUS_RANGE,
     POLYGON_CONFIDENCE_SUMMARY_OPTIONS,
+    POLYGON_COMPARE_PROFILE_OPTIONS,
     SETTINGS_APP,
     SETTINGS_LABEL_MIN_WIDTH,
     SETTINGS_ORG,
+    TILE_MODE_OPTIONS,
+    TILE_OVERLAP_MODE_OPTIONS,
+    TILE_OVERLAP_RANGE,
+    TILE_SIZE_RANGE,
     THUMBNAIL_SIZE_RANGE,
     TOTAL_FRAMES_RANGE,
 )
@@ -152,6 +174,31 @@ class _ExpandableScoreCard(QWidget):
         self.details_label.setToolTip(tooltip)
 
 
+class _NoWheelSpinBox(QSpinBox):
+    """Ignore wheel scrolling to avoid accidental value changes inside the control panel."""
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        event.ignore()
+
+
+class _NoWheelDoubleSpinBox(QDoubleSpinBox):
+    """Ignore wheel scrolling to avoid accidental value changes inside the control panel."""
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        event.ignore()
+
+
+class _NoWheelComboBox(QComboBox):
+    """Ignore wheel scrolling unless the popup list is explicitly open."""
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        view = self.view()
+        if view is not None and view.isVisible():
+            super().wheelEvent(event)
+            return
+        event.ignore()
+
+
 class _PercentileHistogramWidget(QWidget):
     """Draw a compact histogram over fixed percentile bins."""
 
@@ -159,14 +206,15 @@ class _PercentileHistogramWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._counts = [0, 0, 0, 0, 0]
+        self._counts = [0] * len(PERCENTILE_BAND_BOUNDS)
         self._total = 0
         self._active_bin: int | None = None
         self.setMinimumHeight(120)
 
     def set_payload(self, counts: list[int], total: int, *, active_bin: int | None = None) -> None:
-        self._counts = [int(value) for value in counts[:5]] + [0] * max(0, 5 - len(counts))
-        self._counts = self._counts[:5]
+        expected = len(PERCENTILE_BAND_BOUNDS)
+        self._counts = [int(value) for value in counts[:expected]] + [0] * max(0, expected - len(counts))
+        self._counts = self._counts[:expected]
         self._total = int(total)
         self._active_bin = None if active_bin is None else int(active_bin)
         self.update()
@@ -178,8 +226,9 @@ class _PercentileHistogramWidget(QWidget):
         if rect.width() <= 0 or rect.height() <= 0:
             return []
         max_count = max(1, max(self._counts, default=1))
-        bar_width = max(12.0, rect.width() / max(5.0, len(self._counts) * 1.35))
-        gap = max(6.0, (rect.width() - bar_width * len(self._counts)) / max(1.0, len(self._counts) - 1.0))
+        band_count = max(1, len(self._counts))
+        bar_width = max(12.0, rect.width() / max(4.0, band_count * 1.25))
+        gap = max(6.0, (rect.width() - bar_width * band_count) / max(1.0, band_count - 1.0))
         rects: list[QRectF] = []
         for index, count in enumerate(self._counts):
             height_ratio = float(count) / float(max_count)
@@ -198,15 +247,10 @@ class _PercentileHistogramWidget(QWidget):
             painter.end()
             return
         painter.fillRect(rect, QColor('#11161d'))
-        labels = ('0-20', '20-40', '40-60', '60-80', '80-100')
+        labels = PERCENTILE_BAND_LABELS
         for index, bar_rect in enumerate(self._bar_rects(rect)):
             count = self._counts[index]
-            if index <= 1:
-                color = QColor('#1f5f3b')
-            elif index == 2:
-                color = QColor('#8a6a12')
-            else:
-                color = QColor('#8c2f39')
+            color = QColor(PERCENTILE_BAND_COLORS[index])
             painter.fillRect(bar_rect, color)
             if self._active_bin == index:
                 painter.setPen(QPen(QColor('#f5f8fc'), 2.0))
@@ -256,7 +300,7 @@ class _PercentileHistogramCard(QWidget):
         self.setVisible(visible)
         self.title_label.setText(title)
         self.chart.set_payload(counts, total, active_bin=active_bin)
-        labels = ('P0-20', 'P20-40', 'P40-60', 'P60-80', 'P80-100')
+        labels = PERCENTILE_BAND_TITLES
         translator = Translator()
         summary = ' | '.join(f'{label}: {int(count)}' for label, count in zip(labels, counts))
         if active_bin is not None and 0 <= int(active_bin) < len(labels):
@@ -287,8 +331,8 @@ class _CorrelationColumnWidget(QFrame):
         self.summary_label.setWordWrap(True)
         self.summary_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.summary_label.setStyleSheet('color: #c9d3df; background: transparent; border: none;')
+        self.summary_label.setVisible(False)
         layout.addWidget(self.header_button)
-        layout.addWidget(self.summary_label)
         layout.addStretch(1)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         self._refresh_style(False)
@@ -319,16 +363,7 @@ class _CorrelationColumnWidget(QFrame):
 
     def set_payload(self, frame_count: int, mean_hits: float, max_hits: int, *, active: bool) -> None:
         self._refresh_style(active)
-        translator = Translator()
-        if frame_count <= 0:
-            self.summary_label.setText(translator.tr("hist.no_repeated"))
-            return
-        self.summary_label.setText(
-            f'{translator.tr("hist.frames_in_band")}: {int(frame_count)}\n'
-            f'{translator.tr("hist.mean_hits")}: {float(mean_hits):.2f}\n'
-            f'{translator.tr("hist.max_hits")}: {int(max_hits)}'
-        )
-
+        self.summary_label.clear()
 
 
 class ValidationGradientExtendWidget(QWidget):
@@ -365,7 +400,7 @@ class ValidationGradientExtendWidget(QWidget):
 
         content = QWidget(self)
         content_layout = QHBoxLayout(content)
-        content_layout.setContentsMargins(6, 6, 6, 6)
+        content_layout.setContentsMargins(8, 6, 8, 8)
         root_layout.addWidget(content, stretch=1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, content)
@@ -376,7 +411,102 @@ class ValidationGradientExtendWidget(QWidget):
         control_host = QWidget(control_scroll)
         control_layout = QVBoxLayout(control_host)
         control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(10)
         control_scroll.setWidget(control_host)
+
+        style = self.style()
+
+        self.thumbnail_size_spin = _NoWheelSpinBox(self)
+        self.thumbnail_size_spin.setRange(DEFAULT_CELL_SIZE, DEFAULT_CELL_SIZE)
+        self.thumbnail_size_spin.setValue(DEFAULT_CELL_SIZE)
+        self.thumbnail_size_spin.setEnabled(False)
+
+        self.layout_mode_combo = _NoWheelComboBox(self)
+        self._populate_layout_mode_combo(DEFAULT_MATRIX_LAYOUT_MODE)
+        self.matrix_score_view_combo = _NoWheelComboBox(self)
+        self._populate_matrix_score_view_combo(DEFAULT_MATRIX_SCORE_VIEW_MODE)
+
+        self.total_frames_spin = _NoWheelSpinBox(self)
+        self.total_frames_spin.setRange(*TOTAL_FRAMES_RANGE)
+        self.total_frames_spin.setValue(DEFAULT_TOTAL_FRAMES)
+        self.frames_per_row_spin = _NoWheelSpinBox(self)
+        self.frames_per_row_spin.setRange(*FRAMES_PER_ROW_RANGE)
+        self.frames_per_row_spin.setValue(DEFAULT_FRAMES_PER_ROW)
+        self.matrix_rows_spin = _NoWheelSpinBox(self)
+        self.matrix_rows_spin.setRange(*MATRIX_ROWS_RANGE)
+        self.matrix_rows_spin.setValue(DEFAULT_MATRIX_ROWS)
+        self.matrix_columns_spin = _NoWheelSpinBox(self)
+        self.matrix_columns_spin.setRange(*MATRIX_COLUMNS_RANGE)
+        self.matrix_columns_spin.setValue(DEFAULT_MATRIX_COLUMNS)
+        self.analysis_mode_combo = _NoWheelComboBox(self)
+        self._populate_analysis_mode_combo(DEFAULT_ANALYSIS_MODE)
+        self.geometry_mode_combo = _NoWheelComboBox(self)
+        self._populate_geometry_mode_combo(DEFAULT_GEOMETRY_MODE)
+        self.mask_threshold_spin = _NoWheelDoubleSpinBox(self)
+        self.mask_threshold_spin.setRange(*MASK_THRESHOLD_RANGE)
+        self.mask_threshold_spin.setSingleStep(0.05)
+        self.mask_threshold_spin.setDecimals(2)
+        self.mask_threshold_spin.setValue(DEFAULT_MASK_THRESHOLD)
+        self.mask_threshold_spin.setEnabled(False)
+        self.mask_threshold_spin.hide()
+        self.boundary_radius_spin = _NoWheelSpinBox(self)
+        self.boundary_radius_spin.setRange(*BOUNDARY_RADIUS_RANGE)
+        self.boundary_radius_spin.setValue(DEFAULT_BOUNDARY_RADIUS)
+        self.boundary_radius_spin.setEnabled(False)
+        self.boundary_radius_spin.hide()
+        self.polygon_compare_profile_combo = _NoWheelComboBox(self)
+        self._populate_polygon_compare_profile_combo(DEFAULT_POLYGON_COMPARE_PROFILE)
+        self.confidence_uncertainty_profile_combo = _NoWheelComboBox(self)
+        self._populate_confidence_uncertainty_profile_combo(DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
+        self.polygon_confidence_summary_combo = _NoWheelComboBox(self)
+        self._populate_polygon_confidence_summary_combo(DEFAULT_POLYGON_CONFIDENCE_SUMMARY)
+        self.point_match_radius_spin = _NoWheelDoubleSpinBox(self)
+        self.point_match_radius_spin.setRange(*POINT_MATCH_RADIUS_RANGE)
+        self.point_match_radius_spin.setSingleStep(0.5)
+        self.point_match_radius_spin.setDecimals(1)
+        self.point_match_radius_spin.setValue(DEFAULT_POINT_MATCH_RADIUS)
+        self.point_confidence_radius_spin = _NoWheelSpinBox(self)
+        self.point_confidence_radius_spin.setRange(*POINT_CONFIDENCE_RADIUS_RANGE)
+        self.point_confidence_radius_spin.setValue(DEFAULT_POINT_CONFIDENCE_RADIUS)
+        self.point_extraction_mode_combo = _NoWheelComboBox(self)
+        self._populate_point_extraction_mode_combo(DEFAULT_POINT_EXTRACTION_MODE)
+        self.tile_mode_combo = _NoWheelComboBox(self)
+        self._populate_tile_mode_combo(DEFAULT_TILE_MODE)
+        self.tile_mode_combo.hide()
+        self.subpixel_view_mode_combo = _NoWheelComboBox(self)
+        self._populate_subpixel_view_mode_combo(DEFAULT_SUBPIXEL_VIEW_MODE)
+        self.subpixel_rows_spin = _NoWheelSpinBox(self)
+        self.subpixel_rows_spin.setRange(*SUBPIXEL_ROWS_RANGE)
+        self.subpixel_rows_spin.setValue(DEFAULT_SUBPIXEL_ROWS)
+        self.subpixel_columns_spin = _NoWheelSpinBox(self)
+        self.subpixel_columns_spin.setRange(*SUBPIXEL_COLUMNS_RANGE)
+        self.subpixel_columns_spin.setValue(DEFAULT_SUBPIXEL_COLUMNS)
+        self.subpixel_aggregation_combo = _NoWheelComboBox(self)
+        self._populate_subpixel_aggregation_combo(DEFAULT_SUBPIXEL_AGGREGATION)
+        self.tile_width_spin = _NoWheelSpinBox(self)
+        self.tile_width_spin.setRange(*TILE_SIZE_RANGE)
+        self.tile_width_spin.setValue(DEFAULT_TILE_WIDTH)
+        self.tile_height_spin = _NoWheelSpinBox(self)
+        self.tile_height_spin.setRange(*TILE_SIZE_RANGE)
+        self.tile_height_spin.setValue(DEFAULT_TILE_HEIGHT)
+        self.tile_overlap_mode_combo = _NoWheelComboBox(self)
+        self._populate_tile_overlap_mode_combo(DEFAULT_TILE_OVERLAP_MODE)
+        self.tile_overlap_spin = _NoWheelSpinBox(self)
+        self.tile_overlap_spin.setRange(*TILE_OVERLAP_RANGE)
+        self.tile_overlap_spin.setValue(DEFAULT_TILE_OVERLAP)
+        self.tile_plan_label = QLabel(self._t("matrix.subpixel_plan.waiting"), self)
+        self.tile_plan_label.setWordWrap(True)
+
+        self.metric_group_combo = _NoWheelComboBox(self)
+        for label, key in MATRIX_METRIC_GROUP_OPTIONS:
+            self.metric_group_combo.addItem(self._t(label), key)
+        self.metric_group_combo.hide()
+        self.metric_scope_combo = _NoWheelComboBox(self)
+        self._populate_metric_scope_combo(None, DEFAULT_METRIC_SCOPE)
+        self.metric_combo = _NoWheelComboBox(self)
+        self._populate_metric_combo(DEFAULT_MATRIX_METRIC_KEY)
+        self.frame_type_filter_combo = _NoWheelComboBox(self)
+        self._populate_frame_type_filter_combo('all')
 
         folders_group = QGroupBox(self._t("folders.group"), control_host)
         self.folders_group = folders_group
@@ -390,7 +520,6 @@ class ValidationGradientExtendWidget(QWidget):
         toolbar_layout = QHBoxLayout()
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
         toolbar_layout.setSpacing(4)
-        style = self.style()
 
         self.btn_add_folder = QToolButton(folders_group)
         self.btn_add_folder.setAutoRaise(True)
@@ -420,14 +549,6 @@ class ValidationGradientExtendWidget(QWidget):
         self.btn_compute.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.btn_compute.setToolTip(self._t("folders.compute_mismatch"))
         toolbar_layout.addWidget(self.btn_compute)
-
-        # Legacy export button disabled in current UI.
-        # self.btn_export = QToolButton(folders_group)
-        # self.btn_export.setAutoRaise(True)
-        # self.btn_export.setProperty("toolbarButton", True)
-        # self.btn_export.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
-        # self.btn_export.setToolTip("Export ranked frames")
-        # toolbar_layout.addWidget(self.btn_export)
 
         self.btn_cancel = QToolButton(folders_group)
         self.btn_cancel.setAutoRaise(True)
@@ -493,8 +614,6 @@ class ValidationGradientExtendWidget(QWidget):
         source_layout.addRow(self.gt_source_label, gt_row)
         control_layout.addWidget(source_group)
 
-        control_layout.addStretch(1)
-
         self.matrix_tabs = QTabWidget(splitter)
         self.matrix_tabs.setTabsClosable(True)
         self.matrix_tabs.setMovable(True)
@@ -504,104 +623,19 @@ class ValidationGradientExtendWidget(QWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes(list(CONTROL_PANEL_SPLITTER_SIZES))
 
-        # Legacy export controls disabled in current UI.
-        # self.export_group = QGroupBox("Export", control_host)
-        # export_layout = QFormLayout(self.export_group)
-        # export_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        # self.export_selection_mode_combo = QComboBox(self.export_group)
-        # for label, key in EXPORT_SELECTION_MODE_OPTIONS:
-        #     self.export_selection_mode_combo.addItem(label, key)
-        # self.export_selection_mode_combo.setCurrentIndex(self.export_selection_mode_combo.findData(DEFAULT_EXPORT_SELECTION_MODE))
-        # self.export_top_k_spin = QSpinBox(self.export_group)
-        # self.export_top_k_spin.setRange(*EXPORT_TOP_K_RANGE)
-        # self.export_top_k_spin.setValue(DEFAULT_TOP_K_EXPORT)
-        # self.export_percent_spin = QSpinBox(self.export_group)
-        # self.export_percent_spin.setRange(*EXPORT_PERCENT_RANGE)
-        # self.export_percent_spin.setValue(DEFAULT_EXPORT_PERCENT)
-        # self.export_percentile_spin = QSpinBox(self.export_group)
-        # self.export_percentile_spin.setRange(*EXPORT_PERCENTILE_RANGE)
-        # self.export_percentile_spin.setValue(DEFAULT_EXPORT_PERCENTILE)
-        # self.export_neighbor_radius_spin = QSpinBox(self.export_group)
-        # self.export_neighbor_radius_spin.setRange(*EXPORT_NEIGHBOR_RANGE)
-        # self.export_neighbor_radius_spin.setValue(DEFAULT_EXPORT_NEIGHBOR_RADIUS)
-        # self.filter_to_candidates_checkbox = QCheckBox("Show only selected candidates in matrix", self.export_group)
-        # self.filter_to_candidates_checkbox.setChecked(DEFAULT_FILTER_TO_EXPORT_CANDIDATES)
-        # self.export_selection_preview = QLabel("Candidates: -", self.export_group)
-        # self.export_selection_preview.setWordWrap(True)
-        # export_layout.addRow("Selection mode", self.export_selection_mode_combo)
-        # export_layout.addRow("Worst frame count", self.export_top_k_spin)
-        # export_layout.addRow("Worst percent", self.export_percent_spin)
-        # export_layout.addRow("Percentile >=", self.export_percentile_spin)
-        # export_layout.addRow("Neighbor radius", self.export_neighbor_radius_spin)
-        # export_layout.addRow("Matrix filter", self.filter_to_candidates_checkbox)
-        # export_layout.addRow("Selection preview", self.export_selection_preview)
-        # control_layout.addWidget(self.export_group)
+        self.metric_settings_group = QGroupBox(self._t("ui.metric_focus"), control_host)
+        metric_settings_layout = QVBoxLayout(self.metric_settings_group)
+        metric_settings_layout.setContentsMargins(4, 4, 4, 4)
+        metric_settings_layout.setSpacing(0)
+        metric_settings_layout.addWidget(self._build_metric_settings_widget())
+        control_layout.addWidget(self.metric_settings_group)
 
-        self.thumbnail_size_spin = QSpinBox(self)
-        self.thumbnail_size_spin.setRange(*THUMBNAIL_SIZE_RANGE)
-        self.thumbnail_size_spin.setValue(DEFAULT_CELL_SIZE)
-
-        self.layout_mode_combo = QComboBox(self)
-        self._populate_layout_mode_combo(DEFAULT_MATRIX_LAYOUT_MODE)
-
-        self.total_frames_spin = QSpinBox(self)
-        self.total_frames_spin.setRange(*TOTAL_FRAMES_RANGE)
-        self.total_frames_spin.setValue(DEFAULT_TOTAL_FRAMES)
-        self.frames_per_row_spin = QSpinBox(self)
-        self.frames_per_row_spin.setRange(*FRAMES_PER_ROW_RANGE)
-        self.frames_per_row_spin.setValue(DEFAULT_FRAMES_PER_ROW)
-        self.matrix_rows_spin = QSpinBox(self)
-        self.matrix_rows_spin.setRange(*MATRIX_ROWS_RANGE)
-        self.matrix_rows_spin.setValue(DEFAULT_MATRIX_ROWS)
-        self.matrix_columns_spin = QSpinBox(self)
-        self.matrix_columns_spin.setRange(*MATRIX_COLUMNS_RANGE)
-        self.matrix_columns_spin.setValue(DEFAULT_MATRIX_COLUMNS)
-        self.analysis_mode_combo = QComboBox(self)
-        self._populate_analysis_mode_combo(DEFAULT_ANALYSIS_MODE)
-        self.geometry_mode_combo = QComboBox(self)
-        self._populate_geometry_mode_combo(DEFAULT_GEOMETRY_MODE)
-        self.mask_threshold_spin = QDoubleSpinBox(self)
-        self.mask_threshold_spin.setRange(*MASK_THRESHOLD_RANGE)
-        self.mask_threshold_spin.setSingleStep(0.05)
-        self.mask_threshold_spin.setDecimals(2)
-        self.mask_threshold_spin.setValue(DEFAULT_MASK_THRESHOLD)
-        self.boundary_radius_spin = QSpinBox(self)
-        self.boundary_radius_spin.setRange(*BOUNDARY_RADIUS_RANGE)
-        self.boundary_radius_spin.setValue(DEFAULT_BOUNDARY_RADIUS)
-        self.confidence_uncertainty_delta_spin = QDoubleSpinBox(self)
-        self.confidence_uncertainty_delta_spin.setRange(*CONFIDENCE_UNCERTAINTY_DELTA_RANGE)
-        self.confidence_uncertainty_delta_spin.setSingleStep(0.01)
-        self.confidence_uncertainty_delta_spin.setDecimals(2)
-        self.confidence_uncertainty_delta_spin.setValue(DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA)
-        self.polygon_confidence_summary_combo = QComboBox(self)
-        self._populate_polygon_confidence_summary_combo(DEFAULT_POLYGON_CONFIDENCE_SUMMARY)
-        self.point_match_radius_spin = QDoubleSpinBox(self)
-        self.point_match_radius_spin.setRange(*POINT_MATCH_RADIUS_RANGE)
-        self.point_match_radius_spin.setSingleStep(0.5)
-        self.point_match_radius_spin.setDecimals(1)
-        self.point_match_radius_spin.setValue(DEFAULT_POINT_MATCH_RADIUS)
-        self.point_confidence_radius_spin = QSpinBox(self)
-        self.point_confidence_radius_spin.setRange(*POINT_CONFIDENCE_RADIUS_RANGE)
-        self.point_confidence_radius_spin.setValue(DEFAULT_POINT_CONFIDENCE_RADIUS)
-        self.point_extraction_mode_combo = QComboBox(self)
-        self._populate_point_extraction_mode_combo(DEFAULT_POINT_EXTRACTION_MODE)
-
-        self.metric_group_combo = QComboBox(self)
-        for label, key in MATRIX_METRIC_GROUP_OPTIONS:
-            self.metric_group_combo.addItem(self._t(label), key)
-        self.metric_group_combo.hide()
-        self.metric_scope_combo = QComboBox(self)
-        self._populate_metric_scope_combo(None, DEFAULT_METRIC_SCOPE)
-        self.metric_combo = QComboBox(self)
-        self._populate_metric_combo(DEFAULT_MATRIX_METRIC_KEY)
-        self.frame_type_filter_combo = QComboBox(self)
-        self._populate_frame_type_filter_combo('all')
-
-        self.gradient_selector = GradientPresetSelectorWidget(self)
-        self.gradient_range_selector = GradientRangeSelectorWidget(self)
-        self.gradient_selector.set_selected_gradient(DEFAULT_GRADIENT_NAME, emit_signal=False)
-        self.gradient_range_selector.set_gradient_name(DEFAULT_GRADIENT_NAME)
-        self.gradient_range_selector.set_error_window(*DEFAULT_ERROR_WINDOW)
+        self.analysis_settings_group = QGroupBox(self._t("ui.analysis_setup"), control_host)
+        analysis_settings_layout = QVBoxLayout(self.analysis_settings_group)
+        analysis_settings_layout.setContentsMargins(6, 6, 6, 6)
+        analysis_settings_layout.setSpacing(0)
+        analysis_settings_layout.addWidget(self._build_matrix_settings_widget())
+        control_layout.addWidget(self.analysis_settings_group)
 
         self.language_toggle_button = QToolButton(self._menu_bar)
         self.language_toggle_button.setAutoRaise(True)
@@ -609,14 +643,10 @@ class ValidationGradientExtendWidget(QWidget):
         self.language_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._update_language_toggle_button()
 
+        control_layout.addStretch(1)
+
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()
-        matrix_menu = self._menu_bar.addMenu(self._t("menu.matrix"))
-        self._add_menu_widget(matrix_menu, self._build_matrix_settings_widget())
-        metric_menu = self._menu_bar.addMenu(self._t("menu.metric"))
-        self._add_menu_widget(metric_menu, self._build_metric_settings_widget())
-        view_menu = self._menu_bar.addMenu(self._t("menu.error_view"))
-        self._add_menu_widget(view_menu, self._build_error_view_settings_widget())
         self._menu_bar.setCornerWidget(self.language_toggle_button, Qt.Corner.TopRightCorner)
 
     def _populate_layout_mode_combo(self, selected_mode: str | None) -> None:
@@ -628,6 +658,16 @@ class ValidationGradientExtendWidget(QWidget):
         index = self.layout_mode_combo.findData(current)
         self.layout_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self.layout_mode_combo.blockSignals(False)
+
+    def _populate_matrix_score_view_combo(self, selected_mode: str | None) -> None:
+        current = str(selected_mode or DEFAULT_MATRIX_SCORE_VIEW_MODE)
+        self.matrix_score_view_combo.blockSignals(True)
+        self.matrix_score_view_combo.clear()
+        for label_key, key in MATRIX_SCORE_VIEW_OPTIONS:
+            self.matrix_score_view_combo.addItem(self._t(label_key), key)
+        index = self.matrix_score_view_combo.findData(current)
+        self.matrix_score_view_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.matrix_score_view_combo.blockSignals(False)
 
     def _populate_analysis_mode_combo(self, selected_mode: str | None) -> None:
         current = str(selected_mode or DEFAULT_ANALYSIS_MODE)
@@ -665,6 +705,28 @@ class ValidationGradientExtendWidget(QWidget):
         self.polygon_confidence_summary_combo.setCurrentIndex(index if index >= 0 else 0)
         self.polygon_confidence_summary_combo.blockSignals(False)
 
+    def _populate_polygon_compare_profile_combo(self, selected_value: str | None) -> None:
+        current = str(selected_value or DEFAULT_POLYGON_COMPARE_PROFILE)
+        self.polygon_compare_profile_combo.blockSignals(True)
+        self.polygon_compare_profile_combo.clear()
+        for label_key, key in POLYGON_COMPARE_PROFILE_OPTIONS:
+            self.polygon_compare_profile_combo.addItem(self._t(label_key), key)
+        index = self.polygon_compare_profile_combo.findData(current)
+        if index < 0:
+            index = self.polygon_compare_profile_combo.findData(DEFAULT_POLYGON_COMPARE_PROFILE)
+        self.polygon_compare_profile_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.polygon_compare_profile_combo.blockSignals(False)
+
+    def _populate_confidence_uncertainty_profile_combo(self, selected_value: str | None) -> None:
+        current = str(selected_value or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
+        self.confidence_uncertainty_profile_combo.blockSignals(True)
+        self.confidence_uncertainty_profile_combo.clear()
+        for label_key, key in CONFIDENCE_UNCERTAINTY_PROFILE_OPTIONS:
+            self.confidence_uncertainty_profile_combo.addItem(self._t(label_key), key)
+        index = self.confidence_uncertainty_profile_combo.findData(current)
+        self.confidence_uncertainty_profile_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.confidence_uncertainty_profile_combo.blockSignals(False)
+
     def _populate_metric_scope_combo(self, build_result: BuildResult | None, selected_scope: str | None) -> None:
         current = str(selected_scope or "")
         self.metric_scope_combo.blockSignals(True)
@@ -672,7 +734,7 @@ class ValidationGradientExtendWidget(QWidget):
         if build_result is not None:
             for spec in build_result.model_specs:
                 self.metric_scope_combo.addItem(str(spec.display_name), str(spec.model_id))
-        if self.metric_scope_combo.count() <= 0 and current:
+        if build_result is None and self.metric_scope_combo.count() <= 0 and current:
             self.metric_scope_combo.addItem(current, current)
         index = self.metric_scope_combo.findData(current)
         if index < 0 and build_result is not None:
@@ -706,6 +768,10 @@ class ValidationGradientExtendWidget(QWidget):
                 return f"{self._t('metric.model_point_contrast')} [{model_name}]"
         return metric_key_text
 
+    @staticmethod
+    def _is_overall_score_metric(metric_key: str) -> bool:
+        return str(metric_key).startswith("overall_")
+
     def _populate_metric_combo(self, selected_metric_key: str | None) -> None:
         current = str(selected_metric_key or DEFAULT_MATRIX_METRIC_KEY)
         self.metric_combo.blockSignals(True)
@@ -737,6 +803,50 @@ class ValidationGradientExtendWidget(QWidget):
         self.point_extraction_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self.point_extraction_mode_combo.blockSignals(False)
 
+    def _populate_tile_mode_combo(self, selected_value: str | None) -> None:
+        current = str(selected_value or DEFAULT_TILE_MODE)
+        if current == "subpixel":
+            current = "tile"
+        self.tile_mode_combo.blockSignals(True)
+        self.tile_mode_combo.clear()
+        for label_key, key in TILE_MODE_OPTIONS:
+            self.tile_mode_combo.addItem(self._t(label_key), key)
+        index = self.tile_mode_combo.findData(current)
+        self.tile_mode_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.tile_mode_combo.blockSignals(False)
+
+    def _populate_subpixel_view_mode_combo(self, selected_value: str | None) -> None:
+        current = str(selected_value or DEFAULT_SUBPIXEL_VIEW_MODE)
+        if current == "subpixel":
+            current = "tile"
+        self.subpixel_view_mode_combo.blockSignals(True)
+        self.subpixel_view_mode_combo.clear()
+        for label_key, key in SUBPIXEL_VIEW_MODE_OPTIONS:
+            self.subpixel_view_mode_combo.addItem(self._t(label_key), key)
+        index = self.subpixel_view_mode_combo.findData(current)
+        self.subpixel_view_mode_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.subpixel_view_mode_combo.blockSignals(False)
+
+    def _populate_subpixel_aggregation_combo(self, selected_value: str | None) -> None:
+        current = str(selected_value or DEFAULT_SUBPIXEL_AGGREGATION)
+        self.subpixel_aggregation_combo.blockSignals(True)
+        self.subpixel_aggregation_combo.clear()
+        for label_key, key in SUBPIXEL_AGGREGATION_OPTIONS:
+            self.subpixel_aggregation_combo.addItem(self._t(label_key), key)
+        index = self.subpixel_aggregation_combo.findData(current)
+        self.subpixel_aggregation_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.subpixel_aggregation_combo.blockSignals(False)
+
+    def _populate_tile_overlap_mode_combo(self, selected_value: str | None) -> None:
+        current = str(selected_value or DEFAULT_TILE_OVERLAP_MODE)
+        self.tile_overlap_mode_combo.blockSignals(True)
+        self.tile_overlap_mode_combo.clear()
+        for label_key, key in TILE_OVERLAP_MODE_OPTIONS:
+            self.tile_overlap_mode_combo.addItem(self._t(label_key), key)
+        index = self.tile_overlap_mode_combo.findData(current)
+        self.tile_overlap_mode_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.tile_overlap_mode_combo.blockSignals(False)
+
     def _build_matrix_settings_widget(self) -> QWidget:
         widget = QWidget(self)
         layout = QVBoxLayout(widget)
@@ -745,75 +855,109 @@ class ValidationGradientExtendWidget(QWidget):
         self._matrix_pixel_size_row = self._build_setting_row(self._t("matrix.pixel_size"), self.thumbnail_size_spin)
         self._matrix_analysis_mode_row = self._build_setting_row(self._t("analysis.mode"), self.analysis_mode_combo)
         self._matrix_geometry_row = self._build_setting_row(self._t("analysis.object_type"), self.geometry_mode_combo)
-        self._matrix_threshold_row = self._build_setting_row(self._t('matrix.threshold'), self.mask_threshold_spin)
-        self._matrix_boundary_row = self._build_setting_row(self._t('matrix.boundary_radius'), self.boundary_radius_spin)
-        self._matrix_confidence_delta_row = self._build_setting_row(self._t('matrix.confidence_delta'), self.confidence_uncertainty_delta_spin)
+        self._matrix_polygon_compare_profile_row = self._build_setting_row(self._t("matrix.polygon_compare_profile"), self.polygon_compare_profile_combo)
+        self._matrix_confidence_delta_row = self._build_setting_row(self._t('matrix.confidence_delta'), self.confidence_uncertainty_profile_combo)
         self._matrix_polygon_confidence_summary_row = self._build_setting_row(self._t('matrix.polygon_confidence_summary'), self.polygon_confidence_summary_combo)
         self._matrix_point_radius_row = self._build_setting_row(self._t('matrix.point_match_radius'), self.point_match_radius_spin)
         self._matrix_point_confidence_radius_row = self._build_setting_row(self._t('matrix.point_confidence_radius'), self.point_confidence_radius_spin)
         self._matrix_point_mode_row = self._build_setting_row(self._t('matrix.point_extraction_mode'), self.point_extraction_mode_combo)
         self._matrix_layout_row = self._build_setting_row(self._t("matrix.layout"), self.layout_mode_combo)
+        self._matrix_score_view_row = self._build_setting_row(self._t("matrix.score_view"), self.matrix_score_view_combo)
         self._matrix_frame_type_filter_row = self._build_setting_row(self._t('matrix.frame_type_filter'), self.frame_type_filter_combo)
         self._matrix_total_frames_row = self._build_setting_row(self._t("matrix.total_frames"), self.total_frames_spin)
         self._matrix_frames_per_row_row = self._build_setting_row(self._t("matrix.frames_per_row"), self.frames_per_row_spin)
         self._matrix_rows_row = self._build_setting_row(self._t("matrix.rows"), self.matrix_rows_spin)
         self._matrix_columns_row = self._build_setting_row(self._t("matrix.columns"), self.matrix_columns_spin)
+        self._analysis_task_group = QGroupBox(self._t("ui.analysis_task"), widget)
+        analysis_layout = QVBoxLayout(self._analysis_task_group)
+        analysis_layout.setContentsMargins(8, 8, 8, 8)
+        analysis_layout.setSpacing(8)
         for row in (
             self._matrix_pixel_size_row,
             self._matrix_analysis_mode_row,
             self._matrix_geometry_row,
-            self._matrix_threshold_row,
-            self._matrix_boundary_row,
+            self._matrix_polygon_compare_profile_row,
             self._matrix_confidence_delta_row,
             self._matrix_polygon_confidence_summary_row,
             self._matrix_point_radius_row,
             self._matrix_point_confidence_radius_row,
             self._matrix_point_mode_row,
+        ):
+            analysis_layout.addWidget(row)
+        layout.addWidget(self._analysis_task_group)
+
+        self._matrix_view_group = QGroupBox(self._t("ui.matrix_view"), widget)
+        matrix_layout = QVBoxLayout(self._matrix_view_group)
+        matrix_layout.setContentsMargins(8, 8, 8, 8)
+        matrix_layout.setSpacing(8)
+        for row in (
             self._matrix_layout_row,
+            self._matrix_score_view_row,
             self._matrix_frame_type_filter_row,
             self._matrix_total_frames_row,
             self._matrix_frames_per_row_row,
             self._matrix_rows_row,
             self._matrix_columns_row,
         ):
-            layout.addWidget(row)
+            matrix_layout.addWidget(row)
+        layout.addWidget(self._matrix_view_group)
+        self._tile_grid_group = QGroupBox(self._t("matrix.subpixel_grid.group"), widget)
+        tile_layout = QVBoxLayout(self._tile_grid_group)
+        tile_layout.setContentsMargins(8, 8, 8, 8)
+        tile_layout.setSpacing(8)
+        self._subpixel_view_mode_row = self._build_setting_row(self._t("matrix.subpixel_view_mode"), self.subpixel_view_mode_combo)
+        self._subpixel_rows_row = self._build_setting_row(self._t("matrix.subpixel_rows"), self.subpixel_rows_spin)
+        self._subpixel_columns_row = self._build_setting_row(self._t("matrix.subpixel_columns"), self.subpixel_columns_spin)
+        self._tile_width_row = self._build_setting_row(self._t("matrix.tile_width"), self.tile_width_spin)
+        self._tile_height_row = self._build_setting_row(self._t("matrix.tile_height"), self.tile_height_spin)
+        self._tile_overlap_row = self._build_setting_row(self._t("matrix.tile_overlap"), self.tile_overlap_spin)
+        self._subpixel_aggregation_row = self._build_setting_row(self._t("matrix.subpixel_aggregation"), self.subpixel_aggregation_combo)
+        self._subpixel_plan_row = self._build_setting_row(self._t("matrix.subpixel_plan"), self.tile_plan_label)
+        for row in (
+            self._subpixel_view_mode_row,
+            self._subpixel_rows_row,
+            self._subpixel_columns_row,
+            self._tile_width_row,
+            self._tile_height_row,
+            self._tile_overlap_row,
+            self._subpixel_aggregation_row,
+            self._subpixel_plan_row,
+        ):
+            tile_layout.addWidget(row)
+        layout.addWidget(self._tile_grid_group)
+        self._matrix_pixel_size_row.setVisible(False)
+        is_indexed_layout = str(self.layout_mode_combo.currentData() or DEFAULT_MATRIX_LAYOUT_MODE) == "indexed_grid"
+        self._matrix_total_frames_row.setVisible(is_indexed_layout)
+        self._matrix_frames_per_row_row.setVisible(is_indexed_layout)
+        self._matrix_rows_row.setVisible(not is_indexed_layout)
+        self._matrix_columns_row.setVisible(not is_indexed_layout)
+        self.tile_overlap_mode_combo.hide()
         layout.addStretch(1)
         return widget
 
     def _build_metric_settings_widget(self) -> QWidget:
         widget = QWidget(self)
-        widget.setMinimumWidth(METRIC_SETTINGS_WIDGET_MIN_WIDTH)
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(8)
-        self.metric_scope_combo.setMinimumContentsLength(METRIC_SETTINGS_COMBO_MIN_CONTENTS_LENGTH)
-        self.metric_scope_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.metric_combo.setMinimumContentsLength(METRIC_SETTINGS_COMBO_MIN_CONTENTS_LENGTH)
-        self.metric_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
+        for combo in (self.metric_scope_combo, self.metric_combo):
+            combo.setMinimumContentsLength(max(8, min(10, METRIC_SETTINGS_COMBO_MIN_CONTENTS_LENGTH)))
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._metric_scope_row = self._build_setting_row(
             self._t("analysis.confidence_model"),
             self.metric_scope_combo,
             label_min_width=METRIC_SETTINGS_LABEL_MIN_WIDTH,
+            compact=True,
         )
         layout.addWidget(self._metric_scope_row)
-        layout.addWidget(
-            self._build_setting_row(
-                self._t("menu.metric.select"),
-                self.metric_combo,
-                label_min_width=METRIC_SETTINGS_LABEL_MIN_WIDTH,
-            )
+        self._metric_select_row = self._build_setting_row(
+            self._t("menu.metric.select"),
+            self.metric_combo,
+            label_min_width=METRIC_SETTINGS_LABEL_MIN_WIDTH,
+            compact=True,
         )
-        layout.addStretch(1)
-        return widget
-
-    def _build_error_view_settings_widget(self) -> QWidget:
-        widget = QWidget(self)
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(6)
-        layout.addWidget(self.gradient_selector)
-        layout.addWidget(self.gradient_range_selector)
-        layout.addStretch(1)
+        layout.addWidget(self._metric_select_row)
         return widget
 
     def _update_language_toggle_button(self) -> None:
@@ -826,6 +970,13 @@ class ValidationGradientExtendWidget(QWidget):
         self._t = self._i18n.tr
         self._setup_menu_bar()
         self._update_language_toggle_button()
+        self.analysis_settings_group.setTitle(self._t("ui.analysis_setup"))
+        self.metric_settings_group.setTitle(self._t("ui.metric_focus"))
+        self._analysis_task_group.setTitle(self._t("ui.analysis_task"))
+        self._matrix_view_group.setTitle(self._t("ui.matrix_view"))
+        self._tile_grid_group.setTitle(self._t("matrix.subpixel_grid.group"))
+        self._populate_matrix_score_view_combo(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE)
+        self._populate_confidence_uncertainty_profile_combo(self.confidence_uncertainty_profile_combo.currentData() or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
         self.folders_group.setTitle(self._t("folders.group"))
         self.folders_info_label.setText(self._t("folders.info"))
         self.btn_add_folder.setToolTip(self._t("folders.add_model"))
@@ -851,7 +1002,10 @@ class ValidationGradientExtendWidget(QWidget):
         self._populate_layout_mode_combo(current_layout)
         self._populate_analysis_mode_combo(current_analysis_mode)
         self._populate_geometry_mode_combo(current_geometry)
+        self._populate_polygon_compare_profile_combo(self.polygon_compare_profile_combo.currentData() or DEFAULT_POLYGON_COMPARE_PROFILE)
         self._populate_point_extraction_mode_combo(current_point_extraction_mode)
+        self._populate_subpixel_view_mode_combo(self.subpixel_view_mode_combo.currentData() or DEFAULT_SUBPIXEL_VIEW_MODE)
+        self._populate_subpixel_aggregation_combo(self.subpixel_aggregation_combo.currentData() or DEFAULT_SUBPIXEL_AGGREGATION)
         self._populate_polygon_confidence_summary_combo(current_polygon_confidence_summary)
         current_state = self._presenter._current_tab_state() if hasattr(self, "_presenter") else None
         if current_state is not None:
@@ -869,8 +1023,7 @@ class ValidationGradientExtendWidget(QWidget):
             (getattr(self, "_matrix_pixel_size_row", None), "matrix.pixel_size"),
             (getattr(self, "_matrix_analysis_mode_row", None), "analysis.mode"),
             (getattr(self, "_matrix_geometry_row", None), "analysis.object_type"),
-            (getattr(self, "_matrix_threshold_row", None), "matrix.threshold"),
-            (getattr(self, "_matrix_boundary_row", None), "matrix.boundary_radius"),
+            (getattr(self, "_matrix_polygon_compare_profile_row", None), "matrix.polygon_compare_profile"),
             (getattr(self, "_matrix_confidence_delta_row", None), "matrix.confidence_delta"),
             (getattr(self, "_matrix_polygon_confidence_summary_row", None), "matrix.polygon_confidence_summary"),
             (getattr(self, "_matrix_point_radius_row", None), "matrix.point_match_radius"),
@@ -878,18 +1031,34 @@ class ValidationGradientExtendWidget(QWidget):
             (getattr(self, "_matrix_point_mode_row", None), "matrix.point_extraction_mode"),
             (getattr(self, "_matrix_layout_row", None), "matrix.layout"),
             (getattr(self, "_matrix_frame_type_filter_row", None), "matrix.frame_type_filter"),
+            (getattr(self, "_subpixel_view_mode_row", None), "matrix.subpixel_view_mode"),
+            (getattr(self, "_subpixel_rows_row", None), "matrix.subpixel_rows"),
+            (getattr(self, "_subpixel_columns_row", None), "matrix.subpixel_columns"),
+            (getattr(self, "_tile_width_row", None), "matrix.tile_width"),
+            (getattr(self, "_tile_height_row", None), "matrix.tile_height"),
+            (getattr(self, "_tile_overlap_row", None), "matrix.tile_overlap"),
+            (getattr(self, "_subpixel_aggregation_row", None), "matrix.subpixel_aggregation"),
+            (getattr(self, "_subpixel_plan_row", None), "matrix.subpixel_plan"),
             (getattr(self, "_matrix_total_frames_row", None), "matrix.total_frames"),
             (getattr(self, "_matrix_frames_per_row_row", None), "matrix.frames_per_row"),
             (getattr(self, "_matrix_rows_row", None), "matrix.rows"),
             (getattr(self, "_matrix_columns_row", None), "matrix.columns"),
             (getattr(self, "_metric_scope_row", None), "analysis.confidence_model"),
+            (getattr(self, "_metric_select_row", None), "menu.metric.select"),
         ):
             label = getattr(row, "_title_label", None)
             if label is not None:
                 label.setText(self._t(key))
+        if hasattr(self, "_presenter"):
+            current_state = self._presenter._current_tab_state()
+            self._presenter._sync_mode_controls(current_state, None if current_state is None else current_state.build_result)
         for state in getattr(self, "_presenter", None)._tab_states.values() if hasattr(getattr(self, "_presenter", None), "_tab_states") else ():
             state.preview.group.setTitle(self._t("matrix.preview.group"))
             state.preview.frame_title.setText(self._t("matrix.preview.frame"))
+            if state.preview.overall_group is not None:
+                state.preview.overall_group.setTitle(self._t("matrix.preview.score_overall"))
+            if state.preview.component_group is not None:
+                state.preview.component_group.setTitle(self._t("matrix.preview.score_components"))
             for metric_key, card in state.preview.score_cards.items():
                 if hasattr(card, "title_label"):
                     card.title_label.setText(self._metric_text_for_key(metric_key, state.build_result))
@@ -914,16 +1083,28 @@ class ValidationGradientExtendWidget(QWidget):
         self._settings_service.save_language(language)
         self.retranslate_ui()
 
-    def _build_setting_row(self, title: str, control: QWidget, *, label_min_width: int = SETTINGS_LABEL_MIN_WIDTH) -> QWidget:
+    def _build_setting_row(
+        self,
+        title: str,
+        control: QWidget,
+        *,
+        label_min_width: int = SETTINGS_LABEL_MIN_WIDTH,
+        compact: bool = False,
+    ) -> QWidget:
         row = QWidget(self)
-        layout = QHBoxLayout(row)
+        layout = QVBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(2 if compact else 4)
         label = QLabel(title, row)
-        label.setMinimumWidth(int(label_min_width))
+        label.setMinimumWidth(0)
+        label.setMaximumWidth(int(label_min_width * 3))
         label.setWordWrap(True)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        control.setMinimumWidth(0)
+        if not compact:
+            control.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout.addWidget(label)
-        layout.addWidget(control, stretch=1)
+        layout.addWidget(control)
         row._title_label = label  # type: ignore[attr-defined]
         return row
 
@@ -941,46 +1122,85 @@ class ValidationGradientExtendWidget(QWidget):
         frame_value = QLabel("-", frame_row)
         frame_value.setWordWrap(True)
         frame_value.setMinimumWidth(0)
+        frame_value.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         frame_layout.addWidget(frame_title)
         frame_layout.addWidget(frame_value, stretch=1)
         layout.addWidget(frame_row)
 
-        scores_host = QWidget(group)
-        scores_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        scores_layout = QVBoxLayout(scores_host)
-        scores_layout.setContentsMargins(0, 0, 0, 0)
-        scores_layout.setSpacing(8)
+        subpixel_group = QGroupBox(self._t("details.subpixel_selection"), group)
+        subpixel_layout = QVBoxLayout(subpixel_group)
+        subpixel_layout.setContentsMargins(0, 0, 0, 0)
+        subpixel_layout.setSpacing(6)
+        subpixel_value = QLabel("-", subpixel_group)
+        subpixel_value.setWordWrap(True)
+        subpixel_value.hide()
+        subpixel_score_card = _ExpandableScoreCard(self._t("details.selected_comparison_score"), subpixel_group)
+        subpixel_score_card.hide()
+        subpixel_layout.addWidget(subpixel_value)
+        subpixel_layout.addWidget(subpixel_score_card)
+        subpixel_group.hide()
+        layout.addWidget(subpixel_group)
+
         score_cards: dict[str, QWidget] = {}
         seen_keys: set[str] = set()
+        overall_card_count = 0
+        component_card_count = 0
+        overall_group = QGroupBox(self._t("matrix.preview.score_overall"), group)
+        overall_layout = QVBoxLayout(overall_group)
+        overall_layout.setContentsMargins(0, 0, 0, 0)
+        overall_layout.setSpacing(8)
+        overall_host = QWidget(overall_group)
+        overall_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        overall_host_layout = QVBoxLayout(overall_host)
+        overall_host_layout.setContentsMargins(0, 0, 0, 0)
+        overall_host_layout.setSpacing(8)
+        overall_layout.addWidget(overall_host)
+
+        component_group = QGroupBox(self._t("matrix.preview.score_components"), group)
+        component_layout = QVBoxLayout(component_group)
+        component_layout.setContentsMargins(0, 0, 0, 0)
+        component_layout.setSpacing(8)
+        component_host = QWidget(component_group)
+        component_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        component_host_layout = QVBoxLayout(component_host)
+        component_host_layout.setContentsMargins(0, 0, 0, 0)
+        component_host_layout.setSpacing(8)
+        component_layout.addWidget(component_host)
+
         for metric_key in metric_keys:
             if metric_key in seen_keys:
                 continue
             seen_keys.add(metric_key)
-            card = _ExpandableScoreCard(self._metric_text_for_key(metric_key, build_result), scores_host)
+            target_parent = overall_host if self._is_overall_score_metric(metric_key) else component_host
+            card = _ExpandableScoreCard(self._metric_text_for_key(metric_key, build_result), target_parent)
             card.hide()
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            scores_layout.addWidget(card)
+            target_layout = overall_host_layout if self._is_overall_score_metric(metric_key) else component_host_layout
+            target_layout.addWidget(card)
             score_cards[str(metric_key)] = card
-        scores_layout.addStretch(1)
-        layout.addWidget(scores_host, stretch=1)
-
-        overall_title = QLabel(self._t("metric.overall_frame_score"), group)
-        overall_value = QLabel("-", group)
-        metric_title = QLabel(self._t("matrix.metric"), group)
-        metric_value = QLabel("-", group)
-        labeled_title = QLabel(self._t("metric.labeled_best_quality"), group)
-        labeled_value = QLabel("-", group)
-        acquisition_title = QLabel(self._t("metric.acquisition_score"), group)
-        acquisition_value = QLabel("-", group)
-        overall_title.hide()
-        overall_value.hide()
-        metric_title.hide()
-        metric_value.hide()
-        labeled_title.hide()
-        labeled_value.hide()
-        acquisition_title.hide()
-        acquisition_value.hide()
-        return ExtendPreviewPanel(group, frame_title, frame_value, overall_title, overall_value, metric_title, metric_value, labeled_title, labeled_value, acquisition_title, acquisition_value, score_cards, {})
+            if self._is_overall_score_metric(metric_key):
+                overall_card_count += 1
+            else:
+                component_card_count += 1
+        overall_host_layout.addStretch(1)
+        component_host_layout.addStretch(1)
+        overall_group.setVisible(overall_card_count > 0)
+        component_group.setVisible(component_card_count > 0)
+        layout.addWidget(overall_group)
+        layout.addWidget(component_group)
+        layout.addStretch(1)
+        return ExtendPreviewPanel(
+            group=group,
+            frame_title=frame_title,
+            frame_value=frame_value,
+            subpixel_group=subpixel_group,
+            subpixel_value=subpixel_value,
+            subpixel_score_card=subpixel_score_card,
+            overall_group=overall_group,
+            component_group=component_group,
+            score_cards=score_cards,
+            histogram_cards={},
+        )
 
     def _build_histograms_panel(self, parent: QWidget, metric_keys: tuple[str, ...], build_result: BuildResult) -> tuple[QWidget, dict[str, QWidget], QWidget, QWidget]:
         panel = QWidget(parent)
@@ -1034,28 +1254,27 @@ class ValidationGradientExtendWidget(QWidget):
         self.btn_set_gt.clicked.connect(self._presenter._set_gt_folder)
         self.btn_clear_gt.clicked.connect(self._presenter._clear_gt_folder)
         self.btn_build.clicked.connect(self._presenter._start_build)
-        self.btn_compute.clicked.connect(self._presenter._start_compute_analytics)
-        # Legacy export signal bindings disabled with export UI.
-        # self.btn_export.clicked.connect(self._presenter._export_ranked)
+        self.btn_compute.clicked.connect(self._presenter._on_compute_requested)
         self.btn_cancel.clicked.connect(self._presenter._request_cancel_build)
-        # self.export_selection_mode_combo.currentIndexChanged.connect(self._presenter._on_export_selection_changed)
-        # self.export_top_k_spin.valueChanged.connect(self._presenter._on_export_selection_changed)
-        # self.export_percent_spin.valueChanged.connect(self._presenter._on_export_selection_changed)
-        # self.export_percentile_spin.valueChanged.connect(self._presenter._on_export_selection_changed)
-        # self.export_neighbor_radius_spin.valueChanged.connect(self._presenter._on_export_selection_changed)
-        # self.filter_to_candidates_checkbox.toggled.connect(self._presenter._on_export_selection_changed)
 
         self.layout_mode_combo.currentIndexChanged.connect(self._presenter._on_matrix_visual_parameter_changed)
+        self.matrix_score_view_combo.currentIndexChanged.connect(self._presenter._on_matrix_score_view_changed)
         self.thumbnail_size_spin.valueChanged.connect(self._presenter._on_matrix_visual_parameter_changed)
         self.analysis_mode_combo.currentIndexChanged.connect(self._presenter._on_analysis_mode_changed)
         self.geometry_mode_combo.currentIndexChanged.connect(self._presenter._on_object_type_changed)
-        self.mask_threshold_spin.valueChanged.connect(self._presenter._sync_action_buttons)
-        self.boundary_radius_spin.valueChanged.connect(self._presenter._sync_action_buttons)
-        self.confidence_uncertainty_delta_spin.valueChanged.connect(self._presenter._sync_action_buttons)
+        self.polygon_compare_profile_combo.currentIndexChanged.connect(self._presenter._on_polygon_compare_profile_changed)
+        self.confidence_uncertainty_profile_combo.currentIndexChanged.connect(self._presenter._sync_action_buttons)
         self.polygon_confidence_summary_combo.currentIndexChanged.connect(self._presenter._sync_action_buttons)
         self.point_match_radius_spin.valueChanged.connect(self._presenter._sync_action_buttons)
         self.point_confidence_radius_spin.valueChanged.connect(self._presenter._sync_action_buttons)
         self.point_extraction_mode_combo.currentIndexChanged.connect(self._presenter._sync_action_buttons)
+        self.subpixel_view_mode_combo.currentIndexChanged.connect(self._presenter._on_subpixel_view_mode_changed)
+        self.subpixel_rows_spin.valueChanged.connect(self._presenter._on_subpixel_grid_parameter_changed)
+        self.subpixel_columns_spin.valueChanged.connect(self._presenter._on_subpixel_grid_parameter_changed)
+        self.subpixel_aggregation_combo.currentIndexChanged.connect(self._presenter._on_subpixel_grid_parameter_changed)
+        self.tile_width_spin.valueChanged.connect(self._presenter._on_tile_grid_parameter_changed)
+        self.tile_height_spin.valueChanged.connect(self._presenter._on_tile_grid_parameter_changed)
+        self.tile_overlap_spin.valueChanged.connect(self._presenter._on_tile_grid_parameter_changed)
         self.total_frames_spin.valueChanged.connect(self._presenter._on_matrix_visual_parameter_changed)
         self.frames_per_row_spin.valueChanged.connect(self._presenter._on_matrix_visual_parameter_changed)
         self.matrix_rows_spin.valueChanged.connect(self._presenter._on_matrix_visual_parameter_changed)
@@ -1064,9 +1283,6 @@ class ValidationGradientExtendWidget(QWidget):
         self.metric_combo.currentIndexChanged.connect(self._presenter._on_metric_changed)
         self.frame_type_filter_combo.currentIndexChanged.connect(self._presenter._on_frame_type_filter_changed)
         self.language_toggle_button.clicked.connect(self._toggle_language)
-        self.gradient_selector.gradientChanged.connect(self._presenter._on_gradient_preset_changed)
-        self.gradient_range_selector.rangeChanged.connect(self._presenter._on_error_window_changed)
-
         self.matrix_tabs.currentChanged.connect(self._presenter._on_current_tab_changed)
         self.matrix_tabs.tabCloseRequested.connect(self._presenter._close_matrix_tab)
 
@@ -1089,12 +1305,15 @@ class ValidationGradientExtendWidget(QWidget):
         overview_host = QWidget(host)
         overview_layout = QVBoxLayout(overview_host)
         overview_layout.setContentsMargins(0, 0, 0, 0)
+        overview_layout.setSpacing(8)
         mini_map = MatrixMiniMapWidget(overview_host)
         overview_layout.addWidget(mini_map)
         preview = self._build_preview_panel(overview_host, tuple(build_result.available_metric_keys), build_result)
         overview_layout.addWidget(preview.group)
         overview_layout.addStretch(1)
+        overview_host.setMinimumWidth(max(300, OVERVIEW_PANEL_MAX_WIDTH - 40))
         overview_host.setMaximumWidth(OVERVIEW_PANEL_MAX_WIDTH)
+        overview_host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         matrix_layout.addWidget(overview_host)
 
         preview.histogram_cards = histogram_cards
@@ -1106,8 +1325,7 @@ class ValidationGradientExtendWidget(QWidget):
             content_tabs=content_tabs,
             cell_size=int(snapshot["cell_size"]),
             layout_config=snapshot["layout_config"],
-            gradient_name=str(snapshot["gradient_name"]),
-            error_window=tuple(snapshot["error_window"]),
+            matrix_score_view_mode=str(snapshot.get("matrix_score_view_mode") or DEFAULT_MATRIX_SCORE_VIEW_MODE),
             metric_key=str(snapshot.get("metric_key") or DEFAULT_MATRIX_METRIC_KEY),
             metric_scope=str(snapshot.get("metric_scope") or ""),
             analysis_mode=str(snapshot.get("analysis_mode") or DEFAULT_ANALYSIS_MODE),
@@ -1119,7 +1337,11 @@ class ValidationGradientExtendWidget(QWidget):
             repeated_good_column=repeated_good_column,
         )
         matrix_view.recordSelected.connect(lambda record, s=state: self._presenter._on_record_selected(s, record))
+        if hasattr(matrix_view, "tileSelected"):
+            matrix_view.tileSelected.connect(lambda selection, s=state: self._presenter._on_tile_selected(s, selection))
         matrix_view.recordActivated.connect(lambda record, s=state: self._presenter._open_record_details(record, s))
+        if hasattr(matrix_view, "tileActivated"):
+            matrix_view.tileActivated.connect(lambda selection, s=state: self._presenter._open_record_details(selection.record, s, tile_selection=selection))
         matrix_view.overviewChanged.connect(lambda image, visible_rect, selected_position, selected_blink_on, processing_positions, reference_position, s=state: self._presenter._on_matrix_overview_changed(s, image, visible_rect, selected_position, selected_blink_on, processing_positions, reference_position))
         return state
 

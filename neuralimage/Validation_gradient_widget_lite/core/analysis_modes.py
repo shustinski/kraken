@@ -26,9 +26,6 @@ INTER_MODEL_POLYGON_DISPLAY_KEYS: tuple[str, ...] = (
     "iou_score",
     "dice_score",
     "polygon_bce_score",
-    "iou",
-    "dice",
-    "bce",
 )
 INTER_MODEL_POLYGON_PERCENTILE_KEYS: tuple[str, ...] = (
     "overall_polygon_score",
@@ -43,10 +40,6 @@ INTER_MODEL_POINT_DISPLAY_KEYS: tuple[str, ...] = (
     "recall_score",
     "f1_score",
     "localization_score",
-    "precision",
-    "recall",
-    "f1",
-    "mean_localization_distance",
 )
 INTER_MODEL_POINT_PERCENTILE_KEYS: tuple[str, ...] = (
     "overall_point_score",
@@ -73,6 +66,11 @@ LOWER_IS_BETTER_METRIC_KEYS = frozenset({
     "mean_localization_distance",
 })
 
+CONFIDENCE_QUALITY_THRESHOLDS: tuple[tuple[float, str], ...] = (
+    (0.15, "score.level.low"),
+    (0.35, "score.level.moderate"),
+    (0.60, "score.level.elevated"),
+)
 
 @dataclass(frozen=True, slots=True)
 class AnalysisContext:
@@ -112,6 +110,18 @@ def confidence_metric_family(metric_key: str | None) -> tuple[str, str] | None:
     if not family or not model_id:
         return None
     return family, model_id
+
+
+def confidence_quality_level_key(value: float | None) -> str | None:
+    if value is None:
+        return None
+    numeric = float(value)
+    if not (numeric >= 0.0 or numeric <= 0.0):
+        return None
+    for upper_bound, level_key in CONFIDENCE_QUALITY_THRESHOLDS:
+        if numeric < float(upper_bound):
+            return str(level_key)
+    return "score.level.high"
 
 
 def available_confidence_model_ids(build_result: BuildResult | None) -> tuple[str, ...]:
@@ -194,3 +204,34 @@ def metric_visual_ratio(
     if metric == "mean_localization_distance":
         return max(0.0, min(numeric / max(1e-9, float(point_match_radius)), 1.0))
     return max(0.0, min(numeric, 1.0))
+
+
+def metric_level_key(
+    metric_key: str | None,
+    value: float | None,
+    *,
+    point_match_radius: float,
+    bce_score_cap: float,
+) -> str | None:
+    ratio = metric_visual_ratio(
+        metric_key,
+        value,
+        point_match_radius=point_match_radius,
+        bce_score_cap=bce_score_cap,
+    )
+    if ratio is None:
+        return None
+    family = str(metric_key or "").split("::", 1)[0]
+    if family == "model_confidence":
+        return confidence_quality_level_key(ratio)
+    if not metric_is_lower_better(metric_key):
+        if ratio < 0.33:
+            return "score.level.poor"
+        if ratio < 0.66:
+            return "score.level.fair"
+        return "score.level.good"
+    if ratio < 0.33:
+        return "score.level.low"
+    if ratio < 0.66:
+        return "score.level.medium"
+    return "score.level.high"

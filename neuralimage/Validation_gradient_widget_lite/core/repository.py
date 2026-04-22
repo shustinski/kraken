@@ -7,6 +7,7 @@ import json
 import math
 import pickle
 import shutil
+import ctypes
 from collections import OrderedDict
 from time import perf_counter
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
@@ -23,6 +24,16 @@ try:
 except Exception:
     ndi = None
 
+try:
+    from scipy.spatial import cKDTree
+except Exception:
+    cKDTree = None
+
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
 from .backend_constants import (
     ANALYSIS_CACHE_DIR,
     ANALYSIS_CACHE_VERSION,
@@ -35,10 +46,12 @@ from .backend_constants import (
     MASK_AGREEMENT_SCORE_WEIGHTS,
     MASK_SUPERVISED_SCORE_WEIGHTS,
     MODEL_CONFIDENCE_UNCERTAIN_DELTA,
+    MODEL_RISK_LOW_CONFIDENCE_THRESHOLD,
     MODEL_RISK_TOP_UNCERTAIN_FRACTION,
     MODEL_RISK_UNCERTAINTY_THRESHOLD,
     MODEL_RISK_WEIGHT_CLUSTER,
     MODEL_RISK_WEIGHT_FRACTION,
+    MODEL_RISK_WEIGHT_MEAN,
     MODEL_RISK_WEIGHT_TOP,
     POINT_AGREEMENT_SCORE_WEIGHTS,
     POINT_CONFIDENCE_NEIGHBOR_RADIUS,
@@ -128,6 +141,7 @@ from .backend_constants import (
     EXPORT_SELECTION_MODE_PERCENT,
     EXPORT_SELECTION_MODE_PERCENTILE,
 )
+from .confidence_maps import build_model_uncertainty, normalize_algorithmic_confidence
 from .domain import (
     BuildOptions,
     BuildResult,
@@ -155,8 +169,21 @@ from .domain import (
 )
 
 EPS = 1e-8
-
-
+ANALYTICS_MAX_BATCH_SIZE = 16
+ANALYTICS_BATCH_TARGETS_PER_WORKER = 32
+ANALYTICS_WAIT_TIMEOUT_SECONDS = 0.25
+ANALYTICS_STALL_TIMEOUT_SECONDS = 180.0
+ANALYTICS_STALL_PROGRESS_SECONDS = 5.0
+WINDOWS_THREAD_ANALYTICS_MAX_WORKERS = 64
+WINDOWS_THREAD_CONFIDENCE_MAX_WORKERS = 32
+WINDOWS_PROCESS_ANALYTICS_MAX_WORKERS = 4
+ANALYTICS_WORKER_ENV = "VALIDATION_MATRIX_ANALYTICS_WORKERS"
+ANALYTICS_MEMORY_FRACTION = 0.45
+ANALYSIS_CACHE_MAX_FILES = 100000
+DETAIL_CACHE_MAX_FILES = 20000
+CACHE_TRIM_INTERVAL_SECONDS = 300.0
+_CACHE_TRIM_LAST_BY_DIR: dict[str, float] = {}
+_LAST_ANALYTICS_WORKER_PLAN: dict[str, object] = {}
 
 
 class BuildCancelledError(RuntimeError):
@@ -256,21 +283,244 @@ def _weighted_mean(pairs: list[tuple[float, float]]) -> float:
     return float(numerator / max(EPS, denominator))
 
 
-def _resolve_aux_path(key: str, index: dict[str, Path]) -> Path | None:
+def _analytics_batch_size(total_items: int, worker_count: int) -> int:
+    total = max(1, int(total_items))
+    workers = max(1, int(worker_count))
+    target_batches = max(1, workers * ANALYTICS_BATCH_TARGETS_PER_WORKER)
+    return max(1, min(ANALYTICS_MAX_BATCH_SIZE, math.ceil(total / target_batches)))
+
+
+def _use_thread_pool_for_analytics() -> bool:
+    # ProcessPoolExecutor is fragile inside a PyQt worker thread on Windows:
+    # child process spawn/import or pickle stalls look like a frozen progress bar.
+    return os.name == "nt"
+
+
+def _analytics_worker_env_override() -> int | None:
+    value = os.environ.get(ANALYTICS_WORKER_ENV)
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _available_memory_bytes() -> int | None:
+    if os.name == "nt":
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(status)
+        try:
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullAvailPhys)
+        except Exception:
+            return None
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        available_pages = int(os.sysconf("SC_AVPHYS_PAGES"))
+        if page_size > 0 and available_pages > 0:
+            return page_size * available_pages
+    except Exception:
+        return None
+    return None
+
+
+def _estimated_analytics_worker_memory_bytes(
+    *,
+    analysis_max_side: int | None,
+    model_count: int,
+    include_model_confidence: bool,
+    include_pairwise_metrics: bool,
+    include_model_metrics: bool,
+) -> int:
+    side = int(analysis_max_side or 2048)
+    side = max(64, min(side, 8192))
+    pixels = int(side) * int(side)
+    models = max(1, int(model_count))
+    layer_factor = 4 + min(models, 8)
+    if include_pairwise_metrics:
+        layer_factor += min(models * 2, 12)
+    if include_model_metrics:
+        layer_factor += min(models, 8)
+    if include_model_confidence:
+        layer_factor += min(models * 3, 16)
+    return max(64 * 1024 * 1024, int(pixels * layer_factor * 4))
+
+
+def _memory_limited_worker_count(
+    *,
+    analysis_max_side: int | None,
+    model_count: int,
+    include_model_confidence: bool,
+    include_pairwise_metrics: bool,
+    include_model_metrics: bool,
+) -> int | None:
+    available = _available_memory_bytes()
+    if available is None or available <= 0:
+        return None
+    per_worker = _estimated_analytics_worker_memory_bytes(
+        analysis_max_side=analysis_max_side,
+        model_count=model_count,
+        include_model_confidence=include_model_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+        include_model_metrics=include_model_metrics,
+    )
+    budget = max(per_worker, int(float(available) * ANALYTICS_MEMORY_FRACTION))
+    return max(1, int(budget // max(1, per_worker)))
+
+
+def _cpu_limited_thread_worker_count(
+    *,
+    cpu_limit: int,
+    analysis_max_side: int | None,
+    include_model_confidence: bool,
+) -> int:
+    side_limit = int(analysis_max_side or 0)
+    if include_model_confidence:
+        if side_limit == 0 or side_limit > 1024:
+            return min(cpu_limit, WINDOWS_THREAD_CONFIDENCE_MAX_WORKERS)
+        return min(cpu_limit, max(WINDOWS_THREAD_CONFIDENCE_MAX_WORKERS, cpu_limit // 2))
+    if side_limit > 0 and side_limit <= 512:
+        return min(cpu_limit, max(16, cpu_limit))
+    if side_limit > 0 and side_limit <= 1024:
+        return min(cpu_limit, WINDOWS_THREAD_ANALYTICS_MAX_WORKERS)
+    return min(cpu_limit, max(16, WINDOWS_THREAD_CONFIDENCE_MAX_WORKERS))
+
+
+def _analytics_worker_count(
+    max_workers: int,
+    *,
+    geometry_mode: GeometryMode,
+    analysis_max_side: int | None,
+    include_model_confidence: bool,
+    include_pairwise_metrics: bool = True,
+    include_model_metrics: bool = True,
+    model_count: int = 1,
+    use_thread_pool: bool,
+) -> int:
+    requested = max(1, int(max_workers))
+    override = _analytics_worker_env_override()
+    if override is not None:
+        return min(requested, max(1, int(override)))
+    if os.name != "nt" or geometry_mode == GeometryMode.POINT:
+        return requested
+    cpu_limit = max(1, os.cpu_count() or requested)
+    if use_thread_pool:
+        safe_limit = _cpu_limited_thread_worker_count(
+            cpu_limit=cpu_limit,
+            analysis_max_side=analysis_max_side,
+            include_model_confidence=include_model_confidence,
+        )
+        memory_limit = _memory_limited_worker_count(
+            analysis_max_side=analysis_max_side,
+            model_count=model_count,
+            include_model_confidence=include_model_confidence,
+            include_pairwise_metrics=include_pairwise_metrics,
+            include_model_metrics=include_model_metrics,
+        )
+        if memory_limit is not None:
+            safe_limit = min(safe_limit, memory_limit)
+        return min(requested, max(1, safe_limit))
+    safe_limit = min(cpu_limit, WINDOWS_PROCESS_ANALYTICS_MAX_WORKERS)
+    side_limit = int(analysis_max_side or 0)
+    if include_model_confidence and side_limit > 0 and side_limit <= 768:
+        safe_limit = min(cpu_limit, 5)
+    return min(requested, max(1, safe_limit))
+
+
+def _remember_analytics_worker_plan(
+    *,
+    requested: int,
+    selected: int,
+    use_thread_pool: bool,
+    geometry_mode: GeometryMode,
+    analysis_max_side: int | None,
+    model_count: int,
+    include_model_confidence: bool,
+    include_pairwise_metrics: bool,
+    include_model_metrics: bool,
+) -> None:
+    _LAST_ANALYTICS_WORKER_PLAN.clear()
+    _LAST_ANALYTICS_WORKER_PLAN.update(
+        {
+            "requested": int(requested),
+            "selected": int(selected),
+            "use_thread_pool": bool(use_thread_pool),
+            "geometry_mode": str(getattr(geometry_mode, "value", geometry_mode)),
+            "analysis_max_side": None if analysis_max_side is None else int(analysis_max_side),
+            "model_count": int(model_count),
+            "include_model_confidence": bool(include_model_confidence),
+            "include_pairwise_metrics": bool(include_pairwise_metrics),
+            "include_model_metrics": bool(include_model_metrics),
+        }
+    )
+
+
+def last_analytics_worker_plan() -> dict[str, object]:
+    return dict(_LAST_ANALYTICS_WORKER_PLAN)
+
+
+_FolderPathLookup = tuple[dict[str, Path], dict[str, Path], dict[str, Path]]
+
+
+def _unique_path_lookup(index: dict[str, Path], key_fn) -> dict[str, Path]:
+    lookup: dict[str, Path] = {}
+    duplicates: set[str] = set()
+    for path in index.values():
+        key = str(key_fn(path)).lower()
+        if key in duplicates:
+            continue
+        if key in lookup:
+            lookup.pop(key, None)
+            duplicates.add(key)
+            continue
+        lookup[key] = path
+    return lookup
+
+
+def _build_folder_path_lookup(index: dict[str, Path]) -> _FolderPathLookup:
+    return (
+        index,
+        _unique_path_lookup(index, lambda path: Path(path).name),
+        _unique_path_lookup(index, lambda path: Path(path).stem),
+    )
+
+
+def _resolve_aux_path_from_lookup(key: str, lookup: _FolderPathLookup) -> Path | None:
+    index, name_lookup, stem_lookup = lookup
     exact = index.get(key)
     if exact is not None:
         return exact
     name = Path(key).name.lower()
     stem = Path(key).stem.lower()
-    name_matches = [path for path in index.values() if path.name.lower() == name]
-    if len(name_matches) == 1:
-        return name_matches[0]
-    stem_matches = [path for path in index.values() if path.stem.lower() == stem]
-    if len(stem_matches) == 1:
-        return stem_matches[0]
+    name_match = name_lookup.get(name)
+    if name_match is not None:
+        return name_match
+    stem_match = stem_lookup.get(stem)
+    if stem_match is not None:
+        return stem_match
     return None
 
 
+def _resolve_aux_path(key: str, index: dict[str, Path]) -> Path | None:
+    return _resolve_aux_path_from_lookup(key, _build_folder_path_lookup(index))
+
+
+@lru_cache(maxsize=65536)
 def natural_sort_key(value: str) -> tuple[object, ...]:
     """Split a string into digit and text chunks for natural sorting."""
 
@@ -302,14 +552,34 @@ def build_folder_index(
     recursive: bool,
     extensions: tuple[str, ...],
     cancel_check=None,
+    progress_callback=None,
+    progress_interval: int = 2048,
 ) -> dict[str, Path]:
     """Index frame files in one folder by relative path."""
 
+    folder = Path(folder)
+    normalized_extensions = {str(ext).lower() for ext in extensions}
+    iterator = folder.rglob("*") if recursive else folder.glob("*")
+    paths: list[Path] = []
+    accepted = 0
+    interval = max(1, int(progress_interval))
+    for path in iterator:
+        if cancel_check is not None and cancel_check():
+            raise BuildCancelledError("Build cancelled")
+        if not path.is_file() or path.suffix.lower() not in normalized_extensions:
+            continue
+        paths.append(path)
+        accepted += 1
+        if progress_callback is not None and accepted % interval == 0:
+            progress_callback(accepted, 0, path.name)
+    paths.sort(key=lambda item: natural_sort_key(item.as_posix()))
     index: dict[str, Path] = {}
-    for image_path in iter_image_paths(folder, recursive=recursive, extensions=extensions):
+    for image_path in paths:
         if cancel_check is not None and cancel_check():
             raise BuildCancelledError("Build cancelled")
         index[image_path.relative_to(folder).as_posix()] = image_path
+    if progress_callback is not None:
+        progress_callback(len(index), len(index), Path(folder).name)
     return index
 
 
@@ -543,22 +813,31 @@ def _resolve_model_path_for_key(
     folder: Path,
     key: str,
     extensions: tuple[str, ...],
-    fallback_index_cache: dict[str, dict[str, Path]],
+    fallback_index_cache: dict[str, _FolderPathLookup],
     *,
     recursive: bool,
     cancel_check=None,
+    progress_callback=None,
 ) -> Path | None:
+    cache_key = str(folder.resolve())
+    lookup = fallback_index_cache.get(cache_key)
+    if lookup is not None:
+        return _resolve_aux_path_from_lookup(key, lookup)
     resolved = _resolve_model_path_from_known_key(folder, key, extensions)
     if resolved is not None:
         return resolved
-    cache_key = str(folder.resolve())
-    index = fallback_index_cache.get(cache_key)
-    if index is None:
-        if cancel_check is not None and cancel_check():
-            raise BuildCancelledError('Build cancelled')
-        index = build_folder_index(folder, recursive=recursive, extensions=extensions, cancel_check=cancel_check)
-        fallback_index_cache[cache_key] = index
-    return _resolve_aux_path(key, index)
+    if cancel_check is not None and cancel_check():
+        raise BuildCancelledError('Build cancelled')
+    index = build_folder_index(
+        folder,
+        recursive=recursive,
+        extensions=extensions,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+    )
+    lookup = _build_folder_path_lookup(index)
+    fallback_index_cache[cache_key] = lookup
+    return _resolve_aux_path_from_lookup(key, lookup)
 
 
 def _fit_shape_to_max_side(shape: tuple[int, int], max_side: int | None) -> tuple[int, int]:
@@ -622,6 +901,10 @@ def _record_payload_cache_key(
     confidence_uncertainty_delta: float,
     point_confidence_radius: int,
     polygon_confidence_summary: str,
+    *,
+    include_model_confidence: bool,
+    include_pairwise_metrics: bool,
+    include_model_metrics: bool,
 ) -> str:
     payload = {
         "version": ANALYSIS_CACHE_VERSION,
@@ -633,6 +916,9 @@ def _record_payload_cache_key(
         "confidence_uncertainty_delta": float(confidence_uncertainty_delta),
         "point_confidence_radius": int(point_confidence_radius),
         "polygon_confidence_summary": str(polygon_confidence_summary),
+        "include_model_confidence": bool(include_model_confidence),
+        "include_pairwise_metrics": bool(include_pairwise_metrics),
+        "include_model_metrics": bool(include_model_metrics),
         "original": _path_signature(record.original_path),
         "gt": _path_signature(record.gt_path),
         "models": [
@@ -654,6 +940,31 @@ def _record_payload_cache_path(cache_key: str) -> Path:
     return ANALYSIS_CACHE_DIR / f"{cache_key}.pickle"
 
 
+def _trim_pickle_cache_dir(cache_dir: Path, *, max_files: int) -> None:
+    directory_key = str(Path(cache_dir))
+    now = perf_counter()
+    last_trim = _CACHE_TRIM_LAST_BY_DIR.get(directory_key, 0.0)
+    if now - last_trim < CACHE_TRIM_INTERVAL_SECONDS:
+        return
+    _CACHE_TRIM_LAST_BY_DIR[directory_key] = now
+    try:
+        cache_files = list(Path(cache_dir).glob("*.pickle"))
+    except Exception:
+        return
+    extra_count = len(cache_files) - int(max_files)
+    if extra_count <= 0:
+        return
+    try:
+        removable = sorted(cache_files, key=lambda path: path.stat().st_mtime_ns)[:extra_count]
+    except Exception:
+        return
+    for path in removable:
+        try:
+            path.unlink()
+        except Exception:
+            continue
+
+
 def _load_cached_record_payload(cache_key: str) -> dict[str, object] | None:
     cache_path = _record_payload_cache_path(cache_key)
     if not cache_path.is_file():
@@ -673,6 +984,7 @@ def _store_cached_record_payload(cache_key: str, payload: dict[str, object]) -> 
         with tmp_path.open("wb") as handle:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
         tmp_path.replace(cache_path)
+        _trim_pickle_cache_dir(ANALYSIS_CACHE_DIR, max_files=ANALYSIS_CACHE_MAX_FILES)
     except Exception:
         try:
             if tmp_path.exists():
@@ -722,6 +1034,7 @@ def _store_cached_detail_payload(cache_key: str, payload: object) -> None:
         with tmp_path.open("wb") as handle:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
         tmp_path.replace(cache_path)
+        _trim_pickle_cache_dir(DETAIL_CACHE_DIR, max_files=DETAIL_CACHE_MAX_FILES)
     except Exception:
         try:
             if tmp_path.exists():
@@ -741,6 +1054,9 @@ def _detail_payload_cache_key(record: FrameRecord, build_result: BuildResult, ma
         float(getattr(build_result.options, 'confidence_uncertainty_delta', MODEL_CONFIDENCE_UNCERTAIN_DELTA)),
         int(getattr(build_result.options, 'point_confidence_radius', POINT_CONFIDENCE_NEIGHBOR_RADIUS) or POINT_CONFIDENCE_NEIGHBOR_RADIUS),
         str(getattr(build_result.options, 'polygon_confidence_summary', POLYGON_CONFIDENCE_SUMMARY_WEIGHTED) or POLYGON_CONFIDENCE_SUMMARY_WEIGHTED),
+        include_model_confidence=True,
+        include_pairwise_metrics=False,
+        include_model_metrics=False,
     ) + f"::detail::{str(model_id or '')}"
 
 
@@ -755,6 +1071,9 @@ def _detail_base_payload_cache_key(record: FrameRecord, build_result: BuildResul
         float(getattr(build_result.options, 'confidence_uncertainty_delta', MODEL_CONFIDENCE_UNCERTAIN_DELTA)),
         int(getattr(build_result.options, 'point_confidence_radius', POINT_CONFIDENCE_NEIGHBOR_RADIUS) or POINT_CONFIDENCE_NEIGHBOR_RADIUS),
         str(getattr(build_result.options, 'polygon_confidence_summary', POLYGON_CONFIDENCE_SUMMARY_WEIGHTED) or POLYGON_CONFIDENCE_SUMMARY_WEIGHTED),
+        include_model_confidence=False,
+        include_pairwise_metrics=False,
+        include_model_metrics=False,
     ) + "::detail_base"
 
 
@@ -793,9 +1112,91 @@ def _prob_from_gray(gray: np.ndarray) -> np.ndarray:
     return np.asarray(gray, dtype=np.float32) / 255.0
 
 
+def _is_binary_like_probability(probability: np.ndarray, *, tolerance: float = 1e-4) -> bool:
+    prob = np.asarray(probability, dtype=np.float32)
+    if prob.size == 0:
+        return False
+    finite = prob[np.isfinite(prob)]
+    if finite.size == 0:
+        return False
+    distance_to_binary = np.minimum(np.abs(finite), np.abs(finite - 1.0))
+    return bool(np.max(distance_to_binary, initial=0.0) <= float(max(EPS, tolerance)))
+
+
+def _internal_confidence_probability_map(
+    probability: np.ndarray,
+    *,
+    support_mask: np.ndarray | None = None,
+    allow_binary_proxy: bool = True,
+) -> np.ndarray:
+    prob = np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0)
+    mask_bool = np.asarray(support_mask, dtype=bool) if support_mask is not None else np.asarray(prob >= 0.5, dtype=bool)
+    if prob.size == 0 or not allow_binary_proxy or not _is_binary_like_probability(prob):
+        return prob
+    if mask_bool.shape != prob.shape:
+        mask_bool = np.asarray(prob >= 0.5, dtype=bool)
+    if not np.any(mask_bool):
+        return prob
+    inside = _distance_transform(mask_bool)
+    outside = _distance_transform(~mask_bool)
+    signed_distance = np.asarray(inside - outside, dtype=np.float32)
+    scale = float(np.percentile(np.abs(signed_distance), 95.0))
+    if not np.isfinite(scale) or scale <= EPS:
+        scale = float(np.max(np.abs(signed_distance))) if signed_distance.size else 1.0
+    scale = max(scale, 1.0)
+    proxy = np.clip(0.5 + 0.5 * signed_distance / scale, 0.0, 1.0).astype(np.float32)
+    proxy[mask_bool] = np.maximum(proxy[mask_bool], 0.5 + 0.5 * np.clip(inside[mask_bool] / scale, 0.0, 1.0))
+    proxy[~mask_bool] = np.minimum(proxy[~mask_bool], 0.5 - 0.5 * np.clip(outside[~mask_bool] / scale, 0.0, 1.0))
+    return np.clip(proxy, 0.0, 1.0).astype(np.float32)
+
+
 def _confidence_map_from_probability(probability: np.ndarray) -> np.ndarray:
-    probability_array = np.asarray(probability, dtype=np.float32)
-    return np.clip(2.0 * np.abs(probability_array - 0.5), 0.0, 1.0).astype(np.float32)
+    return normalize_algorithmic_confidence(probability)
+
+
+def _robust_normalize_display_map(
+    values: np.ndarray,
+    *,
+    focus_mask: np.ndarray | None = None,
+    lower_percentile: float = 10.0,
+    upper_percentile: float = 99.0,
+    gamma: float = 0.75,
+    invert: bool = False,
+) -> np.ndarray:
+    """Stretch a narrow value range so close confidence levels remain visible in the UI."""
+
+    array = np.clip(np.asarray(values, dtype=np.float32), 0.0, 1.0)
+    if array.ndim != 2 or array.size == 0:
+        return np.zeros_like(array, dtype=np.float32)
+    finite_mask = np.isfinite(array)
+    if focus_mask is not None:
+        mask = np.asarray(focus_mask, dtype=bool)
+        if mask.shape == array.shape:
+            finite_mask &= mask
+    focus_values = np.asarray(array[finite_mask], dtype=np.float32)
+    if focus_values.size == 0:
+        focus_values = np.asarray(array[np.isfinite(array)], dtype=np.float32)
+    if focus_values.size == 0:
+        return np.zeros_like(array, dtype=np.float32)
+
+    low = float(np.percentile(focus_values, float(lower_percentile)))
+    high = float(np.percentile(focus_values, float(upper_percentile)))
+    if not np.isfinite(low) or not np.isfinite(high) or abs(high - low) <= EPS:
+        low = float(np.min(focus_values))
+        high = float(np.max(focus_values))
+    if abs(high - low) <= EPS:
+        median = float(np.median(focus_values))
+        spread = float(np.max(np.abs(focus_values - median))) if focus_values.size else 0.0
+        normalized = 0.5 + 0.5 * (array - median) / max(EPS, spread)
+    else:
+        normalized = (array - low) / max(EPS, high - low)
+    normalized = np.clip(normalized, 0.0, 1.0)
+    gamma_value = float(max(0.05, gamma))
+    if abs(gamma_value - 1.0) > EPS:
+        normalized = np.power(normalized, gamma_value).astype(np.float32, copy=False)
+    if invert:
+        normalized = 1.0 - normalized
+    return np.clip(normalized, 0.0, 1.0).astype(np.float32, copy=False)
 
 
 def _support_weights_from_probability(probability: np.ndarray, support_threshold: float) -> np.ndarray:
@@ -814,19 +1215,64 @@ def _support_weights_from_probability(probability: np.ndarray, support_threshold
 
 
 def _uncertainty_map_from_probability(probability: np.ndarray) -> np.ndarray:
-    return np.clip(1.0 - _confidence_map_from_probability(probability), 0.0, 1.0).astype(np.float32)
+    return build_model_uncertainty(probability)
 
 
-def _top_weighted_uncertainty_mean(uncertainty_values: np.ndarray, weight_values: np.ndarray, top_fraction: float) -> float:
-    uncertainties = np.asarray(uncertainty_values, dtype=np.float64).reshape(-1)
-    weights = np.asarray(weight_values, dtype=np.float64).reshape(-1)
+def _confidence_display_map_from_probability(
+    probability: np.ndarray,
+    *,
+    support_mask: np.ndarray | None = None,
+    support_threshold: float = POLYGON_SUPPORT_THRESHOLD,
+) -> np.ndarray:
+    """Build a display-only confidence map with robust contrast enhancement.
+
+    The raw confidence metric remains unchanged. The UI map is normalized separately
+    so dense high-confidence ranges (for example 0.80-0.95 probabilities) remain
+    visually separable and low-confidence pockets become easier to spot.
+    """
+
+    prob = np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0)
+    if prob.ndim != 2 or prob.size == 0:
+        return np.zeros_like(prob, dtype=np.float32)
+    focus_mask = None
+    if support_mask is not None:
+        candidate_mask = np.asarray(support_mask, dtype=bool)
+        if candidate_mask.shape == prob.shape and np.any(candidate_mask):
+            focus_mask = candidate_mask
+    if focus_mask is None:
+        support_weights = _support_weights_from_probability(prob, support_threshold)
+        candidate_mask = np.asarray(support_weights > 0.0, dtype=bool)
+        if np.any(candidate_mask):
+            focus_mask = candidate_mask
+    uncertainty = _uncertainty_map_from_probability(prob)
+    enhanced_uncertainty = _robust_normalize_display_map(
+        uncertainty,
+        focus_mask=focus_mask,
+        lower_percentile=10.0,
+        upper_percentile=99.0,
+        gamma=0.75,
+        invert=False,
+    )
+    return np.clip(1.0 - enhanced_uncertainty, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _top_weighted_uncertainty_mean(
+    uncertainty_values: np.ndarray,
+    weight_values: np.ndarray,
+    top_fraction: float,
+    *,
+    assume_valid: bool = False,
+) -> float:
+    uncertainties = np.asarray(uncertainty_values, dtype=np.float32).reshape(-1)
+    weights = np.asarray(weight_values, dtype=np.float32).reshape(-1)
     if uncertainties.size == 0 or weights.size == 0:
         return 0.0
-    valid_mask = np.isfinite(uncertainties) & np.isfinite(weights) & (weights > 0.0)
-    if not np.any(valid_mask):
-        return 0.0
-    uncertainties = uncertainties[valid_mask]
-    weights = weights[valid_mask]
+    if not assume_valid:
+        valid_mask = np.isfinite(uncertainties) & np.isfinite(weights) & (weights > 0.0)
+        if not np.any(valid_mask):
+            return 0.0
+        uncertainties = uncertainties[valid_mask]
+        weights = weights[valid_mask]
     count = max(1, int(math.ceil(float(uncertainties.size) * max(0.0, float(top_fraction)))))
     count = min(count, int(uncertainties.size))
     if count <= 0:
@@ -855,11 +1301,77 @@ def _largest_uncertain_region_fraction(
     labels, component_count = _label_components(uncertain_support)
     if component_count <= 0:
         return 0.0
-    largest_area = 0
-    for label_id in range(1, int(component_count) + 1):
-        largest_area = max(largest_area, int(np.count_nonzero(labels == label_id)))
-    support_pixels = int(np.count_nonzero(support))
-    return float(largest_area / max(1, support_pixels))
+    component_sizes = np.bincount(np.asarray(labels, dtype=np.int32).reshape(-1))
+    largest_area = int(np.max(component_sizes[1:], initial=0)) if component_sizes.size > 1 else 0
+    # Normalize by the full frame area so equally large low-confidence regions stay
+    # comparable across frames, even when their confident support area differs.
+    return float(largest_area / max(1, support.size))
+
+
+def _frame_uncertainty_components_from_maps(
+    uncertainty: np.ndarray,
+    support_weights: np.ndarray,
+    *,
+    uncertainty_threshold: float,
+    top_fraction: float,
+    risk_weight_mean: float,
+    risk_weight_fraction: float,
+    risk_weight_top: float,
+    risk_weight_cluster: float,
+    sampled_uncertainty_values: np.ndarray | None = None,
+    sampled_weight_values: np.ndarray | None = None,
+    support_mask: np.ndarray | None = None,
+) -> tuple[float, float, float, float, float]:
+    support_weight_map = np.asarray(support_weights, dtype=np.float32)
+    if support_weight_map.ndim != 2 or support_weight_map.size == 0:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+    uncertainty_map = np.asarray(uncertainty, dtype=np.float32)
+    if uncertainty_map.shape != support_weight_map.shape:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+    # The frame-level score must stay sensitive to structured local failures.
+    # Using only mean(confidence) hides large bad pockets behind many easy pixels,
+    # so the badness aggregation combines global uncertainty, the worst tail,
+    # the low-confidence fraction, and the size of the largest bad component.
+    valid_mask = np.isfinite(uncertainty_map)
+    if support_mask is not None:
+        candidate_mask = np.asarray(support_mask, dtype=bool)
+        if candidate_mask.shape == uncertainty_map.shape and np.any(candidate_mask):
+            valid_mask &= candidate_mask
+    if not np.any(valid_mask):
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+    uncertainty_values = np.asarray(uncertainty_map[valid_mask], dtype=np.float32)
+    if uncertainty_values.size == 0:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+    unit_weights = np.ones_like(uncertainty_values, dtype=np.float32)
+    uncertainty_cutoff = float(uncertainty_threshold)
+    mean_uncertainty = float(np.mean(uncertainty_values, dtype=np.float64))
+    low_conf_fraction = float(np.mean(uncertainty_values > uncertainty_cutoff, dtype=np.float64))
+    top_uncertainty_mean = _top_weighted_uncertainty_mean(
+        uncertainty_values,
+        unit_weights,
+        float(top_fraction),
+        assume_valid=True,
+    )
+    largest_region_fraction = _largest_uncertain_region_fraction(
+        uncertainty_map,
+        valid_mask,
+        uncertainty_threshold=uncertainty_cutoff,
+    )
+    # Larger score means a worse frame: global uncertainty captures overall drift,
+    # the worst tail highlights severe local failures, the low-confidence fraction
+    # measures spread, and the largest component penalizes structurally connected
+    # bad regions that simple averaging would hide.
+    denominator = max(EPS, float(risk_weight_mean + risk_weight_fraction + risk_weight_top + risk_weight_cluster))
+    score = float(
+        (
+            float(risk_weight_mean) * mean_uncertainty
+            + float(risk_weight_fraction) * low_conf_fraction
+            + float(risk_weight_top) * top_uncertainty_mean
+            + float(risk_weight_cluster) * largest_region_fraction
+        )
+        / denominator
+    )
+    return float(np.clip(score, 0.0, 1.0)), mean_uncertainty, low_conf_fraction, top_uncertainty_mean, largest_region_fraction
 
 
 def _frame_uncertainty_components_from_probability(
@@ -868,41 +1380,26 @@ def _frame_uncertainty_components_from_probability(
     support_threshold: float,
     uncertainty_threshold: float = MODEL_RISK_UNCERTAINTY_THRESHOLD,
     top_fraction: float = MODEL_RISK_TOP_UNCERTAIN_FRACTION,
+    risk_weight_mean: float = MODEL_RISK_WEIGHT_MEAN,
     risk_weight_fraction: float = MODEL_RISK_WEIGHT_FRACTION,
     risk_weight_top: float = MODEL_RISK_WEIGHT_TOP,
     risk_weight_cluster: float = MODEL_RISK_WEIGHT_CLUSTER,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float, float, float]:
     prob = np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0)
     support_weights = _support_weights_from_probability(prob, support_threshold)
-    support_mask = np.asarray(support_weights > 0.0, dtype=bool)
-    if prob.ndim != 2 or prob.size == 0 or not np.any(support_mask):
-        return 0.0, 0.0, 0.0, 0.0
+    if prob.ndim != 2 or prob.size == 0:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
     uncertainty = _uncertainty_map_from_probability(prob)
-    weights = np.asarray(support_weights[support_mask], dtype=np.float64)
-    uncertainty_values = np.asarray(uncertainty[support_mask], dtype=np.float64)
-    weight_total = float(np.sum(weights, dtype=np.float64))
-    if weight_total <= 0.0:
-        return 0.0, 0.0, 0.0, 0.0
-    uncertain_fraction = float(
-        np.sum(weights * np.asarray(uncertainty_values > float(uncertainty_threshold), dtype=np.float64), dtype=np.float64)
-        / max(EPS, weight_total)
-    )
-    top_uncertainty_mean = _top_weighted_uncertainty_mean(uncertainty_values, weights, float(top_fraction))
-    largest_region_fraction = _largest_uncertain_region_fraction(
+    return _frame_uncertainty_components_from_maps(
         uncertainty,
-        support_mask,
+        support_weights,
         uncertainty_threshold=float(uncertainty_threshold),
+        top_fraction=float(top_fraction),
+        risk_weight_mean=float(risk_weight_mean),
+        risk_weight_fraction=float(risk_weight_fraction),
+        risk_weight_top=float(risk_weight_top),
+        risk_weight_cluster=float(risk_weight_cluster),
     )
-    denominator = max(EPS, float(risk_weight_fraction + risk_weight_top + risk_weight_cluster))
-    score = float(
-        (
-            float(risk_weight_fraction) * uncertain_fraction
-            + float(risk_weight_top) * top_uncertainty_mean
-            + float(risk_weight_cluster) * largest_region_fraction
-        )
-        / denominator
-    )
-    return float(np.clip(score, 0.0, 1.0)), uncertain_fraction, top_uncertainty_mean, largest_region_fraction
 
 
 def _point_uncertainty_cluster_fraction(
@@ -962,48 +1459,51 @@ def _frame_uncertainty_components_from_points(
     support_threshold: float = POINT_SUPPORT_THRESHOLD,
     uncertainty_threshold: float = MODEL_RISK_UNCERTAINTY_THRESHOLD,
     top_fraction: float = MODEL_RISK_TOP_UNCERTAIN_FRACTION,
+    risk_weight_mean: float = MODEL_RISK_WEIGHT_MEAN,
     risk_weight_fraction: float = MODEL_RISK_WEIGHT_FRACTION,
     risk_weight_top: float = MODEL_RISK_WEIGHT_TOP,
     risk_weight_cluster: float = MODEL_RISK_WEIGHT_CLUSTER,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float, float, float]:
     probabilities = np.clip(np.asarray(point_probabilities, dtype=np.float32).reshape(-1), 0.0, 1.0)
     if probabilities.size == 0 or not point_coordinates:
-        return 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0
     support_weights = np.zeros_like(probabilities, dtype=np.float32)
     support_mask = probabilities >= float(support_threshold)
     if np.any(support_mask):
         support_weights[support_mask] = (probabilities[support_mask] - float(support_threshold)) / max(EPS, 1.0 - float(support_threshold))
     support_weights = np.clip(support_weights, 0.0, 1.0).astype(np.float32)
     if not np.any(support_weights > 0.0):
-        return 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0
     uncertainty = 1.0 - np.clip(2.0 * np.abs(probabilities - 0.5), 0.0, 1.0)
-    positive_mask = support_weights > 0.0
-    weights = np.asarray(support_weights[positive_mask], dtype=np.float64)
+    positive_mask = np.isfinite(uncertainty)
     uncertainty_values = np.asarray(uncertainty[positive_mask], dtype=np.float64)
-    weight_total = float(np.sum(weights, dtype=np.float64))
-    if weight_total <= 0.0:
-        return 0.0, 0.0, 0.0, 0.0
-    uncertain_fraction = float(
-        np.sum(weights * np.asarray(uncertainty_values > float(uncertainty_threshold), dtype=np.float64), dtype=np.float64)
-        / max(EPS, weight_total)
+    if uncertainty_values.size == 0:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+    mean_uncertainty = float(np.mean(uncertainty_values, dtype=np.float64))
+    low_conf_fraction = float(np.mean(uncertainty_values > float(uncertainty_threshold), dtype=np.float64))
+    top_uncertainty_mean = _top_weighted_uncertainty_mean(
+        uncertainty_values,
+        np.ones_like(uncertainty_values, dtype=np.float64),
+        float(top_fraction),
+        assume_valid=True,
     )
-    top_uncertainty_mean = _top_weighted_uncertainty_mean(uncertainty_values, weights, float(top_fraction))
     largest_region_fraction = _point_uncertainty_cluster_fraction(
         point_coordinates,
         uncertainty,
-        positive_mask,
+        np.asarray(positive_mask, dtype=bool),
         uncertainty_threshold=float(uncertainty_threshold),
     )
-    denominator = max(EPS, float(risk_weight_fraction + risk_weight_top + risk_weight_cluster))
+    denominator = max(EPS, float(risk_weight_mean + risk_weight_fraction + risk_weight_top + risk_weight_cluster))
     score = float(
         (
-            float(risk_weight_fraction) * uncertain_fraction
+            float(risk_weight_mean) * mean_uncertainty
+            + float(risk_weight_fraction) * low_conf_fraction
             + float(risk_weight_top) * top_uncertainty_mean
             + float(risk_weight_cluster) * largest_region_fraction
         )
         / denominator
     )
-    return float(np.clip(score, 0.0, 1.0)), uncertain_fraction, top_uncertainty_mean, largest_region_fraction
+    return float(np.clip(score, 0.0, 1.0)), mean_uncertainty, low_conf_fraction, top_uncertainty_mean, largest_region_fraction
 
 
 def _probability_gradient(probability: np.ndarray) -> np.ndarray:
@@ -1025,35 +1525,69 @@ def _polygon_frame_confidence(
     uncertainty_delta: float = MODEL_CONFIDENCE_UNCERTAIN_DELTA,
     summary_metric: str = POLYGON_CONFIDENCE_SUMMARY_WEIGHTED,
     include_debug: bool = False,
+    allow_binary_proxy: bool = True,
 ) -> PolygonConfidenceMetrics:
     """Compute lightweight frame-level polygon confidence without object-aware geometry refinement."""
 
-    prob = np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0)
     strong = np.asarray(mask, dtype=bool)
+    prob = _internal_confidence_probability_map(
+        probability,
+        support_mask=strong,
+        allow_binary_proxy=allow_binary_proxy,
+    )
     if strong.shape != prob.shape:
         strong = np.asarray(strong, dtype=bool)
         if strong.shape != prob.shape:
             strong = np.zeros_like(prob, dtype=bool)
-    confidence = _confidence_map_from_probability(prob)
-    uncertainty = _uncertainty_map_from_probability(prob)
+    prob_distance = np.abs(prob - np.float32(0.5)).astype(np.float32, copy=False)
+    confidence = np.clip(2.0 * prob_distance, 0.0, 1.0).astype(np.float32, copy=False)
+    uncertainty = (1.0 - confidence).astype(np.float32, copy=False)
     support_weights = _support_weights_from_probability(prob, POLYGON_SUPPORT_THRESHOLD)
     support_mask = support_weights > 0.0
-    focus_confidence = np.asarray(confidence[support_mask], dtype=np.float32)
-    focus_probability = np.asarray(prob[support_mask], dtype=np.float32)
-    uncertain_mask = np.abs(prob - 0.5) <= float(max(0.0, uncertainty_delta))
-    uncertain_fraction = float(np.mean(uncertain_mask[support_mask], dtype=np.float64)) if np.any(support_mask) else 0.0
+    support_probability_values = np.asarray(prob[support_mask], dtype=np.float32)
+    support_weight_values = np.asarray(support_weights[support_mask], dtype=np.float32)
+    support_uncertainty_values = np.asarray(uncertainty[support_mask], dtype=np.float32)
+    uncertainty_band = float(max(0.0, uncertainty_delta))
+    if np.any(support_mask):
+        support_weight_sum = float(np.sum(support_weight_values, dtype=np.float64))
+        support_uncertain_mask = np.asarray(
+            np.abs(support_probability_values - np.float32(0.5)) <= uncertainty_band,
+            dtype=np.float32,
+        )
+        uncertain_fraction = float(
+            np.sum(
+                support_weight_values * support_uncertain_mask,
+                dtype=np.float64,
+            )
+            / max(EPS, support_weight_sum)
+        )
+    else:
+        uncertain_fraction = 0.0
     boundary_mask = _boundary_mask(strong) if np.any(strong) else _boundary_mask(support_mask)
     boundary_uncertainty = float(np.mean(uncertainty[boundary_mask], dtype=np.float64)) if np.any(boundary_mask) else 0.0
-    core_threshold = max(0.65, float(np.quantile(focus_probability, 0.65)) if focus_probability.size > 0 else 0.65)
+    core_threshold = max(0.65, float(np.quantile(support_probability_values, 0.65)) if support_probability_values.size > 0 else 0.65)
     core_mask = support_mask & (prob >= core_threshold)
     core_confidence = float(np.mean(confidence[core_mask], dtype=np.float64)) if np.any(core_mask) else 0.0
     labels, polygon_count = _label_components(strong if np.any(strong) else support_mask)
-    weight_total = float(np.sum(np.asarray(support_weights, dtype=np.float64), dtype=np.float64))
-    mean_confidence = float(np.sum(np.asarray(support_weights * confidence, dtype=np.float64), dtype=np.float64) / max(EPS, weight_total)) if weight_total > 0.0 else 0.0
-    mean_probability = float(np.sum(np.asarray(support_weights * prob, dtype=np.float64), dtype=np.float64) / max(EPS, weight_total)) if weight_total > 0.0 else 0.0
-    frame_uncertainty_score, uncertain_support_fraction, top_uncertainty_mean, largest_uncertain_region_fraction = _frame_uncertainty_components_from_probability(
-        prob,
-        support_threshold=POLYGON_SUPPORT_THRESHOLD,
+    weight_total = float(np.sum(support_weight_values, dtype=np.float64))
+    mean_confidence = float(
+        np.sum(support_weight_values * np.asarray(confidence[support_mask], dtype=np.float32), dtype=np.float64) / max(EPS, weight_total)
+    ) if weight_total > 0.0 else 0.0
+    mean_probability = float(
+        np.sum(support_weight_values * support_probability_values, dtype=np.float64) / max(EPS, weight_total)
+    ) if weight_total > 0.0 else 0.0
+    frame_uncertainty_score, mean_uncertainty, low_conf_fraction, worst_tail_uncertainty, largest_low_conf_component = _frame_uncertainty_components_from_maps(
+        uncertainty,
+        support_weights,
+        uncertainty_threshold=float(MODEL_RISK_UNCERTAINTY_THRESHOLD),
+        top_fraction=float(MODEL_RISK_TOP_UNCERTAIN_FRACTION),
+        risk_weight_mean=float(MODEL_RISK_WEIGHT_MEAN),
+        risk_weight_fraction=float(MODEL_RISK_WEIGHT_FRACTION),
+        risk_weight_top=float(MODEL_RISK_WEIGHT_TOP),
+        risk_weight_cluster=float(MODEL_RISK_WEIGHT_CLUSTER),
+        sampled_uncertainty_values=support_uncertainty_values,
+        sampled_weight_values=support_weight_values,
+        support_mask=support_mask,
     )
     area_fraction = float(np.count_nonzero(support_mask) / max(1, support_mask.size))
     debug_data = None
@@ -1069,9 +1603,10 @@ def _polygon_frame_confidence(
         )
     return PolygonConfidenceMetrics(
         frame_uncertainty_score=frame_uncertainty_score,
-        uncertain_support_fraction=uncertain_support_fraction,
-        top_uncertainty_mean=top_uncertainty_mean,
-        largest_uncertain_region_fraction=largest_uncertain_region_fraction,
+        mean_uncertainty=mean_uncertainty,
+        uncertain_support_fraction=low_conf_fraction,
+        top_uncertainty_mean=worst_tail_uncertainty,
+        largest_uncertain_region_fraction=largest_low_conf_component,
         mean_object_confidence=mean_confidence,
         mean_core_confidence=core_confidence,
         mean_boundary_uncertainty=boundary_uncertainty,
@@ -1082,6 +1617,9 @@ def _polygon_frame_confidence(
         object_area_fraction=area_fraction,
         polygon_count=int(polygon_count),
         summary_metric=str(summary_metric),
+        low_conf_fraction=low_conf_fraction,
+        worst_tail_uncertainty=worst_tail_uncertainty,
+        largest_low_conf_component=largest_low_conf_component,
         objects=tuple(),
         debug_data=debug_data,
     )
@@ -3751,7 +4289,7 @@ def _polygon_internal_confidence(
     include_debug: bool = False,
     config: PolygonConfidencePipelineConfig | None = None,
 ) -> PolygonConfidenceMetrics:
-    prob = _normalize_probability_map(probability)
+    prob = _internal_confidence_probability_map(probability, support_mask=np.asarray(mask, dtype=bool))
     pipeline_config = config or _polygon_confidence_config()
     mask_bool, final_candidates, debug_data = _polygon_confidence_pipeline(
         prob,
@@ -3763,7 +4301,7 @@ def _polygon_internal_confidence(
     confidence_map = _confidence_map_from_probability(prob)
     object_count = int(np.count_nonzero(mask_bool))
     area_fraction = float(object_count / max(1, mask_bool.size))
-    frame_uncertainty_score, uncertain_support_fraction, top_uncertainty_mean, largest_uncertain_region_fraction = _frame_uncertainty_components_from_probability(
+    frame_uncertainty_score, mean_uncertainty, low_conf_fraction, worst_tail_uncertainty, largest_low_conf_component = _frame_uncertainty_components_from_probability(
         prob,
         support_threshold=POLYGON_SUPPORT_THRESHOLD,
     )
@@ -3773,6 +4311,7 @@ def _polygon_internal_confidence(
     if object_count <= 0:
         return PolygonConfidenceMetrics(
             frame_uncertainty_score=0.0,
+            mean_uncertainty=0.0,
             uncertain_support_fraction=0.0,
             top_uncertainty_mean=0.0,
             largest_uncertain_region_fraction=0.0,
@@ -3786,6 +4325,9 @@ def _polygon_internal_confidence(
             object_area_fraction=area_fraction,
             polygon_count=0,
             summary_metric=normalized_summary_metric,
+            low_conf_fraction=0.0,
+            worst_tail_uncertainty=0.0,
+            largest_low_conf_component=0.0,
             objects=(),
             debug_data=debug_data if include_debug else None,
         )
@@ -3932,9 +4474,10 @@ def _polygon_internal_confidence(
 
     return PolygonConfidenceMetrics(
         frame_uncertainty_score=frame_uncertainty_score,
-        uncertain_support_fraction=uncertain_support_fraction,
-        top_uncertainty_mean=top_uncertainty_mean,
-        largest_uncertain_region_fraction=largest_uncertain_region_fraction,
+        mean_uncertainty=mean_uncertainty,
+        uncertain_support_fraction=low_conf_fraction,
+        top_uncertainty_mean=worst_tail_uncertainty,
+        largest_uncertain_region_fraction=largest_low_conf_component,
         mean_object_confidence=_weighted_mean(aggregate_summary),
         mean_core_confidence=_weighted_mean(aggregate_core),
         mean_boundary_uncertainty=_weighted_mean(aggregate_boundary),
@@ -3945,6 +4488,9 @@ def _polygon_internal_confidence(
         object_area_fraction=area_fraction,
         polygon_count=int(object_total),
         summary_metric=normalized_summary_metric,
+        low_conf_fraction=low_conf_fraction,
+        worst_tail_uncertainty=worst_tail_uncertainty,
+        largest_low_conf_component=largest_low_conf_component,
         objects=tuple(object_rows),
         debug_data=debug_data if include_debug else None,
     )
@@ -3979,12 +4525,16 @@ def _point_local_contrast(probability: np.ndarray, x: float, y: float, radius: i
 
 
 def _point_internal_confidence(prediction_view: object, *, neighborhood_radius: int = POINT_CONFIDENCE_NEIGHBOR_RADIUS, include_objects: bool = True) -> PointConfidenceMetrics:
-    probability = _prob_from_gray(np.asarray(getattr(prediction_view, 'pred_gray'), dtype=np.uint8))
+    probability = _internal_confidence_probability_map(
+        _prob_from_gray(np.asarray(getattr(prediction_view, 'pred_gray'), dtype=np.uint8)),
+        support_mask=np.asarray(getattr(prediction_view, 'pred_bin'), dtype=bool),
+    )
     confidence_map = _confidence_map_from_probability(probability)
     points = tuple(getattr(prediction_view, 'points', ()))
     if not points:
         return PointConfidenceMetrics(
             frame_uncertainty_score=0.0,
+            mean_uncertainty=0.0,
             uncertain_support_fraction=0.0,
             top_uncertainty_mean=0.0,
             largest_uncertain_region_fraction=0.0,
@@ -3994,6 +4544,9 @@ def _point_internal_confidence(prediction_view: object, *, neighborhood_radius: 
             mean_point_probability=0.0,
             mean_point_contrast=0.0,
             point_count=0,
+            low_conf_fraction=0.0,
+            worst_tail_uncertainty=0.0,
+            largest_low_conf_component=0.0,
             objects=(),
         )
     object_rows: list[PointObjectConfidence] = []
@@ -4039,22 +4592,26 @@ def _point_internal_confidence(prediction_view: object, *, neighborhood_radius: 
     confidence_array = np.asarray(center_confidences, dtype=np.float64)
     weight_array = np.asarray(point_weights, dtype=np.float64)
     weight_sum = float(np.sum(weight_array, dtype=np.float64))
-    frame_uncertainty_score, uncertain_support_fraction, top_uncertainty_mean, largest_uncertain_region_fraction = _frame_uncertainty_components_from_points(
+    frame_uncertainty_score, mean_uncertainty, low_conf_fraction, worst_tail_uncertainty, largest_low_conf_component = _frame_uncertainty_components_from_points(
         np.asarray(point_probs, dtype=np.float32),
         tuple(point_coordinates),
         support_threshold=POINT_SUPPORT_THRESHOLD,
     )
     return PointConfidenceMetrics(
         frame_uncertainty_score=frame_uncertainty_score,
-        uncertain_support_fraction=uncertain_support_fraction,
-        top_uncertainty_mean=top_uncertainty_mean,
-        largest_uncertain_region_fraction=largest_uncertain_region_fraction,
+        mean_uncertainty=mean_uncertainty,
+        uncertain_support_fraction=low_conf_fraction,
+        top_uncertainty_mean=worst_tail_uncertainty,
+        largest_uncertain_region_fraction=largest_low_conf_component,
         mean_point_confidence=float(np.sum(confidence_array * weight_array, dtype=np.float64) / max(EPS, weight_sum)) if weight_sum > 0.0 else 0.0,
         mean_center_confidence=float(np.mean(confidence_array, dtype=np.float64)),
         mean_local_confidence=float(np.mean(np.asarray(local_confidences, dtype=np.float64))),
         mean_point_probability=float(np.mean(np.asarray(point_probs, dtype=np.float64))),
         mean_point_contrast=float(np.mean(np.asarray(point_contrasts, dtype=np.float64))),
         point_count=int(len(points)),
+        low_conf_fraction=low_conf_fraction,
+        worst_tail_uncertainty=worst_tail_uncertainty,
+        largest_low_conf_component=largest_low_conf_component,
         objects=tuple(object_rows),
     )
 
@@ -4072,6 +4629,9 @@ def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
     if ndi is not None:
         labels, count = ndi.label(mask_bool, structure=np.ones((3, 3), dtype=np.uint8))
         return np.asarray(labels, dtype=np.int32), int(count)
+    if cv2 is not None:
+        count, labels = cv2.connectedComponents(np.asarray(mask_bool, dtype=np.uint8), connectivity=8)
+        return np.asarray(labels, dtype=np.int32), max(0, int(count) - 1)
     height, width = mask_bool.shape
     labels = np.zeros((height, width), dtype=np.int32)
     next_label = 1
@@ -4169,6 +4729,16 @@ def _boundary_mask(mask: np.ndarray) -> np.ndarray:
     return center & np.logical_not(interior)
 
 
+def _distance_transform(mask: np.ndarray) -> np.ndarray:
+    mask_bool = np.asarray(mask, dtype=bool)
+    if ndi is not None:
+        return np.asarray(ndi.distance_transform_edt(mask_bool), dtype=np.float32)
+    if cv2 is not None:
+        distances = cv2.distanceTransform(np.asarray(mask_bool, dtype=np.uint8), cv2.DIST_L2, 5)
+        return np.asarray(distances, dtype=np.float32)
+    raise RuntimeError("Distance transform backend is unavailable")
+
+
 _NEIGHBOR_SLICE_ORDER = (
     (slice(0, -2), slice(0, -2)),
     (slice(0, -2), slice(1, -1)),
@@ -4261,15 +4831,28 @@ def _component_area_stats(labels: np.ndarray, count: int) -> tuple[list[float], 
     return component_areas, mean_component_area
 
 
-def _mask_structure(mask: np.ndarray) -> dict[str, object]:
+def _mask_structure(
+    mask: np.ndarray,
+    *,
+    include_skeleton: bool = True,
+    include_boundary_distance: bool = False,
+) -> dict[str, object]:
     mask_bool = np.asarray(mask, dtype=bool)
     labels, count = _label_components(mask_bool)
-    skeleton = skeletonize(mask_bool)
-    if np.any(skeleton):
-        skeleton_neighbors = _neighbor_count(skeleton)
-        endpoint_count = int(np.count_nonzero(skeleton & (skeleton_neighbors == 1)))
-        branchpoint_count = int(np.count_nonzero(skeleton & (skeleton_neighbors >= 3)))
+    boundary = _boundary_mask(mask_bool)
+    boundary_dist = _distance_transform(~boundary) if include_boundary_distance and np.any(boundary) and (ndi is not None or cv2 is not None) else None
+    if include_skeleton:
+        skeleton = skeletonize(mask_bool)
+        if np.any(skeleton):
+            skeleton_neighbors = _neighbor_count(skeleton)
+            endpoint_count = int(np.count_nonzero(skeleton & (skeleton_neighbors == 1)))
+            branchpoint_count = int(np.count_nonzero(skeleton & (skeleton_neighbors >= 3)))
+        else:
+            skeleton_neighbors = np.zeros_like(mask_bool, dtype=np.uint8)
+            endpoint_count = 0
+            branchpoint_count = 0
     else:
+        skeleton = np.zeros_like(mask_bool, dtype=bool)
         skeleton_neighbors = np.zeros_like(mask_bool, dtype=np.uint8)
         endpoint_count = 0
         branchpoint_count = 0
@@ -4280,6 +4863,9 @@ def _mask_structure(mask: np.ndarray) -> dict[str, object]:
         "component_count": int(count),
         "area_fraction": float(area / max(1, mask_bool.size)),
         "mean_component_area": mean_component_area,
+        "has_skeleton": bool(include_skeleton),
+        "boundary": boundary,
+        "boundary_dist": boundary_dist,
         "skeleton": skeleton,
         "skeleton_neighbors": skeleton_neighbors,
         "skeleton_length": float(np.count_nonzero(skeleton)),
@@ -4465,18 +5051,50 @@ def _distance_similarity(distance: float, shape: tuple[int, int]) -> float:
     return float(1.0 - min(1.0, float(distance) / _frame_diagonal(shape)))
 
 
-def _hausdorff_distance(first: np.ndarray, second: np.ndarray) -> float:
-    first_boundary = _boundary_mask(first)
-    second_boundary = _boundary_mask(second)
+def _nearest_distances_between_coordinate_sets(coords_a: np.ndarray, coords_b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    coords_a = np.asarray(coords_a, dtype=np.float32)
+    coords_b = np.asarray(coords_b, dtype=np.float32)
+    if coords_a.shape[0] == 0 or coords_b.shape[0] == 0:
+        return np.zeros(coords_a.shape[0], dtype=np.float64), np.zeros(coords_b.shape[0], dtype=np.float64)
+
+    def _chunked_nearest_distances(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+        pair_budget = 1_000_000
+        chunk_size = max(1, min(int(source.shape[0]), int(max(1, pair_budget // max(1, int(target.shape[0]))))))
+        nearest = np.empty(source.shape[0], dtype=np.float64)
+        for start in range(0, source.shape[0], chunk_size):
+            stop = min(source.shape[0], start + chunk_size)
+            diff = np.asarray(source[start:stop, None, :] - target[None, :, :], dtype=np.float32)
+            squared = np.sum(np.square(diff, dtype=np.float32), axis=2, dtype=np.float64)
+            nearest[start:stop] = np.sqrt(np.min(squared, axis=1, initial=np.inf))
+        return nearest
+
+    if cKDTree is not None:
+        tree_a = cKDTree(coords_a)
+        tree_b = cKDTree(coords_b)
+        nearest_a = np.asarray(tree_b.query(coords_a, k=1)[0], dtype=np.float64)
+        nearest_b = np.asarray(tree_a.query(coords_b, k=1)[0], dtype=np.float64)
+        return nearest_a, nearest_b
+    return _chunked_nearest_distances(coords_a, coords_b), _chunked_nearest_distances(coords_b, coords_a)
+
+
+def _hausdorff_distance(
+    first: np.ndarray,
+    second: np.ndarray,
+    *,
+    first_structure: dict[str, object] | None = None,
+    second_structure: dict[str, object] | None = None,
+) -> float:
+    first_boundary = np.asarray((first_structure or {}).get("boundary"), dtype=bool) if (first_structure or {}).get("boundary") is not None else _boundary_mask(first)
+    second_boundary = np.asarray((second_structure or {}).get("boundary"), dtype=bool) if (second_structure or {}).get("boundary") is not None else _boundary_mask(second)
     shape = tuple(int(v) for v in np.asarray(first_boundary).shape)
     diagonal = _frame_diagonal(shape)
     if not np.any(first_boundary) and not np.any(second_boundary):
         return 0.0
     if not np.any(first_boundary) or not np.any(second_boundary):
         return diagonal
-    if ndi is not None:
-        dist_to_second = ndi.distance_transform_edt(~second_boundary)
-        dist_to_first = ndi.distance_transform_edt(~first_boundary)
+    if ndi is not None or cv2 is not None:
+        dist_to_second = np.asarray((second_structure or {}).get("boundary_dist"), dtype=np.float32) if (second_structure or {}).get("boundary_dist") is not None else _distance_transform(~second_boundary)
+        dist_to_first = np.asarray((first_structure or {}).get("boundary_dist"), dtype=np.float32) if (first_structure or {}).get("boundary_dist") is not None else _distance_transform(~first_boundary)
         directed_first = float(np.max(dist_to_second[first_boundary])) if np.any(first_boundary) else 0.0
         directed_second = float(np.max(dist_to_first[second_boundary])) if np.any(second_boundary) else 0.0
         return float(max(directed_first, directed_second))
@@ -4486,10 +5104,9 @@ def _hausdorff_distance(first: np.ndarray, second: np.ndarray) -> float:
         return 0.0
     if first_points.size == 0 or second_points.size == 0:
         return diagonal
-    diff = first_points[:, None, :] - second_points[None, :, :]
-    distances = np.sqrt(np.sum(np.square(diff, dtype=np.float64), axis=2, dtype=np.float64))
-    directed_first = float(np.max(np.min(distances, axis=1)))
-    directed_second = float(np.max(np.min(distances, axis=0)))
+    nearest_first, nearest_second = _nearest_distances_between_coordinate_sets(first_points, second_points)
+    directed_first = float(np.max(nearest_first, initial=0.0))
+    directed_second = float(np.max(nearest_second, initial=0.0))
     return float(max(directed_first, directed_second))
 
 
@@ -4505,6 +5122,8 @@ def _structural_penalties(
     gt_count = int(current_gt_structure["component_count"])
     pred_count = int(current_pred_structure["component_count"])
     delta_cc = float(abs(pred_count - gt_count) / max(1, gt_count))
+    if not bool(current_pred_structure.get("has_skeleton", True)) or not bool(current_gt_structure.get("has_skeleton", True)):
+        return delta_cc, 0, 0, 0.0
 
     skeleton_gt = np.asarray(current_gt_structure["skeleton"], dtype=bool)
     supported_gt = skeleton_gt & _binary_dilate(pred, radius=1)
@@ -4538,8 +5157,8 @@ def _labeled_quality(
     gt_structure: dict[str, object] | None = None,
     boundary_radius: int = 1,
 ) -> LabeledModelMetrics:
-    current_pred_structure = pred_structure or _mask_structure(pred_mask)
-    current_gt_structure = gt_structure or _mask_structure(gt_mask)
+    current_pred_structure = pred_structure or _mask_structure(pred_mask, include_boundary_distance=True)
+    current_gt_structure = gt_structure or _mask_structure(gt_mask, include_boundary_distance=True)
     gt_float = np.asarray(gt_mask, dtype=np.float32)
     pred_float = np.clip(np.asarray(pred_prob, dtype=np.float32), 0.0, 1.0)
 
@@ -4551,7 +5170,12 @@ def _labeled_quality(
     precision = _precision(pred_mask, gt_mask)
     recall = _recall(pred_mask, gt_mask)
     boundary_f1 = _boundary_f1(pred_mask, gt_mask, radius=max(1, int(boundary_radius)))
-    hausdorff_distance = _hausdorff_distance(pred_mask, gt_mask)
+    hausdorff_distance = _hausdorff_distance(
+        pred_mask,
+        gt_mask,
+        first_structure=current_pred_structure,
+        second_structure=current_gt_structure,
+    )
     centroid_distance = _centroid_distance(pred_mask, gt_mask)
     frame_shape = tuple(int(v) for v in np.asarray(pred_mask).shape)
     hausdorff_similarity = _distance_similarity(hausdorff_distance, frame_shape)
@@ -4618,11 +5242,29 @@ def _point_match_threshold(point_a: object, point_b: object, base_radius: float)
 
 def _match_point_sets(points_a: tuple[object, ...], points_b: tuple[object, ...], base_radius: float) -> tuple[list[float], set[int], set[int]]:
     candidate_pairs: list[tuple[float, int, int]] = []
-    for index_a, point_a in enumerate(points_a):
-        for index_b, point_b in enumerate(points_b):
-            distance = float(np.hypot(float(getattr(point_a, "x", 0.0)) - float(getattr(point_b, "x", 0.0)), float(getattr(point_a, "y", 0.0)) - float(getattr(point_b, "y", 0.0))))
-            if distance <= _point_match_threshold(point_a, point_b, base_radius):
-                candidate_pairs.append((distance, index_a, index_b))
+    if cKDTree is not None and points_a and points_b:
+        coords_a = _point_coordinates(points_a)
+        coords_b = _point_coordinates(points_b)
+        radius = max(0.0, float(base_radius))
+        if coords_a.shape[0] > 0 and coords_b.shape[0] > 0 and radius >= 0.0:
+            tree_b = cKDTree(coords_b)
+            neighbors = tree_b.query_ball_point(coords_a, r=radius)
+            for index_a, neighbor_indices in enumerate(neighbors):
+                point_a = points_a[index_a]
+                for index_b in neighbor_indices:
+                    point_b = points_b[int(index_b)]
+                    distance = float(np.hypot(
+                        float(getattr(point_a, "x", 0.0)) - float(getattr(point_b, "x", 0.0)),
+                        float(getattr(point_a, "y", 0.0)) - float(getattr(point_b, "y", 0.0)),
+                    ))
+                    if distance <= _point_match_threshold(point_a, point_b, base_radius):
+                        candidate_pairs.append((distance, index_a, int(index_b)))
+    else:
+        for index_a, point_a in enumerate(points_a):
+            for index_b, point_b in enumerate(points_b):
+                distance = float(np.hypot(float(getattr(point_a, "x", 0.0)) - float(getattr(point_b, "x", 0.0)), float(getattr(point_a, "y", 0.0)) - float(getattr(point_b, "y", 0.0))))
+                if distance <= _point_match_threshold(point_a, point_b, base_radius):
+                    candidate_pairs.append((distance, index_a, index_b))
     candidate_pairs.sort(key=lambda item: (item[0], item[1], item[2]))
     matched_distances: list[float] = []
     matched_a: set[int] = set()
@@ -4644,10 +5286,7 @@ def _point_distance_scores(points_a: tuple[object, ...], points_b: tuple[object,
     diagonal = float(max(EPS, math.hypot(float(frame_shape[0]), float(frame_shape[1]))))
     if coords_a.shape[0] == 0 or coords_b.shape[0] == 0:
         return diagonal, diagonal
-    diff = coords_a[:, None, :] - coords_b[None, :, :]
-    distances = np.sqrt(np.sum(np.square(diff, dtype=np.float64), axis=2, dtype=np.float64))
-    nearest_a = np.min(distances, axis=1)
-    nearest_b = np.min(distances, axis=0)
+    nearest_a, nearest_b = _nearest_distances_between_coordinate_sets(coords_a, coords_b)
     chamfer = float((nearest_a.mean(dtype=np.float64) + nearest_b.mean(dtype=np.float64)) / 2.0)
     hausdorff = float(max(float(nearest_a.max(initial=0.0)), float(nearest_b.max(initial=0.0))))
     return chamfer, hausdorff
@@ -4913,14 +5552,27 @@ def _prepare_mask_pairwise_descriptors(
     descriptors: dict[str, dict[str, object]] = {}
     for model_id, probability in probabilities_by_model.items():
         prob = np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0)
+        clip_eps = np.float32(max(EPS, float(np.finfo(np.float32).eps)))
+        prob_clipped = np.clip(prob, clip_eps, np.float32(1.0) - clip_eps)
+        prob_sum = float(np.sum(prob, dtype=np.float64))
+        prob_sq_sum = float(np.sum(np.square(prob, dtype=np.float32), dtype=np.float64))
+        pixel_count = max(1.0, float(prob.size))
         mask = np.asarray(masks_by_model.get(model_id), dtype=bool)
-        boundary = _boundary_mask(mask)
-        dist_to_boundary = np.asarray(ndi.distance_transform_edt(~boundary), dtype=np.float32) if ndi is not None and np.any(boundary) else None
-        current_structure = (model_structures or {}).get(str(model_id)) or _mask_structure(mask)
+        current_structure = (model_structures or {}).get(str(model_id)) or _mask_structure(mask, include_boundary_distance=True)
+        boundary = np.asarray(current_structure.get('boundary'), dtype=bool) if current_structure.get('boundary') is not None else _boundary_mask(mask)
+        dist_to_boundary = current_structure.get('boundary_dist')
+        if dist_to_boundary is not None:
+            dist_to_boundary = np.asarray(dist_to_boundary, dtype=np.float32)
+        elif np.any(boundary) and (ndi is not None or cv2 is not None):
+            dist_to_boundary = _distance_transform(~boundary)
         descriptors[str(model_id)] = {
             'prob': prob,
-            'prob_sum': float(np.sum(prob, dtype=np.float64)),
-            'prob_sq_sum': float(np.sum(np.square(prob, dtype=np.float32), dtype=np.float64)),
+            'prob_sum': prob_sum,
+            'prob_sq_sum': prob_sq_sum,
+            'prob_mean': float(prob_sum / pixel_count),
+            'prob_var': float(max(0.0, (prob_sq_sum / pixel_count) - (prob_sum / pixel_count) ** 2)),
+            'log_prob': np.log(prob_clipped),
+            'log_inv_prob': np.log1p(-prob_clipped),
             'mask': mask,
             'mask_area': int(np.count_nonzero(mask)),
             'boundary': boundary,
@@ -4953,21 +5605,20 @@ def _pairwise_mask_metrics(
     prob_sum_first = float(first['prob_sum'])
     prob_sum_second = float(second['prob_sum'])
     prob_union = float(prob_sum_first + prob_sum_second - prob_intersection)
+    pixel_count = max(1.0, float(first_prob.size))
 
     soft_dice = 1.0 if (prob_sum_first + prob_sum_second) <= EPS else float((2.0 * prob_intersection + EPS) / (prob_sum_first + prob_sum_second + EPS))
     soft_iou = 1.0 if prob_union <= EPS else float((prob_intersection + EPS) / (prob_union + EPS))
 
-    first_prob64 = np.asarray(first_prob, dtype=np.float64)
-    second_prob64 = np.asarray(second_prob, dtype=np.float64)
-    mu_first = float(first_prob64.mean())
-    mu_second = float(second_prob64.mean())
-    sigma_first = float(np.mean((first_prob64 - mu_first) ** 2, dtype=np.float64))
-    sigma_second = float(np.mean((second_prob64 - mu_second) ** 2, dtype=np.float64))
-    sigma_cross = float(np.mean((first_prob64 - mu_first) * (second_prob64 - mu_second), dtype=np.float64))
+    mu_first = float(first.get('prob_mean', 0.0))
+    mu_second = float(second.get('prob_mean', 0.0))
+    sigma_first = float(max(0.0, float(first.get('prob_var', 0.0))))
+    sigma_second = float(max(0.0, float(second.get('prob_var', 0.0))))
+    sigma_cross = float((prob_intersection / pixel_count) - (mu_first * mu_second))
     c1 = 0.01 ** 2
     c2 = 0.03 ** 2
     denominator = (mu_first ** 2 + mu_second ** 2 + c1) * (sigma_first + sigma_second + c2)
-    ssim = 1.0 if denominator <= EPS and np.allclose(first_prob64, second_prob64) else (0.0 if denominator <= EPS else float(_clip01(((2.0 * mu_first * mu_second + c1) * (2.0 * sigma_cross + c2)) / denominator)))
+    ssim = 1.0 if denominator <= EPS and np.allclose(first_prob, second_prob) else (0.0 if denominator <= EPS else float(_clip01(((2.0 * mu_first * mu_second + c1) * (2.0 * sigma_cross + c2)) / denominator)))
 
     dice = 1.0 if (area_first + area_second) == 0 else float((2.0 * intersection_mask + EPS) / (area_first + area_second + EPS))
     iou = 1.0 if union_mask == 0 else float((intersection_mask + EPS) / (union_mask + EPS))
@@ -5000,7 +5651,13 @@ def _pairwise_mask_metrics(
     diff = first_prob - second_prob
     mae = float(np.mean(np.abs(diff), dtype=np.float64)) if diff.size else 0.0
     rmse = float(np.sqrt(np.mean(np.square(diff, dtype=np.float32), dtype=np.float64))) if diff.size else 0.0
-    bce = _symmetric_binary_cross_entropy(first_prob, second_prob)
+    first_log = np.asarray(first.get('log_prob'), dtype=np.float32)
+    first_log_inv = np.asarray(first.get('log_inv_prob'), dtype=np.float32)
+    second_log = np.asarray(second.get('log_prob'), dtype=np.float32)
+    second_log_inv = np.asarray(second.get('log_inv_prob'), dtype=np.float32)
+    forward = -(first_prob * second_log + (1.0 - first_prob) * second_log_inv)
+    backward = -(second_prob * first_log + (1.0 - second_prob) * first_log_inv)
+    bce = float(np.mean((forward + backward) * 0.5, dtype=np.float64)) if forward.size else 0.0
 
     count_agreement = _mask_count_agreement(
         int(np.asarray(first['structure']['component_count']).item() if hasattr(first['structure']['component_count'], 'item') else first['structure']['component_count']),
@@ -5202,6 +5859,10 @@ def _build_model_payloads(
     include_confidence_objects: bool = True,
     include_original_gray: bool = True,
     include_model_confidence: bool = True,
+    include_pairwise_metrics: bool = True,
+    include_model_metrics: bool = True,
+    include_model_diagnostics: bool = True,
+    include_structure_details: bool = True,
 ) -> tuple[
     dict[str, np.ndarray],
     dict[str, np.ndarray],
@@ -5209,6 +5870,7 @@ def _build_model_payloads(
     dict[str, object],
     dict[str, object],
     dict[str, object],
+    dict[str, bool],
     np.ndarray | None,
     np.ndarray | None,
     dict[str, object] | None,
@@ -5216,10 +5878,21 @@ def _build_model_payloads(
     dict[str, object],
     object | None,
 ]:
+    include_pairwise_metrics = bool(include_pairwise_metrics)
+    include_model_metrics = bool(include_model_metrics)
+    include_model_diagnostics = bool(include_model_diagnostics)
+    include_model_confidence = bool(include_model_confidence)
+    include_mask_structures = include_pairwise_metrics or include_model_metrics or include_model_diagnostics
+    include_boundary_distance = include_pairwise_metrics or include_model_metrics
+
     original_gray = _load_optional_gray(record.original_path, max_side=analysis_max_side) if include_original_gray else None
-    gt_gray = _load_optional_gray(record.gt_path, max_side=analysis_max_side)
+    gt_gray = _load_optional_gray(record.gt_path, max_side=analysis_max_side) if include_model_metrics else None
     gt_mask = _mask_from_gray(gt_gray) if gt_gray is not None else None
-    gt_structure = _mask_structure(gt_mask) if gt_mask is not None else None
+    gt_structure = _mask_structure(
+        gt_mask,
+        include_skeleton=include_structure_details,
+        include_boundary_distance=include_boundary_distance,
+    ) if gt_mask is not None else None
 
     probabilities: dict[str, np.ndarray] = {}
     masks: dict[str, np.ndarray] = {}
@@ -5227,13 +5900,14 @@ def _build_model_payloads(
     model_diagnostics: dict[str, object] = {}
     model_metrics: dict[str, object] = {}
     model_confidence: dict[str, object] = {}
+    model_confidence_output_available: dict[str, bool] = {}
     model_views: dict[str, object] = {}
 
     target_shape = tuple(int(v) for v in gt_gray.shape) if gt_gray is not None else None
     if target_shape is None and original_gray is not None:
         target_shape = tuple(int(v) for v in original_gray.shape)
 
-    loaded_rows: list[tuple[ModelSpec, np.ndarray, np.ndarray]] = []
+    loaded_rows: list[tuple[ModelSpec, np.ndarray, np.ndarray, bool]] = []
     first_point_candidate = None
     for spec in model_specs:
         mask_gray = _load_optional_gray(record.model_mask_paths.get(spec.model_id), target_shape=target_shape, max_side=analysis_max_side)
@@ -5246,11 +5920,17 @@ def _build_model_payloads(
         if gt_gray is not None and tuple(int(v) for v in gt_gray.shape) != target_shape:
             gt_gray = _load_optional_gray(record.gt_path, target_shape=target_shape, max_side=analysis_max_side)
             gt_mask = _mask_from_gray(gt_gray) if gt_gray is not None else None
-            gt_structure = _mask_structure(gt_mask) if gt_mask is not None else None
+            gt_structure = _mask_structure(
+                gt_mask,
+                include_skeleton=include_structure_details,
+                include_boundary_distance=include_boundary_distance,
+            ) if gt_mask is not None else None
         prob_gray = _load_optional_gray(record.model_prob_paths.get(spec.model_id), target_shape=target_shape, max_side=analysis_max_side)
+        uses_binary_probability_proxy = prob_gray is None
+        model_confidence_output_available[spec.model_id] = not uses_binary_probability_proxy
         if prob_gray is None:
             prob_gray = mask_gray
-        loaded_rows.append((spec, mask_gray, prob_gray))
+        loaded_rows.append((spec, mask_gray, prob_gray, uses_binary_probability_proxy))
         if geometry_mode == GeometryMode.AUTO and first_point_candidate is None:
             first_point_candidate = build_prediction_view_from_gray(spec.display_name, np.asarray(prob_gray, dtype=np.uint8), threshold=int(round(float(spec.threshold) * 255.0)))
 
@@ -5262,50 +5942,71 @@ def _build_model_payloads(
     if resolved_geometry_mode == GeometryMode.POINT and gt_gray is not None:
         gt_point_view = build_prediction_view_from_gray('ground_truth', np.asarray(gt_gray, dtype=np.uint8), threshold=128)
 
-    for spec, mask_gray, prob_gray in loaded_rows:
+    for spec, mask_gray, prob_gray, uses_binary_probability_proxy in loaded_rows:
         prob_map = _prob_from_gray(prob_gray)
         mask = _mask_from_gray(mask_gray, threshold=spec.threshold)
         probabilities[spec.model_id] = prob_map.astype(np.float32)
         masks[spec.model_id] = mask.astype(bool)
 
         if resolved_geometry_mode == GeometryMode.POINT:
-            prediction_view = build_prediction_view_from_gray(spec.display_name, np.asarray(prob_gray, dtype=np.uint8), threshold=int(round(float(spec.threshold) * 255.0)))
-            model_views[spec.model_id] = prediction_view
-            diagnostics = _point_diagnostic_metrics(prediction_view)
-            model_diagnostics[spec.model_id] = diagnostics
-            if include_model_confidence:
+            need_prediction_view = include_pairwise_metrics or include_model_metrics or include_model_confidence or include_model_diagnostics
+            prediction_view = None
+            if need_prediction_view:
+                prediction_view = build_prediction_view_from_gray(spec.display_name, np.asarray(prob_gray, dtype=np.uint8), threshold=int(round(float(spec.threshold) * 255.0)))
+            if prediction_view is not None and (include_pairwise_metrics or include_model_metrics):
+                model_views[spec.model_id] = prediction_view
+            diagnostics = _point_diagnostic_metrics(prediction_view) if (prediction_view is not None and include_model_diagnostics) else None
+            if diagnostics is not None:
+                model_diagnostics[spec.model_id] = diagnostics
+            if include_model_confidence and prediction_view is not None:
                 model_confidence[spec.model_id] = _point_internal_confidence(
                     prediction_view,
                     neighborhood_radius=int(point_confidence_radius),
                     include_objects=include_confidence_objects,
                 )
-            if gt_point_view is not None:
+            if prediction_view is not None and gt_point_view is not None and include_model_metrics:
                 model_metrics[spec.model_id] = _point_labeled_quality(prediction_view, gt_point_view, point_match_radius)
-            model_structures[spec.model_id] = {
-                'component_count': int(diagnostics.point_count),
-                'area_fraction': float(max(0.0, min(1.0, diagnostics.point_count / max(1.0, float(prediction_view.pred_gray.size))))),
-                'skeleton_length': float(diagnostics.mean_radius),
-            }
+            if diagnostics is not None and prediction_view is not None:
+                model_structures[spec.model_id] = {
+                    'component_count': int(diagnostics.point_count),
+                    'area_fraction': float(max(0.0, min(1.0, diagnostics.point_count / max(1.0, float(prediction_view.pred_gray.size))))),
+                    'skeleton_length': float(diagnostics.mean_radius),
+                }
             continue
 
-        mask_structure = _mask_structure(mask)
-        model_structures[spec.model_id] = mask_structure
-        area_fraction = float(mask_structure['area_fraction'])
-        proxy_score = float(_clip01(1.0 - area_fraction))
-        model_diagnostics[spec.model_id] = ModelDiagnosticMetrics(
-            area_fraction=area_fraction,
-            component_count=int(mask_structure['component_count']),
-            skeleton_length=float(mask_structure['skeleton_length']),
-            proxy_score=proxy_score,
-        )
+        mask_structure = None
+        if include_mask_structures:
+            mask_structure = _mask_structure(
+                mask,
+                include_skeleton=include_structure_details,
+                include_boundary_distance=include_boundary_distance,
+            )
+            model_structures[spec.model_id] = mask_structure
+        if include_model_diagnostics and mask_structure is not None:
+            area_fraction = float(mask_structure['area_fraction'])
+            proxy_score = float(_clip01(1.0 - area_fraction))
+            model_diagnostics[spec.model_id] = ModelDiagnosticMetrics(
+                area_fraction=area_fraction,
+                component_count=int(mask_structure['component_count']),
+                skeleton_length=float(mask_structure['skeleton_length']),
+                proxy_score=proxy_score,
+            )
         if include_model_confidence:
             model_confidence[spec.model_id] = _polygon_frame_confidence(
                 prob_map,
                 mask,
                 uncertainty_delta=float(confidence_uncertainty_delta),
                 summary_metric=str(polygon_confidence_summary),
+                allow_binary_proxy=bool(uses_binary_probability_proxy),
             )
-        if gt_mask is not None and gt_structure is not None:
+        if include_model_metrics and gt_mask is not None and gt_structure is not None:
+            if mask_structure is None:
+                mask_structure = _mask_structure(
+                    mask,
+                    include_skeleton=include_structure_details,
+                    include_boundary_distance=True,
+                )
+                model_structures[spec.model_id] = mask_structure
             model_metrics[spec.model_id] = _labeled_quality(
                 prob_map,
                 mask,
@@ -5315,7 +6016,21 @@ def _build_model_payloads(
                 boundary_radius=boundary_radius,
             )
 
-    return probabilities, masks, model_structures, model_diagnostics, model_metrics, model_confidence, original_gray, gt_mask, gt_structure, resolved_geometry_mode, model_views, gt_point_view
+    return (
+        probabilities,
+        masks,
+        model_structures,
+        model_diagnostics,
+        model_metrics,
+        model_confidence,
+        model_confidence_output_available,
+        original_gray,
+        gt_mask,
+        gt_structure,
+        resolved_geometry_mode,
+        model_views,
+        gt_point_view,
+    )
 
 
 def _metric_requires_model_confidence(metric_key: str | None) -> bool:
@@ -5324,6 +6039,49 @@ def _metric_requires_model_confidence(metric_key: str | None) -> bool:
         return False
     family, _model_id = parsed
     return family in {'model_confidence', 'model_uncertain_fraction', 'model_point_contrast'}
+
+
+def _metric_requires_pairwise_metrics(metric_key: str | None) -> bool:
+    metric_key_text = str(metric_key or 'overall_frame_score')
+    parsed = _parse_model_metric_key(metric_key_text)
+    if parsed is not None:
+        family, _model_id = parsed
+        return family not in {'model_confidence', 'model_uncertain_fraction', 'model_point_contrast'}
+    return metric_key_text in {
+        'overall_frame_score',
+        'export_priority_score',
+        'model_model_score',
+        'disagreement_score',
+        'overall_polygon_score',
+        'iou_score',
+        'dice_score',
+        'polygon_bce_score',
+        'iou',
+        'dice',
+        'bce',
+        'overall_point_score',
+        'precision_score',
+        'recall_score',
+        'f1_score',
+        'localization_score',
+        'precision',
+        'recall',
+        'f1',
+        'mean_localization_distance',
+    }
+
+
+def _metric_requires_model_metrics(metric_key: str | None) -> bool:
+    metric_key_text = str(metric_key or 'overall_frame_score')
+    if _parse_model_metric_key(metric_key_text) is not None:
+        return False
+    return metric_key_text in {
+        'overall_frame_score',
+        'export_priority_score',
+        'model_labeled_score',
+        'labeled_best_quality',
+        'labeled_mean_quality',
+    }
 
 
 def _analyze_record_payload(
@@ -5338,6 +6096,8 @@ def _analyze_record_payload(
     polygon_confidence_summary: str,
     cache_enabled: bool,
     include_model_confidence: bool = True,
+    include_pairwise_metrics: bool = True,
+    include_model_metrics: bool = True,
 ) -> dict[str, object] | None:
     timings_ms: dict[str, float] = {}
     cache_key = None
@@ -5352,13 +6112,16 @@ def _analyze_record_payload(
             confidence_uncertainty_delta,
             point_confidence_radius,
             polygon_confidence_summary,
+            include_model_confidence=bool(include_model_confidence),
+            include_pairwise_metrics=bool(include_pairwise_metrics),
+            include_model_metrics=bool(include_model_metrics),
         )
         cached = _load_cached_record_payload(cache_key)
         if cached is not None:
             return cached
 
     load_started = perf_counter()
-    probabilities_by_model, masks_by_model, model_structures, model_diagnostics, model_metrics, model_confidence, _original_gray, gt_mask, _gt_structure, resolved_geometry_mode, model_views, gt_point_view = _build_model_payloads(
+    probabilities_by_model, masks_by_model, model_structures, model_diagnostics, model_metrics, model_confidence, model_confidence_output_available, _original_gray, gt_mask, _gt_structure, resolved_geometry_mode, model_views, gt_point_view = _build_model_payloads(
         record,
         model_specs,
         analysis_max_side=analysis_max_side,
@@ -5371,6 +6134,10 @@ def _analyze_record_payload(
         include_confidence_objects=False,
         include_original_gray=False,
         include_model_confidence=include_model_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+        include_model_metrics=include_model_metrics,
+        include_model_diagnostics=bool(include_pairwise_metrics or include_model_metrics),
+        include_structure_details=False,
     )
     timings_ms['loading_preprocess'] = 1000.0 * (perf_counter() - load_started)
     probabilities = list(probabilities_by_model.values())
@@ -5378,39 +6145,23 @@ def _analyze_record_payload(
         return None
 
     metrics_started = perf_counter()
-    consensus_prob = _consensus_probability(probabilities)
-    consensus_mask = np.asarray(consensus_prob >= 0.5, dtype=bool)
-    consensus_structure = _mask_structure(consensus_mask)
+    pairwise_rows: tuple[dict[str, object], ...] = ()
+    disagreement = 0.0
+    model_model_score = 1.0
+    if include_pairwise_metrics:
+        pairwise_rows = _pairwise_model_comparisons(
+            probabilities_by_model,
+            masks_by_model,
+            geometry_mode=resolved_geometry_mode,
+            model_views=model_views,
+            model_structures=model_structures,
+            point_match_radius=point_match_radius,
+        )
+        agreement_scores = np.asarray([float(row.get('agreement_score', 0.0)) for row in pairwise_rows], dtype=np.float64)
+        disagreement = float(np.mean(1.0 - agreement_scores, dtype=np.float64)) if agreement_scores.size else 0.0
+        model_model_score = float(np.mean(agreement_scores, dtype=np.float64)) if agreement_scores.size else 1.0
 
-    pairwise_rows = _pairwise_model_comparisons(
-        probabilities_by_model,
-        masks_by_model,
-        geometry_mode=resolved_geometry_mode,
-        model_views=model_views,
-        model_structures=model_structures,
-        point_match_radius=point_match_radius,
-    )
-    agreement_scores = np.asarray([float(row.get('agreement_score', 0.0)) for row in pairwise_rows], dtype=np.float64)
-    disagreement = float(np.mean(1.0 - agreement_scores, dtype=np.float64)) if agreement_scores.size else 0.0
-    model_model_score = float(np.mean(agreement_scores, dtype=np.float64)) if agreement_scores.size else 1.0
-
-    if resolved_geometry_mode == GeometryMode.POINT:
-        reference_view = None
-        if model_diagnostics:
-            best_model_id = max(model_diagnostics.items(), key=lambda item: float(getattr(item[1], 'proxy_score', 0.0)))[0]
-            reference_view = model_views.get(best_model_id)
-        if reference_view is None and model_views:
-            reference_view = next(iter(model_views.values()))
-        vector = _point_feature_vector(reference_view) if reference_view is not None else {
-            'area_fraction': 0.0,
-            'component_count': 0.0,
-            'mean_component_area': 0.0,
-            'skeleton_length': 0.0,
-            'endpoint_count': 0.0,
-            'branchpoint_count': 0.0,
-        }
-    else:
-        vector = _structural_feature_vector(consensus_mask, structure=consensus_structure)
+    vector: dict[str, float] = {}
 
     if model_metrics:
         qualities = np.asarray([float(getattr(metrics, 'quality_score', 0.0)) for metrics in model_metrics.values()], dtype=np.float64)
@@ -5436,6 +6187,7 @@ def _analyze_record_payload(
         'model_diagnostics': model_diagnostics,
         'model_metrics': model_metrics,
         'model_confidence': model_confidence,
+        'model_confidence_output_available': model_confidence_output_available,
         'pairwise_rows': pairwise_rows,
         'timings_ms': timings_ms,
     }
@@ -5445,8 +6197,8 @@ def _analyze_record_payload(
     return payload
 
 
-def _analyze_record_payload_for_executor(args: tuple[FrameRecord, tuple[ModelSpec, ...], int | None, GeometryMode, float, int, float, int, str, bool, bool]) -> tuple[str, dict[str, object] | None]:
-    record, model_specs, analysis_max_side, geometry_mode, point_match_radius, boundary_radius, confidence_uncertainty_delta, point_confidence_radius, polygon_confidence_summary, cache_enabled, include_model_confidence = args
+def _analyze_record_payload_for_executor(args: tuple[FrameRecord, tuple[ModelSpec, ...], int | None, GeometryMode, float, int, float, int, str, bool, bool, bool, bool]) -> tuple[str, dict[str, object] | None]:
+    record, model_specs, analysis_max_side, geometry_mode, point_match_radius, boundary_radius, confidence_uncertainty_delta, point_confidence_radius, polygon_confidence_summary, cache_enabled, include_model_confidence, include_pairwise_metrics, include_model_metrics = args
     return record.key, _analyze_record_payload(
         record,
         model_specs,
@@ -5459,7 +6211,19 @@ def _analyze_record_payload_for_executor(args: tuple[FrameRecord, tuple[ModelSpe
         polygon_confidence_summary,
         cache_enabled,
         include_model_confidence,
+        include_pairwise_metrics,
+        include_model_metrics,
     )
+
+
+def _analyze_record_payload_batch_for_executor(
+    batch_args: tuple[tuple[FrameRecord, tuple[ModelSpec, ...], int | None, GeometryMode, float, int, float, int, str, bool, bool, bool, bool], ...]
+) -> tuple[tuple[str, dict[str, object] | None], ...]:
+    results: list[tuple[str, dict[str, object] | None]] = []
+    for args in batch_args:
+        results.append(_analyze_record_payload_for_executor(args))
+    _clear_runtime_image_caches()
+    return tuple(results)
 
 
 def _iter_record_payloads(
@@ -5476,24 +6240,36 @@ def _iter_record_payloads(
     polygon_confidence_summary: str,
     cache_enabled: bool,
     include_model_confidence: bool = True,
+    include_pairwise_metrics: bool = True,
+    include_model_metrics: bool = True,
     progress_callback=None,
     state_callback=None,
     cancel_check=None,
 ):
     """Yield per-record analytics payloads without retaining the whole dataset in RAM."""
 
-    worker_count = max(1, int(max_workers))
-    if os.name == 'nt' and geometry_mode != GeometryMode.POINT:
-        # Mask analytics keeps several full-frame arrays alive per task; on Windows
-        # too many parallel workers lead to paging and eventual OOM before any speedup.
-        safe_limit = 2
-        if not include_model_confidence:
-            side_limit = int(analysis_max_side or 0)
-            if side_limit > 0 and side_limit <= 1024:
-                safe_limit = 6
-            elif side_limit == 0:
-                safe_limit = 4
-        worker_count = min(worker_count, safe_limit)
+    use_thread_pool = _use_thread_pool_for_analytics()
+    worker_count = _analytics_worker_count(
+        max_workers,
+        geometry_mode=geometry_mode,
+        analysis_max_side=analysis_max_side,
+        include_model_confidence=include_model_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+        include_model_metrics=include_model_metrics,
+        model_count=len(model_specs),
+        use_thread_pool=use_thread_pool,
+    )
+    _remember_analytics_worker_plan(
+        requested=max_workers,
+        selected=worker_count,
+        use_thread_pool=use_thread_pool,
+        geometry_mode=geometry_mode,
+        analysis_max_side=analysis_max_side,
+        model_count=len(model_specs),
+        include_model_confidence=include_model_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+        include_model_metrics=include_model_metrics,
+    )
 
     def run_sequential():
         for index, record in enumerate(records, start=1):
@@ -5513,6 +6289,8 @@ def _iter_record_payloads(
                 polygon_confidence_summary,
                 cache_enabled,
                 include_model_confidence,
+                include_pairwise_metrics,
+                include_model_metrics,
             )
             if state_callback is not None:
                 state_callback(record.key, "done")
@@ -5525,10 +6303,13 @@ def _iter_record_payloads(
         return
 
     try:
-        use_thread_pool = os.name == 'nt'
         executor_cls = ThreadPoolExecutor if use_thread_pool else ProcessPoolExecutor
-        work_items = [
-            (
+        total_records = len(records)
+        batch_size = 1 if use_thread_pool else _analytics_batch_size(total_records, worker_count)
+        batch_count = int(math.ceil(float(total_records) / float(batch_size)))
+
+        def make_work_item(record: FrameRecord):
+            return (
                 record,
                 model_specs,
                 analysis_max_side,
@@ -5540,60 +6321,105 @@ def _iter_record_payloads(
                 polygon_confidence_summary,
                 cache_enabled,
                 include_model_confidence,
+                include_pairwise_metrics,
+                include_model_metrics,
             )
-            for record in records
-        ]
-        with executor_cls(max_workers=worker_count) as executor:
-            try:
-                completed = 0
-                max_in_flight = max(1, worker_count * (2 if use_thread_pool else 1))
-                next_index = 0
-                future_to_order: dict[object, int] = {}
-                ordered_results: dict[int, tuple[str, dict[str, object] | None]] = {}
-                next_yield_index = 0
 
-                def submit_work_item(order_index: int) -> None:
-                    future = executor.submit(_analyze_record_payload_for_executor, work_items[order_index])
-                    future_to_order[future] = order_index
+        def make_batch(order_index: int):
+            start = int(order_index) * int(batch_size)
+            stop = min(total_records, start + int(batch_size))
+            return tuple(make_work_item(records[index]) for index in range(start, stop))
+
+        executor = executor_cls(max_workers=worker_count)
+        shutdown_wait = True
+        executor_shutdown = False
+        try:
+            completed = 0
+            max_in_flight = max(1, worker_count)
+            next_index = 0
+            future_to_batch: dict[object, tuple[tuple[object, ...], ...]] = {}
+            last_result_at = perf_counter()
+            last_stall_progress_at = last_result_at
+
+            def submit_work_item(order_index: int) -> None:
+                batch = make_batch(order_index)
+                if use_thread_pool:
+                    future = executor.submit(_analyze_record_payload_for_executor, batch[0])
+                else:
+                    future = executor.submit(_analyze_record_payload_batch_for_executor, batch)
+                future_to_batch[future] = batch
+                if state_callback is not None:
+                    for item in batch:
+                        state_callback(item[0].key, "running")
+
+            while next_index < batch_count and len(future_to_batch) < max_in_flight:
+                submit_work_item(next_index)
+                next_index += 1
+
+            while future_to_batch:
+                if cancel_check is not None and cancel_check():
                     if state_callback is not None:
-                        state_callback(work_items[order_index][0].key, "running")
-
-                while next_index < len(work_items) and len(future_to_order) < max_in_flight:
-                    submit_work_item(next_index)
-                    next_index += 1
-
-                while future_to_order:
-                    if cancel_check is not None and cancel_check():
+                        for batch in future_to_batch.values():
+                            for item in batch:
+                                state_callback(item[0].key, "stale")
+                    shutdown_wait = False
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    executor_shutdown = True
+                    raise BuildCancelledError("Build cancelled")
+                done, _pending = wait(
+                    tuple(future_to_batch.keys()),
+                    timeout=ANALYTICS_WAIT_TIMEOUT_SECONDS,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    now = perf_counter()
+                    if progress_callback is not None and now - last_stall_progress_at >= ANALYTICS_STALL_PROGRESS_SECONDS:
+                        last_stall_progress_at = now
+                        progress_callback(completed, len(records), "Waiting for analytics workers")
+                    if now - last_result_at >= ANALYTICS_STALL_TIMEOUT_SECONDS:
                         if state_callback is not None:
-                            for pending_order in future_to_order.values():
-                                state_callback(work_items[pending_order][0].key, "stale")
+                            for batch in future_to_batch.values():
+                                for item in batch:
+                                    state_callback(item[0].key, "stale")
+                        shutdown_wait = False
                         executor.shutdown(wait=False, cancel_futures=True)
-                        raise BuildCancelledError("Build cancelled")
-                    done, _pending = wait(tuple(future_to_order.keys()), return_when=FIRST_COMPLETED)
-                    for future in done:
-                        order_index = future_to_order.pop(future)
-                        record_key, payload = future.result()
-                        ordered_results[order_index] = (record_key, payload)
-                        if state_callback is not None:
+                        executor_shutdown = True
+                        raise TimeoutError(
+                            "Analytics workers stalled: no completed frame payloads within "
+                            f"{ANALYTICS_STALL_TIMEOUT_SECONDS:.0f}s."
+                        )
+                    continue
+                last_result_at = perf_counter()
+                for future in done:
+                    future_to_batch.pop(future)
+                    result = future.result()
+                    batch_result = (result,) if use_thread_pool else tuple(result)
+                    if state_callback is not None:
+                        for record_key, _payload in batch_result:
                             state_callback(record_key, "done")
-                    while next_yield_index in ordered_results:
-                        record_key, payload = ordered_results.pop(next_yield_index)
+                    for record_key, payload in batch_result:
                         completed += 1
                         if progress_callback is not None:
                             progress_callback(completed, len(records), record_key)
                         yield record_key, payload
-                        next_yield_index += 1
-                        if completed % 32 == 0:
-                            _clear_runtime_image_caches()
-                    while next_index < len(work_items) and len(future_to_order) < max_in_flight:
-                        submit_work_item(next_index)
-                        next_index += 1
-            except Exception:
-                if state_callback is not None:
-                    for pending_order in future_to_order.values():
-                        state_callback(work_items[pending_order][0].key, "stale")
+                    if completed % 32 == 0:
+                        _clear_runtime_image_caches()
+                while next_index < batch_count and len(future_to_batch) < max_in_flight:
+                    submit_work_item(next_index)
+                    next_index += 1
+        except Exception:
+            shutdown_wait = False
+            if state_callback is not None:
+                for batch in future_to_batch.values():
+                    for item in batch:
+                        state_callback(item[0].key, "stale")
+            if not executor_shutdown:
                 executor.shutdown(wait=False, cancel_futures=True)
-                raise
+                executor_shutdown = True
+            raise
+        finally:
+            if not executor_shutdown:
+                executor.shutdown(wait=shutdown_wait, cancel_futures=not shutdown_wait)
     except (PermissionError, OSError):
         yield from run_sequential()
 
@@ -5613,6 +6439,8 @@ def _compute_record_payloads(
     polygon_confidence_summary: str,
     cache_enabled: bool,
     include_model_confidence: bool = True,
+    include_pairwise_metrics: bool = True,
+    include_model_metrics: bool = True,
     progress_callback=None,
     state_callback=None,
     cancel_check=None,
@@ -5631,6 +6459,8 @@ def _compute_record_payloads(
         polygon_confidence_summary=polygon_confidence_summary,
         cache_enabled=cache_enabled,
         include_model_confidence=include_model_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+        include_model_metrics=include_model_metrics,
         progress_callback=progress_callback,
         state_callback=state_callback,
         cancel_check=cancel_check,
@@ -5740,6 +6570,7 @@ def _collect_frame_records_modern(
     original_folder: FolderSpec | None = None,
     gt_folder: FolderSpec | None = None,
     cancel_check=None,
+    progress_callback=None,
 ) -> BuildResult:
     if not model_specs:
         raise ValueError("At least one model folder must be selected.")
@@ -5748,13 +6579,41 @@ def _collect_frame_records_modern(
     base_spec = model_specs[0]
     if cancel_check is not None and cancel_check():
         raise BuildCancelledError("Build cancelled")
-    base_index = build_folder_index(base_spec.mask_folder, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check)
+    if progress_callback is not None:
+        progress_callback(0, 0, "Indexing base folder")
+    base_index = build_folder_index(
+        base_spec.mask_folder,
+        recursive=options.recursive,
+        extensions=extensions,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+        progress_interval=max(1, int(options.progress_update_interval)),
+    )
     if not base_index:
         raise ValueError("Selected model folders do not contain matching image frames.")
 
-    original_index = build_folder_index(original_folder.path, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check) if original_folder is not None else {}
-    gt_index = build_folder_index(gt_folder.path, recursive=options.recursive, extensions=extensions, cancel_check=cancel_check) if gt_folder is not None else {}
-    fallback_model_indexes: dict[str, dict[str, Path]] = {}
+    if progress_callback is not None:
+        progress_callback(0, len(base_index), "Indexing auxiliary folders")
+    original_index = build_folder_index(
+        original_folder.path,
+        recursive=options.recursive,
+        extensions=extensions,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+        progress_interval=max(1, int(options.progress_update_interval)),
+    ) if original_folder is not None else {}
+    gt_index = build_folder_index(
+        gt_folder.path,
+        recursive=options.recursive,
+        extensions=extensions,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+        progress_interval=max(1, int(options.progress_update_interval)),
+    ) if gt_folder is not None else {}
+    original_lookup = _build_folder_path_lookup(original_index)
+    gt_lookup = _build_folder_path_lookup(gt_index)
+    fallback_model_indexes: dict[str, _FolderPathLookup] = {}
+    fallback_prob_indexes: dict[str, _FolderPathLookup] = {}
 
     records: list[FrameRecord] = []
     sorted_keys = sorted(base_index.keys(), key=natural_sort_key)
@@ -5762,6 +6621,20 @@ def _collect_frame_records_modern(
         if cancel_check is not None and cancel_check():
             raise BuildCancelledError("Build cancelled")
         model_mask_paths: dict[str, str] = {base_spec.model_id: str(base_index[key])}
+        model_prob_paths: dict[str, str] = {}
+        if base_spec.prob_folder is not None:
+            resolved_prob = _resolve_model_path_for_key(
+                base_spec.prob_folder,
+                key,
+                extensions,
+                fallback_prob_indexes,
+                recursive=options.recursive,
+                cancel_check=cancel_check,
+                progress_callback=progress_callback,
+            )
+            model_prob_paths[base_spec.model_id] = str(resolved_prob) if resolved_prob is not None else ""
+        else:
+            model_prob_paths[base_spec.model_id] = ""
         missing_required_model = False
         for spec in model_specs[1:]:
             resolved = _resolve_model_path_for_key(
@@ -5771,16 +6644,29 @@ def _collect_frame_records_modern(
                 fallback_model_indexes,
                 recursive=options.recursive,
                 cancel_check=cancel_check,
+                progress_callback=progress_callback,
             )
             if resolved is None:
                 missing_required_model = True
                 break
             model_mask_paths[spec.model_id] = str(resolved)
+            if spec.prob_folder is not None:
+                resolved_prob = _resolve_model_path_for_key(
+                    spec.prob_folder,
+                    key,
+                    extensions,
+                    fallback_prob_indexes,
+                    recursive=options.recursive,
+                    cancel_check=cancel_check,
+                    progress_callback=progress_callback,
+                )
+                model_prob_paths[spec.model_id] = str(resolved_prob) if resolved_prob is not None else ""
+            else:
+                model_prob_paths[spec.model_id] = ""
         if missing_required_model:
             continue
-        model_prob_paths = {spec.model_id: "" for spec in model_specs}
-        original_path = _resolve_aux_path(key, original_index)
-        gt_path = _resolve_aux_path(key, gt_index)
+        original_path = _resolve_aux_path_from_lookup(key, original_lookup)
+        gt_path = _resolve_aux_path_from_lookup(key, gt_lookup)
         records.append(FrameRecord(
             key=key,
             display_name=Path(key).name,
@@ -5793,6 +6679,8 @@ def _collect_frame_records_modern(
             model_mask_paths=model_mask_paths,
             model_prob_paths=model_prob_paths,
         ))
+        if progress_callback is not None and (index == 0 or (index + 1) % max(1, int(options.progress_update_interval)) == 0 or index + 1 == len(sorted_keys)):
+            progress_callback(index + 1, len(sorted_keys), key)
     return BuildResult(
         records=tuple(records),
         model_specs=model_specs,
@@ -5823,6 +6711,7 @@ def collect_frame_records(
     gt_folder: FolderSpec | None = None,
     base_folder: FolderSpec | None = None,
     cancel_check=None,
+    progress_callback=None,
 ) -> BuildResult:
     """Collect matched frame records in modern or legacy-lite mode."""
 
@@ -5842,6 +6731,7 @@ def collect_frame_records(
             original_folder=base_folder,
             gt_folder=None,
             cancel_check=cancel_check,
+            progress_callback=progress_callback,
         )
         records: list[FrameRecord] = []
         for record in modern.records:
@@ -5873,6 +6763,7 @@ def collect_frame_records(
         original_folder=original_folder,
         gt_folder=gt_folder,
         cancel_check=cancel_check,
+        progress_callback=progress_callback,
     )
 
 
@@ -5892,9 +6783,16 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
     if not records:
         return replace(build_result, scores_computed=True)
 
-    updated_records: list[FrameRecord] = []
+    active_metric = metric_key or build_result.selected_metric_key or 'overall_frame_score'
+    if _metric_requires_model_confidence(active_metric) and active_metric not in set(build_result.available_metric_keys or ()):
+        active_metric = 'overall_frame_score'
+    include_model_confidence = _metric_requires_model_confidence(active_metric)
+    include_pairwise_metrics = _metric_requires_pairwise_metrics(active_metric)
+    include_model_metrics = _metric_requires_model_metrics(active_metric)
+
+    records_by_key = {str(record.key): record for record in records}
+    updated_records_by_key: dict[str, FrameRecord] = {}
     try:
-        include_model_confidence = _metric_requires_model_confidence(metric_key or build_result.selected_metric_key)
         payload_iter = _iter_record_payloads(
             records,
             build_result.model_specs,
@@ -5908,14 +6806,17 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
             polygon_confidence_summary=str(getattr(build_result.options, 'polygon_confidence_summary', POLYGON_CONFIDENCE_SUMMARY_WEIGHTED) or POLYGON_CONFIDENCE_SUMMARY_WEIGHTED),
             cache_enabled=bool(build_result.options.cache_enabled),
             include_model_confidence=include_model_confidence,
+            include_pairwise_metrics=include_pairwise_metrics,
+            include_model_metrics=include_model_metrics,
             progress_callback=progress_callback,
             state_callback=state_callback,
             cancel_check=cancel_check,
         )
-        for record, (record_key, payload) in zip(records, payload_iter):
+        for record_key, payload in payload_iter:
             if payload is None:
                 continue
-            if record.key != record_key:
+            record = records_by_key.get(str(record_key))
+            if record is None:
                 continue
             vector = dict(payload.get('vector') or {})
             disagreement = float(payload.get('disagreement', 0.0))
@@ -5970,12 +6871,19 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
                 notes=(('labeled' if labeled_best is not None else 'unlabeled'),),
                 frame_type=frame_type,
             )
-            updated_records.append(replace(record, summary=summary))
+            updated_records_by_key[str(record.key)] = replace(record, summary=summary)
     finally:
         _clear_runtime_image_caches()
 
-    active_metric = metric_key or build_result.selected_metric_key or 'overall_frame_score'
-    absolute_scores = [float(_record_metric_value(record.summary, active_metric) or 0.0) for record in updated_records]
+    updated_records = [updated_records_by_key[str(record.key)] for record in records if str(record.key) in updated_records_by_key]
+    metric_is_required = _metric_requires_model_confidence(active_metric)
+    metric_values_by_key: dict[str, float] = {}
+    for record in updated_records:
+        value = _record_metric_value(record.summary, active_metric)
+        if value is None and metric_is_required:
+            continue
+        metric_values_by_key[str(record.key)] = float(value or 0.0)
+    absolute_scores = list(metric_values_by_key.values())
     min_absolute = min(absolute_scores) if absolute_scores else 0.0
     max_absolute = max(absolute_scores) if absolute_scores else 0.0
     span = max(EPS, max_absolute - min_absolute)
@@ -5984,7 +6892,18 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
     scored_records: list[FrameRecord] = []
     best_key = None
     best_value = None
-    for record, absolute in zip(updated_records, absolute_scores):
+    for record in updated_records:
+        absolute = metric_values_by_key.get(str(record.key))
+        if absolute is None:
+            scored_records.append(replace(
+                record,
+                score=0.0,
+                absolute_score=None,
+                relative_score=None,
+                score_percentile=None,
+                score_ready=False,
+            ))
+            continue
         relative = 0.0 if abs(max_absolute - min_absolute) <= EPS else (absolute - min_absolute) / span
         display = relative if higher_is_better else (1.0 - relative)
         scored = replace(record, score=float(display), absolute_score=float(absolute), relative_score=float(relative), score_ready=True)
@@ -6017,8 +6936,23 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
 def compute_comparison_score(first: np.ndarray, second: np.ndarray, mode: ComparisonMode) -> float:
     """Legacy-lite helper that returns only scalar score for a comparison mode."""
 
-    _heatmap, score = compute_comparison(first, second, mode)
-    return float(score)
+    if mode == ComparisonMode.GRAYSCALE_DIFF:
+        first_gray = np.asarray(first, dtype=np.float32)
+        second_gray = np.asarray(second, dtype=np.float32)
+        if first_gray.size == 0 or second_gray.size == 0:
+            return 0.0
+        diff = np.abs(first_gray - second_gray)
+        scale = 255.0 if max(float(np.max(first_gray)), float(np.max(second_gray))) > 1.0 else 1.0
+        return float(np.mean(diff, dtype=np.float64) / scale)
+    first_bool = np.asarray(first, dtype=bool)
+    second_bool = np.asarray(second, dtype=bool)
+    if first_bool.size == 0 or second_bool.size == 0 or mode == ComparisonMode.OVERLAY_ONLY:
+        return 0.0
+    if mode in {ComparisonMode.XOR, ComparisonMode.DISAGREEMENT}:
+        return float(np.mean(np.not_equal(first_bool, second_bool), dtype=np.float64))
+    if mode == ComparisonMode.FIRST_MINUS_SECOND:
+        return float(np.mean(np.logical_and(first_bool, np.logical_not(second_bool)), dtype=np.float64))
+    return float(np.mean(np.logical_and(np.logical_not(first_bool), second_bool), dtype=np.float64))
 
 
 def load_frame_layers(record: FrameRecord) -> dict[str, object]:
@@ -6052,7 +6986,7 @@ def load_frame_layers(record: FrameRecord) -> dict[str, object]:
     }
 
 
-def compute_build_result_mismatches(
+def compute_build_result_metrics(
     build_result: BuildResult,
     *,
     comparison_mode: ComparisonMode | None = None,
@@ -6060,7 +6994,7 @@ def compute_build_result_mismatches(
     progress_callback=None,
     cancel_check=None,
 ) -> BuildResult:
-    """Legacy-lite mismatch pipeline wrapper implemented on top of analytics."""
+    """Legacy-lite score-computation wrapper implemented on top of analytics."""
 
     mode = comparison_mode or build_result.options.comparison_mode
     normalized_records: list[FrameRecord] = []
@@ -6116,13 +7050,32 @@ def build_frame_records(
     progress_callback=None,
     cancel_check=None,
 ) -> BuildResult:
-    """Legacy-lite full build wrapper (index + mismatch compute)."""
+    """Legacy-lite full build wrapper (index + metric compute)."""
 
     initial = collect_frame_records(first_folder, second_folder, options, base_folder=base_folder, cancel_check=cancel_check)
-    return compute_build_result_mismatches(
+    return compute_build_result_metrics(
         initial,
         comparison_mode=options.comparison_mode,
         display_metric="relative",
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+    )
+
+
+def compute_build_result_mismatches(
+    build_result: BuildResult,
+    *,
+    comparison_mode: ComparisonMode | None = None,
+    display_metric: str = "relative",
+    progress_callback=None,
+    cancel_check=None,
+) -> BuildResult:
+    """Backward-compatible alias for the legacy lite API."""
+
+    return compute_build_result_metrics(
+        build_result,
+        comparison_mode=comparison_mode,
+        display_metric=display_metric,
         progress_callback=progress_callback,
         cancel_check=cancel_check,
     )
@@ -6171,40 +7124,62 @@ def metric_higher_is_better(metric_key: str) -> bool:
 
 
 def metric_percentile_high_is_bad(metric_key: str) -> bool:
-    metric_key = str(metric_key or "")
-    parsed = _parse_model_metric_key(metric_key)
-    if parsed is not None:
-        family, _model_id = parsed
-        if family == "model_confidence":
-            return True
+    """Compatibility helper for legacy callers.
+
+    Score percentiles shown in the UI are goodness percentiles:
+    higher percentile always means a better frame, regardless of metric sign.
+    """
+
     return False
 
 
 def rank_records_by_metric(records: tuple[FrameRecord, ...] | list[FrameRecord], metric_key: str) -> list[FrameRecord]:
     higher_is_better = metric_higher_is_better(metric_key)
-    scored: list[FrameRecord] = []
+    scored: list[tuple[float, FrameRecord]] = []
     for record in records:
         value = metric_value_for_record(record, metric_key)
-        if value is None or not np.isfinite(float(value)):
+        if value is None:
             continue
-        scored.append(record)
-    return sorted(
-        scored,
-        key=lambda item: float(metric_value_for_record(item, metric_key) or 0.0),
-        reverse=bool(higher_is_better),
-    )
+        value_float = float(value)
+        if not np.isfinite(value_float):
+            continue
+        scored.append((value_float, record))
+    ranked = sorted(scored, key=lambda item: item[0], reverse=bool(higher_is_better))
+    return [record for _value, record in ranked]
+
+
+def rank_records_by_metric_badness(records: tuple[FrameRecord, ...] | list[FrameRecord], metric_key: str) -> list[FrameRecord]:
+    higher_is_better = metric_higher_is_better(metric_key)
+    scored: list[tuple[float, FrameRecord]] = []
+    for record in records:
+        value = metric_value_for_record(record, metric_key)
+        if value is None:
+            continue
+        value_float = float(value)
+        if not np.isfinite(value_float):
+            continue
+        scored.append((value_float, record))
+    ranked = sorted(scored, key=lambda item: item[0], reverse=not bool(higher_is_better))
+    return [record for _value, record in ranked]
+
+
+def _ranked_percentile_map(ranked: list[FrameRecord]) -> dict[str, float]:
+    if not ranked:
+        return {}
+    if len(ranked) == 1:
+        return {ranked[0].key: 100.0}
+    denominator = max(1, len(ranked) - 1)
+    return {record.key: float(100.0 * (denominator - index) / denominator) for index, record in enumerate(ranked)}
 
 
 def compute_metric_percentiles(records: tuple[FrameRecord, ...] | list[FrameRecord], metric_key: str) -> dict[str, float]:
     ranked = rank_records_by_metric(records, metric_key)
-    if not ranked:
-        return {}
-    if len(ranked) == 1:
-        return {ranked[0].key: (0.0 if metric_percentile_high_is_bad(metric_key) else 100.0)}
-    denominator = max(1, len(ranked) - 1)
-    if metric_percentile_high_is_bad(metric_key):
-        return {record.key: float(100.0 * index / denominator) for index, record in enumerate(ranked)}
-    return {record.key: float(100.0 * (denominator - index) / denominator) for index, record in enumerate(ranked)}
+    return _ranked_percentile_map(ranked)
+
+
+def compute_metric_badness_percentiles(records: tuple[FrameRecord, ...] | list[FrameRecord], metric_key: str) -> dict[str, float]:
+    ranked = rank_records_by_metric_badness(records, metric_key)
+    return _ranked_percentile_map(ranked)
 
 
 def select_candidate_records(
@@ -6216,7 +7191,7 @@ def select_candidate_records(
     top_percent: float = 10.0,
     percentile_threshold: float = 90.0,
 ) -> tuple[FrameRecord, ...]:
-    ranked = rank_records_by_metric(build_result.records, metric_key)
+    ranked = rank_records_by_metric_badness(build_result.records, metric_key)
     if not ranked:
         return tuple()
     mode = str(selection_mode or EXPORT_SELECTION_MODE_COUNT)
@@ -6224,7 +7199,7 @@ def select_candidate_records(
         count = max(1, int(math.ceil(len(ranked) * max(0.0, float(top_percent)) / 100.0)))
         return tuple(ranked[:count])
     if mode == EXPORT_SELECTION_MODE_PERCENTILE:
-        percentiles = compute_metric_percentiles(ranked, metric_key)
+        percentiles = compute_metric_badness_percentiles(ranked, metric_key)
         selected = [record for record in ranked if float(percentiles.get(record.key, 0.0)) >= float(percentile_threshold)]
         return tuple(selected or ranked[:1])
     count = max(1, int(top_k))
@@ -6282,8 +7257,13 @@ def load_frame_detail_base(
     confidence_uncertainty_delta = float(getattr(active_build_result.options, 'confidence_uncertainty_delta', MODEL_CONFIDENCE_UNCERTAIN_DELTA))
     point_confidence_radius = int(getattr(active_build_result.options, 'point_confidence_radius', POINT_CONFIDENCE_NEIGHBOR_RADIUS) or POINT_CONFIDENCE_NEIGHBOR_RADIUS)
     polygon_confidence_summary = str(getattr(active_build_result.options, 'polygon_confidence_summary', POLYGON_CONFIDENCE_SUMMARY_WEIGHTED) or POLYGON_CONFIDENCE_SUMMARY_WEIGHTED)
+    summary_pairwise = tuple(active_record.summary.pairwise_metrics) if active_record.summary is not None and active_record.summary.pairwise_metrics else ()
+    summary_model_metrics = dict(getattr(active_record.summary, 'model_metrics', {}) or {}) if active_record.summary is not None else {}
+    include_pairwise_metrics = False
+    include_model_metrics = False
+    include_model_diagnostics = bool(active_build_result.options.geometry_mode in {GeometryMode.POINT, GeometryMode.AUTO})
 
-    probabilities, masks, _model_structures, model_diagnostics, model_metrics, model_confidence, original_gray, gt_mask, _gt_structure, detail_geometry_mode, model_views, gt_point_view = _build_model_payloads(
+    probabilities, masks, _model_structures, model_diagnostics, model_metrics, model_confidence, model_confidence_output_available, original_gray, gt_mask, _gt_structure, detail_geometry_mode, model_views, gt_point_view = _build_model_payloads(
         active_record,
         active_build_result.model_specs,
         analysis_max_side=max_side,
@@ -6295,9 +7275,19 @@ def load_frame_detail_base(
         polygon_confidence_summary=polygon_confidence_summary,
         include_confidence_objects=False,
         include_model_confidence=False,
+        include_pairwise_metrics=include_pairwise_metrics,
+        include_model_metrics=include_model_metrics,
+        include_model_diagnostics=include_model_diagnostics,
+        include_structure_details=True,
     )
+    if summary_model_metrics:
+        model_metrics = {**summary_model_metrics, **model_metrics}
 
     gt_gray = _load_optional_gray(active_record.gt_path, target_shape=tuple(int(v) for v in gt_mask.shape) if gt_mask is not None else (tuple(int(v) for v in original_gray.shape) if original_gray is not None else None), max_side=max_side)
+    if gt_gray is not None:
+        gt_mask = _mask_from_gray(gt_gray)
+        if detail_geometry_mode == GeometryMode.POINT:
+            gt_point_view = build_prediction_view_from_gray('ground_truth', np.asarray(gt_gray, dtype=np.uint8), threshold=128)
     model_display_names = {spec.model_id: spec.display_name for spec in active_build_result.model_specs}
     selected_model_id = target_model_id if target_model_id in probabilities else (next(iter(probabilities.keys()), None))
     summary_confidence = {}
@@ -6326,10 +7316,11 @@ def load_frame_detail_base(
         "gt_point_view": gt_point_view,
         "consensus_prob": consensus_prob,
         "consensus_mask": consensus_mask,
-        "pairwise_model_comparisons": tuple(active_record.summary.pairwise_metrics) if active_record.summary is not None and active_record.summary.pairwise_metrics else _pairwise_model_comparisons(probabilities, masks, geometry_mode=detail_geometry_mode, model_views=model_views, point_match_radius=float(active_build_result.options.point_match_radius)),
+        "pairwise_model_comparisons": summary_pairwise,
         "frame_metrics": dict(active_record.summary.metric_values) if active_record.summary is not None else {},
         "model_metrics": model_metrics,
         "model_confidence": model_confidence,
+        "model_confidence_output_available": model_confidence_output_available,
         "model_diagnostics": model_diagnostics,
         "geometry_mode": detail_geometry_mode.value,
         "point_match_radius": float(active_build_result.options.point_match_radius),
@@ -6402,6 +7393,7 @@ def load_frame_detail_model_confidence(
             uncertainty_delta=confidence_uncertainty_delta,
             summary_metric=polygon_confidence_summary,
             include_debug=True,
+            allow_binary_proxy=not bool((record.model_prob_paths or {}).get(target_model_id)),
         )
     model_confidence[target_model_id] = confidence_row
     _store_cached_detail_payload(cache_key, confidence_row)
@@ -6534,20 +7526,23 @@ def compute_comparison(first: np.ndarray, second: np.ndarray, mode: ComparisonMo
         first_gray = np.asarray(first, dtype=np.float32)
         second_gray = np.asarray(second, dtype=np.float32)
         heatmap = np.abs(first_gray - second_gray)
-        if heatmap.max() > 1.0:
-            heatmap /= 255.0
-        return heatmap.astype(np.float32), float(np.mean(heatmap, dtype=np.float64))
+        if heatmap.size == 0:
+            return heatmap.astype(np.float32), 0.0
+        scale = 255.0 if max(float(np.max(first_gray)), float(np.max(second_gray))) > 1.0 else 1.0
+        if scale > 1.0:
+            heatmap = heatmap / scale
+        return heatmap.astype(np.float32, copy=False), float(np.mean(heatmap, dtype=np.float64))
     first_bool = np.asarray(first, dtype=bool)
     second_bool = np.asarray(second, dtype=bool)
     if mode == ComparisonMode.OVERLAY_ONLY:
-        heatmap = np.zeros_like(first_bool, dtype=np.float32)
+        return np.zeros_like(first_bool, dtype=np.float32), 0.0
     elif mode in {ComparisonMode.XOR, ComparisonMode.DISAGREEMENT}:
-        heatmap = np.logical_xor(first_bool, second_bool).astype(np.float32)
+        mask = np.logical_xor(first_bool, second_bool)
     elif mode == ComparisonMode.FIRST_MINUS_SECOND:
-        heatmap = np.logical_and(first_bool, np.logical_not(second_bool)).astype(np.float32)
+        mask = np.logical_and(first_bool, np.logical_not(second_bool))
     else:
-        heatmap = np.logical_and(np.logical_not(first_bool), second_bool).astype(np.float32)
-    return heatmap, float(np.mean(heatmap, dtype=np.float64))
+        mask = np.logical_and(np.logical_not(first_bool), second_bool)
+    return mask.astype(np.float32), float(np.mean(mask, dtype=np.float64))
 
 
 

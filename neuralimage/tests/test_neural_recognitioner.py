@@ -183,6 +183,34 @@ def test_recognizer_indexes_source_files_inside_worker(tmp_path):
     )
 
 
+def test_recognizer_indexes_source_files_recursively_when_enabled(tmp_path):
+    source_dir = tmp_path / "recognition_source_recursive"
+    nested_dir = source_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    (source_dir / "frame_root.png").write_bytes(b"fake")
+    (nested_dir / "frame_nested.bmp").write_bytes(b"fake")
+
+    bus = _StubBus()
+    params = RecognitionParameters(
+        source_files=[],
+        source_folder=source_dir,
+        result_folder=tmp_path / "result",
+        model="dummy_model_path.pth",
+        part_size=(16, 16),
+        batch_size=4,
+        overlap=2,
+        recursive_file_search=True,
+    )
+    recognizer = NeuralRecognizer(params, bus)
+
+    recognizer._ensure_source_files_indexed()
+
+    assert sorted(p.relative_to(source_dir).as_posix() for p in params.source_files) == [
+        "frame_root.png",
+        "nested/frame_nested.bmp",
+    ]
+
+
 def test_prepare_model_resolves_recommended_threshold_from_artifact_metadata(monkeypatch):
     base_dir = make_test_dir("neural_rec_threshold_auto")
     bus = _StubBus()

@@ -260,6 +260,11 @@ def _build_settings_state(
             read_int('target_x_size', defaults.target_size[0]),
             read_int('target_y_size', defaults.target_size[1]),
         ),
+        compression_factor=max(1, read_int('compression_factor', getattr(defaults, 'compression_factor', 1))),
+        recursive_file_search=read_bool(
+            'recursive_file_search',
+            getattr(defaults, 'recursive_file_search', False),
+        ),
         optimizer_name=read_str('optimizer_name', defaults.optimizer_name),
         mixed_precision=read_str('mixed_precision', defaults.mixed_precision),
         loss_function=normalize_loss_term_name(legacy_loss_function)
@@ -538,14 +543,14 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'resize_enabled': bool(state.resize_enabled),
         'additional_processing': bool(state.crop_enabled or state.resize_enabled),
         'edge_cut_size': int(state.edge_cut_size),
+        'compression_factor': int(max(1, int(getattr(state, 'compression_factor', 1)))),
+        'recursive_file_search': bool(getattr(state, 'recursive_file_search', False)),
         'sample_x_size': int(train_patch_size[0]),
         'sample_y_size': int(train_patch_size[1]),
         'train_patch_x_size': int(train_patch_size[0]),
         'train_patch_y_size': int(train_patch_size[1]),
         'recognition_patch_x_size': int(recognition_patch_size[0]),
         'recognition_patch_y_size': int(recognition_patch_size[1]),
-        'target_x_size': int(state.target_size[0]),
-        'target_y_size': int(state.target_size[1]),
         'optimizer_name': state.optimizer_name,
         'mixed_precision': state.mixed_precision,
         'loss_function': normalize_loss_term_name(state.loss_function)

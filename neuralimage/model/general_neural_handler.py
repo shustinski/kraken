@@ -385,7 +385,8 @@ class GeneralNeuralHandler:
         normalized_purpose = str(purpose or 'train').strip().lower()
         is_training_data = normalized_purpose == 'train'
 
-        if filter_files(dataset_label, ('.cif',)):
+        recursive = bool(getattr(self.tranining_parameters, 'recursive_file_search', False))
+        if filter_files(dataset_label, ('.cif',), recursive=recursive):
             binary_dir_name = 'binary_cif' if is_training_data else f'binary_cif_{normalized_purpose}'
             binary_labels = dataset_label.parent / binary_dir_name
             self._start_cif_conversion(dataset_label, binary_labels)
@@ -533,7 +534,12 @@ class GeneralNeuralHandler:
     def _start_cif_conversion(self, source: Path, result: Path):
         if self._check_folder_existance(result):
             return
-        self.current_thread = ConvertCifThread(source, result, message_bus=self.message_bus)
+        self.current_thread = ConvertCifThread(
+            source,
+            result,
+            message_bus=self.message_bus,
+            recursive=bool(getattr(self.tranining_parameters, 'recursive_file_search', False)),
+        )
         self.current_thread.start()
         self._wait_for_current_thread('cif conversion')
 
@@ -545,6 +551,7 @@ class GeneralNeuralHandler:
             result,
             self.tranining_parameters.generation,
             message_bus=self.message_bus,
+            recursive=bool(getattr(self.tranining_parameters, 'recursive_file_search', False)),
         )
         self.current_thread.daemon = False
         self.current_thread.start()
@@ -825,14 +832,24 @@ class GeneralNeuralHandler:
         image_folder: Path,
         label_folder: Path,
     ) -> list[tuple[Path, Path]] | None:
-        image_files = sorted(filter_images(image_folder))
-        label_files = sorted(filter_images(label_folder))
+        recursive = bool(getattr(self.tranining_parameters, 'recursive_file_search', False))
+        image_files = sorted(filter_images(image_folder, recursive=recursive))
+        label_files = sorted(filter_images(label_folder, recursive=recursive))
 
-        def _build_file_map(files: list[Path], kind: str) -> dict[str, Path]:
+        def _sample_key(file: Path, root: Path) -> str:
+            if not recursive:
+                return file.stem
+            try:
+                relative = file.relative_to(root)
+            except ValueError:
+                return file.stem
+            return relative.with_suffix('').as_posix()
+
+        def _build_file_map(files: list[Path], kind: str, root: Path) -> dict[str, Path]:
             result: dict[str, Path] = {}
             duplicates: list[str] = []
             for file in files:
-                stem = file.stem
+                stem = _sample_key(file, root)
                 if stem in result:
                     duplicates.append(stem)
                     continue
@@ -847,8 +864,8 @@ class GeneralNeuralHandler:
                 self._need_stop = True
             return result
 
-        image_map = _build_file_map(image_files, 'image')
-        label_map = _build_file_map(label_files, 'label')
+        image_map = _build_file_map(image_files, 'image', image_folder)
+        label_map = _build_file_map(label_files, 'label', label_folder)
         if self._need_stop:
             return None
 

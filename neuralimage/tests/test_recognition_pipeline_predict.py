@@ -11,7 +11,10 @@ from model.NeuralNetwork.recognition_pipeline import (
     RuntimeWorkerConfig,
     WorkerCounts,
     WorkerGroups,
+    cut_image_prepare,
     gpu_predict,
+    run_single_thread_recognition,
+    sew,
 )
 from model.NeuralNetwork import recognition_pipeline as recognition_pipeline_module
 
@@ -117,6 +120,118 @@ def test_store_payload_uses_numpy_transport_when_torch_transport_is_disabled(mon
 
     assert isinstance(payload['cutted_image'], np.ndarray)
     assert payload['cutted_image'].flags['C_CONTIGUOUS']
+
+
+def test_cut_image_prepare_applies_compression_restore_before_cutting(tmp_path):
+    source_path = tmp_path / 'checker.png'
+    checker = ((np.indices((8, 8)).sum(axis=0) % 2) * 255).astype(np.uint8)
+    Image.fromarray(checker, mode='L').save(source_path)
+
+    original = cut_image_prepare(source_path, (1, 8, 8), overlap=0)
+    compressed = cut_image_prepare(source_path, (1, 8, 8), overlap=0, compression_factor=2)
+
+    assert original['baseim_size'] == (8, 8)
+    assert compressed['baseim_size'] == (8, 8)
+    assert compressed['cutted_image'].shape == original['cutted_image'].shape
+    assert not np.allclose(compressed['cutted_image'], original['cutted_image'])
+
+
+def test_cut_image_prepare_uses_relative_name_when_source_root_is_provided(tmp_path):
+    source_dir = tmp_path / 'source'
+    nested_dir = source_dir / 'nested'
+    nested_dir.mkdir(parents=True)
+    source_path = nested_dir / 'frame.png'
+    Image.fromarray(np.zeros((8, 8), dtype=np.uint8), mode='L').save(source_path)
+
+    payload = cut_image_prepare(source_path, (1, 8, 8), overlap=0, source_root=source_dir)
+
+    assert payload['name'] == 'nested/frame.png'
+
+
+def test_sew_preserves_relative_output_directories(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        recognition_pipeline_module,
+        'sew_image',
+        lambda **_kwargs: Image.fromarray(np.zeros((8, 8), dtype=np.uint8), mode='L'),
+    )
+    payload = {
+        'name': 'nested/frame.png',
+        'baseim_size': (8, 8),
+        'predicted_image': np.zeros((1, 1, 8, 8), dtype=np.float32),
+        'overlap': 0,
+    }
+
+    output_path = sew(tmp_path, payload)
+
+    assert output_path == tmp_path / 'nested' / 'frame.jpg'
+    assert output_path.exists()
+
+
+def test_sew_writes_confidence_map_to_confidence_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        recognition_pipeline_module,
+        'sew_image',
+        lambda **_kwargs: Image.fromarray(np.zeros((8, 8), dtype=np.uint8), mode='L'),
+    )
+    payload = {
+        'name': 'nested/frame.png',
+        'baseim_size': (8, 8),
+        'predicted_image': np.zeros((1, 1, 8, 8), dtype=np.float32),
+        'confidence_image': np.ones((1, 1, 8, 8), dtype=np.float32),
+        'overlap': 0,
+    }
+
+    output_path = sew(tmp_path, payload, confidence_save_mode='separate_grayscale')
+
+    assert output_path == tmp_path / 'nested' / 'frame.jpg'
+    assert output_path.exists()
+    assert (tmp_path / 'confidence' / 'nested' / 'frame.jpg').exists()
+    assert not (tmp_path / 'nested' / 'frame_confidence.jpg').exists()
+
+
+def test_single_thread_recognition_passes_compression_factor_to_cut(tmp_path, monkeypatch):
+    source_path = tmp_path / 'frame.png'
+    output_path = tmp_path / 'frame.jpg'
+    Image.fromarray(np.zeros((8, 8), dtype=np.uint8), mode='L').save(source_path)
+    Image.fromarray(np.zeros((8, 8), dtype=np.uint8), mode='L').save(output_path)
+    captured: dict[str, int] = {}
+
+    def _fake_cut_image_prepare(_path, _shape, _overlap, **kwargs):
+        captured['compression_factor'] = int(kwargs['compression_factor'])
+        captured['source_root_is_tmp'] = int(kwargs['source_root'] == tmp_path)
+        return {
+            'name': source_path.name,
+            'baseim_size': (8, 8),
+            'overlap': 0,
+            'cutted_image': np.zeros((1, 1, 8, 8), dtype=np.float32),
+        }
+
+    def _fake_gpu_predict(payload, *_args, **_kwargs):
+        payload['_prediction_stats'] = {'min': 0.0, 'max': 1.0, 'mean': 0.5, 'non_finite': 0, 'fp32_retries': 0}
+        return payload
+
+    monkeypatch.setattr(recognition_pipeline_module, 'cut_image_prepare', _fake_cut_image_prepare)
+    monkeypatch.setattr(recognition_pipeline_module, 'gpu_predict', _fake_gpu_predict)
+    monkeypatch.setattr(recognition_pipeline_module, 'sew', lambda *_args, **_kwargs: output_path)
+
+    run_single_thread_recognition(
+        source_files=[source_path],
+        result_folder=tmp_path,
+        model=torch.nn.Identity(),
+        part_size=(8, 8),
+        batch_size=1,
+        overlap=0,
+        colors=1,
+        device=torch.device('cpu'),
+        stop_event=type('StopEvent', (), {'is_set': lambda self: False})(),
+        publish=lambda *_args: None,
+        collect_memory_metrics=lambda: None,
+        compression_factor=4,
+        source_root=tmp_path,
+    )
+
+    assert captured['compression_factor'] == 4
+    assert captured['source_root_is_tmp'] == 1
 
 
 class _StubQueue:

@@ -68,9 +68,9 @@ OPTIMIZER_PRESET_FLOAT_TOLERANCE = 1e-12
 LOSS_PRESET_FLOAT_TOLERANCE = 1e-12
 EDGE_CUT_RANGE = (0, 500)
 EDGE_CUT_STEP = 10
-TARGET_SIZE_RANGE = (0, 4000)
-TARGET_SIZE_STEP = 100
-TARGET_SIZE_DEFAULT = 2000
+COMPRESSION_FACTOR_RANGE = (1, 64)
+COMPRESSION_FACTOR_STEP = 1
+COMPRESSION_FACTOR_DEFAULT = 1
 EPOCHS_RANGE = (0, 1000)
 EPOCHS_DEFAULT = 20
 
@@ -298,6 +298,7 @@ class SettingsPanel(QDockWidget):
         self.shuffle_patches_in_frame_check_box.setChecked(True)
         # Backward-compatible alias for old code expecting a generic shuffle checkbox.
         self.shuffle_check_box = self.shuffle_frames_check_box
+        self.recursive_file_search_check_box = QCheckBox('')
 
         self.nn_model_type = NoWheelComboBox()
         self.nn_model_type.setSizePolicy(self.size_policy)
@@ -884,6 +885,7 @@ class SettingsPanel(QDockWidget):
         )
         self._set_fields_enabled((self.color_type,), training_applicable)
         self._set_fields_enabled((self.train_patch_size_widget,), batch_related)
+        self._set_fields_enabled((self.recursive_file_search_check_box,), training_applicable or recognition_applicable)
         self._set_fields_enabled((self.sync_patch_sizes_check_box,), recognition_applicable)
         self._set_fields_enabled((self.recognition_patch_size_widget,), recognition_applicable)
 
@@ -919,6 +921,7 @@ class SettingsPanel(QDockWidget):
                 self.prepare_samples_groupbox,
                 self.enable_crop_processing,
                 self.enable_resize_processing,
+                self.compression_factor_spinbox,
             ),
             training_applicable,
         )
@@ -1105,18 +1108,15 @@ class SettingsPanel(QDockWidget):
         self.enable_crop_processing = QCheckBox('')
         self.enable_resize_processing = QCheckBox('')
         self.cut_corner_spinbox = create_spinbox(EDGE_CUT_RANGE, step=EDGE_CUT_STEP, default_value=0)
-        self.target_x_size = create_spinbox(
-            TARGET_SIZE_RANGE,
-            step=TARGET_SIZE_STEP,
-            default_value=TARGET_SIZE_DEFAULT,
+        self.compression_factor_spinbox = create_spinbox(
+            COMPRESSION_FACTOR_RANGE,
+            step=COMPRESSION_FACTOR_STEP,
+            default_value=COMPRESSION_FACTOR_DEFAULT,
         )
-        self.target_y_size = create_spinbox(
-            TARGET_SIZE_RANGE,
-            step=TARGET_SIZE_STEP,
-            default_value=TARGET_SIZE_DEFAULT,
-        )
-        size_widget = create_size_widget(self.target_x_size, self.target_y_size)
-        self.target_size_widget = size_widget
+        # Legacy aliases kept for tests/plugins that inspected the old target-size controls.
+        self.target_size_widget = self.compression_factor_spinbox
+        self.target_x_size = self.compression_factor_spinbox
+        self.target_y_size = self.compression_factor_spinbox
 
         form = self._create_form_layout()
         self.prepare_samples_groupbox.setLayout(form)
@@ -1124,7 +1124,7 @@ class SettingsPanel(QDockWidget):
         form.addRow(self.enable_crop_processing)
         form.addRow(self.enable_resize_processing)
         self._add_labeled_row(form, self.cut_corner_spinbox, 'edge_cut')
-        self._add_labeled_row(form, self.target_size_widget, 'target_size')
+        self._add_labeled_row(form, self.compression_factor_spinbox, 'compression_factor')
         self.enable_crop_processing.toggled.connect(self._sync_preprocess_controls)
         self.enable_resize_processing.toggled.connect(self._sync_preprocess_controls)
         self._sync_preprocess_controls()
@@ -1777,6 +1777,7 @@ class SettingsPanel(QDockWidget):
         self.training_page_layout.addWidget(self.samples_number)
         self.training_page_layout.addWidget(self.general_groupbox)
         self.training_page_layout.addWidget(self.spatial_groupbox)
+        self.training_page_layout.addWidget(self.prepare_samples_groupbox)
         self.training_page_layout.addWidget(self.rare_patch_groupbox)
         self.training_page_layout.addWidget(self.optimizer_groupbox)
         self.training_page_layout.addWidget(self.precision_loss_groupbox)
@@ -1791,7 +1792,6 @@ class SettingsPanel(QDockWidget):
         self.expert_content_layout.setContentsMargins(0, 0, 0, 0)
         self.expert_content_layout.setSpacing(CONTENT_LAYOUT_SPACING)
         self.expert_content_layout.addWidget(self.sample_type_groupbox)
-        self.expert_content_layout.addWidget(self.prepare_samples_groupbox)
         self.expert_content_layout.addWidget(self.validation_groupbox)
         self.expert_content_layout.addWidget(self.shuffle_groupbox)
         self.expert_content_layout.addWidget(self.photometric_groupbox)
@@ -2658,7 +2658,7 @@ class SettingsPanel(QDockWidget):
             self._training_controls_applicable and self.enable_crop_processing.isChecked(),
         )
         self._set_field_enabled(
-            self.target_size_widget,
+            self.compression_factor_spinbox,
             self._training_controls_applicable and self.enable_resize_processing.isChecked(),
         )
 

@@ -96,6 +96,16 @@ _ARTIFACT_NAME_SANITIZE_PATTERN = re.compile(r'[^A-Za-z0-9._-]+')
 _RANDOM_ARTIFACT_BANK_TARGET_PER_BUCKET = 4
 _RANDOM_ARTIFACT_BANK_BUCKET_GRANULARITY = 8
 _RANDOM_ARTIFACT_BANK_READY_TIMEOUT_SEC = 0.25
+NON_FINITE_GRADIENT_SKIP_LIMIT = 5
+TRAINING_INSTABILITY_MESSAGE = (
+    'Не удалось выполнить обучение модели из-за нестабильности. '
+    'Проверьте обучающую выборку на однозначность интерпретации данных, '
+    'уменьшите скорость обучения в 2-10 раз и/или отключите режим точности и попробуйте снова'
+)
+
+
+class TrainingInstabilityError(RuntimeError):
+    pass
 
 
 class _NoOpQueue:
@@ -834,6 +844,11 @@ class ModelTrainer(threading.Thread):
                 started_at = time.perf_counter()
                 try:
                     training_process.run()
+                except TrainingInstabilityError as error:
+                    self.error_message = str(error)
+                    self._bus.publish('error', self.error_message)
+                    self.succeeded = False
+                    return
                 except Exception as error:
                     self.error_message = f'Training error: {error}'
                     self._bus.publish('error', self.error_message)
@@ -945,6 +960,7 @@ class TrainerProcess(mp.Process):
         self._training_log_lines: list[str] = []
         self._bus = _RecordingQueue(message_bus, self._training_log_lines)
         self._random_artifact_bank: _RandomArtifactBank | None = None
+        self._non_finite_gradient_skip_count = 0
 
     @property
     def _base_model(self) -> nn.Module:
@@ -3202,6 +3218,9 @@ class TrainerProcess(mp.Process):
                 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self._model.to(device)
             self._run_impl(device=device, rank=0, world_size=1, distributed=False)
+        except TrainingInstabilityError as error:
+            self._bus.put(['error', str(error)])
+            raise
         except Exception as error:
             self._bus.put(['error', f'Критическая ошибка обучения: {error}'])
             raise
@@ -4336,9 +4355,14 @@ class TrainerProcess(mp.Process):
         run_context.scaler.unscale_(run_context.optimizer)
         if self._has_non_finite_gradients():
             self._bus.put(['logging', 'Training warning: non-finite gradients detected, optimizer step skipped.'])
+            self._non_finite_gradient_skip_count = int(
+                getattr(self, '_non_finite_gradient_skip_count', 0)
+            ) + 1
             self._log_non_finite_training_state(stage='non_finite_gradients', batch=batch, outputs=outputs)
             run_context.optimizer.zero_grad(set_to_none=True)
             run_context.scaler.update()
+            if self._non_finite_gradient_skip_count > NON_FINITE_GRADIENT_SKIP_LIMIT:
+                raise TrainingInstabilityError(TRAINING_INSTABILITY_MESSAGE)
             if step_events is not None:
                 self._record_cuda_timing_event(backward_end_event, step_device)
                 backward_end_event.synchronize()
@@ -5058,7 +5082,8 @@ class NeuralRecognizer(threading.Thread):
             return
 
         self._bus.publish('logging', 'Индексация файлов для распознавания выполняется в отдельном потоке...')
-        self._parameters.source_files = filter_images(Path(source_folder))
+        recursive = bool(getattr(self._parameters, 'recursive_file_search', False))
+        self._parameters.source_files = filter_images(Path(source_folder), recursive=recursive)
         self._bus.publish('logging', f'Images queued for recognition: {len(self._parameters.source_files)}')
 
     def run(self, multithreading: bool | None = None):
@@ -5328,6 +5353,8 @@ class NeuralRecognizer(threading.Thread):
             use_cross_attention=bool(self._use_cross_attention),
             context_crop_size=self._context_crop_size,
             context_input_size=self._context_input_size,
+            compression_factor=max(1, int(getattr(self._parameters, 'compression_factor', 1))),
+            source_root=Path(self._parameters.source_folder) if self._parameters.source_folder is not None else None,
         )
         run_multiprocessing_recognition(
             workload=workload,
@@ -5372,6 +5399,8 @@ class NeuralRecognizer(threading.Thread):
             use_cross_attention=bool(self._use_cross_attention),
             context_crop_size=self._context_crop_size,
             context_input_size=self._context_input_size,
+            compression_factor=max(1, int(getattr(self._parameters, 'compression_factor', 1))),
+            source_root=Path(self._parameters.source_folder) if self._parameters.source_folder is not None else None,
         )
 
     def stop(self):
@@ -5550,6 +5579,8 @@ def cut_image_process(
     use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
+    compression_factor: int = 1,
+    source_root: Path | None = None,
 ):
     return _cut_image_process(
         cut_queue,
@@ -5561,6 +5592,8 @@ def cut_image_process(
         use_cross_attention=use_cross_attention,
         context_crop_size=context_crop_size,
         context_input_size=context_input_size,
+        compression_factor=compression_factor,
+        source_root=source_root,
         stop_token=STOP_TOKEN,
     )
 
@@ -5574,6 +5607,8 @@ def cut_image_prepare(
     use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
+    compression_factor: int = 1,
+    source_root: Path | None = None,
 ):
     return _cut_image_prepare(
         img_path,
@@ -5583,6 +5618,8 @@ def cut_image_prepare(
         use_cross_attention=use_cross_attention,
         context_crop_size=context_crop_size,
         context_input_size=context_input_size,
+        compression_factor=compression_factor,
+        source_root=source_root,
     )
 
 

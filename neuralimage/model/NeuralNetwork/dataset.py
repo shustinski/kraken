@@ -1,4 +1,6 @@
+import os
 import random
+from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from bisect import bisect_right
 from pathlib import Path
@@ -329,9 +331,26 @@ class NoCutDataset(Dataset):
             random.shuffle(self.samples)
 
     def _calculate_len(self):
-        len_list: list[int] = []
-        for frame_index in range(len(self.samples)):
-            len_list.append(self._calculate_frame_len(frame_index))
+        frame_count = len(self.samples)
+        if frame_count <= 0:
+            self._frame_lengths = []
+            self._rebuild_lookup()
+            return
+
+        use_parallel = (
+            frame_count >= 128
+            and not self._skip_uniform_labels
+            and not self._rare_patch_oversampling_enabled
+        )
+        if use_parallel:
+            max_workers = min(8, max(2, (os.cpu_count() or 2)))
+            try:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    len_list = list(executor.map(self._calculate_frame_len, range(frame_count)))
+            except Exception:
+                len_list = [self._calculate_frame_len(frame_index) for frame_index in range(frame_count)]
+        else:
+            len_list = [self._calculate_frame_len(frame_index) for frame_index in range(frame_count)]
 
         self._frame_lengths = len_list
         self._rebuild_lookup()

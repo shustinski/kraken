@@ -43,6 +43,7 @@ def get_cut_settings_from_window_state(presenter) -> CutSettings:
         crops_per_image=int(getattr(state, 'crops_per_image', 64)),
         scale_augmentation=bool(getattr(state, 'scale_augmentation', False) and online_mode),
         scale_augmentation_strength=float(getattr(state, 'scale_augmentation_strength', 0.2)),
+        recursive_file_search=bool(getattr(state, 'recursive_file_search', False)),
     )
 
 
@@ -103,7 +104,10 @@ def start_sample_count_request(
         if presenter._sample_count_cache_sizes is not None
         else None
     )
-    normalized_path = normalize_sample_count_path(sample_folder)
+    normalized_path = _sample_count_cache_key(
+        sample_folder,
+        recursive=bool(getattr(calculator_settings, 'recursive_file_search', False)),
+    )
     if normalized_path:
         if normalized_path != cached_path or cached_sizes is None:
             presenter._publish_log_message(
@@ -145,7 +149,10 @@ def run_sample_count_request(
 ) -> None:
     try:
         sample_path = Path(sample_folder)
-        normalized_path = normalize_sample_count_path(sample_path)
+        normalized_path = _sample_count_cache_key(
+            sample_path,
+            recursive=bool(getattr(calculator_settings, 'recursive_file_search', False)),
+        )
         if not sample_path.is_dir():
             presenter._sample_count_signals.calculated.emit(request_id, normalized_path, [], 0)
             return
@@ -156,7 +163,11 @@ def run_sample_count_request(
             presenter._publish_log_message(
                 f'Выполняется индексация списка файлов выборки: {sample_folder}'
             )
-            image_paths = sample_worker_cls.collect_image_paths(sample_path)
+            recursive = bool(getattr(calculator_settings, 'recursive_file_search', False))
+            try:
+                image_paths = sample_worker_cls.collect_image_paths(sample_path, recursive=recursive)
+            except TypeError:
+                image_paths = sample_worker_cls.collect_image_paths(sample_path)
             image_sizes = sample_worker_cls.collect_image_sizes(image_paths)
 
         total_samples = sample_worker_cls.calculate_total_samples(image_sizes, calculator_settings)
@@ -189,6 +200,10 @@ def run_sample_count_request(
 
 def normalize_sample_count_path(path: Path | str) -> str:
     return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _sample_count_cache_key(path: Path | str, *, recursive: bool) -> str:
+    return f'{normalize_sample_count_path(path)}|recursive={int(bool(recursive))}'
 
 
 def on_sample_count_calculated(

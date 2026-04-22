@@ -258,6 +258,8 @@ class MainPresenter(QObject):
         v.theme_selected.connect(self._on_theme_selected)
         v.ui_mode_selected.connect(self._on_ui_mode_selected)
         v.simple_workflow_requested.connect(self._on_simple_workflow_requested)
+        if hasattr(v, 'recursive_file_search_changed'):
+            v.recursive_file_search_changed.connect(self._on_recursive_file_search_changed)
 
         v.request_close.connect(self._on_close_requested)
 
@@ -277,6 +279,10 @@ class MainPresenter(QObject):
         v.augmentation_preview_requested.connect(self._open_augmentation_preview)
         v.ui_language_changed.connect(self.view.apply_ui_language)
         v.rare_patch_editor_requested.connect(self._open_rare_patch_editor)
+
+    def _on_recursive_file_search_changed(self) -> None:
+        self._update_settings_window_state()
+        self._calculate_expected_samples()
 
     def _publish_log_message(self, message: str) -> None:
         state_dict = object.__getattribute__(self, '__dict__')
@@ -528,6 +534,10 @@ class MainPresenter(QObject):
             use_multi_gpu_fallback=bool(getattr(state, 'use_multi_gpu', False)),
         )
         s.sync_patch_sizes_check_box.setChecked(bool(getattr(state, 'sync_patch_sizes', True)))
+        if hasattr(self.view, 'set_recursive_file_search'):
+            self.view.set_recursive_file_search(bool(getattr(state, 'recursive_file_search', False)))
+        elif hasattr(s, 'recursive_file_search_check_box'):
+            s.recursive_file_search_check_box.setChecked(bool(getattr(state, 'recursive_file_search', False)))
         s.multi_gpu_mode_combo.setCurrentText(multi_gpu_mode)
         s.torch_compile_check_box.setChecked(state.torch_compile_enabled)
         view = self.__dict__.get('view')
@@ -553,9 +563,8 @@ class MainPresenter(QObject):
         # 3.8 Размер обрезки по краям
         s.cut_corner_spinbox.setValue(state.edge_cut_size)
 
-        # 3.9  Target size (two spin boxes)
-        s.target_x_size.setValue(state.target_size[0])
-        s.target_y_size.setValue(state.target_size[1])
+        # 3.9 Compression factor
+        s.compression_factor_spinbox.setValue(max(1, int(getattr(state, 'compression_factor', 1))))
 
     def _update_work_mode(self) -> str:
         return state_sync.update_work_mode(self)
@@ -695,7 +704,11 @@ class MainPresenter(QObject):
         crop_enabled = s.enable_crop_processing.isChecked()
         resize_enabled = s.enable_resize_processing.isChecked()
         edge_cut_size = s.cut_corner_spinbox.value()
-        target_size = (s.target_x_size.value(), s.target_y_size.value())
+        compression_factor = s.compression_factor_spinbox.value()
+        if hasattr(self.view, 'is_recursive_file_search_enabled'):
+            recursive_file_search = self.view.is_recursive_file_search_enabled()
+        else:
+            recursive_file_search = s.recursive_file_search_check_box.isChecked()
 
         state = SettingsState(step=step, vertical_rotation=v, horizontal_rotation=h,
                               flip_x=flip_x,
@@ -769,7 +782,8 @@ class MainPresenter(QObject):
                               recognition_postprocess_kernel_size=recognition_postprocess_kernel_size,
                               confidence_save_mode=confidence_save_mode,
                               crop_enabled=crop_enabled, resize_enabled=resize_enabled, edge_cut_size=edge_cut_size,
-                              target_size=target_size,
+                              compression_factor=compression_factor,
+                              recursive_file_search=recursive_file_search,
                               optimizer_name=optimizer_name,
                               mixed_precision=mixed_precision,
                               deep_supervision=deep_supervision,

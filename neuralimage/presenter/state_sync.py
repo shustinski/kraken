@@ -338,9 +338,13 @@ def apply_settings_to_panel(presenter) -> None:
         use_multi_gpu_fallback=bool(getattr(state, 'use_multi_gpu', False)),
     )
     panel.sync_patch_sizes_check_box.setChecked(bool(getattr(state, 'sync_patch_sizes', True)))
+    view = presenter.__dict__.get('view')
+    if view is not None and hasattr(view, 'set_recursive_file_search'):
+        view.set_recursive_file_search(bool(getattr(state, 'recursive_file_search', False)))
+    elif hasattr(panel, 'recursive_file_search_check_box'):
+        panel.recursive_file_search_check_box.setChecked(bool(getattr(state, 'recursive_file_search', False)))
     panel.multi_gpu_mode_combo.setCurrentText(multi_gpu_mode)
     panel.torch_compile_check_box.setChecked(state.torch_compile_enabled)
-    view = presenter.__dict__.get('view')
     if view is not None and hasattr(view, 'set_batch_preview_enabled'):
         view.set_batch_preview_enabled(state.show_batch_preview)
 
@@ -360,8 +364,7 @@ def apply_settings_to_panel(presenter) -> None:
         panel.sync_business_logic_controls(work_mode)
 
     panel.cut_corner_spinbox.setValue(state.edge_cut_size)
-    panel.target_x_size.setValue(state.target_size[0])
-    panel.target_y_size.setValue(state.target_size[1])
+    panel.compression_factor_spinbox.setValue(max(1, int(getattr(state, 'compression_factor', 1))))
 
 
 def update_work_mode(presenter) -> str:
@@ -525,7 +528,12 @@ def update_settings_window_state(presenter) -> None:
     crop_enabled = panel.enable_crop_processing.isChecked()
     resize_enabled = panel.enable_resize_processing.isChecked()
     edge_cut_size = panel.cut_corner_spinbox.value()
-    target_size = (panel.target_x_size.value(), panel.target_y_size.value())
+    compression_factor = panel.compression_factor_spinbox.value()
+    view = presenter.__dict__.get('view')
+    if view is not None and hasattr(view, 'is_recursive_file_search_enabled'):
+        recursive_file_search = view.is_recursive_file_search_enabled()
+    else:
+        recursive_file_search = panel.recursive_file_search_check_box.isChecked()
 
     presenter.settings_state = SettingsState(
         step=step,
@@ -602,7 +610,8 @@ def update_settings_window_state(presenter) -> None:
         crop_enabled=crop_enabled,
         resize_enabled=resize_enabled,
         edge_cut_size=edge_cut_size,
-        target_size=target_size,
+        compression_factor=compression_factor,
+        recursive_file_search=recursive_file_search,
         optimizer_name=optimizer_name,
         mixed_precision=mixed_precision,
         deep_supervision=deep_supervision,

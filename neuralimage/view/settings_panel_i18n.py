@@ -74,6 +74,8 @@ def apply_settings_panel_texts(panel: Any) -> None:
     scheduler_step_lr_step_size_key = 'scheduler_step_lr_step_size'
     scheduler_step_lr_gamma_key = 'scheduler_step_lr_gamma'
     sync_patch_sizes_key = 'sync_patch_sizes'
+    recursive_file_search_key = 'recursive_file_search'
+    compression_factor_key = 'compression_factor'
     crops_per_image_key = 'crops_per_image'
     scale_augmentation_strength_key = 'scale_augmentation_strength'
     synthetic_dataset_factor_key = 'synthetic_dataset_factor'
@@ -195,6 +197,22 @@ def apply_settings_panel_texts(panel: Any) -> None:
                 'If enabled, recognition patch size follows training patch size.',
             )
         )
+    labels_map.setdefault(
+        recursive_file_search_key,
+        str(t.get('recursive_file_search', 'Search in subfolders')),
+    )
+    descriptions.setdefault(
+        recursive_file_search_key,
+        str(t.get('recursive_file_search_tip', 'Find source, training, and label files recursively under selected folders.')),
+    )
+    labels_map.setdefault(
+        compression_factor_key,
+        str(t.get('compression_factor', 'Compression factor')),
+    )
+    descriptions.setdefault(
+        compression_factor_key,
+        str(t.get('compression_factor_tip', 'Downscale each frame by this factor and restore it to the original size before training or recognition.')),
+    )
     if synthetic_dataset_factor_key not in labels_map:
         labels_map[synthetic_dataset_factor_key] = str(t.get('synthetic_dataset_factor', 'Synthetic epoch factor'))
     if synthetic_dataset_factor_key not in descriptions:
@@ -1058,7 +1076,8 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.no_cut_dataset_type.setText(str(t.get('cut_online', 'Cut online')))
     panel.prepare_samples_groupbox.setTitle(str(t.get('preprocess_group', 'Sample preprocessing')))
     panel.enable_crop_processing.setText(str(t.get('preprocess_crop_enable', 'Enable edge crop')))
-    panel.enable_resize_processing.setText(str(t.get('preprocess_resize_enable', 'Enable resize')))
+    panel.enable_resize_processing.setText(str(t.get('preprocess_resize_enable', 'Enable compression resize')))
+    panel.recursive_file_search_check_box.setText(str(t.get('recursive_file_search', 'Search in subfolders')))
     panel.nn_auxilary_settings_groupbox.setTitle(str(t.get('aux_group', 'Additional settings')))
     panel.optimizer_groupbox.setTitle(str(t.get('optimizer_group', 'Optimizer and batch')))
     panel.precision_loss_groupbox.setTitle(str(t.get('loss_precision_group', 'Loss function')))

@@ -233,6 +233,54 @@ def test_run_train_step_handles_nan_model_outputs():
     assert float(step_result.batch_loss) < 100.0
 
 
+def test_run_train_step_stops_after_repeated_non_finite_gradients():
+    trainer = _build_trainer('bce')
+    trainer._model = _NaNOutputModel()
+    optimizer = torch.optim.SGD(trainer._model.parameters(), lr=0.01)
+    criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
+    run_context = _RunContext(
+        bce_criterion=criterion,
+        optimizer=optimizer,
+        scaler=_NoOpScaler(),
+        autocast_ctx=lambda: nullcontext(),
+        scheduler=None,
+        train_size=1,
+        train_sampler=None,
+        supports_loss_aware_sampling=False,
+        strides=_TrainLoopStrides(metric=1, progress=1, log=1, preview=1),
+    )
+
+    image = torch.zeros((1, 1, 8, 8), dtype=torch.float32)
+    label = torch.zeros((1, 1, 8, 8), dtype=torch.float32)
+    batch = _PreparedTrainBatch(
+        data=image,
+        target=label,
+        sample_indices=None,
+        mixup_pair_indices=None,
+        mixup_lambdas=None,
+        inputs=image,
+        image=image,
+        context_image=None,
+        label=label,
+        batch_start=0.0,
+        data_wait_ms=0.0,
+    )
+
+    for _ in range(target.NON_FINITE_GRADIENT_SKIP_LIMIT):
+        assert trainer._run_train_step(run_context=run_context, batch=batch) is not None
+
+    with pytest.raises(target.TrainingInstabilityError) as error:
+        trainer._run_train_step(run_context=run_context, batch=batch)
+
+    assert str(error.value) == target.TRAINING_INSTABILITY_MESSAGE
+    warning_count = sum(
+        1
+        for item in trainer._bus.messages
+        if item == ['logging', 'Training warning: non-finite gradients detected, optimizer step skipped.']
+    )
+    assert warning_count == target.NON_FINITE_GRADIENT_SKIP_LIMIT + 1
+
+
 def test_compute_per_sample_loss_hard_pixel_mining_focuses_on_hardest_pixels():
     trainer = _build_trainer('focal_bce')
     outputs = torch.tensor(

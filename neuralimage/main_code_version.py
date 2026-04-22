@@ -108,11 +108,17 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
 
     edge_cut_raw = prepare_raw.get('edge_cut')
     target_size_raw = prepare_raw.get('target_size')
+    compression_factor = max(1, int(prepare_raw.get('compression_factor', 1) or 1))
     prepare = SamplePrepareSettings(
         enable_crop=bool(prepare_raw.get('enable_crop', False)),
         enable_resize=bool(prepare_raw.get('enable_resize', False)),
         edge_cut=_to_tuple2(edge_cut_raw, 'prepare.edge_cut') if edge_cut_raw is not None else None,
-        target_size=_to_tuple2(target_size_raw, 'prepare.target_size') if target_size_raw is not None else None,
+        target_size=(
+            _to_tuple2(target_size_raw, 'prepare.target_size')
+            if target_size_raw is not None and compression_factor <= 1
+            else None
+        ),
+        compression_factor=compression_factor,
     )
 
     optimizer = OptimizerParameters(
@@ -229,6 +235,7 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
         attention_max_global_tokens=int(raw.get('attention_max_global_tokens', 1024)),
         deep_supervision=bool(raw.get('deep_supervision', True)),
         dataloader_num_workers=int(raw.get('dataloader_num_workers', -1)),
+        recursive_file_search=bool(raw.get('recursive_file_search', False)),
         pcb_defects=build_pcb_defect_parameters(pcb_defects_raw),
     )
 
@@ -269,6 +276,8 @@ def _build_recognition_parameters(raw: dict[str, Any]) -> RecognitionParameters:
             if raw.get('context_input_size') is not None
             else None
         ),
+        recursive_file_search=bool(raw.get('recursive_file_search', False)),
+        compression_factor=max(1, int(raw.get('compression_factor', 1) or 1)),
     )
 
 

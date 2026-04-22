@@ -72,6 +72,8 @@ class SettingsState:
     resize_enabled: bool = False
     edge_cut_size: int = 0
     target_size: tuple[int, int] = (2000, 2000)
+    compression_factor: int = 1
+    recursive_file_search: bool = False
     optimizer_name: str = 'adam'
     mixed_precision: str = 'fp16'
     loss_function: str = 'bce'

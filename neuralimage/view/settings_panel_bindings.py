@@ -147,8 +147,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.cut_dataset_type.toggled,
             panel.no_cut_dataset_type.toggled,
             panel.cut_corner_spinbox.valueChanged,
-            panel.target_x_size.valueChanged,
-            panel.target_y_size.valueChanged,
+            panel.compression_factor_spinbox.valueChanged,
             *(checkbox.toggled for checkbox in getattr(panel, 'random_artifact_type_checkboxes', {}).values()),
         ),
         panel.optimizer_settings_changed,
@@ -183,6 +182,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.cut_dataset_type.toggled,
             panel.no_cut_dataset_type.toggled,
             panel.shift_spinbox.valueChanged,
+            panel.compression_factor_spinbox.valueChanged,
         ),
         panel.cut_slider_shifted,
     )

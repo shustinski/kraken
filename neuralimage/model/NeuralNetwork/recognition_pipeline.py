@@ -32,6 +32,33 @@ MemoryMetricsCollector = Callable[[], dict[str, float] | None]
 _QUEUE_EMPTY = object()
 
 
+def _resolve_relative_frame_name(img_path: Path, source_root: Path | None) -> str:
+    frame_name = img_path.name
+    if source_root is None:
+        return frame_name
+
+    source_root_path = Path(source_root)
+    try:
+        return img_path.relative_to(source_root_path).as_posix()
+    except ValueError:
+        pass
+
+    try:
+        return img_path.resolve().relative_to(source_root_path.resolve()).as_posix()
+    except Exception:
+        pass
+
+    # Windows path casing and mixed absolute/relative forms can break relative_to().
+    try:
+        rel_path = os.path.relpath(str(img_path), start=str(source_root_path))
+    except Exception:
+        return frame_name
+    rel_path_normalized = rel_path.replace('\\', '/')
+    if rel_path_normalized.startswith('../') or rel_path_normalized == '..':
+        return frame_name
+    return Path(rel_path_normalized).as_posix()
+
+
 @dataclass(frozen=True)
 class RecognitionWorkload:
     source_files: list[Path]
@@ -54,6 +81,8 @@ class RecognitionWorkload:
     use_cross_attention: bool = True
     context_crop_size: tuple[int, int] | None = None
     context_input_size: tuple[int, int] | None = None
+    compression_factor: int = 1
+    source_root: Path | None = None
 
     @property
     def frame_count(self) -> int:
@@ -184,6 +213,8 @@ def _run_cut_worker(
     use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
+    compression_factor: int = 1,
+    source_root: Path | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
     try:
@@ -197,6 +228,8 @@ def _run_cut_worker(
             use_cross_attention,
             context_crop_size,
             context_input_size,
+            compression_factor,
+            source_root,
             stop_token,
         )
     except Exception:
@@ -367,6 +400,8 @@ class MultiprocessingRecognitionRunner:
                     self._config.workload.use_cross_attention,
                     self._config.workload.context_crop_size,
                     self._config.workload.context_input_size,
+                    self._config.workload.compression_factor,
+                    self._config.workload.source_root,
                     self._config.stop_token,
                 ),
             )
@@ -570,6 +605,8 @@ def run_single_thread_recognition(
     use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
+    compression_factor: int = 1,
+    source_root: Path | None = None,
 ) -> None:
     model.eval()
     model.to(device)
@@ -592,6 +629,8 @@ def run_single_thread_recognition(
             use_cross_attention=use_cross_attention,
             context_crop_size=context_crop_size,
             context_input_size=context_input_size,
+            compression_factor=compression_factor,
+            source_root=source_root,
         )
         predicted = gpu_predict(
             prepared,
@@ -708,6 +747,8 @@ def cut_image_process(
     use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
+    compression_factor: int = 1,
+    source_root: Path | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
     while not stop_event.is_set():
@@ -724,6 +765,8 @@ def cut_image_process(
             use_cross_attention=use_cross_attention,
             context_crop_size=context_crop_size,
             context_input_size=context_input_size,
+            compression_factor=compression_factor,
+            source_root=source_root,
         )
         _store_payload_array_for_multiprocessing(image_payload, 'cutted_image')
         _store_payload_array_for_multiprocessing(image_payload, 'context_image')
@@ -743,7 +786,10 @@ def cut_image_prepare(
     use_cross_attention: bool = True,
     context_crop_size: tuple[int, int] | None = None,
     context_input_size: tuple[int, int] | None = None,
+    compression_factor: int = 1,
+    source_root: Path | None = None,
 ) -> dict[str, Any]:
+    frame_name = _resolve_relative_frame_name(img_path, source_root)
     payload: dict[str, Any] = {
         'baseim_size': None,
         'segment_size': segment_size,
@@ -754,7 +800,7 @@ def cut_image_prepare(
         'patch_coords_norm': None,
         'patch_coords_px': None,
         'source_size_hw': None,
-        'name': img_path.name,
+        'name': frame_name,
         'source_path': img_path,
     }
 
@@ -764,6 +810,15 @@ def cut_image_prepare(
         if source_image.mode != 'L' and channels == 1:
             source_image = source_image.convert('L')
         payload['baseim_size'] = source_image.size
+        compression_factor = max(1, int(compression_factor))
+        if compression_factor > 1:
+            original_size = source_image.size
+            compressed_size = (
+                max(1, int(round(original_size[0] / compression_factor))),
+                max(1, int(round(original_size[1] / compression_factor))),
+            )
+            source_image = source_image.resize(compressed_size, resample=Image.Resampling.BILINEAR)
+            source_image = source_image.resize(original_size, resample=Image.Resampling.BILINEAR)
         work_image = np.array(source_image).astype('float32')
 
     work_image = _to_channel_first(work_image, channels=channels)
@@ -1284,8 +1339,9 @@ def sew(
     postprocess_kernel_size: int = 0,
     confidence_save_mode: str = 'off',
 ) -> Path:
-    output_name = '.'.join(item['name'].split('.')[:-1]) + '.jpg'
-    output_path = os.path.join(str(save_dir), output_name)
+    output_name = Path(str(item['name'])).with_suffix('.jpg')
+    output_path = Path(save_dir) / output_name
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     image = cast(
         Image.Image,
         sew_image(
@@ -1299,12 +1355,12 @@ def sew(
     quality = max(1, min(100, int(jpeg_quality)))
     image.save(output_path, format='JPEG', quality=quality)
     if str(confidence_save_mode).strip().lower() != 'separate_grayscale':
-        return Path(output_path)
+        return output_path
     confidence_predictions = item.get('confidence_image')
     if confidence_predictions is None:
-        return Path(output_path)
-    confidence_name = '.'.join(item['name'].split('.')[:-1]) + '_confidence.jpg'
-    confidence_path = os.path.join(str(save_dir), confidence_name)
+        return output_path
+    confidence_path = Path(save_dir) / 'confidence' / output_name
+    confidence_path.parent.mkdir(parents=True, exist_ok=True)
     confidence_image = cast(
         Image.Image,
         sew_image(
@@ -1316,7 +1372,7 @@ def sew(
         ),
     )
     confidence_image.save(confidence_path, format='JPEG', quality=quality)
-    return Path(output_path)
+    return output_path
 
 
 def _load_preview_array(path: Path | str | None) -> np.ndarray | None:

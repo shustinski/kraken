@@ -168,6 +168,37 @@ def test_build_workflow_parameters_maps_separate_crop_and_resize_flags():
     assert training.prepare.target_size == (1024, 768)
 
 
+def test_build_workflow_parameters_maps_recursive_search_and_compression_factor():
+    source = make_test_dir("workflow_source_recursive_compression")
+    result = make_test_dir("workflow_result_recursive_compression")
+    sample = make_test_dir("workflow_sample_recursive_compression")
+    label = make_test_dir("workflow_label_recursive_compression")
+
+    main = MainWindowState(
+        work_mode='train_and_recognition',
+        source_folder=str(source),
+        result_folder=str(result),
+        sample_folder=str(sample),
+        label_folder=str(label),
+        model_path=str(result / "model.pth"),
+        epochs=1,
+    )
+    settings = SettingsState(
+        resize_enabled=True,
+        target_size=(1024, 768),
+        compression_factor=4,
+        recursive_file_search=True,
+    )
+
+    _, training, recognition = build_workflow_parameters(main, settings)
+
+    assert training.recursive_file_search is True
+    assert training.prepare.compression_factor == 4
+    assert training.prepare.target_size is None
+    assert recognition.recursive_file_search is True
+    assert recognition.compression_factor == 4
+
+
 def test_build_workflow_parameters_maps_frame_and_patch_shuffle_flags_separately():
     source = make_test_dir("workflow_source_shuffle")
     result = make_test_dir("workflow_result_shuffle")

@@ -70,7 +70,12 @@ def build_workflow_parameters(
         enable_crop=settings.crop_enabled,
         enable_resize=settings.resize_enabled,
         edge_cut=(settings.edge_cut_size, settings.edge_cut_size),
-        target_size=settings.target_size,
+        target_size=(
+            settings.target_size
+            if max(1, int(getattr(settings, 'compression_factor', 1))) <= 1
+            else None
+        ),
+        compression_factor=max(1, int(getattr(settings, 'compression_factor', 1))),
     )
 
     generation = SampleGenerationSettings(
@@ -255,6 +260,7 @@ def build_workflow_parameters(
         use_context_branch=bool(requested_context_branch),
         deep_supervision=bool(getattr(settings, 'deep_supervision', False)),
         dataloader_num_workers=int(getattr(settings, 'dataloader_num_workers', -1)),
+        recursive_file_search=bool(getattr(settings, 'recursive_file_search', False)),
         pcb_defects=pcb_defects,
         synthetic_defect_generator=synthetic_defect_generator,
     )
@@ -295,6 +301,8 @@ def build_workflow_parameters(
         ),
         context_crop_size=tuple(context_crop_size) if context_crop_size is not None else None,
         context_input_size=tuple(context_input_size) if context_input_size is not None else None,
+        recursive_file_search=bool(getattr(settings, 'recursive_file_search', False)),
+        compression_factor=max(1, int(getattr(settings, 'compression_factor', 1))),
     )
 
     return work_mode, training, recognition

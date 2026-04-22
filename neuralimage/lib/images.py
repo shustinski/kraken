@@ -119,7 +119,10 @@ class SampleWorker:
 
         """
 
-        self._img_paths = self.collect_image_paths(self._path)
+        self._img_paths = self.collect_image_paths(
+            self._path,
+            recursive=bool(getattr(self._params, 'recursive_file_search', False)),
+        )
         if len(self._img_paths) == 0:
             self._img_sizes = []
             self._total_parts = 0
@@ -129,10 +132,10 @@ class SampleWorker:
         self.calculate_samples_amount()
 
     @classmethod
-    def collect_image_paths(cls, path: Path) -> list[Path]:
+    def collect_image_paths(cls, path: Path, *, recursive: bool = False) -> list[Path]:
         if not path.is_dir():
             return []
-        return filter_files(path, cls.VALID_EXTENSIONS)
+        return filter_files(path, cls.VALID_EXTENSIONS, recursive=recursive)
 
     @staticmethod
     def collect_image_sizes(image_paths: list[Path]) -> list[tuple[int, int]]:
@@ -285,7 +288,11 @@ class ImagePreparator:
         return self._lazy_size()
 
     def _lazy_size(self):
-        if self._params.enable_resize and self._params.target_size is not None:
+        if (
+            self._params.enable_resize
+            and self._params.target_size is not None
+            and int(getattr(self._params, 'compression_factor', 1)) <= 1
+        ):
             return self._params.target_size
         with retry_file_read(lambda: Image.open(self._path), path=self._path) as img:
             size = img.size
@@ -306,7 +313,7 @@ class ImagePreparator:
         self._size = img.size
         if self._params.enable_crop and self._params.edge_cut is not None:
            self._crop()
-        if self._params.enable_resize and self._params.target_size is not None:
+        if self._params.enable_resize:
             self._resize()
 
     def _crop(self):
@@ -319,7 +326,18 @@ class ImagePreparator:
 
     def _resize(self):
         p = self._params
-        self._image = self._image.resize(p.target_size)
+        compression_factor = max(1, int(getattr(p, 'compression_factor', 1)))
+        if compression_factor > 1:
+            original_size = self._image.size
+            compressed_size = (
+                max(1, int(round(original_size[0] / compression_factor))),
+                max(1, int(round(original_size[1] / compression_factor))),
+            )
+            self._image = self._image.resize(compressed_size, resample=Image.Resampling.BILINEAR)
+            self._image = self._image.resize(original_size, resample=Image.Resampling.BILINEAR)
+            return
+        if p.target_size is not None:
+            self._image = self._image.resize(p.target_size)
 
 
 class SampleFastCutter:

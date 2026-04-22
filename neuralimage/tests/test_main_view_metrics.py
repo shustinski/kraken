@@ -351,6 +351,20 @@ def test_main_view_work_mode_visibility_tracks_model_and_epochs(qapp):
     assert not view.sample_path_group.isHidden()
 
 
+def test_main_view_places_recursive_search_checkbox_next_to_source_path(qapp):
+    view = MainView(QWidget())
+    view.show()
+    qapp.processEvents()
+
+    assert view.source_path_row.layout().indexOf(view.lbl_source) >= 0
+    assert view.source_path_row.layout().indexOf(view.recursive_file_search_check_box) >= 0
+    assert view.recursive_file_search_check_box.text() == 'Искать в дочерних каталогах'
+
+    view.set_recursive_file_search(True)
+
+    assert view.is_recursive_file_search_enabled() is True
+
+
 def test_main_view_restores_ui_mode_from_persisted_settings(qapp, monkeypatch):
     settings_dir = Path('d:/PyCharm/neuralimage-feature-no_cut_dataset/.test_runtime/ui_mode_persist')
     settings_dir.mkdir(parents=True, exist_ok=True)

@@ -22,20 +22,23 @@ class ConvertCifThread(threading.Thread):
         savepath: Path,
         message_bus: AbstractMessageBus,
         callback: Callable[..., None] | None = None,
+        recursive: bool = False,
     ):
         super().__init__()
         self.path = source
         self.savepath = savepath
         self.bus = message_bus
         self.callback = callback
+        self.recursive = bool(recursive)
         self._stop_event = threading.Event()
 
     def run(self):
         self.bus.publish('logging', 'Начинаю преобразование cif в бинарные изображения')
         self.savepath.mkdir(parents=True, exist_ok=True)
 
+        iterator = self.path.rglob('*') if self.recursive else self.path.iterdir()
         cif_files = [
-            file for file in self.path.iterdir()
+            file for file in iterator
             if file.is_file() and file.suffix.lower() == '.cif'
         ]
         total_files = len(cif_files)
@@ -50,7 +53,15 @@ class ConvertCifThread(threading.Thread):
                 self.bus.publish('logging', f'Ошибка в {file.name}: {converted[1]}')
                 continue
 
-            save_path = self.savepath / f'{file.stem}.jpg'
+            relative_parent = Path()
+            if self.recursive:
+                try:
+                    relative_parent = file.relative_to(self.path).parent
+                except ValueError:
+                    relative_parent = Path()
+            output_dir = self.savepath / relative_parent
+            output_dir.mkdir(parents=True, exist_ok=True)
+            save_path = output_dir / f'{file.stem}.jpg'
             converted.save(save_path)
 
         if self.callback is not None:
@@ -68,6 +79,7 @@ class CutImageThread(threading.Thread):
         sample_generation_settings: SampleGenerationSettings,
         message_bus: AbstractMessageBus,
         callback: Callable[..., None] | None = None,
+        recursive: bool = False,
     ):
         super().__init__()
         self.setting = sample_generation_settings
@@ -75,11 +87,12 @@ class CutImageThread(threading.Thread):
         self.callback = callback
         self.source = source
         self.target = target
+        self.recursive = bool(recursive)
         self._stop_event = threading.Event()
 
     def run(self):
         self.bus.publish('logging', f'Начинаю производить нарезку кадров из {self.source}')
-        image_files = sorted(filter_images(self.source))
+        image_files = sorted(filter_images(self.source, recursive=self.recursive))
         total_files = len(image_files)
         for index, file in enumerate(image_files, start=1):
             if self._stop_event.is_set():
@@ -87,9 +100,15 @@ class CutImageThread(threading.Thread):
 
             if index == 1 or index == total_files or index % _PROGRESS_LOG_STEP == 0:
                 self.bus.publish('logging', f'Нарезка кадров: {index}/{total_files} ({file.stem})')
+            output_dir = self.target
+            if self.recursive:
+                try:
+                    output_dir = self.target / file.relative_to(self.source).parent
+                except ValueError:
+                    output_dir = self.target
             backend.frame_cut(
                 file,
-                self.target,
+                output_dir,
                 self.setting.segment_size,
                 self.setting.horizontal_rotation,
                 self.setting.vertical_rotation,

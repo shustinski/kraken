@@ -24,3 +24,17 @@ def test_filter_images_uses_supported_extensions():
 
     assert sorted(p.name for p in result) == ['a.jpg', 'b.bmp', 'c.png']
 
+
+def test_filter_images_can_search_recursively():
+    tmp_path = make_test_dir("file_images_recursive")
+    nested = tmp_path / 'nested'
+    nested.mkdir()
+    (tmp_path / 'root.png').write_text('x', encoding='utf-8')
+    (nested / 'child.jpg').write_text('x', encoding='utf-8')
+
+    shallow = filter_images(tmp_path)
+    recursive = filter_images(tmp_path, recursive=True)
+
+    assert sorted(p.name for p in shallow) == ['root.png']
+    assert sorted(p.relative_to(tmp_path).as_posix() for p in recursive) == ['nested/child.jpg', 'root.png']
+

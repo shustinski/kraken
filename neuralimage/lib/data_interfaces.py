@@ -1296,6 +1296,7 @@ class SampleGenerationSettings:
     crops_per_image: int = 64
     scale_augmentation: bool = False
     scale_augmentation_strength: float = 0.2
+    recursive_file_search: bool = False
     tech_aug: TechAugmentationParameters = field(default_factory=TechAugmentationParameters)
 
 @dataclass
@@ -1304,6 +1305,7 @@ class SamplePrepareSettings:
     enable_resize: bool = False
     edge_cut:tuple[int,int]|None = None
     target_size:tuple[int,int]|None = None
+    compression_factor: int = 1
 
 @dataclass
 class TrainingParameters:
@@ -1355,6 +1357,7 @@ class TrainingParameters:
     deep_supervision: bool = False
     artifact_dir: Path | None = None
     dataloader_num_workers: int = -1
+    recursive_file_search: bool = False
     pcb_defects: PCBDefectParameters = field(default_factory=PCBDefectParameters)
     synthetic_defect_generator: SyntheticDefectGeneratorParameters = field(
         default_factory=SyntheticDefectGeneratorParameters
@@ -1383,6 +1386,8 @@ class RecognitionParameters:
     use_cross_attention: bool | None = None
     context_crop_size: tuple[int, int] | None = None
     context_input_size: tuple[int, int] | None = None
+    recursive_file_search: bool = False
+    compression_factor: int = 1
 
 
 @dataclass
@@ -1404,6 +1409,7 @@ class CutSettings:
     crops_per_image: int = 64
     scale_augmentation: bool = False
     scale_augmentation_strength: float = 0.2
+    recursive_file_search: bool = False
 
 
 @dataclass

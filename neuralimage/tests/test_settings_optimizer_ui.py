@@ -1089,6 +1089,7 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
 
     presenter.view.set_batch_preview_enabled = _set_batch_preview_enabled
     presenter.view.is_batch_preview_enabled = _is_batch_preview_enabled
+    presenter.view.is_recursive_file_search_enabled = lambda: True
     presenter.main_window_state = module.MainWindowState(epochs=1)
     presenter.settings_state = SettingsState(
         model='MockNet',
@@ -1499,3 +1500,4 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert presenter.settings_state.early_stopping_min_delta == pytest.approx(0.002)
     assert presenter.settings_state.early_stopping_restore_best_weights is True
     assert presenter.settings_state.show_batch_preview is True
+    assert presenter.settings_state.recursive_file_search is True

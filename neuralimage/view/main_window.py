@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QCheckBox,
     QLabel,
     QListWidget,
     QMainWindow,
@@ -104,6 +105,7 @@ class MainView(QMainWindow):
     queue_properties_requested: pyqtSignal = pyqtSignal(int)
 
     epochs_changed: pyqtSignal = pyqtSignal()
+    recursive_file_search_changed: pyqtSignal = pyqtSignal()
     request_close: pyqtSignal = pyqtSignal()
 
     log_message: pyqtSignal = pyqtSignal(object)
@@ -221,8 +223,18 @@ class MainView(QMainWindow):
         row += 1
         self.source_title_label = QLabel(t["source"])
         self.main_grid.addWidget(self.source_title_label, row, 0)
+        self.source_path_row = QWidget()
+        source_path_layout = QHBoxLayout(self.source_path_row)
+        source_path_layout.setContentsMargins(0, 0, 0, 0)
+        source_path_layout.setSpacing(10)
         self.lbl_source = ClickableLabel()
-        self.main_grid.addWidget(self.lbl_source, row, 1)
+        source_path_layout.addWidget(self.lbl_source, 1)
+        self.recursive_file_search_check_box = QCheckBox(str(t.get("recursive_file_search", "Search in subfolders")))
+        self.recursive_file_search_check_box.setToolTip(
+            str(t.get("recursive_file_search_tip", "Find source files recursively under the selected folder."))
+        )
+        source_path_layout.addWidget(self.recursive_file_search_check_box, 0)
+        self.main_grid.addWidget(self.source_path_row, row, 1)
 
         row += 1
         self.result_title_label = QLabel(t["result"])
@@ -614,12 +626,14 @@ class MainView(QMainWindow):
 
         if not resolved_mode:
             self.lbl_source.setEnabled(True)
+            self.recursive_file_search_check_box.setEnabled(True)
             self.lbl_result.setEnabled(True)
             self.sample_path_group.setEnabled(True)
             self.sample_path_group.setVisible(True)
             self.model_path.setEnabled(True)
         else:
             self.lbl_source.setEnabled(not training_only)
+            self.recursive_file_search_check_box.setEnabled(True)
             self.lbl_result.setEnabled(not training_only)
             self.sample_path_group.setEnabled(not recognition_only)
             self.sample_path_group.setVisible(not recognition_only)
@@ -643,6 +657,7 @@ class MainView(QMainWindow):
         self.rb_train_only.clicked.connect(lambda _: self.sample_type_changed.emit(WorkMode.train_only.value))
 
         self.lbl_source.clicked.connect(lambda: self.source_path_requested.emit())
+        self.recursive_file_search_check_box.toggled.connect(lambda _: self.recursive_file_search_changed.emit())
         self.lbl_result.clicked.connect(lambda: self.result_path_requested.emit())
 
         self.label_path.clicked.connect(lambda: self.label_path_requested.emit())
@@ -1288,6 +1303,10 @@ class MainView(QMainWindow):
         self.rb_recognition.setText(t["mode_rec"])
         self.rb_train_only.setText(t["mode_train"])
         self.source_title_label.setText(t["source"])
+        self.recursive_file_search_check_box.setText(str(t.get("recursive_file_search", "Search in subfolders")))
+        self.recursive_file_search_check_box.setToolTip(
+            str(t.get("recursive_file_search_tip", "Find source files recursively under the selected folder."))
+        )
         self.result_title_label.setText(t["result"])
         self.sample_path_group.setTitle(t["sample"])
         self.sample_path.setToolTip(t["sample_tip"])
@@ -1414,6 +1433,12 @@ class MainView(QMainWindow):
 
     def set_source_path(self, path: str):
         self.lbl_source.setText(path)
+
+    def set_recursive_file_search(self, enabled: bool) -> None:
+        self.recursive_file_search_check_box.setChecked(bool(enabled))
+
+    def is_recursive_file_search_enabled(self) -> bool:
+        return self.recursive_file_search_check_box.isChecked()
 
     def set_result_path(self, path: str):
         self.lbl_result.setText(path)

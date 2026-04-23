@@ -5,7 +5,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QPointF, QRectF, QSettings, QSignalBlocker, QSize, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -35,21 +35,22 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QStyle,
     QTabWidget,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from .adapters.qt.image_conversion import cv_to_qimage
-from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewImageView, PreviewProcessingRunnable
+from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
 from .application.dto import PersistedPaths
 from .application.processing import (
     VIA_SIZE_MODE_FIXED,
     VIA_SIZE_MODE_RANGE,
     ContourExtractionSettings,
     DisplaySettings,
+    ImageProcessingState,
     SaveOptions,
     normalize_via_size_mode,
 )
@@ -67,8 +68,8 @@ from .batch_processor import BatchProcessor
 from .contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
 from .domain import PolygonData
 from .graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
-from .infrastructure import WidgetDisplaySettingsStore, WidgetPathSettingsStore
 from .i18n import active_language, tr
+from .infrastructure import WidgetDisplaySettingsStore, WidgetPathSettingsStore
 from .pipeline import (
     PreprocessingPipeline,
     available_operations,
@@ -78,10 +79,47 @@ from .pipeline import (
     get_parameter_display_label,
 )
 from .serializers import export_dataset_frame, load_polygons_cif, save_polygons_cif, save_result_bundle
+from .ui.builders import (
+    build_display_tab,
+    build_editor_toolbar,
+    build_extraction_tab,
+    build_files_tab,
+    build_help_tab,
+    build_path_panel,
+    build_paths_tab,
+    build_pipeline_tab,
+    build_tabs,
+    build_ui,
+    build_visual_panel,
+)
+from .ui.retranslate import retranslate_ui
+from .ui.i18n_content import (
+    EDITOR_ACTION_TOOLTIPS,
+    EDITOR_TOOL_TOOLTIPS,
+    EXTRACTION_HELP_TEXTS,
+    GENERAL_CONTROL_TOOLTIPS,
+    LocalizedTextMap,
+    PIPELINE_CONTROL_TOOLTIPS,
+    PIPELINE_OPERATION_GROUPS,
+    PIPELINE_OPERATION_HELP_TEXTS,
+    PIPELINE_PARAMETER_HELP_TEXTS,
+    _localized_text,
+)
 from .utils import is_image_path, load_image_color, scan_image_files
 
-
-LocalizedTextMap = dict[str, tuple[str, str]]
+__all__ = [
+    "EDITOR_ACTION_TOOLTIPS",
+    "EDITOR_TOOL_TOOLTIPS",
+    "EXTRACTION_HELP_TEXTS",
+    "GENERAL_CONTROL_TOOLTIPS",
+    "LocalizedTextMap",
+    "PIPELINE_CONTROL_TOOLTIPS",
+    "PIPELINE_OPERATION_GROUPS",
+    "PIPELINE_OPERATION_HELP_TEXTS",
+    "PIPELINE_PARAMETER_HELP_TEXTS",
+    "PolygonExtractionWidget",
+    "_localized_text",
+]
 
 
 FRAME_STATUS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
@@ -91,1432 +129,9 @@ FRAME_STATUS_MODIFIED = "modified"
 VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
 
 
-class PipelineListWidget(QListWidget):
-    deletePressed = pyqtSignal()
-    orderChanged = pyqtSignal()
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-
-    def keyPressEvent(self, event) -> None:
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            self.deletePressed.emit()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-    def dropEvent(self, event) -> None:
-        super().dropEvent(event)
-        self.orderChanged.emit()
-
-    def contextMenuEvent(self, event) -> None:
-        if self.currentRow() < 0:
-            return
-        menu = QMenu(self)
-        delete_action = menu.addAction("Удалить" if active_language() == "ru" else "Delete")
-        if menu.exec(event.globalPos()) == delete_action:
-            self.deletePressed.emit()
+from .ui.pipeline_list import PipelineListWidget  # noqa: E402  (keep exported here for backward compat)
 
 
-EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
-    "extraction_profile": (
-        "Выбирает независимый набор настроек для проводников или переходных отверстий.",
-        "Selects an independent settings profile for conductors or vias.",
-    ),
-    "retrieval_mode": (
-        "Определяет, искать ли только внешние контуры или всю иерархию вложенных контуров.",
-        "Controls whether only outer contours or the full nested contour hierarchy is extracted.",
-    ),
-    "approximation_mode": (
-        "Задаёт, насколько подробно хранится контур: компактно или со всеми промежуточными точками.",
-        "Controls how densely contour points are stored: compact or full detail.",
-    ),
-    "epsilon": (
-        "Сила упрощения контура. Больше значение уменьшает число вершин и сглаживает форму.",
-        "Contour simplification strength. Higher values reduce vertices and smooth the shape.",
-    ),
-    "epsilon_mode": (
-        "Переключает epsilon между абсолютным значением в пикселях и долей от периметра контура.",
-        "Switches epsilon between an absolute pixel value and a fraction of contour perimeter.",
-    ),
-    "min_area": (
-        "Отсекает слишком маленькие объекты по площади.",
-        "Rejects objects that are too small by area.",
-    ),
-    "max_area": (
-        "Отсекает слишком большие объекты по площади.",
-        "Rejects objects that are too large by area.",
-    ),
-    "min_perimeter": (
-        "Отсекает короткие шумовые контуры по длине границы.",
-        "Rejects short noisy contours by boundary length.",
-    ),
-    "max_perimeter": (
-        "Отсекает слишком длинные и рваные контуры.",
-        "Rejects overly long or ragged contours.",
-    ),
-    "min_points": (
-        "Минимальное число вершин после аппроксимации. Помогает убрать вырожденные фигуры.",
-        "Minimum number of vertices after approximation. Helps remove degenerate shapes.",
-    ),
-    "min_bbox_width": (
-        "Минимальная ширина ограничивающего прямоугольника объекта.",
-        "Minimum object bounding-box width.",
-    ),
-    "max_bbox_width": (
-        "Максимальная ширина ограничивающего прямоугольника объекта.",
-        "Maximum object bounding-box width.",
-    ),
-    "min_bbox_height": (
-        "Минимальная высота ограничивающего прямоугольника объекта.",
-        "Minimum object bounding-box height.",
-    ),
-    "max_bbox_height": (
-        "Максимальная высота ограничивающего прямоугольника объекта.",
-        "Maximum object bounding-box height.",
-    ),
-    "min_aspect_ratio": (
-        "Минимальное отношение ширины к высоте. Полезно для отбора вытянутых объектов.",
-        "Minimum width-to-height ratio. Useful for selecting elongated objects.",
-    ),
-    "max_aspect_ratio": (
-        "Максимальное отношение ширины к высоте. Полезно для отсечения слишком вытянутых форм.",
-        "Maximum width-to-height ratio. Useful for rejecting overly elongated shapes.",
-    ),
-    "exclude_border_touching": (
-        "Убирает объекты, касающиеся границы изображения. Полезно против обрезанных фрагментов.",
-        "Removes objects touching the image border. Useful against cropped fragments.",
-    ),
-    "min_solidity": (
-        "Фильтр по заполненности относительно выпуклой оболочки. Больше значение оставляет более плотные формы.",
-        "Compactness filter relative to the convex hull. Higher values keep denser shapes.",
-    ),
-    "min_extent": (
-        "Фильтр по заполненности bbox. Больше значение оставляет объекты, лучше заполняющие свой прямоугольник.",
-        "Bounding-box fill filter. Higher values keep objects that fill their box better.",
-    ),
-    "via_white_threshold": (
-        "Добавляет к маске пиксели ярче заданного порога.",
-        "Adds pixels brighter than the selected threshold to the mask.",
-    ),
-    "via_black_threshold": (
-        "Добавляет к маске пиксели темнее заданного порога.",
-        "Adds pixels darker than the selected threshold to the mask.",
-    ),
-    "via_threshold_range": (
-        "Добавляет к маске пиксели, попадающие в заданный диапазон яркости.",
-        "Adds pixels inside the selected intensity range to the mask.",
-    ),
-    "via_min_roundness": (
-        "Минимальная округлость via в процентах: 100 близко к окружности, 0 отключает фильтр.",
-        "Minimum via roundness in percent: 100 is close to a circle, 0 disables the filter.",
-    ),
-    "via_size_mode": (
-        "РџРµСЂРµРєР»СЋС‡Р°РµС‚ РѕС‚Р±РѕСЂ via РјРµР¶РґСѓ РґРёР°РїР°Р·РѕРЅРѕРј Рё С‚РѕС‡РЅС‹РјРё Р·РЅР°С‡РµРЅРёСЏРјРё.",
-        "Switches via filtering between a size range and exact size values.",
-    ),
-    "min_via_width": (
-        "Минимальная ширина переходного отверстия в via-профиле.",
-        "Minimum via width in the via profile.",
-    ),
-    "max_via_width": (
-        "Максимальная ширина переходного отверстия в via-профиле.",
-        "Maximum via width in the via profile.",
-    ),
-    "min_via_height": (
-        "Минимальная высота переходного отверстия в via-профиле.",
-        "Minimum via height in the via profile.",
-    ),
-    "max_via_height": (
-        "Максимальная высота переходного отверстия в via-профиле.",
-        "Maximum via height in the via profile.",
-    ),
-    "fixed_via_widths": (
-        "РЎРїРёСЃРѕРє С€РёСЂРёРЅ via. РљР°Р¶РґР°СЏ С€РёСЂРёРЅР° СЃРІСЏР·Р°РЅР° СЃ РІС‹СЃРѕС‚РѕР№ РІ С‚РѕР№ Р¶Рµ РїРѕР·РёС†РёРё.",
-        "Via widths list. Each width is paired with the height at the same position.",
-    ),
-    "fixed_via_heights": (
-        "РЎРїРёСЃРѕРє РІС‹СЃРѕС‚ via. РљР°Р¶РґР°СЏ РІС‹СЃРѕС‚Р° СЃРІСЏР·Р°РЅР° СЃ С€РёСЂРёРЅРѕР№ РІ С‚РѕР№ Р¶Рµ РїРѕР·РёС†РёРё.",
-        "Via heights list. Each height is paired with the width at the same position.",
-    ),
-    "min_hierarchy_depth": (
-        "Минимальная глубина в иерархии контуров. Ноль означает внешние контуры.",
-        "Minimum contour hierarchy depth. Zero means outer contours.",
-    ),
-    "max_hierarchy_depth": (
-        "Максимальная глубина в иерархии контуров.",
-        "Maximum contour hierarchy depth.",
-    ),
-    "max_hole_area_ratio": (
-        "Ограничивает размер внутренней дырки относительно родительского контура.",
-        "Limits inner-hole size relative to its parent contour.",
-    ),
-    "delta": (
-        "RGB-допуск для выбранных цветов.",
-        "RGB tolerance for the selected colors.",
-    ),
-    "min_component_area": (
-        "Минимальная площадь белого компонента бинарной маски.",
-        "Minimum white-component area in the binary mask.",
-    ),
-    "max_component_area": (
-        "Максимальная площадь белого компонента бинарной маски. 0 означает без ограничения.",
-        "Maximum white-component area. Zero means unlimited.",
-    ),
-    "min_component_perimeter": (
-        "Минимальный периметр белого компонента бинарной маски.",
-        "Minimum white-component perimeter in the binary mask.",
-    ),
-    "max_component_perimeter": (
-        "Максимальный периметр белого компонента бинарной маски. 0 означает без ограничения.",
-        "Maximum white-component perimeter. Zero means unlimited.",
-    ),
-}
-
-
-PIPELINE_PARAMETER_HELP_TEXTS: LocalizedTextMap = {
-    "kernel_size": (
-        "Размер окна обработки. Большее окно сильнее сглаживает или меняет форму маски, но теряет мелкие детали.",
-        "Processing window size. Larger windows smooth or reshape the mask more aggressively but lose fine detail.",
-    ),
-    "iterations": (
-        "Число повторов морфологической операции. Больше повторов усиливает эффект.",
-        "Number of morphology repeats. More iterations make the effect stronger.",
-    ),
-    "shape": (
-        "Форма структурирующего элемента. Rect даёт жёсткую геометрию, ellipse мягче, cross тоньше воздействует на линии.",
-        "Structuring element shape. Rect is strict, ellipse softer, cross affects thin lines more gently.",
-    ),
-    "sigma_x": (
-        "Сила гауссова размытия. Чем больше, тем мягче края и меньше шум.",
-        "Gaussian blur strength. Higher values soften edges and reduce noise more.",
-    ),
-    "diameter": (
-        "Размер области bilateral-фильтрации. Большее значение сильнее сглаживает текстуры.",
-        "Bilateral neighborhood size. Higher values smooth textures more strongly.",
-    ),
-    "sigma_color": (
-        "Насколько сильно фильтр сглаживает различия по яркости.",
-        "How strongly the filter smooths intensity differences.",
-    ),
-    "sigma_space": (
-        "Насколько широко bilateral учитывает соседние пиксели по расстоянию.",
-        "How far the bilateral filter looks spatially.",
-    ),
-    "clip_limit": (
-        "Ограничение усиления локального контраста для CLAHE.",
-        "Local contrast boost limit for CLAHE.",
-    ),
-    "tile_grid_size": (
-        "Размер сетки локального выравнивания контраста в CLAHE.",
-        "Local contrast grid size for CLAHE.",
-    ),
-    "alpha": (
-        "Множитель контраста. Больше значение делает различия яркостей заметнее.",
-        "Contrast multiplier. Higher values increase tonal separation.",
-    ),
-    "beta": (
-        "Сдвиг яркости. Положительное значение осветляет, отрицательное затемняет.",
-        "Brightness offset. Positive brightens, negative darkens.",
-    ),
-    "gamma": (
-        "Нелинейная коррекция яркости. Меньше 1 осветляет тени, больше 1 затемняет.",
-        "Nonlinear brightness correction. Below 1 brightens shadows, above 1 darkens them.",
-    ),
-    "threshold": (
-        "Порог бинаризации. Пиксели по одну сторону порога становятся фоном, по другую объектом.",
-        "Binarization threshold. Pixels on one side become background, on the other become foreground.",
-    ),
-    "max_value": (
-        "Значение, которым заполняются пиксели после пороговой операции.",
-        "Output value assigned by thresholding.",
-    ),
-    "threshold_type": (
-        "Тип пороговой операции: прямой, инверсный и другие варианты преобразования.",
-        "Thresholding mode: direct, inverted, and other conversion variants.",
-    ),
-    "adaptive_method": (
-        "Способ локального расчёта порога для adaptive threshold.",
-        "Method used to compute local thresholds in adaptive thresholding.",
-    ),
-    "block_size": (
-        "Размер локального окна для adaptive threshold.",
-        "Local window size for adaptive thresholding.",
-    ),
-    "c_value": (
-        "Смещение локального порога. Меняет агрессивность отделения объекта от фона.",
-        "Local threshold offset. Changes how aggressively foreground is separated from background.",
-    ),
-    "threshold_mode": (
-        "Способ построения первичной маски перед уточнением по границам.",
-        "How the initial mask is built before edge-guided refinement.",
-    ),
-    "edge_detector": (
-        "Метод поиска резких перепадов яркости для уточнения границы маски.",
-        "Method used to find intensity edges for mask boundary refinement.",
-    ),
-    "edge_percentile": (
-        "Порог силы градиента для Sobel. Больше значение оставляет только более резкие края.",
-        "Sobel gradient-strength cutoff. Higher values keep only sharper edges.",
-    ),
-    "correction_radius": (
-        "Максимальный сдвиг границы маски в пикселях при поиске ближайшего яркостного края.",
-        "Maximum mask-boundary shift in pixels while looking for the nearest intensity edge.",
-    ),
-    "fill_holes": (
-        "Заполняет внутренние отверстия после уточнения границы.",
-        "Fills inner holes after boundary refinement.",
-    ),
-    "threshold1": (
-        "Нижний порог Canny. Определяет чувствительность к слабым границам.",
-        "Lower Canny threshold. Controls sensitivity to weak edges.",
-    ),
-    "threshold2": (
-        "Верхний порог Canny. Определяет, какие границы считаются уверенными.",
-        "Upper Canny threshold. Controls which edges are considered strong.",
-    ),
-    "aperture_size": (
-        "Размер фильтра Собеля в Canny. Больше значение даёт более гладкую оценку градиента.",
-        "Sobel kernel size in Canny. Larger values produce a smoother gradient estimate.",
-    ),
-    "l2gradient": (
-        "Использует более точную, но немного более тяжёлую оценку градиента в Canny.",
-        "Uses a more precise but slightly heavier gradient computation in Canny.",
-    ),
-    "width": (
-        "Целевая ширина для resize или ширина выделяемой области для crop.",
-        "Target width for resize or extracted region width for crop.",
-    ),
-    "height": (
-        "Целевая высота для resize или высота выделяемой области для crop.",
-        "Target height for resize or extracted region height for crop.",
-    ),
-    "keep_aspect": (
-        "Сохраняет пропорции изображения при изменении размера.",
-        "Preserves image aspect ratio during resizing.",
-    ),
-    "interpolation": (
-        "Метод интерполяции при изменении размера изображения.",
-        "Interpolation method used during resizing.",
-    ),
-    "x": (
-        "Координата левого края области crop.",
-        "Left coordinate of the crop region.",
-    ),
-    "y": (
-        "Координата верхнего края области crop.",
-        "Top coordinate of the crop region.",
-    ),
-    "amount": (
-        "Сила повышения резкости. Больше значение сильнее подчёркивает контуры.",
-        "Sharpening strength. Higher values emphasize edges more strongly.",
-    ),
-    "sigma": (
-        "Ширина предварительного размытия перед повышением резкости.",
-        "Pre-blur width used before sharpening.",
-    ),
-    "h": (
-        "Сила подавления шума в Non-Local Means.",
-        "Noise suppression strength in Non-Local Means denoising.",
-    ),
-    "template_window_size": (
-        "Размер шаблона для сравнения текстур при denoise.",
-        "Template size used for texture comparison during denoising.",
-    ),
-    "search_window_size": (
-        "Размер области поиска похожих фрагментов при denoise.",
-        "Search area size for similar patches during denoising.",
-    ),
-}
-EXTRACTION_HELP_TEXTS.update(
-    {
-        "extraction_profile": (
-            "Выбирает, что сейчас настраивается: проводники или переходные отверстия. У каждого профиля свои фильтры и свой результат векторизации.",
-            "Selects what is being configured now: conductors or vias. Each profile has its own filters and vectorization result.",
-        ),
-        "retrieval_mode": (
-            "Определяет, искать только внешние границы объектов или также вложенные контуры и отверстия внутри них.",
-            "Controls whether only outer object borders are found or nested contours and holes are included too.",
-        ),
-        "approximation_mode": (
-            "Задает подробность контура. Более подробный режим сохраняет больше точек, компактный делает форму проще.",
-            "Controls contour detail. Full detail keeps more points, compact mode simplifies the shape.",
-        ),
-        "epsilon": (
-            "Сглаживает найденный контур. Чем больше значение, тем меньше лишних вершин, но мелкие детали могут пропасть.",
-            "Smooths the detected contour. Higher values remove more extra vertices, but small details can disappear.",
-        ),
-        "epsilon_mode": (
-            "Меняет смысл сглаживания: фиксированное число пикселей или доля от длины контура. Относительный режим удобнее для объектов разного размера.",
-            "Changes smoothing units: fixed pixels or a fraction of contour length. Relative mode is better for objects of different sizes.",
-        ),
-        "min_area": (
-            "Отбрасывает объекты с площадью меньше этого значения. Используйте, чтобы убрать мелкий шум.",
-            "Rejects objects with an area below this value. Use it to remove small noise.",
-        ),
-        "max_area": (
-            "Отбрасывает объекты с площадью больше этого значения. Ноль обычно означает без верхнего ограничения.",
-            "Rejects objects with an area above this value. Zero usually means no upper limit.",
-        ),
-        "min_perimeter": (
-            "Отбрасывает контуры с короткой границей. Помогает убрать мелкие случайные точки и обрывки.",
-            "Rejects contours with a short border. Helps remove tiny random specks and fragments.",
-        ),
-        "max_perimeter": (
-            "Отбрасывает контуры со слишком длинной границей. Помогает убрать рваные или слишком крупные области.",
-            "Rejects contours with an overly long border. Helps remove ragged or too-large regions.",
-        ),
-        "min_points": (
-            "Минимальное число вершин у готового полигона. Увеличьте, если нужно убрать вырожденные треугольники и линии.",
-            "Minimum vertex count for the final polygon. Increase it to remove degenerate triangles and lines.",
-        ),
-        "min_bbox_width": (
-            "Минимальная ширина прямоугольника вокруг объекта. Объекты уже этого значения не попадут в результат.",
-            "Minimum width of the object's bounding rectangle. Narrower objects are excluded.",
-        ),
-        "max_bbox_width": (
-            "Максимальная ширина прямоугольника вокруг объекта. Ноль обычно означает без верхнего ограничения.",
-            "Maximum width of the object's bounding rectangle. Zero usually means no upper limit.",
-        ),
-        "min_bbox_height": (
-            "Минимальная высота прямоугольника вокруг объекта. Объекты ниже этого значения не попадут в результат.",
-            "Minimum height of the object's bounding rectangle. Shorter objects are excluded.",
-        ),
-        "max_bbox_height": (
-            "Максимальная высота прямоугольника вокруг объекта. Ноль обычно означает без верхнего ограничения.",
-            "Maximum height of the object's bounding rectangle. Zero usually means no upper limit.",
-        ),
-        "min_aspect_ratio": (
-            "Минимальное отношение ширины к высоте. Помогает оставить объекты нужной вытянутости.",
-            "Minimum width-to-height ratio. Helps keep objects with the required elongation.",
-        ),
-        "max_aspect_ratio": (
-            "Максимальное отношение ширины к высоте. Помогает убрать слишком вытянутые или слишком плоские объекты.",
-            "Maximum width-to-height ratio. Helps remove objects that are too elongated or too flat.",
-        ),
-        "exclude_border_touching": (
-            "Если включено, объекты, касающиеся края изображения, не сохраняются. Полезно для обрезанных фрагментов.",
-            "When enabled, objects touching the image border are excluded. Useful for cropped fragments.",
-        ),
-        "min_solidity": (
-            "Требуемая заполненность формы относительно ее выпуклой оболочки. Чем выше значение, тем сильнее отсекаются рваные и вогнутые области.",
-            "Required shape fill relative to its convex hull. Higher values reject ragged and strongly concave regions.",
-        ),
-        "min_extent": (
-            "Требуемая заполненность прямоугольника вокруг объекта. Чем выше значение, тем плотнее объект должен занимать свой bbox.",
-            "Required fill of the object's bounding rectangle. Higher values require the object to occupy its box more tightly.",
-        ),
-        "via_white_threshold": (
-            "Добавляет в маску via пиксели светлее заданного порога. Включайте для поиска светлых переходных отверстий.",
-            "Adds pixels brighter than the threshold to the via mask. Enable it to detect bright vias.",
-        ),
-        "via_white_range": (
-            "Добавляет в маску via пиксели, яркость которых попадает в диапазон для белых переходных отверстий.",
-            "Adds pixels whose brightness falls inside the white-via range to the via mask.",
-        ),
-        "via_black_threshold": (
-            "Добавляет в маску via пиксели темнее заданного порога. Включайте для поиска темных переходных отверстий.",
-            "Adds pixels darker than the threshold to the via mask. Enable it to detect dark vias.",
-        ),
-        "via_black_range": (
-            "Добавляет в маску via пиксели, яркость которых попадает в диапазон для черных переходных отверстий.",
-            "Adds pixels whose brightness falls inside the black-via range to the via mask.",
-        ),
-        "via_detector_methods": (
-            "Включает методы поиска via. Градиент ищет круговой перепад яркости, Hough ищет окружности, остальные методы помогают на бинарных и шумных кадрах.",
-            "Enables via detection methods. Gradient finds circular brightness edges, Hough finds circles, and the other methods help on binary and noisy frames.",
-        ),
-        "via_detector_gradient_method": (
-            "Ищет via по круговому перепаду яркости на границе контакта. Используйте для размытых или слабо отличимых via, когда важнее форма круглого края, а не абсолютная яркость.",
-            "Finds vias by a circular brightness edge around the contact. Use it for blurred or weak vias when the round edge shape matters more than absolute brightness.",
-        ),
-        "via_detector_spot_method": (
-            "Ищет компактные светлые или темные точки, которые выделяются относительно ближайшего фона. Хорошо работает для маленьких ярких контактов на дорожках и шумном фоне.",
-            "Finds compact bright or dark spots that stand out from nearby background. Works well for small bright contacts on traces and noisy background.",
-        ),
-        "via_detector_hough_method": (
-            "Ищет окружности через HoughCircles. Включайте, когда via выглядят как кольца или четкие круглые пятна; отключайте, если появляются лишние круги на дорожках и вертикальных границах.",
-            "Finds circles with HoughCircles. Enable it when vias look like rings or clear round spots; disable it if traces and vertical edges create extra circles.",
-        ),
-        "via_detector_components_method": (
-            "Ищет связные области после порогов и морфологии, затем фильтрует их по размеру и форме. Полезно на бинарных кадрах и там, где каждый via становится отдельным пятном.",
-            "Finds connected regions after thresholds and morphology, then filters them by size and shape. Useful on binary frames and when each via becomes a separate blob.",
-        ),
-        "via_detector_contours_method": (
-            "Ищет контуры областей-кандидатов и оценивает их геометрию. Используйте, когда контуры вокруг via уже хорошо извлекаются, но нужно отсеять дорожки и рваные области.",
-            "Finds contours of candidate regions and evaluates their geometry. Use it when via contours are already extracted well but traces and ragged regions need filtering.",
-        ),
-        "via_detector_morphology_method": (
-            "Ищет центры via после морфологического сглаживания и distance transform. Помогает склеить шумные пиксели в устойчивые круглые кандидаты на зернистых изображениях.",
-            "Finds via centers after morphological smoothing and distance transform. Helps turn noisy pixels into stable round candidates on grainy images.",
-        ),
-        "via_detector_template_method": (
-            "Ищет области, похожие на сохраненные пользователем образцы via. Используйте, когда внешний вид контактов стабилен; качество сильно зависит от выбранных шаблонов.",
-            "Finds regions similar to user-saved via samples. Use it when contact appearance is stable; quality depends strongly on the selected templates.",
-        ),
-        "via_detector_blob_method": (
-            "Ищет круглые пятна через blob detector с проверкой площади, округлости и выпуклости. Полезно для чистых точечных via; на сильном шуме может давать лишние кандидаты.",
-            "Finds round spots with a blob detector using area, circularity, and convexity checks. Useful for clean dot-like vias; may add false candidates on heavy noise.",
-        ),
-        "via_gradient_min_strength": (
-            "Минимальная сила кругового перепада яркости. Увеличьте значение, если появляются ложные via на шуме; уменьшите, если слабые контакты пропадают.",
-            "Minimum circular edge strength. Increase it to remove noisy false vias; decrease it when weak contacts disappear.",
-        ),
-        "via_gradient_min_coverage": (
-            "Какая часть окружности должна иметь заметный перепад яркости. Больше значение требует более замкнутую круглую границу via.",
-            "How much of the circle must have a visible brightness edge. Higher values require a more complete circular via boundary.",
-        ),
-        "via_spot_min_contrast": (
-            "Минимальная локальная яркость точки относительно ближайшего фона. Увеличьте, если находятся шум и дорожки; уменьшите, если слабые контакты пропадают.",
-            "Minimum local brightness of a dot relative to nearby background. Increase it when noise and traces are detected; decrease it when weak contacts are missed.",
-        ),
-        "via_spot_min_roundness": (
-            "Минимальная компактность яркой точки. Увеличьте, чтобы отсеять вытянутые участки дорожек и края; уменьшите для размытых контактов.",
-            "Minimum compactness of the bright dot. Increase it to reject elongated traces and edges; decrease it for blurred contacts.",
-        ),
-        "via_spot_line_suppression": (
-            "\u041f\u043e\u0434\u0430\u0432\u043b\u044f\u0435\u0442 \u0434\u043b\u0438\u043d\u043d\u044b\u0435 \u0433\u043e\u0440\u0438\u0437\u043e\u043d\u0442\u0430\u043b\u044c\u043d\u044b\u0435 \u0438 \u0432\u0435\u0440\u0442\u0438\u043a\u0430\u043b\u044c\u043d\u044b\u0435 \u0434\u043e\u0440\u043e\u0436\u043a\u0438 \u043f\u0435\u0440\u0435\u0434 \u043f\u043e\u0438\u0441\u043a\u043e\u043c \u043a\u0440\u0443\u0433\u043b\u044b\u0445 \u0442\u043e\u0447\u0435\u043a. \u0423\u0432\u0435\u043b\u0438\u0447\u044c\u0442\u0435, \u0435\u0441\u043b\u0438 \u043d\u0430 \u0434\u043e\u0440\u043e\u0436\u043a\u0430\u0445 \u043f\u043e\u044f\u0432\u043b\u044f\u044e\u0442\u0441\u044f \u043b\u043e\u0436\u043d\u044b\u0435 via; \u0443\u043c\u0435\u043d\u044c\u0448\u0438\u0442\u0435, \u0435\u0441\u043b\u0438 via \u0441\u043b\u0438\u0448\u043a\u043e\u043c \u0432\u044b\u0442\u0435\u0440\u043b\u0438\u0441\u044c.",
-            "Suppresses long horizontal and vertical traces before round-dot detection. Increase it when traces create false vias; decrease it if real vias are erased.",
-        ),
-        "via_hough_edge_threshold": (
-            "Порог сильного края для HoughCircles. Увеличьте, чтобы игнорировать слабый шум; уменьшите, чтобы находить менее контрастные окружности.",
-            "Strong-edge threshold for HoughCircles. Increase it to ignore weak noise; decrease it to find lower-contrast circles.",
-        ),
-        "via_hough_accumulator_threshold": (
-            "Сколько голосов нужно окружности в HoughCircles. Больше значение дает меньше, но надежнее кандидатов; меньше значение ищет слабые via.",
-            "How many votes a Hough circle needs. Higher values produce fewer, stronger candidates; lower values find weaker vias.",
-        ),
-        "via_component_min_score": (
-            "Минимальный отклик для кандидатов, найденных связанными компонентами. Увеличьте, чтобы убрать слабые пятна после бинаризации.",
-            "Minimum response for connected-component candidates. Increase it to remove weak spots after binarization.",
-        ),
-        "via_contour_min_score": (
-            "Минимальный отклик для кандидатов, найденных по контурам. Увеличьте, чтобы оставить только контуры с выраженным локальным сигналом.",
-            "Minimum response for contour candidates. Increase it to keep only contours with a clear local signal.",
-        ),
-        "via_morphology_peak_scale": (
-            "Минимальный размер центра via при поиске морфологических пиков относительно ожидаемого размера. Больше значение отсекает мелкие шумовые центры.",
-            "Minimum via-center peak size relative to the expected size. Higher values reject small noisy centers.",
-        ),
-        "via_template_min_score": (
-            "Минимальное совпадение с круглым шаблоном. Больше значение требует более похожую на круг область.",
-            "Minimum circular-template match. Higher values require an area that looks more like a circle.",
-        ),
-        "via_templates": (
-            "Список шаблонов via. Нажмите выбор шаблона и протяните рамку по переходному отверстию на изображении; все шаблоны используются при поиске.",
-            "List of via templates. Click pick template and drag a rectangle over a via in the image; all templates are used during detection.",
-        ),
-        "via_blob_min_circularity": (
-            "Минимальная округлость для Blob detector. Больше значение сильнее отбрасывает вытянутые и рваные пятна.",
-            "Minimum circularity for Blob detector. Higher values reject elongated and ragged spots more strongly.",
-        ),
-        "reset_via_search": (
-            "Возвращает методы поиска via и их параметры к значениям по умолчанию. Сохраненные шаблоны не удаляются.",
-            "Restores via search methods and their parameters to defaults. Saved templates are not removed.",
-        ),
-        "via_noisy_traces_preset": (
-            "Быстро настраивает поиск для кадров, где яркие круглые via находятся на фоне длинных дорожек и шума. Включает методы Точки и Градиент, усиливает подавление дорожек и отключает методы, которые часто дают лишние срабатывания.",
-            "Quick setup for frames where bright round vias sit on long traces and noisy background. Enables Spots and Gradient, increases trace suppression, and disables methods that often create extra false hits.",
-        ),
-        "via_blurred_preset": (
-            "Быстро настраивает поиск для слабых или размытых via. Понижает пороги, допускает менее компактную форму и оставляет инспектор включенным, чтобы можно было проверить найденные точки кликом.",
-            "Quick setup for weak or blurred vias. Lowers thresholds, allows less compact spots, and keeps the inspector enabled so found points can be checked by click.",
-        ),
-        "via_preset_selector": (
-            "Список встроенных и сохраненных пользователем пресетов поиска via. Пресет меняет только параметры распознавания, шаблоны и размеры via остаются на месте.",
-            "List of built-in and user-saved via search presets. A preset changes recognition parameters only; templates and via sizes stay unchanged.",
-        ),
-        "debug_candidates": (
-            "Включает инспектор распознавания via. После обработки кликните по найденной via, чтобы увидеть метод поиска, причину принятия и основные численные признаки.",
-            "Enables the via recognition inspector. After processing, click a detected via to see the search method, acceptance reason, and main numeric features.",
-        ),
-        "via_threshold_range": (
-            "Добавляет в маску via пиксели, яркость которых попадает в заданный диапазон. Удобно, когда via имеет средний тон.",
-            "Adds pixels whose intensity falls inside the selected range to the via mask. Useful for mid-tone vias.",
-        ),
-        "via_min_roundness": (
-            "Минимальная похожесть via на круг в процентах. Увеличьте, чтобы убрать вытянутые пятна; 0 отключает фильтр.",
-            "Minimum via circularity in percent. Increase it to reject elongated spots; 0 disables the filter.",
-        ),
-        "via_size_mode": (
-            "Выбирает способ отбора via по размеру: общий диапазон ширины/высоты или список точных размеров.",
-            "Chooses how vias are filtered by size: a width/height range or a list of exact sizes.",
-        ),
-        "min_via_width": (
-            "Минимальная ширина переходного отверстия. Более узкие объекты будут отброшены.",
-            "Minimum via width. Narrower objects are rejected.",
-        ),
-        "max_via_width": (
-            "Максимальная ширина переходного отверстия. Ноль означает без верхнего ограничения.",
-            "Maximum via width. Zero means no upper limit.",
-        ),
-        "min_via_height": (
-            "Минимальная высота переходного отверстия. Более низкие объекты будут отброшены.",
-            "Minimum via height. Shorter objects are rejected.",
-        ),
-        "max_via_height": (
-            "Максимальная высота переходного отверстия. Ноль означает без верхнего ограничения.",
-            "Maximum via height. Zero means no upper limit.",
-        ),
-        "fixed_via_widths": (
-            "Ширина via из списка точных размеров. Пара X/Y в одной строке описывает один допустимый размер.",
-            "Via width in the exact-size list. The X/Y pair in one row describes one allowed size.",
-        ),
-        "fixed_via_heights": (
-            "Высота via из списка точных размеров. Пара X/Y в одной строке описывает один допустимый размер.",
-            "Via height in the exact-size list. The X/Y pair in one row describes one allowed size.",
-        ),
-        "min_hierarchy_depth": (
-            "Минимальная глубина вложенности контура. Ноль означает внешний контур; большие значения выбирают внутренние контуры.",
-            "Minimum contour nesting depth. Zero means an outer contour; higher values select inner contours.",
-        ),
-        "max_hierarchy_depth": (
-            "Максимальная глубина вложенности контура. Ограничивает, насколько глубоко искать внутренние контуры.",
-            "Maximum contour nesting depth. Limits how deep inner contours are accepted.",
-        ),
-        "max_hole_area_ratio": (
-            "Максимальная площадь отверстия внутри объекта относительно внешнего контура. Уменьшите, чтобы убрать объекты с большими дырками.",
-            "Maximum inner-hole area relative to the outer contour. Lower it to reject objects with large holes.",
-        ),
-        "delta": (
-            "Допуск к выбранному цвету при цветовой бинаризации. Большее значение захватывает больше похожих оттенков.",
-            "Tolerance around selected colors for color binarization. Higher values include more similar shades.",
-        ),
-        "min_component_area": (
-            "Минимальная площадь белой области в бинарной маске. Меньшие области удаляются как шум.",
-            "Minimum area of a white region in the binary mask. Smaller regions are removed as noise.",
-        ),
-        "max_component_area": (
-            "Максимальная площадь белой области в бинарной маске. Ноль означает без верхнего ограничения.",
-            "Maximum area of a white region in the binary mask. Zero means no upper limit.",
-        ),
-        "min_component_perimeter": (
-            "Минимальная длина границы белой области в бинарной маске. Короткие области удаляются.",
-            "Minimum border length of a white region in the binary mask. Shorter regions are removed.",
-        ),
-        "max_component_perimeter": (
-            "Максимальная длина границы белой области в бинарной маске. Ноль означает без верхнего ограничения.",
-            "Maximum border length of a white region in the binary mask. Zero means no upper limit.",
-        ),
-    }
-)
-
-PIPELINE_PARAMETER_HELP_TEXTS.update(
-    {
-        "kernel_size": (
-            "Размер окна обработки. Большее окно сильнее сглаживает или меняет форму маски, но может съесть мелкие детали.",
-            "Processing window size. A larger window smooths or reshapes the mask more strongly, but can remove fine details.",
-        ),
-        "iterations": (
-            "Сколько раз повторить операцию. Чем больше повторов, тем сильнее эффект.",
-            "How many times to repeat the operation. More repeats make the effect stronger.",
-        ),
-        "shape": (
-            "Форма ядра обработки: прямоугольник действует жестче, эллипс мягче, крест слабее влияет на диагонали.",
-            "Processing kernel shape: rectangle is stricter, ellipse is softer, cross affects diagonals less.",
-        ),
-        "sigma_x": (
-            "Сила гауссова размытия. Увеличьте, чтобы убрать шум; уменьшите, чтобы сохранить резкие края.",
-            "Gaussian blur strength. Increase it to reduce noise; decrease it to keep sharper edges.",
-        ),
-        "diameter": (
-            "Размер области bilateral-фильтра. Большее значение сильнее сглаживает текстуру вокруг пикселя.",
-            "Bilateral filter neighborhood size. Higher values smooth texture around each pixel more strongly.",
-        ),
-        "sigma_color": (
-            "Насколько сильно фильтр сглаживает различия по яркости и цвету. Больше значение объединяет более разные оттенки.",
-            "How strongly the filter smooths brightness and color differences. Higher values merge more different tones.",
-        ),
-        "sigma_space": (
-            "Насколько далеко фильтр смотрит вокруг пикселя. Большее значение учитывает более широкую область.",
-            "How far around each pixel the filter looks. Higher values use a wider area.",
-        ),
-        "clip_limit": (
-            "Ограничивает усиление локального контраста. Уменьшите, если появляются пересвеченные пятна или шум.",
-            "Limits local contrast amplification. Lower it if glare spots or noise appear.",
-        ),
-        "tile_grid_size": (
-            "Размер участков для локального контраста. Меньшие участки дают более локальный эффект, большие действуют плавнее.",
-            "Tile size for local contrast. Smaller tiles give a more local effect, larger tiles act more smoothly.",
-        ),
-        "alpha": (
-            "Коэффициент контраста. Больше 1 усиливает различия, меньше 1 делает изображение мягче.",
-            "Contrast multiplier. Above 1 increases differences, below 1 softens the image.",
-        ),
-        "beta": (
-            "Сдвиг яркости. Положительное значение осветляет изображение, отрицательное затемняет.",
-            "Brightness offset. Positive values brighten the image, negative values darken it.",
-        ),
-        "gamma": (
-            "Нелинейная коррекция яркости. Меньше 1 осветляет темные детали, больше 1 затемняет средние тона.",
-            "Nonlinear brightness correction. Below 1 brightens dark details, above 1 darkens midtones.",
-        ),
-        "threshold": (
-            "Порог бинаризации. Пиксели по одну сторону порога станут фоном, по другую - объектом.",
-            "Binarization threshold. Pixels on one side become background, on the other side become foreground.",
-        ),
-        "max_value": (
-            "Яркость, которую получают пиксели объекта после пороговой операции. Обычно оставляют 255 для белой маски.",
-            "Output brightness assigned to foreground pixels after thresholding. Usually keep 255 for a white mask.",
-        ),
-        "threshold_type": (
-            "Направление порога: обычное оставляет светлые объекты, инверсное - темные объекты.",
-            "Threshold direction: normal keeps bright objects, inverted keeps dark objects.",
-        ),
-        "adaptive_method": (
-            "Как считать локальный порог: среднее проще, Gaussian мягче учитывает пиксели рядом с центром окна.",
-            "How to compute the local threshold: mean is simpler, Gaussian weights pixels near the window center more smoothly.",
-        ),
-        "block_size": (
-            "Размер локального окна для адаптивного порога. Больше окно лучше при плавной подсветке, меньше - при мелких изменениях.",
-            "Local window size for adaptive thresholding. Larger works better for smooth lighting, smaller for fine changes.",
-        ),
-        "c_value": (
-            "Сдвиг локального порога. Меняет агрессивность отделения объекта от фона.",
-            "Local threshold offset. Changes how aggressively foreground is separated from background.",
-        ),
-        "threshold_mode": (
-            "Как строится начальная маска перед уточнением границ: вручную, Otsu или адаптивно.",
-            "How the initial mask is built before edge refinement: manual, Otsu, or adaptive.",
-        ),
-        "edge_detector": (
-            "Метод поиска резких границ для уточнения маски. Canny строже, Sobel проще и мягче.",
-            "Edge detection method for mask refinement. Canny is stricter, Sobel is simpler and softer.",
-        ),
-        "edge_percentile": (
-            "Порог силы границы для Sobel. Большее значение оставляет только самые резкие края.",
-            "Sobel edge strength cutoff. Higher values keep only the sharpest edges.",
-        ),
-        "correction_radius": (
-            "На сколько пикселей можно сдвигать границу маски к ближайшему найденному краю.",
-            "How many pixels the mask border may move toward the nearest detected edge.",
-        ),
-        "threshold1": (
-            "Нижний порог Canny. Уменьшите, чтобы видеть слабые границы; увеличьте, чтобы убрать шум.",
-            "Lower Canny threshold. Lower it to detect weak edges; raise it to reduce noise.",
-        ),
-        "threshold2": (
-            "Верхний порог Canny. Определяет, какие границы считаются уверенными.",
-            "Upper Canny threshold. Controls which edges are considered strong.",
-        ),
-        "aperture_size": (
-            "Размер фильтра Sobel внутри Canny. Большее значение дает более плавную оценку границы.",
-            "Sobel filter size inside Canny. Higher values produce a smoother edge estimate.",
-        ),
-        "l2gradient": (
-            "Включает более точный расчет силы границы в Canny. Обычно дает чуть стабильнее результат, но работает тяжелее.",
-            "Uses a more precise Canny edge-strength calculation. Usually slightly more stable but heavier.",
-        ),
-        "fill_holes": (
-            "Заполняет внутренние дырки в маске после уточнения границ. Отключите, если отверстия должны сохраниться.",
-            "Fills inner holes in the mask after edge refinement. Disable it if holes should remain.",
-        ),
-        "min_component_area": (
-            "Минимальная площадь белой области. Меньшие компоненты удаляются.",
-            "Minimum area of a white component. Smaller components are removed.",
-        ),
-        "max_component_area": (
-            "Максимальная площадь белой области. Ноль означает без верхнего ограничения.",
-            "Maximum area of a white component. Zero means no upper limit.",
-        ),
-        "min_component_perimeter": (
-            "Минимальная длина границы белой области. Короткие компоненты удаляются.",
-            "Minimum border length of a white component. Shorter components are removed.",
-        ),
-        "max_component_perimeter": (
-            "Максимальная длина границы белой области. Ноль означает без верхнего ограничения.",
-            "Maximum border length of a white component. Zero means no upper limit.",
-        ),
-        "distance_ratio": (
-            "Чувствительность разделения слипшихся объектов. Большее значение требует более выраженных центров объектов.",
-            "Sensitivity for splitting touching objects. Higher values require more distinct object centers.",
-        ),
-        "min_peak_area": (
-            "Минимальная площадь центра объекта при разделении watershed. Увеличьте, чтобы не дробить шум.",
-            "Minimum object-center area for watershed splitting. Increase it to avoid splitting noise.",
-        ),
-        "background_iterations": (
-            "Сколько раз расширять фон перед watershed. Больше повторов увереннее отделяет фон, но может сжать объекты.",
-            "How many times to expand the background before watershed. More repeats separate background more firmly but can shrink objects.",
-        ),
-        "width": (
-            "Ширина результата при изменении размера или ширина вырезаемой области при crop.",
-            "Result width for resize, or extracted area width for crop.",
-        ),
-        "height": (
-            "Высота результата при изменении размера или высота вырезаемой области при crop.",
-            "Result height for resize, or extracted area height for crop.",
-        ),
-        "keep_aspect": (
-            "Сохраняет пропорции изображения при изменении размера. Отключайте только если допустимо растяжение.",
-            "Preserves image proportions during resize. Disable only when stretching is acceptable.",
-        ),
-        "interpolation": (
-            "Метод пересчета пикселей при изменении размера. Влияет на резкость и сглаживание результата.",
-            "Pixel resampling method for resizing. Affects sharpness and smoothness of the result.",
-        ),
-        "scale": (
-            "Во сколько раз изменить размер изображения. Значение больше 1 увеличивает, меньше 1 уменьшает.",
-            "Resize multiplier. Values above 1 enlarge the image, below 1 shrink it.",
-        ),
-        "x": (
-            "Левая координата области, которая будет вырезана из изображения.",
-            "Left coordinate of the region that will be cropped from the image.",
-        ),
-        "y": (
-            "Верхняя координата области, которая будет вырезана из изображения.",
-            "Top coordinate of the region that will be cropped from the image.",
-        ),
-        "amount": (
-            "Сила повышения резкости. Большее значение сильнее подчеркивает края и шум.",
-            "Sharpening strength. Higher values emphasize edges and noise more strongly.",
-        ),
-        "sigma": (
-            "Ширина предварительного размытия для резкости. Большее значение делает усиление более широким и мягким.",
-            "Pre-blur width for sharpening. Higher values make the enhancement wider and softer.",
-        ),
-        "h": (
-            "Сила подавления шума. Большее значение убирает больше шума, но может сгладить полезные детали.",
-            "Noise suppression strength. Higher values remove more noise but can smooth useful details.",
-        ),
-        "template_window_size": (
-            "Размер образца, по которому denoise сравнивает текстуры. Обычно меняют редко.",
-            "Sample size used by denoise to compare textures. Usually changed rarely.",
-        ),
-        "search_window_size": (
-            "Размер области поиска похожих фрагментов для denoise. Больше область может лучше чистить шум, но работает медленнее.",
-            "Search area size for similar patches in denoise. Larger areas can clean noise better but run slower.",
-        ),
-    }
-)
-
-PIPELINE_CONTROL_TOOLTIPS: LocalizedTextMap = {
-    "add_step_button": (
-        "Добавляет выбранный фильтр из списка в текущий pipeline.",
-        "Adds the selected filter from the list to the current pipeline.",
-    ),
-    "remove_step_button": (
-        "Удаляет выбранный шаг из pipeline. Остальные шаги сохраняются.",
-        "Removes the selected step from the pipeline. Other steps stay unchanged.",
-    ),
-    "move_up_button": (
-        "Перемещает выбранный фильтр выше. Порядок важен: верхние фильтры применяются раньше.",
-        "Moves the selected filter up. Order matters: upper filters run earlier.",
-    ),
-    "move_down_button": (
-        "Перемещает выбранный фильтр ниже. Нижние фильтры применяются позже.",
-        "Moves the selected filter down. Lower filters run later.",
-    ),
-    "auto_apply_checkbox": (
-        "Автоматически пересчитывает текущее изображение после изменения pipeline или его параметров.",
-        "Automatically reprocesses the current image after pipeline or parameter changes.",
-    ),
-    "apply_current_button": (
-        "Применяет текущий pipeline к открытому изображению вручную.",
-        "Manually applies the current pipeline to the open image.",
-    ),
-    "save_json_button": (
-        "Сохраняет текущий набор фильтров и их параметры в JSON-файл.",
-        "Saves the current filter list and parameters to a JSON file.",
-    ),
-    "load_json_button": (
-        "Загружает pipeline из JSON-файла и заменяет текущий список фильтров.",
-        "Loads a pipeline from a JSON file and replaces the current filter list.",
-    ),
-    "auto_tune_button": (
-        "Подбирает параметры фильтров по нарисованным полигонам, используя их как эталон результата.",
-        "Tunes filter parameters using the drawn polygons as the target result.",
-    ),
-}
-
-EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
-    EditorTool.SELECT: (
-        "Выбор и перемещение полигонов на изображении.",
-        "Select and move polygons on the image.",
-    ),
-    EditorTool.SELECT_AREA: (
-        "Выделение объектов рамкой. Потяните прямоугольник вокруг нужных полигонов; Ctrl добавляет к текущему выделению.",
-        "Select objects with a rectangle. Drag around polygons; Ctrl adds to the current selection.",
-    ),
-    EditorTool.PAN: (
-        "Перемещение изображения без изменения полигонов.",
-        "Pan the image without editing polygons.",
-    ),
-    EditorTool.RULER: (
-        "Измерение расстояния на изображении перетаскиванием мыши.",
-        "Measure distance on the image by dragging the mouse.",
-    ),
-    EditorTool.ADD_POLYGON: (
-        "Создание нового полигона точками или прямоугольником.",
-        "Create a new polygon with points or a rectangle.",
-    ),
-    EditorTool.BRUSH: (
-        "Рисование или стирание области кистью. Круг под курсором показывает текущую толщину кисти.",
-        "Draw or erase an area with the brush. The circle under the cursor shows the current brush width.",
-    ),
-    EditorTool.ADD_VIA: (
-        "Поставить переходное отверстие заданной ширины и высоты в месте клика.",
-        "Place a via of the configured width and height at the click position.",
-    ),
-    EditorTool.ADD_VERTEX: (
-        "Добавить вершину на ближайший участок границы выбранного полигона.",
-        "Add a vertex to the nearest edge of the selected polygon.",
-    ),
-    EditorTool.DELETE_VERTEX: (
-        "Удалить вершину выбранного полигона. Режим удаления задает, удаляется одна точка или область.",
-        "Delete vertices from the selected polygon. The delete mode controls whether one point or an area is removed.",
-    ),
-    EditorTool.MOVE_VERTEX: (
-        "Переместить отдельную вершину выбранного полигона.",
-        "Move a single vertex of the selected polygon.",
-    ),
-    EditorTool.DELETE_POLYGON: (
-        "Удалить полигон, по которому вы кликнете.",
-        "Delete the polygon you click.",
-    ),
-}
-
-EDITOR_ACTION_TOOLTIPS: LocalizedTextMap = {
-    "undo_button": (
-        "Отменяет последнее изменение полигонов.",
-        "Undoes the last polygon edit.",
-    ),
-    "redo_button": (
-        "Возвращает последнее отмененное изменение полигонов.",
-        "Redoes the last undone polygon edit.",
-    ),
-    "zoom_in_button": (
-        "Увеличивает изображение в окне просмотра.",
-        "Zooms in on the image view.",
-    ),
-    "zoom_out_button": (
-        "Уменьшает изображение в окне просмотра.",
-        "Zooms out of the image view.",
-    ),
-    "fit_button": (
-        "Подгоняет изображение целиком под размер окна просмотра.",
-        "Fits the whole image into the view.",
-    ),
-}
-
-GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
-    "input_dir": (
-        "Папка с изображениями, которые появятся в списке файлов.",
-        "Folder with images that will appear in the file list.",
-    ),
-    "cif_dir": (
-        "Папка с CIF-разметкой для наложения на изображения. Можно оставить пустой, если CIF не нужен.",
-        "Folder with CIF annotations to overlay on images. Leave empty if CIF is not needed.",
-    ),
-    "output_dir": (
-        "Папка, куда сохраняются результаты обработки и векторизации.",
-        "Folder where processing and vectorization results are saved.",
-    ),
-    "dataset_dir": (
-        "Папка датасета, куда экспортируется текущий кадр в режиме подготовки данных.",
-        "Dataset folder where the current frame is exported during dataset preparation.",
-    ),
-    "browse_input": (
-        "Выбрать папку с исходными изображениями.",
-        "Choose the folder with source images.",
-    ),
-    "browse_cif": (
-        "Выбрать папку с CIF-разметкой для наложения.",
-        "Choose the folder with CIF annotations for overlay.",
-    ),
-    "browse_output": (
-        "Выбрать папку для сохранения результатов.",
-        "Choose the folder for saved results.",
-    ),
-    "browse_dataset": (
-        "Выбрать папку датасета для экспорта кадров.",
-        "Choose the dataset folder for frame export.",
-    ),
-    "refresh_files": (
-        "Перечитать список изображений из выбранной входной папки.",
-        "Reload the image list from the selected input folder.",
-    ),
-    "image_list": (
-        "Список найденных изображений. Выбор файла открывает его для просмотра и обработки.",
-        "List of found images. Selecting a file opens it for viewing and processing.",
-    ),
-    "process_current": (
-        "Обработать только выбранное изображение текущими настройками.",
-        "Process only the selected image with the current settings.",
-    ),
-    "start_batch": (
-        "Запустить обработку всех изображений из списка.",
-        "Start processing all images in the list.",
-    ),
-    "stop_batch": (
-        "Остановить пакетную обработку после текущих выполняемых задач.",
-        "Stop batch processing after the currently running tasks finish.",
-    ),
-    "save_current": (
-        "Сохранить результат для текущего изображения в выходную папку.",
-        "Save the current image result to the output folder.",
-    ),
-    "export_dataset": (
-        "Экспортировать текущий кадр и разметку в папку датасета.",
-        "Export the current frame and annotation to the dataset folder.",
-    ),
-    "dataset_mode": (
-        "После сохранения помечает кадр как подготовленный для датасета и помогает не перепутать уже обработанные файлы.",
-        "After saving, marks the frame as prepared for the dataset and helps distinguish already processed files.",
-    ),
-    "max_workers": (
-        "Сколько изображений можно обрабатывать параллельно в пакетном режиме. Больше потоков быстрее, но сильнее нагружает компьютер.",
-        "How many images can be processed in parallel during batch mode. More workers can be faster but load the computer more.",
-    ),
-    "save_svg": (
-        "Сохранять SVG-файл с найденными полигонами вместе с результатом.",
-        "Save an SVG file with detected polygons together with the result.",
-    ),
-    "save_preview": (
-        "Сохранять картинку предпросмотра с наложенными полигонами.",
-        "Save a preview image with polygons overlaid.",
-    ),
-    "external_color": (
-        "Цвет внешней границы обычных полигонов на предпросмотре.",
-        "Color of regular polygon outer borders in the preview.",
-    ),
-    "hole_color": (
-        "Цвет внутренних отверстий полигонов на предпросмотре.",
-        "Color of polygon inner holes in the preview.",
-    ),
-    "selected_color": (
-        "Цвет полигона, который сейчас выбран в редакторе.",
-        "Color of the polygon currently selected in the editor.",
-    ),
-    "vertex_color": (
-        "Цвет точек-вершин, которые показываются на полигонах.",
-        "Color of vertex points shown on polygons.",
-    ),
-    "line_width": (
-        "Толщина линий полигонов на экране. Не меняет координаты и результат векторизации.",
-        "Polygon line width on screen. Does not change coordinates or vectorization results.",
-    ),
-    "vertex_size": (
-        "Размер точек-вершин на экране. Не влияет на геометрию полигонов.",
-        "Size of vertex points on screen. Does not affect polygon geometry.",
-    ),
-    "fill_opacity": (
-        "Прозрачность заливки полигонов на предпросмотре. Ноль скрывает заливку, единица делает ее непрозрачной.",
-        "Polygon fill opacity in the preview. Zero hides the fill, one makes it opaque.",
-    ),
-    "show_vertices": (
-        "Показывать точки-вершины полигонов в редакторе.",
-        "Show polygon vertex points in the editor.",
-    ),
-    "show_labels": (
-        "Показывать номера полигонов на изображении.",
-        "Show polygon IDs on the image.",
-    ),
-    "polygon_mode": (
-        "Способ создания полигона: по отдельным точкам или прямоугольником.",
-        "Polygon creation method: point by point or as a rectangle.",
-    ),
-    "brush_mode": (
-        "Режим движения кисти. Свободный рисует как ведете мышь, режим 45 градусов ограничивает направление.",
-        "Brush movement mode. Freeform follows the mouse, 45-degree mode constrains direction.",
-    ),
-    "brush_size": (
-        "Толщина кисти в пикселях изображения. Круг под курсором показывает этот размер.",
-        "Brush width in image pixels. The circle under the cursor shows this size.",
-    ),
-    "delete_vertex_mode": (
-        "Как удалять вершины: одну ближайшую точку или все точки внутри области.",
-        "How vertices are deleted: one nearest point or all points inside an area.",
-    ),
-    "editor_via_width": (
-        "Ширина via, которое ставится инструментом Via при клике по изображению.",
-        "Width of the via placed by the Via tool when clicking the image.",
-    ),
-    "editor_via_height": (
-        "Высота via, которое ставится инструментом Via при клике по изображению.",
-        "Height of the via placed by the Via tool when clicking the image.",
-    ),
-}
-
-
-PIPELINE_OPERATION_GROUPS: tuple[tuple[str, tuple[str, str], tuple[str, ...]], ...] = (
-    (
-        "smoothing",
-        ("Сглаживание и шум", "Smoothing and noise"),
-        ("gaussian_blur", "median_blur", "bilateral_filter", "denoise"),
-    ),
-    (
-        "contrast",
-        ("Контраст и тон", "Contrast and tone"),
-        ("clahe", "histogram_equalization", "brightness_contrast", "gamma_correction", "sharpen"),
-    ),
-    (
-        "thresholding",
-        ("Пороговая обработка", "Thresholding"),
-        ("color_binarize", "threshold", "adaptive_threshold", "otsu_threshold", "edge_guided_threshold", "invert"),
-    ),
-    (
-        "binary",
-        ("Бинарные фильтры", "Binary filters"),
-        ("binary_fill_holes", "binary_filter_area", "binary_filter_perimeter", "watershed_split"),
-    ),
-    (
-        "morphology",
-        ("Морфология", "Morphology"),
-        ("morph_open", "morph_close", "erode", "dilate", "gradient", "tophat", "blackhat"),
-    ),
-    (
-        "geometry",
-        ("Геометрия и границы", "Geometry and edges"),
-        ("canny", "resize", "scale_resize", "crop"),
-    ),
-    (
-        "advanced_edges",
-        ("Современные детекторы границ", "Modern edge detectors"),
-        (
-            "scharr_edges",
-            "auto_canny",
-            "log_edges",
-            "ridge_edges",
-            "structured_edges",
-            "phase_congruency",
-            "combined_edges",
-            "edge_method",
-        ),
-    ),
-)
-
-
-PIPELINE_OPERATION_HELP_TEXTS: dict[str, dict[str, tuple[str, str]]] = {
-    "gaussian_blur": {
-        "summary": (
-            "Мягко размывает изображение и подавляет мелкий шум перед бинаризацией.",
-            "Smoothly blurs the image and suppresses fine noise before thresholding.",
-        ),
-        "use": (
-            "Используйте, когда объект читается, но края слегка шумят.",
-            "Use it when the object is visible but the edges are slightly noisy.",
-        ),
-    },
-    "median_blur": {
-        "summary": (
-            "Хорошо убирает одиночные выбросы и соль-перец, сохраняя границы лучше обычного blur.",
-            "Removes salt-and-pepper outliers while preserving edges better than a regular blur.",
-        ),
-        "use": (
-            "Подходит для бинарных масок и изображений с точечным шумом.",
-            "Best for binary masks and images with impulse noise.",
-        ),
-    },
-    "bilateral_filter": {
-        "summary": (
-            "Сглаживает внутри областей, но старается сохранить контуры.",
-            "Smooths within regions while trying to preserve edges.",
-        ),
-        "use": (
-            "Полезен, когда нужно уменьшить текстурный шум и не размыть границы проводника.",
-            "Useful when you need to reduce texture noise without washing out conductor edges.",
-        ),
-    },
-    "clahe": {
-        "summary": (
-            "Усиливает локальный контраст по частям изображения.",
-            "Boosts local contrast in small image regions.",
-        ),
-        "use": (
-            "Применяйте при неравномерной подсветке или слабом локальном контрасте.",
-            "Apply it under uneven illumination or weak local contrast.",
-        ),
-    },
-    "histogram_equalization": {
-        "summary": (
-            "Растягивает общий контраст по всему изображению.",
-            "Expands overall contrast across the whole image.",
-        ),
-        "use": (
-            "Подходит для равномерно тусклых изображений без сильной локальной засветки.",
-            "Good for uniformly dull images without strong local glare.",
-        ),
-    },
-    "brightness_contrast": {
-        "summary": (
-            "Линейно меняет яркость и контраст.",
-            "Linearly adjusts brightness and contrast.",
-        ),
-        "use": (
-            "Используйте для грубой подстройки перед threshold.",
-            "Use it for coarse correction before thresholding.",
-        ),
-    },
-    "gamma_correction": {
-        "summary": (
-            "Нелинейно перераспределяет яркости, сильнее влияя на тени и свет.",
-            "Nonlinearly redistributes tones, affecting shadows and highlights differently.",
-        ),
-        "use": (
-            "Подходит, когда нужно поднять тёмные детали или приглушить пересвет.",
-            "Useful when you need to lift dark details or tame highlights.",
-        ),
-    },
-    "threshold": {
-        "summary": (
-            "Преобразует изображение в маску по одному глобальному порогу.",
-            "Converts the image into a mask using a single global threshold.",
-        ),
-        "use": (
-            "Работает хорошо при стабильном фоне и понятном разделении яркостей.",
-            "Works well with a stable background and clear intensity separation.",
-        ),
-    },
-    "adaptive_threshold": {
-        "summary": (
-            "Строит маску по локальному порогу для каждой области изображения.",
-            "Builds a mask using a local threshold for each image region.",
-        ),
-        "use": (
-            "Используйте при градиентной подсветке и неоднородном фоне.",
-            "Use it under lighting gradients and non-uniform backgrounds.",
-        ),
-    },
-    "otsu_threshold": {
-        "summary": (
-            "Автоматически подбирает глобальный порог по гистограмме.",
-            "Automatically chooses a global threshold from the histogram.",
-        ),
-        "use": (
-            "Хороший стартовый вариант, когда вручную порог ещё не известен.",
-            "A good starting option when you do not yet know the right manual threshold.",
-        ),
-    },
-    "morph_open": {
-        "summary": (
-            "Сначала сужает, потом расширяет маску. Убирает мелкие шумовые точки.",
-            "Erodes then dilates the mask. Removes small foreground specks.",
-        ),
-        "use": (
-            "Полезно для очистки случайных точек перед поиском контуров.",
-            "Useful for cleaning isolated specks before contour extraction.",
-        ),
-    },
-    "morph_close": {
-        "summary": (
-            "Сначала расширяет, потом сужает маску. Закрывает мелкие разрывы и дырки.",
-            "Dilates then erodes the mask. Closes small gaps and holes.",
-        ),
-        "use": (
-            "Используйте, когда проводник рвётся или контур состоит из щелей.",
-            "Use it when a conductor breaks apart or the contour has small gaps.",
-        ),
-    },
-    "erode": {
-        "summary": (
-            "Сужает светлые области и убирает тонкие выступы.",
-            "Shrinks bright regions and removes thin protrusions.",
-        ),
-        "use": (
-            "Подходит для отделения слипшихся объектов и удаления утолщений.",
-            "Useful for separating touching objects and trimming thick edges.",
-        ),
-    },
-    "dilate": {
-        "summary": (
-            "Расширяет светлые области и укрепляет тонкие элементы.",
-            "Expands bright regions and reinforces thin structures.",
-        ),
-        "use": (
-            "Помогает восстановить разорванные линии и усилить слабые проводники.",
-            "Helps reconnect broken lines and strengthen weak conductors.",
-        ),
-    },
-    "gradient": {
-        "summary": (
-            "Оставляет в основном границу объекта как разность между dilate и erode.",
-            "Keeps mainly the object boundary as the difference between dilate and erode.",
-        ),
-        "use": (
-            "Используйте для выделения краёв, когда важен контур, а не заливка.",
-            "Use it when edges matter more than filled regions.",
-        ),
-    },
-    "tophat": {
-        "summary": (
-            "Выделяет маленькие светлые детали на более тёмном фоне.",
-            "Highlights small bright details on a darker background.",
-        ),
-        "use": (
-            "Полезен для поиска мелких светлых отверстий или точек.",
-            "Useful for finding small bright vias or spots.",
-        ),
-    },
-    "blackhat": {
-        "summary": (
-            "Выделяет маленькие тёмные детали на более светлом фоне.",
-            "Highlights small dark details on a lighter background.",
-        ),
-        "use": (
-            "Полезен для тёмных отверстий или канавок на светлом поле.",
-            "Useful for dark vias or grooves on a bright field.",
-        ),
-    },
-    "canny": {
-        "summary": (
-            "Строит карту границ по резким перепадам яркости.",
-            "Builds an edge map from strong intensity changes.",
-        ),
-        "use": (
-            "Используйте, когда объект хорошо описывается линиями границ.",
-            "Use it when the object is best represented by edge lines.",
-        ),
-    },
-    "edge_guided_threshold": {
-        "summary": (
-            "Строит заполненную бинарную маску и уточняет её границу по яркостным краям Sobel или Canny.",
-            "Builds a filled binary mask and refines its boundary using Sobel or Canny intensity edges.",
-        ),
-        "use": (
-            "Используйте, когда обычный порог видит объект, но граница уезжает из-за размытия или неоднородной яркости.",
-            "Use it when thresholding sees the object but blur or uneven intensity shifts the boundary.",
-        ),
-    },
-    "invert": {
-        "summary": (
-            "Меняет светлое и тёмное местами.",
-            "Swaps bright and dark regions.",
-        ),
-        "use": (
-            "Нужно, когда объект и фон перепутаны относительно ожидаемой бинаризации.",
-            "Useful when foreground and background polarity are reversed for the expected thresholding flow.",
-        ),
-    },
-    "resize": {
-        "summary": (
-            "Меняет размер изображения для нормализации масштаба объектов.",
-            "Changes image size to normalize object scale.",
-        ),
-        "use": (
-            "Полезно, если изображения приходят в разных разрешениях.",
-            "Useful when images arrive at different resolutions.",
-        ),
-    },
-    "crop": {
-        "summary": (
-            "Обрезает изображение до рабочей области.",
-            "Crops the image to a region of interest.",
-        ),
-        "use": (
-            "Используйте, если полезная область известна заранее и не нужно обрабатывать весь кадр.",
-            "Use it when the useful region is known in advance and the full frame is unnecessary.",
-        ),
-    },
-    "sharpen": {
-        "summary": (
-            "Подчёркивает локальные перепады и делает границы резче.",
-            "Emphasizes local changes and sharpens edges.",
-        ),
-        "use": (
-            "Полезно перед пороговой обработкой, если границы объекта размыты.",
-            "Useful before thresholding when object edges are soft.",
-        ),
-    },
-    "denoise": {
-        "summary": (
-            "Убирает шум с сохранением общей структуры изображения.",
-            "Removes noise while preserving the overall image structure.",
-        ),
-        "use": (
-            "Используйте на шумных снимках перед более агрессивными шагами pipeline.",
-            "Use it on noisy captures before more aggressive pipeline steps.",
-        ),
-    },
-    "scharr_edges": {
-        "summary": (
-            "Градиент Шарра: резче Sobel на тонких линиях и мелких деталях.",
-            "Scharr gradient: sharper than Sobel on thin lines and fine detail.",
-        ),
-        "use": (
-            "Замените Sobel/Canny, когда нужно поймать очень тонкие или слабо-контрастные границы проводников.",
-            "Use instead of Sobel/Canny to capture very thin or low-contrast conductor edges.",
-        ),
-    },
-    "auto_canny": {
-        "summary": (
-            "Canny с автоматическими порогами по медиане яркости — работает без ручной настройки.",
-            "Canny with automatic median-based thresholds — no manual tuning needed.",
-        ),
-        "use": (
-            "Удобно для серий снимков с разной экспозицией: пороги подстраиваются под каждый кадр.",
-            "Handy for image series with varying exposure: thresholds adapt to every frame.",
-        ),
-    },
-    "log_edges": {
-        "summary": (
-            "Laplacian of Gaussian на нескольких масштабах — сильно откликается на пятна и точки.",
-            "Multi-scale Laplacian of Gaussian — highly responsive to blobs and spots.",
-        ),
-        "use": (
-            "Лучший выбор, когда важны переходные отверстия (via) и круглые контакты.",
-            "Best choice when the goal is vias / round contacts (blob-like features).",
-        ),
-    },
-    "ridge_edges": {
-        "summary": (
-            "Отклик Гессиана подсвечивает гребни — длинные вытянутые структуры.",
-            "Hessian ridge response highlights long tubular structures and crests.",
-        ),
-        "use": (
-            "Подходит для длинных проводников и тонких трасс, которые Sobel пропускает.",
-            "Good for long conductors and thin traces that Sobel tends to miss.",
-        ),
-    },
-    "structured_edges": {
-        "summary": (
-            "Обученный детектор Structured Random Forest (opencv-contrib). При отсутствии модели — усиленный Scharr с non-max suppression.",
-            "Trained Structured Random Forest edge detector (opencv-contrib). Falls back to Scharr with non-max suppression when the model is missing.",
-        ),
-        "use": (
-            "Наиболее стабильные границы на реальных снимках PCB; fallback тоже даёт чище результат, чем обычный Sobel.",
-            "Yields the most stable edges on real PCB images; the fallback already beats a plain Sobel response.",
-        ),
-    },
-    "phase_congruency": {
-        "summary": (
-            "Мера phase congruency: инвариантна к контрасту и освещению (log-Gabor в частотной области).",
-            "Phase congruency: a contrast- and illumination-invariant edge feature (log-Gabor in the frequency domain).",
-        ),
-        "use": (
-            "Лучший выбор при неравномерной подсветке и слабом локальном контрасте.",
-            "Best choice for uneven lighting and low local contrast.",
-        ),
-    },
-    "combined_edges": {
-        "summary": (
-            "Ансамбль нескольких детекторов (попиксельный максимум). Стабильнее любого отдельного оператора.",
-            "Ensemble of several detectors (pixel-wise maximum). More robust than any single operator.",
-        ),
-        "use": (
-            "Когда заранее неизвестно, какой оператор сработает лучше — выберите готовый пресет ('robust', 'fine_detail'…).",
-            "When it is unclear which operator works best — pick a ready preset ('robust', 'fine_detail'…).",
-        ),
-    },
-    "edge_method": {
-        "summary": (
-            "Диспетчер: выбирает, какой из современных детекторов применить (sobel / scharr / log / auto_canny / structured / ridge / phase_congruency / combined).",
-            "Dispatcher: selects which modern detector to apply (sobel / scharr / log / auto_canny / structured / ridge / phase_congruency / combined).",
-        ),
-        "use": (
-            "Добавьте один раз и переключайте метод без пересборки pipeline.",
-            "Add it once and switch methods without rebuilding the pipeline.",
-        ),
-    },
-}
-
-
-def _localized_text(mapping: LocalizedTextMap, key: str, language: str) -> str:
-    entry = mapping.get(key, ("", ""))
-    return entry[0] if language == "ru" else entry[1]
 
 
 class PolygonExtractionWidget(QWidget):
@@ -1616,36 +231,7 @@ class PolygonExtractionWidget(QWidget):
         self.set_ui_language(self._ui_language)
 
     def _build_ui(self) -> None:
-        root_layout = QVBoxLayout(self)
-
-        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.main_splitter.setChildrenCollapsible(False)
-        self.main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
-        root_layout.addWidget(self.main_splitter, 1)
-
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setMinimumWidth(360)
-        left_scroll.setMaximumWidth(560)
-        controls_container = QWidget()
-        left_scroll.setWidget(controls_container)
-        controls_layout = QVBoxLayout(controls_container)
-        self.control_tabs = self._build_tabs()
-        controls_layout.addWidget(self.control_tabs, 1)
-        self.main_splitter.addWidget(left_scroll)
-        self.visual_panel = self._build_visual_panel()
-        self.main_splitter.addWidget(self.visual_panel)
-        self.right_tabs = QTabWidget()
-        self.right_tabs.setUsesScrollButtons(True)
-        self.right_tabs.setMinimumWidth(280)
-        self.right_tabs.setMaximumWidth(440)
-        self.files_tab = self._build_files_tab()
-        self.right_tabs.addTab(self.files_tab, "Files")
-        self.main_splitter.addWidget(self.right_tabs)
-        self.main_splitter.setStretchFactor(0, 0)
-        self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setStretchFactor(2, 0)
-        self.main_splitter.setSizes([380, 1000, 320])
+        return build_ui(self)
 
     def _apply_compact_ui_style(self) -> None:
         self.setStyleSheet(
@@ -1690,142 +276,13 @@ class PolygonExtractionWidget(QWidget):
         )
 
     def _build_path_panel(self) -> QWidget:
-        self.path_group = QGroupBox("Input / Output")
-        layout = QVBoxLayout(self.path_group)
-
-        self.input_dir_edit = QLineEdit()
-        self.cif_dir_edit = QLineEdit()
-        self.output_dir_edit = QLineEdit()
-        self.dataset_dir_edit = QLineEdit()
-        self.input_dir_label = QLabel("Input directory")
-        self.cif_dir_label = QLabel("CIF overlay directory")
-        self.output_dir_label = QLabel("Output directory")
-        self.dataset_dir_label = QLabel("Dataset directory")
-        self.browse_input_button = QPushButton()
-        self.browse_cif_button = QPushButton()
-        self.browse_output_button = QPushButton()
-        self.browse_dataset_button = QPushButton()
-        self.refresh_button = QPushButton()
-        folder_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
-        for button in (
-            self.browse_input_button,
-            self.browse_cif_button,
-            self.browse_output_button,
-            self.browse_dataset_button,
-        ):
-            self._configure_icon_only_button(button, folder_icon)
-        self._configure_icon_only_button(self.refresh_button, self._refresh_files_icon())
-
-        self.browse_input_button.clicked.connect(self._select_input_directory)
-        self.browse_cif_button.clicked.connect(self._select_cif_directory)
-        self.browse_output_button.clicked.connect(self._select_output_directory)
-        self.browse_dataset_button.clicked.connect(self._select_dataset_directory)
-        self.refresh_button.clicked.connect(self.refresh_image_list)
-        self.input_dir_edit.editingFinished.connect(self._apply_input_directory_edit)
-        self.cif_dir_edit.editingFinished.connect(self._apply_cif_directory_edit)
-        self.output_dir_edit.editingFinished.connect(self._apply_output_directory_edit)
-        self.dataset_dir_edit.editingFinished.connect(self._apply_dataset_directory_edit)
-
-        for label, edit, button in [
-            (self.input_dir_label, self.input_dir_edit, self.browse_input_button),
-            (self.cif_dir_label, self.cif_dir_edit, self.browse_cif_button),
-            (self.output_dir_label, self.output_dir_edit, self.browse_output_button),
-            (self.dataset_dir_label, self.dataset_dir_edit, self.browse_dataset_button),
-        ]:
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(6)
-            row_layout.addWidget(edit, 1)
-            row_layout.addWidget(button)
-            layout.addWidget(label)
-            layout.addWidget(row)
-        layout.addWidget(self.refresh_button)
-        return self.path_group
+        return build_path_panel(self)
 
     def _build_paths_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        self.path_panel = self._build_path_panel()
-        layout.addWidget(self.path_panel)
-
-        self.extra_layers_group = QGroupBox("Additional layers")
-        self.extra_layers_form = QFormLayout(self.extra_layers_group)
-        self._configure_compact_form(self.extra_layers_form)
-        self.extra_layers_widget = QWidget()
-        extra_layers_layout = QVBoxLayout(self.extra_layers_widget)
-        extra_layers_layout.setContentsMargins(0, 0, 0, 0)
-        extra_layers_layout.setSpacing(6)
-        self.extra_layers_list = QListWidget()
-        self.extra_layers_list.setMaximumHeight(100)
-        extra_layers_layout.addWidget(self.extra_layers_list)
-        self.extra_layer_path_widget = QWidget()
-        extra_layer_path_layout = QHBoxLayout(self.extra_layer_path_widget)
-        extra_layer_path_layout.setContentsMargins(0, 0, 0, 0)
-        extra_layer_path_layout.setSpacing(6)
-        self.extra_layer_path_edit = QLineEdit()
-        self.extra_layer_path_browse_button = QPushButton("...")
-        self.extra_layer_path_browse_button.setFixedWidth(34)
-        extra_layer_path_layout.addWidget(self.extra_layer_path_edit, 1)
-        extra_layer_path_layout.addWidget(self.extra_layer_path_browse_button)
-        extra_layer_buttons = QWidget()
-        extra_layer_buttons_layout = QHBoxLayout(extra_layer_buttons)
-        extra_layer_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        self.add_extra_layers_button = QPushButton("Add images")
-        self.remove_extra_layer_button = QPushButton("Remove")
-        extra_layer_buttons_layout.addWidget(self.add_extra_layers_button)
-        extra_layer_buttons_layout.addWidget(self.remove_extra_layer_button)
-        extra_layers_layout.addWidget(extra_layer_buttons)
-        self.extra_layer_visible_checkbox = QCheckBox("Layer visible")
-        self.extra_layer_opacity_spin = QDoubleSpinBox()
-        self.extra_layer_opacity_spin.setRange(0.0, 1.0)
-        self.extra_layer_opacity_spin.setSingleStep(0.05)
-        self.extra_layer_opacity_spin.setValue(0.35)
-        self.extra_layer_dx_spin = QDoubleSpinBox()
-        self.extra_layer_dx_spin.setRange(-1_000_000.0, 1_000_000.0)
-        self.extra_layer_dx_spin.setDecimals(2)
-        self.extra_layer_dy_spin = QDoubleSpinBox()
-        self.extra_layer_dy_spin.setRange(-1_000_000.0, 1_000_000.0)
-        self.extra_layer_dy_spin.setDecimals(2)
-
-        self.extra_layers_list.currentRowChanged.connect(self._on_extra_layer_selected)
-        self.add_extra_layers_button.clicked.connect(self._load_extra_layers)
-        self.remove_extra_layer_button.clicked.connect(self._remove_selected_extra_layer)
-        self.extra_layer_path_browse_button.clicked.connect(self._browse_selected_extra_layer_path)
-        self.extra_layer_path_edit.editingFinished.connect(self._on_extra_layer_path_changed)
-        self.extra_layer_visible_checkbox.stateChanged.connect(self._on_extra_layer_controls_changed)
-        self.extra_layer_opacity_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
-        self.extra_layer_dx_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
-        self.extra_layer_dy_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
-
-        self.extra_layers_form.addRow("Additional layers", self.extra_layers_widget)
-        self.extra_layers_label_widget = self.extra_layers_form.labelForField(self.extra_layers_widget)
-        self.extra_layers_form.addRow("Layer path", self.extra_layer_path_widget)
-        self.extra_layer_path_label_widget = self.extra_layers_form.labelForField(self.extra_layer_path_widget)
-        self.extra_layers_form.addRow(self.extra_layer_visible_checkbox)
-        self.extra_layers_form.addRow("Layer opacity", self.extra_layer_opacity_spin)
-        self.extra_layer_opacity_label_widget = self.extra_layers_form.labelForField(self.extra_layer_opacity_spin)
-        self.extra_layers_form.addRow("Layer dX", self.extra_layer_dx_spin)
-        self.extra_layer_dx_label_widget = self.extra_layers_form.labelForField(self.extra_layer_dx_spin)
-        self.extra_layers_form.addRow("Layer dY", self.extra_layer_dy_spin)
-        self.extra_layer_dy_label_widget = self.extra_layers_form.labelForField(self.extra_layer_dy_spin)
-        layout.addWidget(self.extra_layers_group)
-
-        layout.addStretch(1)
-        return tab
+        return build_paths_tab(self)
 
     def _build_tabs(self) -> QWidget:
-        tabs = QTabWidget()
-        tabs.setUsesScrollButtons(True)
-        self.paths_tab = self._build_paths_tab()
-        self.pipeline_tab = self._build_pipeline_tab()
-        self.extraction_tab = self._build_extraction_tab()
-        self.display_tab = self._build_display_tab()
-        tabs.addTab(self.paths_tab, "Paths")
-        tabs.addTab(self.pipeline_tab, "Pipeline")
-        tabs.addTab(self.extraction_tab, "Extraction")
-        tabs.addTab(self.display_tab, "Display")
-        return tabs
+        return build_tabs(self)
 
     def _restore_persisted_paths(self) -> None:
         paths = self._path_settings_store.load()
@@ -1925,820 +382,19 @@ class PolygonExtractionWidget(QWidget):
         self._save_persisted_display_settings()
 
     def _build_files_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        self.image_list = QListWidget()
-        self.image_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.image_list.currentItemChanged.connect(self._on_image_item_changed)
-        self.images_label = QLabel("Images")
-        layout.addWidget(self.images_label)
-        layout.addWidget(self.image_list, 1)
-
-        self.run_group = QGroupBox("Run")
-        run_layout = QGridLayout(self.run_group)
-        self.process_current_button = QPushButton()
-        self.process_current_button.clicked.connect(self.process_current_image)
-        self.batch_button = QPushButton()
-        self.batch_button.clicked.connect(self.start_batch_processing)
-        self.stop_batch_button = QPushButton()
-        self.stop_batch_button.clicked.connect(self.stop_batch_processing)
-        self._configure_icon_only_button(
-            self.process_current_button,
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
-        )
-        self._configure_icon_only_button(
-            self.batch_button,
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward),
-        )
-        self._configure_icon_only_button(
-            self.stop_batch_button,
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop),
-        )
-        self.save_current_button = QPushButton("Save current result")
-        self.save_current_button.clicked.connect(self.save_current_result)
-        self.export_dataset_button = QPushButton("Export frame to dataset")
-        self.export_dataset_button.clicked.connect(self.export_current_frame_to_dataset)
-        self.dataset_mode_checkbox = QCheckBox("Dataset mode")
-        self.max_workers_spin = QSpinBox()
-        self.max_workers_spin.setRange(1, 32)
-        self.max_workers_spin.setValue(4)
-        self.max_workers_label = QLabel("Max workers")
-        run_buttons_row = QWidget()
-        run_buttons_layout = QHBoxLayout(run_buttons_row)
-        run_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        run_buttons_layout.setSpacing(6)
-        run_buttons_layout.addWidget(self.process_current_button)
-        run_buttons_layout.addWidget(self.batch_button)
-        run_buttons_layout.addWidget(self.stop_batch_button)
-        run_buttons_layout.addStretch(1)
-        run_layout.addWidget(run_buttons_row, 0, 0, 1, 2)
-        run_layout.addWidget(self.max_workers_label, 1, 0)
-        run_layout.addWidget(self.max_workers_spin, 1, 1)
-        run_layout.addWidget(self.save_current_button, 2, 0, 1, 2)
-        run_layout.addWidget(self.export_dataset_button, 3, 0, 1, 2)
-        run_layout.addWidget(self.dataset_mode_checkbox, 4, 0, 1, 2)
-        layout.addWidget(self.run_group)
-        self.batch_progress_bar = QProgressBar()
-        self.batch_progress_bar.setRange(0, 100)
-        self.batch_progress_bar.setValue(0)
-        self.batch_progress_bar.setFormat("%p% (%v/%m)")
-        self.batch_progress_bar.setTextVisible(True)
-        self.batch_progress_bar.setVisible(False)
-        layout.addWidget(self.batch_progress_bar)
-        return tab
+        return build_files_tab(self)
 
     def _build_pipeline_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        self.available_filters_group = QGroupBox("Available filters")
-        available_layout = QVBoxLayout(self.available_filters_group)
-        self.operation_tree = QTreeWidget()
-        self.operation_tree.setHeaderHidden(True)
-        self.operation_tree.setRootIsDecorated(True)
-        self.operation_tree.setUniformRowHeights(True)
-        self.operation_tree.currentItemChanged.connect(self._on_available_operation_selected)
-        self.operation_tree.itemDoubleClicked.connect(self._on_available_operation_activated)
-        self.operation_tree.setMinimumHeight(180)
-        available_layout.addWidget(self.operation_tree, 1)
-
-        self.parameters_group = QGroupBox("Step parameters")
-        parameters_scroll = QScrollArea()
-        parameters_scroll.setWidgetResizable(True)
-        parameters_scroll.setMinimumHeight(170)
-        parameters_widget = QWidget()
-        self.parameters_form = QFormLayout(parameters_widget)
-        self._configure_compact_form(self.parameters_form)
-        parameters_scroll.setWidget(parameters_widget)
-        group_layout = QVBoxLayout(self.parameters_group)
-        group_layout.addWidget(parameters_scroll)
-
-        self.pipeline_steps_group = QGroupBox("Applied filters")
-        steps_layout = QVBoxLayout(self.pipeline_steps_group)
-
-        self.pipeline_list = PipelineListWidget()
-        self.pipeline_list.currentRowChanged.connect(self._on_pipeline_step_selected)
-        self.pipeline_list.itemChanged.connect(self._on_pipeline_item_changed)
-        self.pipeline_list.deletePressed.connect(self._remove_pipeline_step)
-        self.pipeline_list.orderChanged.connect(self._sync_pipeline_order_from_list)
-        self.pipeline_list.setMinimumHeight(180)
-        steps_layout.addWidget(self.pipeline_list, 1)
-
-        apply_row = QWidget()
-        apply_layout = QGridLayout(apply_row)
-        apply_layout.setContentsMargins(0, 0, 0, 0)
-        self.auto_apply_checkbox = QCheckBox("Auto apply")
-        self.auto_apply_checkbox.setChecked(True)
-        self.auto_apply_checkbox.hide()
-        self.save_pipeline_button = QPushButton("Save JSON")
-        self.save_pipeline_button.clicked.connect(self._save_pipeline_json)
-        self.load_pipeline_button = QPushButton("Load JSON")
-        self.load_pipeline_button.clicked.connect(self._load_pipeline_json)
-        self.auto_tune_button = QPushButton("Auto-fit from drawing")
-        self.auto_tune_button.clicked.connect(self._start_auto_tune_from_reference)
-        self.auto_tune_button.setToolTip("Tunes filter parameters using the drawn polygons as the target result")
-        apply_layout.addWidget(self.save_pipeline_button, 0, 0)
-        apply_layout.addWidget(self.load_pipeline_button, 0, 1)
-        apply_layout.addWidget(self.auto_tune_button, 1, 0, 1, 2)
-        apply_layout.setColumnStretch(0, 1)
-        apply_layout.setColumnStretch(1, 1)
-        steps_layout.addWidget(apply_row)
-
-        self.pipeline_help_group = QGroupBox("Filter help")
-        help_layout = QVBoxLayout(self.pipeline_help_group)
-        self.pipeline_help_title = QLabel()
-        self.pipeline_help_title.setWordWrap(True)
-        self.pipeline_help_title.setFixedHeight(28)
-        self.pipeline_help_summary = QLabel()
-        self.pipeline_help_summary.setWordWrap(True)
-        self.pipeline_help_summary.setFixedHeight(58)
-        self.pipeline_help_use = QLabel()
-        self.pipeline_help_use.setWordWrap(True)
-        self.pipeline_help_use.setFixedHeight(74)
-        preview_row = QWidget()
-        preview_layout = QHBoxLayout(preview_row)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
-        before_column = QVBoxLayout()
-        self.pipeline_help_before_title = QLabel("Before")
-        self.pipeline_help_before_image = QLabel()
-        self.pipeline_help_before_image.setFixedSize(190, 132)
-        self.pipeline_help_before_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        before_column.addWidget(self.pipeline_help_before_title)
-        before_column.addWidget(self.pipeline_help_before_image)
-        after_column = QVBoxLayout()
-        self.pipeline_help_after_title = QLabel("After")
-        self.pipeline_help_after_image = QLabel()
-        self.pipeline_help_after_image.setFixedSize(190, 132)
-        self.pipeline_help_after_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        after_column.addWidget(self.pipeline_help_after_title)
-        after_column.addWidget(self.pipeline_help_after_image)
-        preview_layout.addLayout(before_column)
-        preview_layout.addLayout(after_column)
-        help_layout.addWidget(self.pipeline_help_title)
-        help_layout.addWidget(self.pipeline_help_summary)
-        help_layout.addWidget(self.pipeline_help_use)
-        help_layout.addWidget(preview_row)
-
-        layout.addWidget(self.available_filters_group)
-        layout.addWidget(self.parameters_group)
-        layout.addWidget(self.pipeline_steps_group)
-        layout.addWidget(self.pipeline_help_group)
-        layout.addStretch(1)
-        return tab
+        return build_pipeline_tab(self)
 
     def _build_extraction_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        container = QWidget()
-        container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.contour_group = QGroupBox("Contour extraction")
-        contour_layout = QVBoxLayout(self.contour_group)
-        self.profile_group = QGroupBox("Profile")
-        self.profile_form = QFormLayout(self.profile_group)
-        self._configure_compact_form(self.profile_form)
-        self.extraction_profile_combo = QComboBox()
-        self.extraction_profile_combo.addItem("Conductors", "conductors")
-        self.extraction_profile_combo.addItem("Vias", "vias")
-        self.profile_form.addRow("Extraction profile", self.extraction_profile_combo)
-        self.extraction_profile_label_widget = self.profile_form.labelForField(self.extraction_profile_combo)
-
-        self.basic_filters_group = QGroupBox("Basic filters")
-        self.basic_filters_form = QFormLayout(self.basic_filters_group)
-        self._configure_compact_form(self.basic_filters_form)
-        self.retrieval_mode_combo = QComboBox()
-        for mode_name in RETRIEVAL_MODE_MAP:
-            self.retrieval_mode_combo.addItem(mode_name, mode_name)
-        self.retrieval_mode_combo.setCurrentIndex(self.retrieval_mode_combo.findData("RETR_EXTERNAL"))
-        self.approximation_mode_combo = QComboBox()
-        for mode_name in APPROXIMATION_MODE_MAP:
-            self.approximation_mode_combo.addItem(mode_name, mode_name)
-        self.approximation_mode_combo.setCurrentIndex(self.approximation_mode_combo.findData("CHAIN_APPROX_SIMPLE"))
-        self.epsilon_spin = QDoubleSpinBox()
-        self.epsilon_spin.setRange(0.0, 1000.0)
-        self.epsilon_spin.setDecimals(3)
-        self.epsilon_spin.setValue(2.0)
-        self.epsilon_relative_checkbox = QCheckBox("Relative to contour perimeter")
-        self.min_area_spin = QDoubleSpinBox()
-        self.min_area_spin.setRange(0.0, 1_000_000_000.0)
-        self.min_area_spin.setValue(10.0)
-        self.max_area_spin = QDoubleSpinBox()
-        self.max_area_spin.setRange(0.0, 1_000_000_000.0)
-        self.max_area_spin.setValue(0.0)
-        self.min_perimeter_spin = QDoubleSpinBox()
-        self.min_perimeter_spin.setRange(0.0, 1_000_000_000.0)
-        self.min_perimeter_spin.setValue(10.0)
-        self.max_perimeter_spin = QDoubleSpinBox()
-        self.max_perimeter_spin.setRange(0.0, 1_000_000_000.0)
-        self.max_perimeter_spin.setValue(0.0)
-        self.area_range_widget = self._build_range_row(self.min_area_spin, self.max_area_spin)
-        self.perimeter_range_widget = self._build_range_row(self.min_perimeter_spin, self.max_perimeter_spin)
-        self.min_points_spin = QSpinBox()
-        self.min_points_spin.setRange(3, 10_000)
-        self.min_points_spin.setValue(3)
-
-        self.geometry_filters_group = QGroupBox("Geometry filters")
-        self.geometry_filters_form = QFormLayout(self.geometry_filters_group)
-        self._configure_compact_form(self.geometry_filters_form)
-        self.min_bbox_width_spin = QSpinBox()
-        self.min_bbox_width_spin.setRange(0, 100_000)
-        self.min_bbox_width_spin.setValue(0)
-        self.max_bbox_width_spin = QSpinBox()
-        self.max_bbox_width_spin.setRange(0, 100_000)
-        self.max_bbox_width_spin.setValue(0)
-        self.min_bbox_height_spin = QSpinBox()
-        self.min_bbox_height_spin.setRange(0, 100_000)
-        self.min_bbox_height_spin.setValue(0)
-        self.max_bbox_height_spin = QSpinBox()
-        self.max_bbox_height_spin.setRange(0, 100_000)
-        self.max_bbox_height_spin.setValue(0)
-        self.min_aspect_ratio_spin = QDoubleSpinBox()
-        self.min_aspect_ratio_spin.setRange(0.0, 1_000.0)
-        self.min_aspect_ratio_spin.setDecimals(3)
-        self.min_aspect_ratio_spin.setSingleStep(0.05)
-        self.min_aspect_ratio_spin.setValue(0.0)
-        self.max_aspect_ratio_spin = QDoubleSpinBox()
-        self.max_aspect_ratio_spin.setRange(0.0, 1_000.0)
-        self.max_aspect_ratio_spin.setDecimals(3)
-        self.max_aspect_ratio_spin.setSingleStep(0.05)
-        self.max_aspect_ratio_spin.setValue(0.0)
-        self.bbox_width_range_widget = self._build_range_row(self.min_bbox_width_spin, self.max_bbox_width_spin)
-        self.bbox_height_range_widget = self._build_range_row(self.min_bbox_height_spin, self.max_bbox_height_spin)
-        self.aspect_ratio_range_widget = self._build_range_row(self.min_aspect_ratio_spin, self.max_aspect_ratio_spin)
-        self.exclude_border_touching_checkbox = QCheckBox("Exclude")
-        self.min_solidity_spin = QDoubleSpinBox()
-        self.min_solidity_spin.setRange(0.0, 1.0)
-        self.min_solidity_spin.setDecimals(3)
-        self.min_solidity_spin.setSingleStep(0.05)
-        self.min_solidity_spin.setValue(0.0)
-        self.min_extent_spin = QDoubleSpinBox()
-        self.min_extent_spin.setRange(0.0, 1.0)
-        self.min_extent_spin.setDecimals(3)
-        self.min_extent_spin.setSingleStep(0.05)
-        self.min_extent_spin.setValue(0.0)
-        self.min_polygon_angle_spin = QDoubleSpinBox()
-        self.min_polygon_angle_spin.setRange(0.0, 180.0)
-        self.min_polygon_angle_spin.setDecimals(1)
-        self.min_polygon_angle_spin.setSingleStep(5.0)
-        self.min_polygon_angle_spin.setValue(90.0)
-
-        self.conductor_group = QGroupBox("Conductor gradient")
-        self.conductor_form = QFormLayout(self.conductor_group)
-        self._configure_compact_form(self.conductor_form)
-        self.conductor_gradient_checkbox = QCheckBox("Enabled")
-        self.conductor_gradient_min_strength_spin = QDoubleSpinBox()
-        self.conductor_gradient_min_strength_spin.setRange(0.0, 255.0)
-        self.conductor_gradient_min_strength_spin.setDecimals(1)
-        self.conductor_gradient_min_strength_spin.setSingleStep(1.0)
-        self.conductor_gradient_min_strength_spin.setValue(18.0)
-        self.conductor_gradient_band_radius_spin = QSpinBox()
-        self.conductor_gradient_band_radius_spin.setRange(0, 25)
-        self.conductor_gradient_band_radius_spin.setValue(3)
-
-        self.via_group = QGroupBox("Via constraints")
-        self.via_form = QFormLayout(self.via_group)
-        self._configure_compact_form(self.via_form)
-        self.via_size_mode_combo = QComboBox()
-        self.via_size_mode_combo.addItem("Range", VIA_SIZE_MODE_RANGE)
-        self.via_size_mode_combo.addItem("Fixed values", VIA_SIZE_MODE_FIXED)
-        self.via_white_range_checkbox = QCheckBox("White range")
-        self.via_white_range_checkbox.setChecked(True)
-        self.via_white_range_min_spin = QSpinBox()
-        self.via_white_range_min_spin.setRange(0, 255)
-        self.via_white_range_min_spin.setValue(200)
-        self.via_white_range_max_spin = QSpinBox()
-        self.via_white_range_max_spin.setRange(0, 255)
-        self.via_white_range_max_spin.setValue(255)
-        self.via_white_range_widget = self._build_range_row(self.via_white_range_min_spin, self.via_white_range_max_spin)
-        self.via_black_range_checkbox = QCheckBox("Black range")
-        self.via_black_range_min_spin = QSpinBox()
-        self.via_black_range_min_spin.setRange(0, 255)
-        self.via_black_range_min_spin.setValue(0)
-        self.via_black_range_max_spin = QSpinBox()
-        self.via_black_range_max_spin.setRange(0, 255)
-        self.via_black_range_max_spin.setValue(30)
-        self.via_black_range_widget = self._build_range_row(self.via_black_range_min_spin, self.via_black_range_max_spin)
-        self.via_detector_methods_widget = QWidget()
-        self.via_detector_methods_layout = QGridLayout(self.via_detector_methods_widget)
-        self.via_detector_methods_layout.setContentsMargins(0, 0, 0, 0)
-        self.via_detector_methods_layout.setHorizontalSpacing(10)
-        self.via_detector_methods_layout.setVerticalSpacing(4)
-        self.via_detector_gradient_checkbox = QCheckBox("Gradient")
-        self.via_detector_gradient_checkbox.setChecked(True)
-        self.via_detector_spot_checkbox = QCheckBox("Spots")
-        self.via_detector_spot_checkbox.setChecked(True)
-        self.via_detector_hough_checkbox = QCheckBox("Hough")
-        self.via_detector_hough_checkbox.setChecked(True)
-        self.via_detector_components_checkbox = QCheckBox("Components")
-        self.via_detector_components_checkbox.setChecked(True)
-        self.via_detector_contours_checkbox = QCheckBox("Contours")
-        self.via_detector_contours_checkbox.setChecked(True)
-        self.via_detector_morphology_checkbox = QCheckBox("Morphology")
-        self.via_detector_morphology_checkbox.setChecked(True)
-        self.via_detector_template_checkbox = QCheckBox("Template")
-        self.via_detector_template_checkbox.setChecked(True)
-        self.via_detector_blob_checkbox = QCheckBox("Blob")
-        self.via_detector_blob_checkbox.setChecked(True)
-        for row_index, (left_checkbox, right_checkbox) in enumerate(
-            [
-                (self.via_white_range_checkbox, self.via_black_range_checkbox),
-                (self.via_detector_gradient_checkbox, self.via_detector_spot_checkbox),
-                (self.via_detector_hough_checkbox, self.via_detector_components_checkbox),
-                (self.via_detector_contours_checkbox, self.via_detector_morphology_checkbox),
-                (self.via_detector_template_checkbox, self.via_detector_blob_checkbox),
-            ]
-        ):
-            self.via_detector_methods_layout.addWidget(left_checkbox, row_index, 0)
-            if right_checkbox is not None:
-                self.via_detector_methods_layout.addWidget(right_checkbox, row_index, 1)
-        self.via_spot_min_contrast_spin = QDoubleSpinBox()
-        self.via_spot_min_contrast_spin.setRange(0.0, 255.0)
-        self.via_spot_min_contrast_spin.setDecimals(1)
-        self.via_spot_min_contrast_spin.setSingleStep(1.0)
-        self.via_spot_min_contrast_spin.setValue(18.0)
-        self.via_spot_min_roundness_spin = QDoubleSpinBox()
-        self.via_spot_min_roundness_spin.setRange(0.0, 100.0)
-        self.via_spot_min_roundness_spin.setDecimals(1)
-        self.via_spot_min_roundness_spin.setSingleStep(1.0)
-        self.via_spot_min_roundness_spin.setValue(45.0)
-        self.via_spot_line_suppression_spin = QDoubleSpinBox()
-        self.via_spot_line_suppression_spin.setRange(0.0, 1.0)
-        self.via_spot_line_suppression_spin.setDecimals(2)
-        self.via_spot_line_suppression_spin.setSingleStep(0.05)
-        self.via_spot_line_suppression_spin.setValue(0.65)
-        self.via_gradient_min_strength_spin = QDoubleSpinBox()
-        self.via_gradient_min_strength_spin.setRange(0.0, 255.0)
-        self.via_gradient_min_strength_spin.setDecimals(1)
-        self.via_gradient_min_strength_spin.setSingleStep(1.0)
-        self.via_gradient_min_strength_spin.setValue(12.0)
-        self.via_gradient_min_coverage_spin = QDoubleSpinBox()
-        self.via_gradient_min_coverage_spin.setRange(0.0, 1.0)
-        self.via_gradient_min_coverage_spin.setDecimals(3)
-        self.via_gradient_min_coverage_spin.setSingleStep(0.01)
-        self.via_gradient_min_coverage_spin.setValue(0.24)
-        self.via_hough_edge_threshold_spin = QDoubleSpinBox()
-        self.via_hough_edge_threshold_spin.setRange(1.0, 1000.0)
-        self.via_hough_edge_threshold_spin.setDecimals(1)
-        self.via_hough_edge_threshold_spin.setSingleStep(5.0)
-        self.via_hough_edge_threshold_spin.setValue(80.0)
-        self.via_hough_accumulator_threshold_spin = QDoubleSpinBox()
-        self.via_hough_accumulator_threshold_spin.setRange(1.0, 1000.0)
-        self.via_hough_accumulator_threshold_spin.setDecimals(1)
-        self.via_hough_accumulator_threshold_spin.setSingleStep(1.0)
-        self.via_hough_accumulator_threshold_spin.setValue(10.0)
-        self.via_component_min_score_spin = QDoubleSpinBox()
-        self.via_component_min_score_spin.setRange(0.0, 255.0)
-        self.via_component_min_score_spin.setDecimals(1)
-        self.via_component_min_score_spin.setSingleStep(1.0)
-        self.via_component_min_score_spin.setValue(0.0)
-        self.via_contour_min_score_spin = QDoubleSpinBox()
-        self.via_contour_min_score_spin.setRange(0.0, 255.0)
-        self.via_contour_min_score_spin.setDecimals(1)
-        self.via_contour_min_score_spin.setSingleStep(1.0)
-        self.via_contour_min_score_spin.setValue(0.0)
-        self.via_morphology_peak_scale_spin = QDoubleSpinBox()
-        self.via_morphology_peak_scale_spin.setRange(0.01, 2.0)
-        self.via_morphology_peak_scale_spin.setDecimals(3)
-        self.via_morphology_peak_scale_spin.setSingleStep(0.01)
-        self.via_morphology_peak_scale_spin.setValue(0.18)
-        self.via_template_min_score_spin = QDoubleSpinBox()
-        self.via_template_min_score_spin.setRange(0.0, 1.0)
-        self.via_template_min_score_spin.setDecimals(3)
-        self.via_template_min_score_spin.setSingleStep(0.01)
-        self.via_template_min_score_spin.setValue(0.35)
-        self.via_templates_widget = QWidget()
-        self.via_templates_layout = QVBoxLayout(self.via_templates_widget)
-        self.via_templates_layout.setContentsMargins(0, 0, 0, 0)
-        self.via_templates_layout.setSpacing(6)
-        self.via_template_list = QListWidget()
-        self.via_template_list.setMaximumHeight(96)
-        self.via_template_list.setIconSize(QSize(56, 56))
-        self.via_templates_layout.addWidget(self.via_template_list)
-        via_template_buttons = QWidget()
-        via_template_buttons_layout = QHBoxLayout(via_template_buttons)
-        via_template_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        self.add_via_template_button = QPushButton("Pick template")
-        self.add_via_template_button.setCheckable(True)
-        self.remove_via_template_button = QPushButton("Remove selected")
-        self.clear_via_templates_button = QPushButton("Clear templates")
-        via_template_buttons_layout.addWidget(self.add_via_template_button)
-        via_template_buttons_layout.addWidget(self.remove_via_template_button)
-        via_template_buttons_layout.addWidget(self.clear_via_templates_button)
-        self.via_templates_layout.addWidget(via_template_buttons)
-        self.via_blob_min_circularity_spin = QDoubleSpinBox()
-        self.via_blob_min_circularity_spin.setRange(0.0, 1.0)
-        self.via_blob_min_circularity_spin.setDecimals(3)
-        self.via_blob_min_circularity_spin.setSingleStep(0.01)
-        self.via_blob_min_circularity_spin.setValue(0.35)
-        self.via_preset_combo = QComboBox()
-        self.apply_via_preset_button = QPushButton("Apply preset")
-        self.save_via_preset_button = QPushButton("Save preset")
-        self.delete_via_preset_button = QPushButton("Delete preset")
-        self.via_preset_widget = QWidget()
-        via_preset_layout = QGridLayout(self.via_preset_widget)
-        via_preset_layout.setContentsMargins(0, 0, 0, 0)
-        via_preset_layout.setHorizontalSpacing(6)
-        via_preset_layout.setVerticalSpacing(6)
-        via_preset_layout.addWidget(self.via_preset_combo, 0, 0, 1, 3)
-        via_preset_layout.addWidget(self.apply_via_preset_button, 1, 0)
-        via_preset_layout.addWidget(self.save_via_preset_button, 1, 1)
-        via_preset_layout.addWidget(self.delete_via_preset_button, 1, 2)
-        self._refresh_via_preset_combo()
-        self.noisy_traces_via_preset_button = QPushButton("Noisy traces preset")
-        self.blurred_via_preset_button = QPushButton("Blurred vias preset")
-        self.reset_via_search_button = QPushButton("Reset via search")
-        self.debug_candidates_checkbox = QCheckBox("Debug recognition")
-        self.show_gradient_debug_button = QPushButton("Show gradient map")
-        self.gradient_overlay_checkbox = QCheckBox("Overlay on image")
-        self.gradient_overlay_opacity_spin = QDoubleSpinBox()
-        self.gradient_overlay_opacity_spin.setRange(0.05, 1.0)
-        self.gradient_overlay_opacity_spin.setDecimals(2)
-        self.gradient_overlay_opacity_spin.setSingleStep(0.05)
-        self.gradient_overlay_opacity_spin.setValue(0.45)
-        self.gradient_overlay_mode_combo = QComboBox()
-        self.gradient_overlay_mode_combo.addItem("Heatmap", "heatmap")
-        self.gradient_overlay_mode_combo.addItem("Threshold mask", "threshold")
-        self.gradient_overlay_mode_combo.addItem("Raw elevation", "elevation")
-        self.via_roundness_spin = QDoubleSpinBox()
-        self.via_roundness_spin.setRange(0.0, 100.0)
-        self.via_roundness_spin.setDecimals(1)
-        self.via_roundness_spin.setSingleStep(1.0)
-        self.via_roundness_spin.setValue(5.0)
-        self.min_via_width_spin = QSpinBox()
-        self.min_via_width_spin.setRange(0, 100_000)
-        self.min_via_width_spin.setValue(0)
-        self.max_via_width_spin = QSpinBox()
-        self.max_via_width_spin.setRange(0, 100_000)
-        self.max_via_width_spin.setValue(0)
-        self.min_via_height_spin = QSpinBox()
-        self.min_via_height_spin.setRange(0, 100_000)
-        self.min_via_height_spin.setValue(0)
-        self.max_via_height_spin = QSpinBox()
-        self.max_via_height_spin.setRange(0, 100_000)
-        self.max_via_height_spin.setValue(0)
-        self.via_width_range_widget = self._build_range_row(self.min_via_width_spin, self.max_via_width_spin)
-        self.via_height_range_widget = self._build_range_row(self.min_via_height_spin, self.max_via_height_spin)
-        self.fixed_vias_widget = QWidget()
-        self.fixed_vias_widget.setObjectName("fixedViaArea")
-        self.fixed_vias_layout = QVBoxLayout(self.fixed_vias_widget)
-        self.fixed_vias_layout.setContentsMargins(10, 10, 10, 10)
-        self.fixed_vias_layout.setSpacing(8)
-        self.fixed_vias_widget.setStyleSheet(
-            "#fixedViaArea { background-color: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.10); border-radius: 8px; }"
-            "#fixedViaArea QLabel, #fixedViaArea QSpinBox, #fixedViaArea QPushButton { border: none; background: transparent; }"
-        )
-        self.fixed_via_rows_widget = QWidget()
-        self.fixed_via_rows_layout = QVBoxLayout(self.fixed_via_rows_widget)
-        self.fixed_via_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.fixed_via_rows_layout.setSpacing(6)
-        self.fixed_vias_layout.addWidget(self.fixed_via_rows_widget)
-        self.fixed_via_add_button = QPushButton("+")
-        self.fixed_via_add_button.setMinimumHeight(38)
-        self.fixed_via_add_button.setStyleSheet(
-            "QPushButton { background-color: #2fbf71; color: white; font-size: 22px; font-weight: 700; border-radius: 8px; }"
-            "QPushButton:hover { background-color: #28a764; }"
-            "QPushButton:pressed { background-color: #229157; }"
-        )
-        self.fixed_via_add_button.clicked.connect(self._add_fixed_via_row)
-        self.fixed_vias_layout.addWidget(self.fixed_via_add_button)
-
-        self.topology_group = QGroupBox("Hierarchy and holes")
-        self.topology_form = QFormLayout(self.topology_group)
-        self._configure_compact_form(self.topology_form)
-        self.min_hierarchy_depth_spin = QSpinBox()
-        self.min_hierarchy_depth_spin.setRange(0, 100)
-        self.min_hierarchy_depth_spin.setValue(0)
-        self.max_hierarchy_depth_spin = QSpinBox()
-        self.max_hierarchy_depth_spin.setRange(0, 100)
-        self.max_hierarchy_depth_spin.setValue(0)
-        self.max_hole_area_ratio_spin = QDoubleSpinBox()
-        self.max_hole_area_ratio_spin.setRange(0.0, 10.0)
-        self.max_hole_area_ratio_spin.setDecimals(3)
-        self.max_hole_area_ratio_spin.setSingleStep(0.05)
-        self.max_hole_area_ratio_spin.setValue(0.0)
-        self.extraction_profile_combo.currentIndexChanged.connect(self._on_extraction_profile_changed)
-        self.retrieval_mode_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
-        self.approximation_mode_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
-        self.epsilon_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.epsilon_relative_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.min_area_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.max_area_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.min_perimeter_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.min_points_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.max_perimeter_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.min_bbox_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.max_bbox_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.min_bbox_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.max_bbox_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.min_aspect_ratio_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.max_aspect_ratio_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.exclude_border_touching_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.min_solidity_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.min_extent_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.min_polygon_angle_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.conductor_gradient_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.conductor_gradient_min_strength_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.conductor_gradient_band_radius_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_size_mode_combo.currentIndexChanged.connect(self._on_via_size_mode_changed)
-        self.via_white_range_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_white_range_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_white_range_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_black_range_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_black_range_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_black_range_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_detector_gradient_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_detector_spot_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_detector_hough_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_detector_components_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_detector_contours_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_detector_morphology_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_detector_template_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_detector_blob_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_spot_min_contrast_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_spot_min_roundness_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_spot_line_suppression_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_gradient_min_strength_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_gradient_min_coverage_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_hough_edge_threshold_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_hough_accumulator_threshold_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_component_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_contour_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_morphology_peak_scale_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_template_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.via_blob_min_circularity_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.add_via_template_button.toggled.connect(self._set_via_template_pick_active)
-        self.remove_via_template_button.clicked.connect(self._remove_selected_via_template)
-        self.clear_via_templates_button.clicked.connect(self._clear_via_templates)
-        self.apply_via_preset_button.clicked.connect(self._apply_selected_via_preset)
-        self.save_via_preset_button.clicked.connect(self._save_current_via_preset)
-        self.delete_via_preset_button.clicked.connect(self._delete_selected_via_preset)
-        self.noisy_traces_via_preset_button.clicked.connect(self._apply_noisy_traces_via_preset)
-        self.blurred_via_preset_button.clicked.connect(self._apply_blurred_via_preset)
-        self.reset_via_search_button.clicked.connect(self._reset_via_search_parameters)
-        self.debug_candidates_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-        self.via_roundness_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.min_via_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.max_via_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.min_via_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.max_via_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.min_hierarchy_depth_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.max_hierarchy_depth_spin.valueChanged.connect(self._on_extraction_settings_changed)
-        self.max_hole_area_ratio_spin.valueChanged.connect(self._on_extraction_settings_changed)
-
-        self.basic_filters_form.addRow("Retrieval mode", self.retrieval_mode_combo)
-        self.retrieval_mode_label_widget = self.basic_filters_form.labelForField(self.retrieval_mode_combo)
-        self.basic_filters_form.addRow("Approximation mode", self.approximation_mode_combo)
-        self.approximation_mode_label_widget = self.basic_filters_form.labelForField(self.approximation_mode_combo)
-        self.basic_filters_form.addRow("Epsilon", self.epsilon_spin)
-        self.epsilon_label_widget = self.basic_filters_form.labelForField(self.epsilon_spin)
-        self.basic_filters_form.addRow("Epsilon mode", self.epsilon_relative_checkbox)
-        self.epsilon_mode_label_widget = self.basic_filters_form.labelForField(self.epsilon_relative_checkbox)
-        self.basic_filters_form.addRow("Area range", self.area_range_widget)
-        self.min_area_label_widget = self.basic_filters_form.labelForField(self.area_range_widget)
-        self.max_area_label_widget = None
-        self.basic_filters_form.addRow("Perimeter range", self.perimeter_range_widget)
-        self.min_perimeter_label_widget = self.basic_filters_form.labelForField(self.perimeter_range_widget)
-        self.max_perimeter_label_widget = None
-        self.basic_filters_form.addRow("Min point count", self.min_points_spin)
-        self.min_point_count_label_widget = self.basic_filters_form.labelForField(self.min_points_spin)
-
-        self.geometry_filters_form.addRow("BBox width range", self.bbox_width_range_widget)
-        self.min_bbox_width_label_widget = self.geometry_filters_form.labelForField(self.bbox_width_range_widget)
-        self.max_bbox_width_label_widget = None
-        self.geometry_filters_form.addRow("BBox height range", self.bbox_height_range_widget)
-        self.min_bbox_height_label_widget = self.geometry_filters_form.labelForField(self.bbox_height_range_widget)
-        self.max_bbox_height_label_widget = None
-        self.geometry_filters_form.addRow("Aspect ratio range", self.aspect_ratio_range_widget)
-        self.min_aspect_ratio_label_widget = self.geometry_filters_form.labelForField(self.aspect_ratio_range_widget)
-        self.max_aspect_ratio_label_widget = None
-        self.geometry_filters_form.addRow("Border handling", self.exclude_border_touching_checkbox)
-        self.border_handling_label_widget = self.geometry_filters_form.labelForField(self.exclude_border_touching_checkbox)
-        self.geometry_filters_form.addRow("Min solidity", self.min_solidity_spin)
-        self.min_solidity_label_widget = self.geometry_filters_form.labelForField(self.min_solidity_spin)
-        self.geometry_filters_form.addRow("Min extent", self.min_extent_spin)
-        self.min_extent_label_widget = self.geometry_filters_form.labelForField(self.min_extent_spin)
-        self.geometry_filters_form.addRow("Min polygon angle", self.min_polygon_angle_spin)
-        self.min_polygon_angle_label_widget = self.geometry_filters_form.labelForField(self.min_polygon_angle_spin)
-
-        self.conductor_form.addRow("Gradient boundaries", self.conductor_gradient_checkbox)
-        self.conductor_gradient_enabled_label_widget = self.conductor_form.labelForField(self.conductor_gradient_checkbox)
-        self.conductor_form.addRow("Min edge", self.conductor_gradient_min_strength_spin)
-        self.conductor_gradient_min_strength_label_widget = self.conductor_form.labelForField(self.conductor_gradient_min_strength_spin)
-        self.conductor_form.addRow("Boundary band", self.conductor_gradient_band_radius_spin)
-        self.conductor_gradient_band_radius_label_widget = self.conductor_form.labelForField(self.conductor_gradient_band_radius_spin)
-
-        self.via_form.addRow("Via size mode", self.via_size_mode_combo)
-        self.via_size_mode_label_widget = self.via_form.labelForField(self.via_size_mode_combo)
-        self.via_form.addRow("White range", self.via_white_range_widget)
-        self.via_white_range_label_widget = self.via_form.labelForField(self.via_white_range_widget)
-        self.via_form.addRow("Black range", self.via_black_range_widget)
-        self.via_black_range_label_widget = self.via_form.labelForField(self.via_black_range_widget)
-        self.via_form.addRow("Detection methods", self.via_detector_methods_widget)
-        self.via_detector_methods_label_widget = self.via_form.labelForField(self.via_detector_methods_widget)
-        self.via_form.addRow("Spot contrast", self.via_spot_min_contrast_spin)
-        self.via_spot_min_contrast_label_widget = self.via_form.labelForField(self.via_spot_min_contrast_spin)
-        self.via_form.addRow("Spot roundness", self.via_spot_min_roundness_spin)
-        self.via_spot_min_roundness_label_widget = self.via_form.labelForField(self.via_spot_min_roundness_spin)
-        self.via_form.addRow("Spot trace suppression", self.via_spot_line_suppression_spin)
-        self.via_spot_line_suppression_label_widget = self.via_form.labelForField(self.via_spot_line_suppression_spin)
-        self.via_form.addRow("Gradient edge", self.via_gradient_min_strength_spin)
-        self.via_gradient_min_strength_label_widget = self.via_form.labelForField(self.via_gradient_min_strength_spin)
-        self.via_form.addRow("Gradient coverage", self.via_gradient_min_coverage_spin)
-        self.via_gradient_min_coverage_label_widget = self.via_form.labelForField(self.via_gradient_min_coverage_spin)
-        self.via_form.addRow("Hough edge", self.via_hough_edge_threshold_spin)
-        self.via_hough_edge_threshold_label_widget = self.via_form.labelForField(self.via_hough_edge_threshold_spin)
-        self.via_form.addRow("Hough votes", self.via_hough_accumulator_threshold_spin)
-        self.via_hough_accumulator_threshold_label_widget = self.via_form.labelForField(self.via_hough_accumulator_threshold_spin)
-        self.via_form.addRow("Components score", self.via_component_min_score_spin)
-        self.via_component_min_score_label_widget = self.via_form.labelForField(self.via_component_min_score_spin)
-        self.via_form.addRow("Contours score", self.via_contour_min_score_spin)
-        self.via_contour_min_score_label_widget = self.via_form.labelForField(self.via_contour_min_score_spin)
-        self.via_form.addRow("Morphology peaks", self.via_morphology_peak_scale_spin)
-        self.via_morphology_peak_scale_label_widget = self.via_form.labelForField(self.via_morphology_peak_scale_spin)
-        self.via_form.addRow("Template score", self.via_template_min_score_spin)
-        self.via_template_min_score_label_widget = self.via_form.labelForField(self.via_template_min_score_spin)
-        self.via_form.addRow("Templates", self.via_templates_widget)
-        self.via_templates_label_widget = self.via_form.labelForField(self.via_templates_widget)
-        self.via_form.addRow("Blob circularity", self.via_blob_min_circularity_spin)
-        self.via_blob_min_circularity_label_widget = self.via_form.labelForField(self.via_blob_min_circularity_spin)
-        self.via_form.addRow("Saved presets", self.via_preset_widget)
-        self.via_preset_label_widget = self.via_form.labelForField(self.via_preset_widget)
-        self.via_form.addRow("Preset", self.noisy_traces_via_preset_button)
-        self.noisy_traces_via_preset_label_widget = self.via_form.labelForField(self.noisy_traces_via_preset_button)
-        self.via_form.addRow("Preset", self.blurred_via_preset_button)
-        self.blurred_via_preset_label_widget = self.via_form.labelForField(self.blurred_via_preset_button)
-        self.via_form.addRow("Reset", self.reset_via_search_button)
-        self.reset_via_search_label_widget = self.via_form.labelForField(self.reset_via_search_button)
-        self.via_form.addRow("Debug", self.debug_candidates_checkbox)
-        self.debug_candidates_label_widget = self.via_form.labelForField(self.debug_candidates_checkbox)
-        self.via_form.addRow("Gradient debug", self.show_gradient_debug_button)
-        self.show_gradient_debug_label_widget = self.via_form.labelForField(self.show_gradient_debug_button)
-        self.show_gradient_debug_button.clicked.connect(self._show_gradient_debug_window)
-        gradient_overlay_row = QWidget()
-        gradient_overlay_row_layout = QHBoxLayout(gradient_overlay_row)
-        gradient_overlay_row_layout.setContentsMargins(0, 0, 0, 0)
-        gradient_overlay_row_layout.addWidget(self.gradient_overlay_checkbox)
-        gradient_overlay_row_layout.addWidget(self.gradient_overlay_mode_combo, 1)
-        gradient_overlay_row_layout.addWidget(self.gradient_overlay_opacity_spin)
-        self.via_form.addRow("Gradient overlay", gradient_overlay_row)
-        self.gradient_overlay_label_widget = self.via_form.labelForField(gradient_overlay_row)
-        self.gradient_overlay_checkbox.toggled.connect(self._on_gradient_overlay_toggled)
-        self.gradient_overlay_opacity_spin.valueChanged.connect(self._on_gradient_overlay_opacity_changed)
-        self.gradient_overlay_mode_combo.currentIndexChanged.connect(self._refresh_gradient_overlay)
-        self.via_form.addRow("Roundness", self.via_roundness_spin)
-        self.via_roundness_label_widget = self.via_form.labelForField(self.via_roundness_spin)
-        self.via_form.addRow("Via width range", self.via_width_range_widget)
-        self.min_via_width_label_widget = self.via_form.labelForField(self.via_width_range_widget)
-        self.max_via_width_label_widget = None
-        self.via_form.addRow("Via height range", self.via_height_range_widget)
-        self.min_via_height_label_widget = self.via_form.labelForField(self.via_height_range_widget)
-        self.max_via_height_label_widget = None
-        self.via_form.addRow("Fixed vias", self.fixed_vias_widget)
-        self.fixed_vias_label_widget = self.via_form.labelForField(self.fixed_vias_widget)
-        self._update_via_size_controls_state()
-
-        self.topology_form.addRow("Min hierarchy depth", self.min_hierarchy_depth_spin)
-        self.min_hierarchy_depth_label_widget = self.topology_form.labelForField(self.min_hierarchy_depth_spin)
-        self.topology_form.addRow("Max hierarchy depth (0 = unlimited)", self.max_hierarchy_depth_spin)
-        self.max_hierarchy_depth_label_widget = self.topology_form.labelForField(self.max_hierarchy_depth_spin)
-        self.topology_form.addRow("Max hole area ratio (0 = unlimited)", self.max_hole_area_ratio_spin)
-        self.max_hole_area_ratio_label_widget = self.topology_form.labelForField(self.max_hole_area_ratio_spin)
-
-        for group in [
-            self.profile_group,
-            self.basic_filters_group,
-            self.geometry_filters_group,
-            self.conductor_group,
-            self.via_group,
-            self.topology_group,
-        ]:
-            contour_layout.addWidget(group)
-        container_layout.addWidget(self.contour_group)
-
-        self.save_group = QGroupBox("Save options")
-        save_layout = QVBoxLayout(self.save_group)
-        self.save_cif_checkbox = QCheckBox("CIF")
-        self.save_cif_checkbox.setChecked(True)
-        self.save_csv_checkbox = QCheckBox("CSV")
-        self.save_txt_checkbox = QCheckBox("TXT")
-        self.save_svg_checkbox = QCheckBox("SVG preview")
-        self.save_preview_checkbox = QCheckBox("Overlay preview image")
-        self.save_preview_checkbox.setChecked(True)
-        for checkbox in [
-            self.save_cif_checkbox,
-            self.save_csv_checkbox,
-            self.save_txt_checkbox,
-            self.save_svg_checkbox,
-            self.save_preview_checkbox,
-        ]:
-            save_layout.addWidget(checkbox)
-        container_layout.addWidget(self.save_group)
-        container_layout.addStretch(1)
-        scroll.setWidget(container)
-        layout.addWidget(scroll, 1)
-        return tab
+        return build_extraction_tab(self)
 
     def _build_display_tab(self) -> QWidget:
-        tab = QWidget()
-        self.display_form = QFormLayout(tab)
-
-        self.external_color_button = self._build_color_button(self._display_settings.external_color, self._choose_external_color)
-        self.hole_color_button = self._build_color_button(self._display_settings.hole_color, self._choose_hole_color)
-        self.selected_color_button = self._build_color_button(self._display_settings.selected_color, self._choose_selected_color)
-        self.vertex_color_button = self._build_color_button(self._display_settings.vertex_color, self._choose_vertex_color)
-        self.line_width_spin = QDoubleSpinBox()
-        self.line_width_spin.setRange(1.0, 20.0)
-        self.line_width_spin.setValue(self._display_settings.line_width)
-        self.vertex_size_spin = QDoubleSpinBox()
-        self.vertex_size_spin.setRange(2.0, 30.0)
-        self.vertex_size_spin.setValue(self._display_settings.vertex_size)
-        self.fill_opacity_spin = QDoubleSpinBox()
-        self.fill_opacity_spin.setRange(0.0, 1.0)
-        self.fill_opacity_spin.setSingleStep(0.05)
-        self.fill_opacity_spin.setValue(self._display_settings.fill_opacity)
-        self.show_vertices_checkbox = QCheckBox("Show vertices")
-        self.show_vertices_checkbox.setChecked(self._display_settings.show_vertices)
-        self.show_labels_checkbox = QCheckBox("Show polygon IDs")
-        self.show_labels_checkbox.setChecked(self._display_settings.show_labels)
-        self.random_object_colors_checkbox = QCheckBox("Random object colors")
-        self.show_neighbor_frames_checkbox = QCheckBox("Show neighboring frames")
-        self.neighbor_columns_spin = QSpinBox()
-        self.neighbor_columns_spin.setRange(1, 1000)
-        self.neighbor_columns_spin.setValue(3)
-        self.neighbor_max_grid_spin = QSpinBox()
-        self.neighbor_max_grid_spin.setRange(3, 7)
-        self.neighbor_max_grid_spin.setSingleStep(2)
-        self.neighbor_max_grid_spin.setValue(7)
-        self.neighbor_opacity_spin = QDoubleSpinBox()
-        self.neighbor_opacity_spin.setRange(0.05, 1.0)
-        self.neighbor_opacity_spin.setSingleStep(0.05)
-        self.neighbor_opacity_spin.setValue(0.35)
-        self.neighbor_overlap_spin = QSpinBox()
-        self.neighbor_overlap_spin.setRange(0, 100_000)
-        self.neighbor_overlap_spin.setValue(0)
-
-        for widget in [
-            self.line_width_spin,
-            self.vertex_size_spin,
-            self.fill_opacity_spin,
-            self.show_vertices_checkbox,
-            self.show_labels_checkbox,
-            self.random_object_colors_checkbox,
-        ]:
-            if isinstance(widget, QCheckBox):
-                widget.stateChanged.connect(self._apply_display_settings)
-            else:
-                widget.valueChanged.connect(self._apply_display_settings)
-        self.show_neighbor_frames_checkbox.stateChanged.connect(self._on_neighbor_display_settings_changed)
-        self.neighbor_columns_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
-        self.neighbor_max_grid_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
-        self.neighbor_opacity_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
-        self.neighbor_overlap_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
-
-        self.display_form.addRow("External contour", self.external_color_button)
-        self.external_color_label_widget = self.display_form.labelForField(self.external_color_button)
-        self.display_form.addRow("Hole contour", self.hole_color_button)
-        self.hole_color_label_widget = self.display_form.labelForField(self.hole_color_button)
-        self.display_form.addRow("Selected contour", self.selected_color_button)
-        self.selected_color_label_widget = self.display_form.labelForField(self.selected_color_button)
-        self.display_form.addRow("Vertex color", self.vertex_color_button)
-        self.vertex_color_label_widget = self.display_form.labelForField(self.vertex_color_button)
-        self.display_form.addRow("Line width", self.line_width_spin)
-        self.line_width_label_widget = self.display_form.labelForField(self.line_width_spin)
-        self.display_form.addRow("Vertex size", self.vertex_size_spin)
-        self.vertex_size_label_widget = self.display_form.labelForField(self.vertex_size_spin)
-        self.display_form.addRow("Fill opacity", self.fill_opacity_spin)
-        self.fill_opacity_label_widget = self.display_form.labelForField(self.fill_opacity_spin)
-        self.display_form.addRow(self.show_vertices_checkbox)
-        self.display_form.addRow(self.show_labels_checkbox)
-        self.display_form.addRow(self.random_object_colors_checkbox)
-        self.display_form.addRow(self.show_neighbor_frames_checkbox)
-        self.display_form.addRow("Frames per row", self.neighbor_columns_spin)
-        self.neighbor_columns_label_widget = self.display_form.labelForField(self.neighbor_columns_spin)
-        self.display_form.addRow("Max neighbor grid", self.neighbor_max_grid_spin)
-        self.neighbor_max_grid_label_widget = self.display_form.labelForField(self.neighbor_max_grid_spin)
-        self.display_form.addRow("Neighbor opacity", self.neighbor_opacity_spin)
-        self.neighbor_opacity_label_widget = self.display_form.labelForField(self.neighbor_opacity_spin)
-        self.display_form.addRow("Frame overlap", self.neighbor_overlap_spin)
-        self.neighbor_overlap_label_widget = self.display_form.labelForField(self.neighbor_overlap_spin)
-        return tab
+        return build_display_tab(self)
 
     def _build_help_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        self.help_scroll = QScrollArea()
-        self.help_scroll.setWidgetResizable(True)
-        self.help_container = QWidget()
-        self.help_layout = QVBoxLayout(self.help_container)
-        self.help_layout.setContentsMargins(0, 0, 0, 0)
-        self.help_scroll.setWidget(self.help_container)
-        layout.addWidget(self.help_scroll, 1)
-        self._rebuild_help_cards()
-        return tab
+        return build_help_tab(self)
 
     def _clear_layout_widgets(self, layout: QVBoxLayout) -> None:
         while layout.count():
@@ -2748,7 +404,7 @@ class PolygonExtractionWidget(QWidget):
             if widget is not None:
                 widget.deleteLater()
             elif child_layout is not None:
-                self._clear_layout_widgets(child_layout)  # type: ignore[arg-type]
+                self._clear_layout_widgets(child_layout)
 
     @staticmethod
     def _build_help_sample_image() -> np.ndarray:
@@ -2769,9 +425,17 @@ class PolygonExtractionWidget(QWidget):
         summary = summary_pair[0] if self._ui_language == "ru" else summary_pair[1]
         use_case = use_pair[0] if self._ui_language == "ru" else use_pair[1]
         if not summary:
-            summary = "Преобразование обрабатывает изображение перед извлечением контуров." if self._ui_language == "ru" else "This transformation preprocesses the image before contour extraction."
+            summary = (
+                "Преобразование обрабатывает изображение перед извлечением контуров."
+                if self._ui_language == "ru"
+                else "This transformation preprocesses the image before contour extraction."
+            )
         if not use_case:
-            use_case = "Используйте, когда этот эффект приближает изображение к удобной бинарной маске." if self._ui_language == "ru" else "Use it when the effect moves the image toward a cleaner binary mask."
+            use_case = (
+                "Используйте, когда этот эффект приближает изображение к удобной бинарной маске."
+                if self._ui_language == "ru"
+                else "Use it when the effect moves the image toward a cleaner binary mask."
+            )
         return summary, use_case
 
     def _pipeline_parameter_tooltip(self, operation_name: str, parameter_name: str) -> str:
@@ -2805,9 +469,7 @@ class PolygonExtractionWidget(QWidget):
             summary, use_case = self._operation_help_entry(descriptor.type_name)
             summary_label = QLabel(summary)
             summary_label.setWordWrap(True)
-            use_label = QLabel(
-                ("Когда использовать: " if self._ui_language == "ru" else "When to use: ") + use_case
-            )
+            use_label = QLabel(("Когда использовать: " if self._ui_language == "ru" else "When to use: ") + use_case)
             use_label.setWordWrap(True)
             images_row = QWidget()
             images_layout = QHBoxLayout(images_row)
@@ -2848,7 +510,9 @@ class PolygonExtractionWidget(QWidget):
             return
         self._help_menu.clear()
         overview_action = self._help_menu.addAction(
-            self._tr("help_all_filters_action", "Все преобразования" if self._ui_language == "ru" else "All transformations")
+            self._tr(
+                "help_all_filters_action", "Все преобразования" if self._ui_language == "ru" else "All transformations"
+            )
         )
         overview_action.triggered.connect(lambda _checked=False: self._show_help_dialog())
         self._help_menu.addSeparator()
@@ -2862,7 +526,9 @@ class PolygonExtractionWidget(QWidget):
     def _show_help_dialog(self, operation_name: str | None = None) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(
-            self._tr("tab_help") if operation_name is None else get_operation_display_name(operation_name, self._ui_language)
+            self._tr("tab_help")
+            if operation_name is None
+            else get_operation_display_name(operation_name, self._ui_language)
         )
         dialog.resize(960, 720)
         layout = QVBoxLayout(dialog)
@@ -2900,9 +566,7 @@ class PolygonExtractionWidget(QWidget):
             summary, use_case = self._operation_help_entry(descriptor.type_name)
             summary_label = QLabel(summary)
             summary_label.setWordWrap(True)
-            use_label = QLabel(
-                ("Когда использовать: " if self._ui_language == "ru" else "When to use: ") + use_case
-            )
+            use_label = QLabel(("Когда использовать: " if self._ui_language == "ru" else "When to use: ") + use_case)
             use_label.setWordWrap(True)
             images_row = QWidget()
             images_layout = QHBoxLayout(images_row)
@@ -2979,7 +643,9 @@ class PolygonExtractionWidget(QWidget):
             processed = sample_image
         self.pipeline_help_after_image.setPixmap(self._pixmap_for_help_image(processed))
 
-    def _on_available_operation_selected(self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None) -> None:
+    def _on_available_operation_selected(
+        self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None
+    ) -> None:
         operation_name = current.data(0, Qt.ItemDataRole.UserRole) if current is not None else None
         self._update_pipeline_help_preview(str(operation_name) if operation_name else None)
 
@@ -3085,9 +751,13 @@ class PolygonExtractionWidget(QWidget):
             self._on_extraction_settings_changed()
 
     def _apply_extraction_tooltips(self) -> None:
-        self._set_field_tooltip(self.extraction_profile_label_widget, self.extraction_profile_combo, "extraction_profile")
+        self._set_field_tooltip(
+            self.extraction_profile_label_widget, self.extraction_profile_combo, "extraction_profile"
+        )
         self._set_field_tooltip(self.retrieval_mode_label_widget, self.retrieval_mode_combo, "retrieval_mode")
-        self._set_field_tooltip(self.approximation_mode_label_widget, self.approximation_mode_combo, "approximation_mode")
+        self._set_field_tooltip(
+            self.approximation_mode_label_widget, self.approximation_mode_combo, "approximation_mode"
+        )
         self._set_field_tooltip(self.epsilon_label_widget, self.epsilon_spin, "epsilon")
         self._set_field_tooltip(self.epsilon_mode_label_widget, self.epsilon_relative_checkbox, "epsilon_mode")
         self._set_field_tooltip(self.min_area_label_widget, self.min_area_spin, "min_area")
@@ -3101,13 +771,17 @@ class PolygonExtractionWidget(QWidget):
         self._set_field_tooltip(self.max_bbox_height_label_widget, self.max_bbox_height_spin, "max_bbox_height")
         self._set_field_tooltip(self.min_aspect_ratio_label_widget, self.min_aspect_ratio_spin, "min_aspect_ratio")
         self._set_field_tooltip(self.max_aspect_ratio_label_widget, self.max_aspect_ratio_spin, "max_aspect_ratio")
-        self._set_field_tooltip(self.border_handling_label_widget, self.exclude_border_touching_checkbox, "exclude_border_touching")
+        self._set_field_tooltip(
+            self.border_handling_label_widget, self.exclude_border_touching_checkbox, "exclude_border_touching"
+        )
         self._set_field_tooltip(self.min_solidity_label_widget, self.min_solidity_spin, "min_solidity")
         self._set_field_tooltip(self.min_extent_label_widget, self.min_extent_spin, "min_extent")
         self._set_field_tooltip(self.via_size_mode_label_widget, self.via_size_mode_combo, "via_size_mode")
         self._set_field_tooltip(self.via_white_range_label_widget, self.via_white_range_widget, "via_white_range")
         self._set_field_tooltip(self.via_black_range_label_widget, self.via_black_range_widget, "via_black_range")
-        self._set_field_tooltip(self.via_detector_methods_label_widget, self.via_detector_methods_widget, "via_detector_methods")
+        self._set_field_tooltip(
+            self.via_detector_methods_label_widget, self.via_detector_methods_widget, "via_detector_methods"
+        )
         self._set_field_tooltip(
             self.via_gradient_min_strength_label_widget,
             self.via_gradient_min_strength_spin,
@@ -3118,8 +792,12 @@ class PolygonExtractionWidget(QWidget):
             self.via_gradient_min_coverage_spin,
             "via_gradient_min_coverage",
         )
-        self._set_field_tooltip(self.via_spot_min_contrast_label_widget, self.via_spot_min_contrast_spin, "via_spot_min_contrast")
-        self._set_field_tooltip(self.via_spot_min_roundness_label_widget, self.via_spot_min_roundness_spin, "via_spot_min_roundness")
+        self._set_field_tooltip(
+            self.via_spot_min_contrast_label_widget, self.via_spot_min_contrast_spin, "via_spot_min_contrast"
+        )
+        self._set_field_tooltip(
+            self.via_spot_min_roundness_label_widget, self.via_spot_min_roundness_spin, "via_spot_min_roundness"
+        )
         self._set_field_tooltip(
             self.via_spot_line_suppression_label_widget,
             self.via_spot_line_suppression_spin,
@@ -3135,12 +813,24 @@ class PolygonExtractionWidget(QWidget):
             self.via_hough_accumulator_threshold_spin,
             "via_hough_accumulator_threshold",
         )
-        self._set_field_tooltip(self.via_component_min_score_label_widget, self.via_component_min_score_spin, "via_component_min_score")
-        self._set_field_tooltip(self.via_contour_min_score_label_widget, self.via_contour_min_score_spin, "via_contour_min_score")
-        self._set_field_tooltip(self.via_morphology_peak_scale_label_widget, self.via_morphology_peak_scale_spin, "via_morphology_peak_scale")
-        self._set_field_tooltip(self.via_template_min_score_label_widget, self.via_template_min_score_spin, "via_template_min_score")
+        self._set_field_tooltip(
+            self.via_component_min_score_label_widget, self.via_component_min_score_spin, "via_component_min_score"
+        )
+        self._set_field_tooltip(
+            self.via_contour_min_score_label_widget, self.via_contour_min_score_spin, "via_contour_min_score"
+        )
+        self._set_field_tooltip(
+            self.via_morphology_peak_scale_label_widget,
+            self.via_morphology_peak_scale_spin,
+            "via_morphology_peak_scale",
+        )
+        self._set_field_tooltip(
+            self.via_template_min_score_label_widget, self.via_template_min_score_spin, "via_template_min_score"
+        )
         self._set_field_tooltip(self.via_templates_label_widget, self.via_templates_widget, "via_templates")
-        self._set_field_tooltip(self.via_blob_min_circularity_label_widget, self.via_blob_min_circularity_spin, "via_blob_min_circularity")
+        self._set_field_tooltip(
+            self.via_blob_min_circularity_label_widget, self.via_blob_min_circularity_spin, "via_blob_min_circularity"
+        )
         self._set_field_tooltip(self.via_preset_label_widget, self.via_preset_widget, "via_preset_selector")
         self._set_field_tooltip(
             self.noisy_traces_via_preset_label_widget,
@@ -3153,12 +843,18 @@ class PolygonExtractionWidget(QWidget):
             "via_blurred_preset",
         )
         self._set_field_tooltip(self.reset_via_search_label_widget, self.reset_via_search_button, "reset_via_search")
-        self.add_via_template_button.setToolTip(_localized_text(EXTRACTION_HELP_TEXTS, "via_templates", self._ui_language))
+        self.add_via_template_button.setToolTip(
+            _localized_text(EXTRACTION_HELP_TEXTS, "via_templates", self._ui_language)
+        )
         self.remove_via_template_button.setToolTip(
-            "Удаляет выбранный шаблон via из списка." if self._ui_language == "ru" else "Removes the selected via template from the list."
+            "Удаляет выбранный шаблон via из списка."
+            if self._ui_language == "ru"
+            else "Removes the selected via template from the list."
         )
         self.clear_via_templates_button.setToolTip(
-            "Удаляет все сохраненные шаблоны via из списка." if self._ui_language == "ru" else "Removes all saved via templates from the list."
+            "Удаляет все сохраненные шаблоны via из списка."
+            if self._ui_language == "ru"
+            else "Removes all saved via templates from the list."
         )
         for checkbox, tooltip_key in (
             (self.via_white_range_checkbox, "via_white_range"),
@@ -3201,9 +897,15 @@ class PolygonExtractionWidget(QWidget):
                     if self._ui_language == "ru"
                     else "Removes this allowed via-size row from the list."
                 )
-        self._set_field_tooltip(self.min_hierarchy_depth_label_widget, self.min_hierarchy_depth_spin, "min_hierarchy_depth")
-        self._set_field_tooltip(self.max_hierarchy_depth_label_widget, self.max_hierarchy_depth_spin, "max_hierarchy_depth")
-        self._set_field_tooltip(self.max_hole_area_ratio_label_widget, self.max_hole_area_ratio_spin, "max_hole_area_ratio")
+        self._set_field_tooltip(
+            self.min_hierarchy_depth_label_widget, self.min_hierarchy_depth_spin, "min_hierarchy_depth"
+        )
+        self._set_field_tooltip(
+            self.max_hierarchy_depth_label_widget, self.max_hierarchy_depth_spin, "max_hierarchy_depth"
+        )
+        self._set_field_tooltip(
+            self.max_hole_area_ratio_label_widget, self.max_hole_area_ratio_spin, "max_hole_area_ratio"
+        )
 
     def _update_via_size_controls_state(self) -> None:
         fixed_mode = normalize_via_size_mode(self.via_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
@@ -3260,9 +962,18 @@ class PolygonExtractionWidget(QWidget):
                     (self.via_hough_accumulator_threshold_label_widget, self.via_hough_accumulator_threshold_spin),
                 ],
             ),
-            (self.via_detector_components_checkbox.isChecked(), [(self.via_component_min_score_label_widget, self.via_component_min_score_spin)]),
-            (self.via_detector_contours_checkbox.isChecked(), [(self.via_contour_min_score_label_widget, self.via_contour_min_score_spin)]),
-            (self.via_detector_morphology_checkbox.isChecked(), [(self.via_morphology_peak_scale_label_widget, self.via_morphology_peak_scale_spin)]),
+            (
+                self.via_detector_components_checkbox.isChecked(),
+                [(self.via_component_min_score_label_widget, self.via_component_min_score_spin)],
+            ),
+            (
+                self.via_detector_contours_checkbox.isChecked(),
+                [(self.via_contour_min_score_label_widget, self.via_contour_min_score_spin)],
+            ),
+            (
+                self.via_detector_morphology_checkbox.isChecked(),
+                [(self.via_morphology_peak_scale_label_widget, self.via_morphology_peak_scale_spin)],
+            ),
             (
                 self.via_detector_template_checkbox.isChecked(),
                 [
@@ -3270,7 +981,10 @@ class PolygonExtractionWidget(QWidget):
                     (self.via_templates_label_widget, self.via_templates_widget),
                 ],
             ),
-            (self.via_detector_blob_checkbox.isChecked(), [(self.via_blob_min_circularity_label_widget, self.via_blob_min_circularity_spin)]),
+            (
+                self.via_detector_blob_checkbox.isChecked(),
+                [(self.via_blob_min_circularity_label_widget, self.via_blob_min_circularity_spin)],
+            ),
         ]
         for visible, rows in detector_rows:
             for label_widget, field_widget in rows:
@@ -3288,163 +1002,10 @@ class PolygonExtractionWidget(QWidget):
         self.topology_group.setVisible(not is_via_profile)
 
     def _build_visual_panel(self) -> QWidget:
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-
-        self.editor_group = QGroupBox("Image / polygon editor")
-        editor_layout = QVBoxLayout(self.editor_group)
-        self.polygon_editor = PolygonEditorView()
-        self.polygon_editor.polygonsEdited.connect(self._on_polygons_edited)
-        self.polygon_editor.logRequested.connect(self._append_log)
-        self.polygon_editor.imageClicked.connect(self._on_editor_image_clicked)
-        self.polygon_editor.imageRegionSelected.connect(self._on_editor_image_region_selected)
-        self.polygon_editor.rulerMeasurementChanged.connect(self._update_ruler_status)
-        self.polygon_editor.toolChanged.connect(self._on_editor_tool_changed)
-        self.polygon_editor.zoomChanged.connect(lambda _zoom: self._sync_neighbor_frames())
-        self.polygon_editor.neighborFrameActivated.connect(self._on_neighbor_frame_activated)
-        self.polygon_editor.viaDebugRequested.connect(self._on_via_debug_requested)
-        self.editor_toolbar = self._build_editor_toolbar()
-        editor_layout.addWidget(self.editor_toolbar)
-        editor_layout.addWidget(self.polygon_editor, 1)
-
-        layout.addWidget(self.editor_group, 1)
-        return panel
+        return build_visual_panel(self)
 
     def _build_editor_toolbar(self) -> QWidget:
-        toolbar = QWidget()
-        layout = QHBoxLayout(toolbar)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-
-        self._tool_button_group = QButtonGroup(self)
-        self._tool_button_group.setExclusive(True)
-        self._tool_buttons: dict[EditorTool, QToolButton] = {}
-        for text, tool in [
-            ("Select", EditorTool.SELECT),
-            ("Select Area", EditorTool.SELECT_AREA),
-            ("Pan", EditorTool.PAN),
-            ("Ruler", EditorTool.RULER),
-            ("Add Polygon", EditorTool.ADD_POLYGON),
-            ("Brush", EditorTool.BRUSH),
-            ("Via", EditorTool.ADD_VIA),
-            ("Add Vertex", EditorTool.ADD_VERTEX),
-            ("Delete Vertex", EditorTool.DELETE_VERTEX),
-            ("Move Vertex", EditorTool.MOVE_VERTEX),
-            ("Delete Polygon", EditorTool.DELETE_POLYGON),
-        ]:
-            button = QToolButton()
-            self._configure_toolbar_button(button, self._create_editor_tool_icon(tool), text, checkable=True)
-            button.clicked.connect(lambda checked=False, tool_value=tool: self.polygon_editor.set_tool(tool_value))
-            self._tool_button_group.addButton(button)
-            self._tool_buttons[tool] = button
-            layout.addWidget(button)
-            if tool == EditorTool.SELECT:
-                button.setChecked(True)
-
-        self.polygon_mode_label = QLabel("Polygon")
-        self.polygon_mode_combo = QComboBox()
-        self.polygon_mode_combo.addItem(self._mode_text("polygon_points"), PolygonCreateMode.POINTS)
-        self.polygon_mode_combo.addItem(self._mode_text("polygon_rectangle"), PolygonCreateMode.RECTANGLE)
-        self.polygon_mode_combo.currentIndexChanged.connect(
-            lambda _index: self.polygon_editor.set_polygon_create_mode(self.polygon_mode_combo.currentData())
-        )
-        layout.addWidget(self.polygon_mode_label)
-        layout.addWidget(self.polygon_mode_combo)
-
-        self.brush_mode_label = QLabel("Brush")
-        self.brush_mode_combo = QComboBox()
-        self.brush_mode_combo.addItem(self._mode_text("brush_freeform"), BrushMode.FREEFORM)
-        self.brush_mode_combo.addItem(self._mode_text("brush_45deg"), BrushMode.ANGLED)
-        self.brush_mode_combo.currentIndexChanged.connect(
-            lambda _index: self.polygon_editor.set_brush_mode(self.brush_mode_combo.currentData())
-        )
-        layout.addWidget(self.brush_mode_label)
-        layout.addWidget(self.brush_mode_combo)
-
-        self.brush_size_label = QLabel("Толщина" if self._ui_language == "ru" else "Width")
-        self.brush_size_spin = QSpinBox()
-        self.brush_size_spin.setRange(1, 256)
-        self.brush_size_spin.setValue(12)
-        self.brush_size_spin.setFixedWidth(68)
-        self.brush_size_spin.valueChanged.connect(
-            lambda value: self.polygon_editor.set_brush_thickness(float(value))
-        )
-        layout.addWidget(self.brush_size_label)
-        layout.addWidget(self.brush_size_spin)
-
-        self.via_width_label = QLabel("Via W")
-        self.via_width_spin = QSpinBox()
-        self.via_width_spin.setRange(1, 100_000)
-        self.via_width_spin.setValue(12)
-        self.via_width_spin.setFixedWidth(74)
-        self.via_height_label = QLabel("Via H")
-        self.via_height_spin = QSpinBox()
-        self.via_height_spin.setRange(1, 100_000)
-        self.via_height_spin.setValue(12)
-        self.via_height_spin.setFixedWidth(74)
-        self.via_width_spin.valueChanged.connect(lambda _value: self._sync_editor_via_size())
-        self.via_height_spin.valueChanged.connect(lambda _value: self._sync_editor_via_size())
-        layout.addWidget(self.via_width_label)
-        layout.addWidget(self.via_width_spin)
-        layout.addWidget(self.via_height_label)
-        layout.addWidget(self.via_height_spin)
-
-        self.delete_vertex_mode_label = QLabel("Delete")
-        self.delete_vertex_mode_combo = QComboBox()
-        self.delete_vertex_mode_combo.addItem(self._mode_text("delete_single"), DeleteVertexMode.SINGLE)
-        self.delete_vertex_mode_combo.addItem(self._mode_text("delete_area"), DeleteVertexMode.AREA)
-        self.delete_vertex_mode_combo.currentIndexChanged.connect(
-            lambda _index: self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
-        )
-        layout.addWidget(self.delete_vertex_mode_label)
-        layout.addWidget(self.delete_vertex_mode_combo)
-
-        self.ruler_status_label = QLabel("")
-        self.ruler_status_label.setMinimumWidth(180)
-        self.ruler_status_label.setVisible(False)
-        layout.addWidget(self.ruler_status_label)
-
-        self.undo_button = QToolButton()
-        self._configure_toolbar_button(self.undo_button, self._create_editor_action_icon("undo"), "Undo")
-        self.undo_button.clicked.connect(self.polygon_editor.undo)
-        self.redo_button = QToolButton()
-        self._configure_toolbar_button(self.redo_button, self._create_editor_action_icon("redo"), "Redo")
-        self.redo_button.clicked.connect(self.polygon_editor.redo)
-        self.zoom_in_button = QToolButton()
-        self._configure_toolbar_button(self.zoom_in_button, self._create_editor_action_icon("zoom_in"), "Zoom +")
-        self.zoom_in_button.clicked.connect(self.polygon_editor.zoom_in)
-        self.zoom_out_button = QToolButton()
-        self._configure_toolbar_button(self.zoom_out_button, self._create_editor_action_icon("zoom_out"), "Zoom -")
-        self.zoom_out_button.clicked.connect(self.polygon_editor.zoom_out)
-        self.fit_button = QToolButton()
-        self._configure_toolbar_button(self.fit_button, self._create_editor_action_icon("fit"), "Fit")
-        self.fit_button.clicked.connect(self.polygon_editor.fit_to_view)
-
-        for button in [
-            self.undo_button,
-            self.redo_button,
-            self.zoom_in_button,
-            self.zoom_out_button,
-            self.fit_button,
-        ]:
-            layout.addWidget(button)
-
-        self.preview_busy_label = QLabel(self._busy_indicator_text())
-        self.preview_busy_progress = QProgressBar()
-        self.preview_busy_progress.setRange(0, 0)
-        self.preview_busy_progress.setTextVisible(False)
-        self.preview_busy_progress.setFixedWidth(88)
-        self.preview_busy_label.setVisible(False)
-        self.preview_busy_progress.setVisible(False)
-        layout.addWidget(self.preview_busy_label)
-        layout.addWidget(self.preview_busy_progress)
-        layout.addStretch(1)
-        self.polygon_editor.set_polygon_create_mode(self.polygon_mode_combo.currentData())
-        self.polygon_editor.set_brush_mode(self.brush_mode_combo.currentData())
-        self.polygon_editor.set_brush_thickness(float(self.brush_size_spin.value()))
-        self._sync_editor_via_size()
-        self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
-        return toolbar
+        return build_editor_toolbar(self)
 
     def _sync_editor_via_size(self) -> None:
         self.polygon_editor.set_via_size(float(self.via_width_spin.value()), float(self.via_height_spin.value()))
@@ -3808,587 +1369,33 @@ class PolygonExtractionWidget(QWidget):
         self._retranslate_ui()
 
     def _retranslate_ui(self) -> None:
-        if not hasattr(self, "control_tabs"):
-            return
-        selected_operation = self._selected_available_operation_name()
-        selected_pipeline_row = self.pipeline_list.currentRow() if hasattr(self, "pipeline_list") else -1
-
-        self.path_group.setTitle(self._tr("path_panel_title"))
-        self.input_dir_label.setText(self._tr("input_directory_label"))
-        self.cif_dir_label.setText(self._tr("cif_overlay_directory_label"))
-        self.output_dir_label.setText(self._tr("output_directory_label"))
-        self.dataset_dir_label.setText(self._tr("dataset_directory_label"))
-        for button, accessible_name in (
-            (self.browse_input_button, self._tr("browse_input_button")),
-            (self.browse_cif_button, self._tr("browse_cif_button")),
-            (self.browse_output_button, self._tr("browse_output_button")),
-            (self.browse_dataset_button, self._tr("browse_dataset_button")),
-            (self.refresh_button, self._tr("refresh_files_button")),
-        ):
-            button.setText("")
-            button.setAccessibleName(accessible_name)
-        for widget, tooltip_key in (
-            (self.input_dir_label, "input_dir"),
-            (self.input_dir_edit, "input_dir"),
-            (self.cif_dir_label, "cif_dir"),
-            (self.cif_dir_edit, "cif_dir"),
-            (self.output_dir_label, "output_dir"),
-            (self.output_dir_edit, "output_dir"),
-            (self.dataset_dir_label, "dataset_dir"),
-            (self.dataset_dir_edit, "dataset_dir"),
-            (self.browse_input_button, "browse_input"),
-            (self.browse_cif_button, "browse_cif"),
-            (self.browse_output_button, "browse_output"),
-            (self.browse_dataset_button, "browse_dataset"),
-            (self.refresh_button, "refresh_files"),
-        ):
-            self._set_common_tooltip(widget, tooltip_key)
-
-        self.control_tabs.setTabText(0, self._tr("tab_paths"))
-        self.control_tabs.setTabText(1, self._tr("tab_pipeline"))
-        self.control_tabs.setTabText(2, self._tr("tab_extraction"))
-        self.control_tabs.setTabText(3, self._tr("tab_display"))
-        if hasattr(self, "right_tabs"):
-            self.right_tabs.setTabText(0, self._tr("tab_files"))
-
-        self.images_label.setText(self._tr("images_label"))
-        self.run_group.setTitle(self._tr("run_group_title"))
-        if hasattr(self, "extra_layers_group"):
-            self.extra_layers_group.setTitle(
-                self._tr(
-                    "extra_layers_group_title",
-                    "Дополнительные слои" if self._ui_language == "ru" else "Additional layers",
-                )
-            )
-        for button, accessible_name in (
-            (self.process_current_button, self._tr("process_current_button")),
-            (self.batch_button, self._tr("start_batch_button")),
-            (self.stop_batch_button, self._tr("stop_batch_button")),
-        ):
-            button.setText("")
-            button.setAccessibleName(accessible_name)
-        self.save_current_button.setText(self._tr("save_current_button"))
-        self.export_dataset_button.setText(self._tr("export_dataset_button"))
-        self.dataset_mode_checkbox.setText(self._tr("dataset_mode_checkbox"))
-        self.max_workers_label.setText(self._tr("max_workers_label"))
-        for widget, tooltip_key in (
-            (self.image_list, "image_list"),
-            (self.images_label, "image_list"),
-            (self.process_current_button, "process_current"),
-            (self.batch_button, "start_batch"),
-            (self.stop_batch_button, "stop_batch"),
-            (self.save_current_button, "save_current"),
-            (self.export_dataset_button, "export_dataset"),
-            (self.dataset_mode_checkbox, "dataset_mode"),
-            (self.max_workers_label, "max_workers"),
-            (self.max_workers_spin, "max_workers"),
-        ):
-            self._set_common_tooltip(widget, tooltip_key)
-
-        self.available_filters_group.setTitle(
-            self._tr("available_filters_group_title", "Фильтры pipeline" if self._ui_language == "ru" else "Pipeline filters")
-        )
-        self.pipeline_steps_group.setTitle(
-            self._tr("applied_filters_group_title", "Примененные фильтры" if self._ui_language == "ru" else "Applied filters")
-        )
-        self.pipeline_help_group.setTitle(
-            self._tr("pipeline_help_group_title", "Справка по фильтру" if self._ui_language == "ru" else "Filter help")
-        )
-        self.pipeline_help_before_title.setText("До" if self._ui_language == "ru" else "Before")
-        self.pipeline_help_after_title.setText("После" if self._ui_language == "ru" else "After")
-        self.save_pipeline_button.setText(self._tr("save_json_button"))
-        self.load_pipeline_button.setText(self._tr("load_json_button"))
-        self.auto_tune_button.setText(
-            self._tr(
-                "auto_tune_button",
-                "Автоподбор по рисунку" if self._ui_language == "ru" else "Auto-fit from drawing",
-            )
-        )
-        self.auto_tune_button.setToolTip(
-            self._tr(
-                "auto_tune_button_tooltip",
-                "Использовать текущие нарисованные полигоны как эталон"
-                if self._ui_language == "ru"
-                else "Use the currently drawn polygons as the fitting target",
-            )
-        )
-        for widget, tooltip_key in (
-            (self.save_pipeline_button, "save_json_button"),
-            (self.load_pipeline_button, "load_json_button"),
-            (self.auto_tune_button, "auto_tune_button"),
-        ):
-            tooltip = _localized_text(PIPELINE_CONTROL_TOOLTIPS, tooltip_key, self._ui_language)
-            widget.setToolTip(tooltip)
-            widget.setStatusTip(tooltip)
-        self.parameters_group.setTitle(self._tr("step_parameters_group"))
-
-        self.contour_group.setTitle(self._tr("contour_extraction_group"))
-        self.profile_group.setTitle(self._tr("extraction_profile_group_title", "Профиль" if self._ui_language == "ru" else "Profile"))
-        self.basic_filters_group.setTitle(self._tr("basic_filters_group_title", "Базовые фильтры" if self._ui_language == "ru" else "Basic filters"))
-        self.geometry_filters_group.setTitle(self._tr("geometry_filters_group_title", "Геометрия" if self._ui_language == "ru" else "Geometry"))
-        self.via_group.setTitle(self._tr("via_constraints_group_title", "Ограничения via" if self._ui_language == "ru" else "Via constraints"))
-        self.topology_group.setTitle(self._tr("topology_group_title", "Иерархия и отверстия" if self._ui_language == "ru" else "Hierarchy and holes"))
-        if self.extraction_profile_label_widget is not None:
-            self.extraction_profile_label_widget.setText(self._tr("extraction_profile_label"))
-        self.extraction_profile_combo.setItemText(0, self._tr("extraction_profile_conductors"))
-        self.extraction_profile_combo.setItemText(1, self._tr("extraction_profile_vias"))
-        if self.retrieval_mode_label_widget is not None:
-            self.retrieval_mode_label_widget.setText(self._tr("retrieval_mode_label"))
-        if self.approximation_mode_label_widget is not None:
-            self.approximation_mode_label_widget.setText(self._tr("approximation_mode_label"))
-        if self.epsilon_label_widget is not None:
-            self.epsilon_label_widget.setText(self._tr("epsilon_label"))
-        if self.epsilon_mode_label_widget is not None:
-            self.epsilon_mode_label_widget.setText(self._tr("epsilon_mode_label"))
-        self.epsilon_relative_checkbox.setText(self._tr("epsilon_relative_checkbox"))
-        if self.min_area_label_widget is not None:
-            self.min_area_label_widget.setText(self._tr("area_range_label", "Диапазон площади" if self._ui_language == "ru" else "Area range"))
-        if self.min_perimeter_label_widget is not None:
-            self.min_perimeter_label_widget.setText(self._tr("perimeter_range_label", "Диапазон периметра" if self._ui_language == "ru" else "Perimeter range"))
-        if self.min_point_count_label_widget is not None:
-            self.min_point_count_label_widget.setText(self._tr("min_point_count_label"))
-        if self.min_bbox_width_label_widget is not None:
-            self.min_bbox_width_label_widget.setText(self._tr("bbox_width_range_label", "Диапазон ширины bbox" if self._ui_language == "ru" else "BBox width range"))
-        if self.min_bbox_height_label_widget is not None:
-            self.min_bbox_height_label_widget.setText(self._tr("bbox_height_range_label", "Диапазон высоты bbox" if self._ui_language == "ru" else "BBox height range"))
-        if self.min_aspect_ratio_label_widget is not None:
-            self.min_aspect_ratio_label_widget.setText(self._tr("aspect_ratio_range_label", "Диапазон aspect ratio" if self._ui_language == "ru" else "Aspect ratio range"))
-        if self.border_handling_label_widget is not None:
-            self.border_handling_label_widget.setText(self._tr("border_handling_label"))
-        self.exclude_border_touching_checkbox.setText(
-            self._tr("exclude_border_touching_checkbox_short", "Исключать" if self._ui_language == "ru" else "Exclude")
-        )
-        if self.min_solidity_label_widget is not None:
-            self.min_solidity_label_widget.setText(self._tr("min_solidity_label"))
-        if self.min_extent_label_widget is not None:
-            self.min_extent_label_widget.setText(self._tr("min_extent_label"))
-        if self.via_size_mode_label_widget is not None:
-            self.via_size_mode_label_widget.setText(
-                self._tr("via_size_mode_label", "Режим размеров via" if self._ui_language == "ru" else "Via size mode")
-            )
-        self.via_size_mode_combo.setItemText(
-            0,
-            self._tr("via_size_mode_range", "Диапазон" if self._ui_language == "ru" else "Range"),
-        )
-        self.via_size_mode_combo.setItemText(
-            1,
-            self._tr("via_size_mode_fixed", "Фиксированные значения" if self._ui_language == "ru" else "Fixed values"),
-        )
-        if self.via_white_range_label_widget is not None:
-            self.via_white_range_label_widget.setText(
-                self._tr("via_white_range_label", "Диапазон белых" if self._ui_language == "ru" else "White range")
-            )
-        self.via_white_range_checkbox.setText("Вкл." if self._ui_language == "ru" else "Enabled")
-        if self.via_black_range_label_widget is not None:
-            self.via_black_range_label_widget.setText(
-                self._tr("via_black_range_label", "Диапазон чёрных" if self._ui_language == "ru" else "Black range")
-            )
-        self.via_black_range_checkbox.setText("Вкл." if self._ui_language == "ru" else "Enabled")
-        if self.via_detector_methods_label_widget is not None:
-            self.via_detector_methods_label_widget.setText(
-                self._tr("via_detector_methods_label", "Методы поиска" if self._ui_language == "ru" else "Detection methods")
-            )
-        self.via_white_range_checkbox.setText(self._tr("via_white_range_method", "Диапазон белых" if self._ui_language == "ru" else "White range"))
-        self.via_black_range_checkbox.setText(self._tr("via_black_range_method", "Диапазон черных" if self._ui_language == "ru" else "Black range"))
-        self.via_detector_gradient_checkbox.setText(
-            self._tr("via_detector_gradient", "Градиент" if self._ui_language == "ru" else "Gradient")
-        )
-        self.via_detector_spot_checkbox.setText(self._tr("via_detector_spot", "Точки" if self._ui_language == "ru" else "Spots"))
-        self.via_detector_hough_checkbox.setText(self._tr("via_detector_hough", "Hough" if self._ui_language == "ru" else "Hough"))
-        self.via_detector_components_checkbox.setText(
-            self._tr("via_detector_components", "Компоненты" if self._ui_language == "ru" else "Components")
-        )
-        self.via_detector_contours_checkbox.setText(
-            self._tr("via_detector_contours", "Контуры" if self._ui_language == "ru" else "Contours")
-        )
-        self.via_detector_morphology_checkbox.setText(
-            self._tr("via_detector_morphology", "Морфология" if self._ui_language == "ru" else "Morphology")
-        )
-        self.via_detector_template_checkbox.setText(
-            self._tr("via_detector_template", "Шаблон" if self._ui_language == "ru" else "Template")
-        )
-        self.via_detector_blob_checkbox.setText(self._tr("via_detector_blob", "Blob" if self._ui_language == "ru" else "Blob"))
-        if self.via_gradient_min_strength_label_widget is not None:
-            self.via_gradient_min_strength_label_widget.setText(
-                self._tr("via_gradient_min_strength_label", "Мин. перепад" if self._ui_language == "ru" else "Min edge")
-            )
-        if self.via_gradient_min_coverage_label_widget is not None:
-            self.via_gradient_min_coverage_label_widget.setText(
-                self._tr("via_gradient_min_coverage_label", "Доля окружности" if self._ui_language == "ru" else "Circle coverage")
-            )
-        if self.via_spot_min_contrast_label_widget is not None:
-            self.via_spot_min_contrast_label_widget.setText(
-                self._tr("via_spot_min_contrast_label", "Точки: контраст" if self._ui_language == "ru" else "Spots contrast")
-            )
-        if self.via_spot_min_roundness_label_widget is not None:
-            self.via_spot_min_roundness_label_widget.setText(
-                self._tr("via_spot_min_roundness_label", "Точки: компактность" if self._ui_language == "ru" else "Spots compactness")
-            )
-        if self.via_spot_line_suppression_label_widget is not None:
-            self.via_spot_line_suppression_label_widget.setText(
-                self._tr(
-                    "via_spot_line_suppression_label",
-                    "\u0422\u043e\u0447\u043a\u0438: \u0434\u043e\u0440\u043e\u0436\u043a\u0438" if self._ui_language == "ru" else "Spots traces",
-                )
-            )
-        if self.via_hough_edge_threshold_label_widget is not None:
-            self.via_hough_edge_threshold_label_widget.setText(
-                self._tr("via_hough_edge_threshold_label", "Hough: край" if self._ui_language == "ru" else "Hough edge")
-            )
-        if self.via_hough_accumulator_threshold_label_widget is not None:
-            self.via_hough_accumulator_threshold_label_widget.setText(
-                self._tr("via_hough_accumulator_threshold_label", "Hough: голоса" if self._ui_language == "ru" else "Hough votes")
-            )
-        if self.via_component_min_score_label_widget is not None:
-            self.via_component_min_score_label_widget.setText(
-                self._tr("via_component_min_score_label", "Компоненты: отклик" if self._ui_language == "ru" else "Components score")
-            )
-        if self.via_contour_min_score_label_widget is not None:
-            self.via_contour_min_score_label_widget.setText(
-                self._tr("via_contour_min_score_label", "Контуры: отклик" if self._ui_language == "ru" else "Contours score")
-            )
-        if self.via_morphology_peak_scale_label_widget is not None:
-            self.via_morphology_peak_scale_label_widget.setText(
-                self._tr("via_morphology_peak_scale_label", "Морфология: пик" if self._ui_language == "ru" else "Morphology peak")
-            )
-        if self.via_template_min_score_label_widget is not None:
-            self.via_template_min_score_label_widget.setText(
-                self._tr("via_template_min_score_label", "Шаблон: совпадение" if self._ui_language == "ru" else "Template score")
-            )
-        if self.via_templates_label_widget is not None:
-            self.via_templates_label_widget.setText(self._tr("via_templates_label", "Шаблоны" if self._ui_language == "ru" else "Templates"))
-        self.add_via_template_button.setText(
-            self._tr("add_via_template_button", "Выделить шаблон" if self._ui_language == "ru" else "Pick template")
-        )
-        self.remove_via_template_button.setText(
-            self._tr("remove_via_template_button", "Удалить выбранный" if self._ui_language == "ru" else "Remove selected")
-        )
-        self.clear_via_templates_button.setText(
-            self._tr("clear_via_templates_button", "Удалить все" if self._ui_language == "ru" else "Clear all")
-        )
-        if self.via_blob_min_circularity_label_widget is not None:
-            self.via_blob_min_circularity_label_widget.setText(
-                self._tr("via_blob_min_circularity_label", "Blob: округлость" if self._ui_language == "ru" else "Blob circularity")
-            )
-        if self.noisy_traces_via_preset_label_widget is not None:
-            self.noisy_traces_via_preset_label_widget.setText("")
-        if self.via_preset_label_widget is not None:
-            self.via_preset_label_widget.setText(
-                self._tr("via_preset_label", "Пресеты поиска via" if self._ui_language == "ru" else "Via search presets")
-            )
-        self.apply_via_preset_button.setText(self._tr("apply_via_preset_button", "Применить" if self._ui_language == "ru" else "Apply"))
-        self.save_via_preset_button.setText(self._tr("save_via_preset_button", "Сохранить" if self._ui_language == "ru" else "Save"))
-        self.delete_via_preset_button.setText(self._tr("delete_via_preset_button", "Удалить" if self._ui_language == "ru" else "Delete"))
-        self.noisy_traces_via_preset_button.setText(
-            self._tr(
-                "noisy_traces_via_preset_button",
-                "Пресет: яркие via на дорожках" if self._ui_language == "ru" else "Preset: bright vias on traces",
-            )
-        )
-        if self.blurred_via_preset_label_widget is not None:
-            self.blurred_via_preset_label_widget.setText("")
-        self.blurred_via_preset_button.setText(
-            self._tr(
-                "blurred_via_preset_button",
-                "Пресет: слабые/размытые via" if self._ui_language == "ru" else "Preset: weak/blurred vias",
-            )
-        )
-        self._refresh_via_preset_combo()
-        if self.reset_via_search_label_widget is not None:
-            self.reset_via_search_label_widget.setText("")
-        self.reset_via_search_button.setText(
-            self._tr("reset_via_search_button", "Сбросить параметры поиска via" if self._ui_language == "ru" else "Reset via search parameters")
-        )
-        if self.debug_candidates_label_widget is not None:
-            self.debug_candidates_label_widget.setText(
-                self._tr("debug_candidates_label", "Отладка via" if self._ui_language == "ru" else "Via debug")
-            )
-        self.debug_candidates_checkbox.setText(
-            self._tr("debug_candidates_checkbox", "Проверять по клику" if self._ui_language == "ru" else "Inspect by click")
-        )
-        if getattr(self, "show_gradient_debug_label_widget", None) is not None:
-            self.show_gradient_debug_label_widget.setText(
-                self._tr("gradient_debug_label", "Карта градиента" if self._ui_language == "ru" else "Gradient map")
-            )
-        self.show_gradient_debug_button.setText(
-            self._tr("gradient_debug_button", "Открыть карту" if self._ui_language == "ru" else "Show gradient map")
-        )
-        if getattr(self, "gradient_overlay_label_widget", None) is not None:
-            self.gradient_overlay_label_widget.setText(
-                self._tr("gradient_overlay_label", "Слой градиента" if self._ui_language == "ru" else "Gradient overlay")
-            )
-        self.gradient_overlay_checkbox.setText(
-            self._tr("gradient_overlay_checkbox", "Показывать на изображении" if self._ui_language == "ru" else "Overlay on image")
-        )
-        self.gradient_overlay_mode_combo.setItemText(
-            0, self._tr("gradient_overlay_mode_heatmap", "Тепловая карта" if self._ui_language == "ru" else "Heatmap")
-        )
-        self.gradient_overlay_mode_combo.setItemText(
-            1, self._tr("gradient_overlay_mode_threshold", "Маска по порогу" if self._ui_language == "ru" else "Threshold mask")
-        )
-        self.gradient_overlay_mode_combo.setItemText(
-            2, self._tr("gradient_overlay_mode_elevation", "Серый градиент" if self._ui_language == "ru" else "Raw elevation")
-        )
-        if self.via_roundness_label_widget is not None:
-            self.via_roundness_label_widget.setText(self._tr("via_roundness_label", "Округлость" if self._ui_language == "ru" else "Roundness"))
-        if self.min_via_width_label_widget is not None:
-            self.min_via_width_label_widget.setText(self._tr("via_width_range_label", "Диапазон ширины via" if self._ui_language == "ru" else "Via width range"))
-        if self.min_via_height_label_widget is not None:
-            self.min_via_height_label_widget.setText(self._tr("via_height_range_label", "Диапазон высоты via" if self._ui_language == "ru" else "Via height range"))
-        if self.fixed_vias_label_widget is not None:
-            self.fixed_vias_label_widget.setText(
-                self._tr("fixed_vias_label", "Фиксированные via" if self._ui_language == "ru" else "Fixed vias")
-            )
-        if self.min_hierarchy_depth_label_widget is not None:
-            self.min_hierarchy_depth_label_widget.setText(self._tr("min_hierarchy_depth_label"))
-        if self.max_hierarchy_depth_label_widget is not None:
-            self.max_hierarchy_depth_label_widget.setText(self._tr("max_hierarchy_depth_label"))
-        if self.max_hole_area_ratio_label_widget is not None:
-            self.max_hole_area_ratio_label_widget.setText(self._tr("max_hole_area_ratio_label"))
-        self.save_group.setTitle(self._tr("save_options_group"))
-        self.save_svg_checkbox.setText(self._tr("save_svg_checkbox"))
-        self.save_preview_checkbox.setText(self._tr("save_preview_checkbox"))
-        self._set_common_tooltip(self.save_svg_checkbox, "save_svg")
-        self._set_common_tooltip(self.save_preview_checkbox, "save_preview")
-        self._apply_extraction_tooltips()
-        self._renumber_fixed_via_rows()
-        self._update_extraction_profile_controls_state()
-
-        if self.external_color_label_widget is not None:
-            self.external_color_label_widget.setText(self._tr("external_contour_label"))
-        if self.hole_color_label_widget is not None:
-            self.hole_color_label_widget.setText(self._tr("hole_contour_label"))
-        if self.selected_color_label_widget is not None:
-            self.selected_color_label_widget.setText(self._tr("selected_contour_label"))
-        if self.vertex_color_label_widget is not None:
-            self.vertex_color_label_widget.setText(self._tr("vertex_color_label"))
-        if self.line_width_label_widget is not None:
-            self.line_width_label_widget.setText(self._tr("line_width_label"))
-        if self.vertex_size_label_widget is not None:
-            self.vertex_size_label_widget.setText(self._tr("vertex_size_label"))
-        if self.fill_opacity_label_widget is not None:
-            self.fill_opacity_label_widget.setText(self._tr("fill_opacity_label"))
-        self.show_vertices_checkbox.setText(self._tr("show_vertices_checkbox"))
-        self.show_labels_checkbox.setText(self._tr("show_labels_checkbox"))
-        self.random_object_colors_checkbox.setText(
-            self._tr("random_object_colors_checkbox", "Случайные цвета объектов" if self._ui_language == "ru" else "Random object colors")
-        )
-        self.show_neighbor_frames_checkbox.setText(
-            self._tr("show_neighbor_frames_checkbox", "Показывать соседние кадры" if self._ui_language == "ru" else "Show neighboring frames")
-        )
-        if self.neighbor_columns_label_widget is not None:
-            self.neighbor_columns_label_widget.setText(
-                self._tr("neighbor_columns_label", "Кадров в строке" if self._ui_language == "ru" else "Frames per row")
-            )
-        if self.neighbor_max_grid_label_widget is not None:
-            self.neighbor_max_grid_label_widget.setText(
-                self._tr("neighbor_max_grid_label", "Макс. сетка" if self._ui_language == "ru" else "Max grid")
-            )
-        if self.neighbor_opacity_label_widget is not None:
-            self.neighbor_opacity_label_widget.setText(
-                self._tr("neighbor_opacity_label", "Прозрачность соседей" if self._ui_language == "ru" else "Neighbor opacity")
-            )
-        if self.neighbor_overlap_label_widget is not None:
-            self.neighbor_overlap_label_widget.setText(
-                self._tr("neighbor_overlap_label", "Пересечение кадров" if self._ui_language == "ru" else "Frame overlap")
-            )
-        if self.extra_layers_label_widget is not None:
-            self.extra_layers_label_widget.setText(
-                self._tr("extra_layers_label", "Дополнительные слои" if self._ui_language == "ru" else "Additional layers")
-            )
-        if self.extra_layer_path_label_widget is not None:
-            self.extra_layer_path_label_widget.setText(
-                self._tr("extra_layer_path_label", "Путь слоя" if self._ui_language == "ru" else "Layer path")
-            )
-        self.add_extra_layers_button.setText(
-            self._tr("add_extra_layers_button", "Добавить изображения" if self._ui_language == "ru" else "Add images")
-        )
-        self.remove_extra_layer_button.setText(
-            self._tr("remove_extra_layer_button", "Удалить слой" if self._ui_language == "ru" else "Remove layer")
-        )
-        self.extra_layer_visible_checkbox.setText(
-            self._tr("extra_layer_visible_checkbox", "Показывать выбранный слой" if self._ui_language == "ru" else "Show selected layer")
-        )
-        if self.extra_layer_opacity_label_widget is not None:
-            self.extra_layer_opacity_label_widget.setText(
-                self._tr("extra_layer_opacity_label", "Прозрачность слоя" if self._ui_language == "ru" else "Layer opacity")
-            )
-        if self.extra_layer_dx_label_widget is not None:
-            self.extra_layer_dx_label_widget.setText(
-                self._tr("extra_layer_dx_label", "Смещение X" if self._ui_language == "ru" else "Offset X")
-            )
-        if self.extra_layer_dy_label_widget is not None:
-            self.extra_layer_dy_label_widget.setText(
-                self._tr("extra_layer_dy_label", "Смещение Y" if self._ui_language == "ru" else "Offset Y")
-            )
-        for widget, tooltip_key in (
-            (self.external_color_label_widget, "external_color"),
-            (self.external_color_button, "external_color"),
-            (self.hole_color_label_widget, "hole_color"),
-            (self.hole_color_button, "hole_color"),
-            (self.selected_color_label_widget, "selected_color"),
-            (self.selected_color_button, "selected_color"),
-            (self.vertex_color_label_widget, "vertex_color"),
-            (self.vertex_color_button, "vertex_color"),
-            (self.line_width_label_widget, "line_width"),
-            (self.line_width_spin, "line_width"),
-            (self.vertex_size_label_widget, "vertex_size"),
-            (self.vertex_size_spin, "vertex_size"),
-            (self.fill_opacity_label_widget, "fill_opacity"),
-            (self.fill_opacity_spin, "fill_opacity"),
-            (self.show_vertices_checkbox, "show_vertices"),
-            (self.show_labels_checkbox, "show_labels"),
-        ):
-            self._set_common_tooltip(widget, tooltip_key)
-        for widget, tooltip in (
-            (
-                self.random_object_colors_checkbox,
-                "Раскрашивает каждый объект отдельным цветом. Это удобно, когда нужно видеть, какие контуры остались отдельными после правки."
-                if self._ui_language == "ru"
-                else "Colors each object separately. Useful for seeing which contours remain separate after edits.",
-            ),
-            (
-                self.show_neighbor_frames_checkbox,
-                "Показывает соседние изображения вокруг текущего кадра на фоне. Текущий кадр остается в центре и отмечается желтой рамкой."
-                if self._ui_language == "ru"
-                else "Shows neighboring images around the current frame in the background. The current frame stays centered and has a yellow border.",
-            ),
-            (
-                self.neighbor_columns_spin,
-                "Сколько кадров в одной строке исходной последовательности. Это нужно, чтобы правильно найти соседей сверху, снизу и по диагонали."
-                if self._ui_language == "ru"
-                else "How many frames are in one row of the source sequence. Used to locate top, bottom, and diagonal neighbors.",
-            ),
-            (
-                self.neighbor_max_grid_spin,
-                "Максимальный размер фоновой матрицы: 3, 5 или 7 кадров по стороне. При уменьшении масштаба сетка раскрывается до этого значения."
-                if self._ui_language == "ru"
-                else "Maximum background matrix size: 3, 5, or 7 frames per side. Zooming out expands the grid up to this value.",
-            ),
-            (
-                self.neighbor_opacity_spin,
-                "Прозрачность соседних кадров на фоне. Меньше значение делает их менее заметными относительно основного кадра."
-                if self._ui_language == "ru"
-                else "Opacity of neighboring background frames. Lower values make them less prominent than the main frame.",
-            ),
-            (
-                self.neighbor_overlap_spin,
-                "Сколько пикселей соседние кадры заходят друг на друга. Ноль размещает кадры вплотную без пересечения."
-                if self._ui_language == "ru"
-                else "How many pixels neighboring frames overlap. Zero places frames edge to edge without overlap.",
-            ),
-            (
-                self.extra_layers_widget,
-                "Список дополнительных JPG/PNG-слоев. Каждый слой можно включить, сделать прозрачнее и сдвинуть относительно основного изображения."
-                if self._ui_language == "ru"
-                else "List of additional JPG/PNG layers. Each layer can be shown, faded, and shifted relative to the main image.",
-            ),
-            (
-                self.extra_layer_path_widget,
-                "Путь к файлу выбранного слоя. Можно вставить или набрать путь вручную, затем нажать Enter или убрать фокус с поля."
-                if self._ui_language == "ru"
-                else "Path to the selected layer file. You can paste or type it manually, then press Enter or move focus away.",
-            ),
-            (
-                self.extra_layer_path_browse_button,
-                "Выбрать изображение для выбранного слоя."
-                if self._ui_language == "ru"
-                else "Choose an image for the selected layer.",
-            ),
-            (
-                self.add_extra_layers_button,
-                "Добавляет один или несколько дополнительных JPG/PNG-слоев поверх основного изображения."
-                if self._ui_language == "ru"
-                else "Adds one or more additional JPG/PNG layers over the main image.",
-            ),
-            (
-                self.remove_extra_layer_button,
-                "Удаляет выбранный дополнительный слой из просмотра."
-                if self._ui_language == "ru"
-                else "Removes the selected additional layer from the view.",
-            ),
-            (
-                self.extra_layer_visible_checkbox,
-                "Включает или выключает отображение выбранного дополнительного слоя."
-                if self._ui_language == "ru"
-                else "Shows or hides the selected additional layer.",
-            ),
-            (
-                self.extra_layer_opacity_spin,
-                "Прозрачность выбранного слоя: 0 делает его невидимым, 1 показывает полностью."
-                if self._ui_language == "ru"
-                else "Opacity of the selected layer: 0 hides it, 1 shows it fully.",
-            ),
-            (
-                self.extra_layer_dx_spin,
-                "Горизонтальное смещение выбранного слоя в пикселях относительно основного кадра."
-                if self._ui_language == "ru"
-                else "Horizontal offset of the selected layer in pixels relative to the main frame.",
-            ),
-            (
-                self.extra_layer_dy_spin,
-                "Вертикальное смещение выбранного слоя в пикселях относительно основного кадра."
-                if self._ui_language == "ru"
-                else "Vertical offset of the selected layer in pixels relative to the main frame.",
-            ),
-        ):
-            widget.setToolTip(tooltip)
-            widget.setStatusTip(tooltip)
-
-        self.editor_group.setTitle(self._tr("editor_group_title"))
-        self._update_tool_button_texts()
-        self._update_action_button_texts()
-        self.polygon_mode_label.setText("Полигон" if self._ui_language == "ru" else "Polygon")
-        self.brush_mode_label.setText("Кисть" if self._ui_language == "ru" else "Brush")
-        self.brush_size_label.setText("Толщина" if self._ui_language == "ru" else "Width")
-        self.delete_vertex_mode_label.setText("Удаление" if self._ui_language == "ru" else "Delete")
-        self.via_width_label.setText("Via W")
-        self.via_height_label.setText("Via H")
-        for widget, tooltip_key in (
-            (self.polygon_mode_label, "polygon_mode"),
-            (self.polygon_mode_combo, "polygon_mode"),
-            (self.brush_mode_label, "brush_mode"),
-            (self.brush_mode_combo, "brush_mode"),
-            (self.brush_size_label, "brush_size"),
-            (self.brush_size_spin, "brush_size"),
-            (self.delete_vertex_mode_label, "delete_vertex_mode"),
-            (self.delete_vertex_mode_combo, "delete_vertex_mode"),
-            (self.via_width_label, "editor_via_width"),
-            (self.via_width_spin, "editor_via_width"),
-            (self.via_height_label, "editor_via_height"),
-            (self.via_height_spin, "editor_via_height"),
-        ):
-            self._set_common_tooltip(widget, tooltip_key)
-        self._on_editor_tool_changed(self.polygon_editor.current_tool)
-        self._retranslate_editor_mode_combos()
-        self.preview_busy_label.setText(self._busy_indicator_text())
-        self._set_progress_status(self._progress_status_key, **self._progress_status_kwargs)
-
-        self._populate_pipeline_operations()
-        self._populate_pipeline_list()
-        if selected_pipeline_row >= 0 and selected_pipeline_row < self.pipeline_list.count():
-            self.pipeline_list.setCurrentRow(selected_pipeline_row)
-        self._retranslate_contour_mode_combos()
-        if selected_operation:
-            target_item = self._find_operation_tree_item(selected_operation)
-            if target_item is not None:
-                self.operation_tree.setCurrentItem(target_item)
-        self._update_pipeline_help_preview(self._selected_available_operation_name())
-        self._refresh_help_menu()
+        retranslate_ui(self)
 
     def _update_tool_button_texts(self) -> None:
         texts = {
             EditorTool.RULER: self._tr("tool_ruler", "Ruler"),
             EditorTool.ADD_VIA: self._tr("tool_add_via", "Via"),
             EditorTool.SELECT: self._tr("tool_select", "Выбор" if self._ui_language == "ru" else "Select"),
-            EditorTool.SELECT_AREA: self._tr("tool_select_area", "Выбор рамкой" if self._ui_language == "ru" else "Area select"),
+            EditorTool.SELECT_AREA: self._tr(
+                "tool_select_area", "Выбор рамкой" if self._ui_language == "ru" else "Area select"
+            ),
             EditorTool.PAN: self._tr("tool_pan", "Панорамирование" if self._ui_language == "ru" else "Pan"),
-            EditorTool.ADD_POLYGON: self._tr("tool_add_polygon", "Полигон" if self._ui_language == "ru" else "Add polygon"),
+            EditorTool.ADD_POLYGON: self._tr(
+                "tool_add_polygon", "Полигон" if self._ui_language == "ru" else "Add polygon"
+            ),
             EditorTool.BRUSH: self._tr("tool_brush", "Кисть" if self._ui_language == "ru" else "Brush"),
-            EditorTool.ADD_VERTEX: self._tr("tool_add_vertex", "Добавить вершину" if self._ui_language == "ru" else "Add vertex"),
-            EditorTool.DELETE_VERTEX: self._tr("tool_delete_vertex", "Удалить вершину" if self._ui_language == "ru" else "Delete vertex"),
-            EditorTool.MOVE_VERTEX: self._tr("tool_move_vertex", "Переместить вершину" if self._ui_language == "ru" else "Move vertex"),
-            EditorTool.DELETE_POLYGON: self._tr("tool_delete_polygon", "Удалить полигон" if self._ui_language == "ru" else "Delete polygon"),
+            EditorTool.ADD_VERTEX: self._tr(
+                "tool_add_vertex", "Добавить вершину" if self._ui_language == "ru" else "Add vertex"
+            ),
+            EditorTool.DELETE_VERTEX: self._tr(
+                "tool_delete_vertex", "Удалить вершину" if self._ui_language == "ru" else "Delete vertex"
+            ),
+            EditorTool.MOVE_VERTEX: self._tr(
+                "tool_move_vertex", "Переместить вершину" if self._ui_language == "ru" else "Move vertex"
+            ),
+            EditorTool.DELETE_POLYGON: self._tr(
+                "tool_delete_polygon", "Удалить полигон" if self._ui_language == "ru" else "Delete polygon"
+            ),
         }
         for tool, button in self._tool_buttons.items():
             label = texts.get(tool, tool.value)
@@ -4405,7 +1412,10 @@ class PolygonExtractionWidget(QWidget):
             (self.undo_button, self._tr("undo_button", "Отменить" if self._ui_language == "ru" else "Undo")),
             (self.redo_button, self._tr("redo_button", "Повторить" if self._ui_language == "ru" else "Redo")),
             (self.zoom_in_button, self._tr("zoom_in_button", "Увеличить" if self._ui_language == "ru" else "Zoom in")),
-            (self.zoom_out_button, self._tr("zoom_out_button", "Уменьшить" if self._ui_language == "ru" else "Zoom out")),
+            (
+                self.zoom_out_button,
+                self._tr("zoom_out_button", "Уменьшить" if self._ui_language == "ru" else "Zoom out"),
+            ),
             (self.fit_button, self._tr("fit_button", "Подогнать" if self._ui_language == "ru" else "Fit")),
         ]:
             button.setToolTip(label)
@@ -4429,7 +1439,9 @@ class PolygonExtractionWidget(QWidget):
             self.ruler_status_label.setText(
                 self._tr(
                     "ruler_idle_label",
-                    "Потяните на изображении для измерения" if self._ui_language == "ru" else "Drag on the image to measure",
+                    "Потяните на изображении для измерения"
+                    if self._ui_language == "ru"
+                    else "Drag on the image to measure",
                 )
             )
         elif not is_ruler:
@@ -4441,7 +1453,9 @@ class PolygonExtractionWidget(QWidget):
                 self.ruler_status_label.setText(
                     self._tr(
                         "ruler_idle_label",
-                        "Потяните на изображении для измерения" if self._ui_language == "ru" else "Drag on the image to measure",
+                        "Потяните на изображении для измерения"
+                        if self._ui_language == "ru"
+                        else "Drag on the image to measure",
                     )
                 )
             else:
@@ -4651,7 +1665,9 @@ class PolygonExtractionWidget(QWidget):
                 widget = QCheckBox()
                 widget.setChecked(bool(value))
                 widget.stateChanged.connect(
-                    lambda _state, name=spec.name, row_index=row, w=widget: self._update_step_parameter(row_index, name, w.isChecked())
+                    lambda _state, name=spec.name, row_index=row, w=widget: self._update_step_parameter(
+                        row_index, name, w.isChecked()
+                    )
                 )
             elif spec.kind == "choice":
                 widget = QComboBox()
@@ -4674,7 +1690,9 @@ class PolygonExtractionWidget(QWidget):
                 widget.setSingleStep(int(spec.step or 1))
                 widget.setValue(int(value))
                 widget.valueChanged.connect(
-                    lambda new_value, name=spec.name, row_index=row: self._update_step_parameter(row_index, name, int(new_value))
+                    lambda new_value, name=spec.name, row_index=row: self._update_step_parameter(
+                        row_index, name, int(new_value)
+                    )
                 )
             else:
                 widget = QDoubleSpinBox()
@@ -4684,7 +1702,9 @@ class PolygonExtractionWidget(QWidget):
                 widget.setSingleStep(float(spec.step or 0.1))
                 widget.setValue(float(value))
                 widget.valueChanged.connect(
-                    lambda new_value, name=spec.name, row_index=row: self._update_step_parameter(row_index, name, float(new_value))
+                    lambda new_value, name=spec.name, row_index=row: self._update_step_parameter(
+                        row_index, name, float(new_value)
+                    )
                 )
             tooltip = spec.tooltip or self._pipeline_parameter_tooltip(step.operation, spec.name)
             widget.setToolTip(tooltip)
@@ -4727,7 +1747,10 @@ class PolygonExtractionWidget(QWidget):
     def _render_color_binarize_parameters(self, row: int) -> None:
         entries = self._color_selection_entries(row)
         group = QGroupBox(
-            self._tr("color_binarize_group_title", "Цвета для бинаризации" if self._ui_language == "ru" else "Colors for binarization")
+            self._tr(
+                "color_binarize_group_title",
+                "Цвета для бинаризации" if self._ui_language == "ru" else "Colors for binarization",
+            )
         )
         layout = QVBoxLayout(group)
         hint = QLabel(
@@ -4761,13 +1784,20 @@ class PolygonExtractionWidget(QWidget):
                 else "This color adds similar pixels to the mask; the checkbox enables or disables it."
             )
             item.setData(Qt.ItemDataRole.UserRole, list(rgb))
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsEnabled
+            )
             item.setCheckState(Qt.CheckState.Checked if entry.get("enabled", True) else Qt.CheckState.Unchecked)
             item.setBackground(QColor(int(rgb[0]), int(rgb[1]), int(rgb[2])))
             brightness = int(rgb[0]) * 0.299 + int(rgb[1]) * 0.587 + int(rgb[2]) * 0.114
             item.setForeground(QColor("#111111" if brightness > 150 else "#F8FAFC"))
             color_list.addItem(item)
-        color_list.itemChanged.connect(lambda item, row_index=row, widget=color_list: self._on_color_entry_changed(row_index, widget, item))
+        color_list.itemChanged.connect(
+            lambda item, row_index=row, widget=color_list: self._on_color_entry_changed(row_index, widget, item)
+        )
         layout.addWidget(color_list)
 
         buttons_row = QWidget()
@@ -4783,16 +1813,24 @@ class PolygonExtractionWidget(QWidget):
             else "Enables picking from the image: click a pixel to add its color to the list."
         )
         pick_button.setChecked(self._color_pick_pipeline_row == row)
-        pick_button.toggled.connect(lambda checked, row_index=row: self._set_color_pick_active(row_index if checked else None))
+        pick_button.toggled.connect(
+            lambda checked, row_index=row: self._set_color_pick_active(row_index if checked else None)
+        )
         remove_button = QPushButton(
-            self._tr("remove_selected_color_button", "Удалить выбранный" if self._ui_language == "ru" else "Remove selected")
+            self._tr(
+                "remove_selected_color_button", "Удалить выбранный" if self._ui_language == "ru" else "Remove selected"
+            )
         )
         remove_button.setToolTip(
             "Удаляет выбранный цвет из списка бинаризации."
             if self._ui_language == "ru"
             else "Removes the selected color from the binarization list."
         )
-        remove_button.clicked.connect(lambda _checked=False, row_index=row, widget=color_list: self._remove_selected_color_entry(row_index, widget))
+        remove_button.clicked.connect(
+            lambda _checked=False, row_index=row, widget=color_list: self._remove_selected_color_entry(
+                row_index, widget
+            )
+        )
         clear_button = QPushButton(
             self._tr("clear_colors_button", "Очистить список" if self._ui_language == "ru" else "Clear list")
         )
@@ -4862,11 +1900,9 @@ class PolygonExtractionWidget(QWidget):
             )
             item.setIcon(QIcon(preview_pixmap))
             item.setToolTip(
-                (
-                    f"Шаблон via #{index}: {width}x{height} пикс."
-                    if self._ui_language == "ru"
-                    else f"Via template #{index}: {width}x{height} px"
-                )
+                f"Шаблон via #{index}: {width}x{height} пикс."
+                if self._ui_language == "ru"
+                else f"Via template #{index}: {width}x{height} px"
             )
             self.via_template_list.addItem(item)
 
@@ -4942,8 +1978,12 @@ class PolygonExtractionWidget(QWidget):
 
     def _built_in_via_presets(self) -> dict[str, dict[str, object]]:
         return {
-            "Яркие via на дорожках" if self._ui_language == "ru" else "Bright vias on traces": self._noisy_traces_via_preset_payload(),
-            "Слабые/размытые via" if self._ui_language == "ru" else "Weak/blurred vias": self._blurred_via_preset_payload(),
+            "Яркие via на дорожках"
+            if self._ui_language == "ru"
+            else "Bright vias on traces": self._noisy_traces_via_preset_payload(),
+            "Слабые/размытые via"
+            if self._ui_language == "ru"
+            else "Weak/blurred vias": self._blurred_via_preset_payload(),
         }
 
     def _noisy_traces_via_preset_payload(self) -> dict[str, object]:
@@ -5019,15 +2059,13 @@ class PolygonExtractionWidget(QWidget):
             return {}
         if not isinstance(payload, dict):
             return {}
-        return {
-            str(name): dict(value)
-            for name, value in payload.items()
-            if isinstance(value, dict)
-        }
+        return {str(name): dict(value) for name, value in payload.items() if isinstance(value, dict)}
 
     def _save_user_via_presets(self) -> None:
         settings = QSettings("ViaLaNet", "PolygonWidget")
-        settings.setValue(VIA_PRESETS_SETTINGS_KEY, json.dumps(self._user_via_presets, ensure_ascii=False, sort_keys=True))
+        settings.setValue(
+            VIA_PRESETS_SETTINGS_KEY, json.dumps(self._user_via_presets, ensure_ascii=False, sort_keys=True)
+        )
         settings.sync()
 
     def _refresh_via_preset_combo(self) -> None:
@@ -5091,34 +2129,88 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.via_roundness_spin),
         ]
         try:
-            self.via_white_range_checkbox.setChecked(bool(payload.get("via_white_range_enabled", self.via_white_range_checkbox.isChecked())))
-            self.via_white_range_min_spin.setValue(int(payload.get("via_white_range_min", self.via_white_range_min_spin.value())))
-            self.via_white_range_max_spin.setValue(int(payload.get("via_white_range_max", self.via_white_range_max_spin.value())))
-            self.via_black_range_checkbox.setChecked(bool(payload.get("via_black_range_enabled", self.via_black_range_checkbox.isChecked())))
-            self.via_black_range_min_spin.setValue(int(payload.get("via_black_range_min", self.via_black_range_min_spin.value())))
-            self.via_black_range_max_spin.setValue(int(payload.get("via_black_range_max", self.via_black_range_max_spin.value())))
-            self.via_detector_gradient_checkbox.setChecked(bool(payload.get("via_detector_gradient_enabled", self.via_detector_gradient_checkbox.isChecked())))
-            self.via_detector_spot_checkbox.setChecked(bool(payload.get("via_detector_spot_enabled", self.via_detector_spot_checkbox.isChecked())))
-            self.via_detector_hough_checkbox.setChecked(bool(payload.get("via_detector_hough_enabled", self.via_detector_hough_checkbox.isChecked())))
-            self.via_detector_components_checkbox.setChecked(bool(payload.get("via_detector_components_enabled", self.via_detector_components_checkbox.isChecked())))
-            self.via_detector_contours_checkbox.setChecked(bool(payload.get("via_detector_contours_enabled", self.via_detector_contours_checkbox.isChecked())))
-            self.via_detector_morphology_checkbox.setChecked(bool(payload.get("via_detector_morphology_enabled", self.via_detector_morphology_checkbox.isChecked())))
-            self.via_detector_template_checkbox.setChecked(bool(payload.get("via_detector_template_enabled", self.via_detector_template_checkbox.isChecked())))
-            self.via_detector_blob_checkbox.setChecked(bool(payload.get("via_detector_blob_enabled", self.via_detector_blob_checkbox.isChecked())))
-            self.via_spot_min_contrast_spin.setValue(float(payload.get("via_spot_min_contrast", self.via_spot_min_contrast_spin.value())))
-            self.via_spot_min_roundness_spin.setValue(float(payload.get("via_spot_min_roundness", self.via_spot_min_roundness_spin.value())))
-            self.via_spot_line_suppression_spin.setValue(float(payload.get("via_spot_line_suppression", self.via_spot_line_suppression_spin.value())))
-            self.via_gradient_min_strength_spin.setValue(float(payload.get("via_gradient_min_strength", self.via_gradient_min_strength_spin.value())))
-            self.via_gradient_min_coverage_spin.setValue(float(payload.get("via_gradient_min_coverage", self.via_gradient_min_coverage_spin.value())))
-            self.via_hough_edge_threshold_spin.setValue(float(payload.get("via_hough_edge_threshold", self.via_hough_edge_threshold_spin.value())))
-            self.via_hough_accumulator_threshold_spin.setValue(float(payload.get("via_hough_accumulator_threshold", self.via_hough_accumulator_threshold_spin.value())))
-            self.via_component_min_score_spin.setValue(float(payload.get("via_component_min_score", self.via_component_min_score_spin.value())))
-            self.via_contour_min_score_spin.setValue(float(payload.get("via_contour_min_score", self.via_contour_min_score_spin.value())))
-            self.via_morphology_peak_scale_spin.setValue(float(payload.get("via_morphology_peak_scale", self.via_morphology_peak_scale_spin.value())))
-            self.via_template_min_score_spin.setValue(float(payload.get("via_template_min_score", self.via_template_min_score_spin.value())))
-            self.via_blob_min_circularity_spin.setValue(float(payload.get("via_blob_min_circularity", self.via_blob_min_circularity_spin.value())))
+            self.via_white_range_checkbox.setChecked(
+                bool(payload.get("via_white_range_enabled", self.via_white_range_checkbox.isChecked()))
+            )
+            self.via_white_range_min_spin.setValue(
+                int(payload.get("via_white_range_min", self.via_white_range_min_spin.value()))
+            )
+            self.via_white_range_max_spin.setValue(
+                int(payload.get("via_white_range_max", self.via_white_range_max_spin.value()))
+            )
+            self.via_black_range_checkbox.setChecked(
+                bool(payload.get("via_black_range_enabled", self.via_black_range_checkbox.isChecked()))
+            )
+            self.via_black_range_min_spin.setValue(
+                int(payload.get("via_black_range_min", self.via_black_range_min_spin.value()))
+            )
+            self.via_black_range_max_spin.setValue(
+                int(payload.get("via_black_range_max", self.via_black_range_max_spin.value()))
+            )
+            self.via_detector_gradient_checkbox.setChecked(
+                bool(payload.get("via_detector_gradient_enabled", self.via_detector_gradient_checkbox.isChecked()))
+            )
+            self.via_detector_spot_checkbox.setChecked(
+                bool(payload.get("via_detector_spot_enabled", self.via_detector_spot_checkbox.isChecked()))
+            )
+            self.via_detector_hough_checkbox.setChecked(
+                bool(payload.get("via_detector_hough_enabled", self.via_detector_hough_checkbox.isChecked()))
+            )
+            self.via_detector_components_checkbox.setChecked(
+                bool(payload.get("via_detector_components_enabled", self.via_detector_components_checkbox.isChecked()))
+            )
+            self.via_detector_contours_checkbox.setChecked(
+                bool(payload.get("via_detector_contours_enabled", self.via_detector_contours_checkbox.isChecked()))
+            )
+            self.via_detector_morphology_checkbox.setChecked(
+                bool(payload.get("via_detector_morphology_enabled", self.via_detector_morphology_checkbox.isChecked()))
+            )
+            self.via_detector_template_checkbox.setChecked(
+                bool(payload.get("via_detector_template_enabled", self.via_detector_template_checkbox.isChecked()))
+            )
+            self.via_detector_blob_checkbox.setChecked(
+                bool(payload.get("via_detector_blob_enabled", self.via_detector_blob_checkbox.isChecked()))
+            )
+            self.via_spot_min_contrast_spin.setValue(
+                float(payload.get("via_spot_min_contrast", self.via_spot_min_contrast_spin.value()))
+            )
+            self.via_spot_min_roundness_spin.setValue(
+                float(payload.get("via_spot_min_roundness", self.via_spot_min_roundness_spin.value()))
+            )
+            self.via_spot_line_suppression_spin.setValue(
+                float(payload.get("via_spot_line_suppression", self.via_spot_line_suppression_spin.value()))
+            )
+            self.via_gradient_min_strength_spin.setValue(
+                float(payload.get("via_gradient_min_strength", self.via_gradient_min_strength_spin.value()))
+            )
+            self.via_gradient_min_coverage_spin.setValue(
+                float(payload.get("via_gradient_min_coverage", self.via_gradient_min_coverage_spin.value()))
+            )
+            self.via_hough_edge_threshold_spin.setValue(
+                float(payload.get("via_hough_edge_threshold", self.via_hough_edge_threshold_spin.value()))
+            )
+            self.via_hough_accumulator_threshold_spin.setValue(
+                float(payload.get("via_hough_accumulator_threshold", self.via_hough_accumulator_threshold_spin.value()))
+            )
+            self.via_component_min_score_spin.setValue(
+                float(payload.get("via_component_min_score", self.via_component_min_score_spin.value()))
+            )
+            self.via_contour_min_score_spin.setValue(
+                float(payload.get("via_contour_min_score", self.via_contour_min_score_spin.value()))
+            )
+            self.via_morphology_peak_scale_spin.setValue(
+                float(payload.get("via_morphology_peak_scale", self.via_morphology_peak_scale_spin.value()))
+            )
+            self.via_template_min_score_spin.setValue(
+                float(payload.get("via_template_min_score", self.via_template_min_score_spin.value()))
+            )
+            self.via_blob_min_circularity_spin.setValue(
+                float(payload.get("via_blob_min_circularity", self.via_blob_min_circularity_spin.value()))
+            )
             self.via_roundness_spin.setValue(float(payload.get("via_min_roundness", self.via_roundness_spin.value())))
-            self.debug_candidates_checkbox.setChecked(bool(payload.get("debug_enabled", self.debug_candidates_checkbox.isChecked())))
+            self.debug_candidates_checkbox.setChecked(
+                bool(payload.get("debug_enabled", self.debug_candidates_checkbox.isChecked()))
+            )
         finally:
             del blockers
         self._update_via_threshold_controls_state()
@@ -5129,7 +2221,11 @@ class PolygonExtractionWidget(QWidget):
         if not isinstance(data, tuple) or len(data) != 2:
             return
         preset_type, preset_name = data
-        payload = self._built_in_via_presets().get(str(preset_name)) if preset_type == "builtin" else self._user_via_presets.get(str(preset_name))
+        payload = (
+            self._built_in_via_presets().get(str(preset_name))
+            if preset_type == "builtin"
+            else self._user_via_presets.get(str(preset_name))
+        )
         if payload:
             self._apply_via_preset_payload(payload)
 
@@ -5234,8 +2330,8 @@ class PolygonExtractionWidget(QWidget):
         if current_state is None or current_state.source_image is None:
             return
         image = np.asarray(current_state.source_image)
-        x_index = int(round(x_coord))
-        y_index = int(round(y_coord))
+        x_index = round(x_coord)
+        y_index = round(y_coord)
         if y_index < 0 or x_index < 0 or y_index >= image.shape[0] or x_index >= image.shape[1]:
             return
         if image.ndim == 2:
@@ -5282,7 +2378,15 @@ class PolygonExtractionWidget(QWidget):
         reason = str(getattr(candidate, "reason", "") or "")
         accepted = bool(getattr(candidate, "accepted", False))
         bbox = getattr(candidate, "bbox", (0, 0, 0, 0))
-        status = "принята" if accepted and self._ui_language == "ru" else "accepted" if accepted else "отклонена" if self._ui_language == "ru" else "rejected"
+        status = (
+            "принята"
+            if accepted and self._ui_language == "ru"
+            else "accepted"
+            if accepted
+            else "отклонена"
+            if self._ui_language == "ru"
+            else "rejected"
+        )
         lines = [
             f"{'Статус' if self._ui_language == 'ru' else 'Status'}: {status}",
             f"{'Метод' if self._ui_language == 'ru' else 'Method'}: {self._debug_method_text(source)}",
@@ -5350,7 +2454,7 @@ class PolygonExtractionWidget(QWidget):
             "gradient_elevation": "Gradient elevation" if self._ui_language != "ru" else "Карта градиента",
             "gradient_color": "Gradient heatmap" if self._ui_language != "ru" else "Тепловая карта",
             "scharr": "Scharr",
-            "phase_congruency": "Phase congruency" if self._ui_language != "ru" else "Phase congruency",
+            "phase_congruency": "Phase congruency",
             "structured": "Structured edges" if self._ui_language != "ru" else "Структурные границы",
             "ridge": "Ridge response" if self._ui_language != "ru" else "Хребтовая реакция",
             "conductor_gradient_elevation": (
@@ -5470,8 +2574,8 @@ class PolygonExtractionWidget(QWidget):
             threshold = float(settings.via_gradient_min_strength)
             mask = elevation >= threshold
             overlay = np.zeros((elevation.shape[0], elevation.shape[1], 3), dtype=np.uint8)
-            overlay[..., 1] = (mask.astype(np.uint8) * 230)
-            overlay[..., 2] = (mask.astype(np.uint8) * 60)
+            overlay[..., 1] = mask.astype(np.uint8) * 230
+            overlay[..., 2] = mask.astype(np.uint8) * 60
             return overlay
         heatmap = cv2.applyColorMap(elevation, cv2.COLORMAP_TURBO)
         threshold = float(settings.via_gradient_min_strength)
@@ -5490,7 +2594,7 @@ class PolygonExtractionWidget(QWidget):
             return None
         if data.dtype != np.uint8:
             if data.dtype == bool:
-                data = (data.astype(np.uint8) * 255)
+                data = data.astype(np.uint8) * 255
             else:
                 as_float = data.astype(np.float32)
                 max_val = float(as_float.max()) if as_float.size else 0.0
@@ -5528,7 +2632,9 @@ class PolygonExtractionWidget(QWidget):
             dx = polygon_center.x() - candidate_center.x()
             dy = polygon_center.y() - candidate_center.y()
             distance_sq = dx * dx + dy * dy
-            max_span = max(polygon_rect.width(), polygon_rect.height(), candidate_rect.width(), candidate_rect.height(), 1.0)
+            max_span = max(
+                polygon_rect.width(), polygon_rect.height(), candidate_rect.width(), candidate_rect.height(), 1.0
+            )
             if overlap <= 0.0 and distance_sq > (max_span * 1.5) * (max_span * 1.5):
                 continue
             accepted_rank = 1 if bool(getattr(candidate, "accepted", False)) else 0
@@ -5591,22 +2697,39 @@ class PolygonExtractionWidget(QWidget):
     def _debug_criterion_text(self, source: str, reason: str, accepted: bool) -> str:
         if not accepted:
             rejection_labels = {
-                "duplicate": ("дубликат более сильного ближайшего кандидата", "duplicate of a stronger nearby candidate"),
-                "component_score": ("отклик компоненты ниже заданного порога", "component response is below the configured threshold"),
-                "contour_score": ("отклик контура ниже заданного порога", "contour response is below the configured threshold"),
+                "duplicate": (
+                    "дубликат более сильного ближайшего кандидата",
+                    "duplicate of a stronger nearby candidate",
+                ),
+                "component_score": (
+                    "отклик компоненты ниже заданного порога",
+                    "component response is below the configured threshold",
+                ),
+                "contour_score": (
+                    "отклик контура ниже заданного порога",
+                    "contour response is below the configured threshold",
+                ),
                 "min_via_width": ("ширина меньше допустимого минимума", "width is below the allowed minimum"),
                 "max_via_width": ("ширина больше допустимого максимума", "width is above the allowed maximum"),
                 "min_via_height": ("высота меньше допустимого минимума", "height is below the allowed minimum"),
                 "max_via_height": ("высота больше допустимого максимума", "height is above the allowed maximum"),
-                "min_aspect_ratio": ("соотношение сторон ниже допустимого", "aspect ratio is below the allowed minimum"),
-                "max_aspect_ratio": ("соотношение сторон выше допустимого", "aspect ratio is above the allowed maximum"),
+                "min_aspect_ratio": (
+                    "соотношение сторон ниже допустимого",
+                    "aspect ratio is below the allowed minimum",
+                ),
+                "max_aspect_ratio": (
+                    "соотношение сторон выше допустимого",
+                    "aspect ratio is above the allowed maximum",
+                ),
                 "roundness": ("округлость ниже заданного порога", "roundness is below the configured threshold"),
                 "empty_geometry": ("пустая геометрия кандидата", "candidate geometry is empty"),
             }
             pair = rejection_labels.get(reason)
             if pair is not None:
                 return pair[0] if self._ui_language == "ru" else pair[1]
-            return reason or ("кандидат не прошел фильтры" if self._ui_language == "ru" else "candidate did not pass filters")
+            return reason or (
+                "кандидат не прошел фильтры" if self._ui_language == "ru" else "candidate did not pass filters"
+            )
         source = source.lower()
         accepted_labels = {
             "range-components": (
@@ -5688,7 +2811,10 @@ class PolygonExtractionWidget(QWidget):
         row = self.pipeline_list.currentRow()
         if row <= 0:
             return
-        self._pipeline.steps[row - 1], self._pipeline.steps[row] = self._pipeline.steps[row], self._pipeline.steps[row - 1]
+        self._pipeline.steps[row - 1], self._pipeline.steps[row] = (
+            self._pipeline.steps[row],
+            self._pipeline.steps[row - 1],
+        )
         self._populate_pipeline_list()
         self.pipeline_list.setCurrentRow(row - 1)
         self._auto_apply_pipeline()
@@ -5697,7 +2823,10 @@ class PolygonExtractionWidget(QWidget):
         row = self.pipeline_list.currentRow()
         if row < 0 or row >= len(self._pipeline.steps) - 1:
             return
-        self._pipeline.steps[row + 1], self._pipeline.steps[row] = self._pipeline.steps[row], self._pipeline.steps[row + 1]
+        self._pipeline.steps[row + 1], self._pipeline.steps[row] = (
+            self._pipeline.steps[row],
+            self._pipeline.steps[row + 1],
+        )
         self._populate_pipeline_list()
         self.pipeline_list.setCurrentRow(row + 1)
         self._auto_apply_pipeline()
@@ -5722,7 +2851,9 @@ class PolygonExtractionWidget(QWidget):
             if not isinstance(old_index, int) or old_index < 0 or old_index >= len(old_steps):
                 return
             new_steps.append(old_steps[old_index])
-        if len(new_steps) != len(old_steps) or all(first is second for first, second in zip(new_steps, old_steps, strict=False)):
+        if len(new_steps) != len(old_steps) or all(
+            first is second for first, second in zip(new_steps, old_steps, strict=False)
+        ):
             return
         self._pipeline.steps = new_steps
         for row in range(self.pipeline_list.count()):
@@ -5742,7 +2873,10 @@ class PolygonExtractionWidget(QWidget):
 
     def _on_via_size_mode_changed(self, *_args) -> None:
         self._update_via_size_controls_state()
-        if normalize_via_size_mode(self.via_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED and not self._fixed_via_rows:
+        if (
+            normalize_via_size_mode(self.via_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
+            and not self._fixed_via_rows
+        ):
             self._add_fixed_via_row(width=1, height=1)
             return
         self._on_extraction_settings_changed()
@@ -5997,7 +3131,9 @@ class PolygonExtractionWidget(QWidget):
             self._append_log(
                 self._tr(
                     "extra_layer_load_failed_log",
-                    "Не удалось загрузить изображение слоя: {path}" if self._ui_language == "ru" else "Failed to load layer image: {path}",
+                    "Не удалось загрузить изображение слоя: {path}"
+                    if self._ui_language == "ru"
+                    else "Failed to load layer image: {path}",
                     path=str(path),
                 )
             )
@@ -6071,7 +3207,12 @@ class PolygonExtractionWidget(QWidget):
         reference_polygons = self.get_polygons()
 
         if current_state is None or current_state.source_image is None or current_image_path is None:
-            self._append_log(self._tr("no_image_selected_log", "Изображение не выбрано." if self._ui_language == "ru" else "No image selected."))
+            self._append_log(
+                self._tr(
+                    "no_image_selected_log",
+                    "Изображение не выбрано." if self._ui_language == "ru" else "No image selected.",
+                )
+            )
             return
         if not reference_polygons:
             self._append_log(
@@ -6087,9 +3228,7 @@ class PolygonExtractionWidget(QWidget):
             self._append_log(
                 self._tr(
                     "auto_tune_already_running_log",
-                    "Автоподбор уже выполняется."
-                    if self._ui_language == "ru"
-                    else "Auto-fit is already running.",
+                    "Автоподбор уже выполняется." if self._ui_language == "ru" else "Auto-fit is already running.",
                 )
             )
             return
@@ -6211,7 +3350,9 @@ class PolygonExtractionWidget(QWidget):
             self.min_bbox_height_spin.setValue(int(settings.min_bbox_height))
             self.max_bbox_height_spin.setValue(0 if settings.max_bbox_height is None else int(settings.max_bbox_height))
             self.min_aspect_ratio_spin.setValue(float(settings.min_aspect_ratio))
-            self.max_aspect_ratio_spin.setValue(0.0 if settings.max_aspect_ratio is None else float(settings.max_aspect_ratio))
+            self.max_aspect_ratio_spin.setValue(
+                0.0 if settings.max_aspect_ratio is None else float(settings.max_aspect_ratio)
+            )
             self.exclude_border_touching_checkbox.setChecked(bool(settings.exclude_border_touching))
             self.min_solidity_spin.setValue(float(settings.min_solidity))
             self.min_extent_spin.setValue(float(settings.min_extent))
@@ -6262,8 +3403,12 @@ class PolygonExtractionWidget(QWidget):
                 self._add_fixed_via_row(width=width, height=height)
             self._suspend_fixed_via_updates = False
             self.min_hierarchy_depth_spin.setValue(int(settings.min_hierarchy_depth))
-            self.max_hierarchy_depth_spin.setValue(0 if settings.max_hierarchy_depth is None else int(settings.max_hierarchy_depth))
-            self.max_hole_area_ratio_spin.setValue(0.0 if settings.max_hole_area_ratio is None else float(settings.max_hole_area_ratio))
+            self.max_hierarchy_depth_spin.setValue(
+                0 if settings.max_hierarchy_depth is None else int(settings.max_hierarchy_depth)
+            )
+            self.max_hole_area_ratio_spin.setValue(
+                0.0 if settings.max_hole_area_ratio is None else float(settings.max_hole_area_ratio)
+            )
             self._update_via_size_controls_state()
             self._update_via_threshold_controls_state()
             self._update_extraction_profile_controls_state()
@@ -6286,7 +3431,9 @@ class PolygonExtractionWidget(QWidget):
         fixed_via_heights = [height for _width, height in fixed_via_pairs]
         max_hierarchy_depth = self.max_hierarchy_depth_spin.value()
         max_hole_area_ratio = self.max_hole_area_ratio_spin.value()
-        extraction_profile = str(self.extraction_profile_combo.currentData() or self._active_extraction_profile or "conductors")
+        extraction_profile = str(
+            self.extraction_profile_combo.currentData() or self._active_extraction_profile or "conductors"
+        )
         object_type = "via" if extraction_profile == "vias" else "conductor"
         output_mode = "box" if extraction_profile == "vias" else "polygon"
         return ContourExtractionSettings(
@@ -6294,7 +3441,9 @@ class PolygonExtractionWidget(QWidget):
             object_type=object_type,
             output_mode=output_mode,
             retrieval_mode=str(self.retrieval_mode_combo.currentData() or self.retrieval_mode_combo.currentText()),
-            approximation_mode=str(self.approximation_mode_combo.currentData() or self.approximation_mode_combo.currentText()),
+            approximation_mode=str(
+                self.approximation_mode_combo.currentData() or self.approximation_mode_combo.currentText()
+            ),
             epsilon=self.epsilon_spin.value(),
             epsilon_relative=self.epsilon_relative_checkbox.isChecked(),
             min_polygon_angle=self.min_polygon_angle_spin.value(),
@@ -6486,7 +3635,9 @@ class PolygonExtractionWidget(QWidget):
             self._append_log(
                 self._tr(
                     "neighbor_frame_load_failed_log",
-                    "Не удалось загрузить соседний кадр {path}: {error}" if self._ui_language == "ru" else "Failed to load neighbor frame {path}: {error}",
+                    "Не удалось загрузить соседний кадр {path}: {error}"
+                    if self._ui_language == "ru"
+                    else "Failed to load neighbor frame {path}: {error}",
                     path=image_path,
                     error=exc,
                 )
@@ -6672,7 +3823,9 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "auto_tune_button"):
             self.auto_tune_button.setEnabled(self._auto_tune_running_request_id is None)
 
-    def _on_prepared_image_result(self, request_id: int, image_path: str, preprocessed_image, pipeline_config: dict) -> None:
+    def _on_prepared_image_result(
+        self, request_id: int, image_path: str, preprocessed_image, pipeline_config: dict
+    ) -> None:
         if request_id != self._prepared_image_running_request_id:
             return
         if pipeline_config != self.get_pipeline():
@@ -6857,9 +4010,7 @@ class PolygonExtractionWidget(QWidget):
         self.image_list.clear()
         for path in normalized_paths:
             item = QListWidgetItem(Path(path).name)
-            item.setToolTip(
-                (f"Путь к файлу: {path}" if self._ui_language == "ru" else f"File path: {path}")
-            )
+            item.setToolTip(f"Путь к файлу: {path}" if self._ui_language == "ru" else f"File path: {path}")
             item.setData(Qt.ItemDataRole.UserRole, path)
             self._apply_frame_status_to_item(item, self._frame_status_for_image(path))
             self.image_list.addItem(item)
@@ -6923,7 +4074,11 @@ class PolygonExtractionWidget(QWidget):
             return
         self._sync_current_state_views()
         self._update_frame_item_status(image_result.image_path)
-        if image_result.prepared_image_required and image_result.state is not None and image_result.state.source_image is not None:
+        if (
+            image_result.prepared_image_required
+            and image_result.state is not None
+            and image_result.state.source_image is not None
+        ):
             self._queue_prepared_image_update(image_result.image_path, image_result.state.source_image)
         if image_result.cache_hit:
             self._append_log(self._tr("loaded_cached_state_log", image_path=image_result.image_path))

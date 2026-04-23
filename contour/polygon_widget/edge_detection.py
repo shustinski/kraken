@@ -34,14 +34,13 @@ the widget keeps working inside the ``opencv-python`` only environment.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import cv2
 import numpy as np
 
 from .utils import ensure_uint8
-
 
 # ---------------------------------------------------------------------------
 # Method registry
@@ -424,7 +423,9 @@ def phase_congruency(
     max_side = max(height, width)
     if max_side > 768:
         scale_to_input = 768.0 / float(max_side)
-        work = cv2.resize(gray, (int(round(width * scale_to_input)), int(round(height * scale_to_input))), interpolation=cv2.INTER_AREA)
+        work = cv2.resize(
+            gray, (round(width * scale_to_input), round(height * scale_to_input)), interpolation=cv2.INTER_AREA
+        )
     work_height, work_width = work.shape
 
     epsilon = 1e-4
@@ -457,7 +458,7 @@ def phase_congruency(
         angular_distance = np.abs(np.arctan2(ds, dc))
         spread = np.pi / float(num_orientations) * 1.6
         spread = max(0.1, spread)
-        angular_filter = np.exp(-(angular_distance ** 2) / (2.0 * spread * spread))
+        angular_filter = np.exp(-(angular_distance**2) / (2.0 * spread * spread))
 
         even_sum = np.zeros_like(work)
         odd_sum = np.zeros_like(work)
@@ -465,7 +466,7 @@ def phase_congruency(
         max_amplitude = np.zeros_like(work)
 
         for scale_index in range(num_scales):
-            wavelength = min_wavelength * (scale_factor ** scale_index)
+            wavelength = min_wavelength * (scale_factor**scale_index)
             f_zero = 1.0 / wavelength
             log_gabor = np.exp(-((np.log(radius / f_zero)) ** 2) / (2.0 * (np.log(sigma_on_f)) ** 2))
             log_gabor[work_height // 2, work_width // 2] = 0.0

@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import cv2
 import numpy as np
 
 from .application.processing import DisplaySettings
-from .domain import Point, PolygonData, compute_polygon_metrics
+from .domain import PolygonData
 from .i18n import tr
-
 
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
@@ -131,7 +130,7 @@ def draw_polygon_overlay(
         base = cv2.cvtColor(ensure_uint8(base), cv2.COLOR_GRAY2BGR)
     overlay = base.copy()
     alpha = max(0.0, min(1.0, display_settings.fill_opacity))
-    line_width = max(1, int(round(display_settings.line_width)))
+    line_width = max(1, round(display_settings.line_width))
 
     for polygon in polygons:
         points = np.asarray(polygon.points, dtype=np.int32)
@@ -149,8 +148,8 @@ def draw_polygon_overlay(
             for x_coord, y_coord in polygon.points:
                 cv2.circle(
                     overlay,
-                    (int(round(x_coord)), int(round(y_coord))),
-                    max(1, int(round(display_settings.vertex_size / 2))),
+                    (round(x_coord), round(y_coord)),
+                    max(1, round(display_settings.vertex_size / 2)),
                     hex_to_bgr(display_settings.vertex_color),
                     thickness=-1,
                     lineType=cv2.LINE_AA,
@@ -183,8 +182,8 @@ def _ellipse_geometry_from_points(points: np.ndarray) -> tuple[tuple[int, int], 
     x_max = int(points[:, 0].max())
     y_min = int(points[:, 1].min())
     y_max = int(points[:, 1].max())
-    center = (int(round((x_min + x_max) / 2.0)), int(round((y_min + y_max) / 2.0)))
-    axes = (max(1, int(round((x_max - x_min) / 2.0))), max(1, int(round((y_max - y_min) / 2.0))))
+    center = (round((x_min + x_max) / 2.0), round((y_min + y_max) / 2.0))
+    axes = (max(1, round((x_max - x_min) / 2.0)), max(1, round((y_max - y_min) / 2.0)))
     return center, axes
 
 

@@ -7,7 +7,6 @@ from typing import Any
 
 from ..domain import PolygonData
 
-
 VIA_SIZE_MODE_RANGE = "range"
 VIA_SIZE_MODE_FIXED = "fixed"
 VIA_CHANNEL_MODE_COLUMNS = "columns"
@@ -97,7 +96,7 @@ class PipelineStepConfig:
     enabled: bool = True
     parameters: dict[str, Any] = field(default_factory=dict)
 
-    def clone(self) -> "PipelineStepConfig":
+    def clone(self) -> PipelineStepConfig:
         return PipelineStepConfig(
             operation=self.operation,
             name=self.name,
@@ -114,7 +113,7 @@ class PipelineStepConfig:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "PipelineStepConfig":
+    def from_dict(cls, payload: dict[str, Any]) -> PipelineStepConfig:
         return cls(
             operation=str(payload["operation"]),
             name=str(payload.get("name") or payload["operation"]),
@@ -293,7 +292,7 @@ class ContourExtractionSettings:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ContourExtractionSettings":
+    def from_dict(cls, payload: dict[str, Any]) -> ContourExtractionSettings:
         max_area = payload.get("max_area")
         max_perimeter = payload.get("max_perimeter")
         max_bbox_width = payload.get("max_bbox_width")
@@ -372,7 +371,9 @@ class ContourExtractionSettings:
             via_gradient_min_strength=max(0.0, min(255.0, float(payload.get("via_gradient_min_strength", 12.0)))),
             via_gradient_min_coverage=max(0.0, min(1.0, float(payload.get("via_gradient_min_coverage", 0.24)))),
             via_hough_edge_threshold=max(1.0, min(1000.0, float(payload.get("via_hough_edge_threshold", 80.0)))),
-            via_hough_accumulator_threshold=max(1.0, min(1000.0, float(payload.get("via_hough_accumulator_threshold", 10.0)))),
+            via_hough_accumulator_threshold=max(
+                1.0, min(1000.0, float(payload.get("via_hough_accumulator_threshold", 10.0)))
+            ),
             via_component_min_score=max(0.0, min(255.0, float(payload.get("via_component_min_score", 0.0)))),
             via_contour_min_score=max(0.0, min(255.0, float(payload.get("via_contour_min_score", 0.0)))),
             via_morphology_peak_scale=max(0.01, min(2.0, float(payload.get("via_morphology_peak_scale", 0.18)))),
@@ -385,14 +386,14 @@ class ContourExtractionSettings:
             debug_enabled=bool(payload.get("debug_enabled", False)),
             debug_gradient_map_enabled=bool(payload.get("debug_gradient_map_enabled", False)),
             min_hierarchy_depth=max(0, int(payload.get("min_hierarchy_depth", 0))),
-            max_hierarchy_depth=None
-            if max_hierarchy_depth in (None, "", 0, 0.0)
-            else max(0, int(max_hierarchy_depth)),
+            max_hierarchy_depth=None if max_hierarchy_depth in (None, "", 0, 0.0) else max(0, int(max_hierarchy_depth)),
             max_hole_area_ratio=None
             if max_hole_area_ratio in (None, "", 0, 0.0)
             else max(0.0, float(max_hole_area_ratio)),
             conductor_gradient_enabled=bool(payload.get("conductor_gradient_enabled", False)),
-            conductor_gradient_min_strength=max(0.0, min(255.0, float(payload.get("conductor_gradient_min_strength", 18.0)))),
+            conductor_gradient_min_strength=max(
+                0.0, min(255.0, float(payload.get("conductor_gradient_min_strength", 18.0)))
+            ),
             conductor_gradient_band_radius=max(0, min(25, int(payload.get("conductor_gradient_band_radius", 3)))),
             edge_method=str(payload.get("edge_method", "sobel") or "sobel"),
             via_gradient_edge_method=str(payload.get("via_gradient_edge_method", "") or ""),
@@ -426,7 +427,7 @@ class DisplaySettings:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "DisplaySettings":
+    def from_dict(cls, payload: dict[str, Any]) -> DisplaySettings:
         return cls(
             external_color=str(payload.get("external_color", "#28C76F")),
             hole_color=str(payload.get("hole_color", "#FF9F43")),
@@ -460,7 +461,7 @@ class SaveOptions:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "SaveOptions":
+    def from_dict(cls, payload: dict[str, Any]) -> SaveOptions:
         return cls(
             save_cif=bool(payload.get("save_cif", True)),
             save_json=bool(payload.get("save_json", False)),

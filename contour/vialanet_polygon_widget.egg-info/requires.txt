@@ -1,4 +1,0 @@
-numpy>=2.4.0
-opencv-python>=4.13
-PyQt6>=6.11
-pyinstaller>=6.19

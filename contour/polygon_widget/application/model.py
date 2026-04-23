@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
 
 
 @dataclass(slots=True)
@@ -23,7 +23,7 @@ class StartupConfiguration:
         cif_dir: str | None = None,
         pipeline_json: str | None = None,
         paths: Sequence[str] | None = None,
-    ) -> "StartupConfiguration":
+    ) -> StartupConfiguration:
         normalized_paths = [str(Path(path)) for path in (paths or [])]
         return cls(
             input_dir=input_dir,

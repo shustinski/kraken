@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import cv2
 import numpy as np
@@ -9,18 +10,29 @@ import numpy as np
 from .application.processing import OperationParameterSpec, PipelineStepConfig
 from .edge_detection import (
     EDGE_METHOD_CHOICES,
-    auto_canny as _ed_auto_canny,
     build_gradient_elevation,
     combined_elevation,
+)
+from .edge_detection import (
+    auto_canny as _ed_auto_canny,
+)
+from .edge_detection import (
     laplacian_of_gaussian as _ed_log,
+)
+from .edge_detection import (
     phase_congruency as _ed_phase_congruency,
+)
+from .edge_detection import (
     ridge_response as _ed_ridge_response,
+)
+from .edge_detection import (
     scharr_magnitude as _ed_scharr_magnitude,
+)
+from .edge_detection import (
     structured_edges as _ed_structured_edges,
 )
 from .i18n import choice_label, operation_name, parameter_label, tr
 from .utils import ensure_binary_mask, ensure_uint8
-
 
 OperationCallable = Callable[[np.ndarray, dict[str, Any]], np.ndarray]
 
@@ -95,7 +107,7 @@ class PreprocessingPipeline:
         return {"steps": [step.to_dict() for step in self.steps]}
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "PreprocessingPipeline":
+    def from_dict(cls, payload: dict[str, Any] | None) -> PreprocessingPipeline:
         payload = payload or {}
         steps = [PipelineStepConfig.from_dict(item) for item in payload.get("steps", [])]
         return cls(steps)
@@ -266,7 +278,9 @@ def _watershed_split(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarra
 
     min_peak_area = max(0, int(parameters.get("min_peak_area", 0) or 0))
     if min_peak_area > 0:
-        count, labels, stats, _centroids = cv2.connectedComponentsWithStats((sure_fg > 0).astype(np.uint8), connectivity=8)
+        count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+            (sure_fg > 0).astype(np.uint8), connectivity=8
+        )
         filtered = np.zeros_like(sure_fg)
         for label_index in range(1, count):
             if int(stats[label_index, cv2.CC_STAT_AREA]) >= min_peak_area:
@@ -515,7 +529,9 @@ def _edge_guided_threshold(image: np.ndarray, parameters: dict[str, Any]) -> np.
 
     markers = np.zeros(gray.shape[:2], dtype=np.int32)
     markers[background_seed > 0] = 1
-    _component_count, foreground_labels = cv2.connectedComponents((foreground_seed > 0).astype(np.uint8), connectivity=8)
+    _component_count, foreground_labels = cv2.connectedComponents(
+        (foreground_seed > 0).astype(np.uint8), connectivity=8
+    )
     markers[foreground_labels > 0] = foreground_labels[foreground_labels > 0] + 1
 
     elevation = _edge_elevation(gray, parameters)
@@ -579,9 +595,9 @@ def _resize(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
     keep_aspect = bool(parameters.get("keep_aspect", True))
     if keep_aspect:
         if target_width <= 0 and target_height > 0:
-            target_width = max(1, int(round(width * (target_height / height))))
+            target_width = max(1, round(width * (target_height / height)))
         elif target_height <= 0 and target_width > 0:
-            target_height = max(1, int(round(height * (target_width / width))))
+            target_height = max(1, round(height * (target_width / width)))
     target_width = max(1, target_width if target_width > 0 else width)
     target_height = max(1, target_height if target_height > 0 else height)
     return cv2.resize(
@@ -594,8 +610,8 @@ def _resize(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
 def _scale_resize(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
     height, width = image.shape[:2]
     scale = max(0.05, float(parameters.get("scale", 1.0)))
-    target_width = max(1, int(round(width * scale)))
-    target_height = max(1, int(round(height * scale)))
+    target_width = max(1, round(width * scale))
+    target_height = max(1, round(height * scale))
     return cv2.resize(
         image,
         (target_width, target_height),
@@ -684,7 +700,9 @@ def _denoise(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
         searchWindowSize=_odd(int(parameters.get("search_window_size", 21)), minimum=3),
     )
     if image.ndim == 3:
-        return cv2.fastNlMeansDenoisingColored(image, None, kwargs["h"], kwargs["h"], kwargs["templateWindowSize"], kwargs["searchWindowSize"])
+        return cv2.fastNlMeansDenoisingColored(
+            image, None, kwargs["h"], kwargs["h"], kwargs["templateWindowSize"], kwargs["searchWindowSize"]
+        )
     return cv2.fastNlMeansDenoising(image, None, **kwargs)
 
 
@@ -719,8 +737,12 @@ def _register_builtin_operations() -> None:
             "Bilateral Filter",
             (
                 OperationParameterSpec("diameter", "Diameter", "int", 9, minimum=1, maximum=50, step=1),
-                OperationParameterSpec("sigma_color", "Sigma color", "float", 75.0, minimum=1.0, maximum=200.0, step=1.0),
-                OperationParameterSpec("sigma_space", "Sigma space", "float", 75.0, minimum=1.0, maximum=200.0, step=1.0),
+                OperationParameterSpec(
+                    "sigma_color", "Sigma color", "float", 75.0, minimum=1.0, maximum=200.0, step=1.0
+                ),
+                OperationParameterSpec(
+                    "sigma_space", "Sigma space", "float", 75.0, minimum=1.0, maximum=200.0, step=1.0
+                ),
             ),
             _bilateral,
         ),
@@ -752,9 +774,7 @@ def _register_builtin_operations() -> None:
         OperationDescriptor(
             "color_binarize",
             "Color Binarize",
-            (
-                OperationParameterSpec("delta", "Color delta", "int", 10, minimum=0, maximum=255, step=1),
-            ),
+            (OperationParameterSpec("delta", "Color delta", "int", 10, minimum=0, maximum=255, step=1),),
             _color_binarize,
         ),
         OperationDescriptor(
@@ -795,7 +815,9 @@ def _register_builtin_operations() -> None:
             "edge_guided_threshold",
             "Edge-guided Threshold",
             (
-                OperationParameterSpec("threshold_mode", "Base mode", "choice", "otsu", options=["otsu", "adaptive", "manual"]),
+                OperationParameterSpec(
+                    "threshold_mode", "Base mode", "choice", "otsu", options=["otsu", "adaptive", "manual"]
+                ),
                 OperationParameterSpec("threshold", "Threshold", "float", 127.0, minimum=0.0, maximum=255.0, step=1.0),
                 OperationParameterSpec("max_value", "Max value", "float", 255.0, minimum=1.0, maximum=255.0, step=1.0),
                 OperationParameterSpec("threshold_type", "Type", "choice", "binary", options=["binary", "binary_inv"]),
@@ -803,10 +825,18 @@ def _register_builtin_operations() -> None:
                 OperationParameterSpec("block_size", "Block size", "int", 11, minimum=3, maximum=99, step=2),
                 OperationParameterSpec("c_value", "C", "float", 2.0, minimum=-50.0, maximum=50.0, step=0.5),
                 OperationParameterSpec("edge_detector", "Edge detector", "choice", "canny", options=["canny", "sobel"]),
-                OperationParameterSpec("edge_percentile", "Sobel percentile", "float", 80.0, minimum=1.0, maximum=99.0, step=1.0),
-                OperationParameterSpec("correction_radius", "Correction radius", "int", 2, minimum=0, maximum=25, step=1),
-                OperationParameterSpec("threshold1", "Threshold 1", "float", 50.0, minimum=0.0, maximum=500.0, step=1.0),
-                OperationParameterSpec("threshold2", "Threshold 2", "float", 150.0, minimum=0.0, maximum=500.0, step=1.0),
+                OperationParameterSpec(
+                    "edge_percentile", "Sobel percentile", "float", 80.0, minimum=1.0, maximum=99.0, step=1.0
+                ),
+                OperationParameterSpec(
+                    "correction_radius", "Correction radius", "int", 2, minimum=0, maximum=25, step=1
+                ),
+                OperationParameterSpec(
+                    "threshold1", "Threshold 1", "float", 50.0, minimum=0.0, maximum=500.0, step=1.0
+                ),
+                OperationParameterSpec(
+                    "threshold2", "Threshold 2", "float", 150.0, minimum=0.0, maximum=500.0, step=1.0
+                ),
                 OperationParameterSpec("aperture_size", "Aperture", "int", 3, minimum=3, maximum=7, step=2),
                 OperationParameterSpec("l2gradient", "L2 gradient", "bool", False),
                 OperationParameterSpec("fill_holes", "Fill holes", "bool", True),
@@ -818,8 +848,12 @@ def _register_builtin_operations() -> None:
             "binary_filter_area",
             "Filter By Area",
             (
-                OperationParameterSpec("min_component_area", "Min area", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0),
-                OperationParameterSpec("max_component_area", "Max area", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0),
+                OperationParameterSpec(
+                    "min_component_area", "Min area", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0
+                ),
+                OperationParameterSpec(
+                    "max_component_area", "Max area", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0
+                ),
             ),
             _binary_filter_area,
         ),
@@ -827,8 +861,12 @@ def _register_builtin_operations() -> None:
             "binary_filter_perimeter",
             "Filter By Perimeter",
             (
-                OperationParameterSpec("min_component_perimeter", "Min perimeter", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0),
-                OperationParameterSpec("max_component_perimeter", "Max perimeter", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0),
+                OperationParameterSpec(
+                    "min_component_perimeter", "Min perimeter", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0
+                ),
+                OperationParameterSpec(
+                    "max_component_perimeter", "Max perimeter", "float", 0.0, minimum=0.0, maximum=1_000_000.0, step=1.0
+                ),
             ),
             _binary_filter_perimeter,
         ),
@@ -836,27 +874,61 @@ def _register_builtin_operations() -> None:
             "watershed_split",
             "Watershed Split",
             (
-                OperationParameterSpec("distance_ratio", "Distance ratio", "float", 0.35, minimum=0.05, maximum=0.95, step=0.01),
-                OperationParameterSpec("min_peak_area", "Min peak area", "int", 0, minimum=0, maximum=1_000_000, step=1),
+                OperationParameterSpec(
+                    "distance_ratio", "Distance ratio", "float", 0.35, minimum=0.05, maximum=0.95, step=0.01
+                ),
+                OperationParameterSpec(
+                    "min_peak_area", "Min peak area", "int", 0, minimum=0, maximum=1_000_000, step=1
+                ),
                 OperationParameterSpec("kernel_size", "Kernel size", "int", 3, minimum=1, maximum=99, step=2),
-                OperationParameterSpec("shape", "Kernel shape", "choice", "ellipse", options=["rect", "ellipse", "cross"]),
-                OperationParameterSpec("background_iterations", "Background iterations", "int", 1, minimum=1, maximum=20, step=1),
+                OperationParameterSpec(
+                    "shape", "Kernel shape", "choice", "ellipse", options=["rect", "ellipse", "cross"]
+                ),
+                OperationParameterSpec(
+                    "background_iterations", "Background iterations", "int", 1, minimum=1, maximum=20, step=1
+                ),
             ),
             _watershed_split,
         ),
-        OperationDescriptor("morph_open", "Morphological Open", common_kernel_specs, lambda image, params: _morph_op(image, cv2.MORPH_OPEN, params)),
-        OperationDescriptor("morph_close", "Morphological Close", common_kernel_specs, lambda image, params: _morph_op(image, cv2.MORPH_CLOSE, params)),
+        OperationDescriptor(
+            "morph_open",
+            "Morphological Open",
+            common_kernel_specs,
+            lambda image, params: _morph_op(image, cv2.MORPH_OPEN, params),
+        ),
+        OperationDescriptor(
+            "morph_close",
+            "Morphological Close",
+            common_kernel_specs,
+            lambda image, params: _morph_op(image, cv2.MORPH_CLOSE, params),
+        ),
         OperationDescriptor("erode", "Erode", common_kernel_specs, _erode),
         OperationDescriptor("dilate", "Dilate", common_kernel_specs, _dilate),
-        OperationDescriptor("gradient", "Gradient", common_kernel_specs, lambda image, params: _morph_op(image, cv2.MORPH_GRADIENT, params)),
-        OperationDescriptor("tophat", "TopHat", common_kernel_specs, lambda image, params: _morph_op(image, cv2.MORPH_TOPHAT, params)),
-        OperationDescriptor("blackhat", "BlackHat", common_kernel_specs, lambda image, params: _morph_op(image, cv2.MORPH_BLACKHAT, params)),
+        OperationDescriptor(
+            "gradient",
+            "Gradient",
+            common_kernel_specs,
+            lambda image, params: _morph_op(image, cv2.MORPH_GRADIENT, params),
+        ),
+        OperationDescriptor(
+            "tophat", "TopHat", common_kernel_specs, lambda image, params: _morph_op(image, cv2.MORPH_TOPHAT, params)
+        ),
+        OperationDescriptor(
+            "blackhat",
+            "BlackHat",
+            common_kernel_specs,
+            lambda image, params: _morph_op(image, cv2.MORPH_BLACKHAT, params),
+        ),
         OperationDescriptor(
             "canny",
             "Canny",
             (
-                OperationParameterSpec("threshold1", "Threshold 1", "float", 50.0, minimum=0.0, maximum=500.0, step=1.0),
-                OperationParameterSpec("threshold2", "Threshold 2", "float", 150.0, minimum=0.0, maximum=500.0, step=1.0),
+                OperationParameterSpec(
+                    "threshold1", "Threshold 1", "float", 50.0, minimum=0.0, maximum=500.0, step=1.0
+                ),
+                OperationParameterSpec(
+                    "threshold2", "Threshold 2", "float", 150.0, minimum=0.0, maximum=500.0, step=1.0
+                ),
                 OperationParameterSpec("aperture_size", "Aperture", "int", 3, minimum=3, maximum=7, step=2),
                 OperationParameterSpec("l2gradient", "L2 gradient", "bool", False),
             ),
@@ -920,7 +992,9 @@ def _register_builtin_operations() -> None:
             "Denoise",
             (
                 OperationParameterSpec("h", "Strength", "float", 10.0, minimum=1.0, maximum=50.0, step=0.5),
-                OperationParameterSpec("template_window_size", "Template window", "int", 7, minimum=3, maximum=21, step=2),
+                OperationParameterSpec(
+                    "template_window_size", "Template window", "int", 7, minimum=3, maximum=21, step=2
+                ),
                 OperationParameterSpec("search_window_size", "Search window", "int", 21, minimum=3, maximum=31, step=2),
             ),
             _denoise,
@@ -954,9 +1028,7 @@ def _register_builtin_operations() -> None:
         OperationDescriptor(
             "ridge_edges",
             "Ridge Response",
-            (
-                OperationParameterSpec("sigma", "Sigma", "float", 1.5, minimum=0.5, maximum=8.0, step=0.1),
-            ),
+            (OperationParameterSpec("sigma", "Sigma", "float", 1.5, minimum=0.5, maximum=8.0, step=0.1),),
             _ridge_edges,
         ),
         OperationDescriptor(
@@ -971,8 +1043,12 @@ def _register_builtin_operations() -> None:
             (
                 OperationParameterSpec("num_scales", "Scales", "int", 4, minimum=1, maximum=8, step=1),
                 OperationParameterSpec("num_orientations", "Orientations", "int", 6, minimum=1, maximum=12, step=1),
-                OperationParameterSpec("min_wavelength", "Min wavelength", "float", 3.0, minimum=1.5, maximum=16.0, step=0.1),
-                OperationParameterSpec("scale_factor", "Scale factor", "float", 2.1, minimum=1.2, maximum=4.0, step=0.1),
+                OperationParameterSpec(
+                    "min_wavelength", "Min wavelength", "float", 3.0, minimum=1.5, maximum=16.0, step=0.1
+                ),
+                OperationParameterSpec(
+                    "scale_factor", "Scale factor", "float", 2.1, minimum=1.2, maximum=4.0, step=0.1
+                ),
             ),
             _phase_congruency_edges,
         ),

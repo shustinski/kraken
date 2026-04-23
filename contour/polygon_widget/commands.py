@@ -32,7 +32,14 @@ class DeletePolygonCommand(QUndoCommand):
 
 
 class MoveVertexCommand(QUndoCommand):
-    def __init__(self, scene: object, polygon_id: int, vertex_index: int, old_point: tuple[float, float], new_point: tuple[float, float]) -> None:
+    def __init__(
+        self,
+        scene: object,
+        polygon_id: int,
+        vertex_index: int,
+        old_point: tuple[float, float],
+        new_point: tuple[float, float],
+    ) -> None:
         super().__init__("Move vertex")
         self._scene = scene
         self._polygon_id = polygon_id
@@ -78,7 +85,13 @@ class DeleteVertexCommand(QUndoCommand):
 
 
 class MovePolygonCommand(QUndoCommand):
-    def __init__(self, scene: object, polygon_id: int, old_points: list[tuple[float, float]], new_points: list[tuple[float, float]]) -> None:
+    def __init__(
+        self,
+        scene: object,
+        polygon_id: int,
+        old_points: list[tuple[float, float]],
+        new_points: list[tuple[float, float]],
+    ) -> None:
         super().__init__("Move polygon")
         self._scene = scene
         self._polygon_id = polygon_id

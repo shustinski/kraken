@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-
 Point = tuple[float, float]
 
 
@@ -19,7 +18,7 @@ class PolygonData:
     perimeter: float = 0.0
     bbox: tuple[int, int, int, int] = (0, 0, 0, 0)
 
-    def clone(self) -> "PolygonData":
+    def clone(self) -> PolygonData:
         return PolygonData(
             id=self.id,
             points=[(float(x_coord), float(y_coord)) for x_coord, y_coord in self.points],
@@ -46,7 +45,7 @@ class PolygonData:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "PolygonData":
+    def from_dict(cls, payload: dict[str, Any]) -> PolygonData:
         return cls(
             id=int(payload["id"]),
             points=[(float(x_coord), float(y_coord)) for x_coord, y_coord in payload.get("points", [])],

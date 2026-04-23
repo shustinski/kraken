@@ -156,14 +156,43 @@ def _build_pipeline_candidates(image_shape: tuple[int, ...], stats: dict[str, An
         [_step("binary_fill_holes")],
         [_step("morph_open", kernel_size=3, iterations=1, shape="ellipse"), _step("binary_fill_holes")],
         [_step("morph_close", kernel_size=3, iterations=1, shape="ellipse"), _step("binary_fill_holes")],
-        [_step("binary_fill_holes"), _step("binary_filter_area", min_component_area=min_component_area, max_component_area=0.0)],
-        [_step("binary_fill_holes"), _step("binary_filter_perimeter", min_component_perimeter=min_component_perimeter, max_component_perimeter=0.0)],
+        [
+            _step("binary_fill_holes"),
+            _step("binary_filter_area", min_component_area=min_component_area, max_component_area=0.0),
+        ],
+        [
+            _step("binary_fill_holes"),
+            _step(
+                "binary_filter_perimeter", min_component_perimeter=min_component_perimeter, max_component_perimeter=0.0
+            ),
+        ],
     ]
     if stats["component_count"] > 1:
         postprocess_candidates.extend(
             [
-                [_step("binary_fill_holes"), _step("watershed_split", distance_ratio=0.35, min_peak_area=2, kernel_size=3, shape="ellipse", background_iterations=1)],
-                [_step("morph_close", kernel_size=3, iterations=1, shape="ellipse"), _step("binary_fill_holes"), _step("watershed_split", distance_ratio=0.3, min_peak_area=2, kernel_size=3, shape="ellipse", background_iterations=1)],
+                [
+                    _step("binary_fill_holes"),
+                    _step(
+                        "watershed_split",
+                        distance_ratio=0.35,
+                        min_peak_area=2,
+                        kernel_size=3,
+                        shape="ellipse",
+                        background_iterations=1,
+                    ),
+                ],
+                [
+                    _step("morph_close", kernel_size=3, iterations=1, shape="ellipse"),
+                    _step("binary_fill_holes"),
+                    _step(
+                        "watershed_split",
+                        distance_ratio=0.3,
+                        min_peak_area=2,
+                        kernel_size=3,
+                        shape="ellipse",
+                        background_iterations=1,
+                    ),
+                ],
             ]
         )
 
@@ -222,9 +251,21 @@ def _build_pipeline_candidates(image_shape: tuple[int, ...], stats: dict[str, An
                 fill_holes=True,
             )
         ],
-        [_step("canny", threshold1=25.0, threshold2=80.0, aperture_size=3, l2gradient=False), _step("dilate", kernel_size=3, iterations=1, shape="ellipse"), _step("binary_fill_holes")],
-        [_step("canny", threshold1=40.0, threshold2=120.0, aperture_size=3, l2gradient=False), _step("morph_close", kernel_size=3, iterations=1, shape="ellipse"), _step("binary_fill_holes")],
-        [_step("canny", threshold1=60.0, threshold2=160.0, aperture_size=3, l2gradient=True), _step("morph_close", kernel_size=5, iterations=1, shape="ellipse"), _step("binary_fill_holes")],
+        [
+            _step("canny", threshold1=25.0, threshold2=80.0, aperture_size=3, l2gradient=False),
+            _step("dilate", kernel_size=3, iterations=1, shape="ellipse"),
+            _step("binary_fill_holes"),
+        ],
+        [
+            _step("canny", threshold1=40.0, threshold2=120.0, aperture_size=3, l2gradient=False),
+            _step("morph_close", kernel_size=3, iterations=1, shape="ellipse"),
+            _step("binary_fill_holes"),
+        ],
+        [
+            _step("canny", threshold1=60.0, threshold2=160.0, aperture_size=3, l2gradient=True),
+            _step("morph_close", kernel_size=5, iterations=1, shape="ellipse"),
+            _step("binary_fill_holes"),
+        ],
     ]
 
     unique_candidates: dict[str, dict[str, Any]] = {}
@@ -237,7 +278,12 @@ def _build_pipeline_candidates(image_shape: tuple[int, ...], stats: dict[str, An
                     config = PreprocessingPipeline(steps).to_dict()
                     unique_candidates.setdefault(_pipeline_signature(config), config)
 
-        edge_filters = [[], [_step("gaussian_blur", kernel_size=3, sigma_x=0.0)], [_step("bilateral_filter", diameter=7, sigma_color=60.0, sigma_space=60.0)], [_step("sharpen", amount=1.2, sigma=1.0)]]
+        edge_filters = [
+            [],
+            [_step("gaussian_blur", kernel_size=3, sigma_x=0.0)],
+            [_step("bilateral_filter", diameter=7, sigma_color=60.0, sigma_space=60.0)],
+            [_step("sharpen", amount=1.2, sigma=1.0)],
+        ]
         for filter_steps in edge_filters:
             for edge_steps in edge_candidates:
                 steps = _scaled_steps(scale, filter_steps + edge_steps)
@@ -248,11 +294,24 @@ def _build_pipeline_candidates(image_shape: tuple[int, ...], stats: dict[str, An
             color_post = [
                 [],
                 [_step("binary_fill_holes")],
-                [_step("binary_fill_holes"), _step("binary_filter_area", min_component_area=min_component_area, max_component_area=0.0)],
+                [
+                    _step("binary_fill_holes"),
+                    _step("binary_filter_area", min_component_area=min_component_area, max_component_area=0.0),
+                ],
             ]
             if stats["component_count"] > 1:
                 color_post.append(
-                    [_step("binary_fill_holes"), _step("watershed_split", distance_ratio=0.35, min_peak_area=2, kernel_size=3, shape="ellipse", background_iterations=1)]
+                    [
+                        _step("binary_fill_holes"),
+                        _step(
+                            "watershed_split",
+                            distance_ratio=0.35,
+                            min_peak_area=2,
+                            kernel_size=3,
+                            shape="ellipse",
+                            background_iterations=1,
+                        ),
+                    ]
                 )
             for delta in stats["color_deltas"]:
                 for postprocess_steps in color_post:
@@ -295,7 +354,9 @@ def _build_contour_candidates(
     image_shape: tuple[int, ...],
 ) -> list[ContourExtractionSettings]:
     areas = [polygon.area for polygon in reference_polygons if not polygon.is_hole and polygon.area > 0.0]
-    perimeters = [polygon.perimeter for polygon in reference_polygons if not polygon.is_hole and polygon.perimeter > 0.0]
+    perimeters = [
+        polygon.perimeter for polygon in reference_polygons if not polygon.is_hole and polygon.perimeter > 0.0
+    ]
     object_type = _infer_object_type(reference_polygons)
     reference_touches_border = _reference_touches_border(reference_polygons, image_shape)
 
@@ -466,7 +527,9 @@ def _color_candidates(image: np.ndarray, target_mask: np.ndarray) -> tuple[list[
     centers = np.clip(np.round(centers), 0, 255).astype(np.uint8)
     label_ids, counts = np.unique(labels.reshape(-1), return_counts=True)
     ordered_centers = [centers[int(label_id)] for label_id in label_ids[np.argsort(counts)[::-1]]]
-    selected_colors = [{"rgb": [int(channel) for channel in center.tolist()], "enabled": True} for center in ordered_centers]
+    selected_colors = [
+        {"rgb": [int(channel) for channel in center.tolist()], "enabled": True} for center in ordered_centers
+    ]
 
     distances = []
     foreground_centers = np.asarray(ordered_centers, dtype=np.float32)
@@ -508,14 +571,16 @@ def _reference_touches_border(reference_polygons: list[PolygonData], image_shape
     return False
 
 
-def _reference_roi_bbox(reference_polygons: list[PolygonData], image_shape: tuple[int, ...]) -> tuple[int, int, int, int]:
+def _reference_roi_bbox(
+    reference_polygons: list[PolygonData], image_shape: tuple[int, ...]
+) -> tuple[int, int, int, int]:
     x_min = min(polygon.bbox[0] for polygon in reference_polygons)
     y_min = min(polygon.bbox[1] for polygon in reference_polygons)
     x_max = max(polygon.bbox[0] + polygon.bbox[2] for polygon in reference_polygons)
     y_max = max(polygon.bbox[1] + polygon.bbox[3] for polygon in reference_polygons)
 
-    padding_x = max(12, int(round((x_max - x_min) * 0.18)))
-    padding_y = max(12, int(round((y_max - y_min) * 0.18)))
+    padding_x = max(12, round((x_max - x_min) * 0.18))
+    padding_y = max(12, round((y_max - y_min) * 0.18))
     height, width = image_shape[:2]
 
     left = max(0, x_min - padding_x)
@@ -548,7 +613,7 @@ def _render_polygon_mask(image_shape: tuple[int, ...], polygons: list[PolygonDat
         if len(polygon.points) < 3:
             continue
         points = np.asarray(
-            [[int(round(x_coord)), int(round(y_coord))] for x_coord, y_coord in polygon.points],
+            [[round(x_coord), round(y_coord)] for x_coord, y_coord in polygon.points],
             dtype=np.int32,
         )
         fill_value = 0 if polygon.is_hole else 255

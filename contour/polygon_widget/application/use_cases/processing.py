@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import cv2
 import numpy as np
 
-from ..processing import BatchImageResult, ContourDebugCandidate, ContourExtractionSettings, DisplaySettings, SaveOptions
 from ...contour_extractor import extract_polygons
 from ...edge_detection import (
-    EDGE_METHOD_SOBEL,
     build_gradient_elevation,
-    gradient_color_map,
     normalize_edge_method,
     phase_congruency,
     ridge_response,
@@ -22,6 +20,13 @@ from ...edge_detection import (
 from ...pipeline import PreprocessingPipeline
 from ...serializers import save_result_bundle
 from ...utils import ensure_binary_mask, ensure_uint8, load_image_color
+from ..processing import (
+    BatchImageResult,
+    ContourDebugCandidate,
+    ContourExtractionSettings,
+    DisplaySettings,
+    SaveOptions,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +156,9 @@ def build_conductor_vectorization_mask(
     return _refine_conductor_mask_by_gradient(source_image, base_mask, settings)
 
 
-def build_via_vectorization_mask(image: Any, settings: ContourExtractionSettings) -> tuple[Any, list[ContourDebugCandidate]]:
+def build_via_vectorization_mask(
+    image: Any, settings: ContourExtractionSettings
+) -> tuple[Any, list[ContourDebugCandidate]]:
     if settings.object_type != "via" and settings.output_mode != "box":
         return ensure_binary_mask(image), []
 
@@ -234,12 +241,16 @@ def build_via_vectorization_mask(image: Any, settings: ContourExtractionSettings
     merged_candidates, duplicate_candidates = _merge_via_candidates(candidates, settings)
     result = _render_via_candidates_mask(gray.shape, merged_candidates, settings)
     debug_candidates = _debug_candidates_from_via_candidates(merged_candidates, accepted=True)
-    debug_candidates.extend(_debug_candidates_from_via_candidates(duplicate_candidates, accepted=False, reason="duplicate"))
+    debug_candidates.extend(
+        _debug_candidates_from_via_candidates(duplicate_candidates, accepted=False, reason="duplicate")
+    )
     debug_candidates.extend(_debug_candidates_from_via_candidates(rejected_candidates, accepted=False))
     return result, debug_candidates
 
 
-def _refine_conductor_mask_by_gradient(source_image: Any, base_mask: np.ndarray, settings: ContourExtractionSettings) -> np.ndarray:
+def _refine_conductor_mask_by_gradient(
+    source_image: Any, base_mask: np.ndarray, settings: ContourExtractionSettings
+) -> np.ndarray:
     binary = ensure_binary_mask(base_mask)
     correction_radius = max(0, int(settings.conductor_gradient_band_radius))
     if correction_radius <= 0 or cv2.countNonZero(binary) == 0:
@@ -265,7 +276,9 @@ def _refine_conductor_mask_by_gradient(source_image: Any, base_mask: np.ndarray,
 
     markers = np.zeros(binary.shape[:2], dtype=np.int32)
     markers[background_seed > 0] = 1
-    _component_count, foreground_labels = cv2.connectedComponents((foreground_seed > 0).astype(np.uint8), connectivity=8)
+    _component_count, foreground_labels = cv2.connectedComponents(
+        (foreground_seed > 0).astype(np.uint8), connectivity=8
+    )
     markers[foreground_labels > 0] = foreground_labels[foreground_labels > 0] + 1
 
     marker_image = cv2.cvtColor(elevation, cv2.COLOR_GRAY2BGR)
@@ -332,7 +345,7 @@ def _range_mask(gray: np.ndarray, low: int, high: int) -> np.ndarray:
 
 
 def _odd_kernel_size(value: float, *, minimum: int = 3) -> int:
-    size = max(minimum, int(round(value)))
+    size = max(minimum, round(value))
     if size % 2 == 0:
         size += 1
     return size
@@ -350,7 +363,7 @@ def _expected_via_span(settings: ContourExtractionSettings) -> int:
             sizes.append(int(value))
     if not sizes:
         return 7
-    return max(3, int(round(float(np.median(np.asarray(sizes, dtype=np.float32))))))
+    return max(3, round(float(np.median(np.asarray(sizes, dtype=np.float32)))))
 
 
 def _via_detect_candidates(
@@ -402,7 +415,10 @@ def _via_detect_candidates(
     if include_range_method:
         candidate_groups.extend(
             [
-                ("range-components", _via_candidates_from_components(intensity_mask, response, source="range-components")),
+                (
+                    "range-components",
+                    _via_candidates_from_components(intensity_mask, response, source="range-components"),
+                ),
                 ("range-contours", _via_candidates_from_contours(intensity_mask, response, source="range-contours")),
             ]
         )
@@ -446,13 +462,18 @@ def _via_detect_candidates(
         candidate_groups.extend(
             [
                 ("contours", _via_candidates_from_contours(method_morphology_mask, response, source="contours")),
-                ("contours-response", _via_candidates_from_contours(gated_response_mask, response, source="contours-response")),
+                (
+                    "contours-response",
+                    _via_candidates_from_contours(gated_response_mask, response, source="contours-response"),
+                ),
             ]
         )
     if include_algorithm_methods and settings.via_detector_morphology_enabled:
         method_morphology_mask = get_morphology_mask()
         distance_peaks = _via_distance_peak_mask(method_morphology_mask, expected_span, settings)
-        candidate_groups.append(("morphology", _via_candidates_from_components(distance_peaks, response, source="morphology")))
+        candidate_groups.append(
+            ("morphology", _via_candidates_from_components(distance_peaks, response, source="morphology"))
+        )
     if include_algorithm_methods and settings.via_detector_template_enabled:
         template_mask = _via_template_peak_mask(
             [gray, column_normalized, row_normalized, clahe_gray, clahe_columns],
@@ -461,14 +482,24 @@ def _via_detect_candidates(
             expected_span,
             settings,
         )
-        candidate_groups.append(("template", _via_candidates_from_components(template_mask, response, source="template")))
+        candidate_groups.append(
+            ("template", _via_candidates_from_components(template_mask, response, source="template"))
+        )
     if include_algorithm_methods and settings.via_detector_blob_enabled:
         method_morphology_mask = get_morphology_mask()
-        candidate_groups.append(("blob", _via_candidates_from_blobs(method_morphology_mask, response, expected_span, settings, source="blob")))
+        candidate_groups.append(
+            (
+                "blob",
+                _via_candidates_from_blobs(method_morphology_mask, response, expected_span, settings, source="blob"),
+            )
+        )
     if include_algorithm_methods and settings.via_detector_hough_enabled:
         candidate_groups.extend(
             [
-                ("hough", _via_candidates_from_hough(response, intensity_mask, expected_span, settings, source="hough")),
+                (
+                    "hough",
+                    _via_candidates_from_hough(response, intensity_mask, expected_span, settings, source="hough"),
+                ),
                 (
                     "hough-gray",
                     _via_candidates_from_hough(
@@ -646,9 +677,9 @@ def _via_candidate_radii(settings: ContourExtractionSettings, expected_span: int
             while value <= max_diameter + 0.5:
                 diameters.append(value)
                 value += step
-    radii = {max(2, int(round(diameter / 2.0))) for diameter in diameters}
+    radii = {max(2, round(diameter / 2.0)) for diameter in diameters}
     if not radii:
-        radii.add(max(2, int(round(expected_span / 2.0))))
+        radii.add(max(2, round(expected_span / 2.0)))
     return sorted(radii)
 
 
@@ -663,7 +694,9 @@ def _via_candidates_from_gradient(
 ) -> list[_ViaCandidate]:
     gate = cv2.dilate(
         ensure_binary_mask(intensity_mask),
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd_kernel_size(expected_span * 1.7), _odd_kernel_size(expected_span * 1.7))),
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (_odd_kernel_size(expected_span * 1.7), _odd_kernel_size(expected_span * 1.7))
+        ),
         iterations=1,
     )
     min_strength = max(0.0, float(settings.via_gradient_min_strength))
@@ -722,7 +755,9 @@ def _via_candidates_from_gradient_spots(
     bright: bool,
     source: str,
 ) -> list[_ViaCandidate]:
-    response = cv2.bitwise_and(_via_spot_response(image, expected_span, settings, bright=bright), ensure_binary_mask(gate))
+    response = cv2.bitwise_and(
+        _via_spot_response(image, expected_span, settings, bright=bright), ensure_binary_mask(gate)
+    )
     values = response[response > 0]
     if values.size == 0:
         return []
@@ -745,19 +780,29 @@ def _via_candidates_from_gradient_spots(
         for radius in radii:
             if not _candidate_overlaps_gate(gate, int(x_coord), int(y_coord), radius):
                 continue
-            center_contrast, center_coverage = _source_radial_metrics(image, int(x_coord), int(y_coord), radius, bright=bright)
+            center_contrast, center_coverage = _source_radial_metrics(
+                image, int(x_coord), int(y_coord), radius, bright=bright
+            )
             if center_contrast < max(2.0, min_strength * 0.55):
                 continue
             if center_coverage < max(0.12, min_coverage * 0.65):
                 continue
             if _source_line_extension_coverage(image, int(x_coord), int(y_coord), radius, bright=bright) > 0.18:
                 continue
-            response_contrast, response_roundness = _spot_candidate_metrics(response, int(x_coord), int(y_coord), max(2, radius))
+            response_contrast, response_roundness = _spot_candidate_metrics(
+                response, int(x_coord), int(y_coord), max(2, radius)
+            )
             if response_contrast < max(1.0, min_strength * 0.35):
                 continue
             center_x, center_y = _spot_candidate_centroid(response, int(x_coord), int(y_coord), max(2, radius))
             roundness = max(float(response_roundness), center_coverage * 100.0)
-            score = 520.0 + float(response[y_coord, x_coord]) + center_contrast * 2.0 + center_coverage * 80.0 + response_roundness
+            score = (
+                520.0
+                + float(response[y_coord, x_coord])
+                + center_contrast * 2.0
+                + center_coverage * 80.0
+                + response_roundness
+            )
             candidate = _ViaCandidate(
                 center_x=float(center_x),
                 center_y=float(center_y),
@@ -788,13 +833,13 @@ def _via_candidates_from_gradient_radius(
     source: str,
 ) -> list[_ViaCandidate]:
     radius = max(2, int(radius))
-    padding = max(2, int(round(radius * 0.35)))
+    padding = max(2, round(radius * 0.35))
     size = radius * 2 + padding * 2 + 1
     if gradient.shape[0] < size or gradient.shape[1] < size:
         return []
     center = size // 2
     template = np.zeros((size, size), dtype=np.float32)
-    thickness = max(1, int(round(radius * 0.22)))
+    thickness = max(1, round(radius * 0.22))
     cv2.circle(template, (center, center), radius, 1.0, thickness=thickness, lineType=cv2.LINE_AA)
     if float(template.sum()) <= 0.0:
         return []
@@ -861,7 +906,7 @@ def _circle_gradient_metrics(
     bright: bool,
 ) -> tuple[float, float]:
     radius = max(2, int(radius))
-    padding = max(2, int(round(radius * 0.35)))
+    padding = max(2, round(radius * 0.35))
     left = max(0, int(center_x) - radius - padding)
     top = max(0, int(center_y) - radius - padding)
     right = min(gradient.shape[1], int(center_x) + radius + padding + 1)
@@ -874,7 +919,7 @@ def _circle_gradient_metrics(
     patch_y = gradient_y[top:bottom, left:right].astype(np.float32)
     ring = np.zeros_like(patch, dtype=np.uint8)
     local_center = (int(center_x) - left, int(center_y) - top)
-    thickness = max(1, int(round(radius * 0.24)))
+    thickness = max(1, round(radius * 0.24))
     cv2.circle(ring, local_center, radius, 255, thickness=thickness, lineType=cv2.LINE_AA)
     ring_mask = ring > 0
     ring_values = patch[ring_mask]
@@ -896,7 +941,9 @@ def _circle_gradient_metrics(
     strong_directional = strong_ring & (directional >= 0.35)
     directional_coverage = float(np.count_nonzero(strong_directional)) / float(ring_values.size)
     angular_coverage = _angular_ring_coverage(strong_directional, grid_x, grid_y)
-    center_contrast, center_fill_coverage = _radial_center_metrics(source_patch, radius_map, grid_x, grid_y, radius, bright=bright)
+    center_contrast, center_fill_coverage = _radial_center_metrics(
+        source_patch, radius_map, grid_x, grid_y, radius, bright=bright
+    )
     if center_contrast < max(float(min_strength), strength * 0.32):
         return strength, 0.0
     coverage = min(
@@ -939,9 +986,11 @@ def _radial_center_metrics(
     return signed_contrast, fill_coverage
 
 
-def _source_radial_metrics(source_image: np.ndarray, center_x: int, center_y: int, radius: int, *, bright: bool) -> tuple[float, float]:
+def _source_radial_metrics(
+    source_image: np.ndarray, center_x: int, center_y: int, radius: int, *, bright: bool
+) -> tuple[float, float]:
     radius = max(2, int(radius))
-    padding = max(2, int(round(radius * 0.65)))
+    padding = max(2, round(radius * 0.65))
     left = max(0, int(center_x) - radius - padding)
     top = max(0, int(center_y) - radius - padding)
     right = min(source_image.shape[1], int(center_x) + radius + padding + 1)
@@ -956,9 +1005,11 @@ def _source_radial_metrics(source_image: np.ndarray, center_x: int, center_y: in
     return _radial_center_metrics(patch, radius_map, grid_x, grid_y, radius, bright=bright)
 
 
-def _source_line_extension_coverage(source_image: np.ndarray, center_x: int, center_y: int, radius: int, *, bright: bool) -> float:
+def _source_line_extension_coverage(
+    source_image: np.ndarray, center_x: int, center_y: int, radius: int, *, bright: bool
+) -> float:
     radius = max(2, int(radius))
-    outer_radius = max(radius + 2, int(round(radius * 2.4)))
+    outer_radius = max(radius + 2, round(radius * 2.4))
     left = max(0, int(center_x) - outer_radius)
     top = max(0, int(center_y) - outer_radius)
     right = min(source_image.shape[1], int(center_x) + outer_radius + 1)
@@ -1030,7 +1081,9 @@ def _via_candidates_from_spots(
 ) -> list[_ViaCandidate]:
     gate = cv2.dilate(
         ensure_binary_mask(intensity_mask),
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd_kernel_size(expected_span * 1.5), _odd_kernel_size(expected_span * 1.5))),
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (_odd_kernel_size(expected_span * 1.5), _odd_kernel_size(expected_span * 1.5))
+        ),
         iterations=1,
     )
     if cv2.countNonZero(gate) == 0:
@@ -1135,7 +1188,7 @@ def _via_candidates_from_spot_response(
         ys = ys[order]
         xs = xs[order]
 
-    radius = max(2, int(round(expected_span * 0.55)))
+    radius = max(2, round(expected_span * 0.55))
     candidates: list[_ViaCandidate] = []
     for y_coord, x_coord in zip(ys, xs, strict=False):
         contrast, roundness = _spot_candidate_metrics(gated, int(x_coord), int(y_coord), radius)
@@ -1186,7 +1239,7 @@ def _spot_candidate_centroid(response: np.ndarray, center_x: int, center_y: int,
 
 def _spot_candidate_metrics(response: np.ndarray, center_x: int, center_y: int, radius: int) -> tuple[float, float]:
     radius = max(2, int(radius))
-    outer_radius = max(radius + 2, int(round(radius * 1.9)))
+    outer_radius = max(radius + 2, round(radius * 1.9))
     left = max(0, center_x - outer_radius)
     top = max(0, center_y - outer_radius)
     right = min(response.shape[1], center_x + outer_radius + 1)
@@ -1287,9 +1340,9 @@ def _via_candidates_from_hough(
     if prepared.ndim != 2:
         prepared = _via_grayscale(prepared)
     prepared = cv2.GaussianBlur(prepared, (3, 3), 0)
-    min_radius = max(2, int(round(expected_span * 0.28)))
-    max_radius = max(min_radius + 1, int(round(expected_span * 0.85)))
-    min_distance = max(3, int(round(expected_span * 0.85)))
+    min_radius = max(2, round(expected_span * 0.28))
+    max_radius = max(min_radius + 1, round(expected_span * 0.85))
+    min_distance = max(3, round(expected_span * 0.85))
     circles = cv2.HoughCircles(
         prepared,
         cv2.HOUGH_GRADIENT,
@@ -1350,9 +1403,9 @@ def _via_candidates_from_blobs(
     candidates: list[_ViaCandidate] = []
     for keypoint in keypoints:
         diameter = max(2.0, float(keypoint.size))
-        x_coord = int(round(keypoint.pt[0] - diameter / 2.0))
-        y_coord = int(round(keypoint.pt[1] - diameter / 2.0))
-        score = 140.0 + _candidate_response_score(response, x_coord, y_coord, int(round(diameter)), int(round(diameter)))
+        x_coord = round(keypoint.pt[0] - diameter / 2.0)
+        y_coord = round(keypoint.pt[1] - diameter / 2.0)
+        score = 140.0 + _candidate_response_score(response, x_coord, y_coord, round(diameter), round(diameter))
         candidates.append(
             _ViaCandidate(
                 center_x=float(keypoint.pt[0]),
@@ -1407,10 +1460,14 @@ def _candidate_roundness_from_contour(contour: np.ndarray, width: int, height: i
     return max(0.0, min(100.0, circularity, aspect_roundness))
 
 
-def _normalize_via_candidate(candidate: _ViaCandidate, settings: ContourExtractionSettings, expected_span: int) -> _ViaCandidate:
+def _normalize_via_candidate(
+    candidate: _ViaCandidate, settings: ContourExtractionSettings, expected_span: int
+) -> _ViaCandidate:
     width = max(1.0, float(candidate.width))
     height = max(1.0, float(candidate.height))
-    reason = candidate.reason or _via_candidate_rejection_reason(width, height, candidate.roundness, settings, expected_span)
+    reason = candidate.reason or _via_candidate_rejection_reason(
+        width, height, candidate.roundness, settings, expected_span
+    )
     return _ViaCandidate(
         center_x=float(candidate.center_x),
         center_y=float(candidate.center_y),
@@ -1453,7 +1510,9 @@ def _via_candidate_rejection_reason(
     return ""
 
 
-def _candidate_size_limits(settings: ContourExtractionSettings, expected_span: int) -> tuple[float, float, float, float]:
+def _candidate_size_limits(
+    settings: ContourExtractionSettings, expected_span: int
+) -> tuple[float, float, float, float]:
     if settings.via_size_mode == "fixed" and settings.fixed_via_widths and settings.fixed_via_heights:
         widths = [float(value) for value in settings.fixed_via_widths if int(value) > 0]
         heights = [float(value) for value in settings.fixed_via_heights if int(value) > 0]
@@ -1500,8 +1559,8 @@ def _render_via_candidates_mask(
     mask = np.zeros((height, width), dtype=np.uint8)
     for candidate in candidates:
         box_width, box_height = _rendered_candidate_size(candidate, settings)
-        center = (int(round(candidate.center_x)), int(round(candidate.center_y)))
-        axes = (max(1, int(round(box_width / 2.0))), max(1, int(round(box_height / 2.0))))
+        center = (round(candidate.center_x), round(candidate.center_y))
+        axes = (max(1, round(box_width / 2.0)), max(1, round(box_height / 2.0)))
         cv2.ellipse(mask, center, axes, 0.0, 0.0, 360.0, 255, thickness=-1, lineType=cv2.LINE_8)
     return ensure_binary_mask(mask)
 
@@ -1511,8 +1570,10 @@ def _rendered_candidate_size(candidate: _ViaCandidate, settings: ContourExtracti
     if settings.via_size_mode == "fixed" and pairs:
         best_width, best_height = min(
             pairs,
-            key=lambda pair: abs(float(pair[0]) - candidate.width) / max(1.0, float(pair[0]))
-            + abs(float(pair[1]) - candidate.height) / max(1.0, float(pair[1])),
+            key=lambda pair: (
+                abs(float(pair[0]) - candidate.width) / max(1.0, float(pair[0]))
+                + abs(float(pair[1]) - candidate.height) / max(1.0, float(pair[1]))
+            ),
         )
         return float(best_width), float(best_height)
     return max(2.0, float(candidate.width)), max(2.0, float(candidate.height))
@@ -1535,7 +1596,9 @@ def _debug_candidates_from_via_candidates(
                 perimeter=float(2.0 * (candidate.width + candidate.height)),
                 roundness=float(candidate.roundness),
                 accepted=bool(accepted),
-                reason=reason or candidate.reason or (f"accepted:{candidate.source}" if accepted else f"rejected:{candidate.source}"),
+                reason=reason
+                or candidate.reason
+                or (f"accepted:{candidate.source}" if accepted else f"rejected:{candidate.source}"),
                 source=str(candidate.source),
                 score=float(candidate.score),
             )
@@ -1544,12 +1607,14 @@ def _debug_candidates_from_via_candidates(
 
 
 def _candidate_bbox(candidate: _ViaCandidate) -> tuple[int, int, int, int]:
-    left = int(round(candidate.center_x - candidate.width / 2.0))
-    top = int(round(candidate.center_y - candidate.height / 2.0))
-    return left, top, max(1, int(round(candidate.width))), max(1, int(round(candidate.height)))
+    left = round(candidate.center_x - candidate.width / 2.0)
+    top = round(candidate.center_y - candidate.height / 2.0)
+    return left, top, max(1, round(candidate.width)), max(1, round(candidate.height))
 
 
-def _via_local_range_mask(gray: np.ndarray, low: int, high: int, settings: ContourExtractionSettings, *, bright: bool) -> np.ndarray:
+def _via_local_range_mask(
+    gray: np.ndarray, low: int, high: int, settings: ContourExtractionSettings, *, bright: bool
+) -> np.ndarray:
     expected_span = _expected_via_span(settings)
     column_normalized = _normalize_columns(gray)
     row_normalized = _normalize_rows(gray)
@@ -1567,7 +1632,9 @@ def _via_local_range_mask(gray: np.ndarray, low: int, high: int, settings: Conto
     )
     response_mask = _response_threshold_mask(response, intensity_mask)
 
-    seed_mask = cv2.bitwise_and(response_mask, cv2.dilate(intensity_mask, np.ones((3, 3), dtype=np.uint8), iterations=1))
+    seed_mask = cv2.bitwise_and(
+        response_mask, cv2.dilate(intensity_mask, np.ones((3, 3), dtype=np.uint8), iterations=1)
+    )
     if cv2.countNonZero(seed_mask) == 0:
         seed_mask = intensity_mask
 
@@ -1672,7 +1739,9 @@ def process_image_path(
     if not contour_settings.debug_enabled:
         debug_candidates = []
     debug_gradient_maps: dict[str, np.ndarray] = {}
-    if contour_settings.debug_gradient_map_enabled or (contour_settings.debug_enabled and contour_settings.debug_gradient_map_enabled):
+    if contour_settings.debug_gradient_map_enabled or (
+        contour_settings.debug_enabled and contour_settings.debug_gradient_map_enabled
+    ):
         try:
             debug_gradient_maps = build_detection_debug_maps(source, preprocessed, contour_settings)
         except Exception:  # pragma: no cover - defensive: debug never breaks processing
@@ -1735,5 +1804,7 @@ def _normalize_columns(gray: np.ndarray) -> np.ndarray:
         if maximum - minimum < 1e-6:
             normalized[:, column_index] = data[:, column_index]
             continue
-        normalized[:, column_index] = np.clip((column - minimum) * (255.0 / (maximum - minimum)), 0, 255).astype(np.uint8)
+        normalized[:, column_index] = np.clip((column - minimum) * (255.0 / (maximum - minimum)), 0, 255).astype(
+            np.uint8
+        )
     return normalized

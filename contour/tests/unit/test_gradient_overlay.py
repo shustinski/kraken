@@ -106,23 +106,17 @@ class GradientOverlayWidgetTests(unittest.TestCase):
         self.assertFalse(overlay_item.isVisible())
 
     def test_threshold_mode_honours_via_gradient_min_strength(self) -> None:
-        self.widget.extraction_profile_combo.setCurrentIndex(
-            self.widget.extraction_profile_combo.findData("vias")
-        )
+        self.widget.extraction_profile_combo.setCurrentIndex(self.widget.extraction_profile_combo.findData("vias"))
         self._app.processEvents()
         self.widget.via_gradient_min_strength_spin.setValue(10.0)
         self.widget.gradient_overlay_mode_combo.setCurrentIndex(1)
         self.widget.gradient_overlay_checkbox.setChecked(True)
         self._app.processEvents()
 
-        overlay_low = self.widget._build_gradient_overlay_image(
-            self.widget._workspace.current_state.source_image
-        )
+        overlay_low = self.widget._build_gradient_overlay_image(self.widget._workspace.current_state.source_image)
 
         self.widget.via_gradient_min_strength_spin.setValue(250.0)
-        overlay_high = self.widget._build_gradient_overlay_image(
-            self.widget._workspace.current_state.source_image
-        )
+        overlay_high = self.widget._build_gradient_overlay_image(self.widget._workspace.current_state.source_image)
 
         low_active = int(overlay_low[..., 1].sum())
         high_active = int(overlay_high[..., 1].sum())

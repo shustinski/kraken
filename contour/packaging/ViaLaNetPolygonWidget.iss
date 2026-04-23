@@ -1,6 +1,8 @@
 #define MyAppName "Contour"
-#define MyAppVersion "0.3.5"
-#define MyAppPublisher "Contour"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.4.0"
+#endif
+#define MyAppPublisher "ViaLaNet"
 #define MyAppExeName "Contour.exe"
 #define MyAppDistDir "..\\dist\\Contour"
 #define MyAppIcon "..\\polygon_widget\\resources\\styles\\icons\\icon.ico"

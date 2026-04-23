@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any
 
 from ...domain import PolygonData
 from ..processing import BatchImageResult, ImageProcessingState
@@ -93,7 +94,11 @@ class WorkspaceSession:
         load_cif_overlay: Callable[[str], list[PolygonData]],
     ) -> WorkspaceLoadResult:
         image_path = str(Path(path))
-        if self._current_image_path == image_path and self._current_state is not None and image_path in self._state_cache:
+        if (
+            self._current_image_path == image_path
+            and self._current_state is not None
+            and image_path in self._state_cache
+        ):
             return WorkspaceLoadResult(
                 image_path=image_path,
                 state=self._current_state,
@@ -108,7 +113,8 @@ class WorkspaceSession:
                 image_path=image_path,
                 state=cached_state,
                 cache_hit=True,
-                prepared_image_required=cached_state.preprocessed_image is None and cached_state.source_image is not None,
+                prepared_image_required=cached_state.preprocessed_image is None
+                and cached_state.source_image is not None,
             )
 
         state = ImageProcessingState(
@@ -150,7 +156,9 @@ class WorkspaceSession:
             debug_candidates=list(result.debug_candidates),
             debug_gradient_maps=dict(result.debug_gradient_maps),
             loaded_cif_path=None if existing_state is None else existing_state.loaded_cif_path,
-            reference_polygons=[] if existing_state is None else [polygon.clone() for polygon in existing_state.reference_polygons],
+            reference_polygons=[]
+            if existing_state is None
+            else [polygon.clone() for polygon in existing_state.reference_polygons],
         )
         self._state_cache[result.image_path] = new_state
         if self._current_image_path != result.image_path:

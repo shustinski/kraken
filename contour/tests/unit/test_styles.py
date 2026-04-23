@@ -11,7 +11,7 @@ class StylesheetTests(unittest.TestCase):
         base_dir = Path(__file__).resolve().parents[2] / "polygon_widget" / "resources" / "styles"
 
         rewritten = _rewrite_relative_urls(
-            'QCheckBox::indicator:checked { image: url(icons/check_light.svg); }',
+            "QCheckBox::indicator:checked { image: url(icons/check_light.svg); }",
             base_dir,
         )
 

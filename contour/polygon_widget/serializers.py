@@ -93,7 +93,7 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
             center_x = _parse_cif_int(payload[2])
             center_y = _parse_cif_int(payload[3])
 
-            width, height = image_size
+            _, height = image_size
             image_center_y = float(height - center_y)
             half_width = float(box_width) / 2.0
             half_height = float(box_height) / 2.0
@@ -128,15 +128,14 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
             continue
 
         raw_points = [
-            (_parse_cif_int(payload[index]), _parse_cif_int(payload[index + 1]))
-            for index in range(0, len(payload), 2)
+            (_parse_cif_int(payload[index]), _parse_cif_int(payload[index + 1])) for index in range(0, len(payload), 2)
         ]
         if len(raw_points) >= 2 and raw_points[0] == raw_points[-1]:
             raw_points = raw_points[:-1]
         if len(raw_points) < 3:
             continue
 
-        width, height = image_size
+        _width, height = image_size
         image_points = [(float(x_coord), float(height - y_coord)) for x_coord, y_coord in raw_points]
         area, perimeter, bbox = compute_polygon_metrics(image_points)
         polygons.append(
@@ -162,17 +161,17 @@ def _polygon_to_cif_line(polygon: PolygonData, image_width: int, image_height: i
         y_values = [point[1] for point in polygon.points]
         if len(x_values) < 4 or len(y_values) < 4:
             return ""
-        width = max(1, int(round(max(x_values) - min(x_values))))
-        height = max(1, int(round(max(y_values) - min(y_values))))
-        center_x = int(round((min(x_values) + max(x_values)) / 2.0))
-        center_y = int(round((min(y_values) + max(y_values)) / 2.0))
+        width = max(1, round(max(x_values) - min(x_values)))
+        height = max(1, round(max(y_values) - min(y_values)))
+        center_x = round((min(x_values) + max(x_values)) / 2.0)
+        center_y = round((min(y_values) + max(y_values)) / 2.0)
         cif_x = max(0, min(image_width, center_x))
-        cif_y = max(0, min(image_height, int(round(image_height - center_y))))
+        cif_y = max(0, min(image_height, round(image_height - center_y)))
         return f"B {width} {height} {cif_x} {cif_y};"
     points = []
     for x_coord, y_coord in polygon.points:
-        cif_x = max(0, min(image_width, int(round(x_coord))))
-        cif_y = max(0, min(image_height, int(round(image_height - y_coord))))
+        cif_x = max(0, min(image_width, round(x_coord)))
+        cif_y = max(0, min(image_height, round(image_height - y_coord)))
         points.append((cif_x, cif_y))
     if len(points) < 3:
         return ""

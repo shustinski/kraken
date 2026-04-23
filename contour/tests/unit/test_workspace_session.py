@@ -89,7 +89,9 @@ class WorkspaceSessionTests(unittest.TestCase):
 
         changed_polygon = polygon.clone()
         changed_polygon.points[1] = (6.0, 0.0)
-        changed_polygon.area, changed_polygon.perimeter, changed_polygon.bbox = compute_polygon_metrics(changed_polygon.points)
+        changed_polygon.area, changed_polygon.perimeter, changed_polygon.bbox = compute_polygon_metrics(
+            changed_polygon.points
+        )
         session.update_current_polygons([changed_polygon])
 
         self.assertTrue(session.current_image_has_changes())

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from importlib import import_module
 
+from .__version__ import __version__
 
 _LAZY_EXPORTS = {
     "BatchImageResult": (".models", "BatchImageResult"),
@@ -23,7 +24,7 @@ _LAZY_EXPORTS = {
     "main": (".application", "main"),
 }
 
-__all__ = list(_LAZY_EXPORTS)
+__all__ = ["__version__", *_LAZY_EXPORTS]
 
 
 def __getattr__(name: str):

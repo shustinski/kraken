@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QObject, QRectF, Qt, QRunnable, pyqtSignal
+from PyQt6.QtCore import QObject, QRectF, QRunnable, Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QWidget
 
+from ...application.use_cases.autotune import auto_tune_pipeline
 from ...application.use_cases.processing import (
     PreparedImageRequest,
     PreviewProcessingRequest,
     prepare_image_for_preview,
     process_image_path,
 )
-from ...application.use_cases.autotune import auto_tune_pipeline
 from .image_conversion import cv_to_qimage
 
 

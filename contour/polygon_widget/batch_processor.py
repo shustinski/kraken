@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import multiprocessing as mp
+from collections.abc import Iterable
 from dataclasses import replace
 from queue import Empty
-from typing import Iterable
 
 import cv2
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
@@ -54,10 +55,8 @@ def _batch_process_worker(
     display_settings: DisplaySettings,
     ui_language: str,
 ) -> None:
-    try:
+    with contextlib.suppress(Exception):
         cv2.setNumThreads(1)
-    except Exception:
-        pass
 
     pipeline = PreprocessingPipeline.from_dict(pipeline_config)
     while not cancel_event.is_set():

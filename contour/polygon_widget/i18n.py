@@ -6,6 +6,7 @@ try:
     from lib.ui_texts import get_ui_language as _get_global_ui_language
     from lib.ui_texts import normalize_ui_language as _normalize_global_ui_language
 except ImportError:
+
     def _get_global_ui_language() -> str:
         return "ru"
 

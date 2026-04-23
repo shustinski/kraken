@@ -9,10 +9,8 @@ from polygon_widget.edge_detection import (
     EDGE_METHOD_AUTO_CANNY,
     EDGE_METHOD_CHOICES,
     EDGE_METHOD_COMBINED,
-    EDGE_METHOD_LAPLACIAN,
     EDGE_METHOD_LOG,
     EDGE_METHOD_PHASE_CONGRUENCY,
-    EDGE_METHOD_RIDGE,
     EDGE_METHOD_SCHARR,
     EDGE_METHOD_SOBEL,
     EDGE_METHOD_STRUCTURED,
@@ -86,9 +84,11 @@ class EdgeDetectionMethodsTests(unittest.TestCase):
         image = _make_bright_spot_image()
         edges = auto_canny(image)
         unique_values = np.unique(edges)
-        self.assertTrue(np.array_equal(unique_values, np.array([0], dtype=np.uint8))
-                        or np.array_equal(unique_values, np.array([0, 255], dtype=np.uint8))
-                        or set(int(v) for v in unique_values).issubset({0, 255}))
+        self.assertTrue(
+            np.array_equal(unique_values, np.array([0], dtype=np.uint8))
+            or np.array_equal(unique_values, np.array([0, 255], dtype=np.uint8))
+            or set(int(v) for v in unique_values).issubset({0, 255})
+        )
         self.assertEqual(edges.dtype, np.uint8)
 
     def test_log_responds_stronger_to_blob_than_to_flat_area(self) -> None:

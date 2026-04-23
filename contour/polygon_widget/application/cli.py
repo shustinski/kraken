@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
-from typing import Sequence
+from collections.abc import Sequence
 
 from .bootstrap import build_application
 

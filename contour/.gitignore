@@ -1,16 +1,46 @@
 .idea/
+.vscode/
+
 __pycache__/
-.pytest_cache/
+*.py[cod]
+*$py.class
+
 .venv/
+venv/
+env/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .pycache_tmp/
 .pytest_tmp/
+.tmp-tests/
 .codex*
 .tracecov*/
+
 build/
 dist/
+
+*.egg-info/
+
 polygon_widget/__pycache__/
 
 *.cif
 *.exe
 
+packaging/*.exe
+!packaging/ViaLaNetPolygonWidget.iss
+!packaging/ViaLaNetPolygonWidget.spec
 
+*.log
+logs/
+
+coverage.xml
+.coverage
+.coverage.*
+htmlcov/
+
+*.bak
+*.tmp
+Thumbs.db
+.DS_Store

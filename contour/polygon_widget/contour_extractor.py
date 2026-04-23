@@ -10,7 +10,6 @@ from .application.processing import ContourDebugCandidate, ContourExtractionSett
 from .domain import PolygonData, compute_polygon_metrics
 from .utils import ensure_binary_mask
 
-
 RETRIEVAL_MODE_MAP = {
     "RETR_EXTERNAL": cv2.RETR_EXTERNAL,
     "RETR_CCOMP": cv2.RETR_CCOMP,
@@ -95,13 +94,13 @@ def _centered_bbox(
     x_coord, y_coord, width, height = bbox
     center_x = x_coord + width / 2.0
     center_y = y_coord + height / 2.0
-    left = int(round(center_x - target_width / 2.0))
-    top = int(round(center_y - target_height / 2.0))
+    left = round(center_x - target_width / 2.0)
+    top = round(center_y - target_height / 2.0)
     return (left, top, max(1, int(target_width)), max(1, int(target_height)))
 
 
 def _size_matches_with_tolerance(actual: int, target: int) -> bool:
-    tolerance = max(2, int(round(target * 0.25)))
+    tolerance = max(2, round(target * 0.25))
     return abs(actual - target) <= tolerance
 
 
@@ -153,9 +152,7 @@ def _matches_via_size_constraints(bbox_width: int, bbox_height: int, config: Con
         return False
     if bbox_height < config.min_via_height:
         return False
-    if config.max_via_height is not None and bbox_height > config.max_via_height:
-        return False
-    return True
+    return not (config.max_via_height is not None and bbox_height > config.max_via_height)
 
 
 def _via_roundness_score(contour: np.ndarray, bbox_width: int, bbox_height: int) -> float:
@@ -177,7 +174,9 @@ def _bbox_center_inside(inner_bbox: tuple[int, int, int, int], outer_bbox: tuple
     )
 
 
-def _debug_candidates_for_mask(mask: np.ndarray, config: ContourExtractionSettings, polygons: list[PolygonData]) -> list[ContourDebugCandidate]:
+def _debug_candidates_for_mask(
+    mask: np.ndarray, config: ContourExtractionSettings, polygons: list[PolygonData]
+) -> list[ContourDebugCandidate]:
     binary_mask = ensure_binary_mask(mask)
     image_height, image_width = binary_mask.shape[:2]
     contours, hierarchy = cv2.findContours(
@@ -212,7 +211,11 @@ def _debug_candidates_for_mask(mask: np.ndarray, config: ContourExtractionSettin
         area, perimeter, bbox = compute_polygon_metrics(points)
         bbox_width = int(bbox[2])
         bbox_height = int(bbox[3])
-        roundness = _via_roundness_score(contour, bbox_width, bbox_height) if config.object_type == "via" or config.output_mode == "box" else 0.0
+        roundness = (
+            _via_roundness_score(contour, bbox_width, bbox_height)
+            if config.object_type == "via" or config.output_mode == "box"
+            else 0.0
+        )
         candidate = ContourDebugCandidate(
             contour_index=contour_index,
             bbox=bbox,
@@ -242,7 +245,9 @@ def _debug_candidates_for_mask(mask: np.ndarray, config: ContourExtractionSettin
             reason = "min_bbox_height"
         elif config.max_bbox_height is not None and bbox_height > config.max_bbox_height:
             reason = "max_bbox_height"
-        elif (config.object_type == "via" or config.output_mode == "box") and not _matches_via_size_constraints(bbox_width, bbox_height, config):
+        elif (config.object_type == "via" or config.output_mode == "box") and not _matches_via_size_constraints(
+            bbox_width, bbox_height, config
+        ):
             reason = "via_size"
         elif (config.object_type == "via" or config.output_mode == "box") and roundness < config.via_min_roundness:
             reason = "roundness"
@@ -286,7 +291,10 @@ def _debug_candidates_for_mask(mask: np.ndarray, config: ContourExtractionSettin
             candidate.accepted = False
             candidate.reason = reason
         else:
-            candidate.accepted = any(_bboxes_overlap(candidate.bbox, bbox) or _bbox_center_inside(candidate.bbox, bbox) for bbox in accepted_bboxes)
+            candidate.accepted = any(
+                _bboxes_overlap(candidate.bbox, bbox) or _bbox_center_inside(candidate.bbox, bbox)
+                for bbox in accepted_bboxes
+            )
             candidate.reason = "accepted" if candidate.accepted else "overlap_suppressed"
         candidates.append(candidate)
 
@@ -322,7 +330,9 @@ def _corner_indices(points: np.ndarray, *, step: int = 2, max_angle: float = 145
     return result
 
 
-def _polygon_vertex_angle(prev_point: tuple[float, float], current_point: tuple[float, float], next_point: tuple[float, float]) -> float:
+def _polygon_vertex_angle(
+    prev_point: tuple[float, float], current_point: tuple[float, float], next_point: tuple[float, float]
+) -> float:
     first = np.asarray(prev_point, dtype=np.float32) - np.asarray(current_point, dtype=np.float32)
     second = np.asarray(next_point, dtype=np.float32) - np.asarray(current_point, dtype=np.float32)
     first_norm = float(np.linalg.norm(first))
@@ -370,7 +380,10 @@ def _adaptive_approximate_contour(contour: np.ndarray, epsilon: float, preserve_
     angle_limit = 150.0 if epsilon <= 1.5 else 140.0 if epsilon <= 3.0 else 130.0
     for corner_index in _corner_indices(contour_points, max_angle=angle_limit):
         corner_point = contour_points[corner_index]
-        if any(np.linalg.norm(corner_point - simplified_point) <= max(1.5, epsilon * 1.2) for simplified_point in simplified_points):
+        if any(
+            np.linalg.norm(corner_point - simplified_point) <= max(1.5, epsilon * 1.2)
+            for simplified_point in simplified_points
+        ):
             continue
         selected_indices.add(corner_index)
 

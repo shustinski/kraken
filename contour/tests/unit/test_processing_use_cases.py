@@ -372,7 +372,12 @@ class ProcessingUseCasesTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result.polygons), 1)
-        self.assertTrue(any(candidate.accepted and candidate.reason.startswith("accepted:gradient") for candidate in result.debug_candidates))
+        self.assertTrue(
+            any(
+                candidate.accepted and candidate.reason.startswith("accepted:gradient")
+                for candidate in result.debug_candidates
+            )
+        )
 
     def test_via_profile_gradient_detects_bright_spot_with_ui_coverage(self) -> None:
         source_image = np.full((64, 64), 90, dtype=np.uint8)
@@ -410,7 +415,12 @@ class ProcessingUseCasesTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result.polygons), 1)
-        self.assertTrue(any(candidate.accepted and candidate.reason.startswith("accepted:gradient") for candidate in result.debug_candidates))
+        self.assertTrue(
+            any(
+                candidate.accepted and candidate.reason.startswith("accepted:gradient")
+                for candidate in result.debug_candidates
+            )
+        )
 
     def test_via_profile_gradient_detects_bright_spots_on_trace(self) -> None:
         rng = np.random.default_rng(2)
@@ -458,7 +468,12 @@ class ProcessingUseCasesTests(unittest.TestCase):
         ]
         self.assertEqual(len(result.polygons), len(expected_x))
         for x_coord in expected_x:
-            self.assertTrue(any(abs(center_x - x_coord) <= 3.0 and abs(center_y - 79) <= 3.0 for center_x, center_y in accepted_centers))
+            self.assertTrue(
+                any(
+                    abs(center_x - x_coord) <= 3.0 and abs(center_y - 79) <= 3.0
+                    for center_x, center_y in accepted_centers
+                )
+            )
 
     def test_via_profile_gradient_rejects_linear_edges(self) -> None:
         source_image = np.full((96, 96), 80, dtype=np.uint8)
@@ -537,7 +552,9 @@ class ProcessingUseCasesTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result.polygons), 2)
-        self.assertTrue(all(candidate.reason == "accepted:template" for candidate in result.debug_candidates if candidate.accepted))
+        self.assertTrue(
+            all(candidate.reason == "accepted:template" for candidate in result.debug_candidates if candidate.accepted)
+        )
 
     def test_via_profile_spot_detector_rejects_long_trace_background(self) -> None:
         source_image = np.full((100, 160), 50, dtype=np.uint8)
@@ -628,8 +645,16 @@ class ProcessingUseCasesTests(unittest.TestCase):
 
         maps = build_detection_debug_maps(source_image, source_image, settings)
 
-        expected = {"source_gray", "gradient_elevation", "gradient_color", "scharr",
-                    "phase_congruency", "structured", "ridge", "mask"}
+        expected = {
+            "source_gray",
+            "gradient_elevation",
+            "gradient_color",
+            "scharr",
+            "phase_congruency",
+            "structured",
+            "ridge",
+            "mask",
+        }
         self.assertTrue(expected.issubset(maps.keys()))
         self.assertEqual(maps["source_gray"].shape, source_image.shape)
         self.assertEqual(maps["gradient_elevation"].dtype, np.uint8)

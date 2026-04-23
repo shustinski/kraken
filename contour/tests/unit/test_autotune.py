@@ -26,7 +26,7 @@ def _render_mask(image_shape: tuple[int, int], polygons: list[PolygonData]) -> n
     mask = np.zeros(image_shape, dtype=np.uint8)
     for polygon in sorted(polygons, key=lambda item: item.is_hole):
         points = np.asarray(
-            [[int(round(x_coord)), int(round(y_coord))] for x_coord, y_coord in polygon.points],
+            [[round(x_coord), round(y_coord)] for x_coord, y_coord in polygon.points],
             dtype=np.int32,
         )
         cv2.fillPoly(mask, [points.reshape((-1, 1, 2))], 0 if polygon.is_hole else 255)

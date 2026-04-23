@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from enum import Enum
+import itertools
+from enum import StrEnum
 from math import atan2, cos, hypot, pi, sin
 
 import cv2
@@ -42,7 +43,7 @@ from .graphics_items import EditablePolygonItem, VertexHandleItem
 from .i18n import active_language, tr
 
 
-class EditorTool(str, Enum):
+class EditorTool(StrEnum):
     SELECT = "select"
     SELECT_AREA = "select_area"
     PAN = "pan"
@@ -56,17 +57,17 @@ class EditorTool(str, Enum):
     DELETE_POLYGON = "delete_polygon"
 
 
-class PolygonCreateMode(str, Enum):
+class PolygonCreateMode(StrEnum):
     POINTS = "points"
     RECTANGLE = "rectangle"
 
 
-class BrushMode(str, Enum):
+class BrushMode(StrEnum):
     FREEFORM = "freeform"
     ANGLED = "angled"
 
 
-class DeleteVertexMode(str, Enum):
+class DeleteVertexMode(StrEnum):
     SINGLE = "single"
     AREA = "area"
 
@@ -429,14 +430,10 @@ class PolygonEditorScene(QGraphicsScene):
         if self._selected_polygon_id is not None:
             candidate_ids.append(self._selected_polygon_id)
         candidate_ids.extend(
-            polygon_id
-            for polygon_id in sorted(self._selected_polygon_ids)
-            if polygon_id != self._selected_polygon_id
+            polygon_id for polygon_id in sorted(self._selected_polygon_ids) if polygon_id != self._selected_polygon_id
         )
         candidate_ids.extend(
-            polygon_id
-            for polygon_id in sorted(self._polygons)
-            if polygon_id not in self._selected_polygon_ids
+            polygon_id for polygon_id in sorted(self._polygons) if polygon_id not in self._selected_polygon_ids
         )
         for polygon_id in candidate_ids:
             polygon = self._polygons[polygon_id]
@@ -554,7 +551,10 @@ class PolygonEditorScene(QGraphicsScene):
 
     def append_pending_point(self, scene_pos: QPointF) -> None:
         point = (scene_pos.x(), scene_pos.y())
-        if self._pending_points and hypot(point[0] - self._pending_points[-1][0], point[1] - self._pending_points[-1][1]) < 1.0:
+        if (
+            self._pending_points
+            and hypot(point[0] - self._pending_points[-1][0], point[1] - self._pending_points[-1][1]) < 1.0
+        ):
             return
         self._pending_points.append(point)
         self._update_pending_path()
@@ -635,7 +635,9 @@ class PolygonEditorScene(QGraphicsScene):
             self._brush_cursor_item.hide()
             return
         radius = max(1.0, float(thickness)) / 2.0
-        self._brush_cursor_item.setRect(QRectF(scene_pos.x() - radius, scene_pos.y() - radius, radius * 2.0, radius * 2.0))
+        self._brush_cursor_item.setRect(
+            QRectF(scene_pos.x() - radius, scene_pos.y() - radius, radius * 2.0, radius * 2.0)
+        )
         self._brush_cursor_item.show()
 
     def set_via_cursor(self, scene_pos: QPointF | None, width: float, height: float, visible: bool) -> None:
@@ -761,7 +763,9 @@ class PolygonEditorScene(QGraphicsScene):
                 for vertex_index in reversed(matching_indices):
                     if remaining <= 3:
                         break
-                    self.undo_stack.push(DeleteVertexCommand(self, polygon_id, vertex_index, polygon.points[vertex_index]))
+                    self.undo_stack.push(
+                        DeleteVertexCommand(self, polygon_id, vertex_index, polygon.points[vertex_index])
+                    )
                     remaining -= 1
                     deleted += 1
         finally:
@@ -793,7 +797,7 @@ class PolygonEditorScene(QGraphicsScene):
     ) -> bool:
         if not points:
             return False
-        shape_bbox = _bbox_from_points(points, padding=(int(round(thickness / 2.0)) + 2) if thickness else 2)
+        shape_bbox = _bbox_from_points(points, padding=(round(thickness / 2.0) + 2) if thickness else 2)
         overlapping_ids = self._find_overlapping_polygon_ids(points=points, thickness=thickness, shape_bbox=shape_bbox)
         if not overlapping_ids:
             return False
@@ -836,7 +840,7 @@ class PolygonEditorScene(QGraphicsScene):
     ) -> tuple[list[PolygonData], list[int]]:
         if not points:
             return [], []
-        shape_bbox = _bbox_from_points(points, padding=(int(round(thickness / 2.0)) + 2) if thickness else 2)
+        shape_bbox = _bbox_from_points(points, padding=(round(thickness / 2.0) + 2) if thickness else 2)
         overlapping_ids = self._find_overlapping_polygon_ids(points=points, thickness=thickness, shape_bbox=shape_bbox)
         region_boxes = [shape_bbox]
         render_ids = self._render_polygon_ids(overlapping_ids)
@@ -971,11 +975,7 @@ class PolygonEditorScene(QGraphicsScene):
         polygon = self._polygons.get(polygon_id)
         if polygon is None or polygon.is_hole:
             return []
-        return [
-            child.clone()
-            for child in self._polygons.values()
-            if child.parent_id == polygon_id and child.is_hole
-        ]
+        return [child.clone() for child in self._polygons.values() if child.parent_id == polygon_id and child.is_hole]
 
     def _render_polygon_ids(self, overlapping_ids: list[int]) -> list[int]:
         render_ids: list[int] = []
@@ -1026,11 +1026,7 @@ class PolygonEditorScene(QGraphicsScene):
             if current_id in family_ids or current_id not in self._polygons:
                 continue
             family_ids.append(current_id)
-            pending.extend(
-                child_id
-                for child_id, polygon in self._polygons.items()
-                if polygon.parent_id == current_id
-            )
+            pending.extend(child_id for child_id, polygon in self._polygons.items() if polygon.parent_id == current_id)
         return sorted(family_ids)
 
     def _assign_polygon_ids(
@@ -1055,8 +1051,7 @@ class PolygonEditorScene(QGraphicsScene):
         sorted_polygons = sorted(polygons, key=lambda polygon: -abs(float(polygon.area)))
         allocated_ids = self._allocate_polygon_ids(reusable_ids, len(sorted_polygons))
         id_map = {
-            polygon.id: allocated_id
-            for polygon, allocated_id in zip(sorted_polygons, allocated_ids, strict=False)
+            polygon.id: allocated_id for polygon, allocated_id in zip(sorted_polygons, allocated_ids, strict=False)
         }
         for polygon, allocated_id in zip(sorted_polygons, allocated_ids, strict=False):
             polygon.parent_id = None if polygon.parent_id is None else id_map.get(polygon.parent_id)
@@ -1147,7 +1142,9 @@ class PolygonEditorScene(QGraphicsScene):
         if emit_signal:
             self.polygonsChanged.emit()
 
-    def _replace_polygon_points_internal(self, polygon_id: int, points: list[tuple[float, float]], emit_signal: bool = True) -> None:
+    def _replace_polygon_points_internal(
+        self, polygon_id: int, points: list[tuple[float, float]], emit_signal: bool = True
+    ) -> None:
         if polygon_id not in self._polygons:
             return
         self._polygons[polygon_id] = self._create_polygon_snapshot(polygon_id, points)
@@ -1278,7 +1275,9 @@ class PolygonEditorView(QGraphicsView):
 
     def set_tool(self, tool: EditorTool) -> None:
         self._tool = tool
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag if tool == EditorTool.PAN else QGraphicsView.DragMode.NoDrag)
+        self.setDragMode(
+            QGraphicsView.DragMode.ScrollHandDrag if tool == EditorTool.PAN else QGraphicsView.DragMode.NoDrag
+        )
         if tool == EditorTool.ADD_POLYGON:
             self._editor_scene.set_pending_path_width(1.5, cosmetic=True)
         elif tool == EditorTool.BRUSH:
@@ -1444,7 +1443,9 @@ class PolygonEditorView(QGraphicsView):
             if shifted.shape_hint == "box" or shifted.category == "via":
                 x_values = [point[0] for point in shifted.points]
                 y_values = [point[1] for point in shifted.points]
-                path.addEllipse(QRectF(min(x_values), min(y_values), max(x_values) - min(x_values), max(y_values) - min(y_values)))
+                path.addEllipse(
+                    QRectF(min(x_values), min(y_values), max(x_values) - min(x_values), max(y_values) - min(y_values))
+                )
             else:
                 if shifted.points:
                     path.moveTo(shifted.points[0][0], shifted.points[0][1])
@@ -1522,7 +1523,10 @@ class PolygonEditorView(QGraphicsView):
                 self._editor_scene.set_preview_rect(scene_pos, scene_pos)
                 event.accept()
                 return
-            if self._polygon_create_mode == PolygonCreateMode.RECTANGLE and event.button() == Qt.MouseButton.RightButton:
+            if (
+                self._polygon_create_mode == PolygonCreateMode.RECTANGLE
+                and event.button() == Qt.MouseButton.RightButton
+            ):
                 self._drag_kind = "rect_polygon"
                 self._drag_start_scene_pos = scene_pos
                 self._drag_erases = True
@@ -1684,7 +1688,12 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.preview_vertex_move(self._drag_polygon_id, self._drag_vertex_index, scene_pos)
             event.accept()
             return
-        if self._drag_kind == "polygon" and self._drag_polygon_id is not None and self._drag_origin_points is not None and self._drag_start_scene_pos is not None:
+        if (
+            self._drag_kind == "polygon"
+            and self._drag_polygon_id is not None
+            and self._drag_origin_points is not None
+            and self._drag_start_scene_pos is not None
+        ):
             dx = scene_pos.x() - self._drag_start_scene_pos.x()
             dy = scene_pos.y() - self._drag_start_scene_pos.y()
             moved = [(x_coord + dx, y_coord + dy) for x_coord, y_coord in self._drag_origin_points]
@@ -1728,7 +1737,9 @@ class PolygonEditorView(QGraphicsView):
                 self._editor_scene.set_measurement(self._drag_start_scene_pos, target_pos, measurement_text)
                 self.rulerMeasurementChanged.emit(measurement_text)
             elif self._drag_kind == "delete_area" and self._drag_start_scene_pos is not None:
-                self._editor_scene.delete_vertices_in_rect(QRectF(self._drag_start_scene_pos, self.mapToScene(event.position().toPoint())))
+                self._editor_scene.delete_vertices_in_rect(
+                    QRectF(self._drag_start_scene_pos, self.mapToScene(event.position().toPoint()))
+                )
                 self._editor_scene.clear_preview_rect()
             elif self._drag_kind == "select_area" and self._drag_start_scene_pos is not None:
                 release_pos = self.mapToScene(event.position().toPoint())
@@ -1736,7 +1747,9 @@ class PolygonEditorView(QGraphicsView):
                 self._editor_scene.clear_preview_rect()
                 if rect.width() < self._scene_tolerance(3) and rect.height() < self._scene_tolerance(3):
                     polygon_id = self._editor_scene.polygon_at(release_pos)
-                    self._editor_scene.select_polygon(polygon_id, additive=bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier))
+                    self._editor_scene.select_polygon(
+                        polygon_id, additive=bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                    )
                 else:
                     self._editor_scene.select_polygons_in_rect(
                         rect,
@@ -1749,7 +1762,12 @@ class PolygonEditorView(QGraphicsView):
                 self._editor_scene.clear_preview_rect()
                 if clipped.width() >= 2.0 and clipped.height() >= 2.0:
                     self.imageRegionSelected.emit(clipped.x(), clipped.y(), clipped.width(), clipped.height())
-            elif self._drag_kind == "vertex" and self._drag_polygon_id is not None and self._drag_vertex_index is not None and self._drag_origin_points is not None:
+            elif (
+                self._drag_kind == "vertex"
+                and self._drag_polygon_id is not None
+                and self._drag_vertex_index is not None
+                and self._drag_origin_points is not None
+            ):
                 new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
                 old_point = self._drag_origin_points[self._drag_vertex_index]
                 new_point = new_points[self._drag_vertex_index]
@@ -1763,7 +1781,11 @@ class PolygonEditorView(QGraphicsView):
                             new_point,
                         )
                     )
-            elif self._drag_kind == "polygon" and self._drag_polygon_id is not None and self._drag_origin_points is not None:
+            elif (
+                self._drag_kind == "polygon"
+                and self._drag_polygon_id is not None
+                and self._drag_origin_points is not None
+            ):
                 new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
                 if _polygon_points_different(self._drag_origin_points, new_points):
                     self.undo_stack.push(
@@ -1830,7 +1852,12 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.delete_polygon()
             event.accept()
             return
-        if event.key() == Qt.Key.Key_Shift and self._drag_kind == "ruler" and self._drag_start_scene_pos is not None and self._last_pointer_scene_pos is not None:
+        if (
+            event.key() == Qt.Key.Key_Shift
+            and self._drag_kind == "ruler"
+            and self._drag_start_scene_pos is not None
+            and self._last_pointer_scene_pos is not None
+        ):
             target_pos = self._ruler_target(self._drag_start_scene_pos, self._last_pointer_scene_pos, event.modifiers())
             measurement_text = self._format_ruler_measurement(self._drag_start_scene_pos, target_pos)
             self._editor_scene.set_measurement(self._drag_start_scene_pos, target_pos, measurement_text)
@@ -1840,7 +1867,12 @@ class PolygonEditorView(QGraphicsView):
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Shift and self._drag_kind == "ruler" and self._drag_start_scene_pos is not None and self._last_pointer_scene_pos is not None:
+        if (
+            event.key() == Qt.Key.Key_Shift
+            and self._drag_kind == "ruler"
+            and self._drag_start_scene_pos is not None
+            and self._last_pointer_scene_pos is not None
+        ):
             target_pos = self._ruler_target(self._drag_start_scene_pos, self._last_pointer_scene_pos, event.modifiers())
             measurement_text = self._format_ruler_measurement(self._drag_start_scene_pos, target_pos)
             self._editor_scene.set_measurement(self._drag_start_scene_pos, target_pos, measurement_text)
@@ -1886,7 +1918,7 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.finish_pending_polygon()
         self._pending_polygon_erases = None
 
-    def _ruler_target(self, start: QPointF, target: QPointF, modifiers: Qt.KeyboardModifier | Qt.KeyboardModifiers) -> QPointF:
+    def _ruler_target(self, start: QPointF, target: QPointF, modifiers: Qt.KeyboardModifier) -> QPointF:
         if modifiers & Qt.KeyboardModifier.ShiftModifier:
             return _snap_to_45(start, target)
         return QPointF(target)
@@ -1895,11 +1927,7 @@ class PolygonEditorView(QGraphicsView):
         dx = end.x() - start.x()
         dy = end.y() - start.y()
         distance = hypot(dx, dy)
-        return (
-            f"L={distance:.1f}px, dX={dx:.1f}, dY={dy:.1f}"
-            if self._editor_scene._ui_language != "ru"
-            else f"L={distance:.1f}px, dX={dx:.1f}, dY={dy:.1f}"
-        )
+        return f"L={distance:.1f}px, dX={dx:.1f}, dY={dy:.1f}"
 
 
 def _distance_to_segment(point: tuple[float, float], start: tuple[float, float], end: tuple[float, float]) -> float:
@@ -1959,7 +1987,9 @@ def _path_for_polygon(polygon: PolygonData) -> QPainterPath:
     if polygon.shape_hint == "box" or polygon.category == "via":
         x_values = [point[0] for point in polygon.points]
         y_values = [point[1] for point in polygon.points]
-        path.addEllipse(QRectF(min(x_values), min(y_values), max(x_values) - min(x_values), max(y_values) - min(y_values)))
+        path.addEllipse(
+            QRectF(min(x_values), min(y_values), max(x_values) - min(x_values), max(y_values) - min(y_values))
+        )
         return path
     path.moveTo(polygon.points[0][0], polygon.points[0][1])
     for x_coord, y_coord in polygon.points[1:]:
@@ -2085,32 +2115,35 @@ def _clip_bbox_to_scene(bbox: tuple[int, int, int, int], scene_rect: QRectF) -> 
     return x_coord, y_coord, max(1, right - x_coord), max(1, bottom - y_coord)
 
 
-def _fill_polygon_on_mask(mask: np.ndarray, points: list[tuple[float, float]], origin: tuple[int, int], value: int = 255) -> None:
+def _fill_polygon_on_mask(
+    mask: np.ndarray, points: list[tuple[float, float]], origin: tuple[int, int], value: int = 255
+) -> None:
     shifted = np.asarray(
-        [[int(round(x_coord - origin[0])), int(round(y_coord - origin[1]))] for x_coord, y_coord in points],
+        [[round(x_coord - origin[0]), round(y_coord - origin[1])] for x_coord, y_coord in points],
         dtype=np.int32,
     )
     if shifted.shape[0] >= 3:
         cv2.fillPoly(mask, [shifted.reshape((-1, 1, 2))], int(value))
 
 
-def _draw_polygon_outline_on_mask(mask: np.ndarray, points: list[tuple[float, float]], origin: tuple[int, int], value: int = 255) -> None:
+def _draw_polygon_outline_on_mask(
+    mask: np.ndarray, points: list[tuple[float, float]], origin: tuple[int, int], value: int = 255
+) -> None:
     shifted = np.asarray(
-        [[int(round(x_coord - origin[0])), int(round(y_coord - origin[1]))] for x_coord, y_coord in points],
+        [[round(x_coord - origin[0]), round(y_coord - origin[1])] for x_coord, y_coord in points],
         dtype=np.int32,
     )
     if shifted.shape[0] >= 3:
         cv2.polylines(mask, [shifted.reshape((-1, 1, 2))], True, int(value), thickness=1, lineType=cv2.LINE_8)
 
 
-def _draw_stroke_on_mask(mask: np.ndarray, points: list[tuple[float, float]], origin: tuple[int, int], thickness: float) -> None:
-    shifted = [
-        (int(round(x_coord - origin[0])), int(round(y_coord - origin[1])))
-        for x_coord, y_coord in points
-    ]
-    line_width = max(1, int(round(thickness)))
+def _draw_stroke_on_mask(
+    mask: np.ndarray, points: list[tuple[float, float]], origin: tuple[int, int], thickness: float
+) -> None:
+    shifted = [(round(x_coord - origin[0]), round(y_coord - origin[1])) for x_coord, y_coord in points]
+    line_width = max(1, round(thickness))
     radius = max(1, line_width // 2)
-    for start, end in zip(shifted, shifted[1:], strict=False):
+    for start, end in itertools.pairwise(shifted):
         cv2.line(mask, start, end, 255, thickness=line_width, lineType=cv2.LINE_8)
     cv2.circle(mask, shifted[0], radius, 255, thickness=-1, lineType=cv2.LINE_8)
     cv2.circle(mask, shifted[-1], radius, 255, thickness=-1, lineType=cv2.LINE_8)
@@ -2171,10 +2204,7 @@ def _polygons_from_mask(mask: np.ndarray, origin: tuple[int, int]) -> list[Polyg
         if contour is None or len(contour) < 3:
             continue
         approx = cv2.approxPolyDP(contour, 1.0, True)
-        points = [
-            (float(point[0][0] + origin[0]), float(point[0][1] + origin[1]))
-            for point in approx
-        ]
+        points = [(float(point[0][0] + origin[0]), float(point[0][1] + origin[1])) for point in approx]
         if len(points) < 3:
             continue
         area, perimeter, bbox = compute_polygon_metrics(points)
@@ -2186,11 +2216,14 @@ def _polygons_from_mask(mask: np.ndarray, origin: tuple[int, int]) -> list[Polyg
 
     contour_id_to_polygon_id = {
         contour_index: polygon_id
-        for polygon_id, (contour_index, _parent_index, _depth, _points, _area, _perimeter, _bbox)
-        in enumerate(intermediates, start=1)
+        for polygon_id, (contour_index, _parent_index, _depth, _points, _area, _perimeter, _bbox) in enumerate(
+            intermediates, start=1
+        )
     }
     polygons: list[PolygonData] = []
-    for polygon_id, (contour_index, parent_index, depth, points, area, perimeter, bbox) in enumerate(intermediates, start=1):
+    for polygon_id, (contour_index, parent_index, depth, points, area, perimeter, bbox) in enumerate(
+        intermediates, start=1
+    ):
         del contour_index
         polygons.append(
             PolygonData(

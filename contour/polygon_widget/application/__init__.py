@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from importlib import import_module
 
-
 _LAZY_EXPORTS = {
     "PolygonWidgetApplicationComponents": (".bootstrap", "PolygonWidgetApplicationComponents"),
     "PolygonWidgetApplicationModel": (".model", "PolygonWidgetApplicationModel"),

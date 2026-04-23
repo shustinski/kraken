@@ -15,7 +15,6 @@ from PyQt6.QtWidgets import QApplication, QWidget
 
 from polygon_widget.widget import PolygonExtractionWidget
 
-
 GOLDEN_PATH = Path(__file__).resolve().parent.parent / "golden" / "widget_public_api.txt"
 
 

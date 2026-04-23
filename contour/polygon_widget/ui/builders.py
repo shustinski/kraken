@@ -11,10 +11,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QAbstractItemView,
-    QAbstractSpinBox,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -26,7 +24,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -36,26 +33,23 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QToolButton,
     QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from ..application.processing import VIA_SIZE_MODE_FIXED, VIA_SIZE_MODE_RANGE
+from ..application.processing import (
+    VIA_SEARCH_MODE_BLOB,
+    VIA_SEARCH_MODE_HYBRID,
+    VIA_SEARCH_MODE_TEMPLATE,
+    VIA_SIZE_MODE_FIXED,
+    VIA_SIZE_MODE_RANGE,
+)
 from ..contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
 from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
-from ..pipeline import available_operations, get_operation_display_name
-from .i18n_content import (
-    EDITOR_ACTION_TOOLTIPS,
-    EDITOR_TOOL_TOOLTIPS,
-    PIPELINE_CONTROL_TOOLTIPS,
-    PIPELINE_OPERATION_GROUPS,
-    _localized_text,
-)
 from .pipeline_list import PipelineListWidget
 
 if TYPE_CHECKING:
-    from polygon_widget.widget import PolygonExtractionWidget
+    pass
 
 
 def build_ui(self) -> None:
@@ -74,6 +68,7 @@ def build_ui(self) -> None:
     left_scroll.setWidget(controls_container)
     controls_layout = QVBoxLayout(controls_container)
     self.control_tabs = self._build_tabs()
+    self.control_tabs.currentChanged.connect(self._on_control_tab_changed)
     controls_layout.addWidget(self.control_tabs, 1)
     self.main_splitter.addWidget(left_scroll)
     self.visual_panel = self._build_visual_panel()
@@ -89,7 +84,6 @@ def build_ui(self) -> None:
     self.main_splitter.setStretchFactor(1, 1)
     self.main_splitter.setStretchFactor(2, 0)
     self.main_splitter.setSizes([380, 1000, 320])
-
 
 
 def build_path_panel(self) -> QWidget:
@@ -145,7 +139,6 @@ def build_path_panel(self) -> QWidget:
         layout.addWidget(row)
     layout.addWidget(self.refresh_button)
     return self.path_group
-
 
 
 def build_paths_tab(self) -> QWidget:
@@ -220,7 +213,6 @@ def build_paths_tab(self) -> QWidget:
     return tab
 
 
-
 def build_tabs(self) -> QWidget:
     tabs = QTabWidget()
     tabs.setUsesScrollButtons(True)
@@ -233,7 +225,6 @@ def build_tabs(self) -> QWidget:
     tabs.addTab(self.extraction_tab, "Extraction")
     tabs.addTab(self.display_tab, "Display")
     return tabs
-
 
 
 def build_files_tab(self) -> QWidget:
@@ -301,7 +292,6 @@ def build_files_tab(self) -> QWidget:
     return tab
 
 
-
 def build_pipeline_tab(self) -> QWidget:
     tab = QWidget()
     layout = QVBoxLayout(tab)
@@ -349,12 +339,17 @@ def build_pipeline_tab(self) -> QWidget:
     self.save_pipeline_button.clicked.connect(self._save_pipeline_json)
     self.load_pipeline_button = QPushButton("Load JSON")
     self.load_pipeline_button.clicked.connect(self._load_pipeline_json)
+    self.pipeline_preset_combo = QComboBox()
+    self.apply_pipeline_preset_button = QPushButton("Apply filter preset")
+    self.apply_pipeline_preset_button.clicked.connect(self._apply_selected_pipeline_preset)
     self.auto_tune_button = QPushButton("Auto-fit from drawing")
     self.auto_tune_button.clicked.connect(self._start_auto_tune_from_reference)
     self.auto_tune_button.setToolTip("Tunes filter parameters using the drawn polygons as the target result")
     apply_layout.addWidget(self.save_pipeline_button, 0, 0)
     apply_layout.addWidget(self.load_pipeline_button, 0, 1)
-    apply_layout.addWidget(self.auto_tune_button, 1, 0, 1, 2)
+    apply_layout.addWidget(self.pipeline_preset_combo, 1, 0)
+    apply_layout.addWidget(self.apply_pipeline_preset_button, 1, 1)
+    apply_layout.addWidget(self.auto_tune_button, 2, 0, 1, 2)
     apply_layout.setColumnStretch(0, 1)
     apply_layout.setColumnStretch(1, 1)
     steps_layout.addWidget(apply_row)
@@ -400,7 +395,6 @@ def build_pipeline_tab(self) -> QWidget:
     layout.addWidget(self.pipeline_help_group)
     layout.addStretch(1)
     return tab
-
 
 
 def build_extraction_tab(self) -> QWidget:
@@ -521,6 +515,10 @@ def build_extraction_tab(self) -> QWidget:
     self.via_size_mode_combo = QComboBox()
     self.via_size_mode_combo.addItem("Range", VIA_SIZE_MODE_RANGE)
     self.via_size_mode_combo.addItem("Fixed values", VIA_SIZE_MODE_FIXED)
+    self.via_search_mode_combo = QComboBox()
+    self.via_search_mode_combo.addItem("Hybrid", VIA_SEARCH_MODE_HYBRID)
+    self.via_search_mode_combo.addItem("Blob only", VIA_SEARCH_MODE_BLOB)
+    self.via_search_mode_combo.addItem("Template only", VIA_SEARCH_MODE_TEMPLATE)
     self.via_white_range_checkbox = QCheckBox("White range")
     self.via_white_range_checkbox.setChecked(True)
     self.via_white_range_min_spin = QSpinBox()
@@ -529,9 +527,7 @@ def build_extraction_tab(self) -> QWidget:
     self.via_white_range_max_spin = QSpinBox()
     self.via_white_range_max_spin.setRange(0, 255)
     self.via_white_range_max_spin.setValue(255)
-    self.via_white_range_widget = self._build_range_row(
-        self.via_white_range_min_spin, self.via_white_range_max_spin
-    )
+    self.via_white_range_widget = self._build_range_row(self.via_white_range_min_spin, self.via_white_range_max_spin)
     self.via_black_range_checkbox = QCheckBox("Black range")
     self.via_black_range_min_spin = QSpinBox()
     self.via_black_range_min_spin.setRange(0, 255)
@@ -539,92 +535,34 @@ def build_extraction_tab(self) -> QWidget:
     self.via_black_range_max_spin = QSpinBox()
     self.via_black_range_max_spin.setRange(0, 255)
     self.via_black_range_max_spin.setValue(30)
-    self.via_black_range_widget = self._build_range_row(
-        self.via_black_range_min_spin, self.via_black_range_max_spin
-    )
-    self.via_detector_methods_widget = QWidget()
-    self.via_detector_methods_layout = QGridLayout(self.via_detector_methods_widget)
-    self.via_detector_methods_layout.setContentsMargins(0, 0, 0, 0)
-    self.via_detector_methods_layout.setHorizontalSpacing(10)
-    self.via_detector_methods_layout.setVerticalSpacing(4)
-    self.via_detector_gradient_checkbox = QCheckBox("Gradient")
-    self.via_detector_gradient_checkbox.setChecked(True)
-    self.via_detector_spot_checkbox = QCheckBox("Spots")
-    self.via_detector_spot_checkbox.setChecked(True)
-    self.via_detector_hough_checkbox = QCheckBox("Hough")
-    self.via_detector_hough_checkbox.setChecked(True)
-    self.via_detector_components_checkbox = QCheckBox("Components")
-    self.via_detector_components_checkbox.setChecked(True)
-    self.via_detector_contours_checkbox = QCheckBox("Contours")
-    self.via_detector_contours_checkbox.setChecked(True)
-    self.via_detector_morphology_checkbox = QCheckBox("Morphology")
-    self.via_detector_morphology_checkbox.setChecked(True)
-    self.via_detector_template_checkbox = QCheckBox("Template")
-    self.via_detector_template_checkbox.setChecked(True)
-    self.via_detector_blob_checkbox = QCheckBox("Blob")
-    self.via_detector_blob_checkbox.setChecked(True)
-    for row_index, (left_checkbox, right_checkbox) in enumerate(
-        [
-            (self.via_white_range_checkbox, self.via_black_range_checkbox),
-            (self.via_detector_gradient_checkbox, self.via_detector_spot_checkbox),
-            (self.via_detector_hough_checkbox, self.via_detector_components_checkbox),
-            (self.via_detector_contours_checkbox, self.via_detector_morphology_checkbox),
-            (self.via_detector_template_checkbox, self.via_detector_blob_checkbox),
-        ]
-    ):
-        self.via_detector_methods_layout.addWidget(left_checkbox, row_index, 0)
-        if right_checkbox is not None:
-            self.via_detector_methods_layout.addWidget(right_checkbox, row_index, 1)
-    self.via_spot_min_contrast_spin = QDoubleSpinBox()
-    self.via_spot_min_contrast_spin.setRange(0.0, 255.0)
-    self.via_spot_min_contrast_spin.setDecimals(1)
-    self.via_spot_min_contrast_spin.setSingleStep(1.0)
-    self.via_spot_min_contrast_spin.setValue(18.0)
-    self.via_spot_min_roundness_spin = QDoubleSpinBox()
-    self.via_spot_min_roundness_spin.setRange(0.0, 100.0)
-    self.via_spot_min_roundness_spin.setDecimals(1)
-    self.via_spot_min_roundness_spin.setSingleStep(1.0)
-    self.via_spot_min_roundness_spin.setValue(45.0)
+    self.via_black_range_widget = self._build_range_row(self.via_black_range_min_spin, self.via_black_range_max_spin)
+    self.via_range_checkboxes_widget = QWidget()
+    via_range_checkboxes_layout = QHBoxLayout(self.via_range_checkboxes_widget)
+    via_range_checkboxes_layout.setContentsMargins(0, 0, 0, 0)
+    via_range_checkboxes_layout.setSpacing(16)
+    via_range_checkboxes_layout.addWidget(self.via_white_range_checkbox)
+    via_range_checkboxes_layout.addWidget(self.via_black_range_checkbox)
+    via_range_checkboxes_layout.addStretch(1)
+    self.via_min_score_spin = QDoubleSpinBox()
+    self.via_min_score_spin.setRange(0.0, 1.0)
+    self.via_min_score_spin.setDecimals(3)
+    self.via_min_score_spin.setSingleStep(0.01)
+    self.via_min_score_spin.setValue(0.35)
+    self.via_min_contrast_spin = QDoubleSpinBox()
+    self.via_min_contrast_spin.setRange(0.0, 255.0)
+    self.via_min_contrast_spin.setDecimals(1)
+    self.via_min_contrast_spin.setSingleStep(1.0)
+    self.via_min_contrast_spin.setValue(14.0)
+    self.via_min_edge_coverage_spin = QDoubleSpinBox()
+    self.via_min_edge_coverage_spin.setRange(0.0, 1.0)
+    self.via_min_edge_coverage_spin.setDecimals(3)
+    self.via_min_edge_coverage_spin.setSingleStep(0.05)
+    self.via_min_edge_coverage_spin.setValue(0.45)
     self.via_spot_line_suppression_spin = QDoubleSpinBox()
     self.via_spot_line_suppression_spin.setRange(0.0, 1.0)
     self.via_spot_line_suppression_spin.setDecimals(2)
     self.via_spot_line_suppression_spin.setSingleStep(0.05)
     self.via_spot_line_suppression_spin.setValue(0.65)
-    self.via_gradient_min_strength_spin = QDoubleSpinBox()
-    self.via_gradient_min_strength_spin.setRange(0.0, 255.0)
-    self.via_gradient_min_strength_spin.setDecimals(1)
-    self.via_gradient_min_strength_spin.setSingleStep(1.0)
-    self.via_gradient_min_strength_spin.setValue(12.0)
-    self.via_gradient_min_coverage_spin = QDoubleSpinBox()
-    self.via_gradient_min_coverage_spin.setRange(0.0, 1.0)
-    self.via_gradient_min_coverage_spin.setDecimals(3)
-    self.via_gradient_min_coverage_spin.setSingleStep(0.01)
-    self.via_gradient_min_coverage_spin.setValue(0.24)
-    self.via_hough_edge_threshold_spin = QDoubleSpinBox()
-    self.via_hough_edge_threshold_spin.setRange(1.0, 1000.0)
-    self.via_hough_edge_threshold_spin.setDecimals(1)
-    self.via_hough_edge_threshold_spin.setSingleStep(5.0)
-    self.via_hough_edge_threshold_spin.setValue(80.0)
-    self.via_hough_accumulator_threshold_spin = QDoubleSpinBox()
-    self.via_hough_accumulator_threshold_spin.setRange(1.0, 1000.0)
-    self.via_hough_accumulator_threshold_spin.setDecimals(1)
-    self.via_hough_accumulator_threshold_spin.setSingleStep(1.0)
-    self.via_hough_accumulator_threshold_spin.setValue(10.0)
-    self.via_component_min_score_spin = QDoubleSpinBox()
-    self.via_component_min_score_spin.setRange(0.0, 255.0)
-    self.via_component_min_score_spin.setDecimals(1)
-    self.via_component_min_score_spin.setSingleStep(1.0)
-    self.via_component_min_score_spin.setValue(0.0)
-    self.via_contour_min_score_spin = QDoubleSpinBox()
-    self.via_contour_min_score_spin.setRange(0.0, 255.0)
-    self.via_contour_min_score_spin.setDecimals(1)
-    self.via_contour_min_score_spin.setSingleStep(1.0)
-    self.via_contour_min_score_spin.setValue(0.0)
-    self.via_morphology_peak_scale_spin = QDoubleSpinBox()
-    self.via_morphology_peak_scale_spin.setRange(0.01, 2.0)
-    self.via_morphology_peak_scale_spin.setDecimals(3)
-    self.via_morphology_peak_scale_spin.setSingleStep(0.01)
-    self.via_morphology_peak_scale_spin.setValue(0.18)
     self.via_template_min_score_spin = QDoubleSpinBox()
     self.via_template_min_score_spin.setRange(0.0, 1.0)
     self.via_template_min_score_spin.setDecimals(3)
@@ -649,11 +587,6 @@ def build_extraction_tab(self) -> QWidget:
     via_template_buttons_layout.addWidget(self.remove_via_template_button)
     via_template_buttons_layout.addWidget(self.clear_via_templates_button)
     self.via_templates_layout.addWidget(via_template_buttons)
-    self.via_blob_min_circularity_spin = QDoubleSpinBox()
-    self.via_blob_min_circularity_spin.setRange(0.0, 1.0)
-    self.via_blob_min_circularity_spin.setDecimals(3)
-    self.via_blob_min_circularity_spin.setSingleStep(0.01)
-    self.via_blob_min_circularity_spin.setValue(0.35)
     self.via_preset_combo = QComboBox()
     self.apply_via_preset_button = QPushButton("Apply preset")
     self.save_via_preset_button = QPushButton("Save preset")
@@ -764,32 +697,18 @@ def build_extraction_tab(self) -> QWidget:
     self.conductor_gradient_min_strength_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.conductor_gradient_band_radius_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_size_mode_combo.currentIndexChanged.connect(self._on_via_size_mode_changed)
+    self.via_search_mode_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.via_white_range_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.via_white_range_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_white_range_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_black_range_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.via_black_range_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_black_range_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_detector_gradient_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.via_detector_spot_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.via_detector_hough_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.via_detector_components_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.via_detector_contours_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.via_detector_morphology_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.via_detector_template_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.via_detector_blob_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.via_spot_min_contrast_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_spot_min_roundness_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.via_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.via_min_contrast_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.via_min_edge_coverage_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_spot_line_suppression_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_gradient_min_strength_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_gradient_min_coverage_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_hough_edge_threshold_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_hough_accumulator_threshold_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_component_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_contour_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_morphology_peak_scale_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_template_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_blob_min_circularity_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.add_via_template_button.toggled.connect(self._set_via_template_pick_active)
     self.remove_via_template_button.clicked.connect(self._remove_selected_via_template)
     self.clear_via_templates_button.clicked.connect(self._clear_via_templates)
@@ -836,9 +755,7 @@ def build_extraction_tab(self) -> QWidget:
     self.min_aspect_ratio_label_widget = self.geometry_filters_form.labelForField(self.aspect_ratio_range_widget)
     self.max_aspect_ratio_label_widget = None
     self.geometry_filters_form.addRow("Border handling", self.exclude_border_touching_checkbox)
-    self.border_handling_label_widget = self.geometry_filters_form.labelForField(
-        self.exclude_border_touching_checkbox
-    )
+    self.border_handling_label_widget = self.geometry_filters_form.labelForField(self.exclude_border_touching_checkbox)
     self.geometry_filters_form.addRow("Min solidity", self.min_solidity_spin)
     self.min_solidity_label_widget = self.geometry_filters_form.labelForField(self.min_solidity_spin)
     self.geometry_filters_form.addRow("Min extent", self.min_extent_spin)
@@ -847,9 +764,7 @@ def build_extraction_tab(self) -> QWidget:
     self.min_polygon_angle_label_widget = self.geometry_filters_form.labelForField(self.min_polygon_angle_spin)
 
     self.conductor_form.addRow("Gradient boundaries", self.conductor_gradient_checkbox)
-    self.conductor_gradient_enabled_label_widget = self.conductor_form.labelForField(
-        self.conductor_gradient_checkbox
-    )
+    self.conductor_gradient_enabled_label_widget = self.conductor_form.labelForField(self.conductor_gradient_checkbox)
     self.conductor_form.addRow("Min edge", self.conductor_gradient_min_strength_spin)
     self.conductor_gradient_min_strength_label_widget = self.conductor_form.labelForField(
         self.conductor_gradient_min_strength_spin
@@ -861,40 +776,26 @@ def build_extraction_tab(self) -> QWidget:
 
     self.via_form.addRow("Via size mode", self.via_size_mode_combo)
     self.via_size_mode_label_widget = self.via_form.labelForField(self.via_size_mode_combo)
+    self.via_form.addRow("Via search mode", self.via_search_mode_combo)
+    self.via_search_mode_label_widget = self.via_form.labelForField(self.via_search_mode_combo)
+    self.via_form.addRow("Polarity", self.via_range_checkboxes_widget)
+    self.via_range_checkboxes_label_widget = self.via_form.labelForField(self.via_range_checkboxes_widget)
     self.via_form.addRow("White range", self.via_white_range_widget)
     self.via_white_range_label_widget = self.via_form.labelForField(self.via_white_range_widget)
     self.via_form.addRow("Black range", self.via_black_range_widget)
     self.via_black_range_label_widget = self.via_form.labelForField(self.via_black_range_widget)
-    self.via_form.addRow("Detection methods", self.via_detector_methods_widget)
-    self.via_detector_methods_label_widget = self.via_form.labelForField(self.via_detector_methods_widget)
-    self.via_form.addRow("Spot contrast", self.via_spot_min_contrast_spin)
-    self.via_spot_min_contrast_label_widget = self.via_form.labelForField(self.via_spot_min_contrast_spin)
-    self.via_form.addRow("Spot roundness", self.via_spot_min_roundness_spin)
-    self.via_spot_min_roundness_label_widget = self.via_form.labelForField(self.via_spot_min_roundness_spin)
+    self.via_form.addRow("Min score", self.via_min_score_spin)
+    self.via_min_score_label_widget = self.via_form.labelForField(self.via_min_score_spin)
+    self.via_form.addRow("Min contrast", self.via_min_contrast_spin)
+    self.via_min_contrast_label_widget = self.via_form.labelForField(self.via_min_contrast_spin)
+    self.via_form.addRow("Min edge coverage", self.via_min_edge_coverage_spin)
+    self.via_min_edge_coverage_label_widget = self.via_form.labelForField(self.via_min_edge_coverage_spin)
     self.via_form.addRow("Spot trace suppression", self.via_spot_line_suppression_spin)
     self.via_spot_line_suppression_label_widget = self.via_form.labelForField(self.via_spot_line_suppression_spin)
-    self.via_form.addRow("Gradient edge", self.via_gradient_min_strength_spin)
-    self.via_gradient_min_strength_label_widget = self.via_form.labelForField(self.via_gradient_min_strength_spin)
-    self.via_form.addRow("Gradient coverage", self.via_gradient_min_coverage_spin)
-    self.via_gradient_min_coverage_label_widget = self.via_form.labelForField(self.via_gradient_min_coverage_spin)
-    self.via_form.addRow("Hough edge", self.via_hough_edge_threshold_spin)
-    self.via_hough_edge_threshold_label_widget = self.via_form.labelForField(self.via_hough_edge_threshold_spin)
-    self.via_form.addRow("Hough votes", self.via_hough_accumulator_threshold_spin)
-    self.via_hough_accumulator_threshold_label_widget = self.via_form.labelForField(
-        self.via_hough_accumulator_threshold_spin
-    )
-    self.via_form.addRow("Components score", self.via_component_min_score_spin)
-    self.via_component_min_score_label_widget = self.via_form.labelForField(self.via_component_min_score_spin)
-    self.via_form.addRow("Contours score", self.via_contour_min_score_spin)
-    self.via_contour_min_score_label_widget = self.via_form.labelForField(self.via_contour_min_score_spin)
-    self.via_form.addRow("Morphology peaks", self.via_morphology_peak_scale_spin)
-    self.via_morphology_peak_scale_label_widget = self.via_form.labelForField(self.via_morphology_peak_scale_spin)
     self.via_form.addRow("Template score", self.via_template_min_score_spin)
     self.via_template_min_score_label_widget = self.via_form.labelForField(self.via_template_min_score_spin)
     self.via_form.addRow("Templates", self.via_templates_widget)
     self.via_templates_label_widget = self.via_form.labelForField(self.via_templates_widget)
-    self.via_form.addRow("Blob circularity", self.via_blob_min_circularity_spin)
-    self.via_blob_min_circularity_label_widget = self.via_form.labelForField(self.via_blob_min_circularity_spin)
     self.via_form.addRow("Saved presets", self.via_preset_widget)
     self.via_preset_label_widget = self.via_form.labelForField(self.via_preset_widget)
     self.via_form.addRow("Preset", self.noisy_traces_via_preset_button)
@@ -973,7 +874,6 @@ def build_extraction_tab(self) -> QWidget:
     return tab
 
 
-
 def build_display_tab(self) -> QWidget:
     tab = QWidget()
     self.display_form = QFormLayout(tab)
@@ -985,9 +885,7 @@ def build_display_tab(self) -> QWidget:
     self.selected_color_button = self._build_color_button(
         self._display_settings.selected_color, self._choose_selected_color
     )
-    self.vertex_color_button = self._build_color_button(
-        self._display_settings.vertex_color, self._choose_vertex_color
-    )
+    self.vertex_color_button = self._build_color_button(self._display_settings.vertex_color, self._choose_vertex_color)
     self.line_width_spin = QDoubleSpinBox()
     self.line_width_spin.setRange(1.0, 20.0)
     self.line_width_spin.setValue(self._display_settings.line_width)
@@ -1066,7 +964,6 @@ def build_display_tab(self) -> QWidget:
     return tab
 
 
-
 def build_help_tab(self) -> QWidget:
     tab = QWidget()
     layout = QVBoxLayout(tab)
@@ -1079,7 +976,6 @@ def build_help_tab(self) -> QWidget:
     layout.addWidget(self.help_scroll, 1)
     self._rebuild_help_cards()
     return tab
-
 
 
 def build_visual_panel(self) -> QWidget:
@@ -1098,13 +994,13 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.zoomChanged.connect(lambda _zoom: self._sync_neighbor_frames())
     self.polygon_editor.neighborFrameActivated.connect(self._on_neighbor_frame_activated)
     self.polygon_editor.viaDebugRequested.connect(self._on_via_debug_requested)
+    self.polygon_editor.middlePreviewHoldChanged.connect(self._on_middle_preview_hold_changed)
     self.editor_toolbar = self._build_editor_toolbar()
     editor_layout.addWidget(self.editor_toolbar)
     editor_layout.addWidget(self.polygon_editor, 1)
 
     layout.addWidget(self.editor_group, 1)
     return panel
-
 
 
 def build_editor_toolbar(self) -> QWidget:
@@ -1240,4 +1136,3 @@ def build_editor_toolbar(self) -> QWidget:
     self._sync_editor_via_size()
     self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
     return toolbar
-

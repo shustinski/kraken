@@ -237,6 +237,41 @@ class CifViaSupportTests(unittest.TestCase):
             payload = saved_cif.read_text(encoding="utf-8")
             self.assertIn("( R frame_1.png );", payload)
 
+    def test_cif_round_trip_restores_hole_topology_from_cut_polygon(self) -> None:
+        outer_points = [(10.0, 10.0), (70.0, 10.0), (70.0, 70.0), (10.0, 70.0)]
+        inner_points = [(32.0, 32.0), (48.0, 32.0), (48.0, 48.0), (32.0, 48.0)]
+        outer_area, outer_perimeter, outer_bbox = compute_polygon_metrics(outer_points)
+        inner_area, inner_perimeter, inner_bbox = compute_polygon_metrics(inner_points)
+        outer = PolygonData(
+            id=1,
+            points=outer_points,
+            is_hole=False,
+            parent_id=None,
+            category="conductor",
+            shape_hint="polygon",
+            area=outer_area,
+            perimeter=outer_perimeter,
+            bbox=outer_bbox,
+        )
+        hole = PolygonData(
+            id=2,
+            points=inner_points,
+            is_hole=True,
+            parent_id=1,
+            category="conductor",
+            shape_hint="polygon",
+            area=inner_area,
+            perimeter=inner_perimeter,
+            bbox=inner_bbox,
+        )
+        cif_path = self._artifact_path("round_trip_hole.cif")
+        save_polygons_cif(cif_path, "sample.png", [outer, hole], image_size=(80, 80))
+        _image_name, _image_size, loaded = load_polygons_cif(cif_path)
+        self.assertTrue(any(not polygon.is_hole for polygon in loaded))
+        self.assertTrue(any(polygon.is_hole for polygon in loaded))
+        hole_parent_ids = {polygon.parent_id for polygon in loaded if polygon.is_hole}
+        self.assertTrue(any(parent_id is not None for parent_id in hole_parent_ids))
+
 
 if __name__ == "__main__":
     unittest.main()

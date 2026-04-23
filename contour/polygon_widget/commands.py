@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from typing import Any
+
 from PyQt6.QtGui import QUndoCommand
 
 from .domain import PolygonData
 
 
 class AddPolygonCommand(QUndoCommand):
-    def __init__(self, scene: object, polygon: PolygonData) -> None:
+    def __init__(self, scene: Any, polygon: PolygonData) -> None:
         super().__init__("Add polygon")
         self._scene = scene
         self._polygon = polygon.clone()
@@ -19,7 +21,7 @@ class AddPolygonCommand(QUndoCommand):
 
 
 class DeletePolygonCommand(QUndoCommand):
-    def __init__(self, scene: object, polygon: PolygonData) -> None:
+    def __init__(self, scene: Any, polygon: PolygonData) -> None:
         super().__init__("Delete polygon")
         self._scene = scene
         self._polygon = polygon.clone()
@@ -34,7 +36,7 @@ class DeletePolygonCommand(QUndoCommand):
 class MoveVertexCommand(QUndoCommand):
     def __init__(
         self,
-        scene: object,
+        scene: Any,
         polygon_id: int,
         vertex_index: int,
         old_point: tuple[float, float],
@@ -55,7 +57,7 @@ class MoveVertexCommand(QUndoCommand):
 
 
 class AddVertexCommand(QUndoCommand):
-    def __init__(self, scene: object, polygon_id: int, insert_index: int, point: tuple[float, float]) -> None:
+    def __init__(self, scene: Any, polygon_id: int, insert_index: int, point: tuple[float, float]) -> None:
         super().__init__("Add vertex")
         self._scene = scene
         self._polygon_id = polygon_id
@@ -70,7 +72,7 @@ class AddVertexCommand(QUndoCommand):
 
 
 class DeleteVertexCommand(QUndoCommand):
-    def __init__(self, scene: object, polygon_id: int, vertex_index: int, point: tuple[float, float]) -> None:
+    def __init__(self, scene: Any, polygon_id: int, vertex_index: int, point: tuple[float, float]) -> None:
         super().__init__("Delete vertex")
         self._scene = scene
         self._polygon_id = polygon_id
@@ -87,7 +89,7 @@ class DeleteVertexCommand(QUndoCommand):
 class MovePolygonCommand(QUndoCommand):
     def __init__(
         self,
-        scene: object,
+        scene: Any,
         polygon_id: int,
         old_points: list[tuple[float, float]],
         new_points: list[tuple[float, float]],

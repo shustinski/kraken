@@ -96,15 +96,21 @@ release process.
 
 ```
 polygon_widget/
-  adapters/qt/        Qt-specific adapters (image conversion, preview)
-  application/        CLI, bootstrap, model/presenter/view, use cases
-  domain/             Pure geometry / polygon primitives
-  infrastructure/     Logging, persisted settings
-  resources/          QSS themes, icons
-  widget.py           Top-level PolygonExtractionWidget
-tests/unit/           Unit tests (unittest + pytest)
-packaging/            PyInstaller spec and Inno Setup script
-scripts/              Build helpers (PowerShell)
+  adapters/qt/           Qt-specific adapters (image conversion, preview)
+  application/           CLI, bootstrap, model/presenter/view
+    services/            Batch / dataset / pipeline / preview / workspace services
+    use_cases/           Image processing use cases (preview, processing, autotune)
+  domain/                Pure geometry / polygon primitives
+  graphics/              Editor scene / view, drawing tools, pure geometry helpers
+  infrastructure/        Logging, persisted settings
+  resources/             QSS themes, icons
+  ui/                    UI builders, retranslate, icons, presets, styles
+  widget.py              Top-level PolygonExtractionWidget (composition root)
+tests/unit/              Unit tests
+tests/integration/       Bootstrap / end-to-end tests
+tests/golden/            Golden snapshots (public API surface)
+packaging/               PyInstaller spec and Inno Setup script
+scripts/                 Build helpers (PowerShell)
 ```
 
 ## Building the Windows installer

@@ -6,11 +6,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PyQt6.QtCore import QEvent, QPointF, QRectF, QSettings, QSignalBlocker, QSize, Qt, QThreadPool, QTimer, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
-    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -18,25 +17,19 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
-    QSplitter,
-    QStyle,
     QTabWidget,
     QToolButton,
-    QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -47,14 +40,21 @@ from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, Previe
 from .application.dto import PersistedPaths
 from .application.processing import (
     VIA_SIZE_MODE_FIXED,
-    VIA_SIZE_MODE_RANGE,
     ContourExtractionSettings,
     DisplaySettings,
     ImageProcessingState,
     SaveOptions,
+    normalize_via_search_mode,
     normalize_via_size_mode,
 )
-from .application.services import WorkspaceSession
+from .application.services import (
+    BatchController,
+    BatchStartRequest,
+    WorkspaceSession,
+    export_frame_to_dataset,
+    load_pipeline_config_from_path,
+    save_pipeline_config_to_path,
+)
 from .application.use_cases import (
     AutoTuneResult,
     PreparedImageRequest,
@@ -65,9 +65,8 @@ from .application.use_cases import (
     load_input_directory,
 )
 from .batch_processor import BatchProcessor
-from .contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
 from .domain import PolygonData
-from .graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
+from .graphics_view import EditorTool
 from .i18n import active_language, tr
 from .infrastructure import WidgetDisplaySettingsStore, WidgetPathSettingsStore
 from .pipeline import (
@@ -78,7 +77,7 @@ from .pipeline import (
     get_operation_display_name,
     get_parameter_display_label,
 )
-from .serializers import export_dataset_frame, load_polygons_cif, save_polygons_cif, save_result_bundle
+from .serializers import load_polygons_cif, save_polygons_cif, save_result_bundle
 from .ui.builders import (
     build_display_tab,
     build_editor_toolbar,
@@ -92,18 +91,32 @@ from .ui.builders import (
     build_ui,
     build_visual_panel,
 )
-from .ui.retranslate import retranslate_ui
+from .ui.editor_icons import (
+    TOOLBAR_BUTTON_SIZE_PX,
+    TOOLBAR_ICON_CANVAS_SIZE_PX,
+    TOOLBAR_ICON_SIZE_PX,
+    create_editor_action_icon,
+    create_editor_tool_icon,
+)
 from .ui.i18n_content import (
     EDITOR_ACTION_TOOLTIPS,
     EDITOR_TOOL_TOOLTIPS,
     EXTRACTION_HELP_TEXTS,
     GENERAL_CONTROL_TOOLTIPS,
-    LocalizedTextMap,
     PIPELINE_CONTROL_TOOLTIPS,
     PIPELINE_OPERATION_GROUPS,
     PIPELINE_OPERATION_HELP_TEXTS,
     PIPELINE_PARAMETER_HELP_TEXTS,
+    LocalizedTextMap,
     _localized_text,
+)
+from .ui.pipeline_presets import built_in_pipeline_presets
+from .ui.retranslate import retranslate_ui
+from .ui.styles import COMPACT_UI_STYLE
+from .ui.via_presets import (
+    blurred_via_preset_payload,
+    built_in_via_presets,
+    noisy_traces_via_preset_payload,
 )
 from .utils import is_image_path, load_image_color, scan_image_files
 
@@ -112,11 +125,11 @@ __all__ = [
     "EDITOR_TOOL_TOOLTIPS",
     "EXTRACTION_HELP_TEXTS",
     "GENERAL_CONTROL_TOOLTIPS",
-    "LocalizedTextMap",
     "PIPELINE_CONTROL_TOOLTIPS",
     "PIPELINE_OPERATION_GROUPS",
     "PIPELINE_OPERATION_HELP_TEXTS",
     "PIPELINE_PARAMETER_HELP_TEXTS",
+    "LocalizedTextMap",
     "PolygonExtractionWidget",
     "_localized_text",
 ]
@@ -127,11 +140,6 @@ FRAME_STATUS_UNCHANGED = "unchanged"
 FRAME_STATUS_VIEWED = "viewed"
 FRAME_STATUS_MODIFIED = "modified"
 VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
-
-
-from .ui.pipeline_list import PipelineListWidget  # noqa: E402  (keep exported here for backward compat)
-
-
 
 
 class PolygonExtractionWidget(QWidget):
@@ -161,6 +169,7 @@ class PolygonExtractionWidget(QWidget):
                 extraction_profile="vias",
                 object_type="via",
                 output_mode="box",
+                via_search_mode="template",
                 min_solidity=0.6,
                 min_extent=0.5,
                 min_aspect_ratio=0.5,
@@ -210,6 +219,7 @@ class PolygonExtractionWidget(QWidget):
         self._auto_tune_request_serial = 0
         self._auto_tune_running_request_id: int | None = None
         self._neighbor_image_cache: dict[str, object] = {}
+        self._show_source_while_middle_held = False
 
         self._batch_processor = BatchProcessor(self)
         self._batch_processor.set_ui_language(self._ui_language)
@@ -218,6 +228,7 @@ class PolygonExtractionWidget(QWidget):
         self._batch_processor.finished.connect(self._on_batch_finished)
         self._batch_processor.errorOccurred.connect(self._on_batch_error)
         self._batch_processor.logMessage.connect(self._append_log)
+        self._batch_controller = BatchController(self._batch_processor)
 
         self._build_ui()
         self._apply_compact_ui_style()
@@ -234,46 +245,7 @@ class PolygonExtractionWidget(QWidget):
         return build_ui(self)
 
     def _apply_compact_ui_style(self) -> None:
-        self.setStyleSheet(
-            """
-            #polygonExtractionWidget {
-                font-size: 12px;
-            }
-            #polygonExtractionWidget QLabel,
-            #polygonExtractionWidget QCheckBox,
-            #polygonExtractionWidget QGroupBox {
-                font-size: 12px;
-            }
-            #polygonExtractionWidget QPushButton {
-                min-height: 28px;
-                padding: 4px 10px;
-                font-size: 12px;
-            }
-            #polygonExtractionWidget QToolButton {
-                padding: 2px;
-            }
-            #polygonExtractionWidget QLineEdit,
-            #polygonExtractionWidget QComboBox,
-            #polygonExtractionWidget QSpinBox,
-            #polygonExtractionWidget QDoubleSpinBox {
-                min-height: 26px;
-                padding: 2px 6px;
-                font-size: 12px;
-            }
-            #polygonExtractionWidget QTabBar::tab {
-                min-height: 24px;
-                padding: 4px 10px;
-                font-size: 12px;
-            }
-            #polygonExtractionWidget QListWidget {
-                font-size: 12px;
-            }
-            #polygonExtractionWidget QProgressBar {
-                min-height: 18px;
-                max-height: 18px;
-            }
-            """
-        )
+        self.setStyleSheet(COMPACT_UI_STYLE)
 
     def _build_path_panel(self) -> QWidget:
         return build_path_panel(self)
@@ -777,26 +749,15 @@ class PolygonExtractionWidget(QWidget):
         self._set_field_tooltip(self.min_solidity_label_widget, self.min_solidity_spin, "min_solidity")
         self._set_field_tooltip(self.min_extent_label_widget, self.min_extent_spin, "min_extent")
         self._set_field_tooltip(self.via_size_mode_label_widget, self.via_size_mode_combo, "via_size_mode")
+        self._set_field_tooltip(self.via_search_mode_label_widget, self.via_search_mode_combo, "via_search_mode")
         self._set_field_tooltip(self.via_white_range_label_widget, self.via_white_range_widget, "via_white_range")
         self._set_field_tooltip(self.via_black_range_label_widget, self.via_black_range_widget, "via_black_range")
+        self._set_field_tooltip(self.via_min_score_label_widget, self.via_min_score_spin, "via_min_score")
+        self._set_field_tooltip(self.via_min_contrast_label_widget, self.via_min_contrast_spin, "via_min_contrast")
         self._set_field_tooltip(
-            self.via_detector_methods_label_widget, self.via_detector_methods_widget, "via_detector_methods"
-        )
-        self._set_field_tooltip(
-            self.via_gradient_min_strength_label_widget,
-            self.via_gradient_min_strength_spin,
-            "via_gradient_min_strength",
-        )
-        self._set_field_tooltip(
-            self.via_gradient_min_coverage_label_widget,
-            self.via_gradient_min_coverage_spin,
-            "via_gradient_min_coverage",
-        )
-        self._set_field_tooltip(
-            self.via_spot_min_contrast_label_widget, self.via_spot_min_contrast_spin, "via_spot_min_contrast"
-        )
-        self._set_field_tooltip(
-            self.via_spot_min_roundness_label_widget, self.via_spot_min_roundness_spin, "via_spot_min_roundness"
+            self.via_min_edge_coverage_label_widget,
+            self.via_min_edge_coverage_spin,
+            "via_min_edge_coverage",
         )
         self._set_field_tooltip(
             self.via_spot_line_suppression_label_widget,
@@ -804,33 +765,9 @@ class PolygonExtractionWidget(QWidget):
             "via_spot_line_suppression",
         )
         self._set_field_tooltip(
-            self.via_hough_edge_threshold_label_widget,
-            self.via_hough_edge_threshold_spin,
-            "via_hough_edge_threshold",
-        )
-        self._set_field_tooltip(
-            self.via_hough_accumulator_threshold_label_widget,
-            self.via_hough_accumulator_threshold_spin,
-            "via_hough_accumulator_threshold",
-        )
-        self._set_field_tooltip(
-            self.via_component_min_score_label_widget, self.via_component_min_score_spin, "via_component_min_score"
-        )
-        self._set_field_tooltip(
-            self.via_contour_min_score_label_widget, self.via_contour_min_score_spin, "via_contour_min_score"
-        )
-        self._set_field_tooltip(
-            self.via_morphology_peak_scale_label_widget,
-            self.via_morphology_peak_scale_spin,
-            "via_morphology_peak_scale",
-        )
-        self._set_field_tooltip(
             self.via_template_min_score_label_widget, self.via_template_min_score_spin, "via_template_min_score"
         )
         self._set_field_tooltip(self.via_templates_label_widget, self.via_templates_widget, "via_templates")
-        self._set_field_tooltip(
-            self.via_blob_min_circularity_label_widget, self.via_blob_min_circularity_spin, "via_blob_min_circularity"
-        )
         self._set_field_tooltip(self.via_preset_label_widget, self.via_preset_widget, "via_preset_selector")
         self._set_field_tooltip(
             self.noisy_traces_via_preset_label_widget,
@@ -859,14 +796,6 @@ class PolygonExtractionWidget(QWidget):
         for checkbox, tooltip_key in (
             (self.via_white_range_checkbox, "via_white_range"),
             (self.via_black_range_checkbox, "via_black_range"),
-            (self.via_detector_gradient_checkbox, "via_detector_gradient_method"),
-            (self.via_detector_spot_checkbox, "via_detector_spot_method"),
-            (self.via_detector_hough_checkbox, "via_detector_hough_method"),
-            (self.via_detector_components_checkbox, "via_detector_components_method"),
-            (self.via_detector_contours_checkbox, "via_detector_contours_method"),
-            (self.via_detector_morphology_checkbox, "via_detector_morphology_method"),
-            (self.via_detector_template_checkbox, "via_detector_template_method"),
-            (self.via_detector_blob_checkbox, "via_detector_blob_method"),
         ):
             detector_tooltip = _localized_text(EXTRACTION_HELP_TEXTS, tooltip_key, self._ui_language)
             checkbox.setToolTip(detector_tooltip)
@@ -927,6 +856,25 @@ class PolygonExtractionWidget(QWidget):
         self._update_via_threshold_controls_state()
 
     def _update_via_threshold_controls_state(self) -> None:
+        mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
+        blob_enabled = mode in {"hybrid", "blob"}
+        template_enabled = mode in {"hybrid", "template"}
+        for label_widget, field_widget in (
+            (self.via_min_score_label_widget, self.via_min_score_spin),
+            (self.via_min_contrast_label_widget, self.via_min_contrast_spin),
+            (self.via_min_edge_coverage_label_widget, self.via_min_edge_coverage_spin),
+            (self.via_spot_line_suppression_label_widget, self.via_spot_line_suppression_spin),
+        ):
+            if label_widget is not None:
+                label_widget.setVisible(blob_enabled)
+            field_widget.setVisible(blob_enabled)
+        if self.via_template_min_score_label_widget is not None:
+            self.via_template_min_score_label_widget.setVisible(template_enabled)
+        self.via_template_min_score_spin.setVisible(template_enabled)
+        if self.via_templates_label_widget is not None:
+            self.via_templates_label_widget.setVisible(template_enabled)
+        self.via_templates_widget.setVisible(template_enabled)
+
         white_enabled = self.via_white_range_checkbox.isChecked()
         self.via_white_range_min_spin.setEnabled(white_enabled)
         self.via_white_range_max_spin.setEnabled(white_enabled)
@@ -939,59 +887,6 @@ class PolygonExtractionWidget(QWidget):
         if self.via_black_range_label_widget is not None:
             self.via_black_range_label_widget.setVisible(black_enabled)
         self.via_black_range_widget.setVisible(black_enabled)
-        detector_rows = [
-            (
-                self.via_detector_gradient_checkbox.isChecked(),
-                [
-                    (self.via_gradient_min_strength_label_widget, self.via_gradient_min_strength_spin),
-                    (self.via_gradient_min_coverage_label_widget, self.via_gradient_min_coverage_spin),
-                ],
-            ),
-            (
-                self.via_detector_spot_checkbox.isChecked(),
-                [
-                    (self.via_spot_min_contrast_label_widget, self.via_spot_min_contrast_spin),
-                    (self.via_spot_min_roundness_label_widget, self.via_spot_min_roundness_spin),
-                    (self.via_spot_line_suppression_label_widget, self.via_spot_line_suppression_spin),
-                ],
-            ),
-            (
-                self.via_detector_hough_checkbox.isChecked(),
-                [
-                    (self.via_hough_edge_threshold_label_widget, self.via_hough_edge_threshold_spin),
-                    (self.via_hough_accumulator_threshold_label_widget, self.via_hough_accumulator_threshold_spin),
-                ],
-            ),
-            (
-                self.via_detector_components_checkbox.isChecked(),
-                [(self.via_component_min_score_label_widget, self.via_component_min_score_spin)],
-            ),
-            (
-                self.via_detector_contours_checkbox.isChecked(),
-                [(self.via_contour_min_score_label_widget, self.via_contour_min_score_spin)],
-            ),
-            (
-                self.via_detector_morphology_checkbox.isChecked(),
-                [(self.via_morphology_peak_scale_label_widget, self.via_morphology_peak_scale_spin)],
-            ),
-            (
-                self.via_detector_template_checkbox.isChecked(),
-                [
-                    (self.via_template_min_score_label_widget, self.via_template_min_score_spin),
-                    (self.via_templates_label_widget, self.via_templates_widget),
-                ],
-            ),
-            (
-                self.via_detector_blob_checkbox.isChecked(),
-                [(self.via_blob_min_circularity_label_widget, self.via_blob_min_circularity_spin)],
-            ),
-        ]
-        for visible, rows in detector_rows:
-            for label_widget, field_widget in rows:
-                if label_widget is not None:
-                    label_widget.setVisible(visible)
-                field_widget.setVisible(visible)
-                field_widget.setEnabled(visible)
 
     def _update_extraction_profile_controls_state(self) -> None:
         is_via_profile = self._active_extraction_profile == "vias"
@@ -1029,299 +924,22 @@ class PolygonExtractionWidget(QWidget):
         button.setCheckable(checkable)
 
     def _create_editor_tool_icon(self, tool: EditorTool) -> QIcon:
-        canvas_size = self._toolbar_icon_canvas_size_px()
-        pixmap = QPixmap(canvas_size, canvas_size)
-        pixmap.fill(Qt.GlobalColor.transparent)
-
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        scale_factor = canvas_size / 28.0
-        painter.scale(scale_factor, scale_factor)
-
-        stroke = QColor("#FFFFFF")
-        neutral = QColor("#E2E8F0")
-        accent = QColor("#38BDF8")
-        success = QColor("#4ADE80")
-        warning = QColor("#FDBA74")
-        danger = QColor("#FB7185")
-
-        if tool == EditorTool.SELECT:
-            self._paint_select_icon(painter, stroke)
-        elif tool == EditorTool.SELECT_AREA:
-            self._paint_select_area_icon(painter, stroke, accent)
-        elif tool == EditorTool.PAN:
-            self._paint_pan_icon(painter, stroke, accent)
-        elif tool == EditorTool.RULER:
-            self._paint_ruler_icon(painter, stroke, warning)
-        elif tool == EditorTool.ADD_POLYGON:
-            self._paint_polygon_badge_icon(painter, stroke, accent, "+")
-        elif tool == EditorTool.BRUSH:
-            self._paint_brush_icon(painter, stroke, success)
-        elif tool == EditorTool.ADD_VIA:
-            self._paint_via_icon(painter, stroke, QColor("#A78BFA"))
-        elif tool == EditorTool.ADD_VERTEX:
-            self._paint_vertex_edit_icon(painter, stroke, neutral, success, "+")
-        elif tool == EditorTool.DELETE_VERTEX:
-            self._paint_vertex_edit_icon(painter, stroke, neutral, danger, "-")
-        elif tool == EditorTool.MOVE_VERTEX:
-            self._paint_move_vertex_icon(painter, stroke, warning)
-        elif tool == EditorTool.DELETE_POLYGON:
-            self._paint_polygon_badge_icon(painter, stroke, danger, "x")
-        painter.end()
-        return QIcon(pixmap)
+        return create_editor_tool_icon(tool)
 
     def _create_editor_action_icon(self, action: str) -> QIcon:
-        canvas_size = self._toolbar_icon_canvas_size_px()
-        pixmap = QPixmap(canvas_size, canvas_size)
-        pixmap.fill(Qt.GlobalColor.transparent)
-
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        scale_factor = canvas_size / 28.0
-        painter.scale(scale_factor, scale_factor)
-        stroke = QColor("#FFFFFF")
-        accent = QColor("#38BDF8")
-
-        if action == "undo":
-            self._paint_history_icon(painter, stroke, mirrored=False)
-        elif action == "redo":
-            self._paint_history_icon(painter, stroke, mirrored=True)
-        elif action == "zoom_in":
-            self._paint_zoom_icon(painter, stroke, accent, add=True)
-        elif action == "zoom_out":
-            self._paint_zoom_icon(painter, stroke, accent, add=False)
-        else:
-            self._paint_fit_icon(painter, stroke, accent)
-        painter.end()
-        return QIcon(pixmap)
+        return create_editor_action_icon(action)
 
     @staticmethod
     def _toolbar_icon_size_px() -> int:
-        return 28
+        return TOOLBAR_ICON_SIZE_PX
 
     @staticmethod
     def _toolbar_button_size_px() -> int:
-        return 34
+        return TOOLBAR_BUTTON_SIZE_PX
 
     @staticmethod
     def _toolbar_icon_canvas_size_px() -> int:
-        return 72
-
-    def _paint_select_icon(self, painter: QPainter, stroke: QColor) -> None:
-        path = QPainterPath()
-        path.moveTo(5.5, 4.0)
-        path.lineTo(5.5, 21.0)
-        path.lineTo(10.0, 16.5)
-        path.lineTo(12.8, 23.0)
-        path.lineTo(16.0, 21.8)
-        path.lineTo(13.2, 15.6)
-        path.lineTo(20.8, 15.6)
-        path.closeSubpath()
-        painter.setPen(QPen(stroke, 1.9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.fillPath(path, QBrush(QColor("#FFFFFF")))
-        painter.drawPath(path)
-
-    def _paint_select_area_icon(self, painter: QPainter, stroke: QColor, accent: QColor) -> None:
-        painter.setPen(QPen(accent, 1.8, Qt.PenStyle.DashLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-        painter.drawRect(QRectF(5.0, 6.0, 16.0, 13.0))
-        self._paint_select_icon(painter, stroke)
-
-    def _paint_pan_icon(self, painter: QPainter, stroke: QColor, accent: QColor) -> None:
-        center = QPointF(14.0, 14.0)
-        painter.setPen(QPen(stroke, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(QPointF(14.0, 5.0), QPointF(14.0, 23.0))
-        painter.drawLine(QPointF(5.0, 14.0), QPointF(23.0, 14.0))
-        self._draw_arrow_head(painter, QPointF(14.0, 5.0), QPointF(14.0, 2.0))
-        self._draw_arrow_head(painter, QPointF(14.0, 23.0), QPointF(14.0, 26.0))
-        self._draw_arrow_head(painter, QPointF(5.0, 14.0), QPointF(2.0, 14.0))
-        self._draw_arrow_head(painter, QPointF(23.0, 14.0), QPointF(26.0, 14.0))
-        painter.setPen(QPen(accent, 1.8))
-        painter.setBrush(QBrush(accent))
-        painter.drawEllipse(QRectF(center.x() - 2.2, center.y() - 2.2, 4.4, 4.4))
-
-    def _paint_ruler_icon(self, painter: QPainter, stroke: QColor, accent: QColor) -> None:
-        start = QPointF(5.0, 19.5)
-        end = QPointF(23.0, 8.5)
-        painter.setPen(QPen(stroke, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(start, end)
-        painter.setPen(QPen(accent, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        for tick in range(1, 5):
-            base_x = 6.5 + tick * 3.4
-            base_y = 18.6 - tick * 2.1
-            painter.drawLine(QPointF(base_x, base_y), QPointF(base_x - 1.0, base_y - 1.8))
-        self._draw_vertex_marker(painter, start, stroke, QColor("#FFFFFF"), radius=1.6)
-        self._draw_vertex_marker(painter, end, stroke, QColor("#FFFFFF"), radius=1.6)
-
-    def _paint_polygon_badge_icon(
-        self,
-        painter: QPainter,
-        stroke: QColor,
-        badge_color: QColor,
-        badge_symbol: str,
-    ) -> None:
-        polygon = QPolygonF(
-            [
-                QPointF(4.5, 18.5),
-                QPointF(8.6, 7.0),
-                QPointF(18.0, 8.6),
-                QPointF(20.0, 18.0),
-                QPointF(12.0, 22.0),
-            ]
-        )
-        painter.setPen(QPen(stroke, 2.1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPolygon(polygon)
-        for point in polygon:
-            self._draw_vertex_marker(painter, point, stroke, QColor("#FFFFFF"), radius=1.9)
-        self._draw_badge(painter, QPointF(20.5, 6.5), badge_color, badge_symbol)
-
-    def _paint_vertex_edit_icon(
-        self,
-        painter: QPainter,
-        stroke: QColor,
-        neutral: QColor,
-        badge_color: QColor,
-        badge_symbol: str,
-    ) -> None:
-        polyline = [QPointF(4.5, 18.0), QPointF(11.0, 8.0), QPointF(19.0, 18.2)]
-        painter.setPen(QPen(stroke, 2.1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.drawPolyline(QPolygonF(polyline))
-        self._draw_vertex_marker(painter, polyline[0], stroke, QColor("#FFFFFF"), radius=1.8)
-        self._draw_vertex_marker(painter, polyline[2], stroke, QColor("#FFFFFF"), radius=1.8)
-        self._draw_vertex_marker(painter, polyline[1], stroke, neutral, radius=2.4)
-        self._draw_badge(painter, QPointF(20.0, 6.5), badge_color, badge_symbol)
-
-    def _paint_move_vertex_icon(self, painter: QPainter, stroke: QColor, accent: QColor) -> None:
-        polygon = QPolygonF(
-            [
-                QPointF(4.5, 18.4),
-                QPointF(8.8, 8.0),
-                QPointF(17.0, 9.0),
-                QPointF(19.6, 17.5),
-                QPointF(11.4, 21.2),
-            ]
-        )
-        painter.setPen(QPen(stroke, 2.1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPolygon(polygon)
-        target = QPointF(17.0, 9.0)
-        self._draw_vertex_marker(painter, target, stroke, accent, radius=2.5)
-        painter.setPen(QPen(accent, 1.9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(QPointF(17.0, 4.2), QPointF(17.0, 13.8))
-        painter.drawLine(QPointF(12.2, 9.0), QPointF(21.8, 9.0))
-        self._draw_arrow_head(painter, QPointF(17.0, 4.2), QPointF(17.0, 1.6))
-        self._draw_arrow_head(painter, QPointF(17.0, 13.8), QPointF(17.0, 16.4))
-        self._draw_arrow_head(painter, QPointF(12.2, 9.0), QPointF(9.6, 9.0))
-        self._draw_arrow_head(painter, QPointF(21.8, 9.0), QPointF(24.4, 9.0))
-
-    def _paint_brush_icon(self, painter: QPainter, stroke: QColor, accent: QColor) -> None:
-        painter.setPen(QPen(stroke, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        path = QPainterPath()
-        path.moveTo(7.0, 20.5)
-        path.cubicTo(9.0, 15.0, 13.0, 10.0, 18.0, 6.5)
-        path.lineTo(21.0, 9.5)
-        path.cubicTo(17.5, 14.5, 12.5, 18.5, 7.0, 20.5)
-        painter.drawPath(path)
-        painter.setBrush(QBrush(accent))
-        painter.setPen(QPen(accent, 1.0))
-        painter.drawEllipse(QRectF(18.8, 5.2, 4.6, 4.6))
-
-    def _paint_via_icon(self, painter: QPainter, stroke: QColor, accent: QColor) -> None:
-        painter.setPen(QPen(stroke, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(QRectF(6.0, 7.0, 16.0, 14.0))
-        painter.setPen(QPen(accent, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.setBrush(QBrush(accent))
-        painter.drawEllipse(QRectF(10.0, 9.0, 8.0, 8.0))
-        painter.drawLine(QPointF(14.0, 4.5), QPointF(14.0, 7.0))
-        painter.drawLine(QPointF(14.0, 21.0), QPointF(14.0, 23.5))
-        painter.drawLine(QPointF(3.5, 14.0), QPointF(6.0, 14.0))
-        painter.drawLine(QPointF(22.0, 14.0), QPointF(24.5, 14.0))
-
-    def _paint_history_icon(self, painter: QPainter, stroke: QColor, mirrored: bool) -> None:
-        painter.setPen(QPen(stroke, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        path = QPainterPath()
-        if mirrored:
-            path.moveTo(7.0, 8.0)
-            path.cubicTo(13.0, 3.5, 22.5, 6.0, 22.0, 14.0)
-            path.cubicTo(21.5, 21.0, 13.5, 23.5, 8.5, 20.0)
-            painter.drawPath(path)
-            self._draw_arrow_head(painter, QPointF(7.2, 8.0), QPointF(3.8, 9.0))
-        else:
-            path.moveTo(21.0, 8.0)
-            path.cubicTo(15.0, 3.5, 5.5, 6.0, 6.0, 14.0)
-            path.cubicTo(6.5, 21.0, 14.5, 23.5, 19.5, 20.0)
-            painter.drawPath(path)
-            self._draw_arrow_head(painter, QPointF(20.8, 8.0), QPointF(24.2, 9.0))
-
-    def _paint_zoom_icon(self, painter: QPainter, stroke: QColor, accent: QColor, *, add: bool) -> None:
-        painter.setPen(QPen(stroke, 2.1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(QRectF(5.0, 5.0, 12.0, 12.0))
-        painter.drawLine(QPointF(15.2, 15.2), QPointF(22.8, 22.8))
-        painter.setPen(QPen(accent, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(QPointF(8.5, 11.0), QPointF(13.5, 11.0))
-        if add:
-            painter.drawLine(QPointF(11.0, 8.5), QPointF(11.0, 13.5))
-
-    def _paint_fit_icon(self, painter: QPainter, stroke: QColor, accent: QColor) -> None:
-        painter.setPen(QPen(stroke, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawRect(QRectF(7.0, 7.0, 14.0, 14.0))
-        painter.setPen(QPen(accent, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(QPointF(5.0, 10.0), QPointF(9.0, 10.0))
-        painter.drawLine(QPointF(10.0, 5.0), QPointF(10.0, 9.0))
-        painter.drawLine(QPointF(19.0, 5.0), QPointF(19.0, 9.0))
-        painter.drawLine(QPointF(19.0, 19.0), QPointF(19.0, 23.0))
-        painter.drawLine(QPointF(5.0, 19.0), QPointF(9.0, 19.0))
-        painter.drawLine(QPointF(19.0, 19.0), QPointF(23.0, 19.0))
-
-    def _draw_vertex_marker(
-        self,
-        painter: QPainter,
-        point: QPointF,
-        stroke: QColor,
-        fill: QColor,
-        radius: float,
-    ) -> None:
-        painter.setPen(QPen(stroke, 1.2))
-        painter.setBrush(QBrush(fill))
-        painter.drawEllipse(QRectF(point.x() - radius, point.y() - radius, radius * 2.0, radius * 2.0))
-
-    def _draw_badge(self, painter: QPainter, center: QPointF, color: QColor, symbol: str) -> None:
-        badge_rect = QRectF(center.x() - 4.3, center.y() - 4.3, 8.6, 8.6)
-        painter.setPen(QPen(color.darker(120), 1.0))
-        painter.setBrush(QBrush(color))
-        painter.drawEllipse(badge_rect)
-        painter.setPen(QPen(QColor("#FFFFFF"), 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        if symbol == "+":
-            painter.drawLine(QPointF(center.x() - 2.2, center.y()), QPointF(center.x() + 2.2, center.y()))
-            painter.drawLine(QPointF(center.x(), center.y() - 2.2), QPointF(center.x(), center.y() + 2.2))
-        elif symbol == "-":
-            painter.drawLine(QPointF(center.x() - 2.2, center.y()), QPointF(center.x() + 2.2, center.y()))
-        else:
-            painter.drawLine(
-                QPointF(center.x() - 1.9, center.y() - 1.9),
-                QPointF(center.x() + 1.9, center.y() + 1.9),
-            )
-            painter.drawLine(
-                QPointF(center.x() - 1.9, center.y() + 1.9),
-                QPointF(center.x() + 1.9, center.y() - 1.9),
-            )
-
-    def _draw_arrow_head(self, painter: QPainter, base: QPointF, tip: QPointF) -> None:
-        vector_x = tip.x() - base.x()
-        vector_y = tip.y() - base.y()
-        if abs(vector_x) >= abs(vector_y):
-            direction = 1.0 if vector_x >= 0 else -1.0
-            left = QPointF(base.x() + 1.6 * direction, base.y() - 1.4)
-            right = QPointF(base.x() + 1.6 * direction, base.y() + 1.4)
-        else:
-            direction = 1.0 if vector_y >= 0 else -1.0
-            left = QPointF(base.x() - 1.4, base.y() + 1.6 * direction)
-            right = QPointF(base.x() + 1.4, base.y() + 1.6 * direction)
-        painter.drawLine(base, left)
-        painter.drawLine(base, right)
+        return TOOLBAR_ICON_CANVAS_SIZE_PX
 
     def _tr(self, key: str, default: str = "", **kwargs) -> str:
         return tr(key, default=default, language=self._ui_language, **kwargs)
@@ -1616,6 +1234,32 @@ class PolygonExtractionWidget(QWidget):
         if target_item is not None:
             self.operation_tree.setCurrentItem(target_item)
             self._update_pipeline_help_preview(target_operation)
+        self._refresh_pipeline_preset_combo()
+
+    def _built_in_pipeline_presets(self) -> dict[str, dict[str, object]]:
+        return built_in_pipeline_presets(self._ui_language)
+
+    def _refresh_pipeline_preset_combo(self) -> None:
+        if not hasattr(self, "pipeline_preset_combo"):
+            return
+        current_name = self.pipeline_preset_combo.currentText()
+        self.pipeline_preset_combo.clear()
+        for name in self._built_in_pipeline_presets():
+            self.pipeline_preset_combo.addItem(name, name)
+        index = self.pipeline_preset_combo.findText(current_name)
+        if index >= 0:
+            self.pipeline_preset_combo.setCurrentIndex(index)
+
+    def _apply_selected_pipeline_preset(self) -> None:
+        if not hasattr(self, "pipeline_preset_combo"):
+            return
+        preset_name = str(self.pipeline_preset_combo.currentData() or self.pipeline_preset_combo.currentText() or "")
+        payload = self._built_in_pipeline_presets().get(preset_name)
+        if not isinstance(payload, dict):
+            return
+        self._pipeline = PreprocessingPipeline.from_dict(payload)
+        self._populate_pipeline_list()
+        self.process_current_image(debounced=True)
 
     def _populate_pipeline_list(self) -> None:
         self._ignore_pipeline_item_change = True
@@ -1977,78 +1621,13 @@ class PolygonExtractionWidget(QWidget):
         self._on_extraction_settings_changed()
 
     def _built_in_via_presets(self) -> dict[str, dict[str, object]]:
-        return {
-            "Яркие via на дорожках"
-            if self._ui_language == "ru"
-            else "Bright vias on traces": self._noisy_traces_via_preset_payload(),
-            "Слабые/размытые via"
-            if self._ui_language == "ru"
-            else "Weak/blurred vias": self._blurred_via_preset_payload(),
-        }
+        return built_in_via_presets(self._ui_language)
 
     def _noisy_traces_via_preset_payload(self) -> dict[str, object]:
-        return {
-            "via_white_range_enabled": True,
-            "via_white_range_min": 180,
-            "via_white_range_max": 255,
-            "via_black_range_enabled": False,
-            "via_black_range_min": 0,
-            "via_black_range_max": 30,
-            "via_detector_gradient_enabled": True,
-            "via_detector_spot_enabled": True,
-            "via_detector_hough_enabled": False,
-            "via_detector_components_enabled": False,
-            "via_detector_contours_enabled": False,
-            "via_detector_morphology_enabled": False,
-            "via_detector_template_enabled": False,
-            "via_detector_blob_enabled": False,
-            "via_spot_min_contrast": 24.0,
-            "via_spot_min_roundness": 55.0,
-            "via_spot_line_suppression": 0.85,
-            "via_gradient_min_strength": 14.0,
-            "via_gradient_min_coverage": 0.28,
-            "via_hough_edge_threshold": 100.0,
-            "via_hough_accumulator_threshold": 20.0,
-            "via_component_min_score": 0.0,
-            "via_contour_min_score": 0.0,
-            "via_morphology_peak_scale": 0.20,
-            "via_template_min_score": 0.35,
-            "via_blob_min_circularity": 0.60,
-            "via_min_roundness": 40.0,
-            "debug_enabled": True,
-        }
+        return noisy_traces_via_preset_payload()
 
     def _blurred_via_preset_payload(self) -> dict[str, object]:
-        return {
-            "via_white_range_enabled": True,
-            "via_white_range_min": 135,
-            "via_white_range_max": 255,
-            "via_black_range_enabled": False,
-            "via_black_range_min": 0,
-            "via_black_range_max": 45,
-            "via_detector_gradient_enabled": True,
-            "via_detector_spot_enabled": True,
-            "via_detector_hough_enabled": False,
-            "via_detector_components_enabled": True,
-            "via_detector_contours_enabled": False,
-            "via_detector_morphology_enabled": True,
-            "via_detector_template_enabled": False,
-            "via_detector_blob_enabled": False,
-            "via_spot_min_contrast": 12.0,
-            "via_spot_min_roundness": 28.0,
-            "via_spot_line_suppression": 0.55,
-            "via_gradient_min_strength": 7.0,
-            "via_gradient_min_coverage": 0.14,
-            "via_hough_edge_threshold": 70.0,
-            "via_hough_accumulator_threshold": 10.0,
-            "via_component_min_score": 0.0,
-            "via_contour_min_score": 0.0,
-            "via_morphology_peak_scale": 0.12,
-            "via_template_min_score": 0.30,
-            "via_blob_min_circularity": 0.25,
-            "via_min_roundness": 15.0,
-            "debug_enabled": True,
-        }
+        return blurred_via_preset_payload()
 
     def _load_user_via_presets(self) -> dict[str, dict[str, object]]:
         settings = QSettings("ViaLaNet", "PolygonWidget")
@@ -2099,36 +1678,27 @@ class PolygonExtractionWidget(QWidget):
 
     def _apply_via_preset_payload(self, payload: dict[str, object]) -> None:
         blockers = [
+            QSignalBlocker(self.via_search_mode_combo),
             QSignalBlocker(self.via_white_range_checkbox),
             QSignalBlocker(self.via_white_range_min_spin),
             QSignalBlocker(self.via_white_range_max_spin),
             QSignalBlocker(self.via_black_range_checkbox),
             QSignalBlocker(self.via_black_range_min_spin),
             QSignalBlocker(self.via_black_range_max_spin),
-            QSignalBlocker(self.via_detector_gradient_checkbox),
-            QSignalBlocker(self.via_detector_hough_checkbox),
-            QSignalBlocker(self.via_detector_components_checkbox),
-            QSignalBlocker(self.via_detector_contours_checkbox),
-            QSignalBlocker(self.via_detector_morphology_checkbox),
-            QSignalBlocker(self.via_detector_template_checkbox),
-            QSignalBlocker(self.via_detector_blob_checkbox),
-            QSignalBlocker(self.via_detector_spot_checkbox),
-            QSignalBlocker(self.via_spot_min_contrast_spin),
-            QSignalBlocker(self.via_spot_min_roundness_spin),
+            QSignalBlocker(self.via_min_score_spin),
+            QSignalBlocker(self.via_min_contrast_spin),
+            QSignalBlocker(self.via_min_edge_coverage_spin),
             QSignalBlocker(self.via_spot_line_suppression_spin),
-            QSignalBlocker(self.via_gradient_min_strength_spin),
-            QSignalBlocker(self.via_gradient_min_coverage_spin),
-            QSignalBlocker(self.via_hough_edge_threshold_spin),
-            QSignalBlocker(self.via_hough_accumulator_threshold_spin),
-            QSignalBlocker(self.via_component_min_score_spin),
-            QSignalBlocker(self.via_contour_min_score_spin),
-            QSignalBlocker(self.via_morphology_peak_scale_spin),
             QSignalBlocker(self.via_template_min_score_spin),
-            QSignalBlocker(self.via_blob_min_circularity_spin),
             QSignalBlocker(self.debug_candidates_checkbox),
             QSignalBlocker(self.via_roundness_spin),
         ]
         try:
+            mode_index = self.via_search_mode_combo.findData(
+                normalize_via_search_mode(payload.get("via_search_mode", self.via_search_mode_combo.currentData()))
+            )
+            if mode_index >= 0:
+                self.via_search_mode_combo.setCurrentIndex(mode_index)
             self.via_white_range_checkbox.setChecked(
                 bool(payload.get("via_white_range_enabled", self.via_white_range_checkbox.isChecked()))
             )
@@ -2147,65 +1717,20 @@ class PolygonExtractionWidget(QWidget):
             self.via_black_range_max_spin.setValue(
                 int(payload.get("via_black_range_max", self.via_black_range_max_spin.value()))
             )
-            self.via_detector_gradient_checkbox.setChecked(
-                bool(payload.get("via_detector_gradient_enabled", self.via_detector_gradient_checkbox.isChecked()))
+            self.via_min_score_spin.setValue(
+                float(payload.get("via_min_score", self.via_min_score_spin.value()))
             )
-            self.via_detector_spot_checkbox.setChecked(
-                bool(payload.get("via_detector_spot_enabled", self.via_detector_spot_checkbox.isChecked()))
+            self.via_min_contrast_spin.setValue(
+                float(payload.get("via_min_contrast", self.via_min_contrast_spin.value()))
             )
-            self.via_detector_hough_checkbox.setChecked(
-                bool(payload.get("via_detector_hough_enabled", self.via_detector_hough_checkbox.isChecked()))
-            )
-            self.via_detector_components_checkbox.setChecked(
-                bool(payload.get("via_detector_components_enabled", self.via_detector_components_checkbox.isChecked()))
-            )
-            self.via_detector_contours_checkbox.setChecked(
-                bool(payload.get("via_detector_contours_enabled", self.via_detector_contours_checkbox.isChecked()))
-            )
-            self.via_detector_morphology_checkbox.setChecked(
-                bool(payload.get("via_detector_morphology_enabled", self.via_detector_morphology_checkbox.isChecked()))
-            )
-            self.via_detector_template_checkbox.setChecked(
-                bool(payload.get("via_detector_template_enabled", self.via_detector_template_checkbox.isChecked()))
-            )
-            self.via_detector_blob_checkbox.setChecked(
-                bool(payload.get("via_detector_blob_enabled", self.via_detector_blob_checkbox.isChecked()))
-            )
-            self.via_spot_min_contrast_spin.setValue(
-                float(payload.get("via_spot_min_contrast", self.via_spot_min_contrast_spin.value()))
-            )
-            self.via_spot_min_roundness_spin.setValue(
-                float(payload.get("via_spot_min_roundness", self.via_spot_min_roundness_spin.value()))
+            self.via_min_edge_coverage_spin.setValue(
+                float(payload.get("via_min_edge_coverage", self.via_min_edge_coverage_spin.value()))
             )
             self.via_spot_line_suppression_spin.setValue(
                 float(payload.get("via_spot_line_suppression", self.via_spot_line_suppression_spin.value()))
             )
-            self.via_gradient_min_strength_spin.setValue(
-                float(payload.get("via_gradient_min_strength", self.via_gradient_min_strength_spin.value()))
-            )
-            self.via_gradient_min_coverage_spin.setValue(
-                float(payload.get("via_gradient_min_coverage", self.via_gradient_min_coverage_spin.value()))
-            )
-            self.via_hough_edge_threshold_spin.setValue(
-                float(payload.get("via_hough_edge_threshold", self.via_hough_edge_threshold_spin.value()))
-            )
-            self.via_hough_accumulator_threshold_spin.setValue(
-                float(payload.get("via_hough_accumulator_threshold", self.via_hough_accumulator_threshold_spin.value()))
-            )
-            self.via_component_min_score_spin.setValue(
-                float(payload.get("via_component_min_score", self.via_component_min_score_spin.value()))
-            )
-            self.via_contour_min_score_spin.setValue(
-                float(payload.get("via_contour_min_score", self.via_contour_min_score_spin.value()))
-            )
-            self.via_morphology_peak_scale_spin.setValue(
-                float(payload.get("via_morphology_peak_scale", self.via_morphology_peak_scale_spin.value()))
-            )
             self.via_template_min_score_spin.setValue(
                 float(payload.get("via_template_min_score", self.via_template_min_score_spin.value()))
-            )
-            self.via_blob_min_circularity_spin.setValue(
-                float(payload.get("via_blob_min_circularity", self.via_blob_min_circularity_spin.value()))
             )
             self.via_roundness_spin.setValue(float(payload.get("via_min_roundness", self.via_roundness_spin.value())))
             self.debug_candidates_checkbox.setChecked(
@@ -2261,48 +1786,24 @@ class PolygonExtractionWidget(QWidget):
 
     def _reset_via_search_parameters(self, *_args) -> None:
         blockers = [
-            QSignalBlocker(self.via_detector_gradient_checkbox),
-            QSignalBlocker(self.via_detector_hough_checkbox),
-            QSignalBlocker(self.via_detector_components_checkbox),
-            QSignalBlocker(self.via_detector_contours_checkbox),
-            QSignalBlocker(self.via_detector_morphology_checkbox),
-            QSignalBlocker(self.via_detector_template_checkbox),
-            QSignalBlocker(self.via_detector_blob_checkbox),
-            QSignalBlocker(self.via_detector_spot_checkbox),
-            QSignalBlocker(self.via_spot_min_contrast_spin),
-            QSignalBlocker(self.via_spot_min_roundness_spin),
+            QSignalBlocker(self.via_search_mode_combo),
+            QSignalBlocker(self.via_min_score_spin),
+            QSignalBlocker(self.via_min_contrast_spin),
+            QSignalBlocker(self.via_min_edge_coverage_spin),
             QSignalBlocker(self.via_spot_line_suppression_spin),
-            QSignalBlocker(self.via_gradient_min_strength_spin),
-            QSignalBlocker(self.via_gradient_min_coverage_spin),
-            QSignalBlocker(self.via_hough_edge_threshold_spin),
-            QSignalBlocker(self.via_hough_accumulator_threshold_spin),
-            QSignalBlocker(self.via_component_min_score_spin),
-            QSignalBlocker(self.via_contour_min_score_spin),
-            QSignalBlocker(self.via_morphology_peak_scale_spin),
             QSignalBlocker(self.via_template_min_score_spin),
-            QSignalBlocker(self.via_blob_min_circularity_spin),
+            QSignalBlocker(self.via_roundness_spin),
         ]
         try:
-            self.via_detector_gradient_checkbox.setChecked(True)
-            self.via_detector_spot_checkbox.setChecked(True)
-            self.via_detector_hough_checkbox.setChecked(True)
-            self.via_detector_components_checkbox.setChecked(True)
-            self.via_detector_contours_checkbox.setChecked(True)
-            self.via_detector_morphology_checkbox.setChecked(True)
-            self.via_detector_template_checkbox.setChecked(True)
-            self.via_detector_blob_checkbox.setChecked(True)
-            self.via_spot_min_contrast_spin.setValue(18.0)
-            self.via_spot_min_roundness_spin.setValue(45.0)
+            mode_index = self.via_search_mode_combo.findData("template")
+            if mode_index >= 0:
+                self.via_search_mode_combo.setCurrentIndex(mode_index)
+            self.via_min_score_spin.setValue(0.35)
+            self.via_min_contrast_spin.setValue(14.0)
+            self.via_min_edge_coverage_spin.setValue(0.45)
             self.via_spot_line_suppression_spin.setValue(0.65)
-            self.via_gradient_min_strength_spin.setValue(12.0)
-            self.via_gradient_min_coverage_spin.setValue(0.24)
-            self.via_hough_edge_threshold_spin.setValue(80.0)
-            self.via_hough_accumulator_threshold_spin.setValue(10.0)
-            self.via_component_min_score_spin.setValue(0.0)
-            self.via_contour_min_score_spin.setValue(0.0)
-            self.via_morphology_peak_scale_spin.setValue(0.18)
             self.via_template_min_score_spin.setValue(0.35)
-            self.via_blob_min_circularity_spin.setValue(0.35)
+            self.via_roundness_spin.setValue(40.0)
         finally:
             del blockers
         self._update_via_threshold_controls_state()
@@ -2400,6 +1901,26 @@ class PolygonExtractionWidget(QWidget):
         message = "\n".join(lines)
         self._append_log(message.replace("\n", " | "))
         QMessageBox.information(self, title, message)
+
+    def _on_middle_preview_hold_changed(self, active: bool) -> None:
+        should_show_source = bool(active and self._is_filters_tab_active())
+        if self._show_source_while_middle_held == should_show_source:
+            return
+        self._show_source_while_middle_held = should_show_source
+        self._sync_current_state_views()
+
+    def _is_filters_tab_active(self) -> bool:
+        if not hasattr(self, "control_tabs") or not hasattr(self, "pipeline_tab"):
+            return False
+        return self.control_tabs.currentWidget() is self.pipeline_tab
+
+    def _on_control_tab_changed(self, _index: int) -> None:
+        if not self._show_source_while_middle_held:
+            return
+        if self._is_filters_tab_active():
+            return
+        self._show_source_while_middle_held = False
+        self._sync_current_state_views()
 
     def _show_gradient_debug_window(self) -> None:
         title = "Отладка градиентов" if self._ui_language == "ru" else "Gradient debug"
@@ -2571,14 +2092,14 @@ class PolygonExtractionWidget(QWidget):
         if mode == "elevation":
             return cv2.cvtColor(elevation, cv2.COLOR_GRAY2BGR)
         if mode == "threshold":
-            threshold = float(settings.via_gradient_min_strength)
+            threshold = float(settings.via_min_contrast)
             mask = elevation >= threshold
             overlay = np.zeros((elevation.shape[0], elevation.shape[1], 3), dtype=np.uint8)
             overlay[..., 1] = mask.astype(np.uint8) * 230
             overlay[..., 2] = mask.astype(np.uint8) * 60
             return overlay
         heatmap = cv2.applyColorMap(elevation, cv2.COLORMAP_TURBO)
-        threshold = float(settings.via_gradient_min_strength)
+        threshold = float(settings.via_min_contrast)
         if settings.object_type == "via" or settings.output_mode == "box":
             below = (elevation < max(0.0, threshold)).astype(np.uint8)
             if below.any():
@@ -2907,7 +2428,7 @@ class PolygonExtractionWidget(QWidget):
         )
         if not path:
             return
-        Path(path).write_text(json.dumps(self.get_pipeline(), indent=2, ensure_ascii=False), encoding="utf-8")
+        save_pipeline_config_to_path(path, self.get_pipeline())
         self._append_log(self._tr("pipeline_saved_log", path=path))
 
     def _load_pipeline_json(self) -> None:
@@ -2919,7 +2440,7 @@ class PolygonExtractionWidget(QWidget):
         )
         if not path:
             return
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = load_pipeline_config_from_path(path)
         self.set_pipeline(payload)
         self._append_log(self._tr("pipeline_loaded_log", path=path))
 
@@ -3198,8 +2719,11 @@ class PolygonExtractionWidget(QWidget):
         self._sync_extra_layers()
 
     def _auto_apply_pipeline(self) -> None:
-        if self._workspace.current_image_path:
-            self.process_current_image(debounced=True)
+        if not self._workspace.current_image_path:
+            return
+        if hasattr(self, "auto_apply_checkbox") and not self.auto_apply_checkbox.isChecked():
+            return
+        self.process_current_image(debounced=True)
 
     def _start_auto_tune_from_reference(self) -> None:
         current_state = self._workspace.current_state
@@ -3289,32 +2813,18 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.conductor_gradient_min_strength_spin),
             QSignalBlocker(self.conductor_gradient_band_radius_spin),
             QSignalBlocker(self.via_size_mode_combo),
+            QSignalBlocker(self.via_search_mode_combo),
             QSignalBlocker(self.via_white_range_checkbox),
             QSignalBlocker(self.via_white_range_min_spin),
             QSignalBlocker(self.via_white_range_max_spin),
             QSignalBlocker(self.via_black_range_checkbox),
             QSignalBlocker(self.via_black_range_min_spin),
             QSignalBlocker(self.via_black_range_max_spin),
-            QSignalBlocker(self.via_detector_gradient_checkbox),
-            QSignalBlocker(self.via_detector_hough_checkbox),
-            QSignalBlocker(self.via_detector_components_checkbox),
-            QSignalBlocker(self.via_detector_contours_checkbox),
-            QSignalBlocker(self.via_detector_morphology_checkbox),
-            QSignalBlocker(self.via_detector_template_checkbox),
-            QSignalBlocker(self.via_detector_blob_checkbox),
-            QSignalBlocker(self.via_detector_spot_checkbox),
-            QSignalBlocker(self.via_spot_min_contrast_spin),
-            QSignalBlocker(self.via_spot_min_roundness_spin),
+            QSignalBlocker(self.via_min_score_spin),
+            QSignalBlocker(self.via_min_contrast_spin),
+            QSignalBlocker(self.via_min_edge_coverage_spin),
             QSignalBlocker(self.via_spot_line_suppression_spin),
-            QSignalBlocker(self.via_gradient_min_strength_spin),
-            QSignalBlocker(self.via_gradient_min_coverage_spin),
-            QSignalBlocker(self.via_hough_edge_threshold_spin),
-            QSignalBlocker(self.via_hough_accumulator_threshold_spin),
-            QSignalBlocker(self.via_component_min_score_spin),
-            QSignalBlocker(self.via_contour_min_score_spin),
-            QSignalBlocker(self.via_morphology_peak_scale_spin),
             QSignalBlocker(self.via_template_min_score_spin),
-            QSignalBlocker(self.via_blob_min_circularity_spin),
             QSignalBlocker(self.debug_candidates_checkbox),
             QSignalBlocker(self.via_roundness_spin),
             QSignalBlocker(self.min_via_width_spin),
@@ -3363,31 +2873,21 @@ class PolygonExtractionWidget(QWidget):
             via_size_mode_index = self.via_size_mode_combo.findData(normalize_via_size_mode(settings.via_size_mode))
             if via_size_mode_index >= 0:
                 self.via_size_mode_combo.setCurrentIndex(via_size_mode_index)
+            via_search_mode_index = self.via_search_mode_combo.findData(
+                normalize_via_search_mode(settings.via_search_mode)
+            )
+            if via_search_mode_index >= 0:
+                self.via_search_mode_combo.setCurrentIndex(via_search_mode_index)
             self.via_white_range_checkbox.setChecked(bool(settings.via_white_range_enabled))
             self.via_white_range_min_spin.setValue(int(settings.via_white_range_min))
             self.via_white_range_max_spin.setValue(int(settings.via_white_range_max))
             self.via_black_range_checkbox.setChecked(bool(settings.via_black_range_enabled))
             self.via_black_range_min_spin.setValue(int(settings.via_black_range_min))
             self.via_black_range_max_spin.setValue(int(settings.via_black_range_max))
-            self.via_detector_gradient_checkbox.setChecked(bool(settings.via_detector_gradient_enabled))
-            self.via_detector_spot_checkbox.setChecked(bool(settings.via_detector_spot_enabled))
-            self.via_detector_hough_checkbox.setChecked(bool(settings.via_detector_hough_enabled))
-            self.via_detector_components_checkbox.setChecked(bool(settings.via_detector_components_enabled))
-            self.via_detector_contours_checkbox.setChecked(bool(settings.via_detector_contours_enabled))
-            self.via_detector_morphology_checkbox.setChecked(bool(settings.via_detector_morphology_enabled))
-            self.via_detector_template_checkbox.setChecked(bool(settings.via_detector_template_enabled))
-            self.via_detector_blob_checkbox.setChecked(bool(settings.via_detector_blob_enabled))
-            self.via_spot_min_contrast_spin.setValue(float(settings.via_spot_min_contrast))
-            self.via_spot_min_roundness_spin.setValue(float(settings.via_spot_min_roundness))
-            self.via_gradient_min_strength_spin.setValue(float(settings.via_gradient_min_strength))
-            self.via_gradient_min_coverage_spin.setValue(float(settings.via_gradient_min_coverage))
-            self.via_hough_edge_threshold_spin.setValue(float(settings.via_hough_edge_threshold))
-            self.via_hough_accumulator_threshold_spin.setValue(float(settings.via_hough_accumulator_threshold))
-            self.via_component_min_score_spin.setValue(float(settings.via_component_min_score))
-            self.via_contour_min_score_spin.setValue(float(settings.via_contour_min_score))
-            self.via_morphology_peak_scale_spin.setValue(float(settings.via_morphology_peak_scale))
+            self.via_min_score_spin.setValue(float(settings.via_min_score))
+            self.via_min_contrast_spin.setValue(float(settings.via_min_contrast))
+            self.via_min_edge_coverage_spin.setValue(float(settings.via_min_edge_coverage))
             self.via_template_min_score_spin.setValue(float(settings.via_template_min_score))
-            self.via_blob_min_circularity_spin.setValue(float(settings.via_blob_min_circularity))
             self.via_spot_line_suppression_spin.setValue(float(settings.via_spot_line_suppression))
             self._via_template_images = self._normalize_via_template_images(settings.via_template_images)
             self._refresh_via_template_list()
@@ -3426,6 +2926,7 @@ class PolygonExtractionWidget(QWidget):
         max_via_width = self.max_via_width_spin.value()
         max_via_height = self.max_via_height_spin.value()
         via_size_mode = normalize_via_size_mode(self.via_size_mode_combo.currentData())
+        via_search_mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
         fixed_via_pairs = self._fixed_via_pairs()
         fixed_via_widths = [width for width, _height in fixed_via_pairs]
         fixed_via_heights = [height for _width, height in fixed_via_pairs]
@@ -3465,31 +2966,17 @@ class PolygonExtractionWidget(QWidget):
             conductor_gradient_min_strength=self.conductor_gradient_min_strength_spin.value(),
             conductor_gradient_band_radius=self.conductor_gradient_band_radius_spin.value(),
             via_size_mode=via_size_mode,
+            via_search_mode=via_search_mode,
             via_white_range_enabled=self.via_white_range_checkbox.isChecked(),
             via_white_range_min=self.via_white_range_min_spin.value(),
             via_white_range_max=self.via_white_range_max_spin.value(),
             via_black_range_enabled=self.via_black_range_checkbox.isChecked(),
             via_black_range_min=self.via_black_range_min_spin.value(),
             via_black_range_max=self.via_black_range_max_spin.value(),
-            via_detector_gradient_enabled=self.via_detector_gradient_checkbox.isChecked(),
-            via_detector_spot_enabled=self.via_detector_spot_checkbox.isChecked(),
-            via_detector_hough_enabled=self.via_detector_hough_checkbox.isChecked(),
-            via_detector_components_enabled=self.via_detector_components_checkbox.isChecked(),
-            via_detector_contours_enabled=self.via_detector_contours_checkbox.isChecked(),
-            via_detector_morphology_enabled=self.via_detector_morphology_checkbox.isChecked(),
-            via_detector_template_enabled=self.via_detector_template_checkbox.isChecked(),
-            via_detector_blob_enabled=self.via_detector_blob_checkbox.isChecked(),
-            via_spot_min_contrast=self.via_spot_min_contrast_spin.value(),
-            via_spot_min_roundness=self.via_spot_min_roundness_spin.value(),
-            via_gradient_min_strength=self.via_gradient_min_strength_spin.value(),
-            via_gradient_min_coverage=self.via_gradient_min_coverage_spin.value(),
-            via_hough_edge_threshold=self.via_hough_edge_threshold_spin.value(),
-            via_hough_accumulator_threshold=self.via_hough_accumulator_threshold_spin.value(),
-            via_component_min_score=self.via_component_min_score_spin.value(),
-            via_contour_min_score=self.via_contour_min_score_spin.value(),
-            via_morphology_peak_scale=self.via_morphology_peak_scale_spin.value(),
+            via_min_score=self.via_min_score_spin.value(),
+            via_min_contrast=self.via_min_contrast_spin.value(),
+            via_min_edge_coverage=self.via_min_edge_coverage_spin.value(),
             via_template_min_score=self.via_template_min_score_spin.value(),
-            via_blob_min_circularity=self.via_blob_min_circularity_spin.value(),
             via_spot_line_suppression=self.via_spot_line_suppression_spin.value(),
             via_template_images=[template.copy() for template in self._via_template_images],
             debug_enabled=self.debug_candidates_checkbox.isChecked(),
@@ -3617,6 +3104,13 @@ class PolygonExtractionWidget(QWidget):
             self._updating_views = False
 
     def _display_image_for_current_state(self):
+        current_state = self._workspace.current_state
+        if (
+            self._show_source_while_middle_held
+            and current_state is not None
+            and current_state.source_image is not None
+        ):
+            return current_state.source_image
         return self._workspace.current_display_image()
 
     def _via_debug_inspection_enabled(self) -> bool:
@@ -4107,21 +3601,15 @@ class PolygonExtractionWidget(QWidget):
         dataset_directory: str | None = None,
     ) -> dict[str, str]:
         target_directory = dataset_directory or self.dataset_dir_edit.text().strip()
-        if not target_directory:
-            self._append_log(self._tr("dataset_directory_not_set_log"))
-            return {}
-        try:
-            saved_files = export_dataset_frame(
-                dataset_directory=target_directory,
-                image_path=image_path,
-                polygons=polygons,
-                source_image=state.source_image,
-            )
-        except Exception as exc:
-            self._append_log(self._tr("dataset_export_failed_log", image_name=Path(image_path).name, error=exc))
-            return {}
-        self._append_log(self._tr("dataset_exported_log", image_name=Path(image_path).name, saved_files=saved_files))
-        return saved_files
+        result = export_frame_to_dataset(
+            dataset_directory=target_directory,
+            image_path=image_path,
+            state=state,
+            polygons=polygons,
+        )
+        if result.message_key is not None:
+            self._append_log(self._tr(result.message_key, **(result.message_kwargs or {})))
+        return result.saved_files
 
     def export_current_frame_to_dataset(self, dataset_directory: str | None = None) -> dict[str, str]:
         current_state = self._workspace.current_state
@@ -4174,7 +3662,7 @@ class PolygonExtractionWidget(QWidget):
         image_paths: list[str] | None = None,
         max_workers: int | None = None,
     ) -> None:
-        if self._batch_processor.is_running:
+        if self._batch_controller.is_running:
             self._append_log(self._tr("batch_already_running_log"))
             return
         paths = image_paths or list(self._workspace.image_paths)
@@ -4183,18 +3671,22 @@ class PolygonExtractionWidget(QWidget):
             return
         output_directory = self.output_dir_edit.text().strip() or None
         save_options = self._current_save_options()
-        self._batch_progress_enabled = bool(output_directory and save_options.save_cif)
+        started = self._batch_controller.start(
+            BatchStartRequest(
+                image_paths=list(paths),
+                pipeline_config=self.get_pipeline(),
+                contour_settings=self._current_contour_settings(),
+                display_settings=self._display_settings,
+                save_options=save_options,
+                output_directory=output_directory,
+                max_workers=max_workers or self.max_workers_spin.value(),
+            )
+        )
+        if not started:
+            return
+        self._batch_progress_enabled = self._batch_controller.progress_enabled
         self._show_batch_progress(len(paths))
         self._set_progress_status("batch_started_status")
-        self._batch_processor.start(
-            image_paths=paths,
-            pipeline_config=self.get_pipeline(),
-            contour_settings=self._current_contour_settings(),
-            output_directory=output_directory,
-            save_options=save_options,
-            display_settings=self._display_settings,
-            max_workers=max_workers or self.max_workers_spin.value(),
-        )
 
     def stop_batch_processing(self) -> None:
-        self._batch_processor.stop()
+        self._batch_controller.stop()

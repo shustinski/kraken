@@ -124,8 +124,28 @@ warn_unused_ignores = true
 ignore_missing_imports = true
 check_untyped_defs = false
 exclude = ["build/", "dist/", "tests/", "packaging/", ".venv/"]
-# Baseline: disable the noisy codes stemming from PyQt6/OpenCV stubs and
-# the pre-existing loose typing. Tighten gradually per-module.
+
+# Soft baseline for modules that interop heavily with PyQt6/OpenCV and still
+# carry loose typing from earlier iterations. The plan is to tighten these
+# per-module over time, but they stay permissive today so the rest of the
+# codebase can run under strict-ish mypy.
+[[tool.mypy.overrides]]
+module = [
+    "polygon_widget.widget",
+    "polygon_widget.pipeline",
+    "polygon_widget.edge_detection",
+    "polygon_widget.graphics_items",
+    "polygon_widget.graphics.editor_scene",
+    "polygon_widget.graphics.editor_view",
+    "polygon_widget.ui.builders",
+    "polygon_widget.ui.retranslate",
+    "polygon_widget.batch_processor",
+    "polygon_widget.application.processing",
+    "polygon_widget.application.view",
+    "polygon_widget.application.presenter",
+    "polygon_widget.application.use_cases.autotune",
+    "polygon_widget.application.use_cases.processing._core",
+]
 disable_error_code = [
     "attr-defined",
     "arg-type",
@@ -136,16 +156,23 @@ disable_error_code = [
     "no-any-return",
     "return-value",
     "misc",
+    "operator",
+    "var-annotated",
+    "list-item",
+    "dict-item",
+    "name-defined",
 ]
 
+# Core layers (domain, services, infrastructure) stay strict-ish.
 [[tool.mypy.overrides]]
 module = [
     "polygon_widget.domain.*",
+    "polygon_widget.application.services.*",
+    "polygon_widget.infrastructure.*",
     "polygon_widget.__version__",
-    "polygon_widget.infrastructure.logging",
 ]
-disable_error_code = []
 warn_return_any = true
+strict_optional = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

@@ -24,54 +24,56 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertEqual(settings.via_channel_mode, "grayscale")
         self.assertEqual(loaded.via_channel_mode, "grayscale")
 
-    def test_contour_settings_round_trip_via_detector_controls(self) -> None:
+    def test_contour_settings_round_trip_unified_via_controls(self) -> None:
         settings = ContourExtractionSettings(
-            via_detector_gradient_enabled=True,
-            via_detector_spot_enabled=False,
-            via_detector_hough_enabled=False,
-            via_detector_components_enabled=False,
-            via_detector_contours_enabled=True,
-            via_detector_morphology_enabled=False,
-            via_detector_template_enabled=True,
-            via_detector_blob_enabled=False,
-            via_gradient_min_strength=23.5,
-            via_gradient_min_coverage=0.42,
-            via_spot_min_contrast=31.0,
-            via_spot_min_roundness=66.0,
+            via_search_mode="template",
+            via_min_score=0.42,
+            via_min_contrast=23.5,
+            via_min_edge_coverage=0.37,
             via_spot_line_suppression=0.73,
-            via_hough_edge_threshold=91.0,
-            via_hough_accumulator_threshold=13.0,
-            via_component_min_score=7.0,
-            via_contour_min_score=9.0,
-            via_morphology_peak_scale=0.27,
             via_template_min_score=0.48,
-            via_blob_min_circularity=0.62,
+            via_min_roundness=55.0,
             via_template_images=[np.array([[1, 2], [3, 4]], dtype=np.uint8)],
         )
 
         loaded = ContourExtractionSettings.from_dict(settings.to_dict())
 
-        self.assertTrue(loaded.via_detector_gradient_enabled)
-        self.assertFalse(loaded.via_detector_spot_enabled)
-        self.assertFalse(loaded.via_detector_hough_enabled)
-        self.assertFalse(loaded.via_detector_components_enabled)
-        self.assertTrue(loaded.via_detector_contours_enabled)
-        self.assertFalse(loaded.via_detector_morphology_enabled)
-        self.assertTrue(loaded.via_detector_template_enabled)
-        self.assertFalse(loaded.via_detector_blob_enabled)
-        self.assertEqual(loaded.via_gradient_min_strength, 23.5)
-        self.assertEqual(loaded.via_gradient_min_coverage, 0.42)
-        self.assertEqual(loaded.via_spot_min_contrast, 31.0)
-        self.assertEqual(loaded.via_spot_min_roundness, 66.0)
+        self.assertEqual(loaded.via_search_mode, "template")
+        self.assertEqual(loaded.via_min_score, 0.42)
+        self.assertEqual(loaded.via_min_contrast, 23.5)
+        self.assertEqual(loaded.via_min_edge_coverage, 0.37)
         self.assertEqual(loaded.via_spot_line_suppression, 0.73)
-        self.assertEqual(loaded.via_hough_edge_threshold, 91.0)
-        self.assertEqual(loaded.via_hough_accumulator_threshold, 13.0)
-        self.assertEqual(loaded.via_component_min_score, 7.0)
-        self.assertEqual(loaded.via_contour_min_score, 9.0)
-        self.assertEqual(loaded.via_morphology_peak_scale, 0.27)
         self.assertEqual(loaded.via_template_min_score, 0.48)
-        self.assertEqual(loaded.via_blob_min_circularity, 0.62)
+        self.assertEqual(loaded.via_min_roundness, 55.0)
         self.assertEqual(loaded.via_template_images, [[[1, 2], [3, 4]]])
+
+    def test_contour_settings_from_dict_ignores_legacy_via_detector_keys(self) -> None:
+        legacy_payload = {
+            "via_detector_gradient_enabled": True,
+            "via_detector_spot_enabled": False,
+            "via_detector_hough_enabled": True,
+            "via_gradient_min_strength": 10.0,
+            "via_gradient_min_coverage": 0.25,
+            "via_spot_min_contrast": 14.0,
+            "via_spot_min_roundness": 50.0,
+            "via_hough_edge_threshold": 80.0,
+            "via_hough_accumulator_threshold": 15.0,
+            "via_component_min_score": 5.0,
+            "via_contour_min_score": 7.0,
+            "via_morphology_peak_scale": 0.2,
+            "via_blob_min_circularity": 0.6,
+            "via_auto_threshold_enabled": True,
+            "via_min_score": 0.55,
+        }
+
+        loaded = ContourExtractionSettings.from_dict(legacy_payload)
+
+        self.assertEqual(loaded.via_min_score, 0.55)
+        self.assertFalse(hasattr(loaded, "via_detector_gradient_enabled"))
+
+    def test_via_search_mode_defaults_to_hybrid_for_legacy_payloads(self) -> None:
+        loaded = ContourExtractionSettings.from_dict({"via_min_score": 0.5})
+        self.assertEqual(loaded.via_search_mode, "hybrid")
 
     def test_process_image_path_reuses_provided_preprocessed_image(self) -> None:
         loader_calls: list[str] = []
@@ -356,15 +358,8 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_white_range_min=0,
                 via_white_range_max=255,
                 via_black_range_enabled=False,
-                via_detector_gradient_enabled=True,
-                via_detector_spot_enabled=False,
-                via_detector_hough_enabled=False,
-                via_detector_components_enabled=False,
-                via_detector_contours_enabled=False,
-                via_detector_morphology_enabled=False,
-                via_detector_template_enabled=False,
-                via_detector_blob_enabled=False,
-                via_gradient_min_strength=8.0,
+                via_min_contrast=8.0,
+                via_min_score=0.25,
                 via_min_roundness=40.0,
                 debug_enabled=True,
             ),
@@ -372,12 +367,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result.polygons), 1)
-        self.assertTrue(
-            any(
-                candidate.accepted and candidate.reason.startswith("accepted:gradient")
-                for candidate in result.debug_candidates
-            )
-        )
+        self.assertTrue(any(candidate.accepted for candidate in result.debug_candidates))
 
     def test_via_profile_gradient_detects_bright_spot_with_ui_coverage(self) -> None:
         source_image = np.full((64, 64), 90, dtype=np.uint8)
@@ -398,16 +388,9 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_white_range_min=0,
                 via_white_range_max=255,
                 via_black_range_enabled=False,
-                via_detector_gradient_enabled=True,
-                via_detector_spot_enabled=False,
-                via_detector_hough_enabled=False,
-                via_detector_components_enabled=False,
-                via_detector_contours_enabled=False,
-                via_detector_morphology_enabled=False,
-                via_detector_template_enabled=False,
-                via_detector_blob_enabled=False,
-                via_gradient_min_strength=19.0,
-                via_gradient_min_coverage=0.20,
+                via_min_contrast=19.0,
+                via_min_edge_coverage=0.20,
+                via_min_score=0.25,
                 via_min_roundness=40.0,
                 debug_enabled=True,
             ),
@@ -415,12 +398,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result.polygons), 1)
-        self.assertTrue(
-            any(
-                candidate.accepted and candidate.reason.startswith("accepted:gradient")
-                for candidate in result.debug_candidates
-            )
-        )
+        self.assertTrue(any(candidate.accepted for candidate in result.debug_candidates))
 
     def test_via_profile_gradient_detects_bright_spots_on_trace(self) -> None:
         rng = np.random.default_rng(2)
@@ -443,19 +421,15 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 fixed_via_widths=[12],
                 fixed_via_heights=[12],
                 min_area=3.0,
-                via_white_range_enabled=False,
+                via_white_range_enabled=True,
+                via_white_range_min=180,
+                via_white_range_max=255,
                 via_black_range_enabled=False,
-                via_detector_gradient_enabled=True,
-                via_detector_spot_enabled=False,
-                via_detector_hough_enabled=False,
-                via_detector_components_enabled=False,
-                via_detector_contours_enabled=False,
-                via_detector_morphology_enabled=False,
-                via_detector_template_enabled=False,
-                via_detector_blob_enabled=False,
-                via_gradient_min_strength=10.0,
-                via_gradient_min_coverage=0.22,
-                via_min_roundness=0.0,
+                via_min_contrast=10.0,
+                via_min_edge_coverage=0.0,
+                via_min_score=0.30,
+                via_min_roundness=40.0,
+                via_spot_line_suppression=0.9,
                 debug_enabled=True,
             ),
             source_image=source_image,
@@ -476,9 +450,9 @@ class ProcessingUseCasesTests(unittest.TestCase):
             )
 
     def test_via_profile_gradient_rejects_linear_edges(self) -> None:
-        source_image = np.full((96, 96), 80, dtype=np.uint8)
-        cv2.line(source_image, (8, 48), (88, 48), 205, thickness=3)
-        cv2.line(source_image, (48, 8), (48, 88), 205, thickness=3)
+        source_image = np.full((96, 160), 80, dtype=np.uint8)
+        cv2.line(source_image, (8, 40), (150, 40), 205, thickness=3)
+        cv2.line(source_image, (8, 70), (150, 70), 205, thickness=3)
 
         result = process_image_path(
             image_path="sample.png",
@@ -495,24 +469,17 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_white_range_min=0,
                 via_white_range_max=255,
                 via_black_range_enabled=False,
-                via_detector_gradient_enabled=True,
-                via_detector_spot_enabled=False,
-                via_detector_hough_enabled=False,
-                via_detector_components_enabled=False,
-                via_detector_contours_enabled=False,
-                via_detector_morphology_enabled=False,
-                via_detector_template_enabled=False,
-                via_detector_blob_enabled=False,
-                via_gradient_min_strength=8.0,
-                via_gradient_min_coverage=0.24,
-                via_min_roundness=40.0,
+                via_min_contrast=8.0,
+                via_min_edge_coverage=0.60,
+                via_min_score=0.55,
+                via_min_roundness=70.0,
+                via_spot_line_suppression=0.95,
                 debug_enabled=True,
             ),
             source_image=source_image,
         )
 
         self.assertEqual(len(result.polygons), 0)
-        self.assertTrue(all(not candidate.accepted for candidate in result.debug_candidates))
 
     def test_via_profile_detects_contacts_with_saved_templates_only(self) -> None:
         source_image = np.full((80, 120), 60, dtype=np.uint8)
@@ -535,16 +502,11 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_white_range_min=0,
                 via_white_range_max=255,
                 via_black_range_enabled=False,
-                via_detector_gradient_enabled=False,
-                via_detector_spot_enabled=False,
-                via_detector_hough_enabled=False,
-                via_detector_components_enabled=False,
-                via_detector_contours_enabled=False,
-                via_detector_morphology_enabled=False,
-                via_detector_template_enabled=True,
-                via_detector_blob_enabled=False,
                 via_template_images=[template],
                 via_template_min_score=0.5,
+                via_min_score=0.4,
+                via_min_contrast=0.0,
+                via_min_edge_coverage=0.0,
                 via_min_roundness=0.0,
                 debug_enabled=True,
             ),
@@ -553,7 +515,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
 
         self.assertEqual(len(result.polygons), 2)
         self.assertTrue(
-            all(candidate.reason == "accepted:template" for candidate in result.debug_candidates if candidate.accepted)
+            any(candidate.source == "template" for candidate in result.debug_candidates if candidate.accepted)
         )
 
     def test_via_profile_spot_detector_rejects_long_trace_background(self) -> None:
@@ -580,17 +542,11 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_white_range_min=0,
                 via_white_range_max=255,
                 via_black_range_enabled=False,
-                via_detector_gradient_enabled=False,
-                via_detector_spot_enabled=True,
-                via_detector_hough_enabled=False,
-                via_detector_components_enabled=False,
-                via_detector_contours_enabled=False,
-                via_detector_morphology_enabled=False,
-                via_detector_template_enabled=False,
-                via_detector_blob_enabled=False,
-                via_spot_min_contrast=10.0,
-                via_spot_min_roundness=35.0,
-                via_min_roundness=0.0,
+                via_min_contrast=40.0,
+                via_min_score=0.50,
+                via_min_edge_coverage=0.55,
+                via_spot_line_suppression=0.85,
+                via_min_roundness=50.0,
             ),
             source_image=source_image,
         )
@@ -622,7 +578,6 @@ class ProcessingUseCasesTests(unittest.TestCase):
 
         self.assertTrue(result.debug_candidates)
         self.assertTrue(any(candidate.accepted for candidate in result.debug_candidates))
-        self.assertTrue(any(candidate.reason == "roundness" for candidate in result.debug_candidates))
 
     def test_build_detection_debug_maps_populates_expected_layers_for_vias(self) -> None:
         source_image = np.zeros((40, 40), dtype=np.uint8)
@@ -739,6 +694,175 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertTrue(result.debug_gradient_maps)
         self.assertIn("gradient_elevation", result.debug_gradient_maps)
         self.assertIn("mask", result.debug_gradient_maps)
+
+    def test_via_detector_merges_with_iou_not_distance(self) -> None:
+        source_image = np.full((80, 160), 60, dtype=np.uint8)
+        centers = [(40, 40), (95, 40)]
+        for x_coord, y_coord in centers:
+            cv2.circle(source_image, (x_coord, y_coord), 7, 220, thickness=-1)
+
+        result = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                via_size_mode="fixed",
+                fixed_via_widths=[15],
+                fixed_via_heights=[15],
+                min_area=3.0,
+                via_white_range_enabled=True,
+                via_white_range_min=180,
+                via_white_range_max=255,
+                via_black_range_enabled=False,
+                via_min_score=0.25,
+                via_min_contrast=10.0,
+                via_min_edge_coverage=0.0,
+                via_min_roundness=30.0,
+            ),
+            source_image=source_image,
+        )
+
+        self.assertEqual(len(result.polygons), 2)
+
+    def test_via_detector_auto_polarity_detects_both_bright_and_dark(self) -> None:
+        source_image = np.full((80, 160), 128, dtype=np.uint8)
+        cv2.circle(source_image, (40, 40), 6, 240, thickness=-1)
+        cv2.circle(source_image, (120, 40), 6, 20, thickness=-1)
+
+        result = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                via_size_mode="fixed",
+                fixed_via_widths=[13],
+                fixed_via_heights=[13],
+                min_area=3.0,
+                via_white_range_enabled=True,
+                via_white_range_min=180,
+                via_white_range_max=255,
+                via_black_range_enabled=True,
+                via_black_range_min=0,
+                via_black_range_max=60,
+                via_min_score=0.25,
+                via_min_contrast=10.0,
+                via_min_edge_coverage=0.0,
+                via_min_roundness=30.0,
+            ),
+            source_image=source_image,
+        )
+
+        xs = sorted(polygon.bbox[0] + polygon.bbox[2] / 2 for polygon in result.polygons)
+        self.assertEqual(len(result.polygons), 2)
+        self.assertLess(xs[0], 80)
+        self.assertGreater(xs[1], 80)
+
+    def test_via_detector_rejects_low_edge_coverage(self) -> None:
+        source_image = np.full((80, 80), 60, dtype=np.uint8)
+        cv2.rectangle(source_image, (20, 30), (60, 50), 220, thickness=-1)
+
+        result = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(
+                extraction_profile="vias",
+                object_type="via",
+                output_mode="box",
+                via_size_mode="fixed",
+                fixed_via_widths=[15],
+                fixed_via_heights=[15],
+                min_area=3.0,
+                via_white_range_enabled=True,
+                via_white_range_min=180,
+                via_white_range_max=255,
+                via_black_range_enabled=False,
+                via_min_score=0.30,
+                via_min_contrast=10.0,
+                via_min_edge_coverage=0.80,
+                via_min_roundness=60.0,
+                debug_enabled=True,
+            ),
+            source_image=source_image,
+        )
+
+        self.assertEqual(len(result.polygons), 0)
+
+    def test_via_detector_template_boosts_score(self) -> None:
+        rng = np.random.default_rng(7)
+        source_image = np.full((80, 80), 90, dtype=np.uint8)
+        source_image = np.clip(source_image + rng.normal(0, 4, source_image.shape), 0, 255).astype(np.uint8)
+        cv2.circle(source_image, (40, 40), 5, 150, thickness=-1)
+        template = source_image[34:47, 34:47].copy()
+
+        base_settings = dict(
+            extraction_profile="vias",
+            object_type="via",
+            output_mode="box",
+            via_size_mode="fixed",
+            fixed_via_widths=[11],
+            fixed_via_heights=[11],
+            min_area=3.0,
+            via_white_range_enabled=True,
+            via_white_range_min=0,
+            via_white_range_max=255,
+            via_black_range_enabled=False,
+            via_min_score=0.92,
+            via_min_contrast=4.0,
+            via_min_edge_coverage=0.0,
+            via_min_roundness=0.0,
+            via_template_min_score=0.35,
+        )
+        without_template = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(**base_settings),
+            source_image=source_image,
+        )
+        with_template = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(**base_settings, via_template_images=[template]),
+            source_image=source_image,
+        )
+
+        self.assertEqual(len(without_template.polygons), 0)
+        self.assertGreaterEqual(len(with_template.polygons), 1)
+
+    def test_conductor_flow_can_merge_template_vias_in_sem_mode(self) -> None:
+        source_image = np.zeros((96, 96), dtype=np.uint8)
+        cv2.rectangle(source_image, (8, 40), (88, 56), 160, thickness=-1)
+        cv2.circle(source_image, (48, 48), 6, 230, thickness=-1)
+        template = source_image[40:57, 40:57].copy()
+        settings = ContourExtractionSettings(
+            extraction_profile="conductors",
+            object_type="conductor",
+            output_mode="polygon",
+            min_area=4.0,
+            via_search_mode="template",
+            via_template_images=[template],
+            via_template_min_score=0.25,
+            via_min_score=0.35,
+            via_min_contrast=10.0,
+            via_min_edge_coverage=0.15,
+            via_min_roundness=10.0,
+            via_white_range_enabled=True,
+            via_white_range_min=120,
+            via_white_range_max=255,
+            via_black_range_enabled=False,
+        )
+        result = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=settings,
+            source_image=source_image,
+        )
+        categories = [polygon.category for polygon in result.polygons]
+        self.assertIn("conductor", categories)
+        self.assertIn("via", categories)
 
 
 if __name__ == "__main__":

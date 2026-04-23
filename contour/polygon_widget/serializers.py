@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+import cv2
 import numpy as np
 
 from .application.processing import DisplaySettings, SaveOptions
@@ -152,6 +153,7 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
             )
         )
 
+    polygons = _recover_cut_hole_topology(polygons, image_size)
     return image_name, image_size, polygons
 
 
@@ -181,6 +183,196 @@ def _polygon_to_cif_line(polygon: PolygonData, image_width: int, image_height: i
     return f"P {coordinates};"
 
 
+def _local_mask_bounds(points_groups: list[list[tuple[float, float]]], image_width: int, image_height: int) -> tuple[int, int, int, int]:
+    all_x: list[float] = []
+    all_y: list[float] = []
+    for points in points_groups:
+        for x_coord, y_coord in points:
+            all_x.append(float(x_coord))
+            all_y.append(float(y_coord))
+    min_x = max(0, int(np.floor(min(all_x))) - 3)
+    min_y = max(0, int(np.floor(min(all_y))) - 3)
+    max_x = min(image_width - 1, int(np.ceil(max(all_x))) + 3)
+    max_y = min(image_height - 1, int(np.ceil(max(all_y))) + 3)
+    return min_x, min_y, max_x, max_y
+
+
+def _to_local_int_points(points: list[tuple[float, float]], left: int, top: int) -> np.ndarray:
+    return np.array(
+        [[round(x_coord - left), round(y_coord - top)] for x_coord, y_coord in points],
+        dtype=np.int32,
+    )
+
+
+def _bridge_hole_to_outer(mask: np.ndarray, outer: np.ndarray, hole: np.ndarray) -> None:
+    if len(outer) == 0 or len(hole) == 0:
+        return
+    outer_pts = outer.reshape(-1, 2)
+    hole_pts = hole.reshape(-1, 2)
+    best_outer = outer_pts[0]
+    best_hole = hole_pts[0]
+    best_dist = float("inf")
+    for outer_point in outer_pts:
+        dx = hole_pts[:, 0] - outer_point[0]
+        dy = hole_pts[:, 1] - outer_point[1]
+        distances = dx * dx + dy * dy
+        nearest_index = int(np.argmin(distances))
+        nearest_dist = float(distances[nearest_index])
+        if nearest_dist < best_dist:
+            best_dist = nearest_dist
+            best_outer = outer_point
+            best_hole = hole_pts[nearest_index]
+    cv2.line(
+        mask,
+        (int(best_outer[0]), int(best_outer[1])),
+        (int(best_hole[0]), int(best_hole[1])),
+        color=0,
+        thickness=1,
+        lineType=cv2.LINE_8,
+    )
+
+
+def _encode_parent_with_holes_cut_path(
+    parent: PolygonData,
+    holes: list[PolygonData],
+    image_width: int,
+    image_height: int,
+) -> list[tuple[float, float]]:
+    groups = [parent.points] + [hole.points for hole in holes if len(hole.points) >= 3]
+    left, top, right, bottom = _local_mask_bounds(groups, image_width, image_height)
+    local_width = max(1, right - left + 1)
+    local_height = max(1, bottom - top + 1)
+    mask = np.zeros((local_height, local_width), dtype=np.uint8)
+    outer_local = _to_local_int_points(parent.points, left, top)
+    cv2.fillPoly(mask, [outer_local], 255)
+    hole_locals: list[np.ndarray] = []
+    for hole in holes:
+        hole_local = _to_local_int_points(hole.points, left, top)
+        cv2.fillPoly(mask, [hole_local], 0)
+        hole_locals.append(hole_local)
+    outer_contours, _ = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    outer_boundary = outer_contours[0] if outer_contours else outer_local.reshape(-1, 1, 2)
+    for hole_local in hole_locals:
+        _bridge_hole_to_outer(mask, outer_boundary, hole_local)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return parent.points
+    contour = max(contours, key=cv2.contourArea).reshape(-1, 2)
+    return [(float(point[0] + left), float(point[1] + top)) for point in contour]
+
+
+def _contour_points_to_polygon(
+    contour: np.ndarray,
+    *,
+    left: int,
+    top: int,
+    polygon_id: int,
+    is_hole: bool,
+    parent_id: int | None,
+) -> PolygonData:
+    points = [(float(point[0][0] + left), float(point[0][1] + top)) for point in contour]
+    area, perimeter, bbox = compute_polygon_metrics(points)
+    return PolygonData(
+        id=polygon_id,
+        points=points,
+        is_hole=is_hole,
+        parent_id=parent_id,
+        category="conductor",
+        shape_hint="polygon",
+        area=area,
+        perimeter=perimeter,
+        bbox=bbox,
+    )
+
+
+def _recover_cut_hole_topology(polygons: list[PolygonData], image_size: tuple[int, int] | None) -> list[PolygonData]:
+    if image_size is None:
+        return polygons
+    image_width, image_height = image_size
+    del image_height
+    recovered: list[PolygonData] = []
+    next_id = 1
+    for polygon in polygons:
+        if polygon.shape_hint == "box" or polygon.category == "via" or len(polygon.points) < 3:
+            clone = polygon.clone()
+            clone.id = next_id
+            recovered.append(clone)
+            next_id += 1
+            continue
+        left = max(0, int(np.floor(min(point[0] for point in polygon.points))) - 3)
+        top = max(0, int(np.floor(min(point[1] for point in polygon.points))) - 3)
+        right = min(image_width - 1, int(np.ceil(max(point[0] for point in polygon.points))) + 3)
+        bottom = int(np.ceil(max(point[1] for point in polygon.points))) + 3
+        local_width = max(1, right - left + 1)
+        local_height = max(1, bottom - top + 1)
+        raw_mask = np.zeros((local_height, local_width), dtype=np.uint8)
+        local_points = _to_local_int_points(polygon.points, left, top)
+        cv2.fillPoly(raw_mask, [local_points], 255)
+        _contours_raw, hierarchy_raw = cv2.findContours(raw_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        raw_hole_count = 0
+        if hierarchy_raw is not None and len(hierarchy_raw) > 0:
+            raw_hole_count = int(sum(1 for item in hierarchy_raw[0] if int(item[3]) >= 0))
+        best_contours: list[np.ndarray] = []
+        best_hierarchy: np.ndarray | None = None
+        best_hole_count = raw_hole_count
+        for kernel_size in (3, 5):
+            closed = cv2.morphologyEx(
+                raw_mask,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size)),
+                iterations=1,
+            )
+            contours_closed, hierarchy_closed = cv2.findContours(closed, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+            closed_hole_count = 0
+            if hierarchy_closed is not None and len(hierarchy_closed) > 0:
+                closed_hole_count = int(sum(1 for item in hierarchy_closed[0] if int(item[3]) >= 0))
+            if closed_hole_count > best_hole_count:
+                best_hole_count = closed_hole_count
+                best_contours = [np.asarray(contour) for contour in contours_closed]
+                best_hierarchy = hierarchy_closed
+        if best_hole_count <= raw_hole_count or best_hierarchy is None or not best_contours or len(best_hierarchy) == 0:
+            clone = polygon.clone()
+            clone.id = next_id
+            recovered.append(clone)
+            next_id += 1
+            continue
+        hierarchy = best_hierarchy[0]
+        contour_to_parent_id: dict[int, int] = {}
+        for index, contour in enumerate(best_contours):
+            parent_index = int(hierarchy[index][3])
+            if parent_index >= 0:
+                continue
+            parent_poly = _contour_points_to_polygon(
+                contour,
+                left=left,
+                top=top,
+                polygon_id=next_id,
+                is_hole=False,
+                parent_id=None,
+            )
+            recovered.append(parent_poly)
+            contour_to_parent_id[index] = next_id
+            next_id += 1
+        for index, contour in enumerate(best_contours):
+            parent_index = int(hierarchy[index][3])
+            if parent_index < 0:
+                continue
+            parent_id = contour_to_parent_id.get(parent_index)
+            if parent_id is None:
+                continue
+            hole_poly = _contour_points_to_polygon(
+                contour,
+                left=left,
+                top=top,
+                polygon_id=next_id,
+                is_hole=True,
+                parent_id=parent_id,
+            )
+            recovered.append(hole_poly)
+            next_id += 1
+    return recovered
+
+
 def save_polygons_cif(
     path: str | Path,
     image_path: str,
@@ -196,8 +388,34 @@ def save_polygons_cif(
         f"( R {Path(image_path).name} );",
         f"( S {width} {height} );",
     ]
-    for polygon in sorted(polygons, key=lambda item: item.id):
-        line = _polygon_to_cif_line(polygon, image_width=width, image_height=height)
+    sorted_polygons = sorted(polygons, key=lambda item: item.id)
+    holes_by_parent: dict[int, list[PolygonData]] = {}
+    for polygon in sorted_polygons:
+        if polygon.is_hole and polygon.parent_id is not None:
+            holes_by_parent.setdefault(int(polygon.parent_id), []).append(polygon)
+    for polygon in sorted_polygons:
+        if polygon.is_hole:
+            continue
+        save_polygon = polygon
+        if polygon.category != "via" and polygon.shape_hint != "box":
+            holes = holes_by_parent.get(int(polygon.id), [])
+            if holes:
+                stitched_points = _encode_parent_with_holes_cut_path(
+                    polygon, holes, image_width=width, image_height=height
+                )
+                area, perimeter, bbox = compute_polygon_metrics(stitched_points)
+                save_polygon = PolygonData(
+                    id=polygon.id,
+                    points=stitched_points,
+                    is_hole=False,
+                    parent_id=None,
+                    category=polygon.category,
+                    shape_hint=polygon.shape_hint,
+                    area=area,
+                    perimeter=perimeter,
+                    bbox=bbox,
+                )
+        line = _polygon_to_cif_line(save_polygon, image_width=width, image_height=height)
         if line:
             lines.append(line)
     lines.extend(["DF;", "E"])

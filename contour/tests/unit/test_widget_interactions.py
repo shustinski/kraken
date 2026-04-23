@@ -117,7 +117,6 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget.deleteLater()
         self._app.processEvents()
 
-    @unittest.expectedFailure  # Known pre-existing issue: auto-apply toggle fires once; tracked for widget refactor.
     def test_extraction_change_does_not_process_when_auto_apply_disabled(self) -> None:
         process_calls: list[bool] = []
         self.widget.process_current_image = lambda *_args, debounced=False: process_calls.append(debounced)  # type: ignore[method-assign]
@@ -725,19 +724,23 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
         first_item = self.widget.image_list.item(0)
         second_item = self.widget.image_list.item(1)
 
+        from polygon_widget.application.services import dataset_exporter as dataset_exporter_module
+
         exported_calls: list[tuple[str, str, int]] = []
-        original_export_dataset_frame = widget_module.export_dataset_frame
+        original_export_dataset_frame = dataset_exporter_module.export_dataset_frame
         original_load_image = self.widget.load_image
         try:
-            widget_module.export_dataset_frame = lambda dataset_directory, image_path, polygons, source_image: (
-                exported_calls.append((str(dataset_directory), image_path, len(polygons)))
-                or {"image": "dataset/images/frame_1.png", "cif": "dataset/cif/frame_1.cif"}
+            dataset_exporter_module.export_dataset_frame = (
+                lambda dataset_directory, image_path, polygons, source_image: (
+                    exported_calls.append((str(dataset_directory), image_path, len(polygons)))
+                    or {"image": "dataset/images/frame_1.png", "cif": "dataset/cif/frame_1.cif"}
+                )
             )
             self.widget.load_image = lambda path: None  # type: ignore[method-assign]
 
             self.widget._on_image_item_changed(second_item, first_item)
         finally:
-            widget_module.export_dataset_frame = original_export_dataset_frame
+            dataset_exporter_module.export_dataset_frame = original_export_dataset_frame
             self.widget.load_image = original_load_image  # type: ignore[method-assign]
 
         self.assertEqual(exported_calls, [("dataset", first_path, 1)])

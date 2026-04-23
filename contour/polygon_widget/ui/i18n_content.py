@@ -415,81 +415,21 @@ EXTRACTION_HELP_TEXTS.update(
             "Добавляет в маску via пиксели, яркость которых попадает в диапазон для черных переходных отверстий.",
             "Adds pixels whose brightness falls inside the black-via range to the via mask.",
         ),
-        "via_detector_methods": (
-            "Включает методы поиска via. Градиент ищет круговой перепад яркости, Hough ищет окружности, остальные методы помогают на бинарных и шумных кадрах.",
-            "Enables via detection methods. Gradient finds circular brightness edges, Hough finds circles, and the other methods help on binary and noisy frames.",
+        "via_min_score": (
+            "Единый итоговый порог для via от 0 до 1. Комбинирует отклик, радиальный контраст и покрытие кромки. Увеличьте, чтобы оставить только самые уверенные кандидаты.",
+            "Unified final via score threshold from 0 to 1. Combines response, radial contrast and edge coverage. Increase to keep only the most confident candidates.",
         ),
-        "via_detector_gradient_method": (
-            "Ищет via по круговому перепаду яркости на границе контакта. Используйте для размытых или слабо отличимых via, когда важнее форма круглого края, а не абсолютная яркость.",
-            "Finds vias by a circular brightness edge around the contact. Use it for blurred or weak vias when the round edge shape matters more than absolute brightness.",
+        "via_min_contrast": (
+            "Минимальный радиальный контраст центра via относительно кольца вокруг него (в уровнях 0-255). Увеличьте, чтобы отсечь слабые пятна.",
+            "Minimum radial contrast of the via center vs the surrounding ring (0-255 levels). Increase to reject weak spots.",
         ),
-        "via_detector_spot_method": (
-            "Ищет компактные светлые или темные точки, которые выделяются относительно ближайшего фона. Хорошо работает для маленьких ярких контактов на дорожках и шумном фоне.",
-            "Finds compact bright or dark spots that stand out from nearby background. Works well for small bright contacts on traces and noisy background.",
-        ),
-        "via_detector_hough_method": (
-            "Ищет окружности через HoughCircles. Включайте, когда via выглядят как кольца или четкие круглые пятна; отключайте, если появляются лишние круги на дорожках и вертикальных границах.",
-            "Finds circles with HoughCircles. Enable it when vias look like rings or clear round spots; disable it if traces and vertical edges create extra circles.",
-        ),
-        "via_detector_components_method": (
-            "Ищет связные области после порогов и морфологии, затем фильтрует их по размеру и форме. Полезно на бинарных кадрах и там, где каждый via становится отдельным пятном.",
-            "Finds connected regions after thresholds and morphology, then filters them by size and shape. Useful on binary frames and when each via becomes a separate blob.",
-        ),
-        "via_detector_contours_method": (
-            "Ищет контуры областей-кандидатов и оценивает их геометрию. Используйте, когда контуры вокруг via уже хорошо извлекаются, но нужно отсеять дорожки и рваные области.",
-            "Finds contours of candidate regions and evaluates their geometry. Use it when via contours are already extracted well but traces and ragged regions need filtering.",
-        ),
-        "via_detector_morphology_method": (
-            "Ищет центры via после морфологического сглаживания и distance transform. Помогает склеить шумные пиксели в устойчивые круглые кандидаты на зернистых изображениях.",
-            "Finds via centers after morphological smoothing and distance transform. Helps turn noisy pixels into stable round candidates on grainy images.",
-        ),
-        "via_detector_template_method": (
-            "Ищет области, похожие на сохраненные пользователем образцы via. Используйте, когда внешний вид контактов стабилен; качество сильно зависит от выбранных шаблонов.",
-            "Finds regions similar to user-saved via samples. Use it when contact appearance is stable; quality depends strongly on the selected templates.",
-        ),
-        "via_detector_blob_method": (
-            "Ищет круглые пятна через blob detector с проверкой площади, округлости и выпуклости. Полезно для чистых точечных via; на сильном шуме может давать лишние кандидаты.",
-            "Finds round spots with a blob detector using area, circularity, and convexity checks. Useful for clean dot-like vias; may add false candidates on heavy noise.",
-        ),
-        "via_gradient_min_strength": (
-            "Минимальная сила кругового перепада яркости. Увеличьте значение, если появляются ложные via на шуме; уменьшите, если слабые контакты пропадают.",
-            "Minimum circular edge strength. Increase it to remove noisy false vias; decrease it when weak contacts disappear.",
-        ),
-        "via_gradient_min_coverage": (
-            "Какая часть окружности должна иметь заметный перепад яркости. Больше значение требует более замкнутую круглую границу via.",
-            "How much of the circle must have a visible brightness edge. Higher values require a more complete circular via boundary.",
-        ),
-        "via_spot_min_contrast": (
-            "Минимальная локальная яркость точки относительно ближайшего фона. Увеличьте, если находятся шум и дорожки; уменьшите, если слабые контакты пропадают.",
-            "Minimum local brightness of a dot relative to nearby background. Increase it when noise and traces are detected; decrease it when weak contacts are missed.",
-        ),
-        "via_spot_min_roundness": (
-            "Минимальная компактность яркой точки. Увеличьте, чтобы отсеять вытянутые участки дорожек и края; уменьшите для размытых контактов.",
-            "Minimum compactness of the bright dot. Increase it to reject elongated traces and edges; decrease it for blurred contacts.",
+        "via_min_edge_coverage": (
+            "Минимальная доля окружности, на которой есть заметная кромка. Увеличьте, чтобы требовать более замкнутую круглую границу.",
+            "Minimum fraction of the circle that must show a visible edge. Increase to require a more complete round boundary.",
         ),
         "via_spot_line_suppression": (
             "\u041f\u043e\u0434\u0430\u0432\u043b\u044f\u0435\u0442 \u0434\u043b\u0438\u043d\u043d\u044b\u0435 \u0433\u043e\u0440\u0438\u0437\u043e\u043d\u0442\u0430\u043b\u044c\u043d\u044b\u0435 \u0438 \u0432\u0435\u0440\u0442\u0438\u043a\u0430\u043b\u044c\u043d\u044b\u0435 \u0434\u043e\u0440\u043e\u0436\u043a\u0438 \u043f\u0435\u0440\u0435\u0434 \u043f\u043e\u0438\u0441\u043a\u043e\u043c \u043a\u0440\u0443\u0433\u043b\u044b\u0445 \u0442\u043e\u0447\u0435\u043a. \u0423\u0432\u0435\u043b\u0438\u0447\u044c\u0442\u0435, \u0435\u0441\u043b\u0438 \u043d\u0430 \u0434\u043e\u0440\u043e\u0436\u043a\u0430\u0445 \u043f\u043e\u044f\u0432\u043b\u044f\u044e\u0442\u0441\u044f \u043b\u043e\u0436\u043d\u044b\u0435 via; \u0443\u043c\u0435\u043d\u044c\u0448\u0438\u0442\u0435, \u0435\u0441\u043b\u0438 via \u0441\u043b\u0438\u0448\u043a\u043e\u043c \u0432\u044b\u0442\u0435\u0440\u043b\u0438\u0441\u044c.",
             "Suppresses long horizontal and vertical traces before round-dot detection. Increase it when traces create false vias; decrease it if real vias are erased.",
-        ),
-        "via_hough_edge_threshold": (
-            "Порог сильного края для HoughCircles. Увеличьте, чтобы игнорировать слабый шум; уменьшите, чтобы находить менее контрастные окружности.",
-            "Strong-edge threshold for HoughCircles. Increase it to ignore weak noise; decrease it to find lower-contrast circles.",
-        ),
-        "via_hough_accumulator_threshold": (
-            "Сколько голосов нужно окружности в HoughCircles. Больше значение дает меньше, но надежнее кандидатов; меньше значение ищет слабые via.",
-            "How many votes a Hough circle needs. Higher values produce fewer, stronger candidates; lower values find weaker vias.",
-        ),
-        "via_component_min_score": (
-            "Минимальный отклик для кандидатов, найденных связанными компонентами. Увеличьте, чтобы убрать слабые пятна после бинаризации.",
-            "Minimum response for connected-component candidates. Increase it to remove weak spots after binarization.",
-        ),
-        "via_contour_min_score": (
-            "Минимальный отклик для кандидатов, найденных по контурам. Увеличьте, чтобы оставить только контуры с выраженным локальным сигналом.",
-            "Minimum response for contour candidates. Increase it to keep only contours with a clear local signal.",
-        ),
-        "via_morphology_peak_scale": (
-            "Минимальный размер центра via при поиске морфологических пиков относительно ожидаемого размера. Больше значение отсекает мелкие шумовые центры.",
-            "Minimum via-center peak size relative to the expected size. Higher values reject small noisy centers.",
         ),
         "via_template_min_score": (
             "Минимальное совпадение с круглым шаблоном. Больше значение требует более похожую на круг область.",
@@ -498,10 +438,6 @@ EXTRACTION_HELP_TEXTS.update(
         "via_templates": (
             "Список шаблонов via. Нажмите выбор шаблона и протяните рамку по переходному отверстию на изображении; все шаблоны используются при поиске.",
             "List of via templates. Click pick template and drag a rectangle over a via in the image; all templates are used during detection.",
-        ),
-        "via_blob_min_circularity": (
-            "Минимальная округлость для Blob detector. Больше значение сильнее отбрасывает вытянутые и рваные пятна.",
-            "Minimum circularity for Blob detector. Higher values reject elongated and ragged spots more strongly.",
         ),
         "reset_via_search": (
             "Возвращает методы поиска via и их параметры к значениям по умолчанию. Сохраненные шаблоны не удаляются.",
@@ -534,6 +470,10 @@ EXTRACTION_HELP_TEXTS.update(
         "via_size_mode": (
             "Выбирает способ отбора via по размеру: общий диапазон ширины/высоты или список точных размеров.",
             "Chooses how vias are filtered by size: a width/height range or a list of exact sizes.",
+        ),
+        "via_search_mode": (
+            "Выбирает режим детекции via: гибрид (blob+шаблоны), только blob или только поиск по шаблонам.",
+            "Selects the via detection mode: hybrid (blob+templates), blob only, or template-only matching.",
         ),
         "min_via_width": (
             "Минимальная ширина переходного отверстия. Более узкие объекты будут отброшены.",
@@ -1402,7 +1342,6 @@ PIPELINE_OPERATION_HELP_TEXTS: dict[str, dict[str, tuple[str, str]]] = {
         ),
     },
 }
-
 
 
 def _localized_text(mapping: LocalizedTextMap, key: str, language: str) -> str:

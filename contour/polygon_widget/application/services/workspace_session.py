@@ -148,6 +148,7 @@ class WorkspaceSession:
             mask_image=result.mask_image,
             polygons=result.polygons,
             debug_candidates=list(result.debug_candidates),
+            debug_gradient_maps=dict(result.debug_gradient_maps),
             loaded_cif_path=None if existing_state is None else existing_state.loaded_cif_path,
             reference_polygons=[] if existing_state is None else [polygon.clone() for polygon in existing_state.reference_polygons],
         )

@@ -207,12 +207,16 @@ class ContourExtractionSettings:
     via_blob_min_circularity: float = 0.35
     via_template_images: list[Any] = field(default_factory=list)
     debug_enabled: bool = False
+    debug_gradient_map_enabled: bool = False
     min_hierarchy_depth: int = 0
     max_hierarchy_depth: int | None = None
     max_hole_area_ratio: float | None = None
     conductor_gradient_enabled: bool = False
     conductor_gradient_min_strength: float = 18.0
     conductor_gradient_band_radius: int = 3
+    edge_method: str = "sobel"
+    via_gradient_edge_method: str = ""
+    conductor_gradient_edge_method: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -276,12 +280,16 @@ class ContourExtractionSettings:
             "via_blob_min_circularity": self.via_blob_min_circularity,
             "via_template_images": _serialize_template_images(self.via_template_images),
             "debug_enabled": self.debug_enabled,
+            "debug_gradient_map_enabled": self.debug_gradient_map_enabled,
             "min_hierarchy_depth": self.min_hierarchy_depth,
             "max_hierarchy_depth": self.max_hierarchy_depth,
             "max_hole_area_ratio": self.max_hole_area_ratio,
             "conductor_gradient_enabled": self.conductor_gradient_enabled,
             "conductor_gradient_min_strength": self.conductor_gradient_min_strength,
             "conductor_gradient_band_radius": self.conductor_gradient_band_radius,
+            "edge_method": self.edge_method,
+            "via_gradient_edge_method": self.via_gradient_edge_method,
+            "conductor_gradient_edge_method": self.conductor_gradient_edge_method,
         }
 
     @classmethod
@@ -375,6 +383,7 @@ class ContourExtractionSettings:
             via_spot_min_roundness=max(0.0, min(100.0, float(payload.get("via_spot_min_roundness", 45.0)))),
             via_spot_line_suppression=max(0.0, min(1.0, float(payload.get("via_spot_line_suppression", 0.65)))),
             debug_enabled=bool(payload.get("debug_enabled", False)),
+            debug_gradient_map_enabled=bool(payload.get("debug_gradient_map_enabled", False)),
             min_hierarchy_depth=max(0, int(payload.get("min_hierarchy_depth", 0))),
             max_hierarchy_depth=None
             if max_hierarchy_depth in (None, "", 0, 0.0)
@@ -385,6 +394,9 @@ class ContourExtractionSettings:
             conductor_gradient_enabled=bool(payload.get("conductor_gradient_enabled", False)),
             conductor_gradient_min_strength=max(0.0, min(255.0, float(payload.get("conductor_gradient_min_strength", 18.0)))),
             conductor_gradient_band_radius=max(0, min(25, int(payload.get("conductor_gradient_band_radius", 3)))),
+            edge_method=str(payload.get("edge_method", "sobel") or "sobel"),
+            via_gradient_edge_method=str(payload.get("via_gradient_edge_method", "") or ""),
+            conductor_gradient_edge_method=str(payload.get("conductor_gradient_edge_method", "") or ""),
         )
 
 
@@ -468,6 +480,7 @@ class ImageProcessingState:
     mask_image: Any | None = None
     polygons: list[PolygonData] = field(default_factory=list)
     debug_candidates: list[ContourDebugCandidate] = field(default_factory=list)
+    debug_gradient_maps: dict[str, Any] = field(default_factory=dict)
     loaded_cif_path: str | None = None
     reference_polygons: list[PolygonData] = field(default_factory=list)
 
@@ -481,6 +494,7 @@ class BatchImageResult:
     mask_image: Any | None
     polygons: list[PolygonData]
     debug_candidates: list[ContourDebugCandidate] = field(default_factory=list)
+    debug_gradient_maps: dict[str, Any] = field(default_factory=dict)
     saved_files: dict[str, str] = field(default_factory=dict)
     error: str | None = None
 

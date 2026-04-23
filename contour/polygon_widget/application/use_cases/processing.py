@@ -9,6 +9,16 @@ import numpy as np
 
 from ..processing import BatchImageResult, ContourDebugCandidate, ContourExtractionSettings, DisplaySettings, SaveOptions
 from ...contour_extractor import extract_polygons
+from ...edge_detection import (
+    EDGE_METHOD_SOBEL,
+    build_gradient_elevation,
+    gradient_color_map,
+    normalize_edge_method,
+    phase_congruency,
+    ridge_response,
+    scharr_magnitude,
+    structured_edges,
+)
 from ...pipeline import PreprocessingPipeline
 from ...serializers import save_result_bundle
 from ...utils import ensure_binary_mask, ensure_uint8, load_image_color
@@ -64,6 +74,70 @@ def prepare_image_for_preview(source_image: Any, pipeline_config: dict[str, Any]
 def apply_via_vectorization_mask(image: Any, settings: ContourExtractionSettings) -> Any:
     mask, _debug_candidates = build_via_vectorization_mask(image, settings)
     return mask
+
+
+def build_detection_debug_maps(
+    source_image: Any,
+    preprocessed_image: Any,
+    settings: ContourExtractionSettings,
+    *,
+    include_color_maps: bool = True,
+) -> dict[str, np.ndarray]:
+    """Return a dictionary of debug heatmaps produced by the detector.
+
+    Keys always include:
+
+    * ``"source_gray"`` – grayscale view of the source image.
+    * ``"gradient_elevation"`` – gradient magnitude map used for detection.
+    * ``"gradient_color"`` – coloured TURBO heatmap (if ``include_color_maps``).
+    * ``"scharr"``, ``"phase_congruency"``, ``"structured"``, ``"ridge"`` –
+      outputs of individual modern edge detectors for side-by-side
+      inspection.
+    * ``"mask"`` – final binary mask actually fed into ``extract_polygons``.
+    * ``"spot_response"`` / ``"spot_response_dark"`` – multiscale top-hat /
+      blob response used by the via detector (only populated for via flow).
+    """
+
+    maps: dict[str, np.ndarray] = {}
+    if source_image is None:
+        return maps
+
+    source_gray = _via_grayscale(source_image)
+    maps["source_gray"] = source_gray
+
+    if settings.object_type == "via" or settings.output_mode == "box":
+        edge_method = _resolve_via_edge_method(settings)
+    else:
+        edge_method = _resolve_conductor_edge_method(settings)
+
+    elevation = build_gradient_elevation(source_gray, edge_method)
+    maps["gradient_elevation"] = elevation
+    if include_color_maps and elevation.size:
+        maps["gradient_color"] = cv2.applyColorMap(elevation, cv2.COLORMAP_TURBO)
+
+    maps["scharr"] = scharr_magnitude(source_gray)
+    try:
+        maps["phase_congruency"] = phase_congruency(source_gray)
+    except Exception:  # pragma: no cover - numerical fallback
+        maps["phase_congruency"] = np.zeros_like(source_gray, dtype=np.uint8)
+    maps["structured"] = structured_edges(source_gray)
+    maps["ridge"] = ridge_response(source_gray)
+
+    if settings.object_type == "via" or settings.output_mode == "box":
+        expected_span = _expected_via_span(settings)
+        try:
+            maps["spot_response"] = _via_spot_response(source_gray, expected_span, settings, bright=True)
+            maps["spot_response_dark"] = _via_spot_response(source_gray, expected_span, settings, bright=False)
+        except Exception:  # pragma: no cover - defensive
+            pass
+        mask, _candidates = build_via_vectorization_mask(preprocessed_image, settings)
+        maps["mask"] = ensure_binary_mask(mask)
+    else:
+        mask = build_conductor_vectorization_mask(source_image, preprocessed_image, settings)
+        maps["mask"] = ensure_binary_mask(mask)
+        if include_color_maps:
+            maps["conductor_gradient_elevation"] = _conductor_gradient_elevation(source_gray, settings)
+    return maps
 
 
 def build_conductor_vectorization_mask(
@@ -202,22 +276,29 @@ def _refine_conductor_mask_by_gradient(source_image: Any, base_mask: np.ndarray,
     return ensure_binary_mask(result)
 
 
+def _resolve_conductor_edge_method(settings: ContourExtractionSettings) -> str:
+    preferred = settings.conductor_gradient_edge_method or settings.edge_method
+    return normalize_edge_method(preferred)
+
+
+def _resolve_via_edge_method(settings: ContourExtractionSettings) -> str:
+    preferred = settings.via_gradient_edge_method or settings.edge_method
+    return normalize_edge_method(preferred)
+
+
 def _conductor_gradient_elevation(image: np.ndarray, settings: ContourExtractionSettings) -> np.ndarray:
     gray = ensure_uint8(image)
     if gray.ndim != 2:
         gray = _via_grayscale(gray)
-    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-    grad_x = cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(blurred, cv2.CV_32F, 0, 1, ksize=3)
-    magnitude = cv2.magnitude(grad_x, grad_y)
-    if magnitude.size == 0 or float(magnitude.max()) <= 0.0:
+    method = _resolve_conductor_edge_method(settings)
+    elevation = build_gradient_elevation(gray, method)
+    if elevation.size == 0 or int(elevation.max()) <= 0:
         return np.zeros_like(gray, dtype=np.uint8)
-    elevation = np.clip(magnitude * 0.25, 0.0, 255.0).astype(np.uint8)
     min_strength = max(0.0, float(settings.conductor_gradient_min_strength))
     if min_strength <= 0.0:
         return elevation
-    weak = elevation < min_strength
     elevation = elevation.copy()
+    weak = elevation < min_strength
     elevation[weak] = np.clip(elevation[weak].astype(np.float32) * 0.25, 0.0, 255.0).astype(np.uint8)
     return elevation
 
@@ -587,16 +668,16 @@ def _via_candidates_from_gradient(
     )
     min_strength = max(0.0, float(settings.via_gradient_min_strength))
     min_coverage = max(0.0, min(1.0, float(settings.via_gradient_min_coverage)))
+    edge_method = _resolve_via_edge_method(settings)
     candidates: list[_ViaCandidate] = []
     for image_index, image in enumerate(images[:1]):
         gray = ensure_uint8(image)
         smoothed = cv2.GaussianBlur(gray, (3, 3), 0)
         grad_x = cv2.Sobel(smoothed, cv2.CV_32F, 1, 0, ksize=3)
         grad_y = cv2.Sobel(smoothed, cv2.CV_32F, 0, 1, ksize=3)
-        magnitude = cv2.magnitude(grad_x, grad_y)
-        if magnitude.size == 0 or float(magnitude.max()) <= 0.0:
+        gradient = build_gradient_elevation(gray, edge_method)
+        if gradient.size == 0 or int(gradient.max()) <= 0:
             continue
-        gradient = np.clip(magnitude * 0.25, 0.0, 255.0).astype(np.uint8)
         if cv2.countNonZero(gradient) == 0:
             continue
         for radius in _via_candidate_radii(settings, expected_span):
@@ -1590,6 +1671,12 @@ def process_image_path(
     polygons = extract_polygons(mask, contour_settings)
     if not contour_settings.debug_enabled:
         debug_candidates = []
+    debug_gradient_maps: dict[str, np.ndarray] = {}
+    if contour_settings.debug_gradient_map_enabled or (contour_settings.debug_enabled and contour_settings.debug_gradient_map_enabled):
+        try:
+            debug_gradient_maps = build_detection_debug_maps(source, preprocessed, contour_settings)
+        except Exception:  # pragma: no cover - defensive: debug never breaks processing
+            debug_gradient_maps = {}
     saved_files: dict[str, str] = {}
     if output_directory:
         saved_files = save_bundle(
@@ -1615,6 +1702,7 @@ def process_image_path(
         mask_image=result_mask,
         polygons=polygons,
         debug_candidates=debug_candidates,
+        debug_gradient_maps=debug_gradient_maps if include_images_in_result else {},
         saved_files=saved_files,
     )
 

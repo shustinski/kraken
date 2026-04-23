@@ -7,6 +7,17 @@ import cv2
 import numpy as np
 
 from .application.processing import OperationParameterSpec, PipelineStepConfig
+from .edge_detection import (
+    EDGE_METHOD_CHOICES,
+    auto_canny as _ed_auto_canny,
+    build_gradient_elevation,
+    combined_elevation,
+    laplacian_of_gaussian as _ed_log,
+    phase_congruency as _ed_phase_congruency,
+    ridge_response as _ed_ridge_response,
+    scharr_magnitude as _ed_scharr_magnitude,
+    structured_edges as _ed_structured_edges,
+)
 from .i18n import choice_label, operation_name, parameter_label, tr
 from .utils import ensure_binary_mask, ensure_uint8
 
@@ -608,6 +619,63 @@ def _sharpen(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
     return np.clip(sharpened, 0, 255).astype(np.uint8)
 
 
+def _scharr_edges(image: np.ndarray, _parameters: dict[str, Any]) -> np.ndarray:
+    return _ed_scharr_magnitude(_as_gray(image))
+
+
+def _auto_canny(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    sigma = float(parameters.get("sigma", 0.33))
+    aperture = max(3, min(7, _odd(int(parameters.get("aperture_size", 3)), minimum=3)))
+    l2gradient = bool(parameters.get("l2gradient", True))
+    return _ed_auto_canny(_as_gray(image), sigma=sigma, aperture_size=aperture, l2gradient=l2gradient)
+
+
+def _log_edges(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    sigma_small = max(0.4, float(parameters.get("sigma_small", 1.0)))
+    sigma_mid = max(sigma_small + 0.1, float(parameters.get("sigma_mid", 2.0)))
+    sigma_large = max(sigma_mid + 0.1, float(parameters.get("sigma_large", 3.5)))
+    return _ed_log(_as_gray(image), sigmas=(sigma_small, sigma_mid, sigma_large))
+
+
+def _ridge_edges(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    sigma = max(0.5, float(parameters.get("sigma", 1.5)))
+    return _ed_ridge_response(_as_gray(image), sigma=sigma)
+
+
+def _structured_edge_operation(image: np.ndarray, _parameters: dict[str, Any]) -> np.ndarray:
+    return _ed_structured_edges(image)
+
+
+def _phase_congruency_edges(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    return _ed_phase_congruency(
+        _as_gray(image),
+        num_scales=max(1, int(parameters.get("num_scales", 4))),
+        num_orientations=max(1, int(parameters.get("num_orientations", 6))),
+        min_wavelength=max(1.5, float(parameters.get("min_wavelength", 3.0))),
+        scale_factor=max(1.2, float(parameters.get("scale_factor", 2.1))),
+    )
+
+
+_COMBINED_PRESETS: dict[str, tuple[str, ...]] = {
+    "default": ("scharr", "log", "phase_congruency"),
+    "fine_detail": ("scharr", "laplacian"),
+    "robust": ("scharr", "log", "phase_congruency", "ridge"),
+    "illumination_invariant": ("phase_congruency", "log"),
+    "all_classical": ("sobel", "scharr", "laplacian", "log", "auto_canny"),
+}
+
+
+def _combined_edges(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    preset = str(parameters.get("preset", "default") or "default")
+    methods = _COMBINED_PRESETS.get(preset, _COMBINED_PRESETS["default"])
+    return combined_elevation(_as_gray(image), methods)
+
+
+def _edge_dispatch(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    method = str(parameters.get("method", "sobel") or "sobel")
+    return build_gradient_elevation(_as_gray(image), method)
+
+
 def _denoise(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
     image = ensure_uint8(image)
     kwargs = dict(
@@ -856,6 +924,85 @@ def _register_builtin_operations() -> None:
                 OperationParameterSpec("search_window_size", "Search window", "int", 21, minimum=3, maximum=31, step=2),
             ),
             _denoise,
+        ),
+        OperationDescriptor(
+            "scharr_edges",
+            "Scharr Edges",
+            (),
+            _scharr_edges,
+        ),
+        OperationDescriptor(
+            "auto_canny",
+            "Auto Canny",
+            (
+                OperationParameterSpec("sigma", "Sigma", "float", 0.33, minimum=0.0, maximum=1.0, step=0.01),
+                OperationParameterSpec("aperture_size", "Aperture", "int", 3, minimum=3, maximum=7, step=2),
+                OperationParameterSpec("l2gradient", "L2 gradient", "bool", True),
+            ),
+            _auto_canny,
+        ),
+        OperationDescriptor(
+            "log_edges",
+            "Laplacian of Gaussian",
+            (
+                OperationParameterSpec("sigma_small", "Sigma small", "float", 1.0, minimum=0.4, maximum=8.0, step=0.1),
+                OperationParameterSpec("sigma_mid", "Sigma mid", "float", 2.0, minimum=0.5, maximum=12.0, step=0.1),
+                OperationParameterSpec("sigma_large", "Sigma large", "float", 3.5, minimum=0.5, maximum=16.0, step=0.1),
+            ),
+            _log_edges,
+        ),
+        OperationDescriptor(
+            "ridge_edges",
+            "Ridge Response",
+            (
+                OperationParameterSpec("sigma", "Sigma", "float", 1.5, minimum=0.5, maximum=8.0, step=0.1),
+            ),
+            _ridge_edges,
+        ),
+        OperationDescriptor(
+            "structured_edges",
+            "Structured Edges",
+            (),
+            _structured_edge_operation,
+        ),
+        OperationDescriptor(
+            "phase_congruency",
+            "Phase Congruency",
+            (
+                OperationParameterSpec("num_scales", "Scales", "int", 4, minimum=1, maximum=8, step=1),
+                OperationParameterSpec("num_orientations", "Orientations", "int", 6, minimum=1, maximum=12, step=1),
+                OperationParameterSpec("min_wavelength", "Min wavelength", "float", 3.0, minimum=1.5, maximum=16.0, step=0.1),
+                OperationParameterSpec("scale_factor", "Scale factor", "float", 2.1, minimum=1.2, maximum=4.0, step=0.1),
+            ),
+            _phase_congruency_edges,
+        ),
+        OperationDescriptor(
+            "combined_edges",
+            "Combined Edges",
+            (
+                OperationParameterSpec(
+                    "preset",
+                    "Preset",
+                    "choice",
+                    "default",
+                    options=list(_COMBINED_PRESETS.keys()),
+                ),
+            ),
+            _combined_edges,
+        ),
+        OperationDescriptor(
+            "edge_method",
+            "Edge Detector",
+            (
+                OperationParameterSpec(
+                    "method",
+                    "Method",
+                    "choice",
+                    "sobel",
+                    options=list(EDGE_METHOD_CHOICES),
+                ),
+            ),
+            _edge_dispatch,
         ),
     ]
     for descriptor in descriptors:

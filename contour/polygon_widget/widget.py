@@ -1173,6 +1173,20 @@ PIPELINE_OPERATION_GROUPS: tuple[tuple[str, tuple[str, str], tuple[str, ...]], .
         ("Геометрия и границы", "Geometry and edges"),
         ("canny", "resize", "scale_resize", "crop"),
     ),
+    (
+        "advanced_edges",
+        ("Современные детекторы границ", "Modern edge detectors"),
+        (
+            "scharr_edges",
+            "auto_canny",
+            "log_edges",
+            "ridge_edges",
+            "structured_edges",
+            "phase_congruency",
+            "combined_edges",
+            "edge_method",
+        ),
+    ),
 )
 
 
@@ -1417,6 +1431,86 @@ PIPELINE_OPERATION_HELP_TEXTS: dict[str, dict[str, tuple[str, str]]] = {
             "Use it on noisy captures before more aggressive pipeline steps.",
         ),
     },
+    "scharr_edges": {
+        "summary": (
+            "Градиент Шарра: резче Sobel на тонких линиях и мелких деталях.",
+            "Scharr gradient: sharper than Sobel on thin lines and fine detail.",
+        ),
+        "use": (
+            "Замените Sobel/Canny, когда нужно поймать очень тонкие или слабо-контрастные границы проводников.",
+            "Use instead of Sobel/Canny to capture very thin or low-contrast conductor edges.",
+        ),
+    },
+    "auto_canny": {
+        "summary": (
+            "Canny с автоматическими порогами по медиане яркости — работает без ручной настройки.",
+            "Canny with automatic median-based thresholds — no manual tuning needed.",
+        ),
+        "use": (
+            "Удобно для серий снимков с разной экспозицией: пороги подстраиваются под каждый кадр.",
+            "Handy for image series with varying exposure: thresholds adapt to every frame.",
+        ),
+    },
+    "log_edges": {
+        "summary": (
+            "Laplacian of Gaussian на нескольких масштабах — сильно откликается на пятна и точки.",
+            "Multi-scale Laplacian of Gaussian — highly responsive to blobs and spots.",
+        ),
+        "use": (
+            "Лучший выбор, когда важны переходные отверстия (via) и круглые контакты.",
+            "Best choice when the goal is vias / round contacts (blob-like features).",
+        ),
+    },
+    "ridge_edges": {
+        "summary": (
+            "Отклик Гессиана подсвечивает гребни — длинные вытянутые структуры.",
+            "Hessian ridge response highlights long tubular structures and crests.",
+        ),
+        "use": (
+            "Подходит для длинных проводников и тонких трасс, которые Sobel пропускает.",
+            "Good for long conductors and thin traces that Sobel tends to miss.",
+        ),
+    },
+    "structured_edges": {
+        "summary": (
+            "Обученный детектор Structured Random Forest (opencv-contrib). При отсутствии модели — усиленный Scharr с non-max suppression.",
+            "Trained Structured Random Forest edge detector (opencv-contrib). Falls back to Scharr with non-max suppression when the model is missing.",
+        ),
+        "use": (
+            "Наиболее стабильные границы на реальных снимках PCB; fallback тоже даёт чище результат, чем обычный Sobel.",
+            "Yields the most stable edges on real PCB images; the fallback already beats a plain Sobel response.",
+        ),
+    },
+    "phase_congruency": {
+        "summary": (
+            "Мера phase congruency: инвариантна к контрасту и освещению (log-Gabor в частотной области).",
+            "Phase congruency: a contrast- and illumination-invariant edge feature (log-Gabor in the frequency domain).",
+        ),
+        "use": (
+            "Лучший выбор при неравномерной подсветке и слабом локальном контрасте.",
+            "Best choice for uneven lighting and low local contrast.",
+        ),
+    },
+    "combined_edges": {
+        "summary": (
+            "Ансамбль нескольких детекторов (попиксельный максимум). Стабильнее любого отдельного оператора.",
+            "Ensemble of several detectors (pixel-wise maximum). More robust than any single operator.",
+        ),
+        "use": (
+            "Когда заранее неизвестно, какой оператор сработает лучше — выберите готовый пресет ('robust', 'fine_detail'…).",
+            "When it is unclear which operator works best — pick a ready preset ('robust', 'fine_detail'…).",
+        ),
+    },
+    "edge_method": {
+        "summary": (
+            "Диспетчер: выбирает, какой из современных детекторов применить (sobel / scharr / log / auto_canny / structured / ridge / phase_congruency / combined).",
+            "Dispatcher: selects which modern detector to apply (sobel / scharr / log / auto_canny / structured / ridge / phase_congruency / combined).",
+        ),
+        "use": (
+            "Добавьте один раз и переключайте метод без пересборки pipeline.",
+            "Add it once and switch methods without rebuilding the pipeline.",
+        ),
+    },
 }
 
 
@@ -1654,6 +1748,69 @@ class PolygonExtractionWidget(QWidget):
         layout = QVBoxLayout(tab)
         self.path_panel = self._build_path_panel()
         layout.addWidget(self.path_panel)
+
+        self.extra_layers_group = QGroupBox("Additional layers")
+        self.extra_layers_form = QFormLayout(self.extra_layers_group)
+        self._configure_compact_form(self.extra_layers_form)
+        self.extra_layers_widget = QWidget()
+        extra_layers_layout = QVBoxLayout(self.extra_layers_widget)
+        extra_layers_layout.setContentsMargins(0, 0, 0, 0)
+        extra_layers_layout.setSpacing(6)
+        self.extra_layers_list = QListWidget()
+        self.extra_layers_list.setMaximumHeight(100)
+        extra_layers_layout.addWidget(self.extra_layers_list)
+        self.extra_layer_path_widget = QWidget()
+        extra_layer_path_layout = QHBoxLayout(self.extra_layer_path_widget)
+        extra_layer_path_layout.setContentsMargins(0, 0, 0, 0)
+        extra_layer_path_layout.setSpacing(6)
+        self.extra_layer_path_edit = QLineEdit()
+        self.extra_layer_path_browse_button = QPushButton("...")
+        self.extra_layer_path_browse_button.setFixedWidth(34)
+        extra_layer_path_layout.addWidget(self.extra_layer_path_edit, 1)
+        extra_layer_path_layout.addWidget(self.extra_layer_path_browse_button)
+        extra_layer_buttons = QWidget()
+        extra_layer_buttons_layout = QHBoxLayout(extra_layer_buttons)
+        extra_layer_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self.add_extra_layers_button = QPushButton("Add images")
+        self.remove_extra_layer_button = QPushButton("Remove")
+        extra_layer_buttons_layout.addWidget(self.add_extra_layers_button)
+        extra_layer_buttons_layout.addWidget(self.remove_extra_layer_button)
+        extra_layers_layout.addWidget(extra_layer_buttons)
+        self.extra_layer_visible_checkbox = QCheckBox("Layer visible")
+        self.extra_layer_opacity_spin = QDoubleSpinBox()
+        self.extra_layer_opacity_spin.setRange(0.0, 1.0)
+        self.extra_layer_opacity_spin.setSingleStep(0.05)
+        self.extra_layer_opacity_spin.setValue(0.35)
+        self.extra_layer_dx_spin = QDoubleSpinBox()
+        self.extra_layer_dx_spin.setRange(-1_000_000.0, 1_000_000.0)
+        self.extra_layer_dx_spin.setDecimals(2)
+        self.extra_layer_dy_spin = QDoubleSpinBox()
+        self.extra_layer_dy_spin.setRange(-1_000_000.0, 1_000_000.0)
+        self.extra_layer_dy_spin.setDecimals(2)
+
+        self.extra_layers_list.currentRowChanged.connect(self._on_extra_layer_selected)
+        self.add_extra_layers_button.clicked.connect(self._load_extra_layers)
+        self.remove_extra_layer_button.clicked.connect(self._remove_selected_extra_layer)
+        self.extra_layer_path_browse_button.clicked.connect(self._browse_selected_extra_layer_path)
+        self.extra_layer_path_edit.editingFinished.connect(self._on_extra_layer_path_changed)
+        self.extra_layer_visible_checkbox.stateChanged.connect(self._on_extra_layer_controls_changed)
+        self.extra_layer_opacity_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
+        self.extra_layer_dx_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
+        self.extra_layer_dy_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
+
+        self.extra_layers_form.addRow("Additional layers", self.extra_layers_widget)
+        self.extra_layers_label_widget = self.extra_layers_form.labelForField(self.extra_layers_widget)
+        self.extra_layers_form.addRow("Layer path", self.extra_layer_path_widget)
+        self.extra_layer_path_label_widget = self.extra_layers_form.labelForField(self.extra_layer_path_widget)
+        self.extra_layers_form.addRow(self.extra_layer_visible_checkbox)
+        self.extra_layers_form.addRow("Layer opacity", self.extra_layer_opacity_spin)
+        self.extra_layer_opacity_label_widget = self.extra_layers_form.labelForField(self.extra_layer_opacity_spin)
+        self.extra_layers_form.addRow("Layer dX", self.extra_layer_dx_spin)
+        self.extra_layer_dx_label_widget = self.extra_layers_form.labelForField(self.extra_layer_dx_spin)
+        self.extra_layers_form.addRow("Layer dY", self.extra_layer_dy_spin)
+        self.extra_layer_dy_label_widget = self.extra_layers_form.labelForField(self.extra_layer_dy_spin)
+        layout.addWidget(self.extra_layers_group)
+
         layout.addStretch(1)
         return tab
 
@@ -2195,6 +2352,17 @@ class PolygonExtractionWidget(QWidget):
         self.blurred_via_preset_button = QPushButton("Blurred vias preset")
         self.reset_via_search_button = QPushButton("Reset via search")
         self.debug_candidates_checkbox = QCheckBox("Debug recognition")
+        self.show_gradient_debug_button = QPushButton("Show gradient map")
+        self.gradient_overlay_checkbox = QCheckBox("Overlay on image")
+        self.gradient_overlay_opacity_spin = QDoubleSpinBox()
+        self.gradient_overlay_opacity_spin.setRange(0.05, 1.0)
+        self.gradient_overlay_opacity_spin.setDecimals(2)
+        self.gradient_overlay_opacity_spin.setSingleStep(0.05)
+        self.gradient_overlay_opacity_spin.setValue(0.45)
+        self.gradient_overlay_mode_combo = QComboBox()
+        self.gradient_overlay_mode_combo.addItem("Heatmap", "heatmap")
+        self.gradient_overlay_mode_combo.addItem("Threshold mask", "threshold")
+        self.gradient_overlay_mode_combo.addItem("Raw elevation", "elevation")
         self.via_roundness_spin = QDoubleSpinBox()
         self.via_roundness_spin.setRange(0.0, 100.0)
         self.via_roundness_spin.setDecimals(1)
@@ -2407,6 +2575,20 @@ class PolygonExtractionWidget(QWidget):
         self.reset_via_search_label_widget = self.via_form.labelForField(self.reset_via_search_button)
         self.via_form.addRow("Debug", self.debug_candidates_checkbox)
         self.debug_candidates_label_widget = self.via_form.labelForField(self.debug_candidates_checkbox)
+        self.via_form.addRow("Gradient debug", self.show_gradient_debug_button)
+        self.show_gradient_debug_label_widget = self.via_form.labelForField(self.show_gradient_debug_button)
+        self.show_gradient_debug_button.clicked.connect(self._show_gradient_debug_window)
+        gradient_overlay_row = QWidget()
+        gradient_overlay_row_layout = QHBoxLayout(gradient_overlay_row)
+        gradient_overlay_row_layout.setContentsMargins(0, 0, 0, 0)
+        gradient_overlay_row_layout.addWidget(self.gradient_overlay_checkbox)
+        gradient_overlay_row_layout.addWidget(self.gradient_overlay_mode_combo, 1)
+        gradient_overlay_row_layout.addWidget(self.gradient_overlay_opacity_spin)
+        self.via_form.addRow("Gradient overlay", gradient_overlay_row)
+        self.gradient_overlay_label_widget = self.via_form.labelForField(gradient_overlay_row)
+        self.gradient_overlay_checkbox.toggled.connect(self._on_gradient_overlay_toggled)
+        self.gradient_overlay_opacity_spin.valueChanged.connect(self._on_gradient_overlay_opacity_changed)
+        self.gradient_overlay_mode_combo.currentIndexChanged.connect(self._refresh_gradient_overlay)
         self.via_form.addRow("Roundness", self.via_roundness_spin)
         self.via_roundness_label_widget = self.via_form.labelForField(self.via_roundness_spin)
         self.via_form.addRow("Via width range", self.via_width_range_widget)
@@ -2498,41 +2680,6 @@ class PolygonExtractionWidget(QWidget):
         self.neighbor_overlap_spin = QSpinBox()
         self.neighbor_overlap_spin.setRange(0, 100_000)
         self.neighbor_overlap_spin.setValue(0)
-        self.extra_layers_widget = QWidget()
-        extra_layers_layout = QVBoxLayout(self.extra_layers_widget)
-        extra_layers_layout.setContentsMargins(0, 0, 0, 0)
-        extra_layers_layout.setSpacing(6)
-        self.extra_layers_list = QListWidget()
-        self.extra_layers_list.setMaximumHeight(100)
-        extra_layers_layout.addWidget(self.extra_layers_list)
-        self.extra_layer_path_widget = QWidget()
-        extra_layer_path_layout = QHBoxLayout(self.extra_layer_path_widget)
-        extra_layer_path_layout.setContentsMargins(0, 0, 0, 0)
-        extra_layer_path_layout.setSpacing(6)
-        self.extra_layer_path_edit = QLineEdit()
-        self.extra_layer_path_browse_button = QPushButton("...")
-        self.extra_layer_path_browse_button.setFixedWidth(34)
-        extra_layer_path_layout.addWidget(self.extra_layer_path_edit, 1)
-        extra_layer_path_layout.addWidget(self.extra_layer_path_browse_button)
-        extra_layer_buttons = QWidget()
-        extra_layer_buttons_layout = QHBoxLayout(extra_layer_buttons)
-        extra_layer_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        self.add_extra_layers_button = QPushButton("Add images")
-        self.remove_extra_layer_button = QPushButton("Remove")
-        extra_layer_buttons_layout.addWidget(self.add_extra_layers_button)
-        extra_layer_buttons_layout.addWidget(self.remove_extra_layer_button)
-        extra_layers_layout.addWidget(extra_layer_buttons)
-        self.extra_layer_visible_checkbox = QCheckBox("Layer visible")
-        self.extra_layer_opacity_spin = QDoubleSpinBox()
-        self.extra_layer_opacity_spin.setRange(0.0, 1.0)
-        self.extra_layer_opacity_spin.setSingleStep(0.05)
-        self.extra_layer_opacity_spin.setValue(0.35)
-        self.extra_layer_dx_spin = QDoubleSpinBox()
-        self.extra_layer_dx_spin.setRange(-1_000_000.0, 1_000_000.0)
-        self.extra_layer_dx_spin.setDecimals(2)
-        self.extra_layer_dy_spin = QDoubleSpinBox()
-        self.extra_layer_dy_spin.setRange(-1_000_000.0, 1_000_000.0)
-        self.extra_layer_dy_spin.setDecimals(2)
 
         for widget in [
             self.line_width_spin,
@@ -2551,15 +2698,6 @@ class PolygonExtractionWidget(QWidget):
         self.neighbor_max_grid_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
         self.neighbor_opacity_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
         self.neighbor_overlap_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
-        self.extra_layers_list.currentRowChanged.connect(self._on_extra_layer_selected)
-        self.add_extra_layers_button.clicked.connect(self._load_extra_layers)
-        self.remove_extra_layer_button.clicked.connect(self._remove_selected_extra_layer)
-        self.extra_layer_path_browse_button.clicked.connect(self._browse_selected_extra_layer_path)
-        self.extra_layer_path_edit.editingFinished.connect(self._on_extra_layer_path_changed)
-        self.extra_layer_visible_checkbox.stateChanged.connect(self._on_extra_layer_controls_changed)
-        self.extra_layer_opacity_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
-        self.extra_layer_dx_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
-        self.extra_layer_dy_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
 
         self.display_form.addRow("External contour", self.external_color_button)
         self.external_color_label_widget = self.display_form.labelForField(self.external_color_button)
@@ -2587,17 +2725,6 @@ class PolygonExtractionWidget(QWidget):
         self.neighbor_opacity_label_widget = self.display_form.labelForField(self.neighbor_opacity_spin)
         self.display_form.addRow("Frame overlap", self.neighbor_overlap_spin)
         self.neighbor_overlap_label_widget = self.display_form.labelForField(self.neighbor_overlap_spin)
-        self.display_form.addRow("Additional layers", self.extra_layers_widget)
-        self.extra_layers_label_widget = self.display_form.labelForField(self.extra_layers_widget)
-        self.display_form.addRow("Layer path", self.extra_layer_path_widget)
-        self.extra_layer_path_label_widget = self.display_form.labelForField(self.extra_layer_path_widget)
-        self.display_form.addRow(self.extra_layer_visible_checkbox)
-        self.display_form.addRow("Layer opacity", self.extra_layer_opacity_spin)
-        self.extra_layer_opacity_label_widget = self.display_form.labelForField(self.extra_layer_opacity_spin)
-        self.display_form.addRow("Layer dX", self.extra_layer_dx_spin)
-        self.extra_layer_dx_label_widget = self.display_form.labelForField(self.extra_layer_dx_spin)
-        self.display_form.addRow("Layer dY", self.extra_layer_dy_spin)
-        self.extra_layer_dy_label_widget = self.display_form.labelForField(self.extra_layer_dy_spin)
         return tab
 
     def _build_help_tab(self) -> QWidget:
@@ -3726,6 +3853,13 @@ class PolygonExtractionWidget(QWidget):
 
         self.images_label.setText(self._tr("images_label"))
         self.run_group.setTitle(self._tr("run_group_title"))
+        if hasattr(self, "extra_layers_group"):
+            self.extra_layers_group.setTitle(
+                self._tr(
+                    "extra_layers_group_title",
+                    "Дополнительные слои" if self._ui_language == "ru" else "Additional layers",
+                )
+            )
         for button, accessible_name in (
             (self.process_current_button, self._tr("process_current_button")),
             (self.batch_button, self._tr("start_batch_button")),
@@ -3971,6 +4105,29 @@ class PolygonExtractionWidget(QWidget):
             )
         self.debug_candidates_checkbox.setText(
             self._tr("debug_candidates_checkbox", "Проверять по клику" if self._ui_language == "ru" else "Inspect by click")
+        )
+        if getattr(self, "show_gradient_debug_label_widget", None) is not None:
+            self.show_gradient_debug_label_widget.setText(
+                self._tr("gradient_debug_label", "Карта градиента" if self._ui_language == "ru" else "Gradient map")
+            )
+        self.show_gradient_debug_button.setText(
+            self._tr("gradient_debug_button", "Открыть карту" if self._ui_language == "ru" else "Show gradient map")
+        )
+        if getattr(self, "gradient_overlay_label_widget", None) is not None:
+            self.gradient_overlay_label_widget.setText(
+                self._tr("gradient_overlay_label", "Слой градиента" if self._ui_language == "ru" else "Gradient overlay")
+            )
+        self.gradient_overlay_checkbox.setText(
+            self._tr("gradient_overlay_checkbox", "Показывать на изображении" if self._ui_language == "ru" else "Overlay on image")
+        )
+        self.gradient_overlay_mode_combo.setItemText(
+            0, self._tr("gradient_overlay_mode_heatmap", "Тепловая карта" if self._ui_language == "ru" else "Heatmap")
+        )
+        self.gradient_overlay_mode_combo.setItemText(
+            1, self._tr("gradient_overlay_mode_threshold", "Маска по порогу" if self._ui_language == "ru" else "Threshold mask")
+        )
+        self.gradient_overlay_mode_combo.setItemText(
+            2, self._tr("gradient_overlay_mode_elevation", "Серый градиент" if self._ui_language == "ru" else "Raw elevation")
         )
         if self.via_roundness_label_widget is not None:
             self.via_roundness_label_widget.setText(self._tr("via_roundness_label", "Округлость" if self._ui_language == "ru" else "Roundness"))
@@ -5140,6 +5297,218 @@ class PolygonExtractionWidget(QWidget):
         self._append_log(message.replace("\n", " | "))
         QMessageBox.information(self, title, message)
 
+    def _show_gradient_debug_window(self) -> None:
+        title = "Отладка градиентов" if self._ui_language == "ru" else "Gradient debug"
+        current_state = self._workspace.current_state
+        maps: dict[str, object] = {}
+        if current_state is not None:
+            maps = dict(getattr(current_state, "debug_gradient_maps", {}) or {})
+        if not maps:
+            try:
+                maps = self._compute_gradient_debug_maps_on_demand()
+            except Exception as exc:  # pragma: no cover - defensive UI path
+                QMessageBox.warning(
+                    self,
+                    title,
+                    (
+                        f"Не удалось построить карту градиентов: {exc}"
+                        if self._ui_language == "ru"
+                        else f"Could not build the gradient map: {exc}"
+                    ),
+                )
+                return
+        if not maps:
+            message = (
+                "Нет карт градиентов. Включите 'Проверять по клику' и подождите пересчёта."
+                if self._ui_language == "ru"
+                else "No gradient maps available. Enable 'Inspect by click' and wait for reprocessing."
+            )
+            QMessageBox.information(self, title, message)
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(1100, 780)
+        layout = QVBoxLayout(dialog)
+        tabs = QTabWidget(dialog)
+        layout.addWidget(tabs, 1)
+        ordering = [
+            "source_gray",
+            "gradient_elevation",
+            "gradient_color",
+            "scharr",
+            "phase_congruency",
+            "structured",
+            "ridge",
+            "conductor_gradient_elevation",
+            "spot_response",
+            "spot_response_dark",
+            "mask",
+        ]
+        pretty_names = {
+            "source_gray": "Source gray" if self._ui_language != "ru" else "Исходное (серое)",
+            "gradient_elevation": "Gradient elevation" if self._ui_language != "ru" else "Карта градиента",
+            "gradient_color": "Gradient heatmap" if self._ui_language != "ru" else "Тепловая карта",
+            "scharr": "Scharr",
+            "phase_congruency": "Phase congruency" if self._ui_language != "ru" else "Phase congruency",
+            "structured": "Structured edges" if self._ui_language != "ru" else "Структурные границы",
+            "ridge": "Ridge response" if self._ui_language != "ru" else "Хребтовая реакция",
+            "conductor_gradient_elevation": (
+                "Conductor gradient" if self._ui_language != "ru" else "Градиент проводников"
+            ),
+            "spot_response": "Spot response (bright)" if self._ui_language != "ru" else "Отклик (светлые)",
+            "spot_response_dark": "Spot response (dark)" if self._ui_language != "ru" else "Отклик (тёмные)",
+            "mask": "Mask" if self._ui_language != "ru" else "Маска",
+        }
+        seen: set[str] = set()
+        for key in ordering + sorted(maps.keys()):
+            if key in seen or key not in maps:
+                continue
+            seen.add(key)
+            array = maps.get(key)
+            if array is None:
+                continue
+            try:
+                image = np.asarray(array)
+            except Exception:  # pragma: no cover - defensive
+                continue
+            if image.size == 0:
+                continue
+            pixmap = self._gradient_debug_pixmap(image)
+            if pixmap is None:
+                continue
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(4, 4, 4, 4)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            label = QLabel()
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setPixmap(pixmap)
+            scroll.setWidget(label)
+            page_layout.addWidget(scroll, 1)
+            info = QLabel(
+                f"{image.shape[1]} x {image.shape[0]} px"
+                + (f" · dtype={image.dtype}" if hasattr(image, "dtype") else "")
+            )
+            page_layout.addWidget(info)
+            tabs.addTab(page, pretty_names.get(key, key))
+        close_button = QPushButton("Close" if self._ui_language != "ru" else "Закрыть")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+        dialog.exec()
+
+    def _compute_gradient_debug_maps_on_demand(self) -> dict[str, object]:
+        current_state = self._workspace.current_state
+        if current_state is None or current_state.source_image is None:
+            return {}
+        from .application.use_cases.processing import build_detection_debug_maps
+
+        settings = self._current_contour_settings()
+        preprocessed = current_state.preprocessed_image
+        if preprocessed is None:
+            preprocessed = current_state.source_image
+        maps = build_detection_debug_maps(current_state.source_image, preprocessed, settings)
+        try:
+            current_state.debug_gradient_maps = dict(maps)
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return maps
+
+    def _on_gradient_overlay_toggled(self, _checked: bool = False) -> None:
+        if not self.gradient_overlay_checkbox.isChecked():
+            if hasattr(self, "polygon_editor"):
+                self.polygon_editor.clear_gradient_overlay()
+            return
+        self._refresh_gradient_overlay()
+
+    def _on_gradient_overlay_opacity_changed(self, value: float) -> None:
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_gradient_overlay_opacity(float(value))
+
+    def _refresh_gradient_overlay(self) -> None:
+        if not hasattr(self, "polygon_editor") or not hasattr(self, "gradient_overlay_checkbox"):
+            return
+        if not self.gradient_overlay_checkbox.isChecked():
+            self.polygon_editor.clear_gradient_overlay()
+            return
+        current_state = self._workspace.current_state
+        if current_state is None or current_state.source_image is None:
+            self.polygon_editor.clear_gradient_overlay()
+            return
+        try:
+            overlay = self._build_gradient_overlay_image(current_state.source_image)
+        except Exception:  # pragma: no cover - defensive: UI must never crash
+            self.polygon_editor.clear_gradient_overlay()
+            return
+        if overlay is None:
+            self.polygon_editor.clear_gradient_overlay()
+            return
+        self.polygon_editor.set_gradient_overlay(overlay, float(self.gradient_overlay_opacity_spin.value()))
+
+    def _build_gradient_overlay_image(self, source_image: np.ndarray) -> np.ndarray | None:
+        from .application.use_cases.processing import (
+            _resolve_conductor_edge_method,
+            _resolve_via_edge_method,
+            _via_grayscale,
+        )
+        from .edge_detection import build_gradient_elevation
+
+        settings = self._current_contour_settings()
+        if settings.object_type == "via" or settings.output_mode == "box":
+            method = _resolve_via_edge_method(settings)
+        else:
+            method = _resolve_conductor_edge_method(settings)
+        gray = _via_grayscale(source_image)
+        if gray.size == 0:
+            return None
+        elevation = build_gradient_elevation(gray, method)
+        mode = str(self.gradient_overlay_mode_combo.currentData() or "heatmap")
+        if mode == "elevation":
+            return cv2.cvtColor(elevation, cv2.COLOR_GRAY2BGR)
+        if mode == "threshold":
+            threshold = float(settings.via_gradient_min_strength)
+            mask = elevation >= threshold
+            overlay = np.zeros((elevation.shape[0], elevation.shape[1], 3), dtype=np.uint8)
+            overlay[..., 1] = (mask.astype(np.uint8) * 230)
+            overlay[..., 2] = (mask.astype(np.uint8) * 60)
+            return overlay
+        heatmap = cv2.applyColorMap(elevation, cv2.COLORMAP_TURBO)
+        threshold = float(settings.via_gradient_min_strength)
+        if settings.object_type == "via" or settings.output_mode == "box":
+            below = (elevation < max(0.0, threshold)).astype(np.uint8)
+            if below.any():
+                dimmed = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                below3 = below[..., None]
+                heatmap = heatmap * (1 - below3) + (dimmed // 3) * below3
+                heatmap = heatmap.astype(np.uint8)
+        return heatmap
+
+    def _gradient_debug_pixmap(self, image: np.ndarray) -> QPixmap | None:
+        data = np.asarray(image)
+        if data.size == 0:
+            return None
+        if data.dtype != np.uint8:
+            if data.dtype == bool:
+                data = (data.astype(np.uint8) * 255)
+            else:
+                as_float = data.astype(np.float32)
+                max_val = float(as_float.max()) if as_float.size else 0.0
+                if max_val <= 1.0001:
+                    data = np.clip(as_float * 255.0, 0, 255).astype(np.uint8)
+                else:
+                    min_val = float(as_float.min())
+                    span = max_val - min_val
+                    if span <= 1e-6:
+                        data = np.clip(as_float, 0, 255).astype(np.uint8)
+                    else:
+                        data = np.clip((as_float - min_val) / span * 255.0, 0, 255).astype(np.uint8)
+        try:
+            qimage = cv_to_qimage(data)
+        except Exception:  # pragma: no cover - defensive
+            return None
+        return QPixmap.fromImage(qimage)
+
     def _best_debug_candidate_for_polygon(self, polygon: PolygonData, candidates: list[object]) -> object | None:
         polygon_rect = self._polygon_rect(polygon)
         if polygon_rect.isNull() or not candidates:
@@ -5368,6 +5737,7 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_debug_candidates([])
             self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
+        self._refresh_gradient_overlay()
         self._auto_apply_pipeline()
 
     def _on_via_size_mode_changed(self, *_args) -> None:
@@ -5385,6 +5755,7 @@ class PolygonExtractionWidget(QWidget):
         self._active_extraction_profile = profile
         self._set_extraction_settings(self._contour_settings_profiles[profile])
         self._update_extraction_profile_controls_state()
+        self._refresh_gradient_overlay()
         self._auto_apply_pipeline()
 
     def _store_active_extraction_profile_settings(self) -> None:
@@ -5973,6 +6344,7 @@ class PolygonExtractionWidget(QWidget):
             via_spot_line_suppression=self.via_spot_line_suppression_spin.value(),
             via_template_images=[template.copy() for template in self._via_template_images],
             debug_enabled=self.debug_candidates_checkbox.isChecked(),
+            debug_gradient_map_enabled=self.debug_candidates_checkbox.isChecked(),
             via_min_roundness=self.via_roundness_spin.value(),
             min_via_width=self.min_via_width_spin.value(),
             max_via_width=None if max_via_width <= 0 else max_via_width,
@@ -6091,6 +6463,7 @@ class PolygonExtractionWidget(QWidget):
             self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
             self._sync_neighbor_frames()
             self._sync_extra_layers()
+            self._refresh_gradient_overlay()
         finally:
             self._updating_views = False
 

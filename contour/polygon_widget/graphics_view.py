@@ -97,6 +97,11 @@ class PolygonEditorScene(QGraphicsScene):
         self._neighbor_grid_bounds: QRectF | None = None
         self._debug_candidate_items: list[QGraphicsPathItem | QGraphicsSimpleTextItem] = []
         self._extra_layer_items: list[QGraphicsPixmapItem] = []
+        self._gradient_overlay_item = QGraphicsPixmapItem()
+        self._gradient_overlay_item.setZValue(0.9)
+        self._gradient_overlay_item.setOpacity(0.45)
+        self.addItem(self._gradient_overlay_item)
+        self._gradient_overlay_item.hide()
         self._random_object_colors_enabled = False
         self._object_colors: dict[int, str] = {}
 
@@ -260,6 +265,28 @@ class PolygonEditorScene(QGraphicsScene):
             self.removeItem(item)
         self._debug_candidate_items.clear()
         _ = candidates
+
+    def set_gradient_overlay(self, image, opacity: float = 0.45) -> None:
+        if image is None:
+            self._gradient_overlay_item.setPixmap(QPixmap())
+            self._gradient_overlay_item.hide()
+            return
+        pixmap = QPixmap.fromImage(cv_to_qimage(image))
+        if pixmap.isNull():
+            self._gradient_overlay_item.setPixmap(QPixmap())
+            self._gradient_overlay_item.hide()
+            return
+        self._gradient_overlay_item.setPixmap(pixmap)
+        self._gradient_overlay_item.setOpacity(max(0.0, min(1.0, float(opacity))))
+        self._gradient_overlay_item.setPos(0.0, 0.0)
+        self._gradient_overlay_item.show()
+
+    def clear_gradient_overlay(self) -> None:
+        self._gradient_overlay_item.setPixmap(QPixmap())
+        self._gradient_overlay_item.hide()
+
+    def set_gradient_overlay_opacity(self, opacity: float) -> None:
+        self._gradient_overlay_item.setOpacity(max(0.0, min(1.0, float(opacity))))
 
     def _update_main_frame(self) -> None:
         path = QPainterPath()
@@ -1331,6 +1358,15 @@ class PolygonEditorView(QGraphicsView):
 
     def set_extra_layers(self, layers: list[dict[str, object]]) -> None:
         self._editor_scene.set_extra_layers(layers)
+
+    def set_gradient_overlay(self, image, opacity: float = 0.45) -> None:
+        self._editor_scene.set_gradient_overlay(image, opacity)
+
+    def clear_gradient_overlay(self) -> None:
+        self._editor_scene.clear_gradient_overlay()
+
+    def set_gradient_overlay_opacity(self, opacity: float) -> None:
+        self._editor_scene.set_gradient_overlay_opacity(opacity)
 
     def set_ui_language(self, language: str | None) -> None:
         self._editor_scene.set_ui_language(language)

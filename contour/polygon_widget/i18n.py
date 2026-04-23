@@ -363,6 +363,14 @@ OPERATION_NAMES: dict[str, dict[str, str]] = {
     "crop": {"ru": "Обрезка", "en": "Crop"},
     "sharpen": {"ru": "Повышение резкости", "en": "Sharpen"},
     "denoise": {"ru": "Шумоподавление", "en": "Denoise"},
+    "scharr_edges": {"ru": "Границы (Scharr)", "en": "Scharr Edges"},
+    "auto_canny": {"ru": "Авто Канни", "en": "Auto Canny"},
+    "log_edges": {"ru": "Лапласиан Гаусса", "en": "Laplacian of Gaussian"},
+    "ridge_edges": {"ru": "Гребневые структуры", "en": "Ridge Response"},
+    "structured_edges": {"ru": "Структурированные границы", "en": "Structured Edges"},
+    "phase_congruency": {"ru": "Фазовая согласованность", "en": "Phase Congruency"},
+    "combined_edges": {"ru": "Комбинированный детектор", "en": "Combined Edges"},
+    "edge_method": {"ru": "Детектор границ", "en": "Edge Detector"},
 }
 
 
@@ -405,6 +413,16 @@ PARAMETER_LABELS: dict[str, dict[str, str]] = {
     "h": {"ru": "Сила подавления", "en": "Strength"},
     "template_window_size": {"ru": "Окно шаблона", "en": "Template window"},
     "search_window_size": {"ru": "Окно поиска", "en": "Search window"},
+    "sigma_small": {"ru": "Sigma (малая)", "en": "Sigma small"},
+    "sigma_mid": {"ru": "Sigma (средняя)", "en": "Sigma mid"},
+    "sigma_large": {"ru": "Sigma (большая)", "en": "Sigma large"},
+    "num_scales": {"ru": "Масштабы", "en": "Scales"},
+    "num_orientations": {"ru": "Ориентации", "en": "Orientations"},
+    "min_wavelength": {"ru": "Мин. длина волны", "en": "Min wavelength"},
+    "scale_factor": {"ru": "Коэффициент масштабов", "en": "Scale factor"},
+    "methods": {"ru": "Методы", "en": "Methods"},
+    "method": {"ru": "Метод", "en": "Method"},
+    "preset": {"ru": "Пресет", "en": "Preset"},
 }
 
 
@@ -433,6 +451,24 @@ CHOICE_LABELS: dict[str, dict[str, dict[str, str]]] = {
     "edge_detector": {
         "sobel": {"ru": "Собель", "en": "Sobel"},
         "canny": {"ru": "Канни", "en": "Canny"},
+    },
+    "method": {
+        "sobel": {"ru": "Sobel", "en": "Sobel"},
+        "scharr": {"ru": "Scharr", "en": "Scharr"},
+        "laplacian": {"ru": "Лапласиан", "en": "Laplacian"},
+        "log": {"ru": "LoG", "en": "LoG"},
+        "auto_canny": {"ru": "Авто Канни", "en": "Auto Canny"},
+        "structured": {"ru": "Structured Edge", "en": "Structured Edge"},
+        "ridge": {"ru": "Ridge", "en": "Ridge"},
+        "phase_congruency": {"ru": "Phase Congruency", "en": "Phase Congruency"},
+        "combined": {"ru": "Комбинированный", "en": "Combined"},
+    },
+    "preset": {
+        "default": {"ru": "По умолчанию", "en": "Default"},
+        "fine_detail": {"ru": "Мелкие детали", "en": "Fine detail"},
+        "robust": {"ru": "Надёжный", "en": "Robust"},
+        "illumination_invariant": {"ru": "Инвариантный к освещению", "en": "Illumination-invariant"},
+        "all_classical": {"ru": "Все классические", "en": "All classical"},
     },
     "interpolation": {
         "nearest": {"ru": "Ближайший", "en": "Nearest"},

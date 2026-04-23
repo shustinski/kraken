@@ -11,6 +11,7 @@ Requires-Dist: opencv-python>=4.8
 Requires-Dist: torch==2.8.0+cu128
 Requires-Dist: torchvision==0.23.0+cu128
 Requires-Dist: timm>=1.0
+Requires-Dist: pyinstaller>=6.0
 Provides-Extra: web
 Requires-Dist: django>=5.1; extra == "web"
 Requires-Dist: ldap3>=2.9; extra == "web"

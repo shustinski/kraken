@@ -5354,7 +5354,12 @@ class NeuralRecognizer(threading.Thread):
             context_crop_size=self._context_crop_size,
             context_input_size=self._context_input_size,
             compression_factor=max(1, int(getattr(self._parameters, 'compression_factor', 1))),
-            source_root=Path(self._parameters.source_folder) if self._parameters.source_folder is not None else None,
+            source_root=(
+                Path(self._parameters.source_folder)
+                if bool(getattr(self._parameters, 'recursive_file_search', False))
+                and self._parameters.source_folder is not None
+                else None
+            ),
         )
         run_multiprocessing_recognition(
             workload=workload,
@@ -5400,7 +5405,12 @@ class NeuralRecognizer(threading.Thread):
             context_crop_size=self._context_crop_size,
             context_input_size=self._context_input_size,
             compression_factor=max(1, int(getattr(self._parameters, 'compression_factor', 1))),
-            source_root=Path(self._parameters.source_folder) if self._parameters.source_folder is not None else None,
+            source_root=(
+                Path(self._parameters.source_folder)
+                if bool(getattr(self._parameters, 'recursive_file_search', False))
+                and self._parameters.source_folder is not None
+                else None
+            ),
         )
 
     def stop(self):

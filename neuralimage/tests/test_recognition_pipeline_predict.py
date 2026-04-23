@@ -234,6 +234,33 @@ def test_single_thread_recognition_passes_compression_factor_to_cut(tmp_path, mo
     assert captured['source_root_is_tmp'] == 1
 
 
+def test_single_thread_recognition_creates_output_subdirectories_from_source_root(tmp_path):
+    source_dir = tmp_path / 'source'
+    nested_dir = source_dir / 'metal' / 'layer_1'
+    nested_dir.mkdir(parents=True)
+    source_path = nested_dir / 'frame.png'
+    Image.fromarray(np.zeros((8, 8), dtype=np.uint8), mode='L').save(source_path)
+    result_dir = tmp_path / 'result'
+
+    run_single_thread_recognition(
+        source_files=[source_path],
+        result_folder=result_dir,
+        model=torch.nn.Identity(),
+        part_size=(8, 8),
+        batch_size=1,
+        overlap=0,
+        colors=1,
+        device=torch.device('cpu'),
+        stop_event=type('StopEvent', (), {'is_set': lambda self: False})(),
+        publish=lambda *_args: None,
+        collect_memory_metrics=lambda: None,
+        source_root=source_dir,
+    )
+
+    assert (result_dir / 'metal' / 'layer_1' / 'frame.jpg').exists()
+    assert not (result_dir / 'frame.jpg').exists()
+
+
 class _StubQueue:
     def put(self, item):
         return

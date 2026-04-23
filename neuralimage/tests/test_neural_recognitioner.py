@@ -325,6 +325,82 @@ def test_run_multiprocessing_propagates_disabled_binarization_as_none_threshold(
     assert workload.confidence_save_mode == 'separate_grayscale'
 
 
+def test_run_one_thread_passes_source_root_only_for_recursive_search(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source"
+    nested_dir = source_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    source_file = nested_dir / "frame.png"
+    source_file.write_bytes(b"fake")
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    bus = _StubBus()
+    params = RecognitionParameters(
+        source_files=[source_file],
+        source_folder=source_dir,
+        result_folder=tmp_path / "result",
+        model=nn.Identity(),
+        part_size=(16, 16),
+        batch_size=1,
+        overlap=0,
+        recursive_file_search=True,
+    )
+    recognizer = NeuralRecognizer(params, bus)
+    recognizer.model = nn.Identity()
+    recognizer.colors = 1
+    recognizer.devices_list = [torch.device("cpu")]
+    recognizer._resolved_output_threshold = 0.5
+
+    recognizer.run_one_thread()
+
+    assert captured["source_root"] == source_dir
+
+    captured.clear()
+    params.recursive_file_search = False
+
+    recognizer.run_one_thread()
+
+    assert captured["source_root"] is None
+
+
+def test_run_multiprocessing_passes_source_root_for_recursive_search(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source"
+    nested_dir = source_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    source_file = nested_dir / "frame.png"
+    source_file.write_bytes(b"fake")
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "model.NeuralNetwork.model_train_and_recognition.run_multiprocessing_recognition",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    bus = _StubBus()
+    params = RecognitionParameters(
+        source_files=[source_file],
+        source_folder=source_dir,
+        result_folder=tmp_path / "result",
+        model="dummy_model_path.pth",
+        part_size=(16, 16),
+        batch_size=1,
+        overlap=0,
+        recursive_file_search=True,
+    )
+    recognizer = NeuralRecognizer(params, bus)
+    recognizer.colors = 1
+    recognizer.devices_list = [torch.device("cpu")]
+    recognizer._resolved_output_threshold = 0.5
+
+    recognizer.run_multiprocessing()
+
+    assert captured["workload"].source_root == source_dir
+
+
 def test_model_recognizer_does_not_disable_process_mode_under_debugger(monkeypatch):
     base_dir = make_test_dir("neural_rec_debugger")
     bus = _StubBus()

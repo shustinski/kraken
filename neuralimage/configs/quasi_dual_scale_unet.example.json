@@ -1,0 +1,119 @@
+{
+  "work_mode": "train_and_recognition",
+  "recogniton_parameters": {
+    "source_files": [
+      "D:/data/inference/source_1.jpg"
+    ],
+    "result_folder": "D:/data/inference/results",
+    "model_name": "quasi_dual_scale_unet",
+    "local_crop_size": [
+      256,
+      256
+    ],
+    "use_context_branch": true,
+    "use_cross_attention": true,
+    "context_crop_size": [
+      512,
+      512
+    ],
+    "context_input_size": [
+      256,
+      256
+    ],
+    "batch_size": 8,
+    "overlap": 16,
+    "jpeg_quality": 95
+  },
+  "tranining_parameters": {
+    "image_path": "D:/data/train/images",
+    "label_path": "D:/data/train/labels",
+    "shuffle": true,
+    "validation": true,
+    "validation_percent": 20,
+    "batch_size": 8,
+    "cut_mode": "online",
+    "colors": 1,
+    "epochs": 30,
+    "local_crop_size": [
+      256,
+      256
+    ],
+    "context_crop_size": [
+      512,
+      512
+    ],
+    "context_input_size": [
+      256,
+      256
+    ],
+    "context_branch_channels": [
+      16,
+      32,
+      64,
+      128
+    ],
+    "fusion_type": "concat",
+    "use_context_branch": true,
+    "use_cross_attention": true,
+    "attention_dim": 128,
+    "attention_heads": 4,
+    "attention_max_global_tokens": 1024,
+    "generation": {
+      "step": 128,
+      "segment_size": [
+        256,
+        256
+      ],
+      "vertical_rotation": true,
+      "horizontal_rotation": true,
+      "channels": 1,
+      "additional_augmentation": false,
+      "augmentation_brightness_strength": 0.1,
+      "augmentation_contrast_strength": 0.1,
+      "augmentation_noise_probability": 0.5,
+      "augmentation_noise_sigma": 0.01,
+      "random_crop": false,
+      "crops_per_image": 64,
+      "scale_augmentation": false,
+      "scale_augmentation_strength": 0.2
+    },
+    "prepare": {
+      "enable_crop": false,
+      "enable_resize": false,
+      "edge_cut": null,
+      "target_size": null
+    },
+    "optimizer": {
+      "name": "adamw",
+      "learning_rate": 0.001,
+      "weight_decay": 0.0001
+    },
+    "mixed_precision": "bf16",
+    "loss_function": "focal_dice",
+    "dice_loss_weight": 0.7,
+    "iou_loss_weight": 0.3,
+    "early_stopping": {
+      "enabled": true,
+      "patience": 10,
+      "min_delta": 0.001,
+      "restore_best_weights": true
+    },
+    "warmup": {
+      "enabled": true,
+      "epochs": 3,
+      "start_factor": 0.1
+    },
+    "hard_mining": {
+      "enabled": false,
+      "strength": 2.0,
+      "ema_alpha": 0.2,
+      "pixel_enabled": false,
+      "pixel_keep_ratio": 0.25
+    },
+    "skip_uniform_labels": false,
+    "use_multi_gpu": true,
+    "multi_gpu_mode": "distributeddataparallel",
+    "show_batch_preview": true,
+    "log_update_frequency": 10
+  }
+}

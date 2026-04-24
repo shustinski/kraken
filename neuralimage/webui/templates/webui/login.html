@@ -1,0 +1,69 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="{{ ui_language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_title }} {{ texts.page_title_suffix }}</title>
+    <link rel="stylesheet" href="{% static 'webui/dashboard.css' %}">
+</head>
+<body>
+<div class="app-shell auth-shell">
+    <header class="topbar">
+        <div class="title-wrap">
+            <h1>{{ app_name }} <small>v{{ app_version }}</small></h1>
+            <p>{{ texts.page_subtitle }}</p>
+        </div>
+        <div class="control-wrap">
+            <div class="lang-switch" aria-label="{{ texts.language_switch_label }}">
+                <a href="?lang=ru" class="{% if ui_language == 'ru' %}is-active{% endif %}">{{ texts.language_ru }}</a>
+                <a href="?lang=en" class="{% if ui_language == 'en' %}is-active{% endif %}">{{ texts.language_en }}</a>
+            </div>
+        </div>
+    </header>
+
+    {% if messages %}
+        <section class="alerts">
+            {% for message in messages %}
+                <div class="alert {{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+        </section>
+    {% endif %}
+
+    <main class="auth-card panel">
+        <h2>{{ auth_texts.auth_title }}</h2>
+        <p class="auth-subtitle">{{ auth_texts.auth_subtitle }}</p>
+        <div class="auth-actions">
+            {% if ldap_auth_configured %}
+                <form method="post" action="{{ ldap_login_url }}?lang={{ ui_language }}" class="inline-form auth-login-form">
+                    {% csrf_token %}
+                    <div class="field">
+                        <label for="ldap-username">{{ auth_texts.username_label }}</label>
+                        <input id="ldap-username" type="text" name="username" class="control-input" autocomplete="username">
+                    </div>
+                    <div class="field">
+                        <label for="ldap-password">{{ auth_texts.password_label }}</label>
+                        <input id="ldap-password" type="password" name="password" class="control-input" autocomplete="current-password">
+                    </div>
+                    <button type="submit" class="btn-start auth-link-btn">{{ auth_texts.authorize_button }}</button>
+                </form>
+            {% else %}
+                <div class="errors">{{ auth_texts.auth_not_configured }}</div>
+            {% endif %}
+            <form method="post" action="{{ superuser_login_url }}?lang={{ ui_language }}" class="inline-form auth-login-form">
+                {% csrf_token %}
+                <div class="field">
+                    <label for="auth-username">{{ auth_texts.username_label }}</label>
+                    <input id="auth-username" type="text" name="username" class="control-input" autocomplete="username">
+                </div>
+                <div class="field">
+                    <label for="auth-password">{{ auth_texts.password_label }}</label>
+                    <input id="auth-password" type="password" name="password" class="control-input" autocomplete="current-password">
+                </div>
+                <button type="submit" class="ghost-btn auth-local-btn">{{ auth_texts.superuser_button }}</button>
+            </form>
+        </div>
+    </main>
+</div>
+</body>
+</html>

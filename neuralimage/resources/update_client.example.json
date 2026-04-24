@@ -1,0 +1,7 @@
+{
+  "default_channel": "stable",
+  "channels": {
+    "stable": "http://127.0.0.1:8080/neuralimage/stable/version.json",
+    "beta": "http://127.0.0.1:8080/neuralimage/beta/version.json"
+  }
+}

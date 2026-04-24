@@ -1,0 +1,20 @@
+﻿# Runtime dependencies used across source modules
+numpy>=1.26
+Pillow>=10.0
+opencv-python>=4.8
+sympy>=1.12
+PyQt6>=6.6
+pyqtgraph>=0.13
+# torch>=2.2
+# torchvision>=0.17
+timm>=1.0
+huggingface_hub>=0.30
+django>=5.1
+ldap3>=2.9
+
+# Test dependencies
+pytest>=8.0
+pytest-cov>=5.0
+
+# Packaging/build tooling (project contains NeuralImage.spec)
+pyinstaller>=6.0

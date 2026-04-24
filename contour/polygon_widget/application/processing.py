@@ -15,6 +15,8 @@ VIA_SEARCH_MODE_TEMPLATE = "template"
 VIA_CHANNEL_MODE_COLUMNS = "columns"
 VIA_CHANNEL_MODE_GRAYSCALE = "grayscale"
 VIA_CHANNEL_MODE_RED_BLUE = "red_blue"
+ALGORITHM_BACKEND_LEGACY = "legacy"
+ALGORITHM_BACKEND_SEM = "sem"
 
 
 def normalize_via_size_mode(value: Any) -> str:
@@ -41,6 +43,15 @@ def normalize_via_channel_mode(value: Any) -> str:
     if text in {"rb", "red_blue", "red-blue", "redblue"}:
         return VIA_CHANNEL_MODE_RED_BLUE
     return VIA_CHANNEL_MODE_GRAYSCALE
+
+
+def normalize_algorithm_backend(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {ALGORITHM_BACKEND_SEM, "new", "sem_auto", "auto_sem"}:
+        return ALGORITHM_BACKEND_SEM
+    if text == "legacy_via":
+        return "legacy_via"
+    return ALGORITHM_BACKEND_LEGACY
 
 
 def parse_integer_value_list(payload: Any) -> list[int]:
@@ -149,6 +160,10 @@ class ContourDebugCandidate:
 
 @dataclass(slots=True)
 class ContourExtractionSettings:
+    algorithm_backend: str = ALGORITHM_BACKEND_LEGACY
+    sem_noise_level: str = "medium"
+    sem_polarity: str = "auto"
+    sem_preserve_hierarchy: bool = True
     extraction_profile: str = "conductors"
     object_type: str = "conductor"
     output_mode: str = "polygon"
@@ -209,6 +224,10 @@ class ContourExtractionSettings:
     def to_dict(self) -> dict[str, Any]:
         return {
             "extraction_profile": self.extraction_profile,
+            "algorithm_backend": normalize_algorithm_backend(self.algorithm_backend),
+            "sem_noise_level": self.sem_noise_level,
+            "sem_polarity": self.sem_polarity,
+            "sem_preserve_hierarchy": self.sem_preserve_hierarchy,
             "object_type": self.object_type,
             "output_mode": self.output_mode,
             "retrieval_mode": self.retrieval_mode,
@@ -289,6 +308,10 @@ class ContourExtractionSettings:
             white_range_max = payload.get("via_threshold_range_max", white_range_max)
         return cls(
             extraction_profile=str(payload.get("extraction_profile", "conductors")),
+            algorithm_backend=normalize_algorithm_backend(payload.get("algorithm_backend", ALGORITHM_BACKEND_LEGACY)),
+            sem_noise_level=str(payload.get("sem_noise_level", "medium") or "medium"),
+            sem_polarity=str(payload.get("sem_polarity", "auto") or "auto"),
+            sem_preserve_hierarchy=bool(payload.get("sem_preserve_hierarchy", True)),
             object_type=str(payload.get("object_type", "conductor")),
             output_mode=str(payload.get("output_mode", "polygon")),
             retrieval_mode=str(payload.get("retrieval_mode", "RETR_EXTERNAL")),

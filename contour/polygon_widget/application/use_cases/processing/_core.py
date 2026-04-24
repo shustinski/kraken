@@ -687,9 +687,7 @@ def _component_extent(isolation: _IsolationContext, cx: int, cy: int) -> tuple[i
     )
 
 
-def _refine_center(
-    gray: np.ndarray, cx: int, cy: int, radius: int, *, bright: bool
-) -> tuple[float, float]:
+def _refine_center(gray: np.ndarray, cx: int, cy: int, radius: int, *, bright: bool) -> tuple[float, float]:
     """Return an intensity-weighted centroid in the neighbourhood of ``(cx, cy)``.
 
     The blob/ring response peaks do not always coincide with the geometric
@@ -777,12 +775,7 @@ def _verify_peak(
         # Score from absolute circle-fit evidence only; peak response is used
         # for localization, not for scoring (otherwise any bright speckle on
         # texture wins because the response is percentile-normalized).
-        score = (
-            contrast_score * 0.35
-            + edge_score * 0.25
-            + coverage_score * 0.20
-            + isolation_score * 0.20
-        )
+        score = contrast_score * 0.35 + edge_score * 0.25 + coverage_score * 0.20 + isolation_score * 0.20
         if score > best_score:
             best_score = score
             roundness = float(coverage_score * 100.0)
@@ -799,12 +792,8 @@ def _verify_peak(
             )
     if best_candidate is not None:
         winning_radius = max(2, int((best_candidate.width - 1) // 2))
-        refined_cx, refined_cy = _refine_center(
-            gray, cx, cy, winning_radius, bright=bright
-        )
-        best_candidate = replace(
-            best_candidate, center_x=refined_cx, center_y=refined_cy
-        )
+        refined_cx, refined_cy = _refine_center(gray, cx, cy, winning_radius, bright=bright)
+        best_candidate = replace(best_candidate, center_x=refined_cx, center_y=refined_cy)
     return best_candidate
 
 
@@ -972,17 +961,11 @@ def _template_match_candidates(
                 continue
             if cv2.countNonZero(gate) > 0 and gate[cy, cx] == 0:
                 continue
-            refined_cx, refined_cy = _refine_center(
-                gray, cx, cy, radius, bright=bright
-            )
+            refined_cx, refined_cy = _refine_center(gray, cx, cy, radius, bright=bright)
             refined_cx_int = round(refined_cx)
             refined_cy_int = round(refined_cy)
-            contrast = _radial_contrast(
-                gray, refined_cx_int, refined_cy_int, radius, bright=bright
-            )
-            edge_strength, coverage = _edge_ring_metrics(
-                gradient, refined_cx_int, refined_cy_int, radius
-            )
+            contrast = _radial_contrast(gray, refined_cx_int, refined_cy_int, radius, bright=bright)
+            edge_strength, coverage = _edge_ring_metrics(gradient, refined_cx_int, refined_cy_int, radius)
             template_score = float(scores[y_coord, x_coord])
             fit_score = (
                 max(0.0, min(1.0, contrast / 80.0)) * 0.40
@@ -1253,9 +1236,7 @@ def _component_map(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     return labels, stats
 
 
-def _filter_vias_by_conductor_linearity(
-    vias: list[PolygonData], conductor_mask: np.ndarray
-) -> list[PolygonData]:
+def _filter_vias_by_conductor_linearity(vias: list[PolygonData], conductor_mask: np.ndarray) -> list[PolygonData]:
     """Reject likely false vias sitting on long, straight conductor segments."""
 
     component_payload = _component_map(conductor_mask)
@@ -1331,6 +1312,21 @@ def process_image_path(
     else:
         active_pipeline = pipeline or PreprocessingPipeline.from_dict(pipeline_config)
         preprocessed = active_pipeline.apply(source)
+
+    if str(getattr(contour_settings, "algorithm_backend", "legacy")).lower() == "sem":
+        return _process_image_path_sem_backend(
+            image_path=image_path,
+            pipeline_config=pipeline_config,
+            contour_settings=contour_settings,
+            output_directory=output_directory,
+            save_options=save_options,
+            display_settings=display_settings,
+            source=source,
+            preprocessed=preprocessed,
+            save_bundle=save_bundle,
+            include_images_in_result=include_images_in_result,
+        )
+
     if contour_settings.object_type == "via" or contour_settings.output_mode == "box":
         mask, debug_candidates = build_via_vectorization_mask(preprocessed, contour_settings)
         polygons = extract_polygons(mask, contour_settings)
@@ -1383,3 +1379,120 @@ def process_image_path(
         debug_gradient_maps=debug_gradient_maps if include_images_in_result else {},
         saved_files=saved_files,
     )
+
+
+def _process_image_path_sem_backend(
+    *,
+    image_path: str,
+    pipeline_config: dict[str, Any],
+    contour_settings: ContourExtractionSettings,
+    output_directory: str | None,
+    save_options: SaveOptions | None,
+    display_settings: DisplaySettings | None,
+    source: Any,
+    preprocessed: Any,
+    save_bundle: Callable[..., dict[str, str]],
+    include_images_in_result: bool,
+) -> BatchImageResult:
+    from ....vision.integration import (
+        contour_output_to_polygons,
+        output_kind_from_text,
+        run_contour_filled_mask,
+        run_via_detection,
+        via_output_to_polygons,
+    )
+
+    output_kind = output_kind_from_text(contour_settings.output_mode)
+    debug_candidates: list[ContourDebugCandidate] = []
+    debug_gradient_maps: dict[str, np.ndarray] = {}
+    vision_json: dict[str, Any]
+
+    if contour_settings.object_type == "via":
+        via_output = run_via_detection(
+            source,
+            image_path=image_path,
+            output_kind=output_kind,
+            legacy_settings=contour_settings,
+        )
+        polygons = via_output_to_polygons(via_output)
+        mask = _render_polygon_mask_from_polygons(source, polygons)
+        vision_json = via_output.to_json_dict()
+        if contour_settings.debug_enabled:
+            debug_candidates = _debug_candidates_from_via_hits(via_output.hits)
+    else:
+        contour_output = run_contour_filled_mask(
+            source,
+            image_path=image_path,
+            output_kind=output_kind,
+            noise_level=str(getattr(contour_settings, "sem_noise_level", "medium") or "medium"),
+            legacy_settings=contour_settings,
+        )
+        polygons = contour_output_to_polygons(contour_output)
+        mask = contour_output.filled_mask
+        vision_json = contour_output.to_json_dict()
+        preprocessed = contour_output.debug.get("preprocessed", preprocessed)
+        if contour_settings.debug_gradient_map_enabled:
+            debug_gradient_maps = {
+                "source_gray": _via_grayscale(source),
+                "preprocessed": ensure_uint8(preprocessed),
+                "mask": ensure_binary_mask(mask),
+            }
+
+    saved_files: dict[str, str] = {}
+    if output_directory:
+        saved_files = save_bundle(
+            output_directory=output_directory,
+            image_path=image_path,
+            polygons=polygons,
+            source_image=source,
+            display_settings=display_settings or DisplaySettings(),
+            save_options=save_options or SaveOptions(),
+            metadata={
+                "contour_settings": contour_settings.to_dict(),
+                "pipeline": pipeline_config,
+                "vision_backend": vision_json,
+            },
+        )
+
+    return BatchImageResult(
+        image_path=image_path,
+        source_image=source if include_images_in_result else None,
+        preprocessed_image=preprocessed if include_images_in_result else None,
+        pipeline_config=dict(pipeline_config),
+        mask_image=mask if include_images_in_result else None,
+        polygons=polygons,
+        debug_candidates=debug_candidates if contour_settings.debug_enabled else [],
+        debug_gradient_maps=debug_gradient_maps if include_images_in_result else {},
+        saved_files=saved_files,
+    )
+
+
+def _render_polygon_mask_from_polygons(source: Any, polygons: list[PolygonData]) -> np.ndarray:
+    shape = np.asarray(source).shape[:2]
+    mask = np.zeros(shape, dtype=np.uint8)
+    for polygon in polygons:
+        if len(polygon.points) < 3:
+            continue
+        pts = np.array([[round(x), round(y)] for x, y in polygon.points], dtype=np.int32)
+        cv2.fillPoly(mask, [pts], 255)
+    return ensure_binary_mask(mask)
+
+
+def _debug_candidates_from_via_hits(hits: list[Any]) -> list[ContourDebugCandidate]:
+    debug: list[ContourDebugCandidate] = []
+    for index, hit in enumerate(hits):
+        x_coord, y_coord, width, height = hit.to_axis_aligned_box()
+        debug.append(
+            ContourDebugCandidate(
+                contour_index=index,
+                bbox=(x_coord, y_coord, width, height),
+                area=float(width * height),
+                perimeter=float(2 * (width + height)),
+                roundness=float(getattr(hit, "annulus_coverage", 0.0) * 100.0),
+                accepted=True,
+                reason=f"accepted:{getattr(hit, 'strategy', 'sem_primary')}",
+                source=str(getattr(hit, "strategy", "sem_primary")),
+                score=float(getattr(hit, "score", 0.0)),
+            )
+        )
+    return debug

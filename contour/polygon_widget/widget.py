@@ -44,6 +44,7 @@ from .application.processing import (
     DisplaySettings,
     ImageProcessingState,
     SaveOptions,
+    normalize_algorithm_backend,
     normalize_via_search_mode,
     normalize_via_size_mode,
 )
@@ -160,16 +161,20 @@ class PolygonExtractionWidget(QWidget):
         self._display_settings = DisplaySettings()
         self._contour_settings_profiles = {
             "conductors": ContourExtractionSettings(
+                algorithm_backend="sem",
+                sem_noise_level="medium",
                 extraction_profile="conductors",
                 object_type="conductor",
                 output_mode="polygon",
                 min_polygon_angle=90.0,
             ),
             "vias": ContourExtractionSettings(
+                algorithm_backend="sem",
+                sem_noise_level="medium",
                 extraction_profile="vias",
                 object_type="via",
                 output_mode="box",
-                via_search_mode="template",
+                via_search_mode="hybrid",
                 min_solidity=0.6,
                 min_extent=0.5,
                 min_aspect_ratio=0.5,
@@ -857,6 +862,7 @@ class PolygonExtractionWidget(QWidget):
 
     def _update_via_threshold_controls_state(self) -> None:
         mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
+        advanced = self._advanced_extraction_enabled()
         blob_enabled = mode in {"hybrid", "blob"}
         template_enabled = mode in {"hybrid", "template"}
         for label_widget, field_widget in (
@@ -866,11 +872,11 @@ class PolygonExtractionWidget(QWidget):
             (self.via_spot_line_suppression_label_widget, self.via_spot_line_suppression_spin),
         ):
             if label_widget is not None:
-                label_widget.setVisible(blob_enabled)
-            field_widget.setVisible(blob_enabled)
+                label_widget.setVisible(advanced and blob_enabled)
+            field_widget.setVisible(advanced and blob_enabled)
         if self.via_template_min_score_label_widget is not None:
-            self.via_template_min_score_label_widget.setVisible(template_enabled)
-        self.via_template_min_score_spin.setVisible(template_enabled)
+            self.via_template_min_score_label_widget.setVisible(advanced and template_enabled)
+        self.via_template_min_score_spin.setVisible(advanced and template_enabled)
         if self.via_templates_label_widget is not None:
             self.via_templates_label_widget.setVisible(template_enabled)
         self.via_templates_widget.setVisible(template_enabled)
@@ -879,22 +885,46 @@ class PolygonExtractionWidget(QWidget):
         self.via_white_range_min_spin.setEnabled(white_enabled)
         self.via_white_range_max_spin.setEnabled(white_enabled)
         if self.via_white_range_label_widget is not None:
-            self.via_white_range_label_widget.setVisible(white_enabled)
-        self.via_white_range_widget.setVisible(white_enabled)
+            self.via_white_range_label_widget.setVisible(advanced and white_enabled)
+        self.via_white_range_widget.setVisible(advanced and white_enabled)
         black_enabled = self.via_black_range_checkbox.isChecked()
         self.via_black_range_min_spin.setEnabled(black_enabled)
         self.via_black_range_max_spin.setEnabled(black_enabled)
         if self.via_black_range_label_widget is not None:
-            self.via_black_range_label_widget.setVisible(black_enabled)
-        self.via_black_range_widget.setVisible(black_enabled)
+            self.via_black_range_label_widget.setVisible(advanced and black_enabled)
+        self.via_black_range_widget.setVisible(advanced and black_enabled)
 
     def _update_extraction_profile_controls_state(self) -> None:
         is_via_profile = self._active_extraction_profile == "vias"
+        advanced = self._advanced_extraction_enabled()
+        self.basic_filters_group.setVisible(advanced)
+        self.geometry_filters_group.setVisible(advanced)
         self.conductor_group.setEnabled(not is_via_profile)
-        self.conductor_group.setVisible(not is_via_profile)
+        self.conductor_group.setVisible(advanced and not is_via_profile)
         self.via_group.setEnabled(is_via_profile)
         self.via_group.setVisible(is_via_profile)
-        self.topology_group.setVisible(not is_via_profile)
+        self.topology_group.setVisible(advanced and not is_via_profile)
+        advanced_via_widgets = [
+            (self.via_range_checkboxes_label_widget, self.via_range_checkboxes_widget),
+            (self.via_white_range_label_widget, self.via_white_range_widget),
+            (self.via_black_range_label_widget, self.via_black_range_widget),
+            (self.via_min_score_label_widget, self.via_min_score_spin),
+            (self.via_min_contrast_label_widget, self.via_min_contrast_spin),
+            (self.via_min_edge_coverage_label_widget, self.via_min_edge_coverage_spin),
+            (self.via_spot_line_suppression_label_widget, self.via_spot_line_suppression_spin),
+            (self.via_roundness_label_widget, self.via_roundness_spin),
+        ]
+        for label_widget, field_widget in advanced_via_widgets:
+            if label_widget is not None:
+                label_widget.setVisible(advanced and is_via_profile)
+            field_widget.setVisible(advanced and is_via_profile)
+        self._update_via_threshold_controls_state()
+
+    def _advanced_extraction_enabled(self) -> bool:
+        return bool(hasattr(self, "advanced_extraction_checkbox") and self.advanced_extraction_checkbox.isChecked())
+
+    def _on_advanced_extraction_toggled(self, *_args) -> None:
+        self._update_extraction_profile_controls_state()
 
     def _build_visual_panel(self) -> QWidget:
         return build_visual_panel(self)
@@ -1717,9 +1747,7 @@ class PolygonExtractionWidget(QWidget):
             self.via_black_range_max_spin.setValue(
                 int(payload.get("via_black_range_max", self.via_black_range_max_spin.value()))
             )
-            self.via_min_score_spin.setValue(
-                float(payload.get("via_min_score", self.via_min_score_spin.value()))
-            )
+            self.via_min_score_spin.setValue(float(payload.get("via_min_score", self.via_min_score_spin.value())))
             self.via_min_contrast_spin.setValue(
                 float(payload.get("via_min_contrast", self.via_min_contrast_spin.value()))
             )
@@ -2416,8 +2444,11 @@ class PolygonExtractionWidget(QWidget):
     def _store_active_extraction_profile_settings(self) -> None:
         if not hasattr(self, "extraction_profile_combo"):
             return
-        profile = str(self.extraction_profile_combo.currentData() or self._active_extraction_profile or "conductors")
-        self._contour_settings_profiles[profile] = self._current_contour_settings()
+        profile = str(self._active_extraction_profile or self.extraction_profile_combo.currentData() or "conductors")
+        settings = self._current_contour_settings()
+        settings.extraction_profile = profile
+        settings.object_type = "via" if profile == "vias" else "conductor"
+        self._contour_settings_profiles[profile] = settings
 
     def _save_pipeline_json(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -2790,6 +2821,9 @@ class PolygonExtractionWidget(QWidget):
     def _set_extraction_settings(self, settings: ContourExtractionSettings) -> None:
         blockers = [
             QSignalBlocker(self.extraction_profile_combo),
+            QSignalBlocker(self.algorithm_backend_combo),
+            QSignalBlocker(self.result_shape_combo),
+            QSignalBlocker(self.sem_noise_combo),
             QSignalBlocker(self.retrieval_mode_combo),
             QSignalBlocker(self.approximation_mode_combo),
             QSignalBlocker(self.epsilon_spin),
@@ -2834,6 +2868,7 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.min_hierarchy_depth_spin),
             QSignalBlocker(self.max_hierarchy_depth_spin),
             QSignalBlocker(self.max_hole_area_ratio_spin),
+            QSignalBlocker(self.advanced_extraction_checkbox),
         ]
         try:
             profile_index = self.extraction_profile_combo.findData(settings.extraction_profile)
@@ -2842,6 +2877,17 @@ class PolygonExtractionWidget(QWidget):
                 self.extraction_profile_combo.setCurrentIndex(profile_index)
                 self._ignore_extraction_profile_change = False
             self._active_extraction_profile = str(settings.extraction_profile or self._active_extraction_profile)
+            backend_index = self.algorithm_backend_combo.findData(
+                normalize_algorithm_backend(settings.algorithm_backend)
+            )
+            if backend_index >= 0:
+                self.algorithm_backend_combo.setCurrentIndex(backend_index)
+            shape_index = self.result_shape_combo.findData(settings.output_mode)
+            if shape_index >= 0:
+                self.result_shape_combo.setCurrentIndex(shape_index)
+            noise_index = self.sem_noise_combo.findData(settings.sem_noise_level)
+            if noise_index >= 0:
+                self.sem_noise_combo.setCurrentIndex(noise_index)
             retrieval_index = self.retrieval_mode_combo.findData(settings.retrieval_mode)
             if retrieval_index >= 0:
                 self.retrieval_mode_combo.setCurrentIndex(retrieval_index)
@@ -2936,8 +2982,12 @@ class PolygonExtractionWidget(QWidget):
             self.extraction_profile_combo.currentData() or self._active_extraction_profile or "conductors"
         )
         object_type = "via" if extraction_profile == "vias" else "conductor"
-        output_mode = "box" if extraction_profile == "vias" else "polygon"
+        output_mode = str(
+            self.result_shape_combo.currentData() or ("box" if extraction_profile == "vias" else "polygon")
+        )
         return ContourExtractionSettings(
+            algorithm_backend=normalize_algorithm_backend(self.algorithm_backend_combo.currentData()),
+            sem_noise_level=str(self.sem_noise_combo.currentData() or "medium"),
             extraction_profile=extraction_profile,
             object_type=object_type,
             output_mode=output_mode,
@@ -3105,11 +3155,7 @@ class PolygonExtractionWidget(QWidget):
 
     def _display_image_for_current_state(self):
         current_state = self._workspace.current_state
-        if (
-            self._show_source_while_middle_held
-            and current_state is not None
-            and current_state.source_image is not None
-        ):
+        if self._show_source_while_middle_held and current_state is not None and current_state.source_image is not None:
             return current_state.source_image
         return self._workspace.current_display_image()
 

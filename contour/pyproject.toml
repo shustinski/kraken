@@ -1,0 +1,200 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vialanet-polygon-widget"
+description = "Standalone polygon extraction and editing widget."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.13"
+authors = [{ name = "ViaLaNet" }]
+keywords = ["pyqt", "polygon", "contour", "image-processing", "opencv"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications :: Qt",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Software Development :: User Interfaces",
+]
+dynamic = ["version"]
+dependencies = [
+    "numpy>=2.4.0",
+    "opencv-python>=4.13",
+    "PyQt6>=6.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-qt>=4.4",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.8",
+    "types-setuptools",
+]
+build = ["pyinstaller>=6.19"]
+
+[project.urls]
+Homepage = "https://github.com/shustinski/ViaLaNet"
+Repository = "https://github.com/shustinski/ViaLaNet"
+Issues = "https://github.com/shustinski/ViaLaNet/issues"
+Changelog = "https://github.com/shustinski/ViaLaNet/blob/main/CHANGELOG.md"
+
+[project.scripts]
+contour = "polygon_widget.application.cli:main"
+polygon-widget = "polygon_widget.application.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = { attr = "polygon_widget.__version__.__version__" }
+
+[tool.setuptools.packages.find]
+include = [
+    "polygon_widget",
+    "polygon_widget.*",
+]
+
+[tool.setuptools.package-data]
+polygon_widget = [
+    "pipeline_example.json",
+    "resources/styles/*.qss",
+    "resources/styles/icons/*",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+extend-exclude = [
+    "build",
+    "dist",
+    ".venv",
+    ".tmp-tests",
+    "packaging",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+    "N",   # pep8-naming
+]
+ignore = [
+    "E501",   # line length handled by formatter
+    "B008",   # function calls in default args (common in Qt code)
+    "SIM105", # suppress(Exception) is noisier than try/except pass in hot paths
+    "SIM108", # ternary not always clearer
+    "N802",   # function name lowerCamelCase (Qt slots)
+    "N803",   # argument name lowerCamelCase (Qt signals)
+    "N806",   # variable in function should be lowercase (Qt local vars)
+    "N815",   # mixedCase class attribute (Qt signals like imageProcessed)
+    "RUF001", # ambiguous characters in Cyrillic strings (i18n Russian)
+    "RUF002", # ambiguous characters in docstrings (Cyrillic)
+    "RUF003", # ambiguous characters in comments (Cyrillic)
+    "RUF012", # mutable class attributes without ClassVar (common Qt pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["N802", "N806", "SIM117"]
+"examples/**" = ["N802", "N806"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.13"
+strict = false
+warn_unused_ignores = true
+ignore_missing_imports = true
+check_untyped_defs = false
+exclude = ["build/", "dist/", "tests/", "packaging/", ".venv/"]
+
+# Soft baseline for modules that interop heavily with PyQt6/OpenCV and still
+# carry loose typing from earlier iterations. The plan is to tighten these
+# per-module over time, but they stay permissive today so the rest of the
+# codebase can run under strict-ish mypy.
+[[tool.mypy.overrides]]
+module = [
+    "polygon_widget.widget",
+    "polygon_widget.pipeline",
+    "polygon_widget.edge_detection",
+    "polygon_widget.graphics_items",
+    "polygon_widget.graphics.editor_scene",
+    "polygon_widget.graphics.editor_view",
+    "polygon_widget.ui.builders",
+    "polygon_widget.ui.retranslate",
+    "polygon_widget.batch_processor",
+    "polygon_widget.application.processing",
+    "polygon_widget.application.view",
+    "polygon_widget.application.presenter",
+    "polygon_widget.application.use_cases.autotune",
+    "polygon_widget.application.use_cases.processing._core",
+]
+disable_error_code = [
+    "attr-defined",
+    "arg-type",
+    "union-attr",
+    "call-overload",
+    "assignment",
+    "index",
+    "no-any-return",
+    "return-value",
+    "misc",
+    "operator",
+    "var-annotated",
+    "list-item",
+    "dict-item",
+    "name-defined",
+]
+
+# Core layers (domain, services, infrastructure) stay strict-ish.
+[[tool.mypy.overrides]]
+module = [
+    "polygon_widget.domain.*",
+    "polygon_widget.application.services.*",
+    "polygon_widget.infrastructure.*",
+    "polygon_widget.__version__",
+]
+warn_return_any = true
+strict_optional = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gui: marks tests requiring a Qt GUI event loop",
+]
+
+[tool.coverage.run]
+source = ["polygon_widget"]
+branch = true
+omit = [
+    "polygon_widget/__version__.py",
+    "polygon_widget/__main__.py",
+]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "\\.\\.\\.",
+]

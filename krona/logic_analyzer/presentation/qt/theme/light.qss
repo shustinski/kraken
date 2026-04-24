@@ -1,0 +1,170 @@
+/* Modern light theme for EDF Netlist Viewer */
+* {
+    color: #1E2430;
+    font-family: "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 10pt;
+}
+
+QMainWindow,
+QWidget {
+    background-color: #F4F6FB;
+}
+
+QLabel {
+    color: #1F2735;
+}
+
+QGroupBox {
+    border: 1px solid #D2D8E6;
+    border-radius: 10px;
+    margin-top: 12px;
+    padding-top: 10px;
+    background-color: #FFFFFF;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+    color: #5A667E;
+}
+
+QPushButton {
+    background-color: #FFFFFF;
+    border: 1px solid #C7D0E2;
+    border-radius: 8px;
+    padding: 6px 12px;
+    color: #1C2433;
+}
+
+QPushButton:hover {
+    background-color: #F1F5FF;
+    border-color: #9FB2DD;
+}
+
+QPushButton:pressed {
+    background-color: #E7EEFD;
+}
+
+QLineEdit,
+QComboBox,
+QAbstractSpinBox {
+    background-color: #FFFFFF;
+    border: 1px solid #C8D1E5;
+    border-radius: 7px;
+    padding: 5px 8px;
+    selection-background-color: #2E7BEA;
+    selection-color: #FFFFFF;
+}
+
+QLineEdit:focus,
+QComboBox:focus,
+QAbstractSpinBox:focus {
+    border: 1px solid #4E8FEF;
+}
+
+QTabWidget::pane {
+    border: 1px solid #D1D8E8;
+    border-radius: 10px;
+    top: -1px;
+    background: #FFFFFF;
+}
+
+QTabBar::tab {
+    background: #EEF2FA;
+    border: 1px solid #D1D8E8;
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 7px 12px;
+    margin-right: 3px;
+    color: #55627D;
+}
+
+QTabBar::tab:selected {
+    background: #FFFFFF;
+    color: #1B2433;
+}
+
+QTabBar::tab:hover {
+    background: #E7EDF9;
+}
+
+QTableWidget,
+QTreeWidget,
+QListWidget,
+QTableView {
+    background-color: #FFFFFF;
+    alternate-background-color: #F5F8FF;
+    border: 1px solid #CED6E6;
+    border-radius: 8px;
+    gridline-color: #D7DEEC;
+    selection-background-color: #2C6FD2;
+    selection-color: #FFFFFF;
+}
+
+QHeaderView::section {
+    background-color: #EEF2FA;
+    color: #4E5E7A;
+    border: none;
+    border-right: 1px solid #D2DAEA;
+    border-bottom: 1px solid #D2DAEA;
+    padding: 6px 8px;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 11px;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical {
+    background: #C4CEDF;
+    border-radius: 5px;
+    min-height: 24px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #AEBAD2;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 11px;
+    margin: 2px;
+}
+
+QScrollBar::handle:horizontal {
+    background: #C4CEDF;
+    border-radius: 5px;
+    min-width: 24px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #AEBAD2;
+}
+
+QScrollBar::add-line,
+QScrollBar::sub-line {
+    width: 0;
+    height: 0;
+    border: none;
+    background: none;
+}
+
+QGraphicsView {
+    background-color: #F6F8FD;
+    border: 1px solid #CED7E9;
+    border-radius: 10px;
+}
+
+QSplitter::handle {
+    background-color: #D7DEEC;
+}
+
+QToolTip {
+    color: #1D2534;
+    background-color: #FFFFFF;
+    border: 1px solid #AABBDD;
+    padding: 4px 6px;
+}

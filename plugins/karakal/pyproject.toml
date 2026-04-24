@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "karakal"
+version = "0.0.0"
+description = "Reserved Kraken plugin."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+karakal = "karakal.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["karakal", "karakal.*"]

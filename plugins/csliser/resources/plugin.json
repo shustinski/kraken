@@ -1,0 +1,9 @@
+{
+  "id": "csliser",
+  "display_name": "CSliser",
+  "description": "Reserved Kraken plugin.",
+  "version": "0.0.0",
+  "enabled": false,
+  "platforms": ["windows", "linux"],
+  "actions": ["get_capabilities"]
+}

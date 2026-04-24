@@ -1,0 +1,1 @@
+"""Kraken Hub package."""

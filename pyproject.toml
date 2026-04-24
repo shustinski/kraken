@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kraken"
+version = "0.1.0"
+description = "Kraken Hub and shared plugin runtime."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "PyQt6>=6.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-qt>=4.4",
+    "ruff>=0.6",
+]
+build = [
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+kraken-hub = "kraken_hub.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["kraken_core*", "kraken_hub*"]
+
+[tool.setuptools.package-data]
+kraken_hub = ["resources/*.json"]
+kraken_core = [
+    "resources/styles/*.qss",
+    "resources/styles/icons/*.svg",
+    "resources/icons/*",
+]
+
+[tool.uv.workspace]
+members = [
+    "plugins/neuralimage",
+    "plugins/contour",
+    "plugins/krona",
+    "plugins/csliser",
+    "plugins/karakal",
+]
+
+[tool.uv]
+environments = [
+    "sys_platform == 'win32' or sys_platform == 'linux'",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests", "plugins"]
+pythonpath = [
+    "src",
+    "plugins/neuralimage/src",
+    "plugins/contour/src",
+    "plugins/krona/src",
+    "plugins/csliser/src",
+    "plugins/karakal/src",
+]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"

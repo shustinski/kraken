@@ -1,0 +1,116 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuralimage"
+dynamic = ["version"]
+description = "Desktop and web tooling for neural IC image segmentation, training, and recognition."
+requires-python = ">=3.13"
+dependencies = [
+    "kraken",
+    "numpy>=1.26",
+    "Pillow>=10.0",
+    "PyQt6>=6.6",
+    "pyqtgraph>=0.13",
+    "opencv-python>=4.8",
+    "torch==2.8.0+cu128",
+    "torchvision==0.23.0+cu128",
+    "timm>=1.0",
+    "pyinstaller>=6.0",
+]
+
+[tool.uv.sources]
+kraken = { workspace = true }
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[tool.uv]
+ environments = [
+     "sys_platform == 'win32' or sys_platform == 'linux'",
+ ]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[project.optional-dependencies]
+web = [
+    "django>=5.1",
+    "ldap3>=2.9",
+]
+monitoring = [
+    "psutil>=5.9",
+]
+build = [
+    "Cython>=3.0",
+    "huggingface_hub>=0.30",
+    "networkx>=3.2",
+    "pyinstaller>=6.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "django>=5.1",
+    "ldap3>=2.9",
+    "psutil>=5.9",
+    "Cython>=3.0",
+    "huggingface_hub>=0.30",
+    "networkx>=3.2",
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+neuralimage = "neuralimage.main:main"
+neuralimage-manage = "neuralimage.manage:main"
+neuralimage-config = "neuralimage.main_code_version:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = { attr = "neuralimage.lib.version.APP_VERSION" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = [
+    "neuralimage",
+    "neuralimage.*",
+]
+exclude = [
+    "tests",
+    "tests.*",
+]
+
+[tool.setuptools.package-data]
+neuralimage = [
+    "webui/templates/**/*.html",
+    "webui/static/**/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+[tool.setuptools.data-files]
+"resources" = [
+    "resources/*.json",
+    "resources/*.md",
+]
+"_internal" = [
+    "resources/internal/icon.ico",
+    "resources/internal/icon.png",
+    "resources/internal/settings_icon.png",
+]
+"_internal/resources" = [
+    "resources/internal/resources/*.qss",
+]
+"_internal/resources/icons" = [
+    "resources/internal/resources/icons/*.svg",
+]

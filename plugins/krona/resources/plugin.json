@@ -1,0 +1,13 @@
+{
+  "id": "krona",
+  "display_name": "Krona",
+  "description": "EDIF and netlist viewer.",
+  "version": "0.1.0",
+  "enabled": true,
+  "platforms": ["windows", "linux"],
+  "executables": {
+    "windows": {"command": ["python", "-m", "krona"]},
+    "linux": {"command": ["python", "-m", "krona"]}
+  },
+  "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
+}

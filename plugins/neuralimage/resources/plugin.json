@@ -1,0 +1,13 @@
+{
+  "id": "neuralimage",
+  "display_name": "NeuralImage",
+  "description": "Neural IC image segmentation, training, and recognition.",
+  "version": "6.2.0",
+  "enabled": true,
+  "platforms": ["windows", "linux"],
+  "executables": {
+    "windows": {"command": ["python", "-m", "neuralimage"]},
+    "linux": {"command": ["python", "-m", "neuralimage"]}
+  },
+  "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
+}

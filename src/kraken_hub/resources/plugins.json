@@ -21,8 +21,8 @@
       "enabled": true,
       "platforms": ["windows", "linux"],
       "executables": {
-        "windows": {"command": ["python", "-m", "contour"]},
-        "linux": {"command": ["python", "-m", "contour"]}
+        "windows": {"command": ["python", "__main__.py"]},
+        "linux": {"command": ["python", "__main__.py"]}
       },
       "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
     },

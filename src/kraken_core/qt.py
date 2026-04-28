@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 
-from .styles import shared_icon_path
+from .styles import plugin_icon_path, shared_icon_path
 
 
 def configure_application_identity(app, *, app_id: str, icon_name: str = "kraken") -> None:
@@ -27,6 +27,10 @@ def configure_application_identity(app, *, app_id: str, icon_name: str = "kraken
 def resolve_icon_path(icon_name: str):
     suffixes = (".ico", ".png") if os.name == "nt" else (".png", ".ico")
     for suffix in suffixes:
+        if icon_name != "kraken":
+            candidate = plugin_icon_path(icon_name, suffix=suffix)
+            if candidate.exists():
+                return candidate
         candidate = shared_icon_path(icon_name, suffix=suffix)
         if candidate.exists():
             return candidate

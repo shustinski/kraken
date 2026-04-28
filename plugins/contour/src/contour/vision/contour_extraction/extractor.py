@@ -25,6 +25,7 @@ from ..schemas import (
     RotatedBox,
     SemPolarity,
 )
+from ...contour_extractor import estimate_effective_polygon_width_px
 from .hierarchy import build_hierarchy_from_mask
 from .sem_filled_mask import FilledMaskResult, FilledMaskSegmentationConfig, extract_filled_mask
 
@@ -58,6 +59,7 @@ class SemContourConfig:
     max_hierarchy_depth: int | None = None
     max_hole_area_ratio: float | None = None
     box_from_holes: bool = False
+    min_polygon_width_px: float = 0.0
 
     @classmethod
     def from_legacy_settings(cls, settings: Any) -> SemContourConfig:
@@ -93,6 +95,7 @@ class SemContourConfig:
             min_hierarchy_depth=max(0, int(getattr(settings, "min_hierarchy_depth", 0) or 0)),
             max_hierarchy_depth=_none_if_zero(getattr(settings, "max_hierarchy_depth", None), int),
             max_hole_area_ratio=_none_if_zero(getattr(settings, "max_hole_area_ratio", None), float),
+            min_polygon_width_px=max(0.0, float(getattr(settings, "min_polygon_width_px", 0.0) or 0.0)),
         )
 
 
@@ -182,6 +185,15 @@ class SemContourExtractor:
             if self.config.max_hole_area_ratio is not None and component.is_hole and component.parent_id is not None:
                 parent_area = area_by_id.get(component.parent_id, 0.0)
                 if parent_area > 0.0 and component.area / parent_area > self.config.max_hole_area_ratio:
+                    continue
+            if self.config.min_polygon_width_px > 0.0 and len(component.points) >= 3:
+                zero = np.zeros((image_height, image_width), dtype=np.uint8)
+                ctr = np.array(
+                    [[int(round(p[0])), int(round(p[1]))] for p in component.points],
+                    dtype=np.int32,
+                ).reshape(-1, 1, 2)
+                w_est, _ = estimate_effective_polygon_width_px(zero, ctr)
+                if w_est < float(self.config.min_polygon_width_px):
                     continue
             kept.append(replace(component, score=1.0, source_strategy="sem_filled_mask"))
         return kept

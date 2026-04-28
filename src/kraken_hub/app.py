@@ -58,7 +58,11 @@ def build_launch_command(plugin: PluginMetadata, *, root: Path | None = None) ->
         return [str(Path(executable.path).expanduser())]
     plugin_root = (root or workspace_root()) / "plugins" / plugin.id
     if plugin_root.exists() and shutil.which("uv"):
+        if (plugin_root / "__main__.py").is_file():
+            return ["uv", "run", "python", "__main__.py"]
         return ["uv", "run", "python", "-m", plugin.id]
+    if plugin_root.exists() and (plugin_root / "__main__.py").is_file():
+        return [sys.executable, str(plugin_root / "__main__.py")]
     if executable.command:
         return [part.format(workspace=str(root or workspace_root()), plugin_id=plugin.id) for part in executable.command]
     return [sys.executable, "-m", plugin.id]

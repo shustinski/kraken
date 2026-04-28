@@ -88,6 +88,13 @@ EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
         "Фильтр по заполненности bbox. Больше значение оставляет объекты, лучше заполняющие свой прямоугольник.",
         "Bounding-box fill filter. Higher values keep objects that fill their box better.",
     ),
+    "min_polygon_width": (
+        "Минимальная допустимая ширина полигона в пикселях. "
+        "Позволяет отсекать слишком тонкие линии, шумовые артефакты и ложные узкие сегменты. "
+        "Если значение слишком маленькое — будет больше ложных полигонов. "
+        "Если слишком большое — можно потерять реальные узкие дорожки или контакты.",
+        "Minimum allowed polygon width in pixels; 0 disables the filter. Uses a robust local-thickness estimate.",
+    ),
     "via_white_threshold": (
         "Добавляет к маске пиксели ярче заданного порога.",
         "Adds pixels brighter than the selected threshold to the mask.",
@@ -398,6 +405,13 @@ EXTRACTION_HELP_TEXTS.update(
         "min_extent": (
             "Требуемая заполненность прямоугольника вокруг объекта. Чем выше значение, тем плотнее объект должен занимать свой bbox.",
             "Required fill of the object's bounding rectangle. Higher values require the object to occupy its box more tightly.",
+        ),
+        "min_polygon_width": (
+            "Минимальная допустимая ширина полигона в пикселях. "
+            "Позволяет отсекать слишком тонкие линии, шумовые артефакты и ложные узкие сегменты. "
+            "Если значение слишком маленькое — будет больше ложных полигонов. "
+            "Если слишком большое — можно потерять реальные узкие дорожки или контакты.",
+            "Minimum allowed polygon width in pixels; 0 disables the filter. Uses a robust local-thickness estimate.",
         ),
         "via_white_threshold": (
             "Добавляет в маску via пиксели светлее заданного порога. Включайте для поиска светлых переходных отверстий.",
@@ -920,6 +934,10 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
     "selected_color": (
         "Цвет полигона, который сейчас выбран в редакторе.",
         "Color of the polygon currently selected in the editor.",
+    ),
+    "conductor_hover_highlight": (
+        "Цвет контура проводника при наведении указателя на проводник, отверстие в нём или переходное отверстие (via).",
+        "Outline color used for the trace when the pointer hovers the trace, a hole inside it, or a via.",
     ),
     "vertex_color": (
         "Цвет точек-вершин, которые показываются на полигонах.",

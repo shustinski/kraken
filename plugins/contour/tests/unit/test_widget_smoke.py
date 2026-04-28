@@ -67,6 +67,29 @@ class WidgetSmokeTests(unittest.TestCase):
             widget.close()
             widget.deleteLater()
 
+    def test_widget_uses_compact_resizable_layout(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            self.assertLessEqual(widget.main_splitter.widget(0).minimumWidth(), 300)
+            self.assertLessEqual(widget.right_tabs.minimumWidth(), 220)
+            self.assertTrue(hasattr(widget, "editor_toolbar_scroll"))
+            self.assertLessEqual(widget.editor_toolbar_scroll.minimumWidth(), 180)
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_heuristic_via_detector_uses_automatic_preview_controls(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            self.assertFalse(hasattr(widget, "run_bright_via_button"))
+            self.assertEqual(widget.heuristic_background_sigma_spin.value(), 25.0)
+            settings = widget._current_contour_settings()
+            self.assertEqual(settings.heuristic_background_sigma, 25.0)
+            self.assertEqual(settings.via_search_mode, "heuristic")
+        finally:
+            widget.close()
+            widget.deleteLater()
+
     def test_public_api_matches_golden_snapshot(self) -> None:
         widget = PolygonExtractionWidget()
         try:

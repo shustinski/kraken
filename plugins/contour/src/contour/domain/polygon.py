@@ -17,6 +17,8 @@ class PolygonData:
     area: float = 0.0
     perimeter: float = 0.0
     bbox: tuple[int, int, int, int] = (0, 0, 0, 0)
+    #: Metal recovery / debug only; not written to CIF by default.
+    reject_reason: str = ""
 
     def clone(self) -> PolygonData:
         return PolygonData(
@@ -29,6 +31,7 @@ class PolygonData:
             area=float(self.area),
             perimeter=float(self.perimeter),
             bbox=(int(self.bbox[0]), int(self.bbox[1]), int(self.bbox[2]), int(self.bbox[3])),
+            reject_reason=str(self.reject_reason),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,6 +45,7 @@ class PolygonData:
             "area": float(self.area),
             "perimeter": float(self.perimeter),
             "bbox": [int(value) for value in self.bbox],
+            **({"reject_reason": self.reject_reason} if str(self.reject_reason).strip() else {}),
         }
 
     @classmethod
@@ -61,4 +65,5 @@ class PolygonData:
             area=float(payload.get("area", 0.0)),
             perimeter=float(payload.get("perimeter", 0.0)),
             bbox=bbox,
+            reject_reason=str(payload.get("reject_reason", "") or ""),
         )

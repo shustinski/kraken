@@ -11,9 +11,13 @@ COMPACT_UI_STYLE = """
 #polygonExtractionWidget QGroupBox {
     font-size: 12px;
 }
+#polygonExtractionWidget QGroupBox {
+    margin-top: 4px;
+    padding-top: 4px;
+}
 #polygonExtractionWidget QPushButton {
-    min-height: 28px;
-    padding: 4px 10px;
+    min-height: 26px;
+    padding: 3px 8px;
     font-size: 12px;
 }
 #polygonExtractionWidget QToolButton {
@@ -23,13 +27,13 @@ COMPACT_UI_STYLE = """
 #polygonExtractionWidget QComboBox,
 #polygonExtractionWidget QSpinBox,
 #polygonExtractionWidget QDoubleSpinBox {
-    min-height: 26px;
-    padding: 2px 6px;
+    min-height: 24px;
+    padding: 1px 4px;
     font-size: 12px;
 }
 #polygonExtractionWidget QTabBar::tab {
-    min-height: 24px;
-    padding: 4px 10px;
+    min-height: 22px;
+    padding: 3px 8px;
     font-size: 12px;
 }
 #polygonExtractionWidget QListWidget {

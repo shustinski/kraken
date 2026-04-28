@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 
+import kraken_hub.app as hub_app
 from kraken_core.ipc import ActionRegistry, ActionRequest
-from kraken_core.plugins import load_plugin_catalog
+from kraken_core.plugins import PluginMetadata, load_plugin_catalog
+from kraken_core.qt import resolve_icon_path
+from kraken_core.styles import plugin_icon_path, shared_icon_path
 from kraken_core.updater import compare_versions, parse_update_payload, select_platform_release
 
 
@@ -53,3 +56,27 @@ def test_action_registry_reports_invalid_action():
 
     assert response.ok is False
     assert "Unsupported action" in response.message
+
+
+def test_plugin_icons_live_in_plugin_resources():
+    contour_icon = plugin_icon_path("contour", suffix=".png")
+    krona_icon = plugin_icon_path("krona", suffix=".png")
+
+    assert contour_icon.exists()
+    assert krona_icon.exists()
+    assert "plugins" in contour_icon.parts
+    assert "plugins" in krona_icon.parts
+    assert not shared_icon_path("contour", suffix=".png").exists()
+    assert not shared_icon_path("krona", suffix=".png").exists()
+    assert resolve_icon_path("contour") == plugin_icon_path("contour", suffix=".ico")
+
+
+def test_hub_prefers_root_plugin_launcher(tmp_path, monkeypatch):
+    plugin_root = tmp_path / "plugins" / "contour"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "__main__.py").write_text("print('contour')\n", encoding="utf-8")
+    monkeypatch.setattr(hub_app.shutil, "which", lambda name: "uv" if name == "uv" else None)
+
+    command = hub_app.build_launch_command(PluginMetadata(id="contour", display_name="Contour"), root=tmp_path)
+
+    assert command == ["uv", "run", "python", "__main__.py"]

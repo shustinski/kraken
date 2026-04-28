@@ -8,18 +8,17 @@ project_root = Path(SPECPATH).resolve().parent.parent
 block_cipher = None
 
 added_files = [
-    (str(project_root / "resources" / "icons" / "app_icon.ico"), "resources/icons"),
+    (str(project_root / "resources" / "icons" / "krona.ico"), "plugins/krona/resources/icons"),
+    (str(project_root / "resources" / "icons" / "krona.png"), "plugins/krona/resources/icons"),
+    (str(project_root / "resources" / "icons" / "app_icon.ico"), "plugins/krona/resources/icons"),
     (str(project_root / "src" / "krona" / "presentation" / "qt" / "ui_strings.json"), "krona/presentation/qt"),
     (str(project_root / "src" / "krona" / "presentation" / "qt" / "ui_strings_ru.json"), "krona/presentation/qt"),
-    (str(project_root / "src" / "krona" / "presentation" / "qt" / "theme" / "dark.qss"), "krona/presentation/qt/theme"),
-    (str(project_root / "src" / "krona" / "presentation" / "qt" / "theme" / "light.qss"), "krona/presentation/qt/theme"),
 ]
 added_files += collect_data_files(
     "kraken_core",
     includes=[
         "resources/styles/*.qss",
         "resources/styles/icons/*",
-        "resources/icons/*",
     ],
 )
 
@@ -57,7 +56,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(project_root / "resources" / "icons" / "app_icon.ico"),
+    icon=str(project_root / "resources" / "icons" / "krona.ico"),
 )
 
 coll = COLLECT(

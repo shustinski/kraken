@@ -32,7 +32,7 @@ from ..commands import (
     DeleteVertexCommand,
 )
 from ..domain import PolygonData, compute_polygon_metrics
-from ..graphics_items import EditablePolygonItem, VertexHandleItem
+from ..graphics_items import EditablePolygonItem, VertexHandleItem, _display_path_for_polygon
 from ..i18n import active_language, tr
 from .geometry import (
     _bbox_from_points,
@@ -42,10 +42,13 @@ from .geometry import (
     _distance_to_segment,
     _draw_stroke_on_mask,
     _fill_polygon_on_mask,
+    is_valid_closed_polygon_ring,
+    is_valid_open_polyline_last_edge,
     _measurement_label_position,
     _polygon_data_rect,
     _polygons_from_mask,
     _render_polygon_collection_on_mask,
+    resolve_conductor_hover_target_id,
     _smallest_containing_polygon,
     _stable_object_color,
     _union_bbox,
@@ -68,6 +71,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._selected_polygon_ids: set[int] = set()
         self._next_polygon_id = 1
         self._polygon_overlays_visible = True
+        self._polygon_category_visible: dict[str, bool] = {}
 
         self._image_item = QGraphicsPixmapItem()
         self._image_item.setZValue(0)
@@ -77,6 +81,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._neighbor_frame_paths: dict[QGraphicsPixmapItem, str] = {}
         self._neighbor_grid_bounds: QRectF | None = None
         self._debug_candidate_items: list[QGraphicsPathItem | QGraphicsSimpleTextItem] = []
+        self._metal_overlay_items: list[QGraphicsPathItem] = []
         self._extra_layer_items: list[QGraphicsPixmapItem] = []
         self._gradient_overlay_item = QGraphicsPixmapItem()
         self._gradient_overlay_item.setZValue(0.9)
@@ -85,6 +90,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._gradient_overlay_item.hide()
         self._random_object_colors_enabled = False
         self._object_colors: dict[int, str] = {}
+        self._hover_conductor_polygon_id: int | None = None
 
         self._main_frame_item = QGraphicsPathItem()
         self._main_frame_item.setZValue(2)
@@ -177,6 +183,7 @@ class PolygonEditorScene(QGraphicsScene):
             self._main_frame_item.hide()
             self.clear_neighbor_frames()
             self.set_debug_candidates([])
+            self.set_metal_overlays({}, {})
             self._update_scene_rect()
             return
         pixmap = QPixmap.fromImage(cv_to_qimage(image))
@@ -247,6 +254,66 @@ class PolygonEditorScene(QGraphicsScene):
         self._debug_candidate_items.clear()
         _ = candidates
 
+    def set_metal_overlays(
+        self,
+        layers: dict[str, list[PolygonData]],
+        visibility: dict[str, bool],
+    ) -> None:
+        for item in self._metal_overlay_items:
+            self.removeItem(item)
+        self._metal_overlay_items.clear()
+        layer_styles: list[tuple[str, str, bool]] = [
+            ("rejected", "#EF4444", False),
+            ("suspicious", "#EAB308", False),
+            ("border", "#3B82F6", False),
+            ("wide_pairs_suspicious", "#EAB308", True),
+            ("wide_pairs_rejected", "#DC2626", True),
+        ]
+        z = 2.2
+        _ru = self._ui_language == "ru"
+        _layer_tip = {
+            "rejected": "Отклонён" if _ru else "Rejected",
+            "suspicious": "Сомнительный" if _ru else "Suspicious",
+            "border": "У границы кадра" if _ru else "Border touch",
+            "wide_pairs_suspicious": "Широкий проводник (сомнительно)" if _ru else "Wide trace (suspicious)",
+            "wide_pairs_rejected": "Широкий проводник (отклонён)" if _ru else "Wide trace (rejected)",
+        }
+        for key, color_hex, dashed in layer_styles:
+            if not visibility.get(key, False):
+                continue
+            for poly in layers.get(key) or []:
+                path_item = QGraphicsPathItem(_display_path_for_polygon(poly))
+                path_item.setZValue(z)
+                c = QColor(color_hex)
+                pen = QPen(c, 1.75)
+                pen.setCosmetic(True)
+                if dashed:
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                path_item.setPen(pen)
+                path_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                reason = str(getattr(poly, "reject_reason", "") or "")
+                cap = _layer_tip.get(key, key)
+                tip_lines = [cap]
+                if reason.strip():
+                    tip_lines.append(reason)
+                path_item.setToolTip("\n".join(tip_lines))
+                path_item.setData(int(Qt.ItemDataRole.UserRole), key)
+                path_item.setData(int(Qt.ItemDataRole.UserRole) + 1, reason)
+                self.addItem(path_item)
+                self._metal_overlay_items.append(path_item)
+
+    def metal_overlay_pick(self, scene_pos: QPointF) -> tuple[str, str] | None:
+        """Return ``(layer_key, reject_reason)`` for the topmost metal overlay under ``scene_pos``."""
+
+        for item in self.items(scene_pos):
+            if item in self._metal_overlay_items:
+                layer = item.data(int(Qt.ItemDataRole.UserRole))
+                if layer is None:
+                    continue
+                reason = item.data(int(Qt.ItemDataRole.UserRole) + 1)
+                return (str(layer), str(reason or ""))
+        return None
+
     def set_gradient_overlay(self, image, opacity: float = 0.45) -> None:
         if image is None:
             self._gradient_overlay_item.setPixmap(QPixmap())
@@ -283,6 +350,9 @@ class PolygonEditorScene(QGraphicsScene):
     def set_ui_language(self, language: str | None) -> None:
         self._ui_language = active_language(language)
 
+    def warn_invalid_polygon_geometry(self) -> None:
+        self.logRequested.emit(tr("polygon_invalid_geometry_log", language=self._ui_language))
+
     def set_display_settings(self, settings: DisplaySettings) -> None:
         self._display_settings = settings
         self._refresh_all_items()
@@ -314,8 +384,11 @@ class PolygonEditorScene(QGraphicsScene):
 
     def set_polygon_overlays_visible(self, visible: bool) -> None:
         self._polygon_overlays_visible = bool(visible)
-        for item in self._polygon_items.values():
-            item.setVisible(self._polygon_overlays_visible)
+        for polygon_id, item in self._polygon_items.items():
+            poly = self._polygons[polygon_id]
+            cat = str(getattr(poly, "category", "") or "")
+            vis = self._polygon_category_visible.get(cat, True)
+            item.setVisible(self._polygon_overlays_visible and vis)
         self._pending_path_item.setVisible(self._polygon_overlays_visible)
         self._preview_rect_item.setVisible(self._polygon_overlays_visible)
 
@@ -331,6 +404,7 @@ class PolygonEditorScene(QGraphicsScene):
             self.removeItem(item)
         self._polygon_items.clear()
         self._polygons.clear()
+        self._hover_conductor_polygon_id = None
         self._selected_polygon_id = None
         self._selected_polygon_ids.clear()
         self._next_polygon_id = 1
@@ -343,6 +417,25 @@ class PolygonEditorScene(QGraphicsScene):
         self._refresh_all_items()
         self.polygonsChanged.emit()
         self.activePolygonChanged.emit(self._selected_polygon_id)
+
+    def sync_conductor_hover_highlight(self, scene_pos: QPointF) -> None:
+        if not self._polygon_overlays_visible:
+            self._set_hover_conductor_polygon_id(None)
+            return
+        underneath = self.polygon_at(scene_pos)
+        target_id = resolve_conductor_hover_target_id(self._polygons, underneath)
+        self._set_hover_conductor_polygon_id(target_id)
+
+    def clear_conductor_hover_highlight(self) -> None:
+        self._set_hover_conductor_polygon_id(None)
+
+    def _set_hover_conductor_polygon_id(self, conductor_id: int | None) -> None:
+        if conductor_id is not None and conductor_id not in self._polygons:
+            conductor_id = None
+        if conductor_id == self._hover_conductor_polygon_id:
+            return
+        self._hover_conductor_polygon_id = conductor_id
+        self._refresh_all_items()
 
     def selected_polygon_id(self) -> int | None:
         return self._selected_polygon_id
@@ -498,7 +591,15 @@ class PolygonEditorScene(QGraphicsScene):
         if polygon_id not in self._polygons:
             return False
         insert_index = self._nearest_segment_insert_index(polygon_id, scene_pos)
-        self.undo_stack.push(AddVertexCommand(self, polygon_id, insert_index, (scene_pos.x(), scene_pos.y())))
+        new_point = (float(scene_pos.x()), float(scene_pos.y()))
+        points = self.polygon_points(polygon_id)
+        insert_at = max(0, min(len(points), insert_index))
+        trial = list(points)
+        trial.insert(insert_at, new_point)
+        if not is_valid_closed_polygon_ring(trial):
+            self.warn_invalid_polygon_geometry()
+            return False
+        self.undo_stack.push(AddVertexCommand(self, polygon_id, insert_index, new_point))
         self.select_polygon(polygon_id)
         return True
 
@@ -536,6 +637,10 @@ class PolygonEditorScene(QGraphicsScene):
             and hypot(point[0] - self._pending_points[-1][0], point[1] - self._pending_points[-1][1]) < 1.0
         ):
             return
+        trial = [*self._pending_points, point]
+        if not is_valid_open_polyline_last_edge(trial):
+            self.warn_invalid_polygon_geometry()
+            return
         self._pending_points.append(point)
         self._update_pending_path()
 
@@ -554,6 +659,9 @@ class PolygonEditorScene(QGraphicsScene):
     def finish_pending_polygon(self) -> bool:
         if len(self._pending_points) < 3:
             self.cancel_pending_polygon()
+            return False
+        if not is_valid_closed_polygon_ring(self._pending_points):
+            self.warn_invalid_polygon_geometry()
             return False
         area, perimeter, bbox = compute_polygon_metrics(self._pending_points)
         polygon = PolygonData(
@@ -715,6 +823,9 @@ class PolygonEditorScene(QGraphicsScene):
     def subtract_pending_polygon(self) -> bool:
         if len(self._pending_points) < 3:
             self.cancel_pending_polygon()
+            return False
+        if not is_valid_closed_polygon_ring(self._pending_points):
+            self.warn_invalid_polygon_geometry()
             return False
         changed = self._subtract_shape_from_scene(points=self._pending_points, thickness=None, label="Erase polygon")
         self.cancel_pending_polygon()
@@ -936,13 +1047,32 @@ class PolygonEditorScene(QGraphicsScene):
 
     def _refresh_all_items(self) -> None:
         for polygon_id, item in self._polygon_items.items():
+            conductor_hover_highlight = (
+                self._hover_conductor_polygon_id is not None
+                and polygon_id == self._hover_conductor_polygon_id
+                and polygon_id not in self._selected_polygon_ids
+            )
             item.update_from_polygon(
                 self._polygons[polygon_id],
                 self._display_settings,
                 selected=polygon_id in self._selected_polygon_ids,
                 cutout_polygons=self._cutout_polygons_for(polygon_id),
                 custom_color=self._object_color_for(polygon_id),
+                conductor_hover_highlight=conductor_hover_highlight,
             )
+            poly = self._polygons[polygon_id]
+            cat = str(getattr(poly, "category", "") or "")
+            vis = self._polygon_category_visible.get(cat, True)
+            item.setVisible(bool(vis) and self._polygon_overlays_visible)
+
+    def set_polygon_category_visible(self, category: str, visible: bool) -> None:
+        self._polygon_category_visible[str(category)] = bool(visible)
+        for polygon_id, polygon in self._polygons.items():
+            if str(getattr(polygon, "category", "") or "") != str(category):
+                continue
+            item = self._polygon_items.get(polygon_id)
+            if item is not None:
+                item.setVisible(bool(visible) and self._polygon_overlays_visible)
 
     def _object_color_for(self, polygon_id: int) -> str | None:
         if not self._random_object_colors_enabled:
@@ -1111,6 +1241,8 @@ class PolygonEditorScene(QGraphicsScene):
     def _remove_polygon_internal(self, polygon_id: int, emit_signal: bool = True, refresh: bool = True) -> None:
         item = self._polygon_items.pop(polygon_id, None)
         self._polygons.pop(polygon_id, None)
+        if self._hover_conductor_polygon_id == polygon_id:
+            self._hover_conductor_polygon_id = None
         if item is not None:
             self.removeItem(item)
         if self._selected_polygon_id == polygon_id:

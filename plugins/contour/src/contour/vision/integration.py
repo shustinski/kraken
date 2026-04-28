@@ -10,7 +10,7 @@ import numpy as np
 from ..domain import PolygonData, compute_polygon_metrics
 from .contour_extraction import SemContourConfig, SemContourExtractor
 from .io_normalize import make_image_ref, to_gray_u8
-from .schemas import ContourExtractionOutput, HierarchicalComponent, OutputShapeKind, ViaDetectionOutput, ViaHit
+from .schemas import AppMode, ContourExtractionOutput, HierarchicalComponent, OutputShapeKind, ViaDetectionOutput, ViaHit
 from .via import CompositeViaDetector, ViaRunConfig
 
 
@@ -50,6 +50,11 @@ def run_via_detection(
     legacy_settings: Any,
 ) -> ViaDetectionOutput:
     gray = to_gray_u8(image)
+    from ..application.processing import ALGORITHM_BACKEND_SEM
+
+    if str(getattr(legacy_settings, "algorithm_backend", "")).lower() == ALGORITHM_BACKEND_SEM:
+        return _run_sem_via_detection(gray, image, image_path, output_kind, legacy_settings)
+
     detector = CompositeViaDetector(
         make_image_ref(image_path, gray),
         ViaRunConfig(
@@ -58,6 +63,53 @@ def run_via_detection(
         ),
     )
     return detector.run(gray, shape=output_kind, legacy_settings=legacy_settings)
+
+
+def _run_sem_via_detection(
+    gray: Any,
+    image: Any,
+    image_path: str | None,
+    output_kind: OutputShapeKind,
+    legacy_settings: Any,
+) -> ViaDetectionOutput:
+    """SEM backend: primary multi-cue detector, or template-only when configured."""
+
+    from ..application.processing import VIA_SEARCH_MODE_TEMPLATE, normalize_via_search_mode
+    from .via.orchestrator import _detection_to_hit
+    from .via.primary_sem import sem_primary_hits
+    from .via_detection.settings_bridge import template_config_from_settings
+    from .via_detection.template_detector import detect_vias_template
+
+    image_ref = make_image_ref(image_path, gray)
+    mode = normalize_via_search_mode(getattr(legacy_settings, "via_search_mode", ""))
+    log: list[str] = []
+
+    if mode == VIA_SEARCH_MODE_TEMPLATE:
+        tcfg = template_config_from_settings(legacy_settings)
+        if tcfg.templates:
+            result = detect_vias_template(gray, tcfg)
+            hits = [_detection_to_hit(d, "legacy_template") for d in result.accepted]
+            dbg: dict[str, Any] = {**dict(result.debug_images), "parameters": dict(result.parameters_snapshot)}
+            return ViaDetectionOutput(
+                image=image_ref,
+                mode=AppMode.VIA,
+                output_kind=output_kind,
+                hits=hits,
+                selected_strategy="legacy_template",
+                attempt_log=[f"template: n_templates={len(tcfg.templates)}"],
+                debug=dbg,
+            )
+
+    hits = sem_primary_hits(image, legacy_settings, log)
+    return ViaDetectionOutput(
+        image=image_ref,
+        mode=AppMode.VIA,
+        output_kind=output_kind,
+        hits=hits,
+        selected_strategy="sem_primary",
+        attempt_log=log,
+        debug={},
+    )
 
 
 def contour_output_to_polygons(output: ContourExtractionOutput, *, category: str = "conductor") -> list[PolygonData]:

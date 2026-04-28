@@ -33,7 +33,14 @@ version = { attr = "krona.version.__version__" }
 [tool.setuptools.package-data]
 krona = [
     "presentation/qt/*.json",
-    "presentation/qt/theme/*.qss",
+]
+
+[tool.setuptools.data-files]
+"plugins/krona/resources/icons" = [
+    "resources/icons/app_icon.ico",
+    "resources/icons/krona.ico",
+    "resources/icons/krona.png",
+    "resources/icons/window_icon.png",
 ]
 
 [tool.pytest.ini_options]

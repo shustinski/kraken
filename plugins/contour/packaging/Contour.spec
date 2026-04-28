@@ -5,7 +5,7 @@ from PyInstaller.utils.hooks import collect_data_files
 
 PROJECT_ROOT = Path(SPECPATH).resolve().parent.parent
 APP_NAME = "Contour"
-APP_ICON = PROJECT_ROOT.parents[1] / "src" / "kraken_core" / "resources" / "icons" / "contour.ico"
+APP_ICON = PROJECT_ROOT / "resources" / "icons" / "contour.ico"
 
 datas = collect_data_files(
     "contour",
@@ -18,13 +18,16 @@ datas += collect_data_files(
     includes=[
         "resources/styles/*.qss",
         "resources/styles/icons/*",
-        "resources/icons/*",
     ],
 )
+datas += [
+    (str(PROJECT_ROOT / "resources" / "icons" / "contour.ico"), "plugins/contour/resources/icons"),
+    (str(PROJECT_ROOT / "resources" / "icons" / "contour.png"), "plugins/contour/resources/icons"),
+]
 
 
 a = Analysis(
-    [str(PROJECT_ROOT / "src" / "contour" / "__main__.py")],
+    [str(PROJECT_ROOT / "__main__.py")],
     pathex=[str(PROJECT_ROOT / "src")],
     binaries=[],
     datas=datas,

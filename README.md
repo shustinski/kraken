@@ -71,13 +71,6 @@ Install root development tools, such as test and lint dependencies:
 uv sync --extra dev
 ```
 
-Run commands through the managed environment:
-
-```powershell
-uv run python -m kraken_hub --list
-uv run python -m kraken_hub
-```
-
 If `uv` warns that hardlinks are unavailable, use copy mode:
 
 ```powershell
@@ -109,39 +102,31 @@ dependency, so `uv sync` inside the plugin also installs the root
 
 ## Run
 
-From the repository root:
+**Hub (main app)** — from the repository root after `uv sync`:
 
 ```powershell
-uv run python -m kraken_hub --list
 uv run python -m kraken_hub
 ```
 
-Run a plugin from its own folder:
+`--list` lists registered plugins.
+
+**Plugins** — always from that plugin’s directory (separate `uv sync` per plugin the first time):
 
 ```powershell
-cd plugins\krona
-uv run python -m krona
-```
-
-Run a plugin from the repository root by adding the plugin source path:
-
-```powershell
-$env:PYTHONPATH = "src;plugins\krona\src"
-uv run python -m krona
-```
-
-Common plugin commands:
-
-```powershell
-cd plugins\neuralimage
-uv run python -m neuralimage --help
-
 cd plugins\contour
-uv run python -m contour --help
-
-cd plugins\krona
-uv run python -m krona --help
+uv sync
+uv run python -m contour
 ```
+
+Same pattern for `krona`, `neuralimage`, `csliser`, `karakal` (replace the folder and module name). Do not set `PYTHONPATH` by hand for normal use; `uv` installs dependencies.
+
+### Debugging in VS Code / Cursor
+
+1. In the repo root: `uv sync` (creates `.venv` with dependencies).
+2. **Python: Select Interpreter** → `.\.venv\Scripts\python.exe` (or `.venv/bin/python` on Linux/macOS), **not** `Program Files\Python...`.
+3. **Run and Debug** → **Kraken Hub** → F5. The launch config forces this `.venv` so it still works if the wrong interpreter is selected.
+
+If you see `No module named kraken_hub`, the global/system Python is being used. Use `uv run python -m kraken_hub` from the repo root, or select the project `.venv` as above.
 
 ## Build
 

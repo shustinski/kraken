@@ -112,7 +112,7 @@ def run_gui(plugins: list[PluginMetadata]) -> int:
     window.show()
     return app.exec()
 
-
+    
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="kraken-hub")
     parser.add_argument("--catalog", help="Path to plugins.json catalog.")

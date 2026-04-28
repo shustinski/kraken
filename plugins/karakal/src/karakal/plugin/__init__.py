@@ -1,0 +1,1 @@
+"""Karakal plugin package."""

@@ -51,11 +51,15 @@
     {
       "id": "karakal",
       "display_name": "Karakal",
-      "description": "Reserved Kraken plugin.",
-      "version": "0.0.0",
-      "enabled": false,
+      "description": "Validation gradient matrix viewer and metrics explorer.",
+      "version": "0.0.1",
+      "enabled": true,
       "platforms": ["windows", "linux"],
-      "actions": ["get_capabilities"]
+      "executables": {
+        "windows": {"command": ["python", "-m", "karakal"]},
+        "linux": {"command": ["python", "-m", "karakal"]}
+      },
+      "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
     }
   ]
 }

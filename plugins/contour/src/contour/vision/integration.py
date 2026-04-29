@@ -72,12 +72,16 @@ def _run_sem_via_detection(
     output_kind: OutputShapeKind,
     legacy_settings: Any,
 ) -> ViaDetectionOutput:
-    """SEM backend: primary multi-cue detector, or template-only when configured."""
+    """SEM backend: exactly one selected via detector, template or heuristic."""
 
-    from ..application.processing import VIA_SEARCH_MODE_TEMPLATE, normalize_via_search_mode
-    from .via.orchestrator import _detection_to_hit
-    from .via.primary_sem import sem_primary_hits
-    from .via_detection.settings_bridge import template_config_from_settings
+    from ..application.processing import (
+        VIA_SEARCH_MODE_HEURISTIC,
+        VIA_SEARCH_MODE_TEMPLATE,
+        normalize_via_search_mode,
+    )
+    from .via.orchestrator import _detection_to_hit, _result_debug
+    from .via_detection.heuristic_detector import detect_vias_heuristic
+    from .via_detection.settings_bridge import heuristic_config_from_settings, template_config_from_settings
     from .via_detection.template_detector import detect_vias_template
 
     image_ref = make_image_ref(image_path, gray)
@@ -86,29 +90,36 @@ def _run_sem_via_detection(
 
     if mode == VIA_SEARCH_MODE_TEMPLATE:
         tcfg = template_config_from_settings(legacy_settings)
-        if tcfg.templates:
-            result = detect_vias_template(gray, tcfg)
-            hits = [_detection_to_hit(d, "legacy_template") for d in result.accepted]
-            dbg: dict[str, Any] = {**dict(result.debug_images), "parameters": dict(result.parameters_snapshot)}
-            return ViaDetectionOutput(
-                image=image_ref,
-                mode=AppMode.VIA,
-                output_kind=output_kind,
-                hits=hits,
-                selected_strategy="legacy_template",
-                attempt_log=[f"template: n_templates={len(tcfg.templates)}"],
-                debug=dbg,
-            )
+        result = detect_vias_template(gray, tcfg)
+        hits = [_detection_to_hit(d, "template") for d in result.accepted]
+        dbg = _result_debug(result, "template")
+        return ViaDetectionOutput(
+            image=image_ref,
+            mode=AppMode.VIA,
+            output_kind=output_kind,
+            hits=hits,
+            selected_strategy="template",
+            attempt_log=[f"template: n_templates={len(tcfg.templates)} min_corr={tcfg.min_correlation:.3f}"],
+            debug=dbg,
+        )
 
-    hits = sem_primary_hits(image, legacy_settings, log)
+    if mode != VIA_SEARCH_MODE_HEURISTIC:
+        mode = VIA_SEARCH_MODE_HEURISTIC
+    hcfg = heuristic_config_from_settings(legacy_settings)
+    result = detect_vias_heuristic(gray, hcfg)
+    hits = [_detection_to_hit(d, "heuristic") for d in result.accepted]
+    dbg = _result_debug(result, "heuristic")
+    ad = hcfg.allowed_diameters()
+    log.append(f"heuristic: polar={hcfg.polarity!r}")
+    log.append(f"heuristic: diameters={ad[:12]!r}{'...' if len(ad) > 12 else ''}")
     return ViaDetectionOutput(
         image=image_ref,
         mode=AppMode.VIA,
         output_kind=output_kind,
         hits=hits,
-        selected_strategy="sem_primary",
+        selected_strategy="heuristic",
         attempt_log=log,
-        debug={},
+        debug=dbg,
     )
 
 

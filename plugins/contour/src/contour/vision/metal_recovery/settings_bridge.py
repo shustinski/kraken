@@ -70,7 +70,7 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         max_perimeter=max_perimeter,
         epsilon_simplify=max(0.0, float(getattr(settings, "epsilon", 2.0) or 2.0)),
         min_points=max(3, int(getattr(settings, "min_points", 4) or 4)),
-        min_polygon_angle_deg=max(0.0, float(getattr(settings, "min_polygon_angle", 30.0) or 30.0)),
+        min_polygon_angle_deg=max(0.0, float(getattr(settings, "min_polygon_angle", 0.0) or 0.0)),
         approximation_enabled=bool(getattr(settings, "metal_approximation_enabled", True)),
         retrieval_external_only=_normalize_hierarchy_mode(getattr(settings, "metal_hierarchy_mode", "full")),
         allowed_angles=_normalize_allowed_angles(getattr(settings, "metal_allowed_angles", "free")),

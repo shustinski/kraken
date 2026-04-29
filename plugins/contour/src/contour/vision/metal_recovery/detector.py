@@ -739,16 +739,16 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
         if n_vertices >= 2 and topo_pts[0] == topo_pts[-1]:
             n_vertices = max(0, n_vertices - 1)
 
-        angle_soft = bool(ang_ok and dev > config.angle_tolerance_deg * 0.65)
-        straight_soft = bool(
-            straight >= config.min_straightness * 0.85 and straight < config.min_straightness - 1e-4
-        )
+        angle_soft = bool(dev > config.angle_tolerance_deg * 0.65)
+        straight_soft = bool(straight < config.min_straightness - 1e-4)
         soft_suspicious = angle_soft or straight_soft
 
         reject_case = ""
         t_branch_score = 0
         if not valid:
             reject_case = topo_reason or "некорректный_контур"
+        elif n_vertices < max(3, int(config.min_points)):
+            reject_case = "мало_вершин"
         elif width_px + 1e-3 < config.min_width_px:
             reject_case = "ширина"
         elif config.max_width_px is not None and width_px > float(config.max_width_px) + 1e-3:
@@ -763,10 +763,6 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
             reject_case = "периметр"
         elif config.max_perimeter is not None and perimeter > float(config.max_perimeter) + 1e-3:
             reject_case = "периметр_макс"
-        elif straight + 1e-4 < config.min_straightness:
-            reject_case = "прямолинейность"
-        elif not ang_ok:
-            reject_case = "углы"
         elif not config.allow_t_junction:
             t_branch_score = _convex_branching_score(contour)
             if t_branch_score > 2:

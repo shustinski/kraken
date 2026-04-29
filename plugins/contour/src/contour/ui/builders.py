@@ -823,7 +823,7 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_min_final_score_spin.setRange(0.0, 100.0)
     self.bright_via_min_final_score_spin.setDecimals(1)
     self.bright_via_min_final_score_spin.setSingleStep(1.0)
-    self.bright_via_min_final_score_spin.setValue(45.0)
+    self.bright_via_min_final_score_spin.setValue(38.0)
     self.bright_via_show_rejected_checkbox = QCheckBox("Показывать отклонённые кандидаты")
     self.bright_via_show_rejected_checkbox.setChecked(True)
     self.bright_via_hard_asym_checkbox = QCheckBox("Жёстко фильтровать по асимметрии")

@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from contour.application.processing import ContourExtractionSettings
+from contour.application.processing import ALGORITHM_BACKEND_SEM, ContourExtractionSettings
 from contour.vision.integration import run_via_detection
 from contour.vision.schemas import OutputShapeKind
 from contour.vision.via.bright_tophat_dog import (
@@ -226,4 +226,31 @@ def test_heuristic_via_mode_integrates_with_via_output() -> None:
     )
 
     assert output.selected_strategy == "heuristic"
+    assert len(output.hits) >= 1
+
+
+def test_sem_backend_routes_heuristic_to_modern_detector() -> None:
+    """GUI via mode uses algorithm_backend=sem; heuristic must not fall back to sem_primary."""
+    image = _synthetic_bright_vias()
+    settings = ContourExtractionSettings(
+        algorithm_backend=ALGORITHM_BACKEND_SEM,
+        extraction_profile="vias",
+        object_type="via",
+        output_mode="box",
+        via_search_mode="heuristic",
+        bright_via_diameter_min=6,
+        bright_via_diameter_max=16,
+        bright_via_min_final_score=10.0,
+        heuristic_min_center_contrast=1.0,
+        heuristic_min_peak_prominence=1.0,
+        heuristic_min_compactness=0.01,
+    )
+    output = run_via_detection(
+        image,
+        image_path="synthetic.png",
+        output_kind=OutputShapeKind.AXIS_ALIGNED_BOX,
+        legacy_settings=settings,
+    )
+    assert output.selected_strategy == "heuristic"
+    assert any("heuristic: polar=" in line for line in output.attempt_log)
     assert len(output.hits) >= 1

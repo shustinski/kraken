@@ -1,0 +1,2 @@
+"""Pure CSliser domain logic."""
+

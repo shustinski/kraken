@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import multiprocessing as mp
 
-def main() -> None:
-    print("CSliser placeholder plugin is disabled.")
+from .application.cli import main
 
 
 if __name__ == "__main__":
+    mp.freeze_support()
     main()

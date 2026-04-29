@@ -6,6 +6,7 @@ from typing import Any
 from PyQt6.QtCore import QSize
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QMainWindow
+from kraken_core.theme import add_theme_menu, apply_app_theme
 
 from ..widget import PolygonExtractionWidget
 from .styles import resolve_style_path
@@ -48,6 +49,7 @@ class ContourMainView(QMainWindow):
         self._presenter: Any | None = None
         self._widget = PolygonExtractionWidget(self)
         self.setCentralWidget(self._widget)
+        add_theme_menu(self, initial_theme="dark", on_theme_changed=apply_app_theme)
         self._help_menu = self.menuBar().addMenu(self._widget.help_menu_title())
         self._widget.attach_help_menu(self._help_menu)
         _try_apply_app_icon(self)

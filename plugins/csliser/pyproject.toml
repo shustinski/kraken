@@ -4,15 +4,37 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "csliser"
-version = "0.0.0"
-description = "Reserved Kraken plugin."
+dynamic = ["version"]
+description = "Frame-based file copy, move, and cleanup tool."
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "kraken",
+    "PyQt6>=6.6",
+]
+
+[tool.uv.sources]
+kraken = { workspace = true }
 
 [project.scripts]
-csliser = "csliser.__main__:main"
+csliser = "csliser.application.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "csliser.__version__" }
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["csliser", "csliser.*"]
+
+[tool.setuptools.data-files]
+"plugins/csliser/resources/icons" = [
+    "resources/icons/csliser.ico",
+    "resources/icons/csliser.png",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"

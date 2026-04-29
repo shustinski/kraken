@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QSettings, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QWidgetAction,
 )
+from kraken_core.theme import apply_app_theme, normalize_theme
 
 from ..infra.services import ValidationGradientLiteSettingsService
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
@@ -374,6 +375,7 @@ class ValidationGradientExtendWidget(QWidget):
         super().__init__(parent)
         self.setObjectName(EXTEND_ROOT_OBJECT_NAME)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._theme = "dark"
         self.setStyleSheet(EXTEND_WIDGET_STYLESHEET)
         self._settings_service = ValidationGradientLiteSettingsService(QSettings(SETTINGS_ORG, SETTINGS_APP))
         language = self._settings_service.load_language()
@@ -647,7 +649,35 @@ class ValidationGradientExtendWidget(QWidget):
 
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()
+        theme_menu = self._menu_bar.addMenu("Тема")
+        theme_group = QActionGroup(self)
+        theme_group.setExclusive(True)
+        self._theme_action_group = theme_group
+        self._theme_dark_action = QAction("Темная", self)
+        self._theme_dark_action.setCheckable(True)
+        self._theme_dark_action.setData("dark")
+        self._theme_light_action = QAction("Светлая", self)
+        self._theme_light_action.setCheckable(True)
+        self._theme_light_action.setData("light")
+        for action in (self._theme_dark_action, self._theme_light_action):
+            theme_group.addAction(action)
+            theme_menu.addAction(action)
+        self._theme_dark_action.triggered.connect(lambda: self._apply_theme("dark"))
+        self._theme_light_action.triggered.connect(lambda: self._apply_theme("light"))
+        self._sync_theme_menu_checks()
         self._menu_bar.setCornerWidget(self.language_toggle_button, Qt.Corner.TopRightCorner)
+
+    def _apply_theme(self, theme: str) -> None:
+        self._theme = normalize_theme(theme)
+        apply_app_theme(self._theme)
+        self.setStyleSheet(EXTEND_WIDGET_STYLESHEET if self._theme == "dark" else "")
+        self._sync_theme_menu_checks()
+
+    def _sync_theme_menu_checks(self) -> None:
+        if hasattr(self, "_theme_dark_action"):
+            self._theme_dark_action.setChecked(self._theme == "dark")
+        if hasattr(self, "_theme_light_action"):
+            self._theme_light_action.setChecked(self._theme == "light")
 
     def _populate_layout_mode_combo(self, selected_mode: str | None) -> None:
         current = str(selected_mode or DEFAULT_MATRIX_LAYOUT_MODE)

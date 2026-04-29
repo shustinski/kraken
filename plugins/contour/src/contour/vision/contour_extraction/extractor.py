@@ -192,6 +192,7 @@ class SemContourExtractor:
                     [[int(round(p[0])), int(round(p[1]))] for p in component.points],
                     dtype=np.int32,
                 ).reshape(-1, 1, 2)
+                cv2.fillPoly(zero, [ctr], 255)
                 w_est, _ = estimate_effective_polygon_width_px(zero, ctr)
                 if w_est < float(self.config.min_polygon_width_px):
                     continue

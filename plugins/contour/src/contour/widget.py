@@ -2691,7 +2691,7 @@ class PolygonExtractionWidget(QWidget):
             self.bright_via_max_edge_likeness_spin.setValue(35.0)
             self.bright_via_max_line_likeness_spin.setValue(65.0)
             self.bright_via_nms_distance_spin.setValue(5)
-            self.bright_via_min_final_score_spin.setValue(45.0)
+            self.bright_via_min_final_score_spin.setValue(38.0)
             self.bright_via_show_rejected_checkbox.setChecked(True)
             self.bright_via_hard_asym_checkbox.setChecked(False)
             self.bright_via_hard_edge_checkbox.setChecked(False)
@@ -4662,7 +4662,7 @@ class PolygonExtractionWidget(QWidget):
         level = str(self.via_search_sensitivity_combo.currentData() or "medium")
         profiles = {
             "low": (99.5, 8.0, 55.0, 0.40, True, True, True, True),
-            "medium": (99.0, 6.0, 45.0, 0.30, False, False, False, False),
+            "medium": (99.0, 6.0, 38.0, 0.30, False, False, False, False),
             "high": (98.0, 4.0, 32.0, 0.22, False, False, False, False),
         }
         pct, bright, final, circ, ha, he, hl, _ = profiles.get(level, profiles["medium"])

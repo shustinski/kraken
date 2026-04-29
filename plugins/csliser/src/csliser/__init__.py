@@ -1,3 +1,3 @@
-"""CSliser placeholder plugin."""
+"""CSliser frame file selection and transfer plugin."""
 
-__version__ = "0.0.0"
+__version__ = "1.0.0"

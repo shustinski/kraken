@@ -13,7 +13,16 @@ def parse_diameter_list(text: str) -> list[int]:
     text = (text or "").strip()
     if not text:
         return []
-    parts = [p.strip() for p in text.replace(";", ",").split(",") if p.strip()]
+    normalized = text.replace(";", ",").replace("–", "-")
+    parts: list[str] = []
+    for chunk in normalized.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "-" not in chunk:
+            parts.extend(token.strip() for token in chunk.split() if token.strip())
+        else:
+            parts.append(chunk)
     out: list[int] = []
     for p in parts:
         if "-" in p:
@@ -51,7 +60,7 @@ class HeuristicViaDetectorConfig:
     """Sensitivity: higher recall vs precision via threshold mapping."""
     sensitivity: str = "medium"
     nms_distance: int = 5
-    min_final_score: float = 40.0
+    min_final_score: float = 38.0
     min_distance_between_peaks: int = 0  # 0 = derive from min diameter
     min_peak_grey: float = 0.0  # absolute floor on response map for a seed
     background_sigma: float = 25.0
@@ -62,8 +71,8 @@ class HeuristicViaDetectorConfig:
     bilateral_sigma_color: float = 32.0
     bilateral_sigma_space: float = 32.0
     # Hard reject / score gates
-    min_center_contrast: float = 6.0
-    min_peak_prominence: float = 4.0
+    min_center_contrast: float = 4.0
+    min_peak_prominence: float = 2.0
     min_compactness: float = 0.12
     max_elongation: float = 3.2
     line_penalty_scale: float = 1.0
@@ -79,10 +88,10 @@ class HeuristicViaDetectorConfig:
     w_line: float = 20.0
     w_border: float = 20.0
     # |D_eq - d_est| / d_est; D_eq = 2*sqrt(area/pi). Stricter when diameter_mode == "fixed".
-    size_tolerance_ratio: float = 0.30
-    size_tolerance_ratio_fixed: float = 0.18
+    size_tolerance_ratio: float = 0.36
+    size_tolerance_ratio_fixed: float = 0.26
     # Reject if |centroid - seed| exceeds this fraction of d_est (wrong CC)
-    max_center_drift_ratio: float = 0.55
+    max_center_drift_ratio: float = 0.72
 
     def effective_size_tolerance(self) -> float:
         return float(

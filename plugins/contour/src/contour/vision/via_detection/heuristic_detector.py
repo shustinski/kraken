@@ -110,6 +110,7 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
         if best is not None:
             dets.append(best)
 
+    scored_count = len(dets)
     dets = [d for d in dets if d.reject_reason is None or (d.reject_reason and "hard" in d.reject_reason)]
     dets = _dedupe_by_score(dets, min_dist=1.0)
     dets.sort(key=lambda d: d.score, reverse=True)
@@ -144,7 +145,17 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
         rejected=hard,
         below_threshold=below,
         debug_images=dbg,
-        parameters_snapshot={**snap0, "candidates": len(dets), "sensitivity": sens},
+        parameters_snapshot={
+            **snap0,
+            "raw_seed_count": len(raw_seeds),
+            "scored_candidate_count": scored_count,
+            "candidate_count_after_dedupe": len(dets),
+            "candidate_count_after_nms": len(after),
+            "accepted_count": len(accepted),
+            "below_threshold_count": len(below),
+            "hard_rejected_count": len(hard),
+            "sensitivity": sens,
+        },
     )
 
 
@@ -176,9 +187,9 @@ def _normalize01_to_u8(a: np.ndarray) -> np.ndarray:
 def _sensitivity_map(s: str) -> dict[str, float]:
     t = (s or "medium").strip().lower()
     if t in {"low", "низ", "низкая"}:
-        return {"percentile": 97.0}
+        return {"percentile": 99.2}
     if t in {"high", "выс", "высокая"}:
-        return {"percentile": 99.4}
+        return {"percentile": 96.8}
     return {"percentile": 98.3}
 
 
@@ -326,7 +337,7 @@ def _score_one(
     config: HeuristicViaDetectorConfig,
 ) -> ViaDetection | None:
     h, w = patch.shape[:2]
-    if pcx < 1 or pcy < 1 or pcx >= w - 1 or pcy >= h - 1:
+    if pcx < 0 or pcy < 0 or pcx >= w or pcy >= h:
         return None
     ph, pw = h, w
     center_m, inner_m, outer_m = _annulus_masks((ph, pw), pcx, pcy, float(d_est))
@@ -347,19 +358,24 @@ def _score_one(
             "hard:low_contrast",
         )
     med = float(np.median(gpatch))
-    prom = abs(float(gpatch[pcy, pcx]) - med)
+    pr = min(4, max(1, max(h, w) // 6))
+    ny0, ny1 = max(0, pcy - pr), min(h, pcy + pr + 1)
+    nx0, nx1 = max(0, pcx - pr), min(w, pcx + pr + 1)
+    nh = gpatch[ny0:ny1, nx0:nx1].astype(np.float32).ravel()
+    prom = float(np.max(np.abs(nh - med))) if nh.size else 0.0
     if prom < float(config.min_peak_prominence):
         return None
 
     p = float(config.local_binarize_percentile)
-    thr = float(np.percentile(gpatch, p))
+    delta = max(float(config.min_center_contrast), abs(float(contrast)) * 0.30, 2.0)
     if hyp in (str(ViaPolarity.DARK), "dark"):
-        thr2 = float(np.percentile(gpatch, max(1.0, 100.0 - p)))
+        thr2 = min(float(np.percentile(gpatch, max(1.0, 100.0 - p))), med - delta)
         binm = (gpatch <= thr2).astype(np.uint8) * 255
     elif hyp in (str(ViaPolarity.RING_DARK_RING), "ring_dark_ring") and gpatch[pcy, pcx] < med:
-        thr2 = float(np.percentile(gpatch, max(1.0, 100.0 - p)))
+        thr2 = min(float(np.percentile(gpatch, max(1.0, 100.0 - p))), med - delta)
         binm = (gpatch <= thr2).astype(np.uint8) * 255
     else:
+        thr = max(float(np.percentile(gpatch, p)), med + delta)
         binm = (gpatch >= thr).astype(np.uint8) * 255
     nlab, lab, stat, _ = cv2.connectedComponentsWithStats(binm, connectivity=8)
     lab_at = int(lab[pcy, pcx])

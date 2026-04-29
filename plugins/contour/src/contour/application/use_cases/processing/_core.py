@@ -28,7 +28,6 @@ from ...processing import (
     RECOGNITION_MODE_DISABLED,
     RECOGNITION_MODE_VIA,
     VIA_SEARCH_MODE_BLOB,
-    VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_HYBRID,
     VIA_SEARCH_MODE_TEMPLATE,
@@ -133,10 +132,9 @@ def build_via_vectorization_mask(
 ) -> tuple[Any, list[ContourDebugCandidate]]:
     """Detect via candidates and render them into a binary mask.
 
-    Replaces the historical 10+ parallel detectors with a single unified
-    pipeline (multi-scale blob response + circle-template ring response +
-    radial-contrast / edge-ring verification + optional template matching),
-    followed by IoU-based non-maximum suppression.
+    Dispatches only to the selected modern mode: saved-template matching or
+    heuristic local analysis. Old blob/top-hat/DoG detector stacks are not part
+    of this runtime path.
     """
 
     if settings.object_type != "via" and settings.output_mode != "box":
@@ -146,63 +144,7 @@ def build_via_vectorization_mask(
     if gray.size == 0:
         return ensure_binary_mask(image), []
 
-    mode = normalize_via_search_mode(settings.via_search_mode)
-    if mode == VIA_SEARCH_MODE_HEURISTIC:
-        return _build_modern_via_vectorization_mask(gray, settings)
-    if mode == VIA_SEARCH_MODE_TEMPLATE:
-        return _build_modern_via_vectorization_mask(gray, settings)
-    if mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
-        return _build_bright_via_vectorization_mask(gray, settings)
-
-    accepted, rejected = _detect_via_candidates(gray, settings)
-    if not accepted and not rejected:
-        return ensure_binary_mask(image), []
-
-    accepted, duplicates = _iou_nms(accepted, iou_threshold=0.35)
-    mask = _render_via_candidates_mask(gray.shape, accepted, settings)
-
-    debug_candidates = _debug_candidates_from_via_candidates(accepted, accepted=True)
-    debug_candidates.extend(_debug_candidates_from_via_candidates(duplicates, accepted=False, reason="duplicate"))
-    debug_candidates.extend(_debug_candidates_from_via_candidates(rejected, accepted=False))
-    return mask, debug_candidates
-
-
-def _build_bright_via_vectorization_mask(
-    gray: np.ndarray, settings: ContourExtractionSettings
-) -> tuple[np.ndarray, list[ContourDebugCandidate]]:
-    from ....vision.via.bright_tophat_dog import BrightViaDetectorConfig, detect_bright_vias
-
-    result = detect_bright_vias(gray, BrightViaDetectorConfig.from_legacy_settings(settings))
-    mask = np.zeros(gray.shape[:2], dtype=np.uint8)
-    for detection in result.detections:
-        _x_coord, _y_coord, width, height = detection.bbox
-        center = (round(detection.center[0]), round(detection.center[1]))
-        axes = (max(1, round(width * 0.5)), max(1, round(height * 0.5)))
-        cv2.ellipse(mask, center, axes, 0.0, 0.0, 360.0, 255, thickness=-1, lineType=cv2.LINE_8)
-    debug_candidates: list[ContourDebugCandidate] = []
-    for index, det in enumerate(result.candidates):
-        st = str(getattr(det, "status", "accepted") or "accepted")
-        accepted = st == "accepted"
-        if st == "hard_reject" and str(getattr(det, "hard_reason", "") or ""):
-            reason = f"hard_reject:{getattr(det, 'hard_reason', '')}"
-        elif st == "soft_reject":
-            reason = "soft_reject:final_below_threshold"
-        else:
-            reason = "accepted:bright_tophat_dog"
-        debug_candidates.append(
-            ContourDebugCandidate(
-                contour_index=index,
-                bbox=det.bbox,
-                area=float(det.area),
-                perimeter=float(2.0 * (det.bbox[2] + det.bbox[3])),
-                roundness=float(det.circularity * 100.0),
-                accepted=accepted,
-                reason=reason,
-                source="bright_tophat_dog",
-                score=float(det.final_score),
-            )
-        )
-    return ensure_binary_mask(mask), debug_candidates
+    return _build_modern_via_vectorization_mask(gray, settings)
 
 
 def _build_modern_via_vectorization_mask(
@@ -298,8 +240,8 @@ def build_detection_debug_maps(
       outputs of individual modern edge detectors for side-by-side
       inspection.
     * ``"mask"`` – final binary mask actually fed into ``extract_polygons``.
-    * ``"spot_response"`` / ``"spot_response_dark"`` – multiscale top-hat /
-      blob response used by the via detector (only populated for via flow).
+    Modern via debug maps are populated by the selected template or heuristic
+    detector; old blob/top-hat response maps are intentionally not produced.
     """
 
     maps: dict[str, np.ndarray] = {}
@@ -350,22 +292,6 @@ def build_detection_debug_maps(
     maps["ridge"] = ridge_response(source_gray)
 
     if settings.object_type == "via" or settings.output_mode == "box":
-        expected_span = _expected_via_span(settings)
-        try:
-            maps["spot_response"] = _multiscale_blob_response(
-                source_gray,
-                expected_span,
-                bright=True,
-                line_suppression=float(settings.via_spot_line_suppression),
-            )
-            maps["spot_response_dark"] = _multiscale_blob_response(
-                source_gray,
-                expected_span,
-                bright=False,
-                line_suppression=float(settings.via_spot_line_suppression),
-            )
-        except Exception:  # pragma: no cover - defensive
-            pass
         mask, _candidates = build_via_vectorization_mask(preprocessed_image, settings)
         maps["mask"] = ensure_binary_mask(mask)
     else:
@@ -1769,6 +1695,7 @@ def _process_image_path_sem_backend(
         vision_json = via_output.to_json_dict()
         if contour_settings.debug_enabled:
             debug_candidates = _debug_candidates_from_via_hits(via_output.hits)
+            debug_candidates.extend(_debug_candidates_from_via_debug(via_output.debug))
         if contour_settings.debug_gradient_map_enabled:
             debug_gradient_maps = dict(getattr(via_output, "debug", {}) or {})
     else:
@@ -1849,3 +1776,37 @@ def _debug_candidates_from_via_hits(hits: list[Any]) -> list[ContourDebugCandida
             )
         )
     return debug
+
+
+def _debug_candidates_from_via_debug(debug_payload: Any) -> list[ContourDebugCandidate]:
+    payload = dict(debug_payload or {}) if isinstance(debug_payload, dict) else {}
+    out: list[ContourDebugCandidate] = []
+    index = 10_000
+    for group_name, accepted in (("below_threshold", False), ("rejected", False)):
+        items = payload.get(group_name, [])
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            bbox_raw = item.get("bbox", [0, 0, 0, 0])
+            if not isinstance(bbox_raw, (list, tuple)) or len(bbox_raw) < 4:
+                bbox = (0, 0, 0, 0)
+            else:
+                bbox = tuple(int(round(float(v))) for v in bbox_raw[:4])
+            reason = str(item.get("reject_reason") or group_name)
+            out.append(
+                ContourDebugCandidate(
+                    contour_index=index,
+                    bbox=bbox,  # type: ignore[arg-type]
+                    area=float(max(0, bbox[2]) * max(0, bbox[3])),
+                    perimeter=float(2 * (max(0, bbox[2]) + max(0, bbox[3]))),
+                    roundness=float(item.get("compactness", 0.0) or 0.0) * 100.0,
+                    accepted=accepted,
+                    reason=f"{group_name}:{reason}",
+                    source=str(item.get("polarity_hypothesis") or payload.get("strategy") or "via"),
+                    score=float(item.get("score", 0.0) or 0.0),
+                )
+            )
+            index += 1
+    return out

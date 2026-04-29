@@ -29,21 +29,7 @@ def normalize_via_search_mode(value: Any) -> str:
     text = str(value or "").strip().lower()
     if text == VIA_SEARCH_MODE_TEMPLATE:
         return VIA_SEARCH_MODE_TEMPLATE
-    if text in {VIA_SEARCH_MODE_HEURISTIC, "heuristic", "эвристический", "эвристика"}:
-        return VIA_SEARCH_MODE_HEURISTIC
-    if text in {VIA_SEARCH_MODE_BLOB, "blob"}:
-        return VIA_SEARCH_MODE_BLOB
-    if text in {
-        VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
-        "bright_tophat_dog",
-        "bright_tophat/dog",
-    }:
-        return VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
-    if text in {"bright", "tophat_dog"}:
-        return VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
-    if text in {VIA_SEARCH_MODE_HYBRID, "hybrid"}:
-        return VIA_SEARCH_MODE_HYBRID
-    return VIA_SEARCH_MODE_HYBRID
+    return VIA_SEARCH_MODE_HEURISTIC
 
 
 def normalize_via_channel_mode(value: Any) -> str:
@@ -290,7 +276,7 @@ class ContourExtractionSettings:
     min_via_height: int = 0
     max_via_height: int | None = None
     via_size_mode: str = VIA_SIZE_MODE_RANGE
-    via_search_mode: str = VIA_SEARCH_MODE_HYBRID
+    via_search_mode: str = VIA_SEARCH_MODE_HEURISTIC
     fixed_via_widths: list[int] = field(default_factory=list)
     fixed_via_heights: list[int] = field(default_factory=list)
     via_channel_mode: str = VIA_CHANNEL_MODE_GRAYSCALE
@@ -315,8 +301,8 @@ class ContourExtractionSettings:
     via_fixed_diameters_text: str = "6, 8, 10"
     heuristic_background_sigma: float = 25.0
     heuristic_analysis_window_scale: float = 3.0
-    heuristic_min_center_contrast: float = 6.0
-    heuristic_min_peak_prominence: float = 4.0
+    heuristic_min_center_contrast: float = 4.0
+    heuristic_min_peak_prominence: float = 2.0
     heuristic_min_compactness: float = 0.12
     heuristic_max_elongation: float = 3.2
     heuristic_line_penalty_scale: float = 1.0
@@ -324,9 +310,9 @@ class ContourExtractionSettings:
     heuristic_local_binarize_percentile: float = 88.0
     heuristic_min_abs_peak: float = 0.0
     heuristic_use_bilateral: bool = False
-    heuristic_size_tolerance_range: float = 0.30
-    heuristic_size_tolerance_fixed: float = 0.18
-    heuristic_max_center_drift_ratio: float = 0.55
+    heuristic_size_tolerance_range: float = 0.36
+    heuristic_size_tolerance_fixed: float = 0.26
+    heuristic_max_center_drift_ratio: float = 0.72
     bright_via_diameter_min: int = 6
     bright_via_diameter_max: int = 8
     bright_via_clahe_clip_limit: float = 2.0
@@ -350,7 +336,7 @@ class ContourExtractionSettings:
     bright_via_max_edge_likeness: float = 35.0
     bright_via_max_line_likeness: float = 65.0
     bright_via_nms_distance: int = 5
-    bright_via_min_final_score: float = 45.0
+    bright_via_min_final_score: float = 38.0
     bright_via_show_rejected: bool = True
     bright_via_hard_reject_on_asymmetry: bool = False
     bright_via_hard_reject_on_edge: bool = False
@@ -631,7 +617,7 @@ class ContourExtractionSettings:
             min_via_height=max(0, int(payload.get("min_via_height", 0))),
             max_via_height=None if max_via_height in (None, "", 0, 0.0) else max(1, int(max_via_height)),
             via_size_mode=normalize_via_size_mode(payload.get("via_size_mode", VIA_SIZE_MODE_RANGE)),
-            via_search_mode=normalize_via_search_mode(payload.get("via_search_mode", VIA_SEARCH_MODE_HYBRID)),
+            via_search_mode=normalize_via_search_mode(payload.get("via_search_mode", VIA_SEARCH_MODE_HEURISTIC)),
             fixed_via_widths=parse_integer_value_list(payload.get("fixed_via_widths")),
             fixed_via_heights=parse_integer_value_list(payload.get("fixed_via_heights")),
             via_channel_mode=normalize_via_channel_mode(payload.get("via_channel_mode", VIA_CHANNEL_MODE_GRAYSCALE)),
@@ -655,8 +641,8 @@ class ContourExtractionSettings:
             via_fixed_diameters_text=str(payload.get("via_fixed_diameters_text", "6, 8, 10") or "6, 8, 10"),
             heuristic_background_sigma=max(0.1, float(payload.get("heuristic_background_sigma", 25.0))),
             heuristic_analysis_window_scale=max(1.0, float(payload.get("heuristic_analysis_window_scale", 3.0))),
-            heuristic_min_center_contrast=max(0.0, float(payload.get("heuristic_min_center_contrast", 6.0))),
-            heuristic_min_peak_prominence=max(0.0, float(payload.get("heuristic_min_peak_prominence", 4.0))),
+            heuristic_min_center_contrast=max(0.0, float(payload.get("heuristic_min_center_contrast", 4.0))),
+            heuristic_min_peak_prominence=max(0.0, float(payload.get("heuristic_min_peak_prominence", 2.0))),
             heuristic_min_compactness=max(0.0, float(payload.get("heuristic_min_compactness", 0.12))),
             heuristic_max_elongation=max(1.0, float(payload.get("heuristic_max_elongation", 3.2))),
             heuristic_line_penalty_scale=max(0.0, float(payload.get("heuristic_line_penalty_scale", 1.0))),
@@ -667,13 +653,13 @@ class ContourExtractionSettings:
             heuristic_min_abs_peak=max(0.0, float(payload.get("heuristic_min_abs_peak", 0.0))),
             heuristic_use_bilateral=bool(payload.get("heuristic_use_bilateral", False)),
             heuristic_size_tolerance_range=max(
-                0.05, min(0.95, float(payload.get("heuristic_size_tolerance_range", 0.30)))
+                0.05, min(0.95, float(payload.get("heuristic_size_tolerance_range", 0.36)))
             ),
             heuristic_size_tolerance_fixed=max(
-                0.05, min(0.95, float(payload.get("heuristic_size_tolerance_fixed", 0.18)))
+                0.05, min(0.95, float(payload.get("heuristic_size_tolerance_fixed", 0.26)))
             ),
             heuristic_max_center_drift_ratio=max(
-                0.1, min(1.5, float(payload.get("heuristic_max_center_drift_ratio", 0.55)))
+                0.1, min(1.5, float(payload.get("heuristic_max_center_drift_ratio", 0.72)))
             ),
             via_spot_line_suppression=max(0.0, min(1.0, float(payload.get("via_spot_line_suppression", 0.65)))),
             bright_via_diameter_min=max(1, int(payload.get("bright_via_diameter_min", 6))),
@@ -715,7 +701,7 @@ class ContourExtractionSettings:
             bright_via_max_line_likeness=max(0.0, float(payload.get("bright_via_max_line_likeness", 65.0))),
             bright_via_nms_distance=max(0, int(payload.get("bright_via_nms_distance", 5))),
             bright_via_min_final_score=max(
-                0.0, min(100.0, float(payload.get("bright_via_min_final_score", 45.0)))
+                0.0, min(100.0, float(payload.get("bright_via_min_final_score", 38.0)))
             ),
             bright_via_show_rejected=bool(payload.get("bright_via_show_rejected", True)),
             bright_via_hard_reject_on_asymmetry=bool(

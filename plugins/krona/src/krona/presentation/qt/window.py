@@ -34,6 +34,7 @@ from krona.presentation.qt.scene_renderer import EdifSceneRenderer
 from krona.presentation.qt.theme.manager import ThemeManager
 from krona.presentation.qt.ui_strings import available_languages, load_ui_strings
 from kraken_core.qt import resolve_icon_path
+from kraken_core.theme import add_theme_menu
 
 
 def _resolve_window_icon_path() -> Path | None:
@@ -98,6 +99,11 @@ class EdifViewerWindow(QMainWindow):
         return template
 
     def _init_ui(self) -> None:
+        add_theme_menu(
+            self,
+            initial_theme=self._current_theme.lower(),
+            on_theme_changed=lambda theme: self._on_theme_changed("Light" if theme == "light" else "Dark"),
+        )
         root = QWidget(self)
         root_layout = QVBoxLayout(root)
 
@@ -928,9 +934,20 @@ class EdifViewerWindow(QMainWindow):
             return
         self._theme_manager.save_theme(theme_name)
         self._current_theme = theme_name
+        self._sync_theme_controls()
         self.scene_renderer.set_dark_mode(self._current_theme.lower() == "dark")
         if self._scene_data is not None:
             self.refresh_graphics_scene(reset_view=False)
+
+    def _sync_theme_controls(self) -> None:
+        if hasattr(self, "theme_combo") and self.theme_combo.currentText() != self._current_theme:
+            self.theme_combo.blockSignals(True)
+            self.theme_combo.setCurrentText(self._current_theme)
+            self.theme_combo.blockSignals(False)
+        if hasattr(self, "_kraken_theme_dark_action"):
+            self._kraken_theme_dark_action.setChecked(self._current_theme.lower() == "dark")
+        if hasattr(self, "_kraken_theme_light_action"):
+            self._kraken_theme_light_action.setChecked(self._current_theme.lower() == "light")
 
     def _on_hitbox_toggle_changed(self, enabled: bool) -> None:
         self.scene_renderer.set_show_hitboxes(enabled)

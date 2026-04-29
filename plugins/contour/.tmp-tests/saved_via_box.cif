@@ -1,0 +1,7 @@
+DS 1 1 1;
+L NM;
+( R sample.png );
+( S 80 80 );
+B 11 9 30 44;
+DF;
+E

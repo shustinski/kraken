@@ -108,9 +108,3 @@ addopts = "-ra"
     "resources/internal/icon.png",
     "resources/internal/settings_icon.png",
 ]
-"_internal/resources" = [
-    "resources/internal/resources/*.qss",
-]
-"_internal/resources/icons" = [
-    "resources/internal/resources/icons/*.svg",
-]

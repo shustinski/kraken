@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import acos, degrees, pi
+from math import acos, degrees, hypot, pi
 
 import cv2
 import numpy as np
 
+from .application.preview_cancellation import raise_if_preview_cancelled
 from .application.processing import ContourDebugCandidate, ContourExtractionSettings
 from .domain import PolygonData, compute_polygon_metrics
+from .domain.polygon_ring import is_valid_closed_polygon_ring
 from .utils import ensure_binary_mask
 
 RETRIEVAL_MODE_MAP = {
@@ -21,6 +23,62 @@ APPROXIMATION_MODE_MAP = {
     "CHAIN_APPROX_SIMPLE": cv2.CHAIN_APPROX_SIMPLE,
     "CHAIN_APPROX_NONE": cv2.CHAIN_APPROX_NONE,
 }
+
+# Per-centile on the high-clearance "medial core" of the shape (not the whole fill).
+# A raw low %-tile over *all* interior pixels is dominated by layers near the boundary,
+# so a uniform 8 px-wide bar measures ~2 px (same bug as 15th of local width near long edges).
+POLYGON_WIDTH_METRIC_PERCENTILE = 20.0
+# Only pixels with dist at least this fraction of max(dist) in the fill count as "core" samples.
+_MEDIAL_CORE_FRACTION = 0.45
+# is_valid_closed_polygon_ring is for simplified rings; dense CHAIN_APPROX_NONE borders can false-fail on a grid.
+_TOPOLOGY_CHECK_MAX_VERTICES = 192
+
+
+def estimate_effective_polygon_width_px(
+    binary_mask: np.ndarray,
+    contour: np.ndarray,
+    *,
+    percentile: float = POLYGON_WIDTH_METRIC_PERCENTILE,
+) -> tuple[float, str]:
+    """Local thickness estimate: 2*L2 distance transform; robust aggregate on the medial core (not the whole fill)."""
+    if contour is None or len(contour) < 3:
+        return 0.0, "invalid"
+    height, width = binary_mask.shape[:2]
+    x, y, w_box, h_box = cv2.boundingRect(contour)
+    pad = max(4, int(round(0.08 * max(float(w_box), float(h_box), 1.0))))
+    x0 = max(0, x - pad)
+    y0 = max(0, y - pad)
+    x1 = min(width, x + w_box + pad)
+    y1 = min(height, y + h_box + pad)
+    roi_h, roi_w = y1 - y0, x1 - x0
+    if roi_w < 2 or roi_h < 2:
+        return 0.0, "invalid"
+    cnt_roi = contour.astype(np.int32) - np.array([[[x0, y0]]], dtype=np.int32)
+    component = np.zeros((roi_h, roi_w), dtype=np.uint8)
+    cv2.drawContours(component, [cnt_roi], 0, 255, thickness=-1)
+    if int(cv2.countNonZero(component)) < 1:
+        return 0.0, "minAreaRect_fallback"
+    dist = cv2.distanceTransform(component, cv2.DIST_L2, 5)
+    fg = component > 0
+    dmax = float(np.max(dist[fg])) if int(np.count_nonzero(fg)) else 0.0
+    if dmax <= 1e-6:
+        rect = cv2.minAreaRect(contour)
+        rw, rh = float(rect[1][0]), float(rect[1][1])
+        return (min(rw, rh) if rw > 0 and rh > 0 else 0.0), "minAreaRect_fallback"
+
+    # Maximum inscribed "radius" in the fill: 2*max(dist) = true narrowest full width for a long uniform strip.
+    full_width = 2.0 * dmax
+    if dmax <= 0.6:
+        return full_width, "dt_dmax"
+    # Ignore boundary-adjacent pixels (large area with small 2*dist) when taking a low % tile.
+    tau = _MEDIAL_CORE_FRACTION * dmax
+    core = fg & (dist >= tau) & (dist > 0.25)
+    local_w = 2.0 * dist
+    values = local_w[core]
+    if int(values.size) < 3:
+        return full_width, "dt_dmax"
+    w_est = float(np.percentile(values, percentile))
+    return min(w_est, full_width), "dt_core_percentile"
 
 
 @dataclass(slots=True)
@@ -47,6 +105,63 @@ def _depth(index: int, hierarchy: np.ndarray, cache: dict[int, int]) -> int:
         return 0
     cache[index] = 1 + _depth(parent_index, hierarchy, cache)
     return cache[index]
+
+
+def _match_contour_to_dense_list(
+    chain_simple: np.ndarray,
+    contour_index: int,
+    dense_list: list[np.ndarray],
+) -> np.ndarray:
+    """Map the CHAIN_SIMPLE contour to the same boundary with CHAIN_APPROX_NONE (full pixel chain).
+
+    OpenCV’s sparse SIMPLE chain is what findContours returns, but `approxPolyDP`’s `epsilon` is
+    a pixel distance *along the polyline*. With few vertices, a small ε removes large geometric
+    detail; matching a dense chain restores ε semantics comparable to a NONE boundary.
+    """
+    a0 = abs(float(cv2.contourArea(chain_simple)))
+    if a0 < 1e-9 or not dense_list:
+        return chain_simple
+    if contour_index < len(dense_list):
+        c1 = dense_list[contour_index]
+        if c1 is not None and len(c1) >= 3:
+            a1 = abs(float(cv2.contourArea(c1)))
+            if a1 > 1e-9 and abs(a0 - a1) / max(a0, a1) <= 0.02:
+                return c1
+    m0 = cv2.moments(chain_simple)
+    m00 = float(m0.get("m00", 0.0) or 0.0)
+    if m00 < 1e-9:
+        return chain_simple
+    cx0, cy0 = float(m0["m10"] / m00), float(m0["m01"] / m00)
+    best: np.ndarray | None = None
+    best_s = float("inf")
+    for c1 in dense_list:
+        if c1 is None or len(c1) < 3:
+            continue
+        a1 = abs(float(cv2.contourArea(c1)))
+        if a1 < 1e-9 or abs(a0 - a1) / max(a0, a1) > 0.05:
+            continue
+        m1 = cv2.moments(c1)
+        m1_00 = float(m1.get("m00", 0.0) or 0.0)
+        if m1_00 < 1e-9:
+            continue
+        cx1, cy1 = float(m1["m10"] / m1_00), float(m1["m01"] / m1_00)
+        s = (cx0 - cx1) ** 2 + (cy0 - cy1) ** 2
+        if s < best_s:
+            best_s, best = s, c1
+    return best if best is not None else chain_simple
+
+
+def _raw_contour_for_epsilon_simplify(
+    chain_contour: np.ndarray,
+    contour_index: int,
+    *,
+    chain_flag: int,
+    dense_list: list[np.ndarray] | None,
+    use_dense_for_epsilon: bool,
+) -> np.ndarray:
+    if not use_dense_for_epsilon or chain_flag != cv2.CHAIN_APPROX_SIMPLE or not dense_list:
+        return chain_contour
+    return _match_contour_to_dense_list(chain_contour, contour_index, dense_list)
 
 
 def _bbox_box_points(bbox: tuple[int, int, int, int]) -> list[tuple[float, float]]:
@@ -179,13 +294,27 @@ def _debug_candidates_for_mask(
 ) -> list[ContourDebugCandidate]:
     binary_mask = ensure_binary_mask(mask)
     image_height, image_width = binary_mask.shape[:2]
+    retrieval = RETRIEVAL_MODE_MAP.get(config.retrieval_mode, cv2.RETR_EXTERNAL)
+    chain_flag = APPROXIMATION_MODE_MAP.get(config.approximation_mode, cv2.CHAIN_APPROX_SIMPLE)
     contours, hierarchy = cv2.findContours(
         binary_mask.copy(),
-        RETRIEVAL_MODE_MAP.get(config.retrieval_mode, cv2.RETR_EXTERNAL),
-        APPROXIMATION_MODE_MAP.get(config.approximation_mode, cv2.CHAIN_APPROX_SIMPLE),
+        retrieval,
+        chain_flag,
     )
     if not contours:
         return []
+    raise_if_preview_cancelled()
+
+    use_dense = chain_flag == cv2.CHAIN_APPROX_SIMPLE and float(config.epsilon) > 0.0
+    dense_list: list[np.ndarray] | None = None
+    if use_dense:
+        dense_list, _ = cv2.findContours(
+            binary_mask.copy(),
+            retrieval,
+            cv2.CHAIN_APPROX_NONE,
+        )
+        if not dense_list:
+            dense_list = None
 
     hierarchy_array = hierarchy[0] if hierarchy is not None else np.full((len(contours), 4), -1, dtype=np.int32)
     depth_cache: dict[int, int] = {}
@@ -196,19 +325,30 @@ def _debug_candidates_for_mask(
     candidates: list[ContourDebugCandidate] = []
 
     for contour_index, contour in enumerate(contours):
+        if contour_index & 7 == 0:
+            raise_if_preview_cancelled()
         if contour is None or len(contour) < 3:
             continue
+        raw = _raw_contour_for_epsilon_simplify(
+            contour,
+            contour_index,
+            chain_flag=chain_flag,
+            dense_list=dense_list,
+            use_dense_for_epsilon=use_dense,
+        )
         epsilon = float(config.epsilon)
         if config.epsilon_relative:
-            epsilon *= cv2.arcLength(contour, True)
-        approx = _adaptive_approximate_contour(contour, epsilon, config.preserve_corners) if epsilon > 0 else contour
+            epsilon *= cv2.arcLength(raw, True)
+        approx = _adaptive_approximate_contour(raw, epsilon, config.preserve_corners) if epsilon > 0 else contour
         points = [(float(point[0][0]), float(point[0][1])) for point in approx]
-        if config.object_type != "via" and config.output_mode != "box":
-            points = _remove_acute_polygon_vertices(points, config.min_polygon_angle)
+        points = _finalize_closed_polygon_points(points, raw, (image_height, image_width), config)
+        if points is None:
+            continue
         if len(points) < 3:
             continue
 
         area, perimeter, bbox = compute_polygon_metrics(points)
+        w_est, w_m = estimate_effective_polygon_width_px(binary_mask, contour)
         bbox_width = int(bbox[2])
         bbox_height = int(bbox[3])
         roundness = (
@@ -222,6 +362,8 @@ def _debug_candidates_for_mask(
             area=area,
             perimeter=perimeter,
             roundness=roundness,
+            effective_width=float(w_est),
+            width_metric=str(w_m),
         )
 
         reason = ""
@@ -229,7 +371,7 @@ def _debug_candidates_for_mask(
             reason = "min_points"
         elif area <= 0.0 or perimeter <= 0.0:
             reason = "empty_geometry"
-        elif area < config.min_area:
+        elif config.min_area > 0.0 and area < config.min_area:
             reason = "min_area"
         elif config.max_area is not None and area > config.max_area:
             reason = "max_area"
@@ -286,6 +428,8 @@ def _debug_candidates_for_mask(
                         parent_area = contour_areas.get(parent_index, 0.0)
                         if parent_area > 0.0 and (area / parent_area) > config.max_hole_area_ratio:
                             reason = "max_hole_area_ratio"
+                    elif config.min_polygon_width_px > 0.0 and w_est < float(config.min_polygon_width_px):
+                        reason = "min_polygon_width"
 
         if reason:
             candidate.accepted = False
@@ -393,17 +537,106 @@ def _adaptive_approximate_contour(contour: np.ndarray, epsilon: float, preserve_
     return contour[ordered_indices]
 
 
+def _dedupe_consecutive_polygon_vertices(
+    points: list[tuple[float, float]], *, min_dist: float = 0.35
+) -> list[tuple[float, float]]:
+    """Merge consecutive vertices that map to the same pixel corner (pinch / duplicate corners)."""
+    if len(points) < 2:
+        return points
+    cleaned: list[tuple[float, float]] = [points[0]]
+    for p in points[1:]:
+        if hypot(p[0] - cleaned[-1][0], p[1] - cleaned[-1][1]) >= min_dist:
+            cleaned.append(p)
+    if len(cleaned) >= 2 and hypot(cleaned[0][0] - cleaned[-1][0], cleaned[0][1] - cleaned[-1][1]) < min_dist:
+        cleaned.pop()
+    if len(cleaned) < 3:
+        return points
+    return cleaned
+
+
+def _meets_min_polygon_angle(points: list[tuple[float, float]], min_angle: float) -> bool:
+    if min_angle <= 0.0 or len(points) < 3:
+        return True
+    limit = max(0.0, min(180.0, float(min_angle)))
+    for i in range(len(points)):
+        a = _polygon_vertex_angle(points[i - 1], points[i], points[(i + 1) % len(points)])
+        if a < limit - 1e-3:
+            return False
+    return True
+
+
+def _contour_epsilon_value(raw_contour: np.ndarray, config: ContourExtractionSettings) -> float:
+    """Same base epsilon as the main extract loop (absolute or relative to raw contour perimeter)."""
+    e = float(config.epsilon)
+    if config.epsilon_relative:
+        e *= float(cv2.arcLength(raw_contour, True))
+    return max(0.0, e)
+
+
+def _finalize_closed_polygon_points(
+    points: list[tuple[float, float]],
+    raw_contour: np.ndarray,
+    _image_shape: tuple[int, int],
+    config: ContourExtractionSettings,
+) -> list[tuple[float, float]] | None:
+    """Dedupe, optional acute-vertex cull, then if the ring is invalid try stronger simplification *on the same raw OpenCV* contour."""
+    points = _dedupe_consecutive_polygon_vertices(points)
+    points = _remove_acute_polygon_vertices(points, config.min_polygon_angle)
+    points = _dedupe_consecutive_polygon_vertices(points)
+    if config.object_type == "via" or config.output_mode == "box":
+        return points if len(points) >= 3 else None
+    if len(points) < 3:
+        return None
+    if len(points) > _TOPOLOGY_CHECK_MAX_VERTICES or is_valid_closed_polygon_ring(points):
+        return points
+    e0 = _contour_epsilon_value(raw_contour, config)
+    if e0 <= 0.0:
+        mults: tuple[float, ...] = (0.0,)
+    else:
+        # Modest factors only: same raw contour as main path; huge ε collapses concave C-shapes to acute triangles.
+        mults = (1.0, 1.15, 1.3, 1.5, 1.7, 2.0, 2.4, 2.8, 3.2, 3.6, 4.0)
+    for m in mults:
+        eff = e0 * m if e0 > 0.0 else 0.0
+        apx = _adaptive_approximate_contour(raw_contour, eff, config.preserve_corners)
+        if apx is None or len(apx) < 3:
+            continue
+        cand = [(float(p[0][0]), float(p[0][1])) for p in apx]
+        cand = _dedupe_consecutive_polygon_vertices(cand)
+        cand = _remove_acute_polygon_vertices(cand, config.min_polygon_angle)
+        cand = _dedupe_consecutive_polygon_vertices(cand)
+        if len(cand) < 3 or not is_valid_closed_polygon_ring(cand):
+            continue
+        if not _meets_min_polygon_angle(cand, config.min_polygon_angle):
+            continue
+        return cand
+    return points
+
+
 def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | None = None) -> list[PolygonData]:
     config = settings or ContourExtractionSettings()
     binary_mask = ensure_binary_mask(mask)
     image_height, image_width = binary_mask.shape[:2]
+    retrieval = RETRIEVAL_MODE_MAP.get(config.retrieval_mode, cv2.RETR_EXTERNAL)
+    chain_flag = APPROXIMATION_MODE_MAP.get(config.approximation_mode, cv2.CHAIN_APPROX_SIMPLE)
     contours, hierarchy = cv2.findContours(
         binary_mask.copy(),
-        RETRIEVAL_MODE_MAP.get(config.retrieval_mode, cv2.RETR_EXTERNAL),
-        APPROXIMATION_MODE_MAP.get(config.approximation_mode, cv2.CHAIN_APPROX_SIMPLE),
+        retrieval,
+        chain_flag,
     )
     if not contours:
         return []
+    raise_if_preview_cancelled()
+
+    use_dense = chain_flag == cv2.CHAIN_APPROX_SIMPLE and float(config.epsilon) > 0.0
+    dense_list: list[np.ndarray] | None = None
+    if use_dense:
+        dense_list, _ = cv2.findContours(
+            binary_mask.copy(),
+            retrieval,
+            cv2.CHAIN_APPROX_NONE,
+        )
+        if not dense_list:
+            dense_list = None
 
     hierarchy_array = hierarchy[0] if hierarchy is not None else np.full((len(contours), 4), -1, dtype=np.int32)
     depth_cache: dict[int, int] = {}
@@ -411,23 +644,33 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
     contour_areas: dict[int, float] = {}
 
     for contour_index, contour in enumerate(contours):
+        if contour_index & 7 == 0:
+            raise_if_preview_cancelled()
         if contour is None or len(contour) < 3:
             continue
         contour_areas[contour_index] = abs(float(cv2.contourArea(contour)))
+        raw = _raw_contour_for_epsilon_simplify(
+            contour,
+            contour_index,
+            chain_flag=chain_flag,
+            dense_list=dense_list,
+            use_dense_for_epsilon=use_dense,
+        )
         epsilon = float(config.epsilon)
         if config.epsilon_relative:
-            epsilon *= cv2.arcLength(contour, True)
-        approx = _adaptive_approximate_contour(contour, epsilon, config.preserve_corners) if epsilon > 0 else contour
+            epsilon *= cv2.arcLength(raw, True)
+        approx = _adaptive_approximate_contour(raw, epsilon, config.preserve_corners) if epsilon > 0 else contour
         points = [(float(point[0][0]), float(point[0][1])) for point in approx]
-        if config.object_type != "via" and config.output_mode != "box":
-            points = _remove_acute_polygon_vertices(points, config.min_polygon_angle)
+        points = _finalize_closed_polygon_points(points, raw, (image_height, image_width), config)
+        if points is None:
+            continue
         if len(points) < max(3, config.min_points):
             continue
 
         area, perimeter, bbox = compute_polygon_metrics(points)
         if area <= 0.0 or perimeter <= 0.0:
             continue
-        if area < config.min_area:
+        if config.min_area > 0.0 and area < config.min_area:
             continue
         if config.max_area is not None and area > config.max_area:
             continue
@@ -481,7 +724,8 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
         if config.max_hierarchy_depth is not None and depth > config.max_hierarchy_depth:
             continue
 
-        hull = cv2.convexHull(approx)
+        pts_for_hull = np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
+        hull = cv2.convexHull(pts_for_hull)
         hull_area = abs(float(cv2.contourArea(hull))) if hull is not None and len(hull) >= 3 else 0.0
         solidity = float(area / hull_area) if hull_area > 0.0 else 0.0
         if solidity < config.min_solidity:
@@ -496,6 +740,11 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
         if config.max_hole_area_ratio is not None and is_hole and parent_index != -1:
             parent_area = contour_areas.get(parent_index, 0.0)
             if parent_area > 0.0 and (area / parent_area) > config.max_hole_area_ratio:
+                continue
+
+        if config.min_polygon_width_px > 0.0:
+            w_est, _w_m = estimate_effective_polygon_width_px(binary_mask, contour)
+            if w_est < float(config.min_polygon_width_px):
                 continue
 
         kept.append(

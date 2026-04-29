@@ -46,6 +46,8 @@ class EditablePolygonItem(QGraphicsPathItem):
         selected: bool,
         cutout_polygons: list[PolygonData] | None = None,
         custom_color: str | None = None,
+        *,
+        conductor_hover_highlight: bool = False,
     ) -> None:
         self._polygon = polygon.clone()
         path = QPainterPath()
@@ -55,11 +57,19 @@ class EditablePolygonItem(QGraphicsPathItem):
         path.setFillRule(Qt.FillRule.OddEvenFill)
         self.setPath(path)
 
-        color_name = (
-            display_settings.selected_color
-            if selected
-            else custom_color or (display_settings.hole_color if polygon.is_hole else display_settings.external_color)
-        )
+        cat = str(getattr(polygon, "category", "") or "")
+        if selected:
+            color_name = display_settings.selected_color
+        elif conductor_hover_highlight:
+            color_name = display_settings.conductor_hover_highlight_color
+        elif cat == "metal_wide_gradient":
+            color_name = "#2563EB"
+        elif custom_color:
+            color_name = custom_color
+        elif polygon.is_hole:
+            color_name = display_settings.hole_color
+        else:
+            color_name = display_settings.external_color
         outline = QColor(color_name)
         fill = QColor(color_name)
         if polygon.is_hole:

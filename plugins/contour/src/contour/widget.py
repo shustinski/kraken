@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import cv2
@@ -39,12 +40,16 @@ from .adapters.qt.image_conversion import cv_to_qimage
 from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
 from .application.dto import PersistedPaths
 from .application.processing import (
+    VIA_SEARCH_MODE_HEURISTIC,
+    VIA_SEARCH_MODE_TEMPLATE,
     VIA_SIZE_MODE_FIXED,
     ContourExtractionSettings,
     DisplaySettings,
     ImageProcessingState,
     SaveOptions,
+    _normalize_bright_via_metal_constraint_mode,
     normalize_algorithm_backend,
+    normalize_recognition_mode,
     normalize_via_search_mode,
     normalize_via_size_mode,
 )
@@ -161,12 +166,19 @@ class PolygonExtractionWidget(QWidget):
         self._display_settings = DisplaySettings()
         self._contour_settings_profiles = {
             "conductors": ContourExtractionSettings(
-                algorithm_backend="sem",
+                algorithm_backend="legacy",
                 sem_noise_level="medium",
                 extraction_profile="conductors",
                 object_type="conductor",
                 output_mode="polygon",
-                min_polygon_angle=90.0,
+                min_polygon_angle=30.0,
+                retrieval_mode="RETR_TREE",
+                epsilon=2.0,
+                min_area=70.0,
+                min_perimeter=32.0,
+                min_points=4,
+                min_polygon_width_px=4.0,
+                metal_structural_pipeline=True,
             ),
             "vias": ContourExtractionSettings(
                 algorithm_backend="sem",
@@ -174,7 +186,7 @@ class PolygonExtractionWidget(QWidget):
                 extraction_profile="vias",
                 object_type="via",
                 output_mode="box",
-                via_search_mode="hybrid",
+                via_search_mode="heuristic",
                 min_solidity=0.6,
                 min_extent=0.5,
                 min_aspect_ratio=0.5,
@@ -197,13 +209,14 @@ class PolygonExtractionWidget(QWidget):
         self._preview_thread_pool.setExpiryTimeout(-1)
         self._preview_update_timer = QTimer(self)
         self._preview_update_timer.setSingleShot(True)
-        self._preview_update_timer.setInterval(180)
+        self._preview_update_timer.setInterval(50)
         self._preview_update_timer.timeout.connect(self._start_pending_preview_processing)
         self._preview_request_serial = 0
         self._preview_running_request_id: int | None = None
         self._preview_pending_request: PreviewProcessingRequest | None = None
         self._preview_running_signature: tuple[str, str, str] | None = None
         self._preview_pending_signature: tuple[str, str, str] | None = None
+        self._preview_run_cancel: threading.Event | None = None
         self._help_menu: QMenu | None = None
         self._color_pick_pipeline_row: int | None = None
         self._via_template_images: list[np.ndarray] = []
@@ -218,6 +231,7 @@ class PolygonExtractionWidget(QWidget):
         self._prepared_image_pending_request: PreparedImageRequest | None = None
         self._prepared_image_running_signature: tuple[str, str] | None = None
         self._prepared_image_pending_signature: tuple[str, str] | None = None
+        self._prepared_image_run_cancel: threading.Event | None = None
         self._auto_tune_thread_pool = QThreadPool(self)
         self._auto_tune_thread_pool.setMaxThreadCount(1)
         self._auto_tune_thread_pool.setExpiryTimeout(-1)
@@ -307,6 +321,9 @@ class PolygonExtractionWidget(QWidget):
             self._update_color_button(self.external_color_button, self._display_settings.external_color)
             self._update_color_button(self.hole_color_button, self._display_settings.hole_color)
             self._update_color_button(self.selected_color_button, self._display_settings.selected_color)
+            self._update_color_button(
+                self.conductor_hover_highlight_color_button, self._display_settings.conductor_hover_highlight_color
+            )
             self._update_color_button(self.vertex_color_button, self._display_settings.vertex_color)
             self.line_width_spin.setValue(float(self._display_settings.line_width))
             self.vertex_size_spin.setValue(float(self._display_settings.vertex_size))
@@ -728,20 +745,24 @@ class PolygonExtractionWidget(QWidget):
             self._on_extraction_settings_changed()
 
     def _apply_extraction_tooltips(self) -> None:
-        self._set_field_tooltip(
-            self.extraction_profile_label_widget, self.extraction_profile_combo, "extraction_profile"
-        )
         self._set_field_tooltip(self.retrieval_mode_label_widget, self.retrieval_mode_combo, "retrieval_mode")
         self._set_field_tooltip(
             self.approximation_mode_label_widget, self.approximation_mode_combo, "approximation_mode"
         )
-        self._set_field_tooltip(self.epsilon_label_widget, self.epsilon_spin, "epsilon")
+        self._set_field_tooltip(
+            self.epsilon_label_widget,
+            self.epsilon_row_widget if hasattr(self, "epsilon_row_widget") else self.epsilon_spin,
+            "epsilon",
+        )
         self._set_field_tooltip(self.epsilon_mode_label_widget, self.epsilon_relative_checkbox, "epsilon_mode")
         self._set_field_tooltip(self.min_area_label_widget, self.min_area_spin, "min_area")
         self._set_field_tooltip(self.max_area_label_widget, self.max_area_spin, "max_area")
         self._set_field_tooltip(self.min_perimeter_label_widget, self.min_perimeter_spin, "min_perimeter")
         self._set_field_tooltip(self.max_perimeter_label_widget, self.max_perimeter_spin, "max_perimeter")
         self._set_field_tooltip(self.min_point_count_label_widget, self.min_points_spin, "min_points")
+        self._set_field_tooltip(
+            self.min_polygon_width_label_widget, self.min_polygon_width_spin, "min_polygon_width"
+        )
         self._set_field_tooltip(self.min_bbox_width_label_widget, self.min_bbox_width_spin, "min_bbox_width")
         self._set_field_tooltip(self.max_bbox_width_label_widget, self.max_bbox_width_spin, "max_bbox_width")
         self._set_field_tooltip(self.min_bbox_height_label_widget, self.min_bbox_height_spin, "min_bbox_height")
@@ -754,7 +775,10 @@ class PolygonExtractionWidget(QWidget):
         self._set_field_tooltip(self.min_solidity_label_widget, self.min_solidity_spin, "min_solidity")
         self._set_field_tooltip(self.min_extent_label_widget, self.min_extent_spin, "min_extent")
         self._set_field_tooltip(self.via_size_mode_label_widget, self.via_size_mode_combo, "via_size_mode")
-        self._set_field_tooltip(self.via_search_mode_label_widget, self.via_search_mode_combo, "via_search_mode")
+        if getattr(self, "via_search_mode_label_widget", None) is not None:
+            self._set_field_tooltip(self.via_search_mode_label_widget, self.via_search_mode_combo, "via_search_mode")
+        if hasattr(self, "bright_via_viamode_label_widget"):
+            self._set_field_tooltip(self.bright_via_viamode_label_widget, self.via_search_mode_combo, "via_search_mode")
         self._set_field_tooltip(self.via_white_range_label_widget, self.via_white_range_widget, "via_white_range")
         self._set_field_tooltip(self.via_black_range_label_widget, self.via_black_range_widget, "via_black_range")
         self._set_field_tooltip(self.via_min_score_label_widget, self.via_min_score_spin, "via_min_score")
@@ -774,16 +798,26 @@ class PolygonExtractionWidget(QWidget):
         )
         self._set_field_tooltip(self.via_templates_label_widget, self.via_templates_widget, "via_templates")
         self._set_field_tooltip(self.via_preset_label_widget, self.via_preset_widget, "via_preset_selector")
-        self._set_field_tooltip(
-            self.noisy_traces_via_preset_label_widget,
-            self.noisy_traces_via_preset_button,
-            "via_noisy_traces_preset",
-        )
-        self._set_field_tooltip(
-            self.blurred_via_preset_label_widget,
-            self.blurred_via_preset_button,
-            "via_blurred_preset",
-        )
+        if getattr(self, "noisy_traces_via_preset_label_widget", None) is not None:
+            self._set_field_tooltip(
+                self.noisy_traces_via_preset_label_widget,
+                self.noisy_traces_via_preset_button,
+                "via_noisy_traces_preset",
+            )
+        else:
+            self.noisy_traces_via_preset_button.setToolTip(
+                _localized_text(EXTRACTION_HELP_TEXTS, "via_noisy_traces_preset", self._ui_language)
+            )
+        if getattr(self, "blurred_via_preset_label_widget", None) is not None:
+            self._set_field_tooltip(
+                self.blurred_via_preset_label_widget,
+                self.blurred_via_preset_button,
+                "via_blurred_preset",
+            )
+        else:
+            self.blurred_via_preset_button.setToolTip(
+                _localized_text(EXTRACTION_HELP_TEXTS, "via_blurred_preset", self._ui_language)
+            )
         self._set_field_tooltip(self.reset_via_search_label_widget, self.reset_via_search_button, "reset_via_search")
         self.add_via_template_button.setToolTip(
             _localized_text(EXTRACTION_HELP_TEXTS, "via_templates", self._ui_language)
@@ -840,6 +874,585 @@ class PolygonExtractionWidget(QWidget):
         self._set_field_tooltip(
             self.max_hole_area_ratio_label_widget, self.max_hole_area_ratio_spin, "max_hole_area_ratio"
         )
+        self._apply_bright_via_tooltips()
+
+    def _apply_bright_via_tooltips(self) -> None:
+        if not hasattr(self, "bright_via_diameter_min_spin"):
+            return
+        ru = self._ui_language == "ru"
+
+        def tt(ru_text: str, en_text: str) -> str:
+            return ru_text if ru else en_text
+
+        self.bright_via_diameter_min_spin.setToolTip(
+            tt(
+                "Минимальный допустимый размер переходного отверстия в пикселях.\n"
+                "Если значение слишком большое — маленькие via будут пропущены.\n"
+                "Если слишком маленькое — появится больше ложных срабатываний на шуме.\n"
+                "Обычно: 5–8 px.",
+                "Minimum via diameter in pixels (typ. 5–8).",
+            )
+        )
+        self.bright_via_diameter_max_spin.setToolTip(
+            tt(
+                "Максимальный допустимый размер via.\n"
+                "Если слишком маленькое — крупные via будут пропущены.\n"
+                "Если слишком большое — алгоритм начнёт принимать яркие фрагменты дорожек.\n"
+                "Обычно: 8–14 px.",
+                "Maximum via diameter in pixels (typ. 8–14).",
+            )
+        )
+        self.bright_via_clahe_clip_spin.setToolTip(
+            tt(
+                "Предел усиления локального контраста (CLAHE).\n"
+                "Больше значение — сильнее вытягиваются слабые детали, но растёт шум.\n"
+                "Меньше — картинка ровнее, но слабые via могут стать незаметнее.\n"
+                "Типично 1.5–3.5.",
+                "CLAHE clip limit; higher emphasizes weak details and noise.",
+            )
+        )
+        self.bright_via_clahe_tile_spin.setToolTip(
+            tt(
+                "Размер ячейки сетки CLAHE в пикселях.\n"
+                "Меньше — контраст подстраивается локальнее (мелкие объекты), больше шума на мелкой текстуре.\n"
+                "Больше — более глобально, меньше артефактов на зерне, но слабее локальный контраст.\n"
+                "Часто 6–12.",
+                "CLAHE tile size; smaller = more local adaptation.",
+            )
+        )
+        self.bright_via_median_kernel_spin.setToolTip(
+            tt(
+                "Размер медианного фильтра (нечётное число; 1 = отключено по смыслу).\n"
+                "Больше — сильнее подавление шума SEM, но мягче края via.\n"
+                "Меньше — лучше сохраняются острые via, выше риск ложных точек.\n"
+                "Типично 3.",
+                "Median blur kernel (odd); larger removes more noise and softens edges.",
+            )
+        )
+        self.bright_via_tophat_kernel_spin.setToolTip(
+            tt(
+                "Размер структурного элемента для белого top-hat (нечётное).\n"
+                "Больше — подчёркиваются более крупные яркие вкрапления, фон на большей шкале.\n"
+                "Меньше — чувствительнее к мелким пятнам и зерну.\n"
+                "Сопоставляйте с ожидаемым диаметром via.",
+                "White top-hat structuring size; match expected via scale.",
+            )
+        )
+        self.bright_via_dog_small_spin.setToolTip(
+            tt(
+                "Меньшая сигма Гаусса в разности гауссов (DoG).\n"
+                "Вместе с большой сигмой задаёт масштаб выделяемых ярких деталей.\n"
+                "Слишком большая малая сигма — больше отклика на мелкий шум.\n"
+                "Должна быть строго меньше «большой сигмы».",
+                "DoG small sigma; must be < large sigma.",
+            )
+        )
+        self.bright_via_dog_large_spin.setToolTip(
+            tt(
+                "Большая сигма Гаусса в DoG.\n"
+                "Больше значение — сильнее сглаживание «крупного» масштаба, иначе выделяется фон.\n"
+                "Меньше — остаётся больше мелких деталей в отклике.\n"
+                "Подбирайте пару с малой сигмой под размер via.",
+                "DoG large sigma; tune with small sigma for via size.",
+            )
+        )
+        self.bright_via_threshold_percentile_spin.setToolTip(
+            tt(
+                "Определяет, насколько ярким должен быть пиксель, чтобы попасть в маску отклика.\n"
+                "Большее значение → меньше ложных срабатываний, но больше пропусков.\n"
+                "Меньшее значение → выше полнота поиска, но больше шума.\n"
+                "Обычно: 97.5–99.2.",
+                "Response percentile threshold (typ. 97.5–99.2).",
+            )
+        )
+        self.bright_via_mask_combine_combo.setToolTip(
+            tt(
+                "ИЛИ — высокая полнота поиска, больше кандидатов.\n"
+                "И — строгий режим, меньше ложных срабатываний, но больше пропусков.\n"
+                "Обычно рекомендуется начинать с режима ИЛИ.",
+                "OR = high recall; AND = stricter overlap of top-hat and DoG masks.",
+            )
+        )
+        self.bright_via_min_area_factor_spin.setToolTip(
+            tt(
+                "Нижняя граница площади кандидата относительно площади идеального круга минимального диаметра.\n"
+                "Больше — отсекаются слишком маленькие пятна (часто шум).\n"
+                "Меньше — допускаются более мелкие объекты.\n"
+                "Меняйте, если стабильно теряются мелкие via или наоборот много «крошек».",
+                "Min area as a factor of π·(d_min/2)².",
+            )
+        )
+        self.bright_via_max_area_factor_spin.setToolTip(
+            tt(
+                "Верхняя граница площади кандидата относительно площади круга максимального диаметра.\n"
+                "Меньше — жёстче отсекаются крупные пятна (часто куски дорожек).\n"
+                "Больше — допускаются более крупные отклики.\n"
+                "Согласуйте с реальным размером via на SEM.",
+                "Max area factor relative to max diameter.",
+            )
+        )
+        self.bright_via_min_circularity_spin.setToolTip(
+            tt(
+                "Ожидаемая «круглость» контура (4π·area/perimeter²).\n"
+                "Низкие значения допускают вытянутые пятна (часто артефакты дорожек).\n"
+                "Высокие — ближе к диску, но реальные размытые via могут получать меньший балл.\n"
+                "Обычно 0.15–0.45 в зависимости от качества изображения.",
+                "Circularity expectation for blob shape (0–1).",
+            )
+        )
+        self.bright_via_min_aspect_spin.setToolTip(
+            tt(
+                "Минимальное отношение ширины bounding box к высоте.\n"
+                "Слишком большое — отсекаются слегка вытянутые via.\n"
+                "Слишком маленькое — пропускаются сильно вытянутые ложные объекты реже.\n"
+                "Для via обычно около 0.4–0.6.",
+                "Min aspect ratio w/h of bbox.",
+            )
+        )
+        self.bright_via_max_aspect_spin.setToolTip(
+            tt(
+                "Максимальное отношение сторон bbox.\n"
+                "Меньше — строже к вытянутым контурам (меньше дорожных «колбас»).\n"
+                "Больше — допускаются более вытянутые кандидаты.\n"
+                "Слишком большое — растут ложные на границах дорожек.",
+                "Max aspect ratio w/h of bbox.",
+            )
+        )
+        self.bright_via_bright_center_score_spin.setToolTip(
+            tt(
+                "Центр via должен быть ярче окружающей области (разница средних по диску и кольцу).\n"
+                "Увеличение значения уменьшает ложные срабатывания на слабом шуме,\n"
+                "но может пропускать слабые или размытые via.\n"
+                "Это жёсткий порог: ниже — кандидат отбрасывается сразу.",
+                "Hard minimum center-vs-ring brightness delta.",
+            )
+        )
+        self.bright_via_max_radial_asymmetry_spin.setToolTip(
+            tt(
+                "Проверяет симметричность яркости вокруг via (СКО по 8 направлениям).\n"
+                "Настоящее via обычно симметрично, край дорожки — нет.\n"
+                "Порог задаёт, насколько большой разброс ещё считается «похожим на via» в мягком режиме.\n"
+                "Меньше значение в мягком режиме сильнее снижает итоговую оценку при асимметрии.\n"
+                "Слишком жёсткий ручной отбор (если включить жёсткий режим) ведёт к пропускам на шуме.",
+                "Reference level for radial brightness asymmetry (std).",
+            )
+        )
+        self.bright_via_max_edge_likeness_spin.setToolTip(
+            tt(
+                "Ограничивает срабатывания на краях металлизации.\n"
+                "Меньше значение — сильнее штраф в мягком режиме за «краевой» профиль.\n"
+                "Больше — терпимее к via у границы дорожки.\n"
+                "С жёстким режимом (если включён) пары с метрикой выше порога отбрасываются сразу.",
+                "Edge-likeness cap / soft scale.",
+            )
+        )
+        self.bright_via_max_line_likeness_spin.setToolTip(
+            tt(
+                "Отсекает объекты, похожие на куски дорожек (анизотропия градиентов в окне).\n"
+                "Большее значение — мягче к вытянутым откликам, выше риск ложных срабатываний на трассы.\n"
+                "Меньшее — жёстче к линиям, но больше риск пропуска via, слитых с трассой.\n"
+                "В мягком режиме влияет на итоговый балл; в жёстком — и на немедленный отказ.",
+                "Line-likeness (structure tensor) cap / scale.",
+            )
+        )
+        self.bright_via_metal_constraint_combo.setToolTip(
+            tt(
+                "Определяет, использовать ли информацию о металлизации (Otsu+морфология).\n"
+                "Отключено — не учитывать металл.\n"
+                "Мягкая оценка — металл влияет только на итоговую оценку (бонус к баллу).\n"
+                "Жёсткий фильтр — кандидаты вне металла с низкой долей покрытия отбрасываются.\n"
+                "Если металл плохо виден, используйте «Отключено» или «Мягкая оценка».",
+                "Metal mask: disabled / soft score / strict reject.",
+            )
+        )
+        self.bright_via_metal_fraction_spin.setToolTip(
+            tt(
+                "Минимальная доля пикселей металла в окне вокруг кандидата для режима «Жёсткий фильтр».\n"
+                "Выше — принимаются только via, лежащие на металлизации по маске.\n"
+                "Ниже — больше кандидатов проходят, но растут ложные вне металла.\n"
+                "В мягком режиме на порог ориентироваться не обязательно: используется непрерывный бонус.",
+                "Min metal fraction for strict mode (0–1).",
+            )
+        )
+        self.bright_via_min_final_score_spin.setToolTip(
+            tt(
+                "Главный параметр отбора итоговых via по суммарной оценке 0…100 (форма + локальные метрики).\n"
+                "Увеличение → меньше ложных срабатываний, но больше пропусков.\n"
+                "Уменьшение → больше найденных via, но больше кандидатов ниже порога (жёлтые на отладке).\n"
+                "Обычно это один из самых важных параметров настройки.",
+                "Minimum composite score (0–100) to accept a via.",
+            )
+        )
+        self.bright_via_nms_distance_spin.setToolTip(
+            tt(
+                "Минимальное расстояние между двумя кандидатами после этапа слияния и подавления дублей.\n"
+                "Если слишком маленькое — одно via может быть найдено несколько раз с разных откликов.\n"
+                "Если слишком большое — соседние реальные via могут сливаться.\n"
+                "Связывайте с ожидаемым шагом растра via.",
+                "Non-maximum suppression distance in pixels.",
+            )
+        )
+        self.bright_via_show_rejected_checkbox.setToolTip(
+            tt(
+                "Если включено, на итоговом наложении в отладке рисуются и отклонённые кандидаты: "
+                "жёлтые — ниже порога итоговой оценки, красные — жёстко отброшенные по геометрии/контрасту/металлу.\n"
+                "Если выключено — видны только принятые (зелёные).",
+                "Show soft/hard rejected candidates on the debug overlay.",
+            )
+        )
+        self.bright_via_hard_asym_checkbox.setToolTip(
+            tt(
+                "Если включено: при превышении «максимальной радиальной асимметрии» кандидат сразу отбрасывается.\n"
+                "По умолчанию (выкл.) асимметрия влияет на балл, а не на мгновенный отказ.\n"
+                "Включайте только если уверенно настроили порог по этой метрике.",
+                "Hard-reject on radial asymmetry vs threshold.",
+            )
+        )
+        self.bright_via_hard_edge_checkbox.setToolTip(
+            tt(
+                "Если включено: при слишком высокой «похожести на край» кандидат сразу отбрасывается.\n"
+                "По умолчанию метрика только снижает итоговый балл.\n"
+                "Полезно, если остаются устойчивые ложные на кромках металла после настройки мягкого скоринга.",
+                "Hard-reject when edge-likeness exceeds cap.",
+            )
+        )
+        self.bright_via_hard_line_checkbox.setToolTip(
+            tt(
+                "Если включено: при слишком высокой линейности (анизотропии градиентов) — мгновенный отказ.\n"
+                "По умолчанию влияет на балл, чтобы не терять слабые круги на фоне трасс.\n"
+                "Включайте при массовых ложных вдоль дорожек.",
+                "Hard-reject when line-likeness exceeds cap.",
+            )
+        )
+        self.preview_bright_via_mask_button.setToolTip(
+            tt(
+                "Переключает профиль на поиск via, режим «яркий top-hat/DoG», "
+                "включает отладочные слои и открывает окно с картами (исходник, top-hat, DoG, маски, итог).",
+                "Switch to bright via mode and open debug map window.",
+            )
+        )
+        self.reset_bright_via_button.setToolTip(
+            tt(
+                "Сбрасывает параметры детектора к заводским значениям и запускает пересчёт (как при изменении настроек).",
+                "Reset bright via parameters to defaults and re-run.",
+            )
+        )
+        for w in (self.bright_via_diameter_range_widget,):
+            w.setToolTip(
+                tt(
+                    "Пара min/max: см. подсказки у полей минимума и максимума диаметра.",
+                    "Diameter range: see min and max tooltips.",
+                )
+            )
+        if hasattr(self, "recognition_mode_combo"):
+            self.recognition_mode_combo.setToolTip(
+                tt(
+                    "Выбор того, что автоматически ищется на изображении: отключение, via/контакты или маска металлизации.\n"
+                    "Параметры на панели меняются в зависимости от режима.",
+                    "What to run automatically: off, vias, or metal mask; panel shows matching parameters.",
+                )
+            )
+        if hasattr(self, "via_search_sensitivity_combo"):
+            self.via_search_sensitivity_combo.setToolTip(
+                tt(
+                    "Общий уровень агрессии поиска: «Низкая» — меньше ложных, больше пропусков; "
+                    "«Средняя» — баланс; «Высокая» — больше срабатываний и кандидатов.\n"
+                    "Меняет пороги и фильтры; в «Дополнительно» значения можно подправить вручную.",
+                    "Coarse sensitivity for via search; adjust advanced fields manually if needed.",
+                )
+            )
+        if hasattr(self, "via_show_detected_checkbox"):
+            self.via_show_detected_checkbox.setToolTip(
+                tt(
+                    "Показывать на изображении полигоны via, найденные автоматически.",
+                    "Show auto-detected via polygons on the image.",
+                )
+            )
+        if hasattr(self, "via_debug_gradient_map_checkbox"):
+            self.via_debug_gradient_map_checkbox.setToolTip(
+                tt(
+                    "Сохранять и показывать отладочные карты (градиент, маски) в окне «карта градиента» и при клике по отладке.",
+                    "Enable extra debug image maps in the gradient / inspect views.",
+                )
+            )
+        if getattr(self, "metal_preset_combo", None) is not None:
+            self.metal_preset_combo.setToolTip(
+                tt(
+                    "Готовый набор порогов и морфологии под тип слоя.\n"
+                    "«Стандартный» — универсальный баланс; «Плотная металлизация» — чуть агрессивнее к шуму; "
+                    "«Тонкие дорожки» — ниже минимальная ширина; «Шумное SEM» — жёстче отсев; "
+                    "«Консервативный» — меньше ложных, выше пороги длины/прямолинейности.",
+                    "Preset bundle for metal recovery.",
+                )
+            )
+        if getattr(self, "metal_sensitivity_slider", None) is not None:
+            self.metal_sensitivity_slider.setToolTip(
+                tt(
+                    "Единый регулятор чувствительности 0–100: увеличение добавляет пиксели в маску и чаще оставляет слабые дорожки, "
+                    "но усиливает ложные срабатывания на зерне и артефактах; уменьшение убирает шум, но может проглотить тусклые реальные проводники.\n"
+                    "Типичный диапазон 35–65; при «Шумном SEM» чаще 30–45, при контрастных кадрах 55–70.",
+                    "Unified sensitivity 0–100 for internal thresholds.",
+                )
+            )
+        if getattr(self, "metal_min_width_spin", None) is not None:
+            self.metal_min_width_spin.setToolTip(
+                tt(
+                    "Оценка эффективной ширины по маске (медиальное ядро): объекты уже порога отбрасываются как шумовые царапины.\n"
+                    "Увеличение убирает тонкие ложные сегменты, но может отрезать реальные узкие дорожки; уменьшение спасает тонкие линии, но пропускает больше мусора.\n"
+                    "Стартуйте с 6–10 px для тонких технологий и 10–14 px для грубого SEM.",
+                    "Minimum conductor width in pixels.",
+                )
+            )
+        if getattr(self, "metal_max_width_spin", None) is not None:
+            self.metal_max_width_spin.setToolTip(
+                tt(
+                    "Верхняя граница ширины: отсекает широкие заливки, контактные площадки и яркие «пятна», не являющиеся трассами.\n"
+                    "0 или пусто — без ограничения. Уменьшайте максимум, если в результат попадают крупные артефакты; увеличивайте, если режет широкие шины.\n"
+                    "Часто 40–120 px в зависимости от масштаба кадра.",
+                    "Maximum trace width; 0 = unlimited.",
+                )
+            )
+        if getattr(self, "metal_min_length_spin", None) is not None:
+            self.metal_min_length_spin.setToolTip(
+                tt(
+                    "Минимальная длина по ограничивающему прямоугольнику: короткие фрагменты травления и одиночные засветы отсекаются.\n"
+                    "Увеличение сильнее чистит шум; уменьшение сохраняет короткие, но реальные сегменты (перемычки, стабы).\n"
+                    "Рабочий диапазон обычно 18–40 px.",
+                    "Minimum trace length.",
+                )
+            )
+        if getattr(self, "metal_use_wide_gradient_checkbox", None) is not None:
+            self.metal_use_wide_gradient_checkbox.setToolTip(
+                tt(
+                    "Включает дополнительное восстановление широких проводников по ярким краям. Полезно для SEM, где ярко видны только границы проводника, "
+                    "а центр похож на фон. Может находить широкие дорожки, которые пропускает обычная бинаризация, но при слишком шумном изображении "
+                    "может добавить ложные срабатывания.",
+                    "Wide conductor recovery from bright edges (SEM).",
+                )
+            )
+        if getattr(self, "metal_wide_grad_radius_spin", None) is not None:
+            self.metal_wide_grad_radius_spin.setToolTip(
+                tt(
+                    "Сколько пикселей по обе стороны от яркого края используется для анализа профиля яркости. Увеличение помогает для широких и размытых "
+                    "проводников, но может захватывать соседние объекты.",
+                    "Gradient profile half-width in pixels.",
+                )
+            )
+        if getattr(self, "metal_wide_grad_conf_spin", None) is not None:
+            self.metal_wide_grad_conf_spin.setToolTip(
+                tt(
+                    "Насколько явно одна сторона края похожа на фон, а другая — на внутреннюю часть проводника. Увеличение делает режим строже и уменьшает "
+                    "ложные пары краёв, но может пропустить слабые проводники.",
+                    "Minimum direction confidence.",
+                )
+            )
+        if getattr(self, "metal_wide_grad_pair_len_spin", None) is not None:
+            self.metal_wide_grad_pair_len_spin.setToolTip(
+                tt(
+                    "Минимальная длина двух параллельных границ, чтобы они считались сторонами широкого проводника. Увеличение отсекает короткие шумовые линии, "
+                    "уменьшение помогает находить короткие проводники.",
+                    "Minimum parallel edge length for pairing.",
+                )
+            )
+        if getattr(self, "metal_wide_grad_parallel_spin", None) is not None:
+            self.metal_wide_grad_parallel_spin.setToolTip(
+                tt(
+                    "Максимальное отличие углов двух границ. Меньшее значение требует почти параллельных краёв, большее допускает искажённые SEM-границы.",
+                    "Parallelism tolerance in degrees.",
+                )
+            )
+        if getattr(self, "metal_wide_grad_gap_spin", None) is not None:
+            self.metal_wide_grad_gap_spin.setToolTip(
+                tt(
+                    "Позволяет соединять прерывистые яркие края. Увеличение помогает на шумных изображениях, но может ошибочно соединять разные объекты.",
+                    "Max gap for Hough line linking.",
+                )
+            )
+        if getattr(self, "metal_wide_grad_overlap_spin", None) is not None:
+            self.metal_wide_grad_overlap_spin.setToolTip(
+                tt(
+                    "Минимальная доля перекрытия двух границ по длине. Увеличение делает поиск пар строже, уменьшение допускает частично видимые края.",
+                    "Minimum overlap ratio of paired edges.",
+                )
+            )
+        if getattr(self, "metal_segmentation_method_combo", None) is not None:
+            self.metal_segmentation_method_combo.setToolTip(
+                tt(
+                    "По умолчанию — без глобальной пороговой сегментации: контуры строятся по границам на grayscale (Canny + локальная морфология), что лучше сохраняет топологию тонких проводников на SEM.\n"
+                    "Otsu / адаптивная — классическая бинаризация яркости (опционально). Гибрид — объединение граничной маски и Otsu, если нужны и островки по яркости.",
+                    "Default: grayscale edge-based mask (topology-first). Otsu/Adaptive: optional intensity thresholding. Hybrid: edges OR Otsu.",
+                )
+            )
+        if getattr(self, "metal_sensitivity_combo", None) is not None:
+            self.metal_sensitivity_combo.setToolTip(
+                tt(
+                    "Грубый уровень вместе со слайдером 0–100: «Низкая» — эрозия/порог жёстче, меньше ложных; «Высокая» — больше пикселей в маске.\n"
+                    "Используйте как быстрый сдвиг до тонкой подстройки слайдером.",
+                    "Coarse low/medium/high bias paired with slider.",
+                )
+            )
+        if getattr(self, "metal_show_conductors_checkbox", None) is not None:
+            self.metal_show_conductors_checkbox.setToolTip(
+                tt("Показывать принятые полигоны проводников на сцене редактора.", "Show accepted conductor polygons.")
+            )
+        if getattr(self, "metal_show_rejected_checkbox", None) is not None:
+            self.metal_show_rejected_checkbox.setToolTip(
+                tt(
+                    "Красным контуром показать отклонённые компоненты (после фильтров). Полезно понять, что алгоритм отбрасывает.",
+                    "Draw rejected candidates in red.",
+                )
+            )
+        if getattr(self, "metal_show_suspicious_checkbox", None) is not None:
+            self.metal_show_suspicious_checkbox.setToolTip(
+                tt(
+                    "Жёлтым — объекты, прошедшие фильтр, но с пограничными углами или прямолинейностью; проверьте вручную.",
+                    "Highlight borderline accepted traces in yellow.",
+                )
+            )
+        if getattr(self, "metal_show_border_checkbox", None) is not None:
+            self.metal_show_border_checkbox.setToolTip(
+                tt(
+                    "Синим — проводники, касающиеся края кадра (часто обрезаны SEM). Не ошибка, но требует осторожности при метриках.",
+                    "Highlight border-touching traces in blue.",
+                )
+            )
+        if getattr(self, "metal_show_mask_checkbox", None) is not None:
+            self.metal_show_mask_checkbox.setToolTip(
+                tt(
+                    "Включить цветное наложение поверх изображения по выбранному режиму отладки (маска, контуры, фильтр и т.д.).",
+                    "Enable debug / mask overlay on the image.",
+                )
+            )
+        if getattr(self, "metal_debug_visual_combo", None) is not None:
+            self.metal_debug_visual_combo.setToolTip(
+                tt(
+                    "Что именно рисуется в оверлее: итоговая смесь, сырая маска, контуры или этапы фильтрации.",
+                    "Which debug channel is shown in the overlay.",
+                )
+            )
+        if getattr(self, "metal_overlay_opacity_spin", None) is not None:
+            self.metal_overlay_opacity_spin.setToolTip(
+                tt("Прозрачность оверлея отладки/маски (0.05–1.0).", "Overlay opacity.")
+            )
+        if getattr(self, "metal_min_area_spin", None) is not None:
+            self.metal_min_area_spin.setToolTip(
+                tt(
+                    "Минимальная площадь компонента в px² после бинаризации; отсекает мелкие засветы.\n"
+                    "Увеличение — меньше шумовых островков; уменьшение — спасает тонкие, но короткие фрагменты.\n"
+                    "Часто 40–120.",
+                    "Minimum area filter.",
+                )
+            )
+        if getattr(self, "metal_max_area_spin", None) is not None:
+            self.metal_max_area_spin.setToolTip(
+                tt("Максимальная площадь (0 = нет лимита); режет крупные заливки.", "Maximum area, 0 = off.")
+            )
+        if getattr(self, "metal_min_perimeter_spin", None) is not None:
+            self.metal_min_perimeter_spin.setToolTip(
+                tt("Минимальный периметр контура; дополнительный отсев «крошки» вокруг реальных трасс.", "Minimum perimeter.")
+            )
+        if getattr(self, "metal_max_perimeter_spin", None) is not None:
+            self.metal_max_perimeter_spin.setToolTip(
+                tt("Максимальный периметр (0 = нет); для отсечения огромных некорректных компонентов.", "Maximum perimeter.")
+            )
+        if getattr(self, "metal_epsilon_spin", None) is not None:
+            self.metal_epsilon_spin.setToolTip(
+                tt(
+                    "Epsilon для Douglas–Peucker при упрощении цепочки контура перед проверками углов и топологии.\n"
+                    "Больше — меньше вершин, устойчивее к зубцам; меньше — точнее геометрия, но шумнее углы.",
+                    "Contour simplify epsilon.",
+                )
+            )
+        if getattr(self, "metal_min_points_spin", None) is not None:
+            self.metal_min_points_spin.setToolTip(
+                tt("Минимальное число вершин упрощённого полигона для принятия.", "Minimum vertex count.")
+            )
+        if getattr(self, "metal_min_angle_spin", None) is not None:
+            self.metal_min_angle_spin.setToolTip(
+                tt(
+                    "Подавляет острые «шипы» на контуре: вершины с меньшим внутренним углом выкидываются при упрощении.",
+                    "Minimum interior angle at simplified vertices.",
+                )
+            )
+        if getattr(self, "metal_approximation_checkbox", None) is not None:
+            self.metal_approximation_checkbox.setToolTip(
+                tt("Включить упрощение контура (approxPolyDP); выключите только для отладки сырой цепочки.", "Enable DP simplify.")
+            )
+        if getattr(self, "metal_hierarchy_combo", None) is not None:
+            self.metal_hierarchy_combo.setToolTip(
+                tt(
+                    "Полная иерархия (RETR_TREE) учитывает вложенность контуров; только внешние — быстрее и проще, если дырки не нужны.",
+                    "Contour hierarchy retrieval mode.",
+                )
+            )
+        if getattr(self, "metal_allowed_angles_combo", None) is not None:
+            self.metal_allowed_angles_combo.setToolTip(
+                tt(
+                    "Ограничение на углы трассировки после упрощения: ортогональ, 45°/90° или без ограничений.\n"
+                    "Жёстче режим — меньше ложных изломанных контуров, но риск отсечь слегка «кривую» реальную дорожку.",
+                    "Allowed routing angles.",
+                )
+            )
+        if getattr(self, "metal_angle_tolerance_spin", None) is not None:
+            self.metal_angle_tolerance_spin.setToolTip(
+                tt(
+                    "На сколько градусов можно отклониться от идеальных 0/45/90°, чтобы угол всё ещё считался допустимым.\n"
+                    "Увеличьте при шумном крае; уменьшите, если просачиваются диагональные артефакты. Типично 5–10°.",
+                    "Angular tolerance in degrees.",
+                )
+            )
+        if getattr(self, "metal_straightness_spin", None) is not None:
+            self.metal_straightness_spin.setToolTip(
+                tt(
+                    "Отношение «длина по minAreaRect» к периметру: низкие значения характерны для рыхлых, извилистых шумовых масок.\n"
+                    "Повышение отсекает пятна и ветвистый мусор; понижение спасает сложные, но реальные формы. Старт 0.55–0.7.",
+                    "Minimum straightness metric.",
+                )
+            )
+        if getattr(self, "metal_t_junction_checkbox", None) is not None:
+            self.metal_t_junction_checkbox.setToolTip(
+                tt(
+                    "Разрешать T-образные соединения в растровой маске (один связный компонент с разветвлением).\n"
+                    "Выключение слегка ужесточает отбор по выпуклым дефектам — полезно, если шум даёт ложные «тройники» внутри одного контура.",
+                    "Allow T-junction topology in mask components.",
+                )
+            )
+        if getattr(self, "metal_border_handling_combo", None) is not None:
+            self.metal_border_handling_combo.setToolTip(
+                tt(
+                    "«Игнорировать» — отбрасывать всё, что касается края кадра; «Принимать» — не отличать; "
+                    "«Помечать» — принять, но выделить отдельно (часто обрезанные проводники).",
+                    "How to treat image-border-touching components.",
+                )
+            )
+        if getattr(self, "metal_validity_checkbox", None) is not None:
+            self.metal_validity_checkbox.setToolTip(
+                tt(
+                    "Проверка простого замкнутого контура без самопересечений и лишних самокасаний на упрощённой цепочке.\n"
+                    "Отключайте только временно для отладки сырой векторизации — иначе в выдачу могут попасть некорректные полигоны.",
+                    "Validate simplified ring geometry.",
+                )
+            )
+        if getattr(self, "metal_morph_close_spin", None) is not None:
+            self.metal_morph_close_spin.setToolTip(
+                tt(
+                    "Радиус морфологического closing после порога: склеивает мелкие разрывы маски.\n"
+                    "Держите низким (2–4), иначе сливаются близкие несвязанные объекты.",
+                    "Closing radius; keep small.",
+                )
+            )
+        if getattr(self, "metal_morph_open_spin", None) is not None:
+            self.metal_morph_open_spin.setToolTip(
+                tt("Opening для удаления тонкого соли-and-pepper шума; 0 — отключено.", "Opening radius, 0 = off.")
+            )
+        if getattr(self, "metal_preview_mask_button", None) is not None:
+            self.metal_preview_mask_button.setToolTip(
+                tt("Переключить оверлей на бинарную маску и включить показ.", "Jump to binary mask overlay.")
+            )
+        if getattr(self, "metal_reset_params_button", None) is not None:
+            self.metal_reset_params_button.setToolTip(
+                tt("Сбросить параметры восстановления к значениям по умолчанию.", "Reset metal parameters to defaults.")
+            )
 
     def _update_via_size_controls_state(self) -> None:
         fixed_mode = normalize_via_size_mode(self.via_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
@@ -863,8 +1476,9 @@ class PolygonExtractionWidget(QWidget):
     def _update_via_threshold_controls_state(self) -> None:
         mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
         advanced = self._advanced_extraction_enabled()
-        blob_enabled = mode in {"hybrid", "blob"}
-        template_enabled = mode in {"hybrid", "template"}
+        bright_enabled = mode == VIA_SEARCH_MODE_HEURISTIC
+        blob_enabled = False
+        template_enabled = mode == VIA_SEARCH_MODE_TEMPLATE
         for label_widget, field_widget in (
             (self.via_min_score_label_widget, self.via_min_score_spin),
             (self.via_min_contrast_label_widget, self.via_min_contrast_spin),
@@ -880,30 +1494,49 @@ class PolygonExtractionWidget(QWidget):
         if self.via_templates_label_widget is not None:
             self.via_templates_label_widget.setVisible(template_enabled)
         self.via_templates_widget.setVisible(template_enabled)
+        if hasattr(self, "via_range_checkboxes_label_widget") and self.via_range_checkboxes_label_widget is not None:
+            self.via_range_checkboxes_label_widget.setVisible(advanced and not bright_enabled)
+        if hasattr(self, "via_range_checkboxes_widget"):
+            self.via_range_checkboxes_widget.setVisible(advanced and not bright_enabled)
 
         white_enabled = self.via_white_range_checkbox.isChecked()
         self.via_white_range_min_spin.setEnabled(white_enabled)
         self.via_white_range_max_spin.setEnabled(white_enabled)
         if self.via_white_range_label_widget is not None:
-            self.via_white_range_label_widget.setVisible(advanced and white_enabled)
-        self.via_white_range_widget.setVisible(advanced and white_enabled)
+            self.via_white_range_label_widget.setVisible(advanced and white_enabled and not bright_enabled)
+        self.via_white_range_widget.setVisible(advanced and white_enabled and not bright_enabled)
         black_enabled = self.via_black_range_checkbox.isChecked()
         self.via_black_range_min_spin.setEnabled(black_enabled)
         self.via_black_range_max_spin.setEnabled(black_enabled)
         if self.via_black_range_label_widget is not None:
-            self.via_black_range_label_widget.setVisible(advanced and black_enabled)
-        self.via_black_range_widget.setVisible(advanced and black_enabled)
+            self.via_black_range_label_widget.setVisible(advanced and black_enabled and not bright_enabled)
+        self.via_black_range_widget.setVisible(advanced and black_enabled and not bright_enabled)
+        if hasattr(self, "bright_via_group") and hasattr(self, "recognition_mode_combo"):
+            self.bright_via_group.setVisible(
+                self._active_extraction_profile == "vias"
+                and str(self.recognition_mode_combo.currentData() or "") == "via"
+            )
 
     def _update_extraction_profile_controls_state(self) -> None:
+        rec = str(self.recognition_mode_combo.currentData() or "conductors") if hasattr(self, "recognition_mode_combo") else "conductors"
         is_via_profile = self._active_extraction_profile == "vias"
         advanced = self._advanced_extraction_enabled()
-        self.basic_filters_group.setVisible(advanced)
-        self.geometry_filters_group.setVisible(advanced)
-        self.conductor_group.setEnabled(not is_via_profile)
-        self.conductor_group.setVisible(advanced and not is_via_profile)
-        self.via_group.setEnabled(is_via_profile)
-        self.via_group.setVisible(is_via_profile)
-        self.topology_group.setVisible(advanced and not is_via_profile)
+        show_legacy_via = is_via_profile and rec == "disabled"
+        conductors_recognition = rec == "conductors"
+        if hasattr(self, "advanced_extraction_checkbox"):
+            self.advanced_extraction_checkbox.setVisible(not conductors_recognition)
+        if conductors_recognition:
+            self.basic_filters_group.setVisible(False)
+            self.geometry_filters_group.setVisible(False)
+            self.topology_group.setVisible(False)
+        else:
+            self.basic_filters_group.setVisible(advanced)
+            self.geometry_filters_group.setVisible(advanced)
+            self.topology_group.setVisible(advanced and (not is_via_profile or rec == "conductors"))
+        self.conductor_group.setEnabled(False)
+        self.conductor_group.setVisible(False)
+        self.via_group.setEnabled(show_legacy_via)
+        self.via_group.setVisible(show_legacy_via)
         advanced_via_widgets = [
             (self.via_range_checkboxes_label_widget, self.via_range_checkboxes_widget),
             (self.via_white_range_label_widget, self.via_white_range_widget),
@@ -914,11 +1547,25 @@ class PolygonExtractionWidget(QWidget):
             (self.via_spot_line_suppression_label_widget, self.via_spot_line_suppression_spin),
             (self.via_roundness_label_widget, self.via_roundness_spin),
         ]
+        in_via_extraction = rec in ("via", "disabled")
         for label_widget, field_widget in advanced_via_widgets:
             if label_widget is not None:
-                label_widget.setVisible(advanced and is_via_profile)
-            field_widget.setVisible(advanced and is_via_profile)
+                label_widget.setVisible(advanced and is_via_profile and in_via_extraction)
+            field_widget.setVisible(advanced and is_via_profile and in_via_extraction)
+        if hasattr(self, "bright_via_group"):
+            self.bright_via_group.setVisible(is_via_profile and rec == "via")
+        self._sync_recognition_stack_visibility()
         self._update_via_threshold_controls_state()
+
+    def _sync_recognition_stack_visibility(self) -> None:
+        if not hasattr(self, "recognition_mode_combo") or not hasattr(self, "recognition_stack"):
+            return
+        data = str(self.recognition_mode_combo.currentData() or "conductors")
+        if data == "via":
+            self.recognition_stack.setVisible(False)
+        else:
+            self.recognition_stack.setVisible(True)
+            self.recognition_stack.setCurrentIndex(0 if data == "disabled" else 1)
 
     def _advanced_extraction_enabled(self) -> bool:
         return bool(hasattr(self, "advanced_extraction_checkbox") and self.advanced_extraction_checkbox.isChecked())
@@ -1215,8 +1862,10 @@ class PolygonExtractionWidget(QWidget):
 
     def _configure_compact_form(self, form: QFormLayout) -> None:
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        form.setVerticalSpacing(2)
+        form.setHorizontalSpacing(6)
 
     def _disable_spinbox_wheel_changes(self) -> None:
         for spinbox in self.findChildren(QAbstractSpinBox):
@@ -1702,7 +2351,11 @@ class PolygonExtractionWidget(QWidget):
             "max_via_height",
             "via_size_mode",
         }
-        return {key: value for key, value in payload.items() if key.startswith("via_") and key not in excluded_keys} | {
+        return {
+            key: value
+            for key, value in payload.items()
+            if (key.startswith("via_") or key.startswith("bright_via_")) and key not in excluded_keys
+        } | {
             "debug_enabled": self.debug_candidates_checkbox.isChecked()
         }
 
@@ -1720,6 +2373,33 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.via_min_edge_coverage_spin),
             QSignalBlocker(self.via_spot_line_suppression_spin),
             QSignalBlocker(self.via_template_min_score_spin),
+            QSignalBlocker(self.bright_via_diameter_min_spin),
+            QSignalBlocker(self.bright_via_diameter_max_spin),
+            QSignalBlocker(self.bright_via_clahe_clip_spin),
+            QSignalBlocker(self.bright_via_clahe_tile_spin),
+            QSignalBlocker(self.bright_via_median_kernel_spin),
+            QSignalBlocker(self.bright_via_tophat_kernel_spin),
+            QSignalBlocker(self.bright_via_dog_small_spin),
+            QSignalBlocker(self.bright_via_dog_large_spin),
+            QSignalBlocker(self.bright_via_threshold_percentile_spin),
+            QSignalBlocker(self.bright_via_mask_combine_combo),
+            QSignalBlocker(self.bright_via_min_area_factor_spin),
+            QSignalBlocker(self.bright_via_max_area_factor_spin),
+            QSignalBlocker(self.bright_via_min_circularity_spin),
+            QSignalBlocker(self.bright_via_min_aspect_spin),
+            QSignalBlocker(self.bright_via_max_aspect_spin),
+            QSignalBlocker(self.bright_via_bright_center_score_spin),
+            QSignalBlocker(self.bright_via_metal_constraint_combo),
+            QSignalBlocker(self.bright_via_metal_fraction_spin),
+            QSignalBlocker(self.bright_via_max_radial_asymmetry_spin),
+            QSignalBlocker(self.bright_via_max_edge_likeness_spin),
+            QSignalBlocker(self.bright_via_max_line_likeness_spin),
+            QSignalBlocker(self.bright_via_nms_distance_spin),
+            QSignalBlocker(self.bright_via_min_final_score_spin),
+            QSignalBlocker(self.bright_via_show_rejected_checkbox),
+            QSignalBlocker(self.bright_via_hard_asym_checkbox),
+            QSignalBlocker(self.bright_via_hard_edge_checkbox),
+            QSignalBlocker(self.bright_via_hard_line_checkbox),
             QSignalBlocker(self.debug_candidates_checkbox),
             QSignalBlocker(self.via_roundness_spin),
         ]
@@ -1761,6 +2441,110 @@ class PolygonExtractionWidget(QWidget):
                 float(payload.get("via_template_min_score", self.via_template_min_score_spin.value()))
             )
             self.via_roundness_spin.setValue(float(payload.get("via_min_roundness", self.via_roundness_spin.value())))
+            self.bright_via_diameter_min_spin.setValue(
+                int(payload.get("bright_via_diameter_min", self.bright_via_diameter_min_spin.value()))
+            )
+            self.bright_via_diameter_max_spin.setValue(
+                int(payload.get("bright_via_diameter_max", self.bright_via_diameter_max_spin.value()))
+            )
+            self.bright_via_clahe_clip_spin.setValue(
+                float(payload.get("bright_via_clahe_clip_limit", self.bright_via_clahe_clip_spin.value()))
+            )
+            self.bright_via_clahe_tile_spin.setValue(
+                int(payload.get("bright_via_clahe_tile_grid_size", self.bright_via_clahe_tile_spin.value()))
+            )
+            self.bright_via_median_kernel_spin.setValue(
+                int(payload.get("bright_via_median_blur_kernel", self.bright_via_median_kernel_spin.value()))
+            )
+            self.bright_via_tophat_kernel_spin.setValue(
+                int(payload.get("bright_via_tophat_kernel_size", self.bright_via_tophat_kernel_spin.value()))
+            )
+            self.bright_via_dog_small_spin.setValue(
+                float(payload.get("bright_via_dog_sigma_small", self.bright_via_dog_small_spin.value()))
+            )
+            self.bright_via_dog_large_spin.setValue(
+                float(payload.get("bright_via_dog_sigma_large", self.bright_via_dog_large_spin.value()))
+            )
+            self.bright_via_threshold_percentile_spin.setValue(
+                float(
+                    payload.get(
+                        "bright_via_threshold_percentile", self.bright_via_threshold_percentile_spin.value()
+                    )
+                )
+            )
+            combine_index = self.bright_via_mask_combine_combo.findData(
+                str(payload.get("bright_via_mask_combine_mode", self.bright_via_mask_combine_combo.currentData()))
+            )
+            if combine_index >= 0:
+                self.bright_via_mask_combine_combo.setCurrentIndex(combine_index)
+            self.bright_via_min_area_factor_spin.setValue(
+                float(payload.get("bright_via_min_area_factor", self.bright_via_min_area_factor_spin.value()))
+            )
+            self.bright_via_max_area_factor_spin.setValue(
+                float(payload.get("bright_via_max_area_factor", self.bright_via_max_area_factor_spin.value()))
+            )
+            self.bright_via_min_circularity_spin.setValue(
+                float(payload.get("bright_via_min_circularity", self.bright_via_min_circularity_spin.value()))
+            )
+            self.bright_via_min_aspect_spin.setValue(
+                float(payload.get("bright_via_min_aspect", self.bright_via_min_aspect_spin.value()))
+            )
+            self.bright_via_max_aspect_spin.setValue(
+                float(payload.get("bright_via_max_aspect", self.bright_via_max_aspect_spin.value()))
+            )
+            self.bright_via_bright_center_score_spin.setValue(
+                float(
+                    payload.get(
+                        "bright_via_bright_center_min_score",
+                        self.bright_via_bright_center_score_spin.value(),
+                    )
+                )
+            )
+            metal_mode = _normalize_bright_via_metal_constraint_mode(
+                payload.get("bright_via_metal_constraint_mode", self.bright_via_metal_constraint_combo.currentData())
+            )
+            metal_index = self.bright_via_metal_constraint_combo.findData(metal_mode)
+            if metal_index >= 0:
+                self.bright_via_metal_constraint_combo.setCurrentIndex(metal_index)
+            self.bright_via_metal_fraction_spin.setValue(
+                float(payload.get("bright_via_metal_fraction_min", self.bright_via_metal_fraction_spin.value()))
+            )
+            self.bright_via_max_radial_asymmetry_spin.setValue(
+                float(
+                    payload.get(
+                        "bright_via_max_radial_asymmetry",
+                        self.bright_via_max_radial_asymmetry_spin.value(),
+                    )
+                )
+            )
+            self.bright_via_max_edge_likeness_spin.setValue(
+                float(payload.get("bright_via_max_edge_likeness", self.bright_via_max_edge_likeness_spin.value()))
+            )
+            self.bright_via_max_line_likeness_spin.setValue(
+                float(payload.get("bright_via_max_line_likeness", self.bright_via_max_line_likeness_spin.value()))
+            )
+            self.bright_via_nms_distance_spin.setValue(
+                int(payload.get("bright_via_nms_distance", self.bright_via_nms_distance_spin.value()))
+            )
+            self.bright_via_min_final_score_spin.setValue(
+                float(payload.get("bright_via_min_final_score", self.bright_via_min_final_score_spin.value()))
+            )
+            self.bright_via_show_rejected_checkbox.setChecked(
+                bool(payload.get("bright_via_show_rejected", self.bright_via_show_rejected_checkbox.isChecked()))
+            )
+            self.bright_via_hard_asym_checkbox.setChecked(
+                bool(
+                    payload.get(
+                        "bright_via_hard_reject_on_asymmetry", self.bright_via_hard_asym_checkbox.isChecked()
+                    )
+                )
+            )
+            self.bright_via_hard_edge_checkbox.setChecked(
+                bool(payload.get("bright_via_hard_reject_on_edge", self.bright_via_hard_edge_checkbox.isChecked()))
+            )
+            self.bright_via_hard_line_checkbox.setChecked(
+                bool(payload.get("bright_via_hard_reject_on_line", self.bright_via_hard_line_checkbox.isChecked()))
+            )
             self.debug_candidates_checkbox.setChecked(
                 bool(payload.get("debug_enabled", self.debug_candidates_checkbox.isChecked()))
             )
@@ -1837,6 +2621,85 @@ class PolygonExtractionWidget(QWidget):
         self._update_via_threshold_controls_state()
         self._on_extraction_settings_changed()
 
+    def _select_bright_via_mode(self) -> None:
+        ridx = self.recognition_mode_combo.findData("via")
+        if ridx >= 0 and self.recognition_mode_combo.currentIndex() != ridx:
+            self.recognition_mode_combo.setCurrentIndex(ridx)
+        mode_index = self.via_search_mode_combo.findData(VIA_SEARCH_MODE_HEURISTIC)
+        if mode_index >= 0 and self.via_search_mode_combo.currentIndex() != mode_index:
+            self.via_search_mode_combo.setCurrentIndex(mode_index)
+
+    def _preview_bright_via_mask(self, *_args) -> None:
+        self._select_bright_via_mode()
+        self.debug_candidates_checkbox.setChecked(True)
+        self._show_gradient_debug_window()
+
+    def _reset_bright_via_parameters(self, *_args) -> None:
+        blockers = [
+            QSignalBlocker(self.bright_via_diameter_min_spin),
+            QSignalBlocker(self.bright_via_diameter_max_spin),
+            QSignalBlocker(self.bright_via_clahe_clip_spin),
+            QSignalBlocker(self.bright_via_clahe_tile_spin),
+            QSignalBlocker(self.bright_via_median_kernel_spin),
+            QSignalBlocker(self.bright_via_tophat_kernel_spin),
+            QSignalBlocker(self.bright_via_dog_small_spin),
+            QSignalBlocker(self.bright_via_dog_large_spin),
+            QSignalBlocker(self.bright_via_threshold_percentile_spin),
+            QSignalBlocker(self.bright_via_mask_combine_combo),
+            QSignalBlocker(self.bright_via_min_area_factor_spin),
+            QSignalBlocker(self.bright_via_max_area_factor_spin),
+            QSignalBlocker(self.bright_via_min_circularity_spin),
+            QSignalBlocker(self.bright_via_min_aspect_spin),
+            QSignalBlocker(self.bright_via_max_aspect_spin),
+            QSignalBlocker(self.bright_via_bright_center_score_spin),
+            QSignalBlocker(self.bright_via_metal_constraint_combo),
+            QSignalBlocker(self.bright_via_metal_fraction_spin),
+            QSignalBlocker(self.bright_via_max_radial_asymmetry_spin),
+            QSignalBlocker(self.bright_via_max_edge_likeness_spin),
+            QSignalBlocker(self.bright_via_max_line_likeness_spin),
+            QSignalBlocker(self.bright_via_nms_distance_spin),
+            QSignalBlocker(self.bright_via_min_final_score_spin),
+            QSignalBlocker(self.bright_via_show_rejected_checkbox),
+            QSignalBlocker(self.bright_via_hard_asym_checkbox),
+            QSignalBlocker(self.bright_via_hard_edge_checkbox),
+            QSignalBlocker(self.bright_via_hard_line_checkbox),
+        ]
+        try:
+            self.bright_via_diameter_min_spin.setValue(6)
+            self.bright_via_diameter_max_spin.setValue(8)
+            self.bright_via_clahe_clip_spin.setValue(2.0)
+            self.bright_via_clahe_tile_spin.setValue(8)
+            self.bright_via_median_kernel_spin.setValue(3)
+            self.bright_via_tophat_kernel_spin.setValue(11)
+            self.bright_via_dog_small_spin.setValue(0.8)
+            self.bright_via_dog_large_spin.setValue(2.0)
+            self.bright_via_threshold_percentile_spin.setValue(99.0)
+            combine_index = self.bright_via_mask_combine_combo.findData("OR")
+            if combine_index >= 0:
+                self.bright_via_mask_combine_combo.setCurrentIndex(combine_index)
+            self.bright_via_min_area_factor_spin.setValue(0.45)
+            self.bright_via_max_area_factor_spin.setValue(1.8)
+            self.bright_via_min_circularity_spin.setValue(0.30)
+            self.bright_via_min_aspect_spin.setValue(0.45)
+            self.bright_via_max_aspect_spin.setValue(2.2)
+            self.bright_via_bright_center_score_spin.setValue(6.0)
+            metal_index = self.bright_via_metal_constraint_combo.findData("soft")
+            if metal_index >= 0:
+                self.bright_via_metal_constraint_combo.setCurrentIndex(metal_index)
+            self.bright_via_metal_fraction_spin.setValue(0.3)
+            self.bright_via_max_radial_asymmetry_spin.setValue(18.0)
+            self.bright_via_max_edge_likeness_spin.setValue(35.0)
+            self.bright_via_max_line_likeness_spin.setValue(65.0)
+            self.bright_via_nms_distance_spin.setValue(5)
+            self.bright_via_min_final_score_spin.setValue(38.0)
+            self.bright_via_show_rejected_checkbox.setChecked(True)
+            self.bright_via_hard_asym_checkbox.setChecked(False)
+            self.bright_via_hard_edge_checkbox.setChecked(False)
+            self.bright_via_hard_line_checkbox.setChecked(False)
+        finally:
+            del blockers
+        self._on_extraction_settings_changed()
+
     def _add_color_selection(self, row: int, rgb: tuple[int, int, int]) -> None:
         entries = self._color_selection_entries(row)
         for entry in entries:
@@ -1885,7 +2748,12 @@ class PolygonExtractionWidget(QWidget):
     def _on_via_debug_requested(self, polygon: PolygonData) -> None:
         current_state = self._workspace.current_state
         candidates = list(current_state.debug_candidates) if current_state is not None else []
-        title = "Отладка via" if self._ui_language == "ru" else "Via debug"
+        is_via_like = (polygon.shape_hint or "") == "box" or (polygon.category or "") == "via"
+        title = (
+            ("Отладка via" if self._ui_language == "ru" else "Via debug")
+            if is_via_like
+            else ("Отладка полигона" if self._ui_language == "ru" else "Polygon debug")
+        )
         if not candidates:
             message = (
                 "Для текущего кадра нет отладочных данных. Включите 'Проверять по клику' и дождитесь повторной обработки."
@@ -1921,14 +2789,54 @@ class PolygonExtractionWidget(QWidget):
             f"{'Метод' if self._ui_language == 'ru' else 'Method'}: {self._debug_method_text(source)}",
             f"{'Критерий' if self._ui_language == 'ru' else 'Criterion'}: {self._debug_criterion_text(source, reason, accepted)}",
             f"{'Причина' if self._ui_language == 'ru' else 'Reason'}: {reason or '-'}",
-            f"{'Оценка' if self._ui_language == 'ru' else 'Score'}: {float(getattr(candidate, 'score', 0.0)):.1f}",
-            f"{'Округлость' if self._ui_language == 'ru' else 'Roundness'}: {float(getattr(candidate, 'roundness', 0.0)):.1f}",
+        ]
+        if is_via_like:
+            lines += [
+                f"{'Оценка' if self._ui_language == 'ru' else 'Score'}: {float(getattr(candidate, 'score', 0.0)):.1f}",
+                f"{'Округлость' if self._ui_language == 'ru' else 'Roundness'}: {float(getattr(candidate, 'roundness', 0.0)):.1f}",
+            ]
+        else:
+            area_v = float(getattr(candidate, "area", 0.0) or 0.0)
+            per_v = float(getattr(candidate, "perimeter", 0.0) or 0.0)
+            ew = float(getattr(candidate, "effective_width", 0.0) or 0.0)
+            wm = str(getattr(candidate, "width_metric", "") or "")
+            wline = f"{'Оценка ширины' if self._ui_language == 'ru' else 'Width estimate'}: {ew:.2f} px"
+            if wm:
+                wline += f" ({wm})"
+            lines += [
+                f"{'Площадь' if self._ui_language == 'ru' else 'Area'}: {area_v:.1f} px²",
+                f"{'Периметр' if self._ui_language == 'ru' else 'Perimeter'}: {per_v:.1f} px",
+                wline,
+            ]
+        lines += [
             f"{'Размер кандидата' if self._ui_language == 'ru' else 'Candidate size'}: {int(bbox[2])} x {int(bbox[3])} px",
             f"{'Позиция' if self._ui_language == 'ru' else 'Position'}: x={int(bbox[0])}, y={int(bbox[1])}",
         ]
         message = "\n".join(lines)
         self._append_log(message.replace("\n", " | "))
         QMessageBox.information(self, title, message)
+
+    def _on_metal_overlay_detail_requested(self, layer_key: str, reason: str) -> None:
+        ru = self._ui_language == "ru"
+        titles = {
+            "rejected": "Отклонённый проводник" if ru else "Rejected conductor",
+            "suspicious": "Сомнительный проводник" if ru else "Suspicious conductor",
+            "border": "Проводник у границы кадра" if ru else "Border-touching conductor",
+            "wide_pairs_suspicious": "Широкий проводник (сомнительно)" if ru else "Wide trace (suspicious)",
+            "wide_pairs_rejected": "Широкий проводник (отклонён)" if ru else "Wide trace (rejected)",
+        }
+        title = titles.get(layer_key, "Металлизация" if ru else "Metal recovery")
+        r = (reason or "").strip()
+        if not r:
+            body = (
+                "Для этого слоя подробная причина не сохранена."
+                if ru
+                else "No detailed reason was stored for this overlay."
+            )
+        else:
+            body = f"{'Причина' if ru else 'Reason'}:\n{r}"
+        self._append_log(f"{title}: {r or body}")
+        QMessageBox.information(self, title, body)
 
     def _on_middle_preview_hold_changed(self, active: bool) -> None:
         should_show_source = bool(active and self._is_filters_tab_active())
@@ -1996,6 +2904,20 @@ class PolygonExtractionWidget(QWidget):
             "conductor_gradient_elevation",
             "spot_response",
             "spot_response_dark",
+            "raw_gray",
+            "processed",
+            "tophat",
+            "dog",
+            "tophat_mask",
+            "dog_mask",
+            "via_mask",
+            "candidate_mask",
+            "metal_mask",
+            "radial_symmetry",
+            "edge_likeness",
+            "line_likeness",
+            "distance_to_edge",
+            "final_overlay",
             "mask",
         ]
         pretty_names = {
@@ -2011,6 +2933,20 @@ class PolygonExtractionWidget(QWidget):
             ),
             "spot_response": "Spot response (bright)" if self._ui_language != "ru" else "Отклик (светлые)",
             "spot_response_dark": "Spot response (dark)" if self._ui_language != "ru" else "Отклик (тёмные)",
+            "raw_gray": "Normalized input" if self._ui_language != "ru" else "Исходное (нормализовано 0–255)",
+            "processed": "Processed" if self._ui_language != "ru" else "После предобработки",
+            "tophat": "Top-hat response" if self._ui_language != "ru" else "Top-hat отклик",
+            "dog": "DoG response" if self._ui_language != "ru" else "DoG отклик",
+            "tophat_mask": "Top-hat mask" if self._ui_language != "ru" else "Top-hat маска",
+            "dog_mask": "DoG mask" if self._ui_language != "ru" else "DoG маска",
+            "via_mask": "Combined mask (OR/AND)" if self._ui_language != "ru" else "Маска OR/AND (порог)",
+            "candidate_mask": "Candidate union" if self._ui_language != "ru" else "Маска кандидатов (объединение)",
+            "metal_mask": "Metal mask" if self._ui_language != "ru" else "Маска металла",
+            "radial_symmetry": "Radial asymmetry" if self._ui_language != "ru" else "Радиальная асимметрия",
+            "edge_likeness": "Edge-likeness" if self._ui_language != "ru" else "Похожесть на край",
+            "line_likeness": "Line-likeness" if self._ui_language != "ru" else "Линейность",
+            "distance_to_edge": "Distance to edge" if self._ui_language != "ru" else "Дистанция до края",
+            "final_overlay": "Final overlay" if self._ui_language != "ru" else "Итоговый overlay",
             "mask": "Mask" if self._ui_language != "ru" else "Маска",
         }
         seen: set[str] = set()
@@ -2080,7 +3016,22 @@ class PolygonExtractionWidget(QWidget):
             self.polygon_editor.set_gradient_overlay_opacity(float(value))
 
     def _refresh_gradient_overlay(self) -> None:
-        if not hasattr(self, "polygon_editor") or not hasattr(self, "gradient_overlay_checkbox"):
+        if not hasattr(self, "polygon_editor"):
+            return
+        rec = (
+            str(self.recognition_mode_combo.currentData() or "")
+            if hasattr(self, "recognition_mode_combo")
+            else ""
+        )
+        if rec == "conductors":
+            if hasattr(self, "metal_show_mask_checkbox") and self.metal_show_mask_checkbox.isChecked():
+                _st = self._workspace.current_state
+                _maps: dict = getattr(_st, "debug_gradient_maps", None) or {} if _st is not None else {}
+                if any(k in _maps for k in ("metal_filtered_mask", "metal_binary_mask", "metal_mask")):
+                    self._apply_metal_visual_overlay()
+                    return
+        if not hasattr(self, "gradient_overlay_checkbox"):
+            self.polygon_editor.clear_gradient_overlay()
             return
         if not self.gradient_overlay_checkbox.isChecked():
             self.polygon_editor.clear_gradient_overlay()
@@ -2098,6 +3049,61 @@ class PolygonExtractionWidget(QWidget):
             self.polygon_editor.clear_gradient_overlay()
             return
         self.polygon_editor.set_gradient_overlay(overlay, float(self.gradient_overlay_opacity_spin.value()))
+
+    def _apply_metal_visual_overlay(self) -> None:
+        if not hasattr(self, "polygon_editor"):
+            return
+        current_state = self._workspace.current_state
+        if current_state is None:
+            self.polygon_editor.clear_gradient_overlay()
+            return
+        maps: dict = getattr(current_state, "debug_gradient_maps", None) or {}
+        mode = (
+            str(self.metal_debug_visual_combo.currentData() or "overlay")
+            if hasattr(self, "metal_debug_visual_combo")
+            else "overlay"
+        )
+        op = float(self.metal_overlay_opacity_spin.value()) if hasattr(self, "metal_overlay_opacity_spin") else 0.45
+        try:
+            if mode == "overlay":
+                src = current_state.source_image
+                if src is None:
+                    self.polygon_editor.clear_gradient_overlay()
+                    return
+                vis = np.asarray(src)
+                if vis.ndim == 2:
+                    vis = cv2.cvtColor(vis, cv2.COLOR_GRAY2BGR)
+                m = maps.get("metal_filtered_mask") or maps.get("metal_binary_mask") or maps.get("metal_mask")
+                if m is None or np.asarray(m).size == 0:
+                    self.polygon_editor.clear_gradient_overlay()
+                    return
+                binm = (np.asarray(m) > 0).astype(np.uint8)
+                tint = np.zeros_like(vis)
+                tint[:, :, 1] = binm * 200
+                tint[:, :, 0] = binm * 40
+                out = cv2.addWeighted(vis, 1.0 - 0.55 * op, tint, 0.55 * op, 0)
+                if current_state and getattr(current_state, "polygons", None):
+                    for poly in current_state.polygons:
+                        if str(getattr(poly, "category", "")) != "metal_wide_gradient":
+                            continue
+                        if len(poly.points) < 2:
+                            continue
+                        pts = np.array([(int(x), int(y)) for x, y in poly.points], dtype=np.int32).reshape(
+                            -1, 1, 2
+                        )
+                        cv2.polylines(out, [pts], True, (255, 120, 40), 2)
+                self.polygon_editor.set_gradient_overlay(out, 1.0)
+                return
+            arr = maps.get(mode)
+            if arr is None:
+                self.polygon_editor.clear_gradient_overlay()
+                return
+            image = np.asarray(arr)
+            if image.ndim == 2:
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            self.polygon_editor.set_gradient_overlay(image, min(1.0, max(0.05, op)))
+        except Exception:  # pragma: no cover
+            self.polygon_editor.clear_gradient_overlay()
 
     def _build_gradient_overlay_image(self, source_image: np.ndarray) -> np.ndarray | None:
         from .application.use_cases.processing import (
@@ -2272,6 +3278,10 @@ class PolygonExtractionWidget(QWidget):
                 ),
                 "roundness": ("округлость ниже заданного порога", "roundness is below the configured threshold"),
                 "empty_geometry": ("пустая геометрия кандидата", "candidate geometry is empty"),
+                "min_polygon_width": (
+                    "Отклонено: ширина меньше минимальной",
+                    "rejected: width below the configured minimum",
+                ),
             }
             pair = rejection_labels.get(reason)
             if pair is not None:
@@ -2410,7 +3420,37 @@ class PolygonExtractionWidget(QWidget):
         self._render_pipeline_parameters(self.pipeline_list.currentRow())
         self._auto_apply_pipeline()
 
+    def _on_epsilon_spin_value_changed(self, *_args) -> None:
+        if hasattr(self, "epsilon_slider"):
+            self.epsilon_slider.blockSignals(True)
+            try:
+                self.epsilon_slider.setValue(
+                    min(1000, max(0, int(round(self.epsilon_spin.value() * 100.0))))
+                )
+            finally:
+                self.epsilon_slider.blockSignals(False)
+        self._on_extraction_settings_changed()
+
+    def _on_epsilon_slider_value_changed(self, value: int) -> None:
+        self.epsilon_spin.blockSignals(True)
+        try:
+            self.epsilon_spin.setValue(value / 100.0)
+        finally:
+            self.epsilon_spin.blockSignals(False)
+        self._on_extraction_settings_changed()
+
     def _on_extraction_settings_changed(self, *_args) -> None:
+        # Stop in-flight preview immediately (cooperative cancel); keep prepared-image
+        # workers running — pipeline / source unchanged.
+        self._abort_in_flight_interactive_processing(preview=True, prepared=False)
+        if not hasattr(self, "_extraction_settings_debounce"):
+            self._extraction_settings_debounce = QTimer(self)
+            self._extraction_settings_debounce.setSingleShot(True)
+            self._extraction_settings_debounce.timeout.connect(self._flush_extraction_settings_changed)
+        self._extraction_settings_debounce.stop()
+        self._extraction_settings_debounce.start(120)
+
+    def _flush_extraction_settings_changed(self) -> None:
         if hasattr(self, "via_white_range_checkbox"):
             self._update_via_threshold_controls_state()
         self._store_active_extraction_profile_settings()
@@ -2419,6 +3459,18 @@ class PolygonExtractionWidget(QWidget):
             self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
         self._refresh_gradient_overlay()
         self._auto_apply_pipeline()
+
+    def _on_via_search_method_changed(self, *_args) -> None:
+        if hasattr(self, "bright_via_mode_stack"):
+            self.bright_via_mode_stack.setCurrentIndex(
+                1 if self.via_search_mode_combo.currentData() == VIA_SEARCH_MODE_TEMPLATE else 0
+            )
+
+    def _sync_via_diameter_size_mode(self, *_args) -> None:
+        if hasattr(self, "via_size_mode_combo") and hasattr(self, "via_diameter_size_mode_combo"):
+            with QSignalBlocker(self.via_size_mode_combo):
+                self.via_size_mode_combo.setCurrentIndex(self.via_diameter_size_mode_combo.currentIndex())
+        self._on_via_size_mode_changed()
 
     def _on_via_size_mode_changed(self, *_args) -> None:
         self._update_via_size_controls_state()
@@ -2431,20 +3483,14 @@ class PolygonExtractionWidget(QWidget):
         self._on_extraction_settings_changed()
 
     def _on_extraction_profile_changed(self, *_args) -> None:
-        if self._ignore_extraction_profile_change:
-            return
-        self._store_active_extraction_profile_settings()
-        profile = str(self.extraction_profile_combo.currentData() or "conductors")
-        self._active_extraction_profile = profile
-        self._set_extraction_settings(self._contour_settings_profiles[profile])
-        self._update_extraction_profile_controls_state()
-        self._refresh_gradient_overlay()
-        self._auto_apply_pipeline()
+        """Legacy hook; profile is controlled by recognition mode."""
 
     def _store_active_extraction_profile_settings(self) -> None:
-        if not hasattr(self, "extraction_profile_combo"):
+        if not hasattr(self, "recognition_mode_combo"):
             return
-        profile = str(self._active_extraction_profile or self.extraction_profile_combo.currentData() or "conductors")
+        rec = str(self.recognition_mode_combo.currentData() or "conductors")
+        profile = "vias" if rec == "via" else "conductors"
+        self._active_extraction_profile = profile
         settings = self._current_contour_settings()
         settings.extraction_profile = profile
         settings.object_type = "via" if profile == "vias" else "conductor"
@@ -2561,6 +3607,9 @@ class PolygonExtractionWidget(QWidget):
 
     def _choose_selected_color(self) -> None:
         self._choose_color("selected_color", self.selected_color_button)
+
+    def _choose_conductor_hover_highlight_color(self) -> None:
+        self._choose_color("conductor_hover_highlight_color", self.conductor_hover_highlight_color_button)
 
     def _choose_vertex_color(self) -> None:
         self._choose_color("vertex_color", self.vertex_color_button)
@@ -2754,7 +3803,23 @@ class PolygonExtractionWidget(QWidget):
             return
         if hasattr(self, "auto_apply_checkbox") and not self.auto_apply_checkbox.isChecked():
             return
-        self.process_current_image(debounced=True)
+        self._abort_in_flight_interactive_processing(preview=True, prepared=True)
+        self.process_current_image(debounced=False)
+
+    def _try_extract_if_recognition_enabled(self) -> None:
+        if not hasattr(self, "recognition_mode_combo"):
+            return
+        if str(self.recognition_mode_combo.currentData() or "") == "disabled":
+            return
+        current_path = self._workspace.current_image_path
+        if not current_path:
+            return
+        state = self._workspace.current_state
+        if state is None or state.image_path != current_path or state.preprocessed_image is None:
+            return
+        if state.pipeline_config != self.get_pipeline():
+            return
+        self.process_current_image(debounced=False)
 
     def _start_auto_tune_from_reference(self) -> None:
         current_state = self._workspace.current_state
@@ -2820,18 +3885,16 @@ class PolygonExtractionWidget(QWidget):
 
     def _set_extraction_settings(self, settings: ContourExtractionSettings) -> None:
         blockers = [
-            QSignalBlocker(self.extraction_profile_combo),
-            QSignalBlocker(self.algorithm_backend_combo),
-            QSignalBlocker(self.result_shape_combo),
-            QSignalBlocker(self.sem_noise_combo),
             QSignalBlocker(self.retrieval_mode_combo),
             QSignalBlocker(self.approximation_mode_combo),
             QSignalBlocker(self.epsilon_spin),
+            QSignalBlocker(self.epsilon_slider),
             QSignalBlocker(self.epsilon_relative_checkbox),
             QSignalBlocker(self.min_area_spin),
             QSignalBlocker(self.max_area_spin),
             QSignalBlocker(self.min_perimeter_spin),
             QSignalBlocker(self.min_points_spin),
+            QSignalBlocker(self.min_polygon_width_spin),
             QSignalBlocker(self.max_perimeter_spin),
             QSignalBlocker(self.min_bbox_width_spin),
             QSignalBlocker(self.max_bbox_width_spin),
@@ -2870,24 +3933,78 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.max_hole_area_ratio_spin),
             QSignalBlocker(self.advanced_extraction_checkbox),
         ]
+        for _mw in (
+            "metal_preset_combo",
+            "metal_sensitivity_slider",
+            "metal_min_width_spin",
+            "metal_max_width_spin",
+            "metal_min_length_spin",
+            "metal_use_wide_gradient_checkbox",
+            "metal_segmentation_method_combo",
+            "metal_sensitivity_combo",
+            "metal_show_conductors_checkbox",
+            "metal_show_rejected_checkbox",
+            "metal_show_suspicious_checkbox",
+            "metal_show_border_checkbox",
+            "metal_show_mask_checkbox",
+            "metal_debug_visual_combo",
+            "metal_overlay_opacity_spin",
+            "metal_min_area_spin",
+            "metal_max_area_spin",
+            "metal_min_perimeter_spin",
+            "metal_max_perimeter_spin",
+            "metal_epsilon_spin",
+            "metal_min_points_spin",
+            "metal_min_angle_spin",
+            "metal_approximation_checkbox",
+            "metal_hierarchy_combo",
+            "metal_allowed_angles_combo",
+            "metal_angle_tolerance_spin",
+            "metal_straightness_spin",
+            "metal_t_junction_checkbox",
+            "metal_border_handling_combo",
+            "metal_validity_checkbox",
+            "metal_morph_close_spin",
+            "metal_morph_open_spin",
+            "metal_wide_grad_radius_spin",
+            "metal_wide_grad_conf_spin",
+            "metal_wide_grad_pair_len_spin",
+            "metal_wide_grad_parallel_spin",
+            "metal_wide_grad_gap_spin",
+            "metal_wide_grad_overlap_spin",
+            "metal_advanced_group",
+        ):
+            _w = getattr(self, _mw, None)
+            if _w is not None:
+                blockers.append(QSignalBlocker(_w))
+        if hasattr(self, "recognition_mode_combo"):
+            blockers.append(QSignalBlocker(self.recognition_mode_combo))
+        if hasattr(self, "via_search_sensitivity_combo"):
+            blockers.append(QSignalBlocker(self.via_search_sensitivity_combo))
+        if hasattr(self, "via_show_detected_checkbox"):
+            blockers.append(QSignalBlocker(self.via_show_detected_checkbox))
+        if hasattr(self, "via_debug_gradient_map_checkbox"):
+            blockers.append(QSignalBlocker(self.via_debug_gradient_map_checkbox))
         try:
-            profile_index = self.extraction_profile_combo.findData(settings.extraction_profile)
-            if profile_index >= 0:
-                self._ignore_extraction_profile_change = True
-                self.extraction_profile_combo.setCurrentIndex(profile_index)
-                self._ignore_extraction_profile_change = False
-            self._active_extraction_profile = str(settings.extraction_profile or self._active_extraction_profile)
-            backend_index = self.algorithm_backend_combo.findData(
-                normalize_algorithm_backend(settings.algorithm_backend)
-            )
-            if backend_index >= 0:
-                self.algorithm_backend_combo.setCurrentIndex(backend_index)
-            shape_index = self.result_shape_combo.findData(settings.output_mode)
-            if shape_index >= 0:
-                self.result_shape_combo.setCurrentIndex(shape_index)
-            noise_index = self.sem_noise_combo.findData(settings.sem_noise_level)
-            if noise_index >= 0:
-                self.sem_noise_combo.setCurrentIndex(noise_index)
+            prof = str(getattr(settings, "extraction_profile", "conductors") or "conductors")
+            rm = normalize_recognition_mode(getattr(settings, "recognition_mode", "conductors"))
+            if prof == "vias" or (getattr(settings, "object_type", "conductor") == "via" and rm != "disabled"):
+                rdata = "via"
+            elif rm == "disabled":
+                rdata = "disabled"
+            else:
+                rdata = "conductors"
+            if hasattr(self, "recognition_mode_combo"):
+                ridx = self.recognition_mode_combo.findData(rdata)
+                if ridx >= 0:
+                    self.recognition_mode_combo.setCurrentIndex(ridx)
+            if hasattr(self, "recognition_stack"):
+                if rdata == "via":
+                    self.recognition_stack.setVisible(False)
+                else:
+                    self.recognition_stack.setVisible(True)
+                    self.recognition_stack.setCurrentIndex(0 if rdata == "disabled" else 1)
+            self._active_extraction_profile = "vias" if rdata == "via" else "conductors"
             retrieval_index = self.retrieval_mode_combo.findData(settings.retrieval_mode)
             if retrieval_index >= 0:
                 self.retrieval_mode_combo.setCurrentIndex(retrieval_index)
@@ -2895,12 +4012,17 @@ class PolygonExtractionWidget(QWidget):
             if approximation_index >= 0:
                 self.approximation_mode_combo.setCurrentIndex(approximation_index)
             self.epsilon_spin.setValue(float(settings.epsilon))
+            if hasattr(self, "epsilon_slider"):
+                self.epsilon_slider.setValue(
+                    min(1000, max(0, int(round(float(settings.epsilon) * 100.0))))
+                )
             self.epsilon_relative_checkbox.setChecked(bool(settings.epsilon_relative))
             self.min_area_spin.setValue(float(settings.min_area))
             self.max_area_spin.setValue(0.0 if settings.max_area is None else float(settings.max_area))
             self.min_perimeter_spin.setValue(float(settings.min_perimeter))
             self.max_perimeter_spin.setValue(0.0 if settings.max_perimeter is None else float(settings.max_perimeter))
             self.min_points_spin.setValue(int(settings.min_points))
+            self.min_polygon_width_spin.setValue(float(getattr(settings, "min_polygon_width_px", 0.0) or 0.0))
             self.min_bbox_width_spin.setValue(int(settings.min_bbox_width))
             self.max_bbox_width_spin.setValue(0 if settings.max_bbox_width is None else int(settings.max_bbox_width))
             self.min_bbox_height_spin.setValue(int(settings.min_bbox_height))
@@ -2924,6 +4046,82 @@ class PolygonExtractionWidget(QWidget):
             )
             if via_search_mode_index >= 0:
                 self.via_search_mode_combo.setCurrentIndex(via_search_mode_index)
+            if hasattr(self, "via_diameter_size_mode_combo"):
+                _di = self.via_diameter_size_mode_combo.findData(normalize_via_size_mode(settings.via_size_mode))
+                if _di >= 0:
+                    self.via_diameter_size_mode_combo.setCurrentIndex(_di)
+            if hasattr(self, "via_heuristic_polarity_combo"):
+                _po = str(getattr(settings, "via_heuristic_polarity", "auto") or "auto")
+                _pidx = self.via_heuristic_polarity_combo.findData(_po)
+                if _pidx >= 0:
+                    self.via_heuristic_polarity_combo.setCurrentIndex(_pidx)
+            if hasattr(self, "via_fixed_diameters_edit"):
+                self.via_fixed_diameters_edit.setText(
+                    str(getattr(settings, "via_fixed_diameters_text", "6, 8, 10") or "6, 8, 10")
+                )
+            if hasattr(self, "via_template_nms_distance_spin"):
+                self.via_template_nms_distance_spin.setValue(
+                    int(getattr(settings, "via_template_nms_distance", 4) or 4)
+                )
+            if hasattr(self, "via_template_scale_min_spin"):
+                self.via_template_scale_min_spin.setValue(
+                    float(getattr(settings, "via_template_scale_min", 0.9) or 0.9)
+                )
+            if hasattr(self, "via_template_scale_max_spin"):
+                self.via_template_scale_max_spin.setValue(
+                    float(getattr(settings, "via_template_scale_max", 1.1) or 1.1)
+                )
+            if hasattr(self, "via_template_scale_step_spin"):
+                self.via_template_scale_step_spin.setValue(
+                    float(getattr(settings, "via_template_scale_step", 0.1) or 0.1)
+                )
+            if hasattr(self, "heuristic_background_sigma_spin"):
+                self.heuristic_background_sigma_spin.setValue(
+                    float(getattr(settings, "heuristic_background_sigma", 25.0) or 25.0)
+                )
+            if hasattr(self, "heuristic_analysis_window_scale_spin"):
+                self.heuristic_analysis_window_scale_spin.setValue(
+                    float(getattr(settings, "heuristic_analysis_window_scale", 3.0) or 3.0)
+                )
+            if hasattr(self, "heuristic_min_center_contrast_spin"):
+                self.heuristic_min_center_contrast_spin.setValue(
+                    float(getattr(settings, "heuristic_min_center_contrast", 6.0) or 0.0)
+                )
+            if hasattr(self, "heuristic_min_peak_prominence_spin"):
+                self.heuristic_min_peak_prominence_spin.setValue(
+                    float(getattr(settings, "heuristic_min_peak_prominence", 4.0) or 0.0)
+                )
+            if hasattr(self, "heuristic_min_compactness_spin"):
+                self.heuristic_min_compactness_spin.setValue(
+                    float(getattr(settings, "heuristic_min_compactness", 0.12) or 0.0)
+                )
+            if hasattr(self, "heuristic_max_elongation_spin"):
+                self.heuristic_max_elongation_spin.setValue(
+                    float(getattr(settings, "heuristic_max_elongation", 3.2) or 3.2)
+                )
+            if hasattr(self, "heuristic_line_penalty_spin"):
+                self.heuristic_line_penalty_spin.setValue(
+                    float(getattr(settings, "heuristic_line_penalty_scale", 1.0) or 1.0)
+                )
+            if hasattr(self, "heuristic_border_penalty_spin"):
+                self.heuristic_border_penalty_spin.setValue(
+                    float(getattr(settings, "heuristic_border_penalty_scale", 1.0) or 1.0)
+                )
+            if hasattr(self, "heuristic_local_binarize_percentile_spin"):
+                self.heuristic_local_binarize_percentile_spin.setValue(
+                    float(getattr(settings, "heuristic_local_binarize_percentile", 88.0) or 88.0)
+                )
+            if hasattr(self, "heuristic_min_abs_peak_spin"):
+                self.heuristic_min_abs_peak_spin.setValue(
+                    float(getattr(settings, "heuristic_min_abs_peak", 0.0) or 0.0)
+                )
+            if hasattr(self, "heuristic_use_bilateral_checkbox"):
+                self.heuristic_use_bilateral_checkbox.setChecked(
+                    bool(getattr(settings, "heuristic_use_bilateral", False))
+                )
+            if hasattr(self, "bright_via_mode_stack") and hasattr(self, "via_search_mode_combo"):
+                _ist = self.via_search_mode_combo.currentData() == VIA_SEARCH_MODE_TEMPLATE
+                self.bright_via_mode_stack.setCurrentIndex(1 if _ist else 0)
             self.via_white_range_checkbox.setChecked(bool(settings.via_white_range_enabled))
             self.via_white_range_min_spin.setValue(int(settings.via_white_range_min))
             self.via_white_range_max_spin.setValue(int(settings.via_white_range_max))
@@ -2935,9 +4133,51 @@ class PolygonExtractionWidget(QWidget):
             self.via_min_edge_coverage_spin.setValue(float(settings.via_min_edge_coverage))
             self.via_template_min_score_spin.setValue(float(settings.via_template_min_score))
             self.via_spot_line_suppression_spin.setValue(float(settings.via_spot_line_suppression))
+            self.bright_via_diameter_min_spin.setValue(int(settings.bright_via_diameter_min))
+            self.bright_via_diameter_max_spin.setValue(int(settings.bright_via_diameter_max))
+            self.bright_via_clahe_clip_spin.setValue(float(settings.bright_via_clahe_clip_limit))
+            self.bright_via_clahe_tile_spin.setValue(int(settings.bright_via_clahe_tile_grid_size))
+            self.bright_via_median_kernel_spin.setValue(int(settings.bright_via_median_blur_kernel))
+            self.bright_via_tophat_kernel_spin.setValue(int(settings.bright_via_tophat_kernel_size))
+            self.bright_via_dog_small_spin.setValue(float(settings.bright_via_dog_sigma_small))
+            self.bright_via_dog_large_spin.setValue(float(settings.bright_via_dog_sigma_large))
+            self.bright_via_threshold_percentile_spin.setValue(float(settings.bright_via_threshold_percentile))
+            combine_index = self.bright_via_mask_combine_combo.findData(settings.bright_via_mask_combine_mode)
+            if combine_index >= 0:
+                self.bright_via_mask_combine_combo.setCurrentIndex(combine_index)
+            self.bright_via_min_area_factor_spin.setValue(float(settings.bright_via_min_area_factor))
+            self.bright_via_max_area_factor_spin.setValue(float(settings.bright_via_max_area_factor))
+            self.bright_via_min_circularity_spin.setValue(float(settings.bright_via_min_circularity))
+            self.bright_via_min_aspect_spin.setValue(float(settings.bright_via_min_aspect))
+            self.bright_via_max_aspect_spin.setValue(float(settings.bright_via_max_aspect))
+            self.bright_via_bright_center_score_spin.setValue(float(settings.bright_via_bright_center_min_score))
+            metal_index = self.bright_via_metal_constraint_combo.findData(
+                _normalize_bright_via_metal_constraint_mode(settings.bright_via_metal_constraint_mode)
+            )
+            if metal_index >= 0:
+                self.bright_via_metal_constraint_combo.setCurrentIndex(metal_index)
+            self.bright_via_metal_fraction_spin.setValue(float(settings.bright_via_metal_fraction_min))
+            self.bright_via_max_radial_asymmetry_spin.setValue(float(settings.bright_via_max_radial_asymmetry))
+            self.bright_via_max_edge_likeness_spin.setValue(float(settings.bright_via_max_edge_likeness))
+            self.bright_via_max_line_likeness_spin.setValue(float(settings.bright_via_max_line_likeness))
+            self.bright_via_nms_distance_spin.setValue(int(settings.bright_via_nms_distance))
+            self.bright_via_min_final_score_spin.setValue(float(settings.bright_via_min_final_score))
+            self.bright_via_show_rejected_checkbox.setChecked(bool(settings.bright_via_show_rejected))
+            self.bright_via_hard_asym_checkbox.setChecked(bool(settings.bright_via_hard_reject_on_asymmetry))
+            self.bright_via_hard_edge_checkbox.setChecked(bool(settings.bright_via_hard_reject_on_edge))
+            self.bright_via_hard_line_checkbox.setChecked(bool(settings.bright_via_hard_reject_on_line))
             self._via_template_images = self._normalize_via_template_images(settings.via_template_images)
             self._refresh_via_template_list()
             self.debug_candidates_checkbox.setChecked(bool(settings.debug_enabled))
+            if hasattr(self, "via_debug_gradient_map_checkbox"):
+                self.via_debug_gradient_map_checkbox.setChecked(bool(settings.debug_gradient_map_enabled))
+            if hasattr(self, "via_show_detected_checkbox"):
+                self.via_show_detected_checkbox.setChecked(bool(getattr(settings, "via_display_show_detected", True)))
+            if hasattr(self, "via_search_sensitivity_combo"):
+                vs = str(getattr(settings, "via_search_sensitivity", "medium") or "medium")
+                vs_idx = self.via_search_sensitivity_combo.findData(vs)
+                if vs_idx >= 0:
+                    self.via_search_sensitivity_combo.setCurrentIndex(vs_idx)
             self.via_roundness_spin.setValue(float(settings.via_min_roundness))
             self.min_via_width_spin.setValue(int(settings.min_via_width))
             self.max_via_width_spin.setValue(0 if settings.max_via_width is None else int(settings.max_via_width))
@@ -2955,6 +4195,117 @@ class PolygonExtractionWidget(QWidget):
             self.max_hole_area_ratio_spin.setValue(
                 0.0 if settings.max_hole_area_ratio is None else float(settings.max_hole_area_ratio)
             )
+            if hasattr(self, "metal_preset_combo"):
+                mp = self.metal_preset_combo.findData(str(getattr(settings, "metal_preset", "standard") or "standard"))
+                if mp >= 0:
+                    self.metal_preset_combo.setCurrentIndex(mp)
+                self.metal_sensitivity_slider.setValue(int(getattr(settings, "metal_sensitivity_0_100", 50)))
+                if hasattr(self, "metal_sensitivity_value_label"):
+                    self.metal_sensitivity_value_label.setText(str(self.metal_sensitivity_slider.value()))
+                self.metal_min_width_spin.setValue(float(getattr(settings, "metal_min_trace_width_px", 8.0) or 8.0))
+                mw = getattr(settings, "metal_max_trace_width_px", None)
+                self.metal_max_width_spin.setValue(0.0 if mw is None else float(mw))
+                self.metal_min_length_spin.setValue(
+                    float(getattr(settings, "metal_min_trace_length_px", 8.0) or 8.0)
+                )
+                if hasattr(self, "metal_use_wide_gradient_checkbox"):
+                    self.metal_use_wide_gradient_checkbox.setChecked(
+                        bool(getattr(settings, "metal_use_wide_conductor_gradient", False))
+                    )
+                if hasattr(self, "metal_wide_grad_radius_spin"):
+                    self.metal_wide_grad_radius_spin.setValue(
+                        int(getattr(settings, "metal_wide_gradient_profile_radius_px", 8) or 8)
+                    )
+                if hasattr(self, "metal_wide_grad_conf_spin"):
+                    self.metal_wide_grad_conf_spin.setValue(
+                        float(getattr(settings, "metal_wide_gradient_min_direction_confidence", 0.15) or 0.15)
+                    )
+                if hasattr(self, "metal_wide_grad_pair_len_spin"):
+                    self.metal_wide_grad_pair_len_spin.setValue(
+                        float(getattr(settings, "metal_wide_gradient_min_pair_length_px", 24.0) or 24.0)
+                    )
+                if hasattr(self, "metal_wide_grad_parallel_spin"):
+                    self.metal_wide_grad_parallel_spin.setValue(
+                        float(getattr(settings, "metal_wide_gradient_parallel_tolerance_deg", 10.0) or 10.0)
+                    )
+                if hasattr(self, "metal_wide_grad_gap_spin"):
+                    self.metal_wide_grad_gap_spin.setValue(
+                        int(getattr(settings, "metal_wide_gradient_max_edge_gap_px", 5) or 5)
+                    )
+                if hasattr(self, "metal_wide_grad_overlap_spin"):
+                    self.metal_wide_grad_overlap_spin.setValue(
+                        float(getattr(settings, "metal_wide_gradient_min_overlap_ratio", 0.5) or 0.5)
+                    )
+                _smi = self.metal_segmentation_method_combo.findData(
+                    str(getattr(settings, "metal_segmentation_method", "none") or "none")
+                )
+                if _smi >= 0:
+                    self.metal_segmentation_method_combo.setCurrentIndex(_smi)
+                _st = str(getattr(settings, "metal_sensitivity", "medium") or "medium")
+                _sti = self.metal_sensitivity_combo.findData(_st)
+                if _sti >= 0:
+                    self.metal_sensitivity_combo.setCurrentIndex(_sti)
+                self.metal_min_area_spin.setValue(float(getattr(settings, "metal_min_area", 60.0) or 60.0))
+                ma = getattr(settings, "metal_max_area", None)
+                self.metal_max_area_spin.setValue(0.0 if ma is None else float(ma))
+                self.metal_min_perimeter_spin.setValue(
+                    float(getattr(settings, "metal_min_perimeter", 32.0) or 32.0)
+                )
+                mp2 = getattr(settings, "metal_max_perimeter", None)
+                self.metal_max_perimeter_spin.setValue(0.0 if mp2 is None else float(mp2))
+                self.metal_epsilon_spin.setValue(float(settings.epsilon))
+                self.metal_min_points_spin.setValue(int(settings.min_points))
+                self.metal_min_angle_spin.setValue(float(settings.min_polygon_angle))
+                self.metal_approximation_checkbox.setChecked(
+                    bool(getattr(settings, "metal_approximation_enabled", True))
+                )
+                _hm = self.metal_hierarchy_combo.findData(
+                    str(getattr(settings, "metal_hierarchy_mode", "full") or "full")
+                )
+                if _hm >= 0:
+                    self.metal_hierarchy_combo.setCurrentIndex(_hm)
+                _aa = str(getattr(settings, "metal_allowed_angles", "free") or "free")
+                _aai = self.metal_allowed_angles_combo.findData(_aa)
+                if _aai >= 0:
+                    self.metal_allowed_angles_combo.setCurrentIndex(_aai)
+                self.metal_angle_tolerance_spin.setValue(
+                    float(getattr(settings, "metal_angle_tolerance_deg", 7.0) or 7.0)
+                )
+                self.metal_straightness_spin.setValue(
+                    float(getattr(settings, "metal_min_straightness", 0.2) or 0.2)
+                )
+                self.metal_t_junction_checkbox.setChecked(
+                    bool(getattr(settings, "metal_allow_t_junction", True))
+                )
+                _bh = str(getattr(settings, "metal_border_handling", "mark") or "mark")
+                _bhi = self.metal_border_handling_combo.findData(_bh)
+                if _bhi >= 0:
+                    self.metal_border_handling_combo.setCurrentIndex(_bhi)
+                self.metal_validity_checkbox.setChecked(
+                    bool(getattr(settings, "metal_check_contour_validity", True))
+                )
+                self.metal_morph_close_spin.setValue(int(getattr(settings, "metal_morph_close_radius", 1) or 1))
+                self.metal_morph_open_spin.setValue(int(getattr(settings, "metal_morph_open_radius", 0) or 0))
+                self.metal_show_conductors_checkbox.setChecked(
+                    bool(getattr(settings, "metal_display_show_conductors", True))
+                )
+                self.metal_show_rejected_checkbox.setChecked(
+                    bool(getattr(settings, "metal_display_show_rejected", False))
+                )
+                self.metal_show_suspicious_checkbox.setChecked(
+                    bool(getattr(settings, "metal_display_show_suspicious", True))
+                )
+                self.metal_show_border_checkbox.setChecked(
+                    bool(getattr(settings, "metal_display_show_border_highlight", True))
+                )
+                self.metal_show_mask_checkbox.setChecked(bool(getattr(settings, "metal_display_show_mask", True)))
+                _dv = str(getattr(settings, "metal_debug_visual", "overlay") or "overlay")
+                _dvi = self.metal_debug_visual_combo.findData(_dv)
+                if _dvi >= 0:
+                    self.metal_debug_visual_combo.setCurrentIndex(_dvi)
+                self.metal_overlay_opacity_spin.setValue(
+                    float(getattr(settings, "metal_overlay_opacity", 0.45) or 0.45)
+                )
             self._update_via_size_controls_state()
             self._update_via_threshold_controls_state()
             self._update_extraction_profile_controls_state()
@@ -2971,23 +4322,37 @@ class PolygonExtractionWidget(QWidget):
         max_aspect_ratio = self.max_aspect_ratio_spin.value()
         max_via_width = self.max_via_width_spin.value()
         max_via_height = self.max_via_height_spin.value()
-        via_size_mode = normalize_via_size_mode(self.via_size_mode_combo.currentData())
-        via_search_mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
+        raw_rec = (
+            str(self.recognition_mode_combo.currentData() or "conductors")
+            if hasattr(self, "recognition_mode_combo")
+            else "conductors"
+        )
+        rec_mode = normalize_recognition_mode(raw_rec)
+        if rec_mode == "via" and hasattr(self, "via_diameter_size_mode_combo"):
+            via_size_mode = normalize_via_size_mode(self.via_diameter_size_mode_combo.currentData())
+        else:
+            via_size_mode = normalize_via_size_mode(self.via_size_mode_combo.currentData())
+        via_search_mode_effective = normalize_via_search_mode(self.via_search_mode_combo.currentData())
+        if rec_mode == "via":
+            extraction_profile = "vias"
+            object_type = "via"
+            output_mode = "box"
+            algorithm_backend = normalize_algorithm_backend("sem")
+            via_search_mode_effective = normalize_via_search_mode(self.via_search_mode_combo.currentData())
+        else:
+            extraction_profile = "conductors"
+            object_type = "conductor"
+            output_mode = "polygon"
+            algorithm_backend = normalize_algorithm_backend("legacy")
+            via_search_mode_effective = normalize_via_search_mode(self.via_search_mode_combo.currentData())
         fixed_via_pairs = self._fixed_via_pairs()
         fixed_via_widths = [width for width, _height in fixed_via_pairs]
         fixed_via_heights = [height for _width, height in fixed_via_pairs]
         max_hierarchy_depth = self.max_hierarchy_depth_spin.value()
         max_hole_area_ratio = self.max_hole_area_ratio_spin.value()
-        extraction_profile = str(
-            self.extraction_profile_combo.currentData() or self._active_extraction_profile or "conductors"
-        )
-        object_type = "via" if extraction_profile == "vias" else "conductor"
-        output_mode = str(
-            self.result_shape_combo.currentData() or ("box" if extraction_profile == "vias" else "polygon")
-        )
         return ContourExtractionSettings(
-            algorithm_backend=normalize_algorithm_backend(self.algorithm_backend_combo.currentData()),
-            sem_noise_level=str(self.sem_noise_combo.currentData() or "medium"),
+            algorithm_backend=algorithm_backend,
+            sem_noise_level="medium",
             extraction_profile=extraction_profile,
             object_type=object_type,
             output_mode=output_mode,
@@ -2995,13 +4360,19 @@ class PolygonExtractionWidget(QWidget):
             approximation_mode=str(
                 self.approximation_mode_combo.currentData() or self.approximation_mode_combo.currentText()
             ),
-            epsilon=self.epsilon_spin.value(),
+            epsilon=self.metal_epsilon_spin.value()
+            if hasattr(self, "metal_epsilon_spin") and rec_mode != "via"
+            else self.epsilon_spin.value(),
             epsilon_relative=self.epsilon_relative_checkbox.isChecked(),
-            min_polygon_angle=self.min_polygon_angle_spin.value(),
+            min_polygon_angle=self.metal_min_angle_spin.value()
+            if hasattr(self, "metal_min_angle_spin") and rec_mode != "via"
+            else self.min_polygon_angle_spin.value(),
             min_area=self.min_area_spin.value(),
             max_area=None if max_area <= 0 else max_area,
             min_perimeter=self.min_perimeter_spin.value(),
-            min_points=self.min_points_spin.value(),
+            min_points=self.metal_min_points_spin.value()
+            if hasattr(self, "metal_min_points_spin") and rec_mode != "via"
+            else self.min_points_spin.value(),
             max_perimeter=None if max_perimeter <= 0 else max_perimeter,
             min_bbox_width=self.min_bbox_width_spin.value(),
             max_bbox_width=None if max_bbox_width <= 0 else max_bbox_width,
@@ -3012,11 +4383,16 @@ class PolygonExtractionWidget(QWidget):
             exclude_border_touching=self.exclude_border_touching_checkbox.isChecked(),
             min_solidity=self.min_solidity_spin.value(),
             min_extent=self.min_extent_spin.value(),
-            conductor_gradient_enabled=self.conductor_gradient_checkbox.isChecked(),
-            conductor_gradient_min_strength=self.conductor_gradient_min_strength_spin.value(),
-            conductor_gradient_band_radius=self.conductor_gradient_band_radius_spin.value(),
+            min_polygon_width_px=self.min_polygon_width_spin.value(),
+            conductor_gradient_enabled=False,
+            conductor_gradient_min_strength=self.conductor_gradient_min_strength_spin.value()
+            if hasattr(self, "conductor_gradient_min_strength_spin")
+            else 18.0,
+            conductor_gradient_band_radius=self.conductor_gradient_band_radius_spin.value()
+            if hasattr(self, "conductor_gradient_band_radius_spin")
+            else 3,
             via_size_mode=via_size_mode,
-            via_search_mode=via_search_mode,
+            via_search_mode=via_search_mode_effective,
             via_white_range_enabled=self.via_white_range_checkbox.isChecked(),
             via_white_range_min=self.via_white_range_min_spin.value(),
             via_white_range_max=self.via_white_range_max_spin.value(),
@@ -3028,9 +4404,220 @@ class PolygonExtractionWidget(QWidget):
             via_min_edge_coverage=self.via_min_edge_coverage_spin.value(),
             via_template_min_score=self.via_template_min_score_spin.value(),
             via_spot_line_suppression=self.via_spot_line_suppression_spin.value(),
+            bright_via_diameter_min=self.bright_via_diameter_min_spin.value(),
+            bright_via_diameter_max=self.bright_via_diameter_max_spin.value(),
+            bright_via_clahe_clip_limit=self.bright_via_clahe_clip_spin.value(),
+            bright_via_clahe_tile_grid_size=self.bright_via_clahe_tile_spin.value(),
+            bright_via_median_blur_kernel=self.bright_via_median_kernel_spin.value(),
+            bright_via_tophat_kernel_size=self.bright_via_tophat_kernel_spin.value(),
+            bright_via_dog_sigma_small=self.bright_via_dog_small_spin.value(),
+            bright_via_dog_sigma_large=self.bright_via_dog_large_spin.value(),
+            bright_via_threshold_percentile=self.bright_via_threshold_percentile_spin.value(),
+            bright_via_mask_combine_mode=str(self.bright_via_mask_combine_combo.currentData() or "OR"),
+            bright_via_min_area_factor=self.bright_via_min_area_factor_spin.value(),
+            bright_via_max_area_factor=self.bright_via_max_area_factor_spin.value(),
+            bright_via_min_circularity=self.bright_via_min_circularity_spin.value(),
+            bright_via_min_aspect=self.bright_via_min_aspect_spin.value(),
+            bright_via_max_aspect=self.bright_via_max_aspect_spin.value(),
+            bright_via_bright_center_min_score=self.bright_via_bright_center_score_spin.value(),
+            bright_via_metal_constraint_mode=_normalize_bright_via_metal_constraint_mode(
+                self.bright_via_metal_constraint_combo.currentData()
+            ),
+            bright_via_use_metal_mask=str(self.bright_via_metal_constraint_combo.currentData()) != "disabled",
+            bright_via_metal_fraction_min=self.bright_via_metal_fraction_spin.value(),
+            bright_via_max_radial_asymmetry=self.bright_via_max_radial_asymmetry_spin.value(),
+            bright_via_max_edge_likeness=self.bright_via_max_edge_likeness_spin.value(),
+            bright_via_max_line_likeness=self.bright_via_max_line_likeness_spin.value(),
+            bright_via_nms_distance=self.bright_via_nms_distance_spin.value(),
+            bright_via_min_final_score=self.bright_via_min_final_score_spin.value(),
+            bright_via_show_rejected=self.bright_via_show_rejected_checkbox.isChecked(),
+            bright_via_hard_reject_on_asymmetry=self.bright_via_hard_asym_checkbox.isChecked(),
+            bright_via_hard_reject_on_edge=self.bright_via_hard_edge_checkbox.isChecked(),
+            bright_via_hard_reject_on_line=self.bright_via_hard_line_checkbox.isChecked(),
             via_template_images=[template.copy() for template in self._via_template_images],
+            via_template_nms_distance=self.via_template_nms_distance_spin.value()
+            if hasattr(self, "via_template_nms_distance_spin")
+            else 4,
+            via_template_scale_min=self.via_template_scale_min_spin.value()
+            if hasattr(self, "via_template_scale_min_spin")
+            else 0.9,
+            via_template_scale_max=self.via_template_scale_max_spin.value()
+            if hasattr(self, "via_template_scale_max_spin")
+            else 1.1,
+            via_template_scale_step=self.via_template_scale_step_spin.value()
+            if hasattr(self, "via_template_scale_step_spin")
+            else 0.1,
+            via_heuristic_polarity=str(
+                self.via_heuristic_polarity_combo.currentData() or "auto"
+            )
+            if hasattr(self, "via_heuristic_polarity_combo")
+            else "auto",
+            via_fixed_diameters_text=str(self.via_fixed_diameters_edit.text() or "6, 8, 10")
+            if hasattr(self, "via_fixed_diameters_edit")
+            else "6, 8, 10",
+            heuristic_background_sigma=self.heuristic_background_sigma_spin.value()
+            if hasattr(self, "heuristic_background_sigma_spin")
+            else 25.0,
+            heuristic_analysis_window_scale=self.heuristic_analysis_window_scale_spin.value()
+            if hasattr(self, "heuristic_analysis_window_scale_spin")
+            else 3.0,
+            heuristic_min_center_contrast=self.heuristic_min_center_contrast_spin.value()
+            if hasattr(self, "heuristic_min_center_contrast_spin")
+            else 6.0,
+            heuristic_min_peak_prominence=self.heuristic_min_peak_prominence_spin.value()
+            if hasattr(self, "heuristic_min_peak_prominence_spin")
+            else 4.0,
+            heuristic_min_compactness=self.heuristic_min_compactness_spin.value()
+            if hasattr(self, "heuristic_min_compactness_spin")
+            else 0.12,
+            heuristic_max_elongation=self.heuristic_max_elongation_spin.value()
+            if hasattr(self, "heuristic_max_elongation_spin")
+            else 3.2,
+            heuristic_line_penalty_scale=self.heuristic_line_penalty_spin.value()
+            if hasattr(self, "heuristic_line_penalty_spin")
+            else 1.0,
+            heuristic_border_penalty_scale=self.heuristic_border_penalty_spin.value()
+            if hasattr(self, "heuristic_border_penalty_spin")
+            else 1.0,
+            heuristic_local_binarize_percentile=self.heuristic_local_binarize_percentile_spin.value()
+            if hasattr(self, "heuristic_local_binarize_percentile_spin")
+            else 88.0,
+            heuristic_min_abs_peak=self.heuristic_min_abs_peak_spin.value()
+            if hasattr(self, "heuristic_min_abs_peak_spin")
+            else 0.0,
+            heuristic_use_bilateral=self.heuristic_use_bilateral_checkbox.isChecked()
+            if hasattr(self, "heuristic_use_bilateral_checkbox")
+            else False,
             debug_enabled=self.debug_candidates_checkbox.isChecked(),
-            debug_gradient_map_enabled=self.debug_candidates_checkbox.isChecked(),
+            debug_gradient_map_enabled=(
+                self.via_debug_gradient_map_checkbox.isChecked()
+                if hasattr(self, "via_debug_gradient_map_checkbox")
+                else self.debug_candidates_checkbox.isChecked()
+            ),
+            recognition_mode=raw_rec,
+            via_search_sensitivity=str(
+                self.via_search_sensitivity_combo.currentData() or "medium"
+            )
+            if hasattr(self, "via_search_sensitivity_combo")
+            else "medium",
+            via_display_show_detected=(
+                self.via_show_detected_checkbox.isChecked()
+                if hasattr(self, "via_show_detected_checkbox")
+                else True
+            ),
+            via_display_show_candidates=self.debug_candidates_checkbox.isChecked(),
+            metal_structural_pipeline=(raw_rec == "conductors"),
+            metal_preset=str(self.metal_preset_combo.currentData() or "standard")
+            if hasattr(self, "metal_preset_combo")
+            else "standard",
+            metal_segmentation_method=str(self.metal_segmentation_method_combo.currentData() or "none")
+            if hasattr(self, "metal_segmentation_method_combo")
+            else "none",
+            metal_sensitivity=str(self.metal_sensitivity_combo.currentData() or "medium")
+            if hasattr(self, "metal_sensitivity_combo")
+            else "medium",
+            metal_sensitivity_0_100=int(self.metal_sensitivity_slider.value())
+            if hasattr(self, "metal_sensitivity_slider")
+            else 50,
+            metal_min_object_area=self.metal_min_area_spin.value()
+            if hasattr(self, "metal_min_area_spin")
+            else 60.0,
+            metal_min_trace_width_px=float(self.metal_min_width_spin.value())
+            if hasattr(self, "metal_min_width_spin")
+            else 8.0,
+            metal_max_trace_width_px=None
+            if not hasattr(self, "metal_max_width_spin") or self.metal_max_width_spin.value() <= 0
+            else float(self.metal_max_width_spin.value()),
+            metal_min_trace_length_px=float(self.metal_min_length_spin.value())
+            if hasattr(self, "metal_min_length_spin")
+            else 8.0,
+            metal_use_wide_conductor_gradient=(
+                self.metal_use_wide_gradient_checkbox.isChecked()
+                if hasattr(self, "metal_use_wide_gradient_checkbox")
+                else False
+            ),
+            metal_wide_gradient_profile_radius_px=int(self.metal_wide_grad_radius_spin.value())
+            if hasattr(self, "metal_wide_grad_radius_spin")
+            else 8,
+            metal_wide_gradient_min_direction_confidence=float(self.metal_wide_grad_conf_spin.value())
+            if hasattr(self, "metal_wide_grad_conf_spin")
+            else 0.15,
+            metal_wide_gradient_min_pair_length_px=float(self.metal_wide_grad_pair_len_spin.value())
+            if hasattr(self, "metal_wide_grad_pair_len_spin")
+            else 24.0,
+            metal_wide_gradient_parallel_tolerance_deg=float(self.metal_wide_grad_parallel_spin.value())
+            if hasattr(self, "metal_wide_grad_parallel_spin")
+            else 10.0,
+            metal_wide_gradient_max_edge_gap_px=int(self.metal_wide_grad_gap_spin.value())
+            if hasattr(self, "metal_wide_grad_gap_spin")
+            else 5,
+            metal_wide_gradient_min_overlap_ratio=float(self.metal_wide_grad_overlap_spin.value())
+            if hasattr(self, "metal_wide_grad_overlap_spin")
+            else 0.5,
+            metal_allowed_angles=str(self.metal_allowed_angles_combo.currentData() or "free")
+            if hasattr(self, "metal_allowed_angles_combo")
+            else "free",
+            metal_angle_tolerance_deg=float(self.metal_angle_tolerance_spin.value())
+            if hasattr(self, "metal_angle_tolerance_spin")
+            else 7.0,
+            metal_min_straightness=float(self.metal_straightness_spin.value())
+            if hasattr(self, "metal_straightness_spin")
+            else 0.2,
+            metal_allow_t_junction=self.metal_t_junction_checkbox.isChecked()
+            if hasattr(self, "metal_t_junction_checkbox")
+            else True,
+            metal_border_handling=str(self.metal_border_handling_combo.currentData() or "mark")
+            if hasattr(self, "metal_border_handling_combo")
+            else "mark",
+            metal_check_contour_validity=self.metal_validity_checkbox.isChecked()
+            if hasattr(self, "metal_validity_checkbox")
+            else True,
+            metal_hierarchy_mode=str(self.metal_hierarchy_combo.currentData() or "full")
+            if hasattr(self, "metal_hierarchy_combo")
+            else "full",
+            metal_min_area=self.metal_min_area_spin.value() if hasattr(self, "metal_min_area_spin") else 60.0,
+            metal_max_area=None
+            if not hasattr(self, "metal_max_area_spin") or self.metal_max_area_spin.value() <= 0
+            else float(self.metal_max_area_spin.value()),
+            metal_min_perimeter=float(self.metal_min_perimeter_spin.value())
+            if hasattr(self, "metal_min_perimeter_spin")
+            else 32.0,
+            metal_max_perimeter=None
+            if not hasattr(self, "metal_max_perimeter_spin") or self.metal_max_perimeter_spin.value() <= 0
+            else float(self.metal_max_perimeter_spin.value()),
+            metal_approximation_enabled=self.metal_approximation_checkbox.isChecked()
+            if hasattr(self, "metal_approximation_checkbox")
+            else True,
+            metal_morph_close_radius=self.metal_morph_close_spin.value()
+            if hasattr(self, "metal_morph_close_spin")
+            else 1,
+            metal_morph_open_radius=self.metal_morph_open_spin.value()
+            if hasattr(self, "metal_morph_open_spin")
+            else 0,
+            metal_display_show_conductors=self.metal_show_conductors_checkbox.isChecked()
+            if hasattr(self, "metal_show_conductors_checkbox")
+            else True,
+            metal_display_show_mask=self.metal_show_mask_checkbox.isChecked()
+            if hasattr(self, "metal_show_mask_checkbox")
+            else True,
+            metal_display_show_contours=self.metal_show_conductors_checkbox.isChecked()
+            if hasattr(self, "metal_show_conductors_checkbox")
+            else True,
+            metal_display_show_rejected=self.metal_show_rejected_checkbox.isChecked()
+            if hasattr(self, "metal_show_rejected_checkbox")
+            else False,
+            metal_display_show_suspicious=self.metal_show_suspicious_checkbox.isChecked()
+            if hasattr(self, "metal_show_suspicious_checkbox")
+            else True,
+            metal_display_show_border_highlight=self.metal_show_border_checkbox.isChecked()
+            if hasattr(self, "metal_show_border_checkbox")
+            else True,
+            metal_debug_visual=str(self.metal_debug_visual_combo.currentData() or "overlay")
+            if hasattr(self, "metal_debug_visual_combo")
+            else "overlay",
+            metal_overlay_opacity=float(self.metal_overlay_opacity_spin.value())
+            if hasattr(self, "metal_overlay_opacity_spin")
+            else 0.45,
             via_min_roundness=self.via_roundness_spin.value(),
             min_via_width=self.min_via_width_spin.value(),
             max_via_width=None if max_via_width <= 0 else max_via_width,
@@ -3042,6 +4629,312 @@ class PolygonExtractionWidget(QWidget):
             max_hierarchy_depth=None if max_hierarchy_depth <= 0 else max_hierarchy_depth,
             max_hole_area_ratio=None if max_hole_area_ratio <= 0 else max_hole_area_ratio,
         )
+
+    def _on_recognition_mode_changed(self, *_args) -> None:
+        if not hasattr(self, "recognition_mode_combo") or not hasattr(self, "recognition_stack"):
+            return
+        data = str(self.recognition_mode_combo.currentData() or "conductors")
+        if data == "disabled":
+            self._active_extraction_profile = "conductors"
+            self._sync_recognition_stack_visibility()
+        elif data == "conductors":
+            self._active_extraction_profile = "conductors"
+            self._sync_recognition_stack_visibility()
+            self._set_extraction_settings(self._contour_settings_profiles["conductors"])
+        else:
+            self._active_extraction_profile = "vias"
+            self.recognition_stack.setVisible(False)
+            self._set_extraction_settings(self._contour_settings_profiles["vias"])
+        if hasattr(self, "via_group"):
+            self.via_group.setVisible(self._active_extraction_profile == "vias" and data == "disabled")
+        self.polygon_editor.set_debug_candidates([])
+        if hasattr(self, "_update_extraction_profile_controls_state"):
+            self._update_extraction_profile_controls_state()
+        self._on_extraction_settings_changed()
+
+    def _on_via_search_sensitivity_changed(self, *_args) -> None:
+        self._apply_via_search_sensitivity_profile()
+        self._on_extraction_settings_changed()
+
+    def _apply_via_search_sensitivity_profile(self) -> None:
+        if not hasattr(self, "via_search_sensitivity_combo"):
+            return
+        level = str(self.via_search_sensitivity_combo.currentData() or "medium")
+        profiles = {
+            "low": (99.5, 8.0, 55.0, 0.40, True, True, True, True),
+            "medium": (99.0, 6.0, 38.0, 0.30, False, False, False, False),
+            "high": (98.0, 4.0, 32.0, 0.22, False, False, False, False),
+        }
+        pct, bright, final, circ, ha, he, hl, _ = profiles.get(level, profiles["medium"])
+        blockers = [
+            QSignalBlocker(self.bright_via_threshold_percentile_spin),
+            QSignalBlocker(self.bright_via_bright_center_score_spin),
+            QSignalBlocker(self.bright_via_min_final_score_spin),
+            QSignalBlocker(self.bright_via_min_circularity_spin),
+            QSignalBlocker(self.bright_via_hard_asym_checkbox),
+            QSignalBlocker(self.bright_via_hard_edge_checkbox),
+            QSignalBlocker(self.bright_via_hard_line_checkbox),
+        ]
+        try:
+            self.bright_via_threshold_percentile_spin.setValue(pct)
+            self.bright_via_bright_center_score_spin.setValue(bright)
+            self.bright_via_min_final_score_spin.setValue(final)
+            self.bright_via_min_circularity_spin.setValue(circ)
+            self.bright_via_hard_asym_checkbox.setChecked(ha)
+            self.bright_via_hard_edge_checkbox.setChecked(he)
+            self.bright_via_hard_line_checkbox.setChecked(hl)
+        finally:
+            del blockers
+
+    def _on_via_display_settings_changed(self, *_args) -> None:
+        if hasattr(self, "polygon_editor") and hasattr(self, "via_show_detected_checkbox"):
+            self.polygon_editor.set_polygon_category_visible("via", self.via_show_detected_checkbox.isChecked())
+        self._on_extraction_settings_changed()
+
+    def _on_metal_overlay_opacity_changed(self, value: float) -> None:
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_gradient_overlay_opacity(float(value))
+        self._on_extraction_settings_changed()
+
+    def _on_metal_sensitivity_slider_changed(self, value: int) -> None:
+        if hasattr(self, "metal_sensitivity_value_label"):
+            self.metal_sensitivity_value_label.setText(str(int(value)))
+        self._on_extraction_settings_changed()
+
+    def _metal_preset_table(self) -> dict[str, dict[str, float | int | str]]:
+        return {
+            "standard": {
+                "sens": 50,
+                "close": 1,
+                "open": 0,
+                "min_w": 8.0,
+                "max_w": 0.0,
+                "min_l": 8.0,
+                "min_a": 60.0,
+                "max_a": 0.0,
+                "min_p": 32.0,
+                "max_p": 0.0,
+                "str": 0.2,
+                "tol": 7.0,
+                "tok": "medium",
+                "angles": "free",
+            },
+            "dense": {
+                "sens": 42,
+                "close": 5,
+                "open": 0,
+                "min_w": 6.0,
+                "max_w": 85.0,
+                "min_l": 18.0,
+                "min_a": 45.0,
+                "max_a": 0.0,
+                "min_p": 28.0,
+                "max_p": 0.0,
+                "str": 0.52,
+                "tol": 9.0,
+                "tok": "high",
+            },
+            "thin_traces": {
+                "sens": 58,
+                "close": 2,
+                "open": 1,
+                "min_w": 4.0,
+                "max_w": 24.0,
+                "min_l": 28.0,
+                "min_a": 35.0,
+                "max_a": 0.0,
+                "min_p": 26.0,
+                "max_p": 0.0,
+                "str": 0.64,
+                "tol": 6.0,
+                "tok": "medium",
+            },
+            "noisy_sem": {
+                "sens": 36,
+                "close": 4,
+                "open": 1,
+                "min_w": 10.0,
+                "max_w": 0.0,
+                "min_l": 32.0,
+                "min_a": 85.0,
+                "max_a": 0.0,
+                "min_p": 40.0,
+                "max_p": 0.0,
+                "str": 0.68,
+                "tol": 10.0,
+                "tok": "low",
+            },
+            "conservative": {
+                "sens": 62,
+                "close": 2,
+                "open": 0,
+                "min_w": 10.0,
+                "max_w": 48.0,
+                "min_l": 36.0,
+                "min_a": 100.0,
+                "max_a": 0.0,
+                "min_p": 44.0,
+                "max_p": 0.0,
+                "str": 0.72,
+                "tol": 5.0,
+                "tok": "low",
+            },
+        }
+
+    def _on_metal_preset_changed(self, *_args) -> None:
+        if not hasattr(self, "metal_preset_combo"):
+            return
+        key = str(self.metal_preset_combo.currentData() or "standard")
+        pr = self._metal_preset_table().get(key)
+        if not pr:
+            self._on_extraction_settings_changed()
+            return
+        self.metal_sensitivity_slider.setValue(int(pr["sens"]))
+        self.metal_morph_close_spin.setValue(int(pr["close"]))
+        self.metal_morph_open_spin.setValue(int(pr["open"]))
+        self.metal_min_width_spin.setValue(float(pr["min_w"]))
+        self.metal_max_width_spin.setValue(float(pr["max_w"]))
+        self.metal_min_length_spin.setValue(float(pr["min_l"]))
+        self.metal_min_area_spin.setValue(float(pr["min_a"]))
+        self.metal_max_area_spin.setValue(float(pr["max_a"]))
+        self.metal_min_perimeter_spin.setValue(float(pr["min_p"]))
+        self.metal_max_perimeter_spin.setValue(float(pr["max_p"]))
+        self.metal_straightness_spin.setValue(float(pr["str"]))
+        self.metal_angle_tolerance_spin.setValue(float(pr["tol"]))
+        _ti = self.metal_sensitivity_combo.findData(str(pr["tok"]))
+        if _ti >= 0:
+            self.metal_sensitivity_combo.setCurrentIndex(_ti)
+        if hasattr(self, "metal_allowed_angles_combo") and "angles" in pr:
+            _ai = self.metal_allowed_angles_combo.findData(str(pr["angles"]))
+            if _ai >= 0:
+                self.metal_allowed_angles_combo.setCurrentIndex(_ai)
+        self._on_extraction_settings_changed()
+
+    def _preview_metal_mask(self, *_args) -> None:
+        if hasattr(self, "metal_debug_visual_combo"):
+            idx = self.metal_debug_visual_combo.findData("metal_binary_mask")
+            if idx >= 0:
+                self.metal_debug_visual_combo.setCurrentIndex(idx)
+        if hasattr(self, "metal_show_mask_checkbox"):
+            self.metal_show_mask_checkbox.setChecked(True)
+        self._refresh_gradient_overlay()
+
+    def _reset_metal_parameters(self, *_args) -> None:
+        defaults = ContourExtractionSettings()
+        if hasattr(self, "metal_preset_combo"):
+            self.metal_preset_combo.setCurrentIndex(self.metal_preset_combo.findData("standard"))
+        if hasattr(self, "metal_sensitivity_slider"):
+            self.metal_sensitivity_slider.setValue(int(defaults.metal_sensitivity_0_100))
+        if hasattr(self, "metal_sensitivity_value_label"):
+            self.metal_sensitivity_value_label.setText(str(int(defaults.metal_sensitivity_0_100)))
+        if hasattr(self, "metal_min_width_spin"):
+            self.metal_min_width_spin.setValue(float(defaults.metal_min_trace_width_px))
+        if hasattr(self, "metal_max_width_spin"):
+            mw = defaults.metal_max_trace_width_px
+            self.metal_max_width_spin.setValue(0.0 if mw is None else float(mw))
+        if hasattr(self, "metal_min_length_spin"):
+            self.metal_min_length_spin.setValue(float(defaults.metal_min_trace_length_px))
+        if hasattr(self, "metal_segmentation_method_combo"):
+            ix = self.metal_segmentation_method_combo.findData(defaults.metal_segmentation_method)
+            if ix >= 0:
+                self.metal_segmentation_method_combo.setCurrentIndex(ix)
+        if hasattr(self, "metal_sensitivity_combo"):
+            ix = self.metal_sensitivity_combo.findData(defaults.metal_sensitivity)
+            if ix >= 0:
+                self.metal_sensitivity_combo.setCurrentIndex(ix)
+        if hasattr(self, "metal_min_area_spin"):
+            self.metal_min_area_spin.setValue(float(defaults.metal_min_area))
+        if hasattr(self, "metal_max_area_spin"):
+            ma = defaults.metal_max_area
+            self.metal_max_area_spin.setValue(0.0 if ma is None else float(ma))
+        if hasattr(self, "metal_min_perimeter_spin"):
+            self.metal_min_perimeter_spin.setValue(float(defaults.metal_min_perimeter))
+        if hasattr(self, "metal_max_perimeter_spin"):
+            mp = defaults.metal_max_perimeter
+            self.metal_max_perimeter_spin.setValue(0.0 if mp is None else float(mp))
+        if hasattr(self, "metal_epsilon_spin"):
+            self.metal_epsilon_spin.setValue(float(defaults.epsilon))
+        if hasattr(self, "metal_min_points_spin"):
+            self.metal_min_points_spin.setValue(int(defaults.min_points))
+        if hasattr(self, "metal_min_angle_spin"):
+            self.metal_min_angle_spin.setValue(float(defaults.min_polygon_angle))
+        if hasattr(self, "metal_approximation_checkbox"):
+            self.metal_approximation_checkbox.setChecked(bool(defaults.metal_approximation_enabled))
+        if hasattr(self, "metal_hierarchy_combo"):
+            ix = self.metal_hierarchy_combo.findData(defaults.metal_hierarchy_mode)
+            if ix >= 0:
+                self.metal_hierarchy_combo.setCurrentIndex(ix)
+        if hasattr(self, "metal_allowed_angles_combo"):
+            ix = self.metal_allowed_angles_combo.findData(defaults.metal_allowed_angles)
+            if ix >= 0:
+                self.metal_allowed_angles_combo.setCurrentIndex(ix)
+        if hasattr(self, "metal_angle_tolerance_spin"):
+            self.metal_angle_tolerance_spin.setValue(float(defaults.metal_angle_tolerance_deg))
+        if hasattr(self, "metal_straightness_spin"):
+            self.metal_straightness_spin.setValue(float(defaults.metal_min_straightness))
+        if hasattr(self, "metal_t_junction_checkbox"):
+            self.metal_t_junction_checkbox.setChecked(bool(defaults.metal_allow_t_junction))
+        if hasattr(self, "metal_border_handling_combo"):
+            ix = self.metal_border_handling_combo.findData(defaults.metal_border_handling)
+            if ix >= 0:
+                self.metal_border_handling_combo.setCurrentIndex(ix)
+        if hasattr(self, "metal_validity_checkbox"):
+            self.metal_validity_checkbox.setChecked(bool(defaults.metal_check_contour_validity))
+        if hasattr(self, "metal_morph_close_spin"):
+            self.metal_morph_close_spin.setValue(int(defaults.metal_morph_close_radius))
+        if hasattr(self, "metal_morph_open_spin"):
+            self.metal_morph_open_spin.setValue(int(defaults.metal_morph_open_radius))
+        if hasattr(self, "metal_use_wide_gradient_checkbox"):
+            self.metal_use_wide_gradient_checkbox.setChecked(bool(defaults.metal_use_wide_conductor_gradient))
+        if hasattr(self, "metal_wide_grad_radius_spin"):
+            self.metal_wide_grad_radius_spin.setValue(int(defaults.metal_wide_gradient_profile_radius_px))
+        if hasattr(self, "metal_wide_grad_conf_spin"):
+            self.metal_wide_grad_conf_spin.setValue(float(defaults.metal_wide_gradient_min_direction_confidence))
+        if hasattr(self, "metal_wide_grad_pair_len_spin"):
+            self.metal_wide_grad_pair_len_spin.setValue(float(defaults.metal_wide_gradient_min_pair_length_px))
+        if hasattr(self, "metal_wide_grad_parallel_spin"):
+            self.metal_wide_grad_parallel_spin.setValue(float(defaults.metal_wide_gradient_parallel_tolerance_deg))
+        if hasattr(self, "metal_wide_grad_gap_spin"):
+            self.metal_wide_grad_gap_spin.setValue(int(defaults.metal_wide_gradient_max_edge_gap_px))
+        if hasattr(self, "metal_wide_grad_overlap_spin"):
+            self.metal_wide_grad_overlap_spin.setValue(float(defaults.metal_wide_gradient_min_overlap_ratio))
+        if hasattr(self, "metal_show_conductors_checkbox"):
+            self.metal_show_conductors_checkbox.setChecked(bool(defaults.metal_display_show_conductors))
+        if hasattr(self, "metal_show_rejected_checkbox"):
+            self.metal_show_rejected_checkbox.setChecked(bool(defaults.metal_display_show_rejected))
+        if hasattr(self, "metal_show_suspicious_checkbox"):
+            self.metal_show_suspicious_checkbox.setChecked(bool(defaults.metal_display_show_suspicious))
+        if hasattr(self, "metal_show_border_checkbox"):
+            self.metal_show_border_checkbox.setChecked(bool(defaults.metal_display_show_border_highlight))
+        if hasattr(self, "metal_show_mask_checkbox"):
+            self.metal_show_mask_checkbox.setChecked(bool(defaults.metal_display_show_mask))
+        if hasattr(self, "metal_debug_visual_combo"):
+            ix = self.metal_debug_visual_combo.findData(defaults.metal_debug_visual)
+            if ix >= 0:
+                self.metal_debug_visual_combo.setCurrentIndex(ix)
+        if hasattr(self, "metal_overlay_opacity_spin"):
+            self.metal_overlay_opacity_spin.setValue(float(defaults.metal_overlay_opacity))
+        self._on_extraction_settings_changed()
+
+    def _set_recognition_status(self, kind: str, message: str | None = None) -> None:
+        if not hasattr(self, "recognition_status_label"):
+            return
+        if self._ui_language == "ru":
+            texts = {
+                "idle": "Готово",
+                "disabled": "Распознавание отключено",
+                "updating": "Выполняется обработка…",
+                "error": "Ошибка",
+            }
+        else:
+            texts = {
+                "idle": "Ready",
+                "disabled": "Recognition off",
+                "updating": "Updating…",
+                "error": "Error",
+            }
+        text = message or texts.get(kind, texts["idle"])
+        self.recognition_status_label.setText(text)
 
     def _current_save_options(self) -> SaveOptions:
         return SaveOptions(
@@ -3145,8 +5038,29 @@ class PolygonExtractionWidget(QWidget):
             polygons = current_state.polygons if current_state else []
             self.polygon_editor.set_image(display_image)
             self.polygon_editor.set_polygons(polygons)
-            self.polygon_editor.set_debug_candidates([])
+            self.polygon_editor.set_debug_candidates(list(current_state.debug_candidates) if current_state else [])
             self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
+            if hasattr(self, "via_show_detected_checkbox"):
+                self.polygon_editor.set_polygon_category_visible(
+                    "via", self.via_show_detected_checkbox.isChecked()
+                )
+            if hasattr(self, "polygon_editor") and hasattr(self, "metal_show_rejected_checkbox"):
+                layers = getattr(current_state, "metal_overlay_polygons", None) or {}
+                self.polygon_editor.set_metal_overlays(
+                    layers,
+                    {
+                        "rejected": self.metal_show_rejected_checkbox.isChecked(),
+                        "suspicious": self.metal_show_suspicious_checkbox.isChecked(),
+                        "border": self.metal_show_border_checkbox.isChecked(),
+                        "wide_pairs_suspicious": self.metal_show_suspicious_checkbox.isChecked(),
+                        "wide_pairs_rejected": self.metal_show_rejected_checkbox.isChecked(),
+                    },
+                )
+            if hasattr(self, "metal_show_conductors_checkbox"):
+                show_c = self.metal_show_conductors_checkbox.isChecked()
+                self.polygon_editor.set_polygon_category_visible("conductor", show_c)
+                self.polygon_editor.set_polygon_category_visible("metal_border", show_c)
+                self.polygon_editor.set_polygon_category_visible("metal_wide_gradient", show_c)
             self._sync_neighbor_frames()
             self._sync_extra_layers()
             self._refresh_gradient_overlay()
@@ -3245,6 +5159,20 @@ class PolygonExtractionWidget(QWidget):
             else:
                 self.load_image(image_path)
 
+    def _abort_in_flight_interactive_processing(self, *, preview: bool, prepared: bool) -> None:
+        self._preview_update_timer.stop()
+        if preview:
+            if self._preview_run_cancel is not None:
+                self._preview_run_cancel.set()
+            self._preview_pending_request = None
+            self._preview_pending_signature = None
+        if prepared:
+            if self._prepared_image_run_cancel is not None:
+                self._prepared_image_run_cancel.set()
+            self._prepared_image_pending_request = None
+            self._prepared_image_pending_signature = None
+        self._refresh_busy_indicator()
+
     def _queue_prepared_image_update(self, image_path: str, source_image) -> None:
         request = PreparedImageRequest(
             image_path=image_path,
@@ -3255,13 +5183,19 @@ class PolygonExtractionWidget(QWidget):
         if signature == self._prepared_image_running_signature or signature == self._prepared_image_pending_signature:
             self._refresh_busy_indicator()
             return
+        if self._prepared_image_run_cancel is not None:
+            self._prepared_image_run_cancel.set()
         self._prepared_image_pending_request = request
         self._prepared_image_pending_signature = signature
         self._refresh_busy_indicator()
         self._start_pending_prepared_image_update()
 
     def _start_pending_prepared_image_update(self) -> None:
-        if self._prepared_image_running_request_id is not None or self._prepared_image_pending_request is None:
+        if self._prepared_image_pending_request is None:
+            return
+        if self._prepared_image_running_request_id is not None:
+            if self._prepared_image_run_cancel is not None:
+                self._prepared_image_run_cancel.set()
             return
         request = self._prepared_image_pending_request
         self._prepared_image_pending_request = None
@@ -3271,8 +5205,9 @@ class PolygonExtractionWidget(QWidget):
         request_id = self._prepared_image_request_serial
         self._prepared_image_running_request_id = request_id
         self._prepared_image_running_signature = request_signature
-
-        worker = PreparedImageRunnable(request_id=request_id, request=request)
+        cancel = threading.Event()
+        self._prepared_image_run_cancel = cancel
+        worker = PreparedImageRunnable(request_id=request_id, request=request, cancel_event=cancel)
         worker.signals.result.connect(self._on_prepared_image_result)
         worker.signals.error.connect(self._on_prepared_image_error)
         worker.signals.finished.connect(self._on_prepared_image_finished)
@@ -3290,15 +5225,19 @@ class PolygonExtractionWidget(QWidget):
             source_image = current_state.source_image
             if current_state.preprocessed_image is not None and current_state.pipeline_config == pipeline_config:
                 preprocessed_image = current_state.preprocessed_image
+        passthrough: tuple[PolygonData, ...] | None = None
+        if hasattr(self, "recognition_mode_combo") and str(self.recognition_mode_combo.currentData() or "") == "disabled":
+            passthrough = tuple(polygon.clone() for polygon in self.get_polygons())
         return PreviewProcessingRequest(
             image_path=self._workspace.current_image_path,
             pipeline_config=pipeline_config,
             contour_settings=self._current_contour_settings(),
             source_image=source_image,
             preprocessed_image=preprocessed_image,
+            passthrough_polygons=passthrough,
         )
 
-    def _preview_request_signature(self, request: PreviewProcessingRequest) -> tuple[str, str, str]:
+    def _preview_request_signature(self, request: PreviewProcessingRequest) -> tuple[str, str, str, int]:
         return build_preview_request_signature(request)
 
     def _prepared_image_request_signature(self, request: PreparedImageRequest) -> tuple[str, str]:
@@ -3309,10 +5248,15 @@ class PolygonExtractionWidget(QWidget):
         if request is None:
             self._append_log(self._tr("no_image_selected_log"))
             return
+        if hasattr(self, "recognition_mode_combo"):
+            self._set_recognition_status("updating")
         signature = self._preview_request_signature(request)
         if signature == self._preview_running_signature or signature == self._preview_pending_signature:
             self._refresh_busy_indicator()
             return
+        self._preview_update_timer.stop()
+        if self._preview_run_cancel is not None:
+            self._preview_run_cancel.set()
         self._preview_pending_request = request
         self._preview_pending_signature = signature
         self._refresh_busy_indicator()
@@ -3323,7 +5267,11 @@ class PolygonExtractionWidget(QWidget):
         self._start_pending_preview_processing()
 
     def _start_pending_preview_processing(self) -> None:
-        if self._preview_running_request_id is not None or self._preview_pending_request is None:
+        if self._preview_pending_request is None:
+            return
+        if self._preview_running_request_id is not None:
+            if self._preview_run_cancel is not None:
+                self._preview_run_cancel.set()
             return
         request = self._preview_pending_request
         self._preview_pending_request = None
@@ -3333,8 +5281,9 @@ class PolygonExtractionWidget(QWidget):
         request_id = self._preview_request_serial
         self._preview_running_request_id = request_id
         self._preview_running_signature = request_signature
-
-        worker = PreviewProcessingRunnable(request_id=request_id, request=request)
+        cancel = threading.Event()
+        self._preview_run_cancel = cancel
+        worker = PreviewProcessingRunnable(request_id=request_id, request=request, cancel_event=cancel)
         worker.signals.result.connect(self._on_preview_processing_result)
         worker.signals.error.connect(self._on_preview_processing_error)
         worker.signals.finished.connect(self._on_preview_processing_finished)
@@ -3372,6 +5321,7 @@ class PolygonExtractionWidget(QWidget):
             return
         if self._workspace.store_preprocessed_image(image_path, preprocessed_image, pipeline_config):
             self._sync_current_state_views()
+            self._try_extract_if_recognition_enabled()
 
     def _on_prepared_image_error(self, request_id: int, message: str) -> None:
         if request_id != self._prepared_image_running_request_id:
@@ -3382,6 +5332,7 @@ class PolygonExtractionWidget(QWidget):
         if request_id == self._prepared_image_running_request_id:
             self._prepared_image_running_request_id = None
             self._prepared_image_running_signature = None
+            self._prepared_image_run_cancel = None
         if self._prepared_image_pending_request is not None:
             self._start_pending_prepared_image_update()
         self._refresh_busy_indicator()
@@ -3430,6 +5381,11 @@ class PolygonExtractionWidget(QWidget):
         if self._workspace.apply_processing_result(result):
             self._sync_current_state_views()
         self._update_frame_item_status(result.image_path)
+        if hasattr(self, "recognition_mode_combo"):
+            if str(self.recognition_mode_combo.currentData() or "") == "disabled":
+                self._set_recognition_status("disabled")
+            else:
+                self._set_recognition_status("idle")
         self._set_progress_status("current_image_processed_status")
         self._append_log(
             self._tr(
@@ -3443,12 +5399,15 @@ class PolygonExtractionWidget(QWidget):
     def _on_preview_processing_error(self, request_id: int, message: str) -> None:
         if request_id != self._preview_running_request_id:
             return
+        if hasattr(self, "recognition_mode_combo"):
+            self._set_recognition_status("error", message)
         self._append_log(self._tr("processing_failed_log", error=message))
 
     def _on_preview_processing_finished(self, request_id: int) -> None:
         if request_id == self._preview_running_request_id:
             self._preview_running_request_id = None
             self._preview_running_signature = None
+            self._preview_run_cancel = None
         if self._preview_pending_request is not None and not self._preview_update_timer.isActive():
             self._start_pending_preview_processing()
         self._refresh_busy_indicator()
@@ -3541,12 +5500,7 @@ class PolygonExtractionWidget(QWidget):
         normalized_paths = self._workspace.replace_image_selection(paths, is_supported_image=is_image_path)
         self._neighbor_image_cache.clear()
         self._viewed_image_paths.intersection_update(str(Path(path)) for path in normalized_paths)
-        self._preview_update_timer.stop()
-        self._preview_pending_request = None
-        self._preview_pending_signature = None
-        self._prepared_image_pending_request = None
-        self._prepared_image_pending_signature = None
-        self._refresh_busy_indicator()
+        self._abort_in_flight_interactive_processing(preview=True, prepared=True)
         self.image_list.clear()
         for path in normalized_paths:
             item = QListWidgetItem(Path(path).name)
@@ -3594,12 +5548,7 @@ class PolygonExtractionWidget(QWidget):
         return polygons
 
     def load_image(self, path: str) -> None:
-        self._preview_update_timer.stop()
-        self._preview_pending_request = None
-        self._preview_pending_signature = None
-        self._prepared_image_pending_request = None
-        self._prepared_image_pending_signature = None
-        self._refresh_busy_indicator()
+        self._abort_in_flight_interactive_processing(preview=True, prepared=True)
         image_result = self._workspace.load_image(
             path,
             load_source_image=load_image_color,
@@ -3624,6 +5573,7 @@ class PolygonExtractionWidget(QWidget):
             self._append_log(self._tr("loaded_cached_state_log", image_path=image_result.image_path))
         else:
             self._append_log(self._tr("loaded_image_log", image_path=image_result.image_path))
+        self._try_extract_if_recognition_enabled()
 
     def get_polygons(self) -> list[PolygonData]:
         return self.polygon_editor.get_polygons()

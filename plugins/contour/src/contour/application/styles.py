@@ -3,12 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from kraken_core.styles import (
-    load_shared_stylesheet as load_core_shared_stylesheet,
-    shared_icon_path,
-    shared_styles_root as core_shared_styles_root,
-    rewrite_relative_urls as _rewrite_relative_urls,
-)
+from kraken_core import styles as core_styles
 
 _WINDOWS_ABSOLUTE_PATH = re.compile(r"^[a-zA-Z]:[\\/]")
 _URL_PATTERN = re.compile(r'url\((?P<quote>["\']?)(?P<path>[^)"\']+)(?P=quote)\)')
@@ -19,19 +14,22 @@ def package_root() -> Path:
 
 
 def styles_root() -> Path:
-    return core_shared_styles_root()
+    return core_styles.shared_styles_root()
 
 
 def resolve_style_path(*parts: str) -> Path:
     if parts and parts[0] == "icons":
         icon_name = Path(*parts[1:]).name
         if icon_name in {"icon.png", "icon.ico"}:
-            return shared_icon_path("contour", suffix=Path(icon_name).suffix)
+            candidate = core_styles.plugin_icon_path("contour", suffix=Path(icon_name).suffix)
+            if candidate.exists():
+                return candidate
+            return core_styles.shared_icon_path("kraken", suffix=Path(icon_name).suffix)
     return styles_root().joinpath(*parts)
 
 
 def load_stylesheet(name: str = "dark_modern.qss") -> str:
-    return load_core_shared_stylesheet(name)
+    return core_styles.load_shared_stylesheet(name)
 
 
 def shared_styles_root() -> Path:
@@ -44,6 +42,10 @@ def resolve_shared_style_path(*parts: str) -> Path:
 
 def load_shared_stylesheet(name: str = "dark_modern.qss") -> str:
     return load_stylesheet(name)
+
+
+def _rewrite_relative_urls(content: str, base_dir: str | Path) -> str:
+    return core_styles.rewrite_relative_urls(content, base_dir)
 
 
 def _is_relative_url(raw_path: str) -> bool:

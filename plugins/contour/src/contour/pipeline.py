@@ -32,6 +32,7 @@ from .edge_detection import (
     structured_edges as _ed_structured_edges,
 )
 from .i18n import choice_label, operation_name, parameter_label, tr
+from .application.preview_cancellation import raise_if_preview_cancelled
 from .utils import ensure_binary_mask, ensure_uint8
 
 OperationCallable = Callable[[np.ndarray, dict[str, Any]], np.ndarray]
@@ -101,6 +102,7 @@ class PreprocessingPipeline:
                         error=exc,
                     )
                 ) from exc
+            raise_if_preview_cancelled()
         return result
 
     def to_dict(self) -> dict[str, Any]:

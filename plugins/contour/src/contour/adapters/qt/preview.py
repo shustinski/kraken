@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from PyQt6.QtCore import QObject, QRectF, QRunnable, Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QWidget
@@ -11,6 +13,7 @@ from ...application.use_cases.processing import (
     prepare_image_for_preview,
     process_image_path,
 )
+from ...application.preview_cancellation import PreviewProcessingCancelled, use_preview_cancellation_event
 from .image_conversion import cv_to_qimage
 
 
@@ -66,7 +69,13 @@ class AutoTuneSignals(QObject):
 
 
 class PreviewProcessingRunnable(QRunnable):
-    def __init__(self, request_id: int, request: PreviewProcessingRequest) -> None:
+    def __init__(
+        self,
+        request_id: int,
+        request: PreviewProcessingRequest,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         super().__init__()
         self.request_id = int(request_id)
         self.request = PreviewProcessingRequest(
@@ -75,19 +84,27 @@ class PreviewProcessingRunnable(QRunnable):
             contour_settings=request.contour_settings,
             source_image=request.source_image,
             preprocessed_image=request.preprocessed_image,
+            passthrough_polygons=request.passthrough_polygons,
         )
+        self._cancel = cancel_event
         self.signals = PreviewProcessingSignals()
 
     def run(self) -> None:
         try:
-            result = process_image_path(
-                image_path=self.request.image_path,
-                pipeline_config=self.request.pipeline_config,
-                contour_settings=self.request.contour_settings,
-                source_image=self.request.source_image,
-                preprocessed_image=self.request.preprocessed_image,
-            )
+            with use_preview_cancellation_event(self._cancel):
+                result = process_image_path(
+                    image_path=self.request.image_path,
+                    pipeline_config=self.request.pipeline_config,
+                    contour_settings=self.request.contour_settings,
+                    source_image=self.request.source_image,
+                    preprocessed_image=self.request.preprocessed_image,
+                    passthrough_polygons=list(self.request.passthrough_polygons)
+                    if self.request.passthrough_polygons
+                    else None,
+                )
             self.signals.result.emit(self.request_id, result)
+        except PreviewProcessingCancelled:
+            pass
         except Exception as exc:
             self.signals.error.emit(self.request_id, str(exc))
         finally:
@@ -95,7 +112,13 @@ class PreviewProcessingRunnable(QRunnable):
 
 
 class PreparedImageRunnable(QRunnable):
-    def __init__(self, request_id: int, request: PreparedImageRequest) -> None:
+    def __init__(
+        self,
+        request_id: int,
+        request: PreparedImageRequest,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         super().__init__()
         self.request_id = int(request_id)
         self.request = PreparedImageRequest(
@@ -103,20 +126,24 @@ class PreparedImageRunnable(QRunnable):
             source_image=request.source_image.copy(),
             pipeline_config=dict(request.pipeline_config),
         )
+        self._cancel = cancel_event
         self.signals = PreparedImageSignals()
 
     def run(self) -> None:
         try:
-            preprocessed_image = prepare_image_for_preview(
-                source_image=self.request.source_image,
-                pipeline_config=self.request.pipeline_config,
-            )
+            with use_preview_cancellation_event(self._cancel):
+                preprocessed_image = prepare_image_for_preview(
+                    source_image=self.request.source_image,
+                    pipeline_config=self.request.pipeline_config,
+                )
             self.signals.result.emit(
                 self.request_id,
                 self.request.image_path,
                 preprocessed_image,
                 self.request.pipeline_config,
             )
+        except PreviewProcessingCancelled:
+            pass
         except Exception as exc:
             self.signals.error.emit(self.request_id, str(exc))
         finally:

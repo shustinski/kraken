@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from PyQt6.QtWidgets import QApplication
-from kraken_core.styles import load_shared_stylesheet, load_stylesheet
+from kraken_core.styles import load_shared_stylesheet
 
 
 class ThemeManager:
@@ -17,7 +17,6 @@ class ThemeManager:
         if settings_path is None:
             settings_path = Path.cwd() / ".krona_ui.json"
         self._settings_path = settings_path
-        self._theme_dir = Path(__file__).parent
 
     def available_themes(self) -> list[str]:
         return list(self._THEME_FILES.keys())
@@ -62,9 +61,7 @@ class ThemeManager:
         filename = self._THEME_FILES.get(theme_name)
         if not filename:
             return ""
-        path = self._theme_dir / filename
-        qss = load_shared_stylesheet(filename)
-        return qss or load_stylesheet(path)
+        return load_shared_stylesheet(filename)
 
     def apply_theme(self, app: QApplication, theme_name: str) -> bool:
         qss = self.stylesheet_for(theme_name)

@@ -152,9 +152,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.parameters_group.setTitle(self._tr("step_parameters_group"))
 
     self.contour_group.setTitle(self._tr("contour_extraction_group"))
-    self.profile_group.setTitle(
-        self._tr("extraction_profile_group_title", "Профиль" if self._ui_language == "ru" else "Profile")
-    )
     self.basic_filters_group.setTitle(
         self._tr("basic_filters_group_title", "Базовые фильтры" if self._ui_language == "ru" else "Basic filters")
     )
@@ -167,29 +164,33 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.topology_group.setTitle(
         self._tr("topology_group_title", "Иерархия и отверстия" if self._ui_language == "ru" else "Hierarchy and holes")
     )
-    if self.extraction_profile_label_widget is not None:
-        self.extraction_profile_label_widget.setText(self._tr("extraction_profile_label"))
-    self.extraction_profile_combo.setItemText(0, self._tr("extraction_profile_conductors"))
-    self.extraction_profile_combo.setItemText(1, self._tr("extraction_profile_vias"))
+    if hasattr(self, "recognition_mode_combo"):
+        self.recognition_mode_combo.setItemText(0, self._tr("recognition_mode_disabled"))
+        self.recognition_mode_combo.setItemText(1, self._tr("recognition_mode_conductors"))
+        self.recognition_mode_combo.setItemText(2, self._tr("extraction_profile_vias"))
     if self.retrieval_mode_label_widget is not None:
         self.retrieval_mode_label_widget.setText(self._tr("retrieval_mode_label"))
     if self.approximation_mode_label_widget is not None:
         self.approximation_mode_label_widget.setText(self._tr("approximation_mode_label"))
     if self.epsilon_label_widget is not None:
         self.epsilon_label_widget.setText(self._tr("epsilon_label"))
+    if hasattr(self, "epsilon_left_label"):
+        self.epsilon_left_label.setText(self._tr("epsilon_left_label"))
+    if hasattr(self, "epsilon_right_label"):
+        self.epsilon_right_label.setText(self._tr("epsilon_right_label"))
     if self.epsilon_mode_label_widget is not None:
         self.epsilon_mode_label_widget.setText(self._tr("epsilon_mode_label"))
     self.epsilon_relative_checkbox.setText(self._tr("epsilon_relative_checkbox"))
     if self.min_area_label_widget is not None:
-        self.min_area_label_widget.setText(
-            self._tr("area_range_label", "Диапазон площади" if self._ui_language == "ru" else "Area range")
-        )
+        self.min_area_label_widget.setText(self._tr("area_range_label"))
     if self.min_perimeter_label_widget is not None:
         self.min_perimeter_label_widget.setText(
             self._tr("perimeter_range_label", "Диапазон периметра" if self._ui_language == "ru" else "Perimeter range")
         )
     if self.min_point_count_label_widget is not None:
         self.min_point_count_label_widget.setText(self._tr("min_point_count_label"))
+    if getattr(self, "min_polygon_width_label_widget", None) is not None:
+        self.min_polygon_width_label_widget.setText(self._tr("min_polygon_width_label"))
     if self.min_bbox_width_label_widget is not None:
         self.min_bbox_width_label_widget.setText(
             self._tr(
@@ -236,16 +237,15 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.via_search_mode_label_widget.setText(
             self._tr("via_search_mode_label", "Режим поиска via" if self._ui_language == "ru" else "Via search mode")
         )
-    self.via_search_mode_combo.setItemText(
-        0, self._tr("via_search_mode_hybrid", "Гибридный" if self._ui_language == "ru" else "Hybrid")
-    )
-    self.via_search_mode_combo.setItemText(
-        1, self._tr("via_search_mode_blob", "Только blob" if self._ui_language == "ru" else "Blob only")
-    )
-    self.via_search_mode_combo.setItemText(
-        2,
-        self._tr("via_search_mode_template", "Только шаблоны" if self._ui_language == "ru" else "Template only"),
-    )
+    if self.via_search_mode_combo.count() >= 2:
+        self.via_search_mode_combo.setItemText(
+            0,
+            self._tr("via_search_mode_template", "По шаблону" if self._ui_language == "ru" else "Template"),
+        )
+        self.via_search_mode_combo.setItemText(
+            1,
+            self._tr("via_search_mode_heuristic", "Эвристический" if self._ui_language == "ru" else "Heuristic"),
+        )
     if self.via_white_range_label_widget is not None:
         self.via_white_range_label_widget.setText(
             self._tr("via_white_range_label", "Диапазон белых" if self._ui_language == "ru" else "White range")
@@ -310,7 +310,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.clear_via_templates_button.setText(
         self._tr("clear_via_templates_button", "Удалить все" if self._ui_language == "ru" else "Clear all")
     )
-    if self.noisy_traces_via_preset_label_widget is not None:
+    if getattr(self, "noisy_traces_via_preset_label_widget", None) is not None:
         self.noisy_traces_via_preset_label_widget.setText("")
     if self.via_preset_label_widget is not None:
         self.via_preset_label_widget.setText(
@@ -331,7 +331,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             "Пресет: яркие via на дорожках" if self._ui_language == "ru" else "Preset: bright vias on traces",
         )
     )
-    if self.blurred_via_preset_label_widget is not None:
+    if getattr(self, "blurred_via_preset_label_widget", None) is not None:
         self.blurred_via_preset_label_widget.setText("")
     self.blurred_via_preset_button.setText(
         self._tr(
@@ -424,6 +424,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.hole_color_label_widget.setText(self._tr("hole_contour_label"))
     if self.selected_color_label_widget is not None:
         self.selected_color_label_widget.setText(self._tr("selected_contour_label"))
+    if self.conductor_hover_highlight_label_widget is not None:
+        self.conductor_hover_highlight_label_widget.setText(self._tr("conductor_hover_highlight_label"))
     if self.vertex_color_label_widget is not None:
         self.vertex_color_label_widget.setText(self._tr("vertex_color_label"))
     if self.line_width_label_widget is not None:
@@ -504,6 +506,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.hole_color_button, "hole_color"),
         (self.selected_color_label_widget, "selected_color"),
         (self.selected_color_button, "selected_color"),
+        (self.conductor_hover_highlight_label_widget, "conductor_hover_highlight"),
+        (self.conductor_hover_highlight_color_button, "conductor_hover_highlight"),
         (self.vertex_color_label_widget, "vertex_color"),
         (self.vertex_color_button, "vertex_color"),
         (self.line_width_label_widget, "line_width"),

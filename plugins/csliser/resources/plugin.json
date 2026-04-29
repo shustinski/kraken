@@ -1,9 +1,16 @@
 {
   "id": "csliser",
   "display_name": "CSliser",
-  "description": "Reserved Kraken plugin.",
-  "version": "0.0.0",
-  "enabled": false,
+  "description": "Frame-based file copy, move, and cleanup tool.",
+  "version": "1.0.0",
+  "category": "File Tools",
+  "icon": "resources/icons/csliser.png",
+  "entry_point": "csliser.application.cli:main",
+  "enabled": true,
   "platforms": ["windows", "linux"],
-  "actions": ["get_capabilities"]
+  "executables": {
+    "windows": {"command": ["python", "-m", "csliser"]},
+    "linux": {"command": ["python", "-m", "csliser"]}
+  },
+  "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
 }

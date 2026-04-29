@@ -134,11 +134,13 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget.auto_apply_checkbox.setChecked(True)
         self.widget.min_area_spin.setValue(self.widget.min_area_spin.value() + 5.0)
         self._app.processEvents()
+        QTest.qWait(200)
+        self._app.processEvents()
 
-        self.assertEqual(process_calls, [True])
+        self.assertEqual(process_calls, [False])
 
     def test_via_roundness_is_included_in_current_settings(self) -> None:
-        self.widget.extraction_profile_combo.setCurrentIndex(self.widget.extraction_profile_combo.findData("vias"))
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))
         self.widget.via_roundness_spin.setValue(73.0)
 
         settings = self.widget._current_contour_settings()
@@ -149,7 +151,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(settings.via_min_roundness, 73.0)
 
     def test_via_threshold_ui_exposes_only_white_and_black_ranges(self) -> None:
-        self.widget.extraction_profile_combo.setCurrentIndex(self.widget.extraction_profile_combo.findData("vias"))
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))
         self.widget.via_white_range_min_spin.setValue(150)
         self.widget.via_white_range_max_spin.setValue(230)
         self.widget.via_black_range_checkbox.setChecked(True)

@@ -72,6 +72,12 @@ contour = [
     "pipeline_example.json",
 ]
 
+[tool.setuptools.data-files]
+"plugins/contour/resources/icons" = [
+    "resources/icons/contour.ico",
+    "resources/icons/contour.png",
+]
+
 [tool.ruff]
 line-length = 120
 target-version = "py313"

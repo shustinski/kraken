@@ -53,4 +53,4 @@ class ContourApplicationModel:
 
     @property
     def initial_size(self) -> tuple[int, int]:
-        return max(640, self.width), max(480, self.height)
+        return max(640, self.width), max(420, self.height)

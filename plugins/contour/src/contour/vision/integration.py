@@ -10,7 +10,7 @@ import numpy as np
 from ..domain import PolygonData, compute_polygon_metrics
 from .contour_extraction import SemContourConfig, SemContourExtractor
 from .io_normalize import make_image_ref, to_gray_u8
-from .schemas import ContourExtractionOutput, HierarchicalComponent, OutputShapeKind, ViaDetectionOutput, ViaHit
+from .schemas import AppMode, ContourExtractionOutput, HierarchicalComponent, OutputShapeKind, ViaDetectionOutput, ViaHit
 from .via import CompositeViaDetector, ViaRunConfig
 
 
@@ -50,6 +50,11 @@ def run_via_detection(
     legacy_settings: Any,
 ) -> ViaDetectionOutput:
     gray = to_gray_u8(image)
+    from ..application.processing import ALGORITHM_BACKEND_SEM
+
+    if str(getattr(legacy_settings, "algorithm_backend", "")).lower() == ALGORITHM_BACKEND_SEM:
+        return _run_sem_via_detection(gray, image, image_path, output_kind, legacy_settings)
+
     detector = CompositeViaDetector(
         make_image_ref(image_path, gray),
         ViaRunConfig(
@@ -58,6 +63,64 @@ def run_via_detection(
         ),
     )
     return detector.run(gray, shape=output_kind, legacy_settings=legacy_settings)
+
+
+def _run_sem_via_detection(
+    gray: Any,
+    image: Any,
+    image_path: str | None,
+    output_kind: OutputShapeKind,
+    legacy_settings: Any,
+) -> ViaDetectionOutput:
+    """SEM backend: exactly one selected via detector, template or heuristic."""
+
+    from ..application.processing import (
+        VIA_SEARCH_MODE_HEURISTIC,
+        VIA_SEARCH_MODE_TEMPLATE,
+        normalize_via_search_mode,
+    )
+    from .via.orchestrator import _detection_to_hit, _result_debug
+    from .via_detection.heuristic_detector import detect_vias_heuristic
+    from .via_detection.settings_bridge import heuristic_config_from_settings, template_config_from_settings
+    from .via_detection.template_detector import detect_vias_template
+
+    image_ref = make_image_ref(image_path, gray)
+    mode = normalize_via_search_mode(getattr(legacy_settings, "via_search_mode", ""))
+    log: list[str] = []
+
+    if mode == VIA_SEARCH_MODE_TEMPLATE:
+        tcfg = template_config_from_settings(legacy_settings)
+        result = detect_vias_template(gray, tcfg)
+        hits = [_detection_to_hit(d, "template") for d in result.accepted]
+        dbg = _result_debug(result, "template")
+        return ViaDetectionOutput(
+            image=image_ref,
+            mode=AppMode.VIA,
+            output_kind=output_kind,
+            hits=hits,
+            selected_strategy="template",
+            attempt_log=[f"template: n_templates={len(tcfg.templates)} min_corr={tcfg.min_correlation:.3f}"],
+            debug=dbg,
+        )
+
+    if mode != VIA_SEARCH_MODE_HEURISTIC:
+        mode = VIA_SEARCH_MODE_HEURISTIC
+    hcfg = heuristic_config_from_settings(legacy_settings)
+    result = detect_vias_heuristic(gray, hcfg)
+    hits = [_detection_to_hit(d, "heuristic") for d in result.accepted]
+    dbg = _result_debug(result, "heuristic")
+    ad = hcfg.allowed_diameters()
+    log.append(f"heuristic: polar={hcfg.polarity!r}")
+    log.append(f"heuristic: diameters={ad[:12]!r}{'...' if len(ad) > 12 else ''}")
+    return ViaDetectionOutput(
+        image=image_ref,
+        mode=AppMode.VIA,
+        output_kind=output_kind,
+        hits=hits,
+        selected_strategy="heuristic",
+        attempt_log=log,
+        debug=dbg,
+    )
 
 
 def contour_output_to_polygons(output: ContourExtractionOutput, *, category: str = "conductor") -> list[PolygonData]:

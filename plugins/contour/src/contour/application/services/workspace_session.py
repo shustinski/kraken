@@ -146,6 +146,7 @@ class WorkspaceSession:
 
     def apply_processing_result(self, result: BatchImageResult) -> bool:
         existing_state = self._state_cache.get(result.image_path)
+        metal_layers = getattr(result, "metal_overlay_polygons", None) or {}
         new_state = ImageProcessingState(
             image_path=result.image_path,
             source_image=result.source_image,
@@ -155,6 +156,7 @@ class WorkspaceSession:
             polygons=result.polygons,
             debug_candidates=list(result.debug_candidates),
             debug_gradient_maps=dict(result.debug_gradient_maps),
+            metal_overlay_polygons={k: [p.clone() for p in v] for k, v in metal_layers.items()},
             loaded_cif_path=None if existing_state is None else existing_state.loaded_cif_path,
             reference_polygons=[]
             if existing_state is None

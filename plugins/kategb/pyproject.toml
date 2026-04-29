@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kategb"
+dynamic = ["version"]
+description = "CIF sample generation and verification tool."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "kraken",
+    "openpyxl>=3.1",
+    "PyQt6>=6.6",
+]
+
+[tool.uv.sources]
+kraken = { workspace = true }
+
+[project.scripts]
+kategb = "kategb.application.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "kategb.__version__" }
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["kategb", "kategb.*"]
+
+[tool.setuptools.data-files]
+"plugins/kategb/resources/icons" = [
+    "resources/icons/kategb.png",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"

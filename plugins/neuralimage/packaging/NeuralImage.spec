@@ -36,16 +36,10 @@ datas = [
     # In PyInstaller >=6 onedir layout, all app files are already placed under
     # dist/<app>/_internal. Destination paths below must NOT include "_internal",
     # otherwise resources end up nested as _internal/_internal/... and runtime
-    # file lookups like "_internal/resources/dark_modern.qss" fail.
+    # app-resource lookups fail.
     (str(project_root / 'resources' / 'internal' / 'icon.png'), '.'),
     (str(project_root / 'resources' / 'internal' / 'icon.ico'), '.'),
     (str(project_root / 'resources' / 'internal' / 'settings_icon.png'), '.'),
-    (str(project_root / 'resources' / 'internal' / 'resources' / 'dark_modern.qss'), 'resources'),
-    (str(project_root / 'resources' / 'internal' / 'resources' / 'style.qss'), 'resources'),
-    (str(project_root / 'resources' / 'internal' / 'resources' / 'new_style.qss'), 'resources'),
-    (str(project_root / 'resources' / 'internal' / 'resources' / 'icons' / 'check_light.svg'), 'resources/icons'),
-    (str(project_root / 'resources' / 'internal' / 'resources' / 'icons' / 'chevron_down_light.svg'), 'resources/icons'),
-    (str(project_root / 'resources' / 'internal' / 'resources' / 'icons' / 'chevron_up_light.svg'), 'resources/icons'),
     (str(project_root / 'resources' / 'ui_texts_ru.json'), 'resources'),
     (str(project_root / 'resources' / 'ui_texts_en.json'), 'resources'),
     (str(project_root / 'resources' / 'changelog.md'), 'resources'),
@@ -96,7 +90,6 @@ datas += collect_data_files(
     includes=[
         'resources/styles/*.qss',
         'resources/styles/icons/*',
-        'resources/icons/*',
     ],
 )
 

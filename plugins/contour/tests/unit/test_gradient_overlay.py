@@ -106,7 +106,7 @@ class GradientOverlayWidgetTests(unittest.TestCase):
         self.assertFalse(overlay_item.isVisible())
 
     def test_threshold_mode_honours_via_min_contrast(self) -> None:
-        self.widget.extraction_profile_combo.setCurrentIndex(self.widget.extraction_profile_combo.findData("vias"))
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))
         self._app.processEvents()
         self.widget.via_min_contrast_spin.setValue(10.0)
         self.widget.gradient_overlay_mode_combo.setCurrentIndex(1)

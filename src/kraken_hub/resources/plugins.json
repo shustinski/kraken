@@ -21,8 +21,8 @@
       "enabled": true,
       "platforms": ["windows", "linux"],
       "executables": {
-        "windows": {"command": ["python", "-m", "contour"]},
-        "linux": {"command": ["python", "-m", "contour"]}
+        "windows": {"command": ["python", "__main__.py"]},
+        "linux": {"command": ["python", "__main__.py"]}
       },
       "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
     },
@@ -42,11 +42,34 @@
     {
       "id": "csliser",
       "display_name": "CSliser",
-      "description": "Reserved Kraken plugin.",
-      "version": "0.0.0",
-      "enabled": false,
+      "description": "Frame-based file copy, move, and cleanup tool.",
+      "version": "1.0.0",
+      "category": "File Tools",
+      "icon": "resources/icons/csliser.png",
+      "entry_point": "csliser.application.cli:main",
+      "enabled": true,
       "platforms": ["windows", "linux"],
-      "actions": ["get_capabilities"]
+      "executables": {
+        "windows": {"command": ["python", "-m", "csliser"]},
+        "linux": {"command": ["python", "-m", "csliser"]}
+      },
+      "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
+    },
+    {
+      "id": "kategb",
+      "display_name": "KateGB",
+      "description": "CIF sample generation and verification quality analysis.",
+      "version": "1.0.0",
+      "category": "Quality Control",
+      "icon": "resources/icons/kategb.png",
+      "entry_point": "kategb.application.cli:main",
+      "enabled": true,
+      "platforms": ["windows", "linux"],
+      "executables": {
+        "windows": {"command": ["python", "-m", "kategb"]},
+        "linux": {"command": ["python", "-m", "kategb"]}
+      },
+      "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
     },
     {
       "id": "karakal",

@@ -14,6 +14,7 @@ from .geometry import (
     _points_different,
     _polygon_points_different,
     _polygons_center,
+    is_valid_closed_polygon_ring,
     _snap_to_45,
 )
 from .tools import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode
@@ -30,6 +31,7 @@ class PolygonEditorView(QGraphicsView):
     zoomChanged = pyqtSignal(float)
     neighborFrameActivated = pyqtSignal(str)
     viaDebugRequested = pyqtSignal(object)
+    metalOverlayDetailRequested = pyqtSignal(str, str)
     middlePreviewHoldChanged = pyqtSignal(bool)
 
     def __init__(self, parent=None) -> None:
@@ -154,6 +156,9 @@ class PolygonEditorView(QGraphicsView):
     def set_debug_candidates(self, candidates: list[object]) -> None:
         self._editor_scene.set_debug_candidates(candidates)
 
+    def set_metal_overlays(self, layers: dict[str, list[PolygonData]], visibility: dict[str, bool]) -> None:
+        self._editor_scene.set_metal_overlays(layers, visibility)
+
     def set_via_debug_inspection_enabled(self, enabled: bool) -> None:
         self._via_debug_inspection_enabled = bool(enabled)
         self._editor_scene.set_debug_candidates([])
@@ -178,6 +183,9 @@ class PolygonEditorView(QGraphicsView):
 
     def set_gradient_overlay_opacity(self, opacity: float) -> None:
         self._editor_scene.set_gradient_overlay_opacity(opacity)
+
+    def set_polygon_category_visible(self, category: str, visible: bool) -> None:
+        self._editor_scene.set_polygon_category_visible(category, visible)
 
     def set_ui_language(self, language: str | None) -> None:
         self._editor_scene.set_ui_language(language)
@@ -321,6 +329,13 @@ class PolygonEditorView(QGraphicsView):
             super().mousePressEvent(event)
             return
 
+        if event.button() == Qt.MouseButton.LeftButton:
+            metal_hit = self._editor_scene.metal_overlay_pick(scene_pos)
+            if metal_hit is not None:
+                self.metalOverlayDetailRequested.emit(metal_hit[0], metal_hit[1])
+                event.accept()
+                return
+
         if event.button() == Qt.MouseButton.MiddleButton:
             self._middle_button_hides_overlays = True
             self._editor_scene.set_polygon_overlays_visible(False)
@@ -438,7 +453,7 @@ class PolygonEditorView(QGraphicsView):
         self._editor_scene.select_polygon(polygon_id, additive=additive_selection)
         if self._via_debug_inspection_enabled and polygon_id is not None:
             polygon = self._editor_scene.polygon_snapshot(polygon_id)
-            if polygon is not None and (polygon.category == "via" or polygon.shape_hint == "box"):
+            if polygon is not None:
                 self.viaDebugRequested.emit(polygon)
                 event.accept()
                 return
@@ -457,9 +472,11 @@ class PolygonEditorView(QGraphicsView):
         self._last_pointer_scene_pos = scene_pos
         self._update_tool_cursors()
         if self._paste_mode:
+            self._editor_scene.clear_conductor_hover_highlight()
             self._update_paste_preview(scene_pos)
             event.accept()
             return
+        self._editor_scene.sync_conductor_hover_highlight(scene_pos)
         if self._tool == EditorTool.PAN:
             super().mouseMoveEvent(event)
             return
@@ -586,15 +603,21 @@ class PolygonEditorView(QGraphicsView):
                 old_point = self._drag_origin_points[self._drag_vertex_index]
                 new_point = new_points[self._drag_vertex_index]
                 if _points_different(old_point, new_point):
-                    self.undo_stack.push(
-                        MoveVertexCommand(
-                            self._editor_scene,
-                            self._drag_polygon_id,
-                            self._drag_vertex_index,
-                            old_point,
-                            new_point,
+                    if not is_valid_closed_polygon_ring(new_points):
+                        self._editor_scene.preview_vertex_move(
+                            self._drag_polygon_id, self._drag_vertex_index, QPointF(old_point[0], old_point[1])
                         )
-                    )
+                        self._editor_scene.warn_invalid_polygon_geometry()
+                    else:
+                        self.undo_stack.push(
+                            MoveVertexCommand(
+                                self._editor_scene,
+                                self._drag_polygon_id,
+                                self._drag_vertex_index,
+                                old_point,
+                                new_point,
+                            )
+                        )
             elif (
                 self._drag_kind == "polygon"
                 and self._drag_polygon_id is not None
@@ -602,14 +625,18 @@ class PolygonEditorView(QGraphicsView):
             ):
                 new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
                 if _polygon_points_different(self._drag_origin_points, new_points):
-                    self.undo_stack.push(
-                        MovePolygonCommand(
-                            self._editor_scene,
-                            self._drag_polygon_id,
-                            self._drag_origin_points,
-                            new_points,
+                    if not is_valid_closed_polygon_ring(new_points):
+                        self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
+                        self._editor_scene.warn_invalid_polygon_geometry()
+                    else:
+                        self.undo_stack.push(
+                            MovePolygonCommand(
+                                self._editor_scene,
+                                self._drag_polygon_id,
+                                self._drag_origin_points,
+                                new_points,
+                            )
                         )
-                    )
             self._drag_kind = None
             self._drag_polygon_id = None
             self._drag_vertex_index = None
@@ -696,6 +723,7 @@ class PolygonEditorView(QGraphicsView):
         super().keyReleaseEvent(event)
 
     def leaveEvent(self, event) -> None:
+        self._editor_scene.clear_conductor_hover_highlight()
         self._editor_scene.hide_tool_cursors()
         super().leaveEvent(event)
 

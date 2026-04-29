@@ -512,7 +512,7 @@ class MainView(QMainWindow):
         self.ui_language_en_action.setData("en")
         language_group.addAction(self.ui_language_en_action)
         self._language_menu.addAction(self.ui_language_en_action)
-        self._theme_menu = view_menu.addMenu(t.get("menu_theme", "Тема"))
+        self._theme_menu = menubar.addMenu(t.get("menu_theme", "Тема"))
         theme_group = QActionGroup(self)
         theme_group.setExclusive(True)
         self.theme_dark_action = QAction(t.get("theme_dark", "Темная"), self)

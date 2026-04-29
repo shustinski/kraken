@@ -11,6 +11,7 @@ from PyQt6.QtCore import QPointF, QRectF
 from PyQt6.QtGui import QColor, QPainterPath
 
 from ..domain import PolygonData, compute_polygon_metrics
+from ..domain.polygon_ring import is_valid_closed_polygon_ring, is_valid_open_polyline_last_edge
 
 
 def _distance_to_segment(point: tuple[float, float], start: tuple[float, float], end: tuple[float, float]) -> float:
@@ -184,6 +185,40 @@ def _smallest_containing_polygon(polygon: PolygonData, candidates: list[PolygonD
     if not containing:
         return None
     return min(containing, key=lambda candidate: candidate.area)
+
+
+def _polygon_is_via_box_display(polygon: PolygonData) -> bool:
+    return polygon.shape_hint == "box" or polygon.category == "via"
+
+
+def resolve_conductor_hover_target_id(
+    polygons_by_id: dict[int, PolygonData], hovered_polygon_id: int | None
+) -> int | None:
+    """Map hovered polygon hole/via/trace to the outer conductor polygon id that should glow on hover."""
+    if hovered_polygon_id is None:
+        return None
+    poly = polygons_by_id.get(hovered_polygon_id)
+    if poly is None:
+        return None
+    if poly.is_hole:
+        parent_id = poly.parent_id
+        if parent_id is None:
+            return None
+        parent = polygons_by_id.get(parent_id)
+        if parent is None or parent.is_hole or _polygon_is_via_box_display(parent):
+            return None
+        return parent_id
+    if _polygon_is_via_box_display(poly):
+        if poly.parent_id is not None:
+            parent = polygons_by_id.get(poly.parent_id)
+            if parent is not None and not parent.is_hole and not _polygon_is_via_box_display(parent):
+                return poly.parent_id
+        candidates = [candidate for candidate in polygons_by_id.values() if not candidate.is_hole and not _polygon_is_via_box_display(candidate)]
+        smallest = _smallest_containing_polygon(poly, candidates)
+        return smallest.id if smallest is not None else None
+    if not poly.is_hole:
+        return poly.id
+    return None
 
 
 def _clip_bbox_to_scene(bbox: tuple[int, int, int, int], scene_rect: QRectF) -> tuple[int, int, int, int]:

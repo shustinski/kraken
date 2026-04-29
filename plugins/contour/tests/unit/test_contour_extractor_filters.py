@@ -6,7 +6,8 @@ import cv2
 import numpy as np
 
 from contour.application.processing import ContourExtractionSettings
-from contour.contour_extractor import extract_polygons
+from contour.contour_extractor import _finalize_closed_polygon_points, extract_polygons
+from contour.domain.polygon_ring import is_valid_closed_polygon_ring
 
 
 def _angle(
@@ -24,6 +25,22 @@ def _angle(
 
 
 class ContourExtractorFilterTests(unittest.TestCase):
+    def test_invalid_bow_tie_repaired_using_filled_lattice(self) -> None:
+        # Order (0,0)->(W,H)->(0,H)->(W,0) self-intersects; same bounding square as a valid axis ring.
+        raw = np.array([[[0, 0]], [[20, 0]], [[20, 20]], [[0, 20]]], dtype=np.int32)
+        bad_ring = [(0.0, 0.0), (20.0, 20.0), (0.0, 20.0), (20.0, 0.0)]
+        self.assertFalse(is_valid_closed_polygon_ring(bad_ring))
+        out = _finalize_closed_polygon_points(
+            list(bad_ring),
+            raw,
+            (22, 22),
+            ContourExtractionSettings(
+                epsilon=0.0, min_polygon_angle=0.0, object_type="conductor", output_mode="polygon"
+            ),
+        )
+        self.assertIsNotNone(out)
+        self.assertTrue(is_valid_closed_polygon_ring(out))
+
     def test_excludes_border_touching_contours(self) -> None:
         mask = np.zeros((64, 64), dtype=np.uint8)
         cv2.rectangle(mask, (0, 10), (20, 30), 255, thickness=-1)
@@ -66,6 +83,30 @@ class ContourExtractorFilterTests(unittest.TestCase):
         self.assertEqual(len(baseline), 1)
         self.assertEqual(by_solidity, [])
         self.assertEqual(by_extent, [])
+
+    def test_rejects_thin_strip_by_min_polygon_width(self) -> None:
+        mask = np.zeros((120, 120), dtype=np.uint8)
+        cv2.rectangle(mask, (10, 50), (100, 54), 255, thickness=-1)
+
+        baseline = extract_polygons(
+            mask, ContourExtractionSettings(min_area=1.0, min_perimeter=1.0, min_polygon_width_px=0.0)
+        )
+        filtered = extract_polygons(
+            mask, ContourExtractionSettings(min_area=1.0, min_perimeter=1.0, min_polygon_width_px=8.0)
+        )
+
+        self.assertEqual(len(baseline), 1)
+        self.assertEqual(filtered, [])
+
+    def test_keeps_8px_strip_when_min_polygon_width_2_5(self) -> None:
+        # Regression: 15% tile over the whole fill once measured ~2 px for an 8 px-wide bar (edge dilution).
+        mask = np.zeros((120, 120), dtype=np.uint8)
+        cv2.rectangle(mask, (10, 20), (100, 28), 255, thickness=-1)
+
+        polygons = extract_polygons(
+            mask, ContourExtractionSettings(min_area=1.0, min_perimeter=1.0, min_polygon_width_px=2.5)
+        )
+        self.assertEqual(len(polygons), 1)
 
     def test_via_profile_filters_by_roundness(self) -> None:
         mask = np.zeros((96, 96), dtype=np.uint8)

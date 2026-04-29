@@ -1,18 +1,18 @@
-#define MyAppName "Contour"
+#define MyAppName "CSliser"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.5"
+  #define MyAppVersion "1.0.0"
 #endif
 #define MyAppPublisher "ViaLaNet"
-#define MyAppExeName "Contour.exe"
-#define MyAppDistDir "..\\dist\\Contour"
-#define MyAppIcon "..\\..\\..\\src\\kraken_core\\resources\\icons\\contour.ico"
+#define MyAppExeName "CSliser.exe"
+#define MyAppDistDir "..\\dist\\CSliser"
+#define MyAppIcon "..\\resources\\icons\\csliser.ico"
 
 [Setup]
-AppId={{3D57BB57-5DD3-40F8-8521-0FC09E6EF8B5}
+AppId={{C4E8F1AC-92D7-41B3-A6E1-7088D5C31290}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\ViaLaNet\Polygon Widget
+DefaultDirName={autopf}\ViaLaNet\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 ArchitecturesAllowed=x64compatible
@@ -20,15 +20,14 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
-LanguageDetectionMethod=none
 OutputDir=.
-OutputBaseFilename=Contour-setup-{#MyAppVersion}
+OutputBaseFilename=CSliser-setup-{#MyAppVersion}
 SetupIconFile={#MyAppIcon}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
-Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked

@@ -171,7 +171,9 @@ def _finalize_metal_strip_polygon(
     )
     raw_pts = [(float(cnt_i[i][0][0]), float(cnt_i[i][0][1])) for i in range(len(cnt_i))]
     topo_pts = points if len(points) >= 3 else raw_pts
-    valid, topo_reason = _md._valid_topology(topo_pts, enabled=config.check_contour_validity)
+    topo_pts, valid, topo_reason = _md._repair_contour_polygon_for_topology(cnt_i, topo_pts, config, (h, w))
+    if valid and len(topo_pts) >= 3:
+        points = topo_pts
     if len(points) < 3:
         dev, ang_ok = 0.0, True
     else:

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from math import atan2, degrees
@@ -14,6 +14,7 @@ from ...domain.polygon_ring import is_valid_closed_polygon_ring
 from ...utils import ensure_binary_mask, ensure_uint8
 
 _TOPOLOGY_CHECK_MAX_VERTICES = 192
+_TOPOLOGY_REPAIR_MIN_FILL_IOU = 0.98
 
 _CANONICAL_90 = {0.0, 90.0, 180.0}
 _CANONICAL_45 = {0.0, 45.0, 90.0, 135.0, 180.0}
@@ -40,9 +41,9 @@ def _normalize_metal_extraction_mode(value: str) -> str:
         "none",
         "off",
         "disabled",
-        "без",
-        "без_сегментации",
-        "без сегментации",
+        "Р±РµР·",
+        "Р±РµР·_СЃРµРіРјРµРЅС‚Р°С†РёРё",
+        "Р±РµР· СЃРµРіРјРµРЅС‚Р°С†РёРё",
         "grayscale",
         "edges",
         "edge",
@@ -50,9 +51,9 @@ def _normalize_metal_extraction_mode(value: str) -> str:
         "no-segmentation",
     }:
         return "none"
-    if t in {"hybrid", "гибрид", "both", "комбинированный"}:
+    if t in {"hybrid", "РіРёР±СЂРёРґ", "both", "РєРѕРјР±РёРЅРёСЂРѕРІР°РЅРЅС‹Р№"}:
         return "hybrid"
-    if t in {"adaptive", "адаптив", "адаптивная"}:
+    if t in {"adaptive", "Р°РґР°РїС‚РёРІ", "Р°РґР°РїС‚РёРІРЅР°СЏ"}:
         return "adaptive"
     if t in {"otsu"}:
         return "otsu"
@@ -61,14 +62,14 @@ def _normalize_metal_extraction_mode(value: str) -> str:
 
 def _normalize_metal_segmentation_method(value: str) -> str:
     """Threshold leg: Otsu vs Adaptive (only used inside `_segment_bright_metal`)."""
-    return "adaptive" if str(value).strip().lower() in {"adaptive", "адаптив", "адаптивная"} else "otsu"
+    return "adaptive" if str(value).strip().lower() in {"adaptive", "Р°РґР°РїС‚РёРІ", "Р°РґР°РїС‚РёРІРЅР°СЏ"} else "otsu"
 
 
 def _normalize_metal_sensitivity_token(value: str) -> str:
     t = str(value or "").strip().lower()
-    if t in {"low", "низкая", "низк"}:
+    if t in {"low", "РЅРёР·РєР°СЏ", "РЅРёР·Рє"}:
         return "low"
-    if t in {"high", "высокая", "высок"}:
+    if t in {"high", "РІС‹СЃРѕРєР°СЏ", "РІС‹СЃРѕРє"}:
         return "high"
     return "medium"
 
@@ -163,76 +164,76 @@ def format_metal_reject_detail_ru(
     c = str(case or "").strip()
     tol = float(config.angle_tolerance_deg)
     mode = str(config.allowed_angles).strip()
-    if c == "мало_вершин":
+    if c == "РјР°Р»Рѕ_РІРµСЂС€РёРЅ":
         return (
-            f"Топология: у контура {int(vertex_count)} вершин(ы), требуется не менее 3 "
-            f"(параметр «мин. число точек» в упрощении: {int(config.min_points)})"
+            f"РўРѕРїРѕР»РѕРіРёСЏ: Сѓ РєРѕРЅС‚СѓСЂР° {int(vertex_count)} РІРµСЂС€РёРЅ(С‹), С‚СЂРµР±СѓРµС‚СЃСЏ РЅРµ РјРµРЅРµРµ 3 "
+            f"(РїР°СЂР°РјРµС‚СЂ В«РјРёРЅ. С‡РёСЃР»Рѕ С‚РѕС‡РµРєВ» РІ СѓРїСЂРѕС‰РµРЅРёРё: {int(config.min_points)})"
         )
-    if c == "самопересечение_или_топология" or c.startswith("самопересечение"):
+    if c == "СЃР°РјРѕРїРµСЂРµСЃРµС‡РµРЅРёРµ_РёР»Рё_С‚РѕРїРѕР»РѕРіРёСЏ" or c.startswith("СЃР°РјРѕРїРµСЂРµСЃРµС‡РµРЅРёРµ"):
         return (
-            "Топология: контур самопересекается, касается сам себя или имеет недопустимую конфигурацию рёбер "
-            f"(проверка включена: check_contour_validity={bool(config.check_contour_validity)})"
+            "РўРѕРїРѕР»РѕРіРёСЏ: РєРѕРЅС‚СѓСЂ СЃР°РјРѕРїРµСЂРµСЃРµРєР°РµС‚СЃСЏ, РєР°СЃР°РµС‚СЃСЏ СЃР°Рј СЃРµР±СЏ РёР»Рё РёРјРµРµС‚ РЅРµРґРѕРїСѓСЃС‚РёРјСѓСЋ РєРѕРЅС„РёРіСѓСЂР°С†РёСЋ СЂС‘Р±РµСЂ "
+            f"(РїСЂРѕРІРµСЂРєР° РІРєР»СЋС‡РµРЅР°: check_contour_validity={bool(config.check_contour_validity)})"
         )
-    if c == "некорректный_контур" or c == "":
+    if c == "РЅРµРєРѕСЂСЂРµРєС‚РЅС‹Р№_РєРѕРЅС‚СѓСЂ" or c == "":
         return (
-            "Топология: контур не прошёл проверку целостности "
-            f"(вершин: {int(vertex_count)}, проверка: {bool(config.check_contour_validity)})"
+            "РўРѕРїРѕР»РѕРіРёСЏ: РєРѕРЅС‚СѓСЂ РЅРµ РїСЂРѕС€С‘Р» РїСЂРѕРІРµСЂРєСѓ С†РµР»РѕСЃС‚РЅРѕСЃС‚Рё "
+            f"(РІРµСЂС€РёРЅ: {int(vertex_count)}, РїСЂРѕРІРµСЂРєР°: {bool(config.check_contour_validity)})"
         )
-    if c == "ширина":
+    if c == "С€РёСЂРёРЅР°":
         return (
-            "Оценка ширины (маска + minAreaRect): "
-            f"у полигона {width_px:.2f} px, в настройках минимум {float(config.min_width_px):.2f} px"
+            "РћС†РµРЅРєР° С€РёСЂРёРЅС‹ (РјР°СЃРєР° + minAreaRect): "
+            f"Сѓ РїРѕР»РёРіРѕРЅР° {width_px:.2f} px, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјРёРЅРёРјСѓРј {float(config.min_width_px):.2f} px"
         )
-    if c == "ширина_макс":
-        cap_s = f"{float(config.max_width_px):.2f}" if config.max_width_px is not None else "—"
+    if c == "С€РёСЂРёРЅР°_РјР°РєСЃ":
+        cap_s = f"{float(config.max_width_px):.2f}" if config.max_width_px is not None else "вЂ”"
         return (
-            "Оценка ширины (маска + minAreaRect): "
-            f"у полигона {width_px:.2f} px, в настройках максимум {cap_s} px"
+            "РћС†РµРЅРєР° С€РёСЂРёРЅС‹ (РјР°СЃРєР° + minAreaRect): "
+            f"Сѓ РїРѕР»РёРіРѕРЅР° {width_px:.2f} px, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјР°РєСЃРёРјСѓРј {cap_s} px"
         )
-    if c == "длина":
+    if c == "РґР»РёРЅР°":
         return (
-            "Длина по minAreaRect (большая сторона): "
-            f"у полигона {length_px:.2f} px, в настройках минимум {float(config.min_length_px):.2f} px"
+            "Р”Р»РёРЅР° РїРѕ minAreaRect (Р±РѕР»СЊС€Р°СЏ СЃС‚РѕСЂРѕРЅР°): "
+            f"Сѓ РїРѕР»РёРіРѕРЅР° {length_px:.2f} px, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјРёРЅРёРјСѓРј {float(config.min_length_px):.2f} px"
         )
-    if c == "площадь":
-        return f"Площадь контура: у полигона {area:.1f} px², в настройках минимум {float(config.min_area):.1f} px²"
-    if c == "площадь_макс":
-        cap_s = f"{float(config.max_area):.1f}" if config.max_area is not None else "—"
-        return f"Площадь контура: у полигона {area:.1f} px², в настройках максимум {cap_s} px²"
-    if c == "периметр":
+    if c == "РїР»РѕС‰Р°РґСЊ":
+        return f"РџР»РѕС‰Р°РґСЊ РєРѕРЅС‚СѓСЂР°: Сѓ РїРѕР»РёРіРѕРЅР° {area:.1f} pxВІ, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјРёРЅРёРјСѓРј {float(config.min_area):.1f} pxВІ"
+    if c == "РїР»РѕС‰Р°РґСЊ_РјР°РєСЃ":
+        cap_s = f"{float(config.max_area):.1f}" if config.max_area is not None else "вЂ”"
+        return f"РџР»РѕС‰Р°РґСЊ РєРѕРЅС‚СѓСЂР°: Сѓ РїРѕР»РёРіРѕРЅР° {area:.1f} pxВІ, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјР°РєСЃРёРјСѓРј {cap_s} pxВІ"
+    if c == "РїРµСЂРёРјРµС‚СЂ":
         return (
-            "Периметр контура: "
-            f"у полигона {perimeter:.1f} px, в настройках минимум {float(config.min_perimeter):.1f} px"
+            "РџРµСЂРёРјРµС‚СЂ РєРѕРЅС‚СѓСЂР°: "
+            f"Сѓ РїРѕР»РёРіРѕРЅР° {perimeter:.1f} px, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјРёРЅРёРјСѓРј {float(config.min_perimeter):.1f} px"
         )
-    if c == "периметр_макс":
-        cap_s = f"{float(config.max_perimeter):.1f}" if config.max_perimeter is not None else "—"
+    if c == "РїРµСЂРёРјРµС‚СЂ_РјР°РєСЃ":
+        cap_s = f"{float(config.max_perimeter):.1f}" if config.max_perimeter is not None else "вЂ”"
         return (
-            "Периметр контура: "
-            f"у полигона {perimeter:.1f} px, в настройках максимум {cap_s} px"
+            "РџРµСЂРёРјРµС‚СЂ РєРѕРЅС‚СѓСЂР°: "
+            f"Сѓ РїРѕР»РёРіРѕРЅР° {perimeter:.1f} px, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјР°РєСЃРёРјСѓРј {cap_s} px"
         )
-    if c == "прямолинейность":
+    if c == "РїСЂСЏРјРѕР»РёРЅРµР№РЅРѕСЃС‚СЊ":
         return (
-            "Прямолинейность (2·max(стороны minAreaRect) / периметр): "
-            f"у полигона {straightness:.3f}, в настройках минимум {float(config.min_straightness):.3f}"
+            "РџСЂСЏРјРѕР»РёРЅРµР№РЅРѕСЃС‚СЊ (2В·max(СЃС‚РѕСЂРѕРЅС‹ minAreaRect) / РїРµСЂРёРјРµС‚СЂ): "
+            f"Сѓ РїРѕР»РёРіРѕРЅР° {straightness:.3f}, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјРёРЅРёРјСѓРј {float(config.min_straightness):.3f}"
         )
-    if c == "углы":
+    if c == "СѓРіР»С‹":
         return (
-            f"Углы полигона: режим «{mode}», допуск ±{tol:.1f}°; "
-            f"максимальное отклонение от допустимых направлений {max_angle_deviation:.2f}° "
-            f"(ожидалось не больше {tol:.1f}°)"
+            f"РЈРіР»С‹ РїРѕР»РёРіРѕРЅР°: СЂРµР¶РёРј В«{mode}В», РґРѕРїСѓСЃРє В±{tol:.1f}В°; "
+            f"РјР°РєСЃРёРјР°Р»СЊРЅРѕРµ РѕС‚РєР»РѕРЅРµРЅРёРµ РѕС‚ РґРѕРїСѓСЃС‚РёРјС‹С… РЅР°РїСЂР°РІР»РµРЅРёР№ {max_angle_deviation:.2f}В° "
+            f"(РѕР¶РёРґР°Р»РѕСЃСЊ РЅРµ Р±РѕР»СЊС€Рµ {tol:.1f}В°)"
         )
-    if c == "т_соединение_запрещено":
+    if c == "С‚_СЃРѕРµРґРёРЅРµРЅРёРµ_Р·Р°РїСЂРµС‰РµРЅРѕ":
         return (
-            "Т-образное ветвление (выпуклые дефекты контура): "
-            f"оценка {int(t_branch_score)} > 2 при выключенном параметре «разрешить Т-соединения» "
+            "Рў-РѕР±СЂР°Р·РЅРѕРµ РІРµС‚РІР»РµРЅРёРµ (РІС‹РїСѓРєР»С‹Рµ РґРµС„РµРєС‚С‹ РєРѕРЅС‚СѓСЂР°): "
+            f"РѕС†РµРЅРєР° {int(t_branch_score)} > 2 РїСЂРё РІС‹РєР»СЋС‡РµРЅРЅРѕРј РїР°СЂР°РјРµС‚СЂРµ В«СЂР°Р·СЂРµС€РёС‚СЊ Рў-СЃРѕРµРґРёРЅРµРЅРёСЏВ» "
             f"(allow_t_junction={bool(config.allow_t_junction)})"
         )
-    if c == "граница":
+    if c == "РіСЂР°РЅРёС†Р°":
         return (
-            "Касание границы кадра: контур касается края изображения; "
-            f"режим обработки таких контуров: «{config.border_mode}» (ожидалось не попадать на край при режиме ignore)"
+            "РљР°СЃР°РЅРёРµ РіСЂР°РЅРёС†С‹ РєР°РґСЂР°: РєРѕРЅС‚СѓСЂ РєР°СЃР°РµС‚СЃСЏ РєСЂР°СЏ РёР·РѕР±СЂР°Р¶РµРЅРёСЏ; "
+            f"СЂРµР¶РёРј РѕР±СЂР°Р±РѕС‚РєРё С‚Р°РєРёС… РєРѕРЅС‚СѓСЂРѕРІ: В«{config.border_mode}В» (РѕР¶РёРґР°Р»РѕСЃСЊ РЅРµ РїРѕРїР°РґР°С‚СЊ РЅР° РєСЂР°Р№ РїСЂРё СЂРµР¶РёРјРµ ignore)"
         )
-    return f"Отклонение: {c}"
+    return f"РћС‚РєР»РѕРЅРµРЅРёРµ: {c}"
 
 
 def format_metal_suspicion_detail_ru(
@@ -250,17 +251,17 @@ def format_metal_suspicion_detail_ru(
     soft_s = min_s * 0.85
     if angle_soft:
         parts.append(
-            f"углы близки к порогу: отклонение {max_angle_deviation:.2f}° при жёстком допуске ±{tol:.1f}° "
-            f"(мягкое предупреждение уже от {soft_ang:.2f}°)"
+            f"СѓРіР»С‹ Р±Р»РёР·РєРё Рє РїРѕСЂРѕРіСѓ: РѕС‚РєР»РѕРЅРµРЅРёРµ {max_angle_deviation:.2f}В° РїСЂРё Р¶С‘СЃС‚РєРѕРј РґРѕРїСѓСЃРєРµ В±{tol:.1f}В° "
+            f"(РјСЏРіРєРѕРµ РїСЂРµРґСѓРїСЂРµР¶РґРµРЅРёРµ СѓР¶Рµ РѕС‚ {soft_ang:.2f}В°)"
         )
     if straight_soft:
         parts.append(
-            f"прямолинейность близка к минимуму: {straightness:.3f} при пороге {min_s:.3f} "
-            f"(мягкое предупреждение от {soft_s:.3f})"
+            f"РїСЂСЏРјРѕР»РёРЅРµР№РЅРѕСЃС‚СЊ Р±Р»РёР·РєР° Рє РјРёРЅРёРјСѓРјСѓ: {straightness:.3f} РїСЂРё РїРѕСЂРѕРіРµ {min_s:.3f} "
+            f"(РјСЏРіРєРѕРµ РїСЂРµРґСѓРїСЂРµР¶РґРµРЅРёРµ РѕС‚ {soft_s:.3f})"
         )
     if not parts:
-        return "Сомнительный контур: сработали мягкие эвристики без детализации."
-    return "Сомнительно: " + "; ".join(parts)
+        return "РЎРѕРјРЅРёС‚РµР»СЊРЅС‹Р№ РєРѕРЅС‚СѓСЂ: СЃСЂР°Р±РѕС‚Р°Р»Рё РјСЏРіРєРёРµ СЌРІСЂРёСЃС‚РёРєРё Р±РµР· РґРµС‚Р°Р»РёР·Р°С†РёРё."
+    return "РЎРѕРјРЅРёС‚РµР»СЊРЅРѕ: " + "; ".join(parts)
 
 
 @dataclass(slots=True)
@@ -376,7 +377,7 @@ def _watershed_split_touching_conductors(
 def _grayscale_edge_conductor_mask(gray: np.ndarray, config: MetalRecoveryConfig) -> tuple[np.ndarray, np.ndarray]:
     """Closed regions from grayscale edges + local morphology (no global intensity threshold).
 
-    Pipeline: Gaussian blur → white-hat emphasis → Canny(L2) → dilate → morph close/open.
+    Pipeline: Gaussian blur в†’ white-hat emphasis в†’ Canny(L2) в†’ dilate в†’ morph close/open.
     Returns ``(filled_region_mask_uint8, canny_edges_uint8)``.
     """
     if gray.size == 0:
@@ -496,10 +497,10 @@ def _angle_deviation_for_mode(
     if len(points) < 3:
         return 0.0, True
     mode = str(allowed).strip().lower()
-    if mode in {"free", "arbitrary", "произвольные", "any"}:
+    if mode in {"free", "arbitrary", "РїСЂРѕРёР·РІРѕР»СЊРЅС‹Рµ", "any"}:
         return 0.0, True
 
-    if mode in {"90_only", "90", "ortho", "только_90"}:
+    if mode in {"90_only", "90", "ortho", "С‚РѕР»СЊРєРѕ_90"}:
         canonical = _CANONICAL_90
     else:
         canonical = _CANONICAL_45
@@ -558,39 +559,117 @@ def _contour_to_polygon(
     if not approx_enabled or epsilon <= 0:
         pts = [(float(p[0][0]), float(p[0][1])) for p in contour]
     else:
-        arc = cv2.arcLength(contour, True)
         eps = max(0.1, float(epsilon))
         simplified = cv2.approxPolyDP(contour, eps, True)
         pts = [(float(p[0][0]), float(p[0][1])) for p in simplified]
     if len(pts) >= 3 and min_angle_deg > 1e-6:
-        # drop vertices with too sharp turns (noise spikes)
-        filtered: list[tuple[float, float]] = []
-        n = len(pts)
-        for i in range(n):
-            p0 = pts[(i - 1) % n]
-            p1 = pts[i]
-            p2 = pts[(i + 1) % n]
-            a1 = atan2(p0[1] - p1[1], p0[0] - p1[0])
-            a2 = atan2(p2[1] - p1[1], p2[0] - p1[0])
-            ang = degrees(abs(a2 - a1))
-            if ang > 180.0:
-                ang = 360.0 - ang
-            interior = abs(180.0 - ang)
-            if interior >= float(min_angle_deg) - 1e-3:
-                filtered.append(p1)
-        if len(filtered) >= 3:
-            pts = filtered
+        pts = _remove_vertices_below_angle(pts, float(min_angle_deg))
     return pts
+
+
+def _vertex_angle_deg(
+    prev_point: tuple[float, float],
+    current_point: tuple[float, float],
+    next_point: tuple[float, float],
+) -> float:
+    a1 = atan2(prev_point[1] - current_point[1], prev_point[0] - current_point[0])
+    a2 = atan2(next_point[1] - current_point[1], next_point[0] - current_point[0])
+    angle = degrees(abs(a2 - a1))
+    if angle > 180.0:
+        angle = 360.0 - angle
+    return float(angle)
+
+
+def _remove_vertices_below_angle(
+    points: list[tuple[float, float]],
+    min_angle_deg: float,
+) -> list[tuple[float, float]]:
+    if len(points) < 3 or min_angle_deg <= 0.0:
+        return points
+    limit = max(0.0, min(180.0, float(min_angle_deg)))
+    cleaned = list(points)
+    changed = True
+    while changed and len(cleaned) >= 4:
+        changed = False
+        for index, current_point in enumerate(cleaned):
+            prev_point = cleaned[(index - 1) % len(cleaned)]
+            next_point = cleaned[(index + 1) % len(cleaned)]
+            if _vertex_angle_deg(prev_point, current_point, next_point) < limit - 1e-3:
+                del cleaned[index]
+                changed = True
+                break
+    return cleaned
+
+
+def _filled_contour_iou(
+    contour: np.ndarray,
+    points: list[tuple[float, float]],
+    shape_hw: tuple[int, int],
+) -> float:
+    h, w = shape_hw
+    if h <= 0 or w <= 0 or contour is None or len(contour) < 3 or len(points) < 3:
+        return 0.0
+    contour_mask = np.zeros((h, w), dtype=np.uint8)
+    polygon_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.drawContours(contour_mask, [np.round(contour).astype(np.int32)], 0, 1, thickness=-1)
+    polygon = np.array([(round(x), round(y)) for x, y in points], dtype=np.int32).reshape(-1, 1, 2)
+    cv2.fillPoly(polygon_mask, [polygon], 1)
+    inter = int(np.logical_and(contour_mask, polygon_mask).sum())
+    union = int(np.logical_or(contour_mask, polygon_mask).sum())
+    if union <= 0:
+        return 0.0
+    return float(inter / union)
+
+
+def _repair_contour_polygon_for_topology(
+    contour: np.ndarray,
+    points: list[tuple[float, float]],
+    config: MetalRecoveryConfig,
+    shape_hw: tuple[int, int],
+) -> tuple[list[tuple[float, float]], bool, str]:
+    valid, reason = _valid_topology(points, enabled=config.check_contour_validity)
+    if valid or not config.check_contour_validity:
+        return points, valid, reason
+
+    base_epsilon = max(0.1, float(config.epsilon_simplify))
+    multipliers = (0.6, 0.8, 1.0, 1.15, 1.3, 1.5, 1.7, 2.0, 2.4, 2.8, 3.2)
+    for multiplier in multipliers:
+        candidate = _contour_to_polygon(
+            contour,
+            epsilon=base_epsilon * multiplier,
+            approx_enabled=True,
+            min_angle_deg=float(config.min_polygon_angle_deg),
+        )
+        candidate_valid, candidate_reason = _valid_topology(candidate, enabled=True)
+        if not candidate_valid:
+            reason = candidate_reason or reason
+            continue
+        if _filled_contour_iou(contour, candidate, shape_hw) < _TOPOLOGY_REPAIR_MIN_FILL_IOU:
+            continue
+        return candidate, True, ""
+
+    return points, False, reason
 
 
 def _polygon_raster_iou(a: PolygonData, b: PolygonData, shape_hw: tuple[int, int]) -> float:
     h, w = shape_hw
     if h <= 0 or w <= 0:
         return 0.0
-    m1 = np.zeros((h, w), dtype=np.uint8)
-    m2 = np.zeros((h, w), dtype=np.uint8)
-    ca = np.array([(int(x), int(y)) for x, y in a.points], dtype=np.int32).reshape(-1, 1, 2)
-    cb = np.array([(int(x), int(y)) for x, y in b.points], dtype=np.int32).reshape(-1, 1, 2)
+    ax, ay, aw, ah = a.bbox
+    bx, by, bw, bh = b.bbox
+    x0 = max(0, min(ax, bx))
+    y0 = max(0, min(ay, by))
+    x1 = min(w, max(ax + aw, bx + bw))
+    y1 = min(h, max(ay + ah, by + bh))
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    if ax >= bx + bw or bx >= ax + aw or ay >= by + bh or by >= ay + ah:
+        return 0.0
+    roi_h, roi_w = y1 - y0, x1 - x0
+    m1 = np.zeros((roi_h, roi_w), dtype=np.uint8)
+    m2 = np.zeros((roi_h, roi_w), dtype=np.uint8)
+    ca = np.array([(int(x) - x0, int(y) - y0) for x, y in a.points], dtype=np.int32).reshape(-1, 1, 2)
+    cb = np.array([(int(x) - x0, int(y) - y0) for x, y in b.points], dtype=np.int32).reshape(-1, 1, 2)
     if ca.shape[0] < 3 or cb.shape[0] < 3:
         return 0.0
     cv2.fillPoly(m1, [ca], 1)
@@ -606,7 +685,12 @@ def _nms_polygons_by_mask_iou(polygons: list[PolygonData], shape_hw: tuple[int, 
     ordered = sorted(polygons, key=lambda p: float(p.area), reverse=True)
     kept: list[PolygonData] = []
     for p in ordered:
-        if any(_polygon_raster_iou(p, k, shape_hw) >= iou_threshold for k in kept):
+        px, py, pw, ph = p.bbox
+        if any(
+            not (px >= k.bbox[0] + k.bbox[2] or k.bbox[0] >= px + pw or py >= k.bbox[1] + k.bbox[3] or k.bbox[1] >= py + ph)
+            and _polygon_raster_iou(p, k, shape_hw) >= iou_threshold
+            for k in kept
+        ):
             continue
         kept.append(p)
     return kept
@@ -626,6 +710,10 @@ def _merge_base_and_wide_metal(
         best_j = -1
         best_iou = 0.0
         for j, bp in enumerate(merged):
+            wx, wy, ww, wh = wpc.bbox
+            bx, by, bw, bh = bp.bbox
+            if wx >= bx + bw or bx >= wx + ww or wy >= by + bh or by >= wy + wh:
+                continue
             iou = _polygon_raster_iou(wpc, bp, shape_hw)
             if iou > best_iou:
                 best_iou = iou
@@ -646,7 +734,7 @@ def _valid_topology(points: list[tuple[float, float]], *, enabled: bool) -> tupl
     if not enabled:
         return True, ""
     if len(points) < 3:
-        return False, "мало_вершин"
+        return False, "РјР°Р»Рѕ_РІРµСЂС€РёРЅ"
     sample: list[tuple[float, float]] = list(points)
     # Dense chains (SEM / CHAIN_APPROX): uniform subsampling [::step] can introduce
     # spurious segment crossings that are not present on the true boundary; use
@@ -655,7 +743,7 @@ def _valid_topology(points: list[tuple[float, float]], *, enabled: bool) -> tupl
         cnt = np.asarray(sample, dtype=np.float32).reshape(-1, 1, 2)
         peri = float(cv2.arcLength(cnt, True))
         if peri <= 1e-6:
-            return False, "самопересечение_или_топология"
+            return False, "СЃР°РјРѕРїРµСЂРµСЃРµС‡РµРЅРёРµ_РёР»Рё_С‚РѕРїРѕР»РѕРіРёСЏ"
         eps = max(0.45, 0.001 * peri)
         simplified = cnt
         for _ in range(18):
@@ -664,11 +752,88 @@ def _valid_topology(points: list[tuple[float, float]], *, enabled: bool) -> tupl
                 break
             eps *= 1.28
         if len(simplified) < 3:
-            return False, "мало_вершин"
+            return False, "РјР°Р»Рѕ_РІРµСЂС€РёРЅ"
         sample = [(float(simplified[i][0][0]), float(simplified[i][0][1])) for i in range(len(simplified))]
     if not is_valid_closed_polygon_ring(sample):
-        return False, "самопересечение_или_топология"
+        return False, "СЃР°РјРѕРїРµСЂРµСЃРµС‡РµРЅРёРµ_РёР»Рё_С‚РѕРїРѕР»РѕРіРёСЏ"
     return True, ""
+
+
+def _contour_depth(contour_index: int, hierarchy: np.ndarray, cache: dict[int, int]) -> int:
+    if contour_index in cache:
+        return cache[contour_index]
+    parent_index = int(hierarchy[contour_index][3])
+    if parent_index < 0:
+        cache[contour_index] = 0
+        return 0
+    depth = _contour_depth(parent_index, hierarchy, cache) + 1
+    cache[contour_index] = depth
+    return depth
+
+
+def _append_hierarchy_holes(
+    accepted: list[PolygonData],
+    accepted_mask: np.ndarray,
+    raw_contours: tuple[np.ndarray, ...],
+    hierarchy: np.ndarray,
+    contour_to_polygon_id: dict[int, int],
+    config: MetalRecoveryConfig,
+) -> int:
+    if config.retrieval_external_only or not hierarchy.size:
+        return 0
+    h, w = accepted_mask.shape[:2]
+    depth_cache: dict[int, int] = {}
+    added = 0
+    next_id = max((polygon.id for polygon in accepted), default=0) + 1
+    for idx, contour in enumerate(raw_contours):
+        if contour is None or len(contour) < 3 or idx >= hierarchy.shape[0]:
+            continue
+        parent_index = int(hierarchy[idx][3])
+        parent_id = contour_to_polygon_id.get(parent_index)
+        if parent_id is None:
+            continue
+        depth = _contour_depth(idx, hierarchy, depth_cache)
+        if depth % 2 == 0:
+            continue
+        raw_pts = [(float(contour[i][0][0]), float(contour[i][0][1])) for i in range(len(contour))]
+        points = _contour_to_polygon(
+            contour,
+            epsilon=config.epsilon_simplify,
+            approx_enabled=config.approximation_enabled,
+            min_angle_deg=config.min_polygon_angle_deg,
+        )
+        topo_pts = points if len(points) >= 3 else raw_pts
+        topo_pts, valid, _reason = _repair_contour_polygon_for_topology(contour, topo_pts, config, (h, w))
+        if valid and len(topo_pts) >= 3:
+            points = topo_pts
+        use_pts = points if len(points) >= 3 else raw_pts
+        if len(use_pts) < 3:
+            continue
+        hole = PolygonData(
+            id=next_id,
+            points=use_pts,
+            is_hole=True,
+            parent_id=parent_id,
+            category="conductor",
+            shape_hint="polygon",
+        )
+        hole.area, hole.perimeter, hole.bbox = compute_polygon_metrics(hole.points)
+        accepted.append(hole)
+        cv2.drawContours(accepted_mask, [contour], 0, 0, thickness=-1)
+        next_id += 1
+        added += 1
+    return added
+
+
+def _renumber_polygons_preserving_parents(polygons: list[PolygonData]) -> None:
+    old_to_new: dict[int, int] = {}
+    for new_id, poly in enumerate(polygons, start=1):
+        old_to_new[int(poly.id)] = new_id
+    for poly in polygons:
+        poly.id = old_to_new[int(poly.id)]
+    for poly in polygons:
+        if poly.parent_id is not None:
+            poly.parent_id = old_to_new.get(int(poly.parent_id), poly.parent_id)
 
 
 def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> MetalDetectionResult:
@@ -695,80 +860,106 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
     accepted_mask = np.zeros_like(mask)
 
     next_id = 1
+    contour_to_polygon_id: dict[int, int] = {}
+    hierarchy_array = hierarchy[0] if hierarchy.size else np.empty((0, 4), dtype=np.int32)
     for idx, contour in enumerate(raw_contours):
         raise_if_preview_cancelled()
         if contour is None or len(contour) < 3:
             continue
-        if not config.retrieval_external_only and hierarchy.size and idx < hierarchy.shape[1]:
-            parent = int(hierarchy[0][idx][3])
-            if parent != -1:
-                continue
+        parent = int(hierarchy_array[idx][3]) if idx < hierarchy_array.shape[0] else -1
+        if not config.retrieval_external_only and parent != -1:
+            continue
 
         area = abs(float(cv2.contourArea(contour)))
         perimeter = float(cv2.arcLength(contour, True))
         if area < 1.0:
             continue
 
-        width_px, _wm = estimate_effective_polygon_width_px(mask, contour)
         rect = cv2.minAreaRect(contour)
         rw, rh = float(rect[1][0]), float(rect[1][1])
-        width_px = effective_conductor_width_px(width_px, rw, rh)
+        width_px = min(rw, rh) if rw > 0.0 and rh > 0.0 else 0.0
         length_px = float(max(rw, rh))
         straight = _straightness_metric(rw, rh, perimeter)
         b_touch = _border_touch(contour, width=w, height=h)
 
+        reject_case = ""
+        t_branch_score = 0
+        valid = True
+        topo_reason = ""
+        dev, ang_ok = 0.0, True
+        n_vertices = int(len(contour))
         raw_pts = [(float(contour[i][0][0]), float(contour[i][0][1])) for i in range(len(contour))]
-        points = _contour_to_polygon(
-            contour,
-            epsilon=config.epsilon_simplify,
-            approx_enabled=config.approximation_enabled,
-            min_angle_deg=config.min_polygon_angle_deg,
-        )
-        topo_pts = points if len(points) >= 3 else raw_pts
-        valid, topo_reason = _valid_topology(topo_pts, enabled=config.check_contour_validity)
-        if len(points) < 3:
-            dev, ang_ok = 0.0, True
-        else:
-            dev, ang_ok = _angle_deviation_for_mode(
-                points,
-                allowed=config.allowed_angles,
-                tolerance_deg=config.angle_tolerance_deg,
-            )
+        points = raw_pts
+        topo_pts = raw_pts
+        if length_px + 1e-3 < config.min_length_px:
+            reject_case = "length"
+        elif False and n_vertices < max(3, int(config.min_points)):
+            reject_case = "РјР°Р»Рѕ_РІРµСЂС€РёРЅ"
+        elif False and width_px + 1e-3 < config.min_width_px:
+            reject_case = "С€РёСЂРёРЅР°"
+        elif False and config.max_width_px is not None and width_px > float(config.max_width_px) + 1e-3:
+            reject_case = "С€РёСЂРёРЅР°_РјР°РєСЃ"
+        elif False and length_px + 1e-3 < config.min_length_px:
+            reject_case = "РґР»РёРЅР°"
+        elif area + 1e-3 < config.min_area:
+            reject_case = "РїР»РѕС‰Р°РґСЊ"
+        elif config.max_area is not None and area > float(config.max_area) + 1e-3:
+            reject_case = "РїР»РѕС‰Р°РґСЊ_РјР°РєСЃ"
+        elif perimeter + 1e-3 < config.min_perimeter:
+            reject_case = "РїРµСЂРёРјРµС‚СЂ"
+        elif config.max_perimeter is not None and perimeter > float(config.max_perimeter) + 1e-3:
+            reject_case = "РїРµСЂРёРјРµС‚СЂ_РјР°РєСЃ"
+        elif False and not config.allow_t_junction:
+            t_branch_score = _convex_branching_score(contour)
+            if t_branch_score > 2:
+                reject_case = "С‚_СЃРѕРµРґРёРЅРµРЅРёРµ_Р·Р°РїСЂРµС‰РµРЅРѕ"
+        if not reject_case:
+            width_dt, _wm = estimate_effective_polygon_width_px(mask, contour)
+            width_px = effective_conductor_width_px(width_dt, rw, rh)
+            if width_px + 1e-3 < config.min_width_px:
+                reject_case = "width"
+            elif config.max_width_px is not None and width_px > float(config.max_width_px) + 1e-3:
+                reject_case = "width_max"
 
-        n_vertices = len(topo_pts)
-        if n_vertices >= 2 and topo_pts[0] == topo_pts[-1]:
-            n_vertices = max(0, n_vertices - 1)
+        if not reject_case:
+            points = _contour_to_polygon(
+                contour,
+                epsilon=config.epsilon_simplify,
+                approx_enabled=config.approximation_enabled,
+                min_angle_deg=config.min_polygon_angle_deg,
+            )
+            topo_pts = points if len(points) >= 3 else raw_pts
+            topo_pts, valid, topo_reason = _repair_contour_polygon_for_topology(contour, topo_pts, config, (h, w))
+            if valid and len(topo_pts) >= 3:
+                points = topo_pts
+            if len(points) < 3:
+                dev, ang_ok = 0.0, True
+            else:
+                dev, ang_ok = _angle_deviation_for_mode(
+                    points,
+                    allowed=config.allowed_angles,
+                    tolerance_deg=config.angle_tolerance_deg,
+                )
+
+            n_vertices = len(topo_pts)
+            if n_vertices >= 2 and topo_pts[0] == topo_pts[-1]:
+                n_vertices = max(0, n_vertices - 1)
+
+            if not valid:
+                reject_case = topo_reason or "invalid_topology"
+            elif n_vertices < max(3, int(config.min_points)):
+                reject_case = "min_vertices"
+            elif not config.allow_t_junction:
+                t_branch_score = _convex_branching_score(contour)
+                if t_branch_score > 2:
+                    reject_case = "t_junction_forbidden"
 
         angle_soft = bool(dev > config.angle_tolerance_deg * 0.65)
         straight_soft = bool(straight < config.min_straightness - 1e-4)
         soft_suspicious = angle_soft or straight_soft
 
-        reject_case = ""
-        t_branch_score = 0
-        if not valid:
-            reject_case = topo_reason or "некорректный_контур"
-        elif n_vertices < max(3, int(config.min_points)):
-            reject_case = "мало_вершин"
-        elif width_px + 1e-3 < config.min_width_px:
-            reject_case = "ширина"
-        elif config.max_width_px is not None and width_px > float(config.max_width_px) + 1e-3:
-            reject_case = "ширина_макс"
-        elif length_px + 1e-3 < config.min_length_px:
-            reject_case = "длина"
-        elif area + 1e-3 < config.min_area:
-            reject_case = "площадь"
-        elif config.max_area is not None and area > float(config.max_area) + 1e-3:
-            reject_case = "площадь_макс"
-        elif perimeter + 1e-3 < config.min_perimeter:
-            reject_case = "периметр"
-        elif config.max_perimeter is not None and perimeter > float(config.max_perimeter) + 1e-3:
-            reject_case = "периметр_макс"
-        elif not config.allow_t_junction:
-            t_branch_score = _convex_branching_score(contour)
-            if t_branch_score > 2:
-                reject_case = "т_соединение_запрещено"
         if not reject_case and config.border_mode == "ignore" and b_touch:
-            reject_case = "граница"
+            reject_case = "РіСЂР°РЅРёС†Р°"
 
         reject_reason = ""
         if reject_case:
@@ -839,6 +1030,7 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
         accept_poly.id = next_id
         next_id += 1
         accepted.append(accept_poly)
+        contour_to_polygon_id[idx] = accept_poly.id
         cv2.drawContours(accepted_mask, [contour], 0, 255, thickness=-1)
 
         if soft_suspicious:
@@ -884,8 +1076,16 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
         dbg.update(w_dbg)
         accepted = _merge_base_and_wide_metal(accepted, wide_polys, (h, w))
 
-    for new_id, poly in enumerate(accepted, start=1):
-        poly.id = new_id
+    _append_hierarchy_holes(
+        accepted,
+        accepted_mask,
+        raw_contours,
+        hierarchy_array,
+        contour_to_polygon_id,
+        config,
+    )
+
+    _renumber_polygons_preserving_parents(accepted)
 
     return MetalDetectionResult(
         accepted=accepted,

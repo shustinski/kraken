@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 
-from PyQt6.QtWidgets import QApplication, QMessageBox
 from kraken_core.qt import configure_application_identity
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from ..__version__ import __version__
 from ..infrastructure.logging import configure_logging
@@ -63,7 +63,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--language",
         choices=("ru", "en"),
-        default=None,
+        default="ru",
         help="UI language override.",
     )
     parser.add_argument(

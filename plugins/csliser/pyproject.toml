@@ -16,6 +16,9 @@ dependencies = [
 [tool.uv.sources]
 kraken = { workspace = true }
 
+[project.optional-dependencies]
+build = ["pyinstaller>=6.19"]
+
 [project.scripts]
 csliser = "csliser.application.cli:main"
 
@@ -38,3 +41,4 @@ include = ["csliser", "csliser.*"]
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+extend-exclude = ["build", "dist", ".venv", "packaging"]

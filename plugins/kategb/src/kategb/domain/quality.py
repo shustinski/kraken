@@ -10,7 +10,7 @@ def calculate_author_results(
     incorrect_vectors: dict[int, IncorrectVector],
 ) -> tuple[AuthorVerificationResult, ...]:
     if len(original_frames) != len(checked_vector_numbers):
-        raise ValueError("Original frame count does not match checked vector count.")
+        raise ValueError("Количество исходных кадров не совпадает с количеством проверенных векторов.")
 
     checked_by_author: dict[str, list[int]] = {author: [] for author in layer.author_frames}
     incorrect_by_author: dict[str, list[int]] = {author: [] for author in layer.author_frames}

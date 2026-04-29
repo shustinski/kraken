@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kategb"
 dynamic = ["version"]
-description = "CIF sample generation and verification tool."
+description = "Формирование CIF-выборок и расчет результатов проверки."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

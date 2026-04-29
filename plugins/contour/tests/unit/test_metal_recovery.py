@@ -8,7 +8,12 @@ from contour.vision.metal_recovery import (
     detect_metalization,
     estimate_inward_direction_by_gradient_profile,
 )
-from contour.vision.metal_recovery.detector import _valid_topology, effective_conductor_width_px
+from contour.vision.metal_recovery.detector import (
+    _remove_vertices_below_angle,
+    _repair_contour_polygon_for_topology,
+    _valid_topology,
+    effective_conductor_width_px,
+)
 
 
 def test_effective_conductor_width_blends_with_bbox_minor_axis() -> None:
@@ -33,6 +38,30 @@ def test_detect_metalization_finds_bright_bar() -> None:
     r = detect_metalization(img, cfg)
     assert r.accepted, "expected at least one accepted trace"
     assert r.debug_images.get("metal_binary_mask") is not None
+
+
+def test_hierarchy_mode_full_preserves_holes() -> None:
+    img = np.zeros((120, 120), dtype=np.uint8)
+    img[20:100, 20:100] = 240
+    img[45:75, 45:75] = 0
+    base = dict(
+        segmentation_method="otsu",
+        min_width_px=2.0,
+        min_length_px=10.0,
+        min_area=20.0,
+        min_perimeter=20.0,
+        allowed_angles="free",
+        morph_close_radius=1,
+        check_contour_validity=True,
+    )
+
+    external = detect_metalization(img, MetalRecoveryConfig(**base, retrieval_external_only=True))
+    full = detect_metalization(img, MetalRecoveryConfig(**base, retrieval_external_only=False))
+
+    assert not any(polygon.is_hole for polygon in external.accepted)
+    holes = [polygon for polygon in full.accepted if polygon.is_hole]
+    assert holes
+    assert all(hole.parent_id is not None for hole in holes)
 
 
 def test_estimate_inward_direction_by_profile() -> None:
@@ -112,6 +141,38 @@ def test_valid_topology_accepts_dense_simple_outline() -> None:
         pts.append((0.0, float(i)))
     ok, reason = _valid_topology(pts, enabled=True)
     assert ok, reason
+
+
+def test_topology_repair_accepts_equivalent_valid_open_cv_contour() -> None:
+    contour = np.array([[[10, 10]], [[70, 10]], [[70, 40]], [[10, 40]]], dtype=np.int32)
+    invalid_display_ring = [(10.0, 10.0), (70.0, 40.0), (10.0, 40.0), (70.0, 10.0)]
+    cfg = MetalRecoveryConfig(
+        epsilon_simplify=1.0,
+        min_polygon_angle_deg=0.0,
+        check_contour_validity=True,
+    )
+
+    repaired, ok, reason = _repair_contour_polygon_for_topology(contour, invalid_display_ring, cfg, (80, 90))
+
+    assert ok, reason
+    assert repaired != invalid_display_ring
+    assert _valid_topology(repaired, enabled=True)[0]
+
+
+def test_min_polygon_angle_removes_vertices_below_threshold() -> None:
+    points = [(0.0, 0.0), (10.0, 0.0), (10.5, 2.0), (11.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
+
+    filtered = _remove_vertices_below_angle(points, 30.0)
+
+    assert (10.5, 2.0) not in filtered
+
+
+def test_min_polygon_angle_keeps_vertices_at_or_above_threshold() -> None:
+    points = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+
+    filtered = _remove_vertices_below_angle(points, 30.0)
+
+    assert filtered == points
 
 
 def test_edge_mode_separates_adjacent_parallel_traces() -> None:

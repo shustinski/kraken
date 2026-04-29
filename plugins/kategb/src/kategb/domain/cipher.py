@@ -23,13 +23,13 @@ def validate_decodable(text: object) -> tuple[bool, str | None]:
 
 def _shift_text(text: str, key: str, direction: int) -> str:
     if not key:
-        raise CipherError("Encryption key must not be empty.")
+        raise CipherError("Ключ шифрования не должен быть пустым.")
     ok, invalid = validate_decodable(text)
     if not ok:
-        raise CipherError(f"Text contains unsupported character: {invalid!r}.")
+        raise CipherError(f"Текст содержит неподдерживаемый символ: {invalid!r}.")
     ok, invalid = validate_decodable(key)
     if not ok:
-        raise CipherError(f"Key contains unsupported character: {invalid!r}.")
+        raise CipherError(f"Ключ содержит неподдерживаемый символ: {invalid!r}.")
     alphabet_len = len(ALPHABET)
     result: list[str] = []
     for index, char in enumerate(text):

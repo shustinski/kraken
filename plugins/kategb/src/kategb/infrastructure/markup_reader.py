@@ -13,7 +13,7 @@ class OpenPyxlCrystalInfoReader:
         try:
             import openpyxl
         except ImportError as exc:
-            raise RuntimeError("Reading Excel markup requires the optional dependency 'openpyxl'.") from exc
+            raise RuntimeError("Для чтения Excel-разметки нужна зависимость 'openpyxl'.") from exc
         workbook = openpyxl.load_workbook(path, data_only=True)
         layers: dict[str, LayerInfo] = {}
         for sheet_name in workbook.sheetnames:
@@ -24,7 +24,7 @@ class OpenPyxlCrystalInfoReader:
             if layer is not None:
                 layers[sheet_name] = layer
         if not layers:
-            raise ValueError("No layer sheets were found in markup workbook.")
+            raise ValueError("В файле разметки не найдены листы слоев.")
         return CrystalInfo(layers=layers)
 
     def _read_layer(self, name: str, sheet: Any) -> LayerInfo | None:

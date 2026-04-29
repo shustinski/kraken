@@ -6,6 +6,7 @@ from pathlib import Path
 from PyQt6 import QtGui, QtWidgets
 from PyQt6.QtCore import QThread
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QFileDialog,
     QGridLayout,
@@ -19,6 +20,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QTextBrowser,
+    QListView,
+    QTreeView,
 )
 from kraken_core.theme import add_theme_menu, apply_app_theme, normalize_theme
 
@@ -27,11 +30,66 @@ from csliser.application.use_cases import BuildTransferPlan
 from csliser.domain.models import FileOperation, OperationPlan, OperationResult, ProcessingConfig, SelectionMode, SourceFolder
 from csliser.domain.planner import PlanningError, discover_extensions
 from csliser.domain.ranges import FrameRangeError
-from csliser.infrastructure.settings_store import WindowSettings, WindowSettingsStore
+from csliser.infrastructure.settings_store import CSliserPreset, WindowSettings, WindowSettingsStore
 from csliser.presentation.qt.widgets import AnimatedToggle, ExtensionCheckbox
 from csliser.presentation.qt.worker import TransferWorker
 
 _IDLE_TEXT = "Жду начала копирования, чтобы информировать о своей работе"
+
+_LEGACY_DEFAULT_EXTENSIONS = (".jpg", ".bmp", ".cif")
+
+
+def legacy_source_extension_state(path: Path, *, dynamic_extensions: bool) -> tuple[tuple[str, ...], set[str]]:
+    """Return extension list and default checks using the legacy CSliser rules."""
+    if dynamic_extensions:
+        extensions = discover_extensions(path, defaults=_LEGACY_DEFAULT_EXTENSIONS)
+        return extensions, {item for item in extensions if item in _LEGACY_DEFAULT_EXTENSIONS}
+
+    drive = path.drive.upper()
+    if not drive:
+        drive = str(path).replace("\\", "/").split("/", maxsplit=1)[0].upper()
+    active: set[str] = set()
+    if drive == "X:":
+        active.add(".jpg")
+    if drive == "Z:":
+        active.add(".cif")
+    return _LEGACY_DEFAULT_EXTENSIONS, active
+
+
+def duplicate_source_folder_names(paths: list[Path]) -> tuple[Path, Path] | None:
+    seen: dict[str, Path] = {}
+    for path in paths:
+        key = path.name.lower()
+        if key in seen:
+            return seen[key], path
+        seen[key] = path
+    return None
+
+
+_BUTTON_STYLE = (
+    "QPushButton {background-color:rgb(204, 204, 204); "
+    "border-style: outset; border-width: 2px; "
+    "border-radius: 10px; border-color: beige; padding: 6px;}"
+    "QPushButton:hover {background-color: rgb(204, 239, 255);}"
+)
+_COPY_BUTTON_STYLE_DISABLED = (
+    "QPushButton {background-color:rgb(217,217,217); "
+    "border-style: outset; border-width: 2px; "
+    "border-radius: 10px; border-color: beige; padding: 6px; color: #555555;}"
+    "QPushButton:hover {background-color: rgb(204, 239, 255);}"
+)
+_COPY_BUTTON_STYLE_ENABLED = (
+    "QPushButton {background-color:rgb(153,255,204); "
+    "border-style: outset; border-width: 2px; "
+    "border-radius: 10px; border-color: beige; padding: 6px; color: #111111;}"
+    "QPushButton:hover {background-color: rgb(102, 255, 102);}"
+)
+_FINISH_BUTTON_STYLE = (
+    "QPushButton {background-color:rgb(255, 102, 102); "
+    "border-style: outset; border-width: 2px; "
+    "border-radius: 10px; border-color: beige; padding: 6px; color: #111111;}"
+    "QPushButton:hover {background-color: rgb(255, 51, 51);}"
+)
 
 
 class CSliserWindow(QMainWindow):
@@ -49,6 +107,7 @@ class CSliserWindow(QMainWindow):
         self._current_operation = FileOperation.COPY
         self._busy = False
         self._theme = "dark"
+        self._dynamic_extensions = False
 
         self.font = QtGui.QFont("sans-serif")
         self.font.setPixelSize(14)
@@ -95,6 +154,8 @@ class CSliserWindow(QMainWindow):
 
         self.plus_dirs_button = QPushButton("+")
         self.plus_dirs_button.setFont(self.font)
+        self.plus_dirs_button.setMinimumSize(48, 32)
+        self.plus_dirs_button.setStyleSheet(_COPY_BUTTON_STYLE_ENABLED)
         self.copy_groupbox_layout.addWidget(self.plus_dirs_button, 0, 0, 1, 2)
         self.gridapp.addWidget(self.copy_dir_groupbox, 0, 1, 1, 3)
 
@@ -108,6 +169,7 @@ class CSliserWindow(QMainWindow):
 
         self.destination_folder_select = QPushButton("Выбрать")
         self.destination_folder_select.setFont(self.font)
+        self.destination_folder_select.setStyleSheet(_BUTTON_STYLE)
         self.gridapp.addWidget(self.destination_folder_select, 1, 2, 1, 2)
 
         self.first_frame_label = QtWidgets.QLabel("Кадры:")
@@ -152,6 +214,7 @@ class CSliserWindow(QMainWindow):
 
         self.finish_button = QPushButton("Остановить копирование")
         self.finish_button.setFont(self.font)
+        self.finish_button.setStyleSheet(_FINISH_BUTTON_STYLE)
         self.finish_button.setVisible(False)
         self.gridapp.addWidget(self.finish_button, 4, 0, 1, 2)
 
@@ -214,6 +277,7 @@ class CSliserWindow(QMainWindow):
         self.first_frame_lineedit.setText(settings.frame_expression)
         self.frames_in_row_lineedit.setText(str(settings.frames_per_row))
         self.add_extension_checkbox.setChecked(settings.add_extension_prefix)
+        self._dynamic_extensions = settings.dynamic_extensions
         self.copy_all_radiobutton.setChecked(settings.selection_mode == SelectionMode.FULL_RANGE.value)
         self.copy_area_radiobutton.setChecked(settings.selection_mode != SelectionMode.FULL_RANGE.value)
         self._disable_frames_in_row()
@@ -229,20 +293,42 @@ class CSliserWindow(QMainWindow):
                 add_extension_prefix=self.add_extension_checkbox.isChecked(),
                 selection_mode=self._selection_mode().value,
                 operation=self._current_operation.value,
+                dynamic_extensions=self._dynamic_extensions,
             )
         )
 
     def _select_source(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку")
-        if not folder:
+        initial = next(reversed(self._source_folders), Path.home()).parent if self._source_folders else Path.home()
+        dialog = self._create_directory_dialog("Выберите папки", initial=initial, multi_select=True)
+        if dialog.exec() != QFileDialog.DialogCode.Accepted:
             return
-        path = Path(folder)
-        if path not in self._source_folders:
-            extensions = discover_extensions(path)
-            active = {item for item in extensions if item in {".jpg", ".bmp", ".cif"}}
-            self._source_folders[path] = {"all_extensions": extensions, "active_extensions": active or set(extensions)}
+        for folder in dialog.selectedFiles():
+            self._add_source_path(Path(folder))
         self._source_ui()
         self._refresh_state()
+
+    def _create_directory_dialog(
+        self,
+        title: str,
+        *,
+        initial: str | Path | None = None,
+        multi_select: bool = False,
+    ) -> QFileDialog:
+        dialog = QFileDialog(self, title, str(initial or ""))
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        if multi_select:
+            for view_type in (QListView, QTreeView):
+                for view in dialog.findChildren(view_type):
+                    view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        return dialog
+
+    def _add_source_path(self, path: Path) -> None:
+        path = Path(path)
+        if path not in self._source_folders:
+            extensions, active = legacy_source_extension_state(path, dynamic_extensions=self._dynamic_extensions)
+            self._source_folders[path] = {"all_extensions": extensions, "active_extensions": active}
 
     def _source_ui(self) -> None:
         self._source_line_edits = []
@@ -251,12 +337,17 @@ class CSliserWindow(QMainWindow):
             item = self.copy_groupbox_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                if widget is self.plus_dirs_button:
+                    widget.setParent(self.copy_dir_groupbox)
+                    continue
                 widget.deleteLater()
 
         for row, path in enumerate(list(self._source_folders)):
             folder_edit = QLineEdit(str(path))
             folder_edit.setFont(self.font)
-            folder_edit.textChanged.connect(lambda text, old_path=path: self._source_text_changed(old_path, text))
+            folder_edit.editingFinished.connect(
+                lambda edit=folder_edit, old_path=path: self._source_text_edit_finished(old_path, edit)
+            )
             self._source_line_edits.append(folder_edit)
             self.copy_groupbox_layout.addWidget(folder_edit, row, 0)
 
@@ -280,18 +371,20 @@ class CSliserWindow(QMainWindow):
 
             delete_folder = QPushButton("-")
             delete_folder.setFont(self.font)
+            delete_folder.setMinimumSize(48, 32)
             delete_folder.clicked.connect(lambda _checked=False, source=path: self._delete_folder(source))
             delete_folder.setObjectName("dangerButton")
+            delete_folder.setStyleSheet(_FINISH_BUTTON_STYLE)
             self.copy_groupbox_layout.addWidget(delete_folder, row, 2)
 
         self.copy_groupbox_layout.addWidget(self.plus_dirs_button, len(self._source_folders) + 1, 0, 1, 2)
 
-    def _source_text_changed(self, old_path: Path, text: str) -> None:
-        new_path = Path(text)
+    def _source_text_edit_finished(self, old_path: Path, edit: QLineEdit) -> None:
+        new_path = Path(edit.text())
         if new_path == old_path or old_path not in self._source_folders:
             return
-        payload = self._source_folders.pop(old_path)
-        self._source_folders[new_path] = payload
+        self._replace_source_path_preserving_order(old_path, new_path)
+        self._source_ui()
         self._refresh_state()
 
     def _set_extension(self, source: Path, extension: str, checked: bool) -> None:
@@ -309,10 +402,14 @@ class CSliserWindow(QMainWindow):
         self._refresh_state()
 
     def _select_destination(self) -> None:
-        initial = self.destination_folder_lineedit.text().strip() or str(Path.home())
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку назначения", initial)
-        if folder:
-            self.destination_folder_lineedit.setText(folder)
+        last_source_parent = next(reversed(self._source_folders), Path.home()).parent if self._source_folders else Path.home()
+        initial = self.destination_folder_lineedit.text().strip() or str(last_source_parent)
+        dialog = self._create_directory_dialog("Выберите папку назначения", initial=initial)
+        if dialog.exec() != QFileDialog.DialogCode.Accepted:
+            return
+        selected = dialog.selectedFiles()
+        if selected:
+            self.destination_folder_lineedit.setText(selected[0])
 
     def _input_text_changed(self) -> None:
         self._sanitize_numeric_inputs()
@@ -346,6 +443,7 @@ class CSliserWindow(QMainWindow):
         return SelectionMode.FULL_RANGE if self.copy_all_radiobutton.isChecked() else SelectionMode.RECTANGLE
 
     def _config(self, operation: FileOperation) -> ProcessingConfig:
+        self._sync_source_edits()
         sources: list[SourceFolder] = []
         for path, payload in self._source_folders.items():
             active_extensions = payload["active_extensions"]
@@ -362,8 +460,33 @@ class CSliserWindow(QMainWindow):
             add_extension_prefix=self.add_extension_checkbox.isChecked(),
         )
 
+    def _sync_source_edits(self) -> None:
+        for edit, old_path in zip(self._source_line_edits, list(self._source_folders), strict=False):
+            new_path = Path(edit.text())
+            if new_path == old_path or old_path not in self._source_folders:
+                continue
+            self._replace_source_path_preserving_order(old_path, new_path)
+
+    def _replace_source_path_preserving_order(self, old_path: Path, new_path: Path) -> None:
+        rebuilt: dict[Path, dict[str, set[str] | tuple[str, ...]]] = {}
+        for path, payload in self._source_folders.items():
+            if path == old_path:
+                extensions, active = legacy_source_extension_state(
+                    new_path,
+                    dynamic_extensions=self._dynamic_extensions,
+                )
+                rebuilt[new_path] = {"all_extensions": extensions, "active_extensions": active}
+            else:
+                rebuilt[path] = payload
+        self._source_folders = rebuilt
+
     def _start_operation(self, operation: FileOperation) -> None:
         self._current_operation = operation
+        self._sync_source_edits()
+        if operation != FileOperation.DELETE and not self.add_extension_checkbox.isChecked():
+            duplicate = duplicate_source_folder_names(list(self._source_folders))
+            if duplicate is not None and not self._confirm_duplicate_source_names(duplicate):
+                return
         try:
             plan = BuildTransferPlan().execute(self._config(operation))
         except (FrameRangeError, PlanningError, OSError, ValueError) as exc:
@@ -383,6 +506,17 @@ class CSliserWindow(QMainWindow):
         self._save_settings()
         self._current_plan = plan
         self._start_worker(plan)
+
+    def _confirm_duplicate_source_names(self, duplicate: tuple[Path, Path]) -> bool:
+        first, second = duplicate
+        answer = QMessageBox.question(
+            self,
+            "Повторяющиеся папки",
+            f"Папки {second} и {first} имеют одно имя, "
+            "а добавление расширения выключено. "
+            "Файлы окажутся в одной папке. Продолжить?",
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def _confirm_destination(self, plan: OperationPlan) -> bool:
         destination = plan.config.destination
@@ -422,6 +556,15 @@ class CSliserWindow(QMainWindow):
             self,
             "Предупреждение",
             f"Вы собираетесь {verb} {len(plan.operations)} файлов. Продолжить?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        if operation != FileOperation.DELETE:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Предупреждение",
+            "В случае ошибки файлы могут быть утрачены навсегда. Удалить?",
         )
         return answer == QMessageBox.StandardButton.Yes
 
@@ -500,12 +643,14 @@ class CSliserWindow(QMainWindow):
             self.copy_button.setEnabled(False)
             self.move_button.setEnabled(False)
             self.delete_button.setEnabled(False)
+            self._apply_operation_button_styles()
 
     def _refresh_state(self) -> None:
         if self._busy:
             self.copy_button.setEnabled(False)
             self.move_button.setEnabled(False)
             self.delete_button.setEnabled(False)
+            self._apply_operation_button_styles()
             return
         has_sources = bool(self._source_folders)
         has_frames = bool(self.first_frame_lineedit.text().strip())
@@ -516,14 +661,65 @@ class CSliserWindow(QMainWindow):
         self.delete_button.setEnabled(can_delete)
         self.copy_button.setEnabled(can_copy_or_move)
         self.move_button.setEnabled(can_copy_or_move)
+        self._apply_operation_button_styles()
+
+    def _apply_operation_button_styles(self) -> None:
+        self.copy_button.setStyleSheet(
+            _COPY_BUTTON_STYLE_ENABLED if self.copy_button.isEnabled() else _COPY_BUTTON_STYLE_DISABLED
+        )
+        self.move_button.setStyleSheet(_BUTTON_STYLE if self.move_button.isEnabled() else _COPY_BUTTON_STYLE_DISABLED)
+        self.delete_button.setStyleSheet(
+            _FINISH_BUTTON_STYLE if self.delete_button.isEnabled() else _COPY_BUTTON_STYLE_DISABLED
+        )
+        self.plus_dirs_button.setStyleSheet(_COPY_BUTTON_STYLE_ENABLED)
 
     def _open_settings_dialog(self) -> None:
-        value, ok = QInputDialog.getInt(self, "Настройки", "Размер шрифта:", self.font.pixelSize(), 8, 72)
-        if ok:
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Настройки")
+        layout = QGridLayout(dialog)
+
+        font_label = QtWidgets.QLabel("Размер шрифта:")
+        font_edit = QLineEdit(str(self.font.pixelSize()))
+        dynamic_checkbox = QtWidgets.QCheckBox("Динамические расширения")
+        dynamic_checkbox.setChecked(self._dynamic_extensions)
+
+        file_browser_groupbox = QGroupBox("Файловый браузер")
+        file_browser_layout = QGridLayout(file_browser_groupbox)
+        qt_file_browser = QRadioButton("QFileDialog")
+        qt_file_browser.setChecked(True)
+        qt_file_browser.setEnabled(False)
+        file_browser_layout.addWidget(qt_file_browser, 0, 0)
+
+        ok_button = QPushButton("Ок")
+        apply_button = QPushButton("Применить")
+
+        layout.addWidget(font_label, 0, 0, 1, 2)
+        layout.addWidget(font_edit, 0, 2)
+        layout.addWidget(dynamic_checkbox, 1, 0, 1, 3)
+        layout.addWidget(file_browser_groupbox, 2, 0, 1, 3)
+        layout.addWidget(ok_button, 3, 1)
+        layout.addWidget(apply_button, 3, 2)
+
+        def apply_settings(close_dialog: bool) -> None:
+            if not font_edit.text().isdigit():
+                QMessageBox.warning(dialog, "Ошибка", "Размер шрифта должен быть числом.")
+                return
+            value = int(font_edit.text())
+            if value < 8 or value > 72:
+                QMessageBox.warning(dialog, "Ошибка", "Размер шрифта должен быть от 8 до 72.")
+                return
             self.font.setPixelSize(value)
+            self._dynamic_extensions = dynamic_checkbox.isChecked()
             self._apply_font(self)
             self._apply_theme(self._theme)
             self._save_settings()
+            if close_dialog:
+                dialog.accept()
+
+        ok_button.clicked.connect(lambda: apply_settings(True))
+        apply_button.clicked.connect(lambda: apply_settings(False))
+        self._apply_font(dialog)
+        dialog.exec()
 
     def _apply_font(self, widget) -> None:
         widget.setFont(self.font)
@@ -534,14 +730,77 @@ class CSliserWindow(QMainWindow):
         name, ok = QInputDialog.getText(self, "Имя пресета", "Имя пресета:")
         if not ok or not name.strip():
             return
-        # Keep the old menu entry visible; full preset persistence can be added without touching domain logic.
-        QMessageBox.information(self, "Информация", f"Пресет «{name.strip()}» сохранен в текущих настройках окна.")
-        if include_sources:
-            self._save_settings()
+        self._sync_source_edits()
+        preset = CSliserPreset(
+            sources=tuple(str(path) for path in self._source_folders),
+            destination=self.destination_folder_lineedit.text(),
+            frames=self.first_frame_lineedit.text(),
+            row_frames=self.frames_in_row_lineedit.text(),
+        )
+        self._settings_store.save_preset(name.strip(), preset, include_sources=include_sources)
 
-    def _restore_preset(self, *, include_sources: bool) -> None:  # noqa: ARG002
-        self._restore_settings()
-        QMessageBox.information(self, "Информация", "Восстановлены последние сохраненные параметры окна.")
+    def _restore_preset(self, *, include_sources: bool) -> None:
+        presets = self._settings_store.load_presets(include_sources=include_sources)
+        if not presets:
+            QMessageBox.warning(self, "Ошибка", "Нет пресетов для восстановления")
+            return
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Полное восстановление" if include_sources else "Восстановление кадров")
+        layout = QGridLayout(dialog)
+
+        def clear_layout() -> None:
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
+        def restore_name(name: str) -> None:
+            answer = QMessageBox.question(dialog, "Восстановление", f"Восстановить {name}?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self._apply_preset(presets[name], include_sources=include_sources)
+            dialog.accept()
+
+        def delete_name(name: str) -> None:
+            answer = QMessageBox.question(dialog, "Удалить", f"Удалить {name}?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self._settings_store.delete_preset(name, include_sources=include_sources)
+            presets.pop(name, None)
+            if not presets:
+                dialog.accept()
+                return
+            render_presets()
+
+        def render_presets() -> None:
+            clear_layout()
+            for row, name in enumerate(presets):
+                restore_button = QPushButton(name)
+                restore_button.setFont(self.font)
+                restore_button.clicked.connect(lambda _checked=False, preset_name=name: restore_name(preset_name))
+                layout.addWidget(restore_button, row, 0, 1, 2)
+
+                delete_button = QPushButton("-")
+                delete_button.setFont(self.font)
+                delete_button.setMinimumSize(48, 32)
+                delete_button.setStyleSheet(_FINISH_BUTTON_STYLE)
+                delete_button.clicked.connect(lambda _checked=False, preset_name=name: delete_name(preset_name))
+                layout.addWidget(delete_button, row, 2)
+
+        render_presets()
+        dialog.exec()
+
+    def _apply_preset(self, preset: CSliserPreset, *, include_sources: bool) -> None:
+        if include_sources:
+            self._source_folders = {}
+            for source in preset.sources:
+                self._add_source_path(Path(source))
+            self.destination_folder_lineedit.setText(preset.destination)
+            self._source_ui()
+        self.first_frame_lineedit.setText(preset.frames)
+        self.frames_in_row_lineedit.setText(preset.row_frames)
+        self._refresh_state()
 
     def _show_about(self) -> None:
         dialog = QMessageBox(self)

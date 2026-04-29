@@ -23,10 +23,16 @@ def _normalize_polygon_points(points: list[tuple[float, float]]) -> tuple[tuple[
     return tuple((round(float(x_coord), 6), round(float(y_coord), 6)) for x_coord, y_coord in points)
 
 
+def _sortable_optional_int(value: int | None) -> tuple[int, int]:
+    if value is None:
+        return (0, 0)
+    return (1, int(value))
+
+
 def _polygon_signature(polygon: PolygonData) -> tuple[object, ...]:
     return (
         bool(polygon.is_hole),
-        polygon.parent_id,
+        _sortable_optional_int(polygon.parent_id),
         str(polygon.category),
         str(polygon.shape_hint),
         _normalize_polygon_points(polygon.points),

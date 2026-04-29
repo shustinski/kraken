@@ -14,9 +14,9 @@ class FrameRange:
 
     def __post_init__(self) -> None:
         if self.first <= 0:
-            raise ValueError("First frame must be positive.")
+            raise ValueError("Первый кадр должен быть положительным числом.")
         if self.last < self.first:
-            raise ValueError("Last frame must be greater than or equal to first frame.")
+            raise ValueError("Последний кадр должен быть больше или равен первому.")
 
 
 @dataclass(frozen=True, slots=True)

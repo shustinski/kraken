@@ -36,7 +36,7 @@ class BuildSample:
 class GenerateVerificationManifest:
     def execute(self, request: GenerateManifestRequest) -> Path:
         if not request.frames:
-            raise ValueError("Cannot save manifest without frames.")
+            raise ValueError("Нельзя сохранить файл проверки без кадров.")
         request.output_folder.mkdir(parents=True, exist_ok=True)
         manifest = VerificationManifest(
             vector_folder=request.vector_folder,
@@ -63,11 +63,11 @@ class ReadVerificationManifest:
     def execute(self, path: Path, encryption_key: str) -> VerificationManifest:
         raw_lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
         if len(raw_lines) < 6:
-            raise ValueError("Verification manifest is incomplete.")
+            raise ValueError("Файл проверки неполный.")
         decoded = [decode_string(line, encryption_key) for line in raw_lines]
         selection_mode = decoded[4]
         if selection_mode not in {"all", "area"}:
-            raise ValueError("Invalid encryption key or manifest selection mode.")
+            raise ValueError("Неверный ключ шифрования или режим диапазона в файле проверки.")
         return VerificationManifest(
             vector_folder=decoded[0],
             layer_name=decoded[1],
@@ -86,7 +86,7 @@ class AnalyzeVerification:
 
     def execute(self, request: AnalyzeVerificationRequest):
         if request.markup_path is None:
-            raise ValueError("Markup file is required to map frames to authors.")
+            raise ValueError("Для сопоставления кадров с исполнителями нужен файл разметки.")
         manifest = self._read_manifest.execute(request.manifest_path, request.encryption_key)
         crystal = self._crystal_reader.read(request.markup_path)
         layer_name = request.layer_name or manifest.layer_name

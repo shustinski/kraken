@@ -8,7 +8,10 @@ try {
     if (-not $SkipTests) {
         python -m pytest
     }
-    python -m build
+    pyinstaller .\packaging\CSliser.spec
+    if (Get-Command iscc -ErrorAction SilentlyContinue) {
+        iscc .\packaging\CSliser.iss
+    }
 } finally {
     Pop-Location
 }

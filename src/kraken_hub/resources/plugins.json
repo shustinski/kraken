@@ -58,9 +58,9 @@
     {
       "id": "kategb",
       "display_name": "KateGB",
-      "description": "CIF sample generation and verification quality analysis.",
+      "description": "Формирование CIF-выборок и расчет результатов проверки.",
       "version": "1.0.0",
-      "category": "Quality Control",
+      "category": "Контроль качества",
       "icon": "resources/icons/kategb.png",
       "entry_point": "kategb.application.cli:main",
       "enabled": true,

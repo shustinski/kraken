@@ -101,6 +101,24 @@ class WorkspaceSessionTests(unittest.TestCase):
 
         self.assertFalse(session.current_image_has_changes())
 
+    def test_image_has_changes_handles_mixed_parent_ids(self) -> None:
+        session = WorkspaceSession()
+        parent = _triangle_polygon()
+        hole = PolygonData(
+            id=2,
+            points=[(1.0, 1.0), (2.0, 1.0), (1.0, 2.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        session.load_image(
+            "sample.png",
+            load_source_image=lambda _path: "source",
+            load_cif_overlay=lambda _path: [hole.clone(), parent.clone()],
+        )
+        session.current_state.reference_polygons = [parent.clone(), hole.clone()]
+
+        self.assertFalse(session.current_image_has_changes())
+
 
 if __name__ == "__main__":
     unittest.main()

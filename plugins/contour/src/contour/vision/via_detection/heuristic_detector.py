@@ -200,51 +200,94 @@ def _local_extrema_seeds(
     lm = (response == dil) & (response > 0)
     th = max(float(min_peak), float(np.percentile(response, pctl)))
     lm = lm & (response >= th)
+    m = lm.astype(np.uint8)
     pts: list[tuple[int, int]] = []
-    ys, xs = np.where(lm)
-    for y, x in zip(ys, xs, strict=False):
-        pts.append((int(y), int(x)))
-    m = (lm.astype(np.uint8) * 255) if hasattr(lm, "astype") else np.zeros_like(response, dtype=np.uint8)
-    return pts, m
+    if int(cv2.countNonZero(m)) > 0:
+        nlab, labels, stats, centroids = cv2.connectedComponentsWithStats(m, connectivity=8)
+        for label in range(1, nlab):
+            x, y, ww, hh, area = stats[label]
+            if int(area) <= 0:
+                continue
+            roi = response[y : y + hh, x : x + ww]
+            lab_roi = labels[y : y + hh, x : x + ww] == label
+            if roi.size == 0 or not bool(np.any(lab_roi)):
+                cx, cy = centroids[label]
+                pts.append((int(round(cy)), int(round(cx))))
+                continue
+            masked = np.where(lab_roi, roi, 0)
+            yy, xx = np.unravel_index(int(np.argmax(masked)), masked.shape)
+            pts.append((int(y + yy), int(x + xx)))
+    return pts, m * 255
+
+
+def _grid_suppressed_points(
+    pts: list[tuple[int, int]],
+    min_dist: int,
+    h: int,
+    w: int,
+) -> list[tuple[int, int]]:
+    if not pts:
+        return []
+    radius = max(1, int(min_dist))
+    cell = max(1, radius)
+    d2 = float(radius * radius)
+    grid: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    out: list[tuple[int, int]] = []
+    for py, px in sorted(set(pts), key=lambda p: p[0] * max(1, w) + p[1]):
+        cy = max(0, min(h - 1, int(py))) // cell
+        cx = max(0, min(w - 1, int(px))) // cell
+        too_close = False
+        for gy in range(cy - 1, cy + 2):
+            for gx in range(cx - 1, cx + 2):
+                for qy, qx in grid.get((gy, gx), ()):
+                    if (py - qy) ** 2 + (px - qx) ** 2 < d2:
+                        too_close = True
+                        break
+                if too_close:
+                    break
+            if too_close:
+                break
+        if too_close:
+            continue
+        point = (int(py), int(px))
+        out.append(point)
+        grid.setdefault((cy, cx), []).append(point)
+    return out
 
 
 def _merge_seeds(allp: list[tuple[int, int]], min_dist: int, h: int, w: int) -> list[tuple[int, int]]:
-    if not allp:
-        return []
-    d2 = float(max(1, min_dist) ** 2)
-    allp = sorted(set(allp), key=lambda p: p[0] * 1_000_000 + p[1])
-    out: list[tuple[int, int]] = []
-    for p in allp:
-        if any((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 < d2 for q in out):
-            continue
-        out.append(p)
-    return out
+    return _grid_suppressed_points(allp, min_dist, h, w)
 
 
 def _spread_points(pts: list[tuple[int, int]], min_dist: int, h: int, w: int) -> list[tuple[int, int]]:
-    if not pts:
-        return []
-    d2 = float(max(1, min_dist) ** 2)
-    pts = sorted(pts, key=lambda p: p[0] * 1_000_000 + p[1])
-    out: list[tuple[int, int]] = []
-    for p in pts:
-        if any((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 < d2 for q in out):
-            continue
-        out.append(p)
-    return out
+    return _grid_suppressed_points(pts, min_dist, h, w)
 
 
 def _dedupe_by_score(dets: list[ViaDetection], min_dist: float) -> list[ViaDetection]:
     dets = sorted(dets, key=lambda d: d.score, reverse=True)
-    d2 = float(max(0.5, min_dist) ** 2)
+    radius = max(0.5, float(min_dist))
+    cell = max(1.0, radius)
+    d2 = float(radius * radius)
     kept: list[ViaDetection] = []
+    grid: dict[tuple[int, int], list[ViaDetection]] = {}
     for d in dets:
         if d.reject_reason and "hard" in d.reject_reason:
             kept.append(d)
             continue
-        if any((d.x - k.x) ** 2 + (d.y - k.y) ** 2 < d2 for k in kept if not (k.reject_reason and "hard" in k.reject_reason)):
+        cx = int(d.x // cell)
+        cy = int(d.y // cell)
+        too_close = False
+        for gy in range(cy - 1, cy + 2):
+            for gx in range(cx - 1, cx + 2):
+                if any((d.x - k.x) ** 2 + (d.y - k.y) ** 2 < d2 for k in grid.get((gy, gx), ())):
+                    too_close = True
+                    break
+            if too_close:
+                break
+        if too_close:
             continue
         kept.append(d)
+        grid.setdefault((cy, cx), []).append(d)
     return kept
 
 
@@ -254,11 +297,26 @@ def _nms_simple(dets: list[ViaDetection], dist: int) -> list[ViaDetection]:
     soft.sort(key=lambda x: x.score, reverse=True)
     d2 = float(max(0, int(dist)) ** 2) if dist > 0 else 0.0
     keep: list[ViaDetection] = []
+    grid: dict[tuple[int, int], list[ViaDetection]] = {}
+    cell = max(1, int(dist))
     for d in soft:
         if d2 == 0.0:
             keep.append(d)
-        elif not any((d.x - o.x) ** 2 + (d.y - o.y) ** 2 <= d2 for o in keep):
-            keep.append(d)
+            continue
+        cx = int(d.x // cell)
+        cy = int(d.y // cell)
+        too_close = False
+        for gy in range(cy - 1, cy + 2):
+            for gx in range(cx - 1, cx + 2):
+                if any((d.x - o.x) ** 2 + (d.y - o.y) ** 2 <= d2 for o in grid.get((gy, gx), ())):
+                    too_close = True
+                    break
+            if too_close:
+                break
+        if too_close:
+            continue
+        keep.append(d)
+        grid.setdefault((cy, cx), []).append(d)
     return hard + keep
 
 

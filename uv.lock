@@ -208,11 +208,18 @@ dependencies = [
     { name = "pyqt6", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 
+[package.optional-dependencies]
+build = [
+    { name = "pyinstaller", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "kraken", editable = "." },
+    { name = "pyinstaller", marker = "extra == 'build'", specifier = ">=6.19" },
     { name = "pyqt6", specifier = ">=6.6" },
 ]
+provides-extras = ["build"]
 
 [[package]]
 name = "cython"

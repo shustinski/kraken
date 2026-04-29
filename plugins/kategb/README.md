@@ -1,8 +1,8 @@
 # KateGB
 
-KateGB is a Kraken plugin for preparing encrypted CIF verification samples and
-summarising verification results by author.
+KateGB - плагин Kraken для подготовки зашифрованных CIF-выборок и расчета
+результатов проверки по исполнителям.
 
-The recovered PyInstaller sources were replaced with a clean plugin package:
-domain logic is independent from Qt, application use cases expose testable
-operations, and the UI only collects input and displays results.
+Восстановленный PyInstaller-код заменен чистым пакетом плагина: доменная логика
+не зависит от Qt, сценарии приложения тестируются отдельно, а UI только собирает
+ввод и показывает результат.

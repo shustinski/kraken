@@ -39,13 +39,13 @@ def frames_from_range(frame_range: FrameRange, frames_in_row: int, mode: FrameSe
 
 def generate_sample_frames(layer: LayerInfo, config: SampleGenerationConfig) -> tuple[int, ...]:
     if config.layer_name != layer.name:
-        raise FrameSelectionError(f"Config targets layer {config.layer_name!r}, got {layer.name!r}.")
+        raise FrameSelectionError(f"Параметры заданы для слоя {config.layer_name!r}, получен слой {layer.name!r}.")
     if not config.authors:
-        raise FrameSelectionError("At least one author must be selected.")
+        raise FrameSelectionError("Выберите хотя бы одного исполнителя.")
     if not 0 < config.percent_per_author <= 100:
-        raise FrameSelectionError("Percent per author must be in range 1..100.")
+        raise FrameSelectionError("Процент на исполнителя должен быть в диапазоне 1..100.")
     if config.frame_range and config.frame_range.last > layer.frames_in_layer:
-        raise FrameSelectionError("Frame range exceeds the number of frames in the layer.")
+        raise FrameSelectionError("Диапазон кадров выходит за пределы количества кадров в слое.")
 
     allowed_frames: set[int] | None = None
     if config.frame_range:
@@ -57,7 +57,7 @@ def generate_sample_frames(layer: LayerInfo, config: SampleGenerationConfig) -> 
     selected: list[int] = []
     for author in config.authors:
         if author not in layer.author_frames:
-            raise FrameSelectionError(f"Unknown author for layer {layer.name!r}: {author!r}.")
+            raise FrameSelectionError(f"Неизвестный исполнитель для слоя {layer.name!r}: {author!r}.")
         candidates = set(layer.author_frames[author])
         if allowed_frames is not None:
             candidates &= allowed_frames

@@ -2,28 +2,21 @@ from __future__ import annotations
 
 from typing import Any
 
-try:
-    from lib.ui_texts import get_ui_language as _get_global_ui_language
-    from lib.ui_texts import normalize_ui_language as _normalize_global_ui_language
-except ImportError:
+_DEFAULT_LANGUAGE = "ru"
 
-    def _get_global_ui_language() -> str:
-        return "ru"
 
-    def _normalize_global_ui_language(language: str | None) -> str:
-        text = str(language or "").strip().lower()
-        if text.startswith("en"):
-            return "en"
-        return "ru"
+def _normalize_contour_language(language: str | None) -> str:
+    text = str(language or "").strip().lower()
+    if text.startswith("en"):
+        return "en"
+    return _DEFAULT_LANGUAGE
 
 
 def normalize_language(language: str | None) -> str:
-    return _normalize_global_ui_language(language)
+    return _normalize_contour_language(language)
 
 
 def active_language(language: str | None = None) -> str:
-    if language is None:
-        return normalize_language(_get_global_ui_language())
     return normalize_language(language)
 
 

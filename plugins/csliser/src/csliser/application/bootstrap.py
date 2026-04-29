@@ -22,10 +22,10 @@ def build_application(argv: Sequence[str] | None = None, *, apply_qss: bool = Tr
     qt_argv = sys.argv if argv is None else [sys.argv[0], *argv]
     app = QApplication.instance() or QApplication(qt_argv)
     assert isinstance(app, QApplication)
-    app.setOrganizationName("ViaLaNet")
+    app.setOrganizationName("Kraken")
     app.setApplicationName("CSliser")
     app.setApplicationVersion(__version__)
-    configure_application_identity(app, app_id="ViaLaNet.CSliser", icon_name="csliser")
+    configure_application_identity(app, app_id="Krarken.CSliser", icon_name="csliser")
     if apply_qss:
         app.setStyleSheet(load_shared_stylesheet("dark_modern.qss"))
     window = CSliserWindow()

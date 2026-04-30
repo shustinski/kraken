@@ -447,6 +447,8 @@ class _MatrixCellItem(QGraphicsRectItem):
         self.subpixel_metric_key: str | None = None
         self.selected_subpixel_selection: MatrixTileSelection | None = None
         self.hovered_subpixel_selection: MatrixTileSelection | None = None
+        self._attention_marker_kind: str | None = None
+        self._attention_marker_color: QColor | None = None
         self._tile_rect_cache_key: tuple[float, float, float, float, int, int, str, int, int, int] | None = None
         self._tile_rect_cache: tuple[QRectF, ...] = ()
 
@@ -464,6 +466,15 @@ class _MatrixCellItem(QGraphicsRectItem):
         self.hovered_subpixel_selection = hovered_subpixel_selection
         self.update()
 
+    def set_attention_marker(self, kind: str | None, color: QColor | None) -> None:
+        current_rgba = None if self._attention_marker_color is None else int(self._attention_marker_color.rgba())
+        new_rgba = None if color is None else int(color.rgba())
+        if kind == self._attention_marker_kind and current_rgba == new_rgba:
+            return
+        self._attention_marker_kind = kind
+        self._attention_marker_color = QColor(color) if color is not None else None
+        self.update()
+
     def paint(self, painter: QPainter, option, widget=None) -> None:
         spec = self.subpixel_grid.spec if self.subpixel_grid is not None else self.subpixel_spec
         if not self.subpixel_overlay_enabled or spec is None:
@@ -473,6 +484,7 @@ class _MatrixCellItem(QGraphicsRectItem):
         rect = self.rect()
         if rect.width() < 6.0 or rect.height() < 6.0:
             super().paint(painter, option, widget)
+            self._paint_attention_marker(painter)
             return
         rows = max(1, int(spec.rows))
         columns = max(1, int(spec.columns))
@@ -489,6 +501,7 @@ class _MatrixCellItem(QGraphicsRectItem):
         spec = grid.spec if grid is not None else spec
         if spec is None:
             super().paint(painter, option, widget)
+            self._paint_attention_marker(painter)
             return
         if grid is None:
             self._paint_base_cell(painter)
@@ -554,6 +567,7 @@ class _MatrixCellItem(QGraphicsRectItem):
         if rows * columns > 1:
             painter.setPen(QPen(QColor(255, 255, 255, 60), 0.0))
             painter.drawRect(rect)
+        self._paint_attention_marker(painter)
         painter.restore()
 
     def _paint_base_cell(self, painter: QPainter) -> None:
@@ -562,7 +576,44 @@ class _MatrixCellItem(QGraphicsRectItem):
         painter.fillRect(rect, self.brush())
         painter.setPen(self.pen())
         painter.drawRect(rect)
+        self._paint_attention_marker(painter)
         painter.restore()
+
+    def _paint_attention_marker(self, painter: QPainter) -> None:
+        kind = self._attention_marker_kind
+        color = self._attention_marker_color
+        if kind is None or color is None:
+            return
+        rect = self.rect().adjusted(0.75, 0.75, -0.75, -0.75)
+        if rect.width() < 8.0 or rect.height() < 8.0:
+            return
+        marker_length = max(5.0, min(rect.width(), rect.height()) * 0.28)
+        marker_length = min(marker_length, max(5.0, min(rect.width(), rect.height()) * 0.42))
+        outer_width = max(2.8, min(rect.width(), rect.height()) * 0.12)
+        inner_width = max(1.4, outer_width - 1.4)
+
+        corners: tuple[tuple[float, float, float, float], ...]
+        if kind == "assigned":
+            corners = (
+                (rect.right(), rect.top(), rect.right() - marker_length, rect.top() + marker_length),
+                (rect.left(), rect.bottom(), rect.left() + marker_length, rect.bottom() - marker_length),
+            )
+        else:
+            corners = (
+                (rect.left(), rect.top(), rect.left() + marker_length, rect.top() + marker_length),
+                (rect.right(), rect.bottom(), rect.right() - marker_length, rect.bottom() - marker_length),
+            )
+
+        outline = QColor(0, 0, 0, 235)
+        for pen_color, pen_width in ((outline, outer_width), (color, inner_width)):
+            pen = QPen(pen_color, pen_width)
+            pen.setCosmetic(True)
+            pen.setCapStyle(Qt.PenCapStyle.SquareCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+            painter.setPen(pen)
+            for x1, y1, x2, y2 in corners:
+                painter.drawLine(QPointF(x1, y1), QPointF(x2, y1))
+                painter.drawLine(QPointF(x1, y1), QPointF(x1, y2))
 
     def _display_tile_rects(self, rect: QRectF, spec: SubpixelGridSpec, rows: int, columns: int) -> tuple[QRectF, ...]:
         cache_key = (
@@ -1065,6 +1116,8 @@ class MatrixMiniMapWidget(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._i18n = Translator()
+        self._t = self._i18n.tr
         self._image: QImage | None = None
         self._visible_rect = QRectF()
         self._selected_position: tuple[int, int] | None = None
@@ -1193,6 +1246,14 @@ class MatrixListWidget(QGraphicsView):
         self._record_by_position: dict[tuple[int, int], FrameRecord] = {}
         self._record_positions: dict[str, tuple[int, int]] = {}
         self._record_index_by_key: dict[str, int] = {}
+        self._management_payload_by_key: dict[str, dict[str, str]] = {}
+        self._management_recommended_keys: set[str] = set()
+        self._management_assignee_colors: dict[str, str] = {}
+        self._management_recommended_priority_min: float | None = None
+        self._management_recommended_priority_max: float | None = None
+        self._management_priority_min: float | None = None
+        self._management_priority_max: float | None = None
+        self._management_visual_mode = False
         self._overview_layer_item: QGraphicsPixmapItem | None = None
         self._matrix_frame_item: QGraphicsRectItem | None = None
         self._virtualized_items_enabled = False
@@ -1482,6 +1543,66 @@ class MatrixListWidget(QGraphicsView):
         if reset_view:
             self.resetTransform()
         self._rebuild_scene(ordered)
+
+    def set_management_payload(self, payload_by_key: dict[str, dict[str, str]] | None) -> None:
+        """Attach task-management metadata for matrix overlays and tooltips."""
+
+        normalized: dict[str, dict[str, str]] = {}
+        recommended: set[str] = set()
+        recommended_scores: list[float] = []
+        all_priority_scores: list[float] = []
+        for key, payload in (payload_by_key or {}).items():
+            key_text = str(key or "").strip()
+            if not key_text:
+                continue
+            normalized_payload = {str(k): str(v) for k, v in dict(payload or {}).items()}
+            normalized[key_text] = normalized_payload
+            any_score = self._management_priority_value_from_payload(normalized_payload)
+            if any_score is not None and math.isfinite(float(any_score)):
+                all_priority_scores.append(float(any_score))
+            if str(normalized_payload.get("recommended", "")).strip().lower() in {"1", "true", "yes"}:
+                recommended.add(key_text)
+                score = any_score if any_score is not None else self._management_priority_value_from_payload(normalized_payload)
+                if score is not None and math.isfinite(float(score)):
+                    recommended_scores.append(float(score))
+        self._management_payload_by_key = normalized
+        self._management_recommended_keys = recommended
+        if all_priority_scores:
+            self._management_priority_min = float(min(all_priority_scores))
+            self._management_priority_max = float(max(all_priority_scores))
+        else:
+            self._management_priority_min = None
+            self._management_priority_max = None
+        if recommended_scores:
+            self._management_recommended_priority_min = float(min(recommended_scores))
+            self._management_recommended_priority_max = float(max(recommended_scores))
+        else:
+            self._management_recommended_priority_min = None
+            self._management_recommended_priority_max = None
+        self.refresh_scene()
+
+    def set_management_visual_mode(self, enabled: bool) -> None:
+        """Enable management-specific cluster fill and recommendation border rendering."""
+
+        normalized = bool(enabled)
+        if self._management_visual_mode == normalized:
+            return
+        self._management_visual_mode = normalized
+        self.refresh_scene()
+
+    def set_management_assignee_colors(self, assignee_colors: dict[str, str] | None) -> None:
+        """Attach assignee color preferences used by management-mode rendering."""
+
+        normalized: dict[str, str] = {}
+        for assignee, color in (assignee_colors or {}).items():
+            assignee_text = str(assignee or "").strip()
+            color_text = str(color or "").strip()
+            if not assignee_text or not color_text:
+                continue
+            normalized[assignee_text.lower()] = color_text
+        self._management_assignee_colors = normalized
+        if self._management_visual_mode:
+            self.refresh_scene()
 
     def refresh_scene(self) -> None:
         if not self._records:
@@ -2557,6 +2678,13 @@ class MatrixListWidget(QGraphicsView):
         )
 
     def _apply_item_style(self, item: _MatrixCellItem, *, sync_tile_state: bool = True) -> None:
+        management_payload = self._management_payload_for_record(item.record) if self._management_visual_mode else None
+        is_recommended = str(item.record.key) in self._management_recommended_keys
+        assigned_for_work = self._management_has_active_assignment(management_payload) if management_payload is not None else False
+        assignee_color = self._management_assignee_color_for_payload(management_payload) if management_payload is not None else None
+        cluster_color = self._management_cluster_color_for_payload(management_payload) if management_payload is not None else None
+        marker_kind: str | None = None
+        marker_color: QColor | None = None
         if item is self._hovered_item:
             pen = QPen(HOVER_BORDER, MATRIX_HOVER_PEN_WIDTH)
         elif str(item.record.key) in self._range_selected_keys:
@@ -2565,6 +2693,25 @@ class MatrixListWidget(QGraphicsView):
             pen = QPen(PROCESSING_BORDER, MATRIX_PROCESSING_PEN_WIDTH)
         elif self._reference_key is not None and item.record.key == self._reference_key:
             pen = QPen(REFERENCE_BORDER, MATRIX_REFERENCE_PEN_WIDTH)
+        elif self._management_visual_mode:
+            if assigned_for_work:
+                pen_color = assignee_color if assignee_color is not None else QColor(70, 196, 255, 245)
+                pen = QPen(pen_color, max(MATRIX_DEFAULT_PEN_WIDTH + 0.9, 1.7))
+                marker_kind = "assigned"
+                marker_color = pen_color
+            elif is_recommended:
+                recommendation_color = self._management_recommendation_overlay_color(management_payload)
+                marker_color = recommendation_color if recommendation_color is not None else QColor(186, 104, 200, 245)
+                pen = QPen(marker_color, max(MATRIX_DEFAULT_PEN_WIDTH + 0.8, 1.7))
+                marker_kind = "recommended"
+            else:
+                pen = QPen(DEFAULT_BORDER, MATRIX_DEFAULT_PEN_WIDTH)
+        elif is_recommended:
+            recommendation_payload = self._management_payload_for_record(item.record)
+            recommendation_color = self._management_recommendation_overlay_color(recommendation_payload)
+            pen = QPen(recommendation_color if recommendation_color is not None else QColor(186, 104, 200, 245), max(MATRIX_DEFAULT_PEN_WIDTH + 0.7, 1.6))
+            marker_kind = "recommended"
+            marker_color = recommendation_color if recommendation_color is not None else QColor(186, 104, 200, 245)
         else:
             pen = QPen(DEFAULT_BORDER, MATRIX_DEFAULT_PEN_WIDTH)
         brush_color = self._background_color_for_record(item.record)
@@ -2574,6 +2721,7 @@ class MatrixListWidget(QGraphicsView):
             brush_color = blend_colors(brush_color, SELECTED_BLINK_COLOR, MATRIX_SELECTED_BLEND_RATIO)
         item.setPen(pen)
         item.setBrush(brush_color)
+        item.set_attention_marker(marker_kind, marker_color)
         if sync_tile_state:
             self._sync_tile_state_for_keys({item.record.key})
 
@@ -2727,14 +2875,48 @@ class MatrixListWidget(QGraphicsView):
 
     def _background_color_for_record(self, record: FrameRecord) -> QColor:
         score = self._display_score(record)
-        if score is None:
-            return QColor(MATRIX_BACKGROUND_ALT)
-        return self._background_color(score)
+        base_color = QColor(MATRIX_BACKGROUND_ALT) if score is None else self._background_color(score)
+        if self._management_visual_mode:
+            neutral = QColor(MATRIX_BACKGROUND_ALT)
+            management_payload = self._management_payload_for_record(record)
+            if management_payload is None:
+                return neutral
+            cluster_color = self._management_cluster_color_for_payload(management_payload)
+            priority_overlay = self._management_priority_map_overlay_color(management_payload)
+            result = cluster_color if cluster_color is not None else neutral
+            if self._management_has_active_assignment(management_payload):
+                assignee_color = self._management_assignee_color_for_payload(management_payload)
+                assignment_overlay = assignee_color if assignee_color is not None else QColor(70, 196, 255, 215)
+                return blend_colors(result, assignment_overlay, 0.18)
+            if priority_overlay is not None and cluster_color is None:
+                return blend_colors(neutral, priority_overlay, 0.46)
+            return result
+        management = self._management_payload_for_record(record)
+        if not management:
+            return base_color
+        status = str(management.get("status", "")).lower()
+        status_colors = {
+            "queued": QColor(111, 122, 24, 220),
+            "issued": QColor(47, 96, 156, 220),
+            "in_progress": QColor(47, 96, 156, 220),
+            "returned": QColor(31, 95, 59, 220),
+            "done": QColor(31, 95, 59, 220),
+            "conflict": QColor(167, 93, 18, 220),
+            "overdue": QColor(140, 47, 57, 220),
+        }
+        overlay = status_colors.get(status)
+        if overlay is None:
+            return base_color
+        return blend_colors(base_color, overlay, 0.28)
 
     def _tooltip_for_record(self, record: FrameRecord) -> str:
         if not bool(getattr(record, "score_ready", False)):
             suffix = f"\n{self._t('matrix.reference_frame')}" if self._reference_key == record.key else ""
-            return f"{record.display_name}\n{self._t('matrix.mismatch_not_computed')}{suffix}"
+            base_text = f"{record.display_name}\n{self._t('matrix.mismatch_not_computed')}{suffix}"
+            management_lines = self._management_tooltip_lines(record)
+            if management_lines:
+                return "\n".join([base_text, "", *management_lines])
+            return base_text
         lines = [record.display_name]
         if record.absolute_score is not None:
             lines.append(f"{self._t('matrix.absolute_mismatch')}: {self._format_metric_value(record.absolute_score)}")
@@ -2744,11 +2926,23 @@ class MatrixListWidget(QGraphicsView):
             lines.append(f"Score percentile: P{float(record.score_percentile):.1f}")
         if self._reference_key == record.key:
             lines.append(self._t('matrix.reference_frame'))
+        lines.extend(self._management_tooltip_lines(record))
         return "\n".join(lines)
 
     def _hover_text(self, record: FrameRecord) -> str:
         if not bool(getattr(record, "score_ready", False)):
-            return f"{record.display_name} | {self._t('matrix.mismatch_not_computed').lower()}"
+            parts = [record.display_name, self._t('matrix.mismatch_not_computed').lower()]
+            management = self._management_payload_for_record(record)
+            if management:
+                parts.append(self._t("management.short.task", value=management.get("status", "")))
+                assignee = str(management.get("assignee", "")).strip()
+                if assignee:
+                    parts.append(self._t("management.short.owner", value=assignee))
+                recommended = str(management.get("recommended", "")).strip().lower() in {"1", "true", "yes"}
+                if recommended:
+                    risk = str(management.get("risk_score", "")).strip()
+                    parts.append(self._t("management.short.suggested_with_risk", value=risk) if risk else self._t("management.short.suggested"))
+            return " | ".join(parts)
         parts = [record.display_name]
         if self._reference_key == record.key:
             parts.append(self._t('matrix.reference_short'))
@@ -2758,7 +2952,224 @@ class MatrixListWidget(QGraphicsView):
             parts.append(f"{self._t('matrix.relative_short')} {record.relative_score * 100.0:.3f}%")
         if record.score_percentile is not None:
             parts.append(f"P{float(record.score_percentile):.1f}")
+        management = self._management_payload_for_record(record)
+        if management:
+            parts.append(self._t("management.short.task", value=management.get("status", "")))
+            assignee = str(management.get("assignee", "")).strip()
+            if assignee:
+                parts.append(self._t("management.short.owner", value=assignee))
+            recommended = str(management.get("recommended", "")).strip().lower() in {"1", "true", "yes"}
+            if recommended:
+                risk = str(management.get("risk_score", "")).strip()
+                parts.append(self._t("management.short.suggested_with_risk", value=risk) if risk else self._t("management.short.suggested"))
         return " | ".join(parts)
+
+    def _management_payload_for_record(self, record: FrameRecord) -> dict[str, str] | None:
+        if not self._management_payload_by_key:
+            return None
+        key_variants = (
+            str(record.key),
+            str(record.display_name or ""),
+            str(Path(str(record.key)).name),
+            str(Path(str(record.key)).stem),
+            str(Path(str(record.display_name or "")).stem),
+        )
+        for key in key_variants:
+            normalized = key.strip()
+            if not normalized:
+                continue
+            payload = self._management_payload_by_key.get(normalized)
+            if payload is not None:
+                return payload
+        return None
+
+    def _management_tooltip_lines(self, record: FrameRecord) -> list[str]:
+        payload = self._management_payload_for_record(record)
+        if not payload:
+            return []
+        lines = ["", self._t("management.tooltip.section")]
+        lines.append(self._t("management.tooltip.status", value=payload.get("status", "")))
+        assignee = str(payload.get("assignee", "")).strip()
+        if assignee:
+            lines.append(self._t("management.tooltip.assignee", value=assignee))
+        issued_at = str(payload.get("issued_at", "")).strip()
+        if issued_at:
+            lines.append(self._t("management.tooltip.issued", value=issued_at))
+        returned_at = str(payload.get("returned_at", "")).strip()
+        if returned_at:
+            lines.append(self._t("management.tooltip.returned", value=returned_at))
+        task_type = str(payload.get("task_type", "")).strip()
+        if task_type:
+            lines.append(self._t("management.tooltip.type", value=task_type))
+        cluster_id = str(payload.get("cluster_id", "")).strip()
+        if cluster_id:
+            cluster_size = str(payload.get("cluster_size", "")).strip()
+            if cluster_size:
+                lines.append(f"cluster: {cluster_id} (size: {cluster_size})")
+            else:
+                lines.append(f"cluster: {cluster_id}")
+        pattern_group = str(payload.get("pattern_group", "")).strip()
+        pattern_cluster_id = str(payload.get("pattern_cluster_id", "")).strip()
+        if pattern_group:
+            lines.append(f"pattern group: {pattern_group}")
+        if pattern_cluster_id:
+            lines.append(f"pattern cluster: {pattern_cluster_id}")
+        recommended = str(payload.get("recommended", "")).strip().lower() in {"1", "true", "yes"}
+        if recommended:
+            lines.append(self._t("management.tooltip.suggested"))
+            risk_score = str(payload.get("risk_score", "")).strip()
+            if risk_score:
+                lines.append(self._t("management.tooltip.risk", value=risk_score))
+        scenario_label = str(payload.get("scenario_label", "")).strip()
+        if scenario_label:
+            lines.append(f"scenario: {scenario_label}")
+        scenario_rank = str(payload.get("scenario_rank", "")).strip()
+        if scenario_rank:
+            lines.append(f"scenario rank: {scenario_rank}")
+        priority_score = str(payload.get("priority_score", "")).strip()
+        if priority_score and not str(payload.get("risk_score", "")).strip():
+            lines.append(f"priority: {priority_score}")
+        labeling_percent = str(payload.get("labeling_priority_percent", "")).strip()
+        labeling_category = str(payload.get("labeling_priority_category", "")).strip()
+        labeling_reasons = str(payload.get("labeling_priority_reasons", "")).strip()
+        if labeling_percent:
+            lines.append(f"labeling priority: {labeling_percent}/100")
+        if labeling_category:
+            lines.append(f"category: {labeling_category}")
+        if labeling_reasons:
+            lines.append(f"reasons: {labeling_reasons}")
+        return lines
+
+    @staticmethod
+    def _management_has_active_assignment(payload: dict[str, str] | None) -> bool:
+        if not payload:
+            return False
+        assignee = str(payload.get("assignee", "")).strip()
+        if not assignee:
+            return False
+        status = str(payload.get("status", "")).strip().lower()
+        return status not in {"returned", "done", "cancelled"}
+
+    def _management_assignee_color_for_payload(self, payload: dict[str, str] | None) -> QColor | None:
+        if not payload:
+            return None
+        assignee = str(payload.get("assignee", "")).strip()
+        if not assignee:
+            return None
+        configured_color = self._management_assignee_colors.get(assignee.lower())
+        color = self._color_from_text(configured_color)
+        if color is not None:
+            return color
+        # Stable fallback per assignee if no custom color was configured yet.
+        digest = hashlib.sha1(assignee.lower().encode("utf-8", errors="ignore")).digest()
+        red = 70 + (digest[0] % 150)
+        green = 80 + (digest[1] % 130)
+        blue = 90 + (digest[2] % 140)
+        return QColor(int(red), int(green), int(blue), 235)
+
+    def _management_cluster_color_for_payload(self, payload: dict[str, str] | None) -> QColor | None:
+        if not payload:
+            return None
+        cluster_id_text = str(payload.get("cluster_id", "")).strip()
+        if not cluster_id_text:
+            cluster_id_text = str(payload.get("pattern_cluster_id", "")).strip()
+        if not cluster_id_text:
+            return None
+        try:
+            cluster_id = int(float(cluster_id_text))
+        except Exception:
+            cluster_id = int.from_bytes(cluster_id_text.encode("utf-8", errors="ignore"), "little", signed=False) % 9973
+        hue = int((cluster_id * 47) % 360)
+        color = QColor.fromHsv(hue, 195, 250, 240)
+        return color if color.isValid() else None
+
+    @staticmethod
+    def _management_priority_value_from_payload(payload: dict[str, str] | None) -> float | None:
+        if not payload:
+            return None
+        for key in ("labeling_priority_score", "risk_score", "priority_score"):
+            raw = str(payload.get(key, "")).strip()
+            if not raw:
+                continue
+            try:
+                value = float(raw)
+            except Exception:
+                continue
+            if math.isfinite(value):
+                return float(value)
+        return None
+
+    @staticmethod
+    def _mix_colors(left: QColor, right: QColor, ratio: float, *, alpha: int = 230) -> QColor:
+        clamped = max(0.0, min(float(ratio), 1.0))
+        inv = 1.0 - clamped
+        return QColor(
+            int(left.red() * inv + right.red() * clamped),
+            int(left.green() * inv + right.green() * clamped),
+            int(left.blue() * inv + right.blue() * clamped),
+            int(alpha),
+        )
+
+    def _management_recommendation_overlay_color(self, payload: dict[str, str] | None) -> QColor | None:
+        if not payload:
+            return None
+        recommended = str(payload.get("recommended", "")).strip().lower() in {"1", "true", "yes"}
+        if not recommended:
+            return None
+        value = self._management_priority_value_from_payload(payload)
+        if value is None:
+            return QColor(186, 104, 200, 232)
+        low = self._management_recommended_priority_min
+        high = self._management_recommended_priority_max
+        if low is None or high is None or not math.isfinite(low) or not math.isfinite(high):
+            ratio = 1.0
+        elif abs(float(high) - float(low)) <= 1e-9:
+            ratio = 1.0
+        else:
+            ratio = (float(value) - float(low)) / max(1e-9, float(high) - float(low))
+        ratio = max(0.0, min(ratio, 1.0))
+        low_color = QColor(74, 156, 83, 230)
+        mid_color = QColor(221, 186, 74, 230)
+        high_color = QColor(214, 78, 71, 230)
+        if ratio <= 0.5:
+            return self._mix_colors(low_color, mid_color, ratio * 2.0, alpha=232)
+        return self._mix_colors(mid_color, high_color, (ratio - 0.5) * 2.0, alpha=232)
+
+    def _management_priority_map_overlay_color(self, payload: dict[str, str] | None) -> QColor | None:
+        if not payload:
+            return None
+        scenario = str(payload.get("scenario", "")).strip().lower()
+        if scenario not in {"labeling_priority_hard_cases", "primary_labeling_selection"}:
+            return None
+        value = self._management_priority_value_from_payload(payload)
+        if value is None:
+            return None
+        low = self._management_priority_min
+        high = self._management_priority_max
+        if low is None or high is None or not math.isfinite(low) or not math.isfinite(high):
+            ratio = 1.0
+        elif abs(float(high) - float(low)) <= 1e-9:
+            ratio = 1.0
+        else:
+            ratio = (float(value) - float(low)) / max(1e-9, float(high) - float(low))
+        ratio = max(0.0, min(ratio, 1.0))
+        low_color = QColor(96, 107, 118, 220)
+        mid_color = QColor(227, 187, 87, 225)
+        high_color = QColor(214, 81, 70, 232)
+        if ratio <= 0.5:
+            return self._mix_colors(low_color, mid_color, ratio * 2.0, alpha=228)
+        return self._mix_colors(mid_color, high_color, (ratio - 0.5) * 2.0, alpha=232)
+
+    @staticmethod
+    def _color_from_text(value: str | None) -> QColor | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        color = QColor(text)
+        if not color.isValid():
+            return None
+        color.setAlpha(235)
+        return color
 
 
 __all__ = [

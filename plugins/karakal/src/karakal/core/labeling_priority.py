@@ -1,0 +1,66 @@
+"""Compatibility re-export for manager primary labeling selector.
+
+This module is intentionally thin to avoid breaking existing imports while
+keeping heavy computation in manager-mode code.
+"""
+from __future__ import annotations
+
+from ..manager.primary_labeling_selector import (
+    LabelingPriorityConfig,
+    LabelingPriorityFrame,
+    LabelingPriorityResult,
+    PrimaryLabelingConfig,
+    FrameFeatureSet,
+    FrameSelectionResult,
+    PrimaryLabelingSelectionResult,
+    normalize_frame,
+    extract_frame_features,
+    extract_object_features,
+    extract_pattern_features,
+    compute_artifact_score,
+    compute_rarity_score,
+    compute_object_complexity_score,
+    compute_labeling_priority_scores,
+    cluster_pattern_groups,
+    cluster_candidate_patterns,
+    select_hard_cases,
+    select_diverse_hard_cases,
+    assign_cluster_quotas,
+    compute_diversity_gain,
+    normalize_scores,
+    explain_recommendation,
+    explain_frame_recommendation,
+    build_primary_labeling_selection,
+    cached_primary_labeling_priority_result,
+    compute_labeling_priority_for_paths,
+)
+
+__all__ = [
+    "LabelingPriorityConfig",
+    "LabelingPriorityFrame",
+    "LabelingPriorityResult",
+    "PrimaryLabelingConfig",
+    "FrameFeatureSet",
+    "FrameSelectionResult",
+    "PrimaryLabelingSelectionResult",
+    "normalize_frame",
+    "extract_frame_features",
+    "extract_object_features",
+    "extract_pattern_features",
+    "compute_artifact_score",
+    "compute_rarity_score",
+    "compute_object_complexity_score",
+    "compute_labeling_priority_scores",
+    "cluster_pattern_groups",
+    "cluster_candidate_patterns",
+    "select_hard_cases",
+    "select_diverse_hard_cases",
+    "assign_cluster_quotas",
+    "compute_diversity_gain",
+    "normalize_scores",
+    "explain_recommendation",
+    "explain_frame_recommendation",
+    "build_primary_labeling_selection",
+    "cached_primary_labeling_priority_result",
+    "compute_labeling_priority_for_paths",
+]

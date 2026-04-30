@@ -8,9 +8,17 @@ from datetime import datetime
 from math import isfinite
 from pathlib import Path
 
+import numpy as np
 from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, Qt
-from PyQt6.QtGui import QImageReader
-from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox
+from PyQt6.QtGui import QColor, QImageReader
+from PyQt6.QtWidgets import (
+    QColorDialog,
+    QFileDialog,
+    QInputDialog,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+)
 
 from ..core.analysis_modes import (
     INTRA_MODEL_CONFIDENCE_MODE,
@@ -33,6 +41,11 @@ from ..core.backend_constants import (
     BCE_SCORE_CAP,
 )
 from ..core.domain import BuildOptions, BuildResult, FolderSpec, FrameIdentity, FrameRecord, GeometryMode, ModelSpec
+from ..core.pipeline import recommend_corrective_candidates
+from ..manager.primary_labeling_selector import (
+    PrimaryLabelingConfig,
+    cached_primary_labeling_priority_result,
+)
 from ..core.repository import (
     _parse_model_metric_key,
     compute_metric_percentiles,
@@ -88,6 +101,12 @@ from ..ui.ui_constants import (
 )
 from .state import ExtendMatrixTabState
 
+MGMT_ROLE_KIND = int(Qt.ItemDataRole.UserRole) + 20
+MGMT_ROLE_TASK_ID = int(Qt.ItemDataRole.UserRole) + 21
+MGMT_ROLE_FRAME_KEY = int(Qt.ItemDataRole.UserRole) + 22
+MGMT_ROLE_BATCH_ID = int(Qt.ItemDataRole.UserRole) + 23
+MGMT_ROLE_GROUP_KEY = int(Qt.ItemDataRole.UserRole) + 24
+
 
 class KarakalPresenter(QObject):
     """Coordinate UI state, background workers and matrix tabs."""
@@ -116,6 +135,16 @@ class KarakalPresenter(QObject):
         self._active_progress_key = ""
         self._deferred_analytics_restart: tuple[ExtendMatrixTabState, bool] | None = None
         self._histogram_update_generation = 0
+        self._last_active_tab_state: ExtendMatrixTabState | None = None
+        self._management_tasks_cache = []
+        self._management_assignee_colors: dict[str, str] = {}
+        self._primary_labeling_target_ratio = 0.10
+        self._primary_labeling_candidate_pool_ratio = 0.35
+        self._primary_labeling_enable_diversity = True
+        self._primary_labeling_include_normal_reference = False
+        self._primary_labeling_max_normal_reference = 1
+        self._primary_labeling_max_group_share = 0.40
+        self._restore_management_settings()
 
     def __getattr__(self, name: str):
         return getattr(self._view, name)
@@ -123,8 +152,15 @@ class KarakalPresenter(QObject):
     def _current_tab_state(self) -> ExtendMatrixTabState | None:
         widget = self.matrix_tabs.currentWidget()
         if widget is None:
+            if self._last_active_tab_state is not None and any(candidate is self._last_active_tab_state for candidate in self._tab_states.values()):
+                return self._last_active_tab_state
             return None
-        return self._tab_states.get(widget)
+        state = self._tab_states.get(widget)
+        if state is not None:
+            return state
+        if self._last_active_tab_state is not None and any(candidate is self._last_active_tab_state for candidate in self._tab_states.values()):
+            return self._last_active_tab_state
+        return None
 
     @staticmethod
     def _set_row_visible(row: object | None, visible: bool) -> None:
@@ -185,6 +221,13 @@ class KarakalPresenter(QObject):
                 return candidate
         return next(iter(sorted(available)), "overall_frame_score")
 
+    @staticmethod
+    def _is_base_only_build_result(build_result: BuildResult | None) -> bool:
+        if build_result is None:
+            return False
+        specs = tuple(getattr(build_result, "model_specs", ()) or ())
+        return len(specs) == 1 and str(getattr(specs[0], "model_id", "") or "") == "base_layer"
+
     def _fallback_metric_keys_for_build_result(self, build_result: BuildResult | None) -> list[str]:
         available = set(build_result.available_metric_keys if build_result is not None else ())
         candidates = ("overall_frame_score", "export_priority_score", "model_model_score", "disagreement_score")
@@ -243,6 +286,25 @@ class KarakalPresenter(QObject):
                 threshold=threshold,
             ))
         return tuple(specs)
+
+    def _effective_model_specs_for_build(self) -> tuple[ModelSpec, ...]:
+        specs = self._checked_model_specs()
+        if specs:
+            return specs
+        if self._original_folder is None:
+            return specs
+        base_path = Path(self._original_folder.path)
+        if not base_path.exists():
+            return specs
+        threshold, _boundary_radius = self._selected_polygon_compare_values()
+        fallback_spec = ModelSpec(
+            model_id="base_layer",
+            display_name=str(self._original_folder.label or base_path.name or "base_layer"),
+            mask_folder=base_path,
+            prob_folder=None,
+            threshold=float(threshold),
+        )
+        return (fallback_spec,)
 
     def _selected_confidence_uncertainty_profile(self) -> str:
         return str(self.confidence_uncertainty_profile_combo.currentData() or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
@@ -451,20 +513,22 @@ class KarakalPresenter(QObject):
 
     def _append_folder_item(self, folder_path: Path, *, checked: bool) -> QListWidgetItem:
         folder_path = Path(folder_path)
-        for row in range(self.folder_list.count()):
+        folder_path_text = str(folder_path)
+        item_count = self.folder_list.count()
+        for row in range(item_count):
             existing_item = self.folder_list.item(row)
-            if Path(existing_item.data(Qt.ItemDataRole.UserRole)) == folder_path:
+            if str(existing_item.data(Qt.ItemDataRole.UserRole) or "") == folder_path_text:
                 existing_item.setData(FOLDER_CHECKED_ROLE, bool(checked))
                 if not existing_item.data(FOLDER_LABEL_ROLE):
                     existing_item.setData(FOLDER_LABEL_ROLE, folder_path.name)
                 return existing_item
         item = QListWidgetItem()
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-        item.setData(Qt.ItemDataRole.UserRole, str(folder_path))
+        item.setData(Qt.ItemDataRole.UserRole, folder_path_text)
         item.setData(FOLDER_CHECKED_ROLE, bool(checked))
         item.setData(FOLDER_LABEL_ROLE, folder_path.name)
         item.setData(FOLDER_CONFIDENCE_ROLE, "")
-        item.setToolTip(str(folder_path))
+        item.setToolTip(folder_path_text)
         self.folder_list.addItem(item)
         return item
 
@@ -482,40 +546,45 @@ class KarakalPresenter(QObject):
         return False
 
     def _refresh_folder_rows(self) -> None:
-        for row in range(self.folder_list.count()):
-            item = self.folder_list.item(row)
-            path_text = str(item.data(Qt.ItemDataRole.UserRole))
-            display_text = str(item.data(FOLDER_LABEL_ROLE) or (Path(path_text).name or path_text))
-            confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "")
-            confidence_display_text = self._compact_path_text(confidence_path_text)
-            row_widget = FolderRowWidget(
-                self.folder_list,
-                path_text=path_text,
-                display_text=display_text,
-                checked=bool(item.data(FOLDER_CHECKED_ROLE)),
-                confidence_display_text=confidence_display_text,
-                confidence_path_text=confidence_path_text,
-                can_move_up=row > 0,
-                can_move_down=row < self.folder_list.count() - 1,
-                on_checked_changed=lambda checked, item=item: self._set_folder_item_checked(item, checked),
-                on_label_changed=lambda text, item=item: self._set_folder_item_label(item, text),
-                on_confidence_folder=lambda _checked=False, item=item: self._set_folder_item_confidence_folder(item),
-                on_clear_confidence_folder=lambda _checked=False, item=item: self._clear_folder_item_confidence_folder(item),
-                on_remove=lambda _checked=False, item=item: self._remove_folder_item(item),
-                on_move_up=lambda _checked=False, item=item: self._move_folder_item(item, -1),
-                on_move_down=lambda _checked=False, item=item: self._move_folder_item(item, 1),
-                checkbox_tooltip="Use model in analytics",
-                confidence_placeholder=self._t("folders.confidence_not_set"),
-                confidence_tooltip=confidence_path_text,
-                confidence_select_tooltip=self._t("folders.select_confidence"),
-                confidence_clear_tooltip=self._t("folders.clear_confidence"),
-                remove_tooltip="Remove model folder",
-                move_up_tooltip="Move up",
-                move_down_tooltip="Move down",
-            )
-            row_widget.setMinimumHeight(FOLDER_ROW_MIN_HEIGHT)
-            item.setSizeHint(row_widget.sizeHint())
-            self.folder_list.setItemWidget(item, row_widget)
+        item_count = self.folder_list.count()
+        self.folder_list.setUpdatesEnabled(False)
+        try:
+            for row in range(item_count):
+                item = self.folder_list.item(row)
+                path_text = str(item.data(Qt.ItemDataRole.UserRole))
+                display_text = str(item.data(FOLDER_LABEL_ROLE) or (Path(path_text).name or path_text))
+                confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "")
+                confidence_display_text = self._compact_path_text(confidence_path_text)
+                row_widget = FolderRowWidget(
+                    self.folder_list,
+                    path_text=path_text,
+                    display_text=display_text,
+                    checked=bool(item.data(FOLDER_CHECKED_ROLE)),
+                    confidence_display_text=confidence_display_text,
+                    confidence_path_text=confidence_path_text,
+                    can_move_up=row > 0,
+                    can_move_down=row < item_count - 1,
+                    on_checked_changed=lambda checked, item=item: self._set_folder_item_checked(item, checked),
+                    on_label_changed=lambda text, item=item: self._set_folder_item_label(item, text),
+                    on_confidence_folder=lambda _checked=False, item=item: self._set_folder_item_confidence_folder(item),
+                    on_clear_confidence_folder=lambda _checked=False, item=item: self._clear_folder_item_confidence_folder(item),
+                    on_remove=lambda _checked=False, item=item: self._remove_folder_item(item),
+                    on_move_up=lambda _checked=False, item=item: self._move_folder_item(item, -1),
+                    on_move_down=lambda _checked=False, item=item: self._move_folder_item(item, 1),
+                    checkbox_tooltip="Use model in analytics",
+                    confidence_placeholder=self._t("folders.confidence_not_set"),
+                    confidence_tooltip=confidence_path_text,
+                    confidence_select_tooltip=self._t("folders.select_confidence"),
+                    confidence_clear_tooltip=self._t("folders.clear_confidence"),
+                    remove_tooltip="Remove model folder",
+                    move_up_tooltip="Move up",
+                    move_down_tooltip="Move down",
+                )
+                row_widget.setMinimumHeight(FOLDER_ROW_MIN_HEIGHT)
+                item.setSizeHint(row_widget.sizeHint())
+                self.folder_list.setItemWidget(item, row_widget)
+        finally:
+            self.folder_list.setUpdatesEnabled(True)
 
     def _set_folder_item_checked(self, item: QListWidgetItem, checked: bool) -> None:
         self._folder_check_guard = True
@@ -953,6 +1022,7 @@ class KarakalPresenter(QObject):
                 reset_view=reset_view,
                 prefer_complete=filtered_view,
             )
+            self._sync_management_payload_for_state(state)
             self._update_matrix_preview(state)
             if update_histograms:
                 self._update_metric_histograms(state)
@@ -960,6 +1030,212 @@ class KarakalPresenter(QObject):
             QMessageBox.warning(self._view, self._t("errors.layout"), str(error))
             return False
         return True
+
+    @staticmethod
+    def _management_key_variants(*values: str) -> tuple[str, ...]:
+        variants: list[str] = []
+        for value in values:
+            raw = str(value or "").strip()
+            if not raw:
+                continue
+            path = Path(raw)
+            candidates = [
+                raw,
+                raw.replace("\\", "/"),
+                path.name,
+                path.stem,
+            ]
+            for candidate in candidates:
+                text = str(candidate or "").strip()
+                if text and text not in variants:
+                    variants.append(text)
+        return tuple(variants)
+
+    @staticmethod
+    def _normalize_assignee_colors_payload(payload: dict | None) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        source = payload if isinstance(payload, dict) else {}
+        for assignee, color in source.items():
+            assignee_text = str(assignee or "").strip()
+            color_text = str(color or "").strip()
+            if not assignee_text or not color_text:
+                continue
+            parsed = QColor(color_text)
+            if not parsed.isValid():
+                continue
+            normalized[assignee_text.lower()] = parsed.name(QColor.NameFormat.HexRgb)
+        return normalized
+
+    def _restore_management_settings(self) -> None:
+        payload = self._settings_service.load_management_payload() or {}
+        raw_colors = payload.get("assignee_colors", {})
+        self._management_assignee_colors = self._normalize_assignee_colors_payload(raw_colors if isinstance(raw_colors, dict) else {})
+        self._primary_labeling_target_ratio = float(np.clip(float(payload.get("primary_labeling_target_ratio", 0.10) or 0.10), 0.05, 0.25))
+        self._primary_labeling_candidate_pool_ratio = float(np.clip(float(payload.get("primary_labeling_candidate_pool_ratio", 0.35) or 0.35), 0.20, 0.60))
+        self._primary_labeling_enable_diversity = bool(payload.get("primary_labeling_enable_diversity", True))
+        self._primary_labeling_include_normal_reference = bool(payload.get("primary_labeling_include_normal_reference", False))
+        self._primary_labeling_max_normal_reference = int(max(0, min(3, int(payload.get("primary_labeling_max_normal_reference", 1) or 1))))
+        self._primary_labeling_max_group_share = float(np.clip(float(payload.get("primary_labeling_max_group_share", 0.40) or 0.40), 0.30, 0.90))
+        if hasattr(self, "management_target_ratio_spin"):
+            self.management_target_ratio_spin.blockSignals(True)
+            self.management_target_ratio_spin.setValue(float(self._primary_labeling_target_ratio * 100.0))
+            self.management_target_ratio_spin.blockSignals(False)
+        if hasattr(self, "management_diversity_check"):
+            self.management_diversity_check.blockSignals(True)
+            self.management_diversity_check.setChecked(bool(self._primary_labeling_enable_diversity))
+            self.management_diversity_check.blockSignals(False)
+
+    def _build_management_settings_payload(self) -> dict:
+        return {
+            "assignee_colors": dict(self._management_assignee_colors),
+            "primary_labeling_target_ratio": float(self._primary_labeling_target_ratio),
+            "primary_labeling_candidate_pool_ratio": float(self._primary_labeling_candidate_pool_ratio),
+            "primary_labeling_enable_diversity": bool(self._primary_labeling_enable_diversity),
+            "primary_labeling_include_normal_reference": bool(self._primary_labeling_include_normal_reference),
+            "primary_labeling_max_normal_reference": int(self._primary_labeling_max_normal_reference),
+            "primary_labeling_max_group_share": float(self._primary_labeling_max_group_share),
+        }
+
+    def _push_management_assignee_colors_to_views(self) -> None:
+        for state in self._tab_states.values():
+            try:
+                state.matrix_view.set_management_assignee_colors(self._management_assignee_colors)
+            except Exception:
+                continue
+        if hasattr(self, "management_matrix_view"):
+            try:
+                self.management_matrix_view.set_management_assignee_colors(self._management_assignee_colors)
+            except Exception:
+                pass
+
+    def _assignee_color_for(self, assignee: str) -> str:
+        assignee_key = str(assignee or "").strip().lower()
+        if not assignee_key:
+            return "#46c4ff"
+        configured = self._management_assignee_colors.get(assignee_key)
+        parsed = QColor(str(configured or ""))
+        if parsed.isValid():
+            return parsed.name(QColor.NameFormat.HexRgb)
+        # Default deterministic color fallback.
+        seed_bytes = assignee_key.encode("utf-8", errors="ignore")
+        seed_a = sum((index + 1) * value for index, value in enumerate(seed_bytes))
+        seed_b = sum((index + 3) * value for index, value in enumerate(reversed(seed_bytes)))
+        red = 70 + (seed_a % 150)
+        green = 80 + (seed_b % 130)
+        blue = 90 + ((seed_a + seed_b) % 140)
+        return QColor(int(red), int(green), int(blue)).name(QColor.NameFormat.HexRgb)
+
+    def _management_configure_assignee_color(self) -> None:
+        assignees = sorted(
+            {
+                str(task.assignee).strip()
+                for task in (self._management_tasks_cache or [])
+                if str(task.assignee).strip()
+            }
+        )
+        if not assignees:
+            QMessageBox.information(
+                self._view,
+                self._t("management.assignee_color.title"),
+                self._t("management.assignee_color.no_assignees"),
+            )
+            return
+        assignee, ok = QInputDialog.getItem(
+            self._view,
+            self._t("management.assignee_color.title"),
+            self._t("management.assignee_color.select_assignee"),
+            assignees,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        selected_assignee = str(assignee or "").strip()
+        if not selected_assignee:
+            return
+        initial = QColor(self._assignee_color_for(selected_assignee))
+        picked = QColorDialog.getColor(initial, self._view, self._t("management.assignee_color.dialog_title"))
+        if not picked.isValid():
+            return
+        self._management_assignee_colors[selected_assignee.lower()] = picked.name(QColor.NameFormat.HexRgb)
+        self._push_management_assignee_colors_to_views()
+        self._settings_service.save_management_payload(self._build_management_settings_payload())
+        self._settings_service.sync()
+        self._refresh_management_mode_view()
+
+    def _build_management_payload_for_state(self, state: ExtendMatrixTabState) -> dict[str, dict[str, str]]:
+        mapping: dict[str, dict[str, str]] = {}
+        records = tuple(getattr(state.build_result, "records", ()) or ())
+        scenario_id = str(getattr(state, "management_scenario_id", "") or "")
+        include_default_corrective_overlay = scenario_id in {"", "none"} and not self._is_base_only_build_result(state.build_result)
+        if records and include_default_corrective_overlay:
+            top_k = min(max(20, len(records) // 10), len(records))
+            recommendations = recommend_corrective_candidates(records, top_k=top_k)
+            for candidate in recommendations:
+                recommendation_payload = {
+                    "recommended": "1",
+                    "recommendation_reason": str(candidate.reason),
+                    "risk_score": f"{float(candidate.priority_score):.4f}",
+                }
+                for key in self._management_key_variants(candidate.frame_key, candidate.display_name):
+                    existing = mapping.get(key)
+                    if existing is None:
+                        mapping[key] = {
+                            "task_id": "",
+                            "task_type": "corrective_labeling",
+                            "status": "suggested",
+                            "assignee": "",
+                            "issued_at": "",
+                            "due_at": "",
+                            "returned_at": "",
+                            "reason": str(candidate.reason),
+                            "priority_score": f"{float(candidate.priority_score):.4f}",
+                            **recommendation_payload,
+                        }
+                    else:
+                        merged = dict(existing)
+                        merged.update(recommendation_payload)
+                        mapping[key] = merged
+        scenario_payload = dict(getattr(state, "management_scenario_payload_by_key", {}) or {})
+        for key, payload in scenario_payload.items():
+            normalized_key = str(key or "").strip()
+            if not normalized_key or not isinstance(payload, dict):
+                continue
+            existing = mapping.get(normalized_key)
+            if existing is None:
+                mapping[normalized_key] = {str(k): str(v) for k, v in payload.items()}
+                continue
+            merged = dict(existing)
+            if str(payload.get("recommended", "")).strip():
+                merged["recommended"] = str(payload.get("recommended", ""))
+            for field in ("scenario", "scenario_label", "scenario_rank"):
+                value = str(payload.get(field, "")).strip()
+                if value:
+                    merged[field] = value
+            reserved = {"task_id", "batch_id", "task_type", "status", "assignee", "issued_at", "due_at", "returned_at"}
+            for field, raw_value in payload.items():
+                field_name = str(field or "").strip()
+                if not field_name or field_name in reserved:
+                    continue
+                value = str(raw_value or "").strip()
+                if value:
+                    merged[field_name] = value
+            mapping[normalized_key] = merged
+        return mapping
+
+    def _sync_management_payload_for_state(self, state: ExtendMatrixTabState) -> None:
+        payload = self._build_management_payload_for_state(state)
+        state.management_payload_by_key = payload
+        try:
+            state.matrix_view.set_management_assignee_colors(self._management_assignee_colors)
+            state.matrix_view.set_management_payload(payload)
+        except Exception:
+            pass
+
+    def _refresh_management_payload_for_open_tabs(self) -> None:
+        for state in self._tab_states.values():
+            self._sync_management_payload_for_state(state)
+            self._update_matrix_preview(state)
 
     def _metric_value_missing_for_build_result(self, build_result: BuildResult | None, metric_key: str) -> bool:
         if build_result is None:
@@ -1831,6 +2107,14 @@ class KarakalPresenter(QObject):
         self._update_source_labels()
         self._sync_action_buttons()
 
+    def _bootstrap_source_folder_for_sampling(self) -> Path | None:
+        if self._original_folder is None:
+            return None
+        path = Path(self._original_folder.path)
+        if not path.exists():
+            return None
+        return path
+
     def _set_gt_folder(self) -> None:
         if self._worker_thread is not None:
             return
@@ -1869,10 +2153,335 @@ class KarakalPresenter(QObject):
         self._update_source_labels()
         self._sync_action_buttons()
 
+    def _current_app_mode(self) -> str:
+        return str(self.app_mode_combo.currentData() or "validation")
+
+    def _management_selected_scenario(self) -> str:
+        if not hasattr(self, "management_scenario_combo"):
+            return "primary_labeling_selection"
+        value = str(self.management_scenario_combo.currentData() or "primary_labeling_selection")
+        if value in {"none", "primary_sampling_initial", "primary_sampling_clustered_anomaly", "labeling_priority_hard_cases"}:
+            return "primary_labeling_selection"
+        return value
+
+    def _on_management_scenario_changed(self, *_args) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        state.management_scenario_id = self._management_selected_scenario()
+        # Do not auto-run expensive scenario computation on combobox change.
+        # Clear previous scenario payload and wait for explicit run action.
+        state.management_scenario_payload_by_key.clear()
+        state.management_scenario_summary = ""
+        self._sync_management_payload_for_state(state)
+        if self._current_app_mode() == "management":
+            self._refresh_management_mode_view()
+
+    def _on_management_primary_labeling_target_ratio_changed(self, value: float) -> None:
+        ratio = float(np.clip(float(value) / 100.0, 0.05, 0.25))
+        if abs(ratio - float(self._primary_labeling_target_ratio)) <= 1e-9:
+            return
+        self._primary_labeling_target_ratio = ratio
+        state = self._current_tab_state()
+        if state is not None:
+            state.management_scenario_payload_by_key.clear()
+            state.management_scenario_summary = ""
+            self._sync_management_payload_for_state(state)
+        self._settings_service.save_management_payload(self._build_management_settings_payload())
+        self._settings_service.sync()
+        if self._current_app_mode() == "management":
+            self._on_management_refresh_requested()
+
+    def _on_management_primary_labeling_diversity_changed(self, checked: bool) -> None:
+        enabled = bool(checked)
+        if enabled == bool(self._primary_labeling_enable_diversity):
+            return
+        self._primary_labeling_enable_diversity = enabled
+        state = self._current_tab_state()
+        if state is not None:
+            state.management_scenario_payload_by_key.clear()
+            state.management_scenario_summary = ""
+            self._sync_management_payload_for_state(state)
+        self._settings_service.save_management_payload(self._build_management_settings_payload())
+        self._settings_service.sync()
+        if self._current_app_mode() == "management":
+            self._on_management_refresh_requested()
+
+    def _management_run_selected_scenario(self, *, show_summary: bool = True, show_missing_tab_warning: bool = True) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            if show_missing_tab_warning:
+                QMessageBox.information(self._view, self._t("management.title"), "Open a validation tab first.")
+            return
+        scenario_id = self._management_selected_scenario()
+        state.management_scenario_id = scenario_id
+        if scenario_id == "primary_labeling_selection":
+            try:
+                payload_by_key, summary = self._management_labeling_priority_overlay(state)
+            except Exception as error:
+                QMessageBox.warning(self._view, self._t("dialog.warning_title"), str(error))
+                return
+            state.management_scenario_payload_by_key = payload_by_key
+            state.management_scenario_summary = summary
+            self._sync_management_payload_for_state(state)
+            if self._current_app_mode() == "management":
+                self._refresh_management_mode_view()
+            if show_summary:
+                QMessageBox.information(self._view, self._t("management.title"), summary)
+            return
+        # Defensive fallback for persisted legacy values.
+        state.management_scenario_id = "primary_labeling_selection"
+        self._management_run_selected_scenario(show_summary=show_summary, show_missing_tab_warning=show_missing_tab_warning)
+
+    def _on_management_refresh_requested(self) -> None:
+        if self._current_app_mode() == "management":
+            self._management_run_selected_scenario(show_summary=False, show_missing_tab_warning=False)
+            self._refresh_management_mode_view()
+
+    def _on_build_requested(self) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            self._start_build()
+            return
+        self._apply_pending_display_controls(state)
+        ok = self._apply_tab_visual_settings(state, reset_view=True, update_histograms=False)
+        if not ok:
+            return
+        if self._current_app_mode() == "management":
+            self._refresh_management_mode_view()
+        self._sync_action_buttons()
+
+    def _management_prediction_map_for_state(self, state: ExtendMatrixTabState) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        records = tuple(getattr(state.build_result, "records", ()) or ())
+        for record in records:
+            prob_paths = tuple(str(path or "").strip() for path in (getattr(record, "model_prob_paths", {}) or {}).values() if str(path or "").strip())
+            if not prob_paths:
+                continue
+            prediction_path = prob_paths[0]
+            for key in self._management_key_variants(record.key, record.display_name, record.original_path, record.base_path):
+                normalized = str(key or "").strip()
+                if normalized and normalized not in mapping:
+                    mapping[normalized] = prediction_path
+        return mapping
+
+    def _management_labeling_priority_overlay(self, state: ExtendMatrixTabState) -> tuple[dict[str, dict[str, str]], str]:
+        source_folder = self._bootstrap_source_folder_for_sampling()
+        if source_folder is None:
+            raise ValueError(self._t("management.warn.set_original_folder"))
+        prediction_map = self._management_prediction_map_for_state(state)
+        config = PrimaryLabelingConfig(
+            target_ratio=float(self._primary_labeling_target_ratio),
+            candidate_pool_ratio=float(self._primary_labeling_candidate_pool_ratio),
+            enable_diversity_filter=bool(self._primary_labeling_enable_diversity),
+            include_normal_reference_frames=bool(self._primary_labeling_include_normal_reference),
+            max_normal_reference_frames=int(self._primary_labeling_max_normal_reference),
+            max_group_share=float(self._primary_labeling_max_group_share),
+        )
+        result = cached_primary_labeling_priority_result(
+            source_folder,
+            prediction_path_by_key=prediction_map,
+            config=config,
+            use_cache=True,
+        )
+        if not result.frames:
+            raise ValueError(self._t("management.warn.bootstrap_empty"))
+
+        payload_by_key: dict[str, dict[str, str]] = {}
+        for frame in result.frames:
+            priority = float(frame.priority_score)
+            is_recommended = bool(frame.recommended)
+            reason_text = " + ".join(frame.reasons) if frame.reasons else "hard_case"
+            payload = {
+                "task_id": "",
+                "batch_id": "",
+                "task_type": "initial_labeling",
+                "status": "suggested" if is_recommended else "candidate",
+                "assignee": "",
+                "issued_at": "",
+                "due_at": "",
+                "returned_at": "",
+                "reason": reason_text,
+                "priority_score": f"{priority:.4f}",
+                "risk_score": f"{priority:.4f}",
+                "labeling_priority_score": f"{priority:.4f}",
+                "labeling_priority_percent": f"{priority * 100.0:.1f}",
+                "labeling_priority_category": str(frame.category),
+                "labeling_priority_reasons": ", ".join(frame.reasons),
+                "pattern_cluster_id": str(int(frame.pattern_cluster_id)),
+                "pattern_group": str(frame.pattern_group),
+                "artifact_score": f"{float(frame.artifact_score):.4f}",
+                "rarity_score": f"{float(frame.rarity_score):.4f}",
+                "edge_complexity_score": f"{float(frame.edge_complexity_score):.4f}",
+                "object_complexity_score": f"{float(frame.object_complexity_score):.4f}",
+                "saturation_or_noise_score": f"{float(frame.saturation_or_noise_score):.4f}",
+                "recommended": "1" if is_recommended else "0",
+                "scenario": "primary_labeling_selection",
+                "scenario_label": "Primary Labeling Selection",
+                "scenario_rank": str(int(frame.rank)) if is_recommended and int(frame.rank) > 0 else "",
+            }
+            if frame.uncertainty_score is not None:
+                payload["uncertainty_score"] = f"{float(frame.uncertainty_score):.4f}"
+            for key in self._management_key_variants(frame.frame_key, frame.display_name, frame.original_path):
+                if key not in payload_by_key:
+                    payload_by_key[key] = payload
+
+        visible_keys = {
+            str(record.key).strip()
+            for record in tuple(getattr(state.build_result, "records", ()) or ())
+            if str(getattr(record, "key", "")).strip()
+        }
+        visible_recommended = 0
+        visible_candidates = 0
+        recommended_pattern_counts: dict[str, int] = {}
+        for frame in result.frames:
+            if str(frame.frame_key).strip() not in visible_keys:
+                continue
+            visible_candidates += 1
+            if frame.recommended:
+                visible_recommended += 1
+                pattern_name = str(frame.pattern_group or "mixed_pattern").strip() or "mixed_pattern"
+                recommended_pattern_counts[pattern_name] = int(recommended_pattern_counts.get(pattern_name, 0)) + 1
+        pattern_summary = ", ".join(
+            f"{name}:{count}"
+            for name, count in sorted(recommended_pattern_counts.items(), key=lambda pair: (-pair[1], pair[0]))
+        )
+        if not pattern_summary:
+            pattern_summary = "n/a"
+        summary = (
+            "Scenario: Labeling Priority / Hard Cases\n"
+            f"Source: {source_folder}\n"
+            f"Discovered: {int(result.total_discovered)}, candidates scored: {int(len(result.frames))}, "
+            f"recommended: {int(result.selected_count)}, visible candidates: {int(visible_candidates)}, "
+            f"visible recommended: {int(visible_recommended)}\n"
+            f"Pattern coverage: {pattern_summary}"
+        )
+        return payload_by_key, summary
+
+    def _on_app_mode_changed(self) -> None:
+        mode = self._current_app_mode()
+        if hasattr(self._view, "_set_app_mode"):
+            self._view._set_app_mode(mode)
+        if mode == "management":
+            self._refresh_management_mode_view()
+        self._sync_action_buttons()
+
+    def _refresh_management_mode_view(self) -> None:
+        if not hasattr(self, "management_matrix_view"):
+            return
+        state = self._current_tab_state()
+        if state is None or not getattr(state.build_result, "records", None):
+            self.management_matrix_view.set_management_assignee_colors(self._management_assignee_colors)
+            self.management_matrix_view.set_management_payload({})
+            self.management_matrix_view.set_records([], sort_mode="name", reset_view=True)
+            return
+
+        payload_by_key = self._build_management_payload_for_state(state)
+        self.management_matrix_view.set_layout_config(state.layout_config)
+        self.management_matrix_view.set_management_assignee_colors(self._management_assignee_colors)
+        self.management_matrix_view.set_management_payload(payload_by_key)
+        self.management_matrix_view.set_records(list(state.build_result.records), sort_mode="name", reset_view=True)
+
+    def _management_group_row_values(self, tasks: list, batch, is_batch_group: bool) -> list[str]:
+        if not tasks:
+            return ["", "", "", "", "", "", "", ""]
+        if is_batch_group:
+            statuses = {str(item.status) for item in tasks}
+            status = str(batch.status) if batch is not None else ("mixed" if len(statuses) > 1 else str(tasks[0].status))
+            assignee = str(batch.assignee) if batch is not None else str(tasks[0].assignee)
+            issued_at = str(batch.issued_at) if batch is not None else ""
+            returned_at = str(batch.returned_at) if batch is not None else ""
+            task_type = str(batch.task_type) if batch is not None else str(tasks[0].task_type)
+            title = str(batch.title).strip() if batch is not None else ""
+            frame_count = int(batch.frame_count) if batch is not None else len(tasks)
+            area_name = title or f"area_{str(tasks[0].batch_id)[:8]}"
+            return [
+                f"AREA: {area_name}",
+                f"{frame_count} frame(s)",
+                task_type,
+                status,
+                assignee,
+                issued_at,
+                returned_at,
+                "",
+            ]
+        task = tasks[0]
+        return [
+            f"FRAME GROUP: {task.display_name or task.frame_key}",
+            "1 frame",
+            str(task.task_type),
+            str(task.status),
+            str(task.assignee),
+            str(task.issued_at),
+            str(task.returned_at),
+            "",
+        ]
+
+    def _refresh_management_matrix_panel(self, tasks: list) -> None:
+        if not hasattr(self, "management_matrix_view"):
+            return
+        state = self._current_tab_state()
+        if state is None or not getattr(state.build_result, "records", None):
+            self.management_matrix_view.set_management_assignee_colors(self._management_assignee_colors)
+            self.management_matrix_view.set_management_payload({})
+            self.management_matrix_view.set_records([], sort_mode="name", reset_view=True)
+            return
+
+        payload_by_key = self._build_management_payload_for_state(state)
+
+        self.management_matrix_view.set_layout_config(state.layout_config)
+        self.management_matrix_view.set_management_assignee_colors(self._management_assignee_colors)
+        self.management_matrix_view.set_management_payload(payload_by_key)
+        self.management_matrix_view.set_records(list(state.build_result.records), sort_mode="name", reset_view=True)
+
+    def _on_management_matrix_record_selected(self, record: FrameRecord | None) -> None:
+        return
+
+    def _on_management_matrix_tile_selected(self, selection: object | None) -> None:
+        return
+
+    def _on_management_matrix_record_activated(self, record: FrameRecord | None) -> None:
+        if record is None:
+            return
+        state = self._current_tab_state()
+        if state is None:
+            return
+        self._open_record_details(record, state)
+
+    def _on_management_matrix_tile_activated(self, selection: object | None) -> None:
+        record = getattr(selection, "record", None)
+        if not isinstance(record, FrameRecord):
+            return
+        state = self._current_tab_state()
+        if state is None:
+            return
+        self._open_record_details(record, state, tile_selection=selection)
+
+    def _management_matrix_selected_records(self, fallback_record: FrameRecord | None = None) -> tuple[FrameRecord, ...]:
+        if not hasattr(self, "management_matrix_view"):
+            return (fallback_record,) if fallback_record is not None else ()
+        selected: tuple[FrameRecord, ...] = tuple()
+        try:
+            selected = tuple(self.management_matrix_view.selected_records())
+        except Exception:
+            selected = tuple()
+        if selected:
+            return selected
+        if fallback_record is not None:
+            return (fallback_record,)
+        return tuple()
+
     def _start_build(self) -> None:
-        model_specs = self._checked_model_specs()
+        explicit_model_specs = self._checked_model_specs()
+        model_specs = self._effective_model_specs_for_build()
         required_model_count = self._required_model_count_for_active_mode()
-        if len(model_specs) < required_model_count:
+        building_from_base_only = (
+            len(explicit_model_specs) <= 0
+            and len(model_specs) == 1
+            and self._original_folder is not None
+            and Path(self._original_folder.path).exists()
+        )
+        if len(model_specs) < required_model_count and not building_from_base_only:
             message_key = "errors.inter_model_model_count_required" if required_model_count > 1 else "errors.active_model_required"
             QMessageBox.warning(self._view, self._t("dialog.warning_title"), self._t(message_key))
             return
@@ -1953,8 +2562,19 @@ class KarakalPresenter(QObject):
         self._sync_action_buttons()
 
     def _on_compute_requested(self) -> None:
+        if self._current_app_mode() == "management":
+            self._on_management_refresh_requested()
+            return
         state = self._current_tab_state()
         if state is None:
+            return
+        if self._is_base_only_build_result(state.build_result):
+            QMessageBox.information(
+                self._view,
+                self._t("dialog.info_title"),
+                self._t("matrix.info.base_only_metrics_disabled"),
+            )
+            self._sync_action_buttons()
             return
         previous_options = state.build_result.options
         self._sync_current_analysis_context(state, auto_recompute=False)
@@ -2032,6 +2652,7 @@ class KarakalPresenter(QObject):
         snapshot["confidence_model_id"] = str(self.metric_scope_combo.currentData() or "")
         snapshot["metric_key"] = str(self.metric_combo.currentData() or self._default_metric_key_for_state(None, result))
         state = self._create_matrix_tab(result, snapshot)
+        self._last_active_tab_state = state
         self._connect_histogram_cards(state)
         ok = self._apply_tab_visual_settings(state, reset_view=True, update_histograms=False)
         self._show_progress_bar(visible=False)
@@ -2193,8 +2814,22 @@ class KarakalPresenter(QObject):
     def _on_current_tab_changed(self, _index: int) -> None:
         state = self._current_tab_state()
         if state is None:
+            if hasattr(self, "management_scenario_combo"):
+                blocker = QSignalBlocker(self.management_scenario_combo)
+                scenario_index = self.management_scenario_combo.findData("primary_labeling_selection")
+                self.management_scenario_combo.setCurrentIndex(scenario_index if scenario_index >= 0 else 0)
+                del blocker
             self._sync_action_buttons()
+            if self._current_app_mode() == "management":
+                self._refresh_management_mode_view()
             return
+        self._last_active_tab_state = state
+        if hasattr(self, "management_scenario_combo"):
+            blocker = QSignalBlocker(self.management_scenario_combo)
+            target_scenario = str(getattr(state, "management_scenario_id", "") or "none")
+            scenario_index = self.management_scenario_combo.findData(target_scenario)
+            self.management_scenario_combo.setCurrentIndex(scenario_index if scenario_index >= 0 else 0)
+            del blocker
         self._set_ui_context_from_state(state)
         scope_blocker = QSignalBlocker(self.metric_scope_combo)
         self._populate_metric_scope_combo(state.build_result, state.confidence_model_id or state.metric_scope)
@@ -2222,13 +2857,17 @@ class KarakalPresenter(QObject):
             self._sync_action_buttons()
             return
         self._update_matrix_preview(state)
+        if self._current_app_mode() == "management":
+            self._refresh_management_mode_view()
         self._sync_action_buttons()
 
     def _close_matrix_tab(self, index: int) -> None:
         widget = self.matrix_tabs.widget(index)
         if widget is None:
             return
-        self._tab_states.pop(widget, None)
+        removed_state = self._tab_states.pop(widget, None)
+        if removed_state is not None and self._last_active_tab_state is removed_state:
+            self._last_active_tab_state = next(iter(self._tab_states.values()), None)
         self.matrix_tabs.removeTab(index)
         widget.deleteLater()
         self._sync_action_buttons()
@@ -2387,6 +3026,35 @@ class KarakalPresenter(QObject):
         self._details_view_payload = dict(payload or {})
         self._settings_service.save_details_view_payload(self._details_view_payload)
 
+    def _management_payload_for_record(self, state: ExtendMatrixTabState, record: FrameRecord | None) -> dict[str, str] | None:
+        if record is None or not state.management_payload_by_key:
+            return None
+        for key in self._management_key_variants(record.key, record.display_name):
+            payload = state.management_payload_by_key.get(key)
+            if payload is not None:
+                return payload
+        return None
+
+    @staticmethod
+    def _management_summary_text(payload: dict[str, str] | None) -> str:
+        if not payload:
+            return ""
+        status = str(payload.get("status", "")).strip()
+        assignee = str(payload.get("assignee", "")).strip()
+        issued_at = str(payload.get("issued_at", "")).strip()
+        returned_at = str(payload.get("returned_at", "")).strip()
+        task_type = str(payload.get("task_type", "")).strip()
+        parts = [f"task:{status}" if status else "task:-"]
+        if assignee:
+            parts.append(f"owner:{assignee}")
+        if task_type:
+            parts.append(f"type:{task_type}")
+        if issued_at:
+            parts.append(f"issued:{issued_at}")
+        if returned_at:
+            parts.append(f"returned:{returned_at}")
+        return " | ".join(parts)
+
     def _update_matrix_preview(self, state: ExtendMatrixTabState, record: FrameRecord | None = None) -> None:
         selected = record or state.matrix_view.current_record()
         preview = state.preview
@@ -2407,7 +3075,9 @@ class KarakalPresenter(QObject):
             if preview.component_group is not None:
                 preview.component_group.hide()
             return
-        preview.frame_value.setText(selected.display_name)
+        management_payload = self._management_payload_for_record(state, selected)
+        management_text = self._management_summary_text(management_payload)
+        preview.frame_value.setText(selected.display_name if not management_text else f"{selected.display_name}\n{management_text}")
         summary = selected.summary
         selected_subpixel = None
         if hasattr(state.matrix_view, "selected_tile_selection"):
@@ -2512,7 +3182,10 @@ class KarakalPresenter(QObject):
         current_state = self._current_tab_state()
         active_model_count = len(self._checked_model_specs())
         required_model_count = self._required_model_count_for_active_mode()
+        can_build_from_base_only = active_model_count <= 0 and self._original_folder is not None and Path(self._original_folder.path).exists()
         is_busy = self._worker_thread is not None
+        is_base_only_current = self._is_base_only_build_result(None if current_state is None else current_state.build_result)
+        is_management_mode = self._current_app_mode() == "management"
         self.btn_clear_folders.setEnabled(self.folder_list.count() > 0 and not is_busy)
         self.btn_set_original.setEnabled(not is_busy)
         self.btn_clear_original.setEnabled(self._original_folder is not None and not is_busy)
@@ -2520,8 +3193,9 @@ class KarakalPresenter(QObject):
         self.btn_clear_gt.setEnabled(self._gt_folder is not None and not is_busy)
         self.btn_set_export.setEnabled(not is_busy)
         self.btn_clear_export.setEnabled(self._export_folder is not None and not is_busy)
-        self.btn_build.setEnabled(active_model_count >= required_model_count and not is_busy)
-        self.btn_compute.setEnabled(current_state is not None and not is_busy)
+        can_start_build = active_model_count >= required_model_count or can_build_from_base_only
+        self.btn_build.setEnabled((current_state is not None or can_start_build) and not is_busy)
+        self.btn_compute.setEnabled(current_state is not None and not is_busy and (is_management_mode or not is_base_only_current))
         self.btn_cancel.setEnabled(is_busy)
         if hasattr(self._view, "set_workflow_summary"):
             original_state = self._t("workflow.state.ready") if self._original_folder is not None else self._t("workflow.state.pending")
@@ -2579,6 +3253,8 @@ class KarakalPresenter(QObject):
         self._restore_folder_manager_state()
         self._restore_build_settings()
         self._update_source_labels()
+        self._on_app_mode_changed()
+        self._push_management_assignee_colors_to_views()
 
     def _restore_folder_manager_state(self) -> None:
         payload = self._settings_service.load_folder_manager_payload()
@@ -2753,6 +3429,7 @@ class KarakalPresenter(QObject):
     def _persist_state(self) -> None:
         self._settings_service.save_folder_manager_payload(self._build_folder_manager_payload())
         self._settings_service.save_build_settings_payload(self._build_build_settings_payload())
+        self._settings_service.save_management_payload(self._build_management_settings_payload())
         self._settings_service.sync()
 
     def shutdown(self) -> None:

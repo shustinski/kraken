@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -23,9 +24,12 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
+    QTreeWidget,
     QSpinBox,
     QStyle,
     QTabWidget,
+    QLineEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -519,6 +523,15 @@ class KarakalWidget(QWidget):
         self._populate_metric_combo(DEFAULT_MATRIX_METRIC_KEY)
         self.frame_type_filter_combo = _NoWheelComboBox(self)
         self._populate_frame_type_filter_combo('all')
+        self.app_mode_combo = _NoWheelComboBox(self)
+        self._populate_app_mode_combo("validation")
+
+        self.mode_group = QGroupBox(self._t("management.mode_group"), control_host)
+        mode_layout = QVBoxLayout(self.mode_group)
+        mode_layout.setContentsMargins(6, 6, 6, 6)
+        self._mode_row = self._build_setting_row(self._t("management.current_mode"), self.app_mode_combo)
+        mode_layout.addWidget(self._mode_row)
+        control_layout.addWidget(self.mode_group)
 
         folders_group = QGroupBox(self._t("folders.group"), control_host)
         self.folders_group = folders_group
@@ -644,22 +657,6 @@ class KarakalWidget(QWidget):
         source_layout.addRow(self.export_source_label, export_row)
         control_layout.addWidget(source_group)
 
-        self.matrix_tabs = QTabWidget(splitter)
-        self.matrix_tabs.setTabsClosable(True)
-        self.matrix_tabs.setMovable(True)
-        self.matrix_tabs.setDocumentMode(True)
-
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes(list(CONTROL_PANEL_SPLITTER_SIZES))
-
-        self.metric_settings_group = QGroupBox(self._t("ui.metric_focus"), control_host)
-        metric_settings_layout = QVBoxLayout(self.metric_settings_group)
-        metric_settings_layout.setContentsMargins(4, 4, 4, 4)
-        metric_settings_layout.setSpacing(0)
-        metric_settings_layout.addWidget(self._build_metric_settings_widget())
-        control_layout.addWidget(self.metric_settings_group)
-
         self.analysis_settings_group = QGroupBox(self._t("ui.analysis_setup"), control_host)
         analysis_settings_layout = QVBoxLayout(self.analysis_settings_group)
         analysis_settings_layout.setContentsMargins(6, 6, 6, 6)
@@ -667,17 +664,184 @@ class KarakalWidget(QWidget):
         analysis_settings_layout.addWidget(self._build_matrix_settings_widget())
         control_layout.addWidget(self.analysis_settings_group)
 
+        self.left_mode_stack = QStackedWidget(control_host)
+        validation_controls_page = QWidget(self.left_mode_stack)
+        validation_controls_layout = QVBoxLayout(validation_controls_page)
+        validation_controls_layout.setContentsMargins(0, 0, 0, 0)
+        validation_controls_layout.setSpacing(10)
+
+        self.metric_settings_group = QGroupBox(self._t("ui.metric_focus"), validation_controls_page)
+        metric_settings_layout = QVBoxLayout(self.metric_settings_group)
+        metric_settings_layout.setContentsMargins(4, 4, 4, 4)
+        metric_settings_layout.setSpacing(0)
+        metric_settings_layout.addWidget(self._build_metric_settings_widget())
+        validation_controls_layout.addWidget(self.metric_settings_group)
+        validation_controls_layout.addStretch(1)
+        self.left_mode_stack.addWidget(validation_controls_page)
+
+        management_controls_page = self._build_management_mode_controls_panel(self.left_mode_stack)
+        self.left_mode_stack.addWidget(management_controls_page)
+        self.left_mode_stack.setCurrentIndex(0)
+        control_layout.addWidget(self.left_mode_stack, stretch=1)
+
+        self.main_mode_stack = QStackedWidget(splitter)
+        validation_page = QWidget(self.main_mode_stack)
+        validation_layout = QVBoxLayout(validation_page)
+        validation_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.matrix_tabs = QTabWidget(validation_page)
+        self.matrix_tabs.setTabsClosable(True)
+        self.matrix_tabs.setMovable(True)
+        self.matrix_tabs.setDocumentMode(True)
+        validation_layout.addWidget(self.matrix_tabs)
+        self.main_mode_stack.addWidget(validation_page)
+
+        self.management_page = self._build_management_mode_panel(self.main_mode_stack)
+        self.main_mode_stack.addWidget(self.management_page)
+        self.main_mode_stack.setCurrentIndex(0)
+
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes(list(CONTROL_PANEL_SPLITTER_SIZES))
+
         self.language_toggle_button = QToolButton(self._menu_bar)
         self.language_toggle_button.setAutoRaise(True)
         self.language_toggle_button.setObjectName(EXTEND_LANGUAGE_BUTTON_OBJECT_NAME)
         self.language_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._update_language_toggle_button()
 
-        control_layout.addStretch(1)
+    def _build_management_mode_controls_panel(self, parent: QWidget) -> QWidget:
+        controls_host = QWidget(parent)
+        controls_layout = QVBoxLayout(controls_host)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+
+        self.management_scenario_combo = _NoWheelComboBox(controls_host)
+        self._populate_management_scenario_combo("primary_labeling_selection")
+        self.management_target_ratio_spin = _NoWheelDoubleSpinBox(controls_host)
+        self.management_target_ratio_spin.setRange(5.0, 25.0)
+        self.management_target_ratio_spin.setSingleStep(1.0)
+        self.management_target_ratio_spin.setDecimals(0)
+        self.management_target_ratio_spin.setSuffix("%")
+        self.management_target_ratio_spin.setValue(10.0)
+        self.management_diversity_check = QCheckBox(self._t("management.primary.diversity"), controls_host)
+        self.management_diversity_check.setChecked(True)
+
+        self._management_highlight_mode_row = self._build_setting_row(self._t("management.highlight_mode"), self.management_scenario_combo, compact=True)
+        self._management_target_ratio_row = self._build_setting_row(self._t("management.primary.target_ratio"), self.management_target_ratio_spin, compact=True)
+        self._management_diversity_row = self._build_setting_row(self._t("management.primary.enable_diversity_filter"), self.management_diversity_check, compact=True)
+        controls_layout.addWidget(self._management_highlight_mode_row)
+        controls_layout.addWidget(self._management_target_ratio_row)
+        controls_layout.addWidget(self._management_diversity_row)
+
+        self.management_assignee_colors_button = QPushButton(self._t("management.button.assignee_colors"), controls_host)
+        controls_layout.addWidget(self.management_assignee_colors_button)
+        controls_layout.addStretch(1)
+        return controls_host
+
+    def _build_management_mode_panel(self, parent: QWidget) -> QWidget:
+        host = QWidget(parent)
+        root_layout = QVBoxLayout(host)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(6)
+
+        self.management_main_splitter = QSplitter(Qt.Orientation.Horizontal, host)
+        root_layout.addWidget(self.management_main_splitter, stretch=1)
+        matrix_host = QWidget(self.management_main_splitter)
+        matrix_layout = QVBoxLayout(matrix_host)
+        matrix_layout.setContentsMargins(0, 0, 0, 0)
+        matrix_layout.setSpacing(6)
+        matrix_header = QWidget(matrix_host)
+        matrix_header_layout = QHBoxLayout(matrix_header)
+        matrix_header_layout.setContentsMargins(0, 0, 0, 0)
+        matrix_header_layout.setSpacing(8)
+        matrix_title_host = QWidget(matrix_header)
+        matrix_title_layout = QVBoxLayout(matrix_title_host)
+        matrix_title_layout.setContentsMargins(0, 0, 0, 0)
+        matrix_title_layout.setSpacing(2)
+        self.management_matrix_title = QLabel(self._t("management.matrix.title"), matrix_title_host)
+        self.management_matrix_legend = QLabel(self._t("management.matrix.legend"), matrix_title_host)
+        self.management_matrix_legend.setWordWrap(True)
+        matrix_title_layout.addWidget(self.management_matrix_title)
+        matrix_title_layout.addWidget(self.management_matrix_legend)
+        matrix_header_layout.addWidget(matrix_title_host, stretch=1)
+        matrix_layout.addWidget(matrix_header)
+
+        matrix_row = QWidget(matrix_host)
+        matrix_row_layout = QHBoxLayout(matrix_row)
+        matrix_row_layout.setContentsMargins(0, 0, 0, 0)
+        matrix_row_layout.setSpacing(8)
+
+        self.management_matrix_view = MatrixListWidget(matrix_row)
+        self.management_matrix_view.set_management_visual_mode(True)
+        matrix_row_layout.addWidget(self.management_matrix_view, stretch=1)
+
+        management_overview = QWidget(matrix_row)
+        management_overview_layout = QVBoxLayout(management_overview)
+        management_overview_layout.setContentsMargins(0, 0, 0, 0)
+        management_overview_layout.setSpacing(6)
+        self.management_matrix_minimap = MatrixMiniMapWidget(management_overview)
+        self.management_matrix_minimap.setMinimumHeight(150)
+        self.management_matrix_minimap.setMaximumHeight(220)
+        management_overview_layout.addWidget(self.management_matrix_minimap)
+        management_overview.setMinimumWidth(240)
+        management_overview.setMaximumWidth(220)
+        management_overview.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        matrix_row_layout.addWidget(management_overview)
+
+        matrix_layout.addWidget(matrix_row, stretch=1)
+
+        self.management_matrix_view.overviewChanged.connect(
+            lambda image, visible_rect, selected_position, selected_blink_on, processing_positions, reference_position: self.management_matrix_minimap.set_overview(
+                image,
+                visible_rect,
+                selected_position,
+                selected_blink_on,
+                processing_positions,
+                reference_position,
+            )
+        )
+        self.management_main_splitter.setStretchFactor(0, 4)
+        self.management_main_splitter.setStretchFactor(1, 1)
+        self.management_main_splitter.setSizes([1700, 300])
+        return host
+
+    def _set_app_mode(self, mode: str) -> None:
+        normalized = str(mode or "validation").strip().lower()
+        is_management = normalized == "management"
+        if normalized == "management":
+            self.main_mode_stack.setCurrentIndex(1)
+            self.left_mode_stack.setCurrentIndex(1)
+        else:
+            self.main_mode_stack.setCurrentIndex(0)
+            self.left_mode_stack.setCurrentIndex(0)
+        if hasattr(self, "_analysis_task_group"):
+            self._analysis_task_group.setVisible(not is_management)
+        if hasattr(self, "_tile_grid_group"):
+            self._tile_grid_group.setVisible(not is_management)
 
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()
         self._menu_bar.setCornerWidget(self.language_toggle_button, Qt.Corner.TopRightCorner)
+
+    def _populate_app_mode_combo(self, selected_mode: str | None) -> None:
+        current = str(selected_mode or "validation")
+        self.app_mode_combo.blockSignals(True)
+        self.app_mode_combo.clear()
+        self.app_mode_combo.addItem(self._t("management.mode.validation"), "validation")
+        self.app_mode_combo.addItem(self._t("management.mode.management"), "management")
+        index = self.app_mode_combo.findData(current)
+        self.app_mode_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.app_mode_combo.blockSignals(False)
+
+    def _populate_management_scenario_combo(self, selected_scenario: str | None) -> None:
+        current = str(selected_scenario or "primary_labeling_selection")
+        self.management_scenario_combo.blockSignals(True)
+        self.management_scenario_combo.clear()
+        self.management_scenario_combo.addItem(self._t("management.highlight.primary_labeling_selection"), "primary_labeling_selection")
+        index = self.management_scenario_combo.findData(current)
+        self.management_scenario_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.management_scenario_combo.blockSignals(False)
 
     def _populate_layout_mode_combo(self, selected_mode: str | None) -> None:
         current = str(selected_mode or DEFAULT_MATRIX_LAYOUT_MODE)
@@ -1006,6 +1170,11 @@ class KarakalWidget(QWidget):
         self._t = self._i18n.tr
         self._setup_menu_bar()
         self._update_language_toggle_button()
+        self.mode_group.setTitle(self._t("management.mode_group"))
+        mode_row_label = getattr(getattr(self, "_mode_row", None), "_title_label", None)
+        if mode_row_label is not None:
+            mode_row_label.setText(self._t("management.current_mode"))
+        self._populate_app_mode_combo(self.app_mode_combo.currentData())
         self.analysis_settings_group.setTitle(self._t("ui.analysis_setup"))
         self.metric_settings_group.setTitle(self._t("ui.metric_focus"))
         self._analysis_task_group.setTitle(self._t("ui.analysis_task"))
@@ -1030,6 +1199,12 @@ class KarakalWidget(QWidget):
         self.btn_clear_gt.setText(self._t("common.clear"))
         self.btn_set_export.setText(self._t("common.set"))
         self.btn_clear_export.setText(self._t("common.clear"))
+        self._populate_management_scenario_combo(self.management_scenario_combo.currentData())
+        self.management_assignee_colors_button.setText(self._t("management.button.assignee_colors"))
+        if hasattr(self, "management_matrix_title"):
+            self.management_matrix_title.setText(self._t("management.matrix.title"))
+        if hasattr(self, "management_matrix_legend"):
+            self.management_matrix_legend.setText(self._t("management.matrix.legend"))
         if hasattr(self, "_presenter"):
             self._presenter._update_source_labels()
         current_layout = str(self.layout_mode_combo.currentData() or DEFAULT_MATRIX_LAYOUT_MODE)
@@ -1083,12 +1258,17 @@ class KarakalWidget(QWidget):
             (getattr(self, "_matrix_frames_per_row_row", None), "matrix.frames_per_row"),
             (getattr(self, "_matrix_rows_row", None), "matrix.rows"),
             (getattr(self, "_matrix_columns_row", None), "matrix.columns"),
+            (getattr(self, "_management_highlight_mode_row", None), "management.highlight_mode"),
+            (getattr(self, "_management_target_ratio_row", None), "management.primary.target_ratio"),
+            (getattr(self, "_management_diversity_row", None), "management.primary.enable_diversity_filter"),
             (getattr(self, "_metric_scope_row", None), "analysis.confidence_model"),
             (getattr(self, "_metric_select_row", None), "menu.metric.select"),
         ):
             label = getattr(row, "_title_label", None)
             if label is not None:
                 label.setText(self._t(key))
+        if hasattr(self, "management_diversity_check"):
+            self.management_diversity_check.setText(self._t("management.primary.diversity"))
         if hasattr(self, "_presenter"):
             current_state = self._presenter._current_tab_state()
             self._presenter._sync_mode_controls(current_state, None if current_state is None else current_state.build_result)
@@ -1287,6 +1467,17 @@ class KarakalWidget(QWidget):
         menu.addAction(action)
 
     def _connect_signals(self) -> None:
+        self.app_mode_combo.currentIndexChanged.connect(self._presenter._on_app_mode_changed)
+        self.management_assignee_colors_button.clicked.connect(self._presenter._management_configure_assignee_color)
+        self.management_scenario_combo.currentIndexChanged.connect(self._presenter._on_management_scenario_changed)
+        self.management_target_ratio_spin.valueChanged.connect(self._presenter._on_management_primary_labeling_target_ratio_changed)
+        self.management_diversity_check.toggled.connect(self._presenter._on_management_primary_labeling_diversity_changed)
+        self.management_matrix_view.recordSelected.connect(self._presenter._on_management_matrix_record_selected)
+        self.management_matrix_view.recordActivated.connect(self._presenter._on_management_matrix_record_activated)
+        if hasattr(self.management_matrix_view, "tileSelected"):
+            self.management_matrix_view.tileSelected.connect(self._presenter._on_management_matrix_tile_selected)
+        if hasattr(self.management_matrix_view, "tileActivated"):
+            self.management_matrix_view.tileActivated.connect(self._presenter._on_management_matrix_tile_activated)
         self.btn_add_folder.clicked.connect(self._presenter._add_folder)
         self.btn_clear_folders.clicked.connect(self._presenter._clear_folders)
         self.btn_set_original.clicked.connect(self._presenter._set_original_folder)
@@ -1295,7 +1486,7 @@ class KarakalWidget(QWidget):
         self.btn_clear_gt.clicked.connect(self._presenter._clear_gt_folder)
         self.btn_set_export.clicked.connect(self._presenter._set_export_folder)
         self.btn_clear_export.clicked.connect(self._presenter._clear_export_folder)
-        self.btn_build.clicked.connect(self._presenter._start_build)
+        self.btn_build.clicked.connect(self._presenter._on_build_requested)
         self.btn_compute.clicked.connect(self._presenter._on_compute_requested)
         self.btn_cancel.clicked.connect(self._presenter._request_cancel_build)
 

@@ -5,7 +5,13 @@ import json
 
 from PyQt6.QtCore import QSettings
 
-from ..ui.ui_constants import SETTINGS_BUILD_KEY, SETTINGS_DETAILS_VIEW_KEY, SETTINGS_FOLDERS_KEY, SETTINGS_LANGUAGE_KEY
+from ..ui.ui_constants import (
+    SETTINGS_BUILD_KEY,
+    SETTINGS_DETAILS_VIEW_KEY,
+    SETTINGS_FOLDERS_KEY,
+    SETTINGS_LANGUAGE_KEY,
+    SETTINGS_MANAGEMENT_KEY,
+)
 
 
 class KarakalSettingsService:
@@ -31,6 +37,12 @@ class KarakalSettingsService:
 
     def save_details_view_payload(self, payload: dict) -> None:
         self._save_payload(SETTINGS_DETAILS_VIEW_KEY, payload)
+
+    def load_management_payload(self) -> dict:
+        return self._load_payload(SETTINGS_MANAGEMENT_KEY)
+
+    def save_management_payload(self, payload: dict) -> None:
+        self._save_payload(SETTINGS_MANAGEMENT_KEY, payload)
 
     def load_language(self) -> str | None:
         value = self._settings.value(SETTINGS_LANGUAGE_KEY, "", str)

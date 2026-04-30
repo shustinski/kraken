@@ -56,6 +56,10 @@ class ExtendMatrixTabState:
     processing_state_by_key: dict[str, str] = field(default_factory=dict)
     repeated_bad_column: QWidget | None = None
     repeated_good_column: QWidget | None = None
+    management_payload_by_key: dict[str, dict[str, str]] = field(default_factory=dict)
+    management_scenario_id: str = ""
+    management_scenario_payload_by_key: dict[str, dict[str, str]] = field(default_factory=dict)
+    management_scenario_summary: str = ""
 
 
 # Backward-compatible aliases for legacy lite imports.

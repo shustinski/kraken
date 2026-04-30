@@ -6629,6 +6629,8 @@ def _parse_model_metric_key(metric_key: str) -> tuple[str, str] | None:
 
 
 def _available_metric_keys_for_models(model_specs: tuple[ModelSpec, ...], records: tuple[FrameRecord, ...] | list[FrameRecord] | None = None) -> tuple[str, ...]:
+    if len(model_specs) == 1 and str(getattr(model_specs[0], "model_id", "") or "") == "base_layer":
+        return ("overall_frame_score",)
     keys = [
         "overall_frame_score",
         "export_priority_score",
@@ -6988,6 +6990,28 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
     records = list(build_result.records)
     if not records:
         return replace(build_result, scores_computed=True)
+    if len(build_result.model_specs) == 1 and str(getattr(build_result.model_specs[0], "model_id", "") or "") == "base_layer":
+        return replace(
+            build_result,
+            records=tuple(
+                replace(
+                    record,
+                    score=0.0,
+                    absolute_score=None,
+                    relative_score=None,
+                    score_percentile=None,
+                    score_ready=False,
+                    summary=None,
+                )
+                for record in records
+            ),
+            scores_computed=False,
+            best_match_key=None,
+            min_absolute_score=None,
+            max_absolute_score=None,
+            selected_metric_key="overall_frame_score",
+            available_metric_keys=("overall_frame_score",),
+        )
 
     active_metric = metric_key or build_result.selected_metric_key or 'overall_frame_score'
     available_metric_keys_at_start = set(build_result.available_metric_keys or ()) | set(_available_metric_keys_for_models(build_result.model_specs, records))

@@ -778,12 +778,16 @@ PIPELINE_CONTROL_TOOLTIPS: LocalizedTextMap = {
 
 EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
     EditorTool.SELECT: (
-        "Выбор и перемещение полигонов на изображении.",
-        "Select and move polygons on the image.",
+        "Выбор: клик по полигону; перетаскивание с пустого места — рамка; перетаскивание полигона — сдвиг. "
+        "Ctrl добавляет или убирает из выделения.",
+        "Select: click a polygon; drag on empty space for a marquee; drag a polygon to move. "
+        "Ctrl adds or toggles items in the selection.",
     ),
     EditorTool.SELECT_AREA: (
-        "Выделение объектов рамкой. Потяните прямоугольник вокруг нужных полигонов; Ctrl добавляет к текущему выделению.",
-        "Select objects with a rectangle. Drag around polygons; Ctrl adds to the current selection.",
+        "Выбор: клик по полигону; перетаскивание с пустого места — рамка; перетаскивание полигона — сдвиг. "
+        "Ctrl добавляет или убирает из выделения.",
+        "Select: click a polygon; drag on empty space for a marquee; drag a polygon to move. "
+        "Ctrl adds or toggles items in the selection.",
     ),
     EditorTool.PAN: (
         "Перемещение изображения без изменения полигонов.",
@@ -882,6 +886,42 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
     "refresh_files": (
         "Перечитать список изображений из выбранной входной папки.",
         "Reload the image list from the selected input folder.",
+    ),
+    "pick_input_images": (
+        "Выбрать отдельные файлы изображений (не всю папку).",
+        "Pick individual image files instead of scanning the entire folder.",
+    ),
+    "merge_cif_files": (
+        "Добавить в индекс отдельные .cif файлы (по имени сопоставляются с изображением).",
+        "Add individual .cif files to the overlay index (matched by basename to images).",
+    ),
+    "sidebar_list_mode": (
+        "Переключить список справа между кадрами и векторами из папки CIF.",
+        "Switch the sidebar between image frames and CIF overlays from the overlay folder.",
+    ),
+    "vector_list_sidebar": (
+        "Файлы CIF из текущего индекса. Выбор переходит на кадр с тем же именем.",
+        "CIF entries from the current index. Choosing a row selects the matching image basename.",
+    ),
+    "reload_selected_cif_overlays": (
+        "Сбросить кэш и перечитать CIF для строк, выделенных в этом списке.",
+        "Clear caches and reload CIF overlays for the selected sidebar rows.",
+    ),
+    "reload_cif_for_selected_frames": (
+        "Сбросить кэш и перечитать CIF для выделенных кадров (или текущего).",
+        "Clear caches and reload CIF overlays for selected image frames (or the current one).",
+    ),
+    "frame_nav_previous": (
+        "Перейти к предыдущему кадру списка.",
+        "Jump to the previous frame in the list.",
+    ),
+    "frame_nav_next": (
+        "Перейти к следующему кадру списка.",
+        "Jump to the next frame in the list.",
+    ),
+    "frame_nav_jump": (
+        "Выбрать кадр по номеру (1 … N в текущем списке изображений).",
+        "Select a frame by index (1 … N within the loaded image list).",
     ),
     "image_list": (
         "Список найденных изображений. Выбор файла открывает его для просмотра и обработки.",

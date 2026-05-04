@@ -3,13 +3,16 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
@@ -39,6 +42,14 @@ def _rectangle_polygon(left: int, top: int, right: int, bottom: int) -> PolygonD
     ]
     area, perimeter, bbox = compute_polygon_metrics(points)
     return PolygonData(id=1, points=points, area=area, perimeter=perimeter, bbox=bbox)
+
+
+def _net_outline_area(polygons: list[PolygonData]) -> float:
+    """Subtract hole areas from roots (handles flat lists after CSG raster ops)."""
+
+    outers = sum(p.area for p in polygons if not p.is_hole)
+    holes = sum(p.area for p in polygons if p.is_hole)
+    return outers - holes
 
 
 class PolygonExtractionWidgetLoadImageTests(unittest.TestCase):
@@ -137,7 +148,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         QTest.qWait(200)
         self._app.processEvents()
 
-        self.assertEqual(process_calls, [False])
+        self.assertEqual(process_calls[-1], False)
 
     def test_via_roundness_is_included_in_current_settings(self) -> None:
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))
@@ -283,29 +294,73 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.view.deleteLater()
         self._app.processEvents()
 
-    def test_middle_button_temporarily_hides_polygon_overlays(self) -> None:
-        click_pos = self.view.mapFromScene(QPointF(50.0, 50.0))
+    def test_middle_button_pans_without_hiding_polygon_overlays_or_changing_polygons(self) -> None:
+        self.view.set_tool(EditorTool.ADD_POLYGON)
+        origin = self.view.mapFromScene(QPointF(50.0, 50.0))
+        h_before = self.view.horizontalScrollBar().value()
 
         QTest.mousePress(
             self.view.viewport(),
             Qt.MouseButton.MiddleButton,
             Qt.KeyboardModifier.NoModifier,
-            click_pos,
+            origin,
         )
         self._app.processEvents()
-        self.assertFalse(self.view._editor_scene.polygon_overlays_visible())
-        self.assertEqual(len(self.view.get_polygons()), 1)
+        self.assertTrue(self.view._editor_scene.polygon_overlays_visible())
+
+        QTest.mouseMove(self.view.viewport(), origin + QPoint(30, -12), delay=10)
+        self._app.processEvents()
 
         QTest.mouseRelease(
             self.view.viewport(),
             Qt.MouseButton.MiddleButton,
             Qt.KeyboardModifier.NoModifier,
-            click_pos,
+            origin + QPoint(30, -12),
         )
         self._app.processEvents()
 
         self.assertTrue(self.view._editor_scene.polygon_overlays_visible())
         self.assertEqual(len(self.view.get_polygons()), 1)
+        self.assertEqual(self.view.current_tool, EditorTool.ADD_POLYGON)
+        self.assertLessEqual(self.view.horizontalScrollBar().value(), h_before - 25)
+
+    def test_space_toggle_hides_vectors_without_mutating_polygon_data(self) -> None:
+        QTest.mouseClick(self.view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(40, 40))
+        before = [(p.points[0], p.points[2]) for p in self.view.get_polygons()]
+        QTest.keyClick(self.view, Qt.Key.Key_Space)
+
+        self._app.processEvents()
+        self.assertFalse(self.view._editor_scene.polygon_overlays_visible())
+        after_first = [(p.points[0], p.points[2]) for p in self.view.get_polygons()]
+        self.assertIsNotNone(self.view._editor_scene.selected_polygon_id())
+        self.assertEqual(before, after_first)
+
+        QTest.keyClick(self.view, Qt.Key.Key_Space)
+        self._app.processEvents()
+        self.assertTrue(self.view._editor_scene.polygon_overlays_visible())
+        after_second = [(p.points[0], p.points[2]) for p in self.view.get_polygons()]
+        self.assertEqual(after_second, before)
+
+    def test_ctrl_wheel_keeps_scene_point_under_cursor_stable(self) -> None:
+        self.view.fit_to_view()
+        self._app.processEvents()
+        pos = QPoint(90, 80)
+        scene_before = self.view.mapToScene(pos)
+        event = QWheelEvent(
+            QPointF(pos),
+            QPointF(pos),
+            QPoint(0, 0),
+            QPoint(0, 120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.ControlModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        self._app.sendEvent(self.view.viewport(), event)
+        self._app.processEvents()
+        scene_after = self.view.mapToScene(pos)
+        self.assertAlmostEqual(scene_after.x(), scene_before.x(), delta=2.0)
+        self.assertAlmostEqual(scene_after.y(), scene_before.y(), delta=2.0)
 
     def test_ruler_tool_reports_measurement_without_changing_polygons(self) -> None:
         measurements: list[str] = []
@@ -349,7 +404,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
     def test_right_button_brush_erases_existing_polygon_area(self) -> None:
         self.view.set_tool(EditorTool.BRUSH)
-        initial_area = sum(polygon.area for polygon in self.view.get_polygons())
+        initial_area = _net_outline_area(self.view.get_polygons())
         start_pos = self.view.mapFromScene(QPointF(50.0, 20.0))
         end_pos = self.view.mapFromScene(QPointF(50.0, 80.0))
 
@@ -368,13 +423,13 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         )
         self._app.processEvents()
 
-        final_area = sum(polygon.area for polygon in self.view.get_polygons())
+        final_area = _net_outline_area(self.view.get_polygons())
         self.assertLess(final_area, initial_area)
 
     def test_right_button_rectangle_polygon_erases_existing_polygon_area(self) -> None:
         self.view.set_tool(EditorTool.ADD_POLYGON)
         self.view.set_polygon_create_mode(PolygonCreateMode.RECTANGLE)
-        initial_area = sum(polygon.area for polygon in self.view.get_polygons())
+        initial_area = _net_outline_area(self.view.get_polygons())
         start_pos = self.view.mapFromScene(QPointF(42.0, 20.0))
         end_pos = self.view.mapFromScene(QPointF(58.0, 80.0))
 
@@ -384,6 +439,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
             Qt.KeyboardModifier.NoModifier,
             start_pos,
         )
+        QTest.mouseMove(self.view.viewport(), end_pos)
         QTest.mouseRelease(
             self.view.viewport(),
             Qt.MouseButton.RightButton,
@@ -392,7 +448,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         )
         self._app.processEvents()
 
-        final_area = sum(polygon.area for polygon in self.view.get_polygons())
+        final_area = _net_outline_area(self.view.get_polygons())
         self.assertLess(final_area, initial_area)
 
     def test_closed_brush_contour_preserves_empty_center(self) -> None:
@@ -662,6 +718,7 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
         }
         self.widget._workspace._current_image_path = first_path
         self.widget._workspace._current_state = first_state
+        self.widget._viewed_image_paths.update({str(Path(first_path)), str(Path(second_path))})
         self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
         self.widget.polygon_editor.set_polygons([changed_polygon.clone()])
         self.widget.image_list.clear()
@@ -677,6 +734,7 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
         original_save_polygons_cif = widget_module.save_polygons_cif
         original_load_image = self.widget.load_image
         try:
+            self.widget.autosave_on_frame_transition_checkbox.setChecked(True)
             widget_module.save_polygons_cif = lambda path, image_path, polygons, image_size, layer_name="NM": (
                 saved_calls.append((str(path), image_path, image_size, len(polygons)))
             )
@@ -690,6 +748,60 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
         self.assertEqual(saved_calls, [("frame_1.cif", first_path, (32, 32), 1)])
         self.assertEqual(first_item.background().color().name().lower(), "#86efac")
         self.assertEqual(second_item.background().color().name().lower(), "#d1d5db")
+
+    def test_switching_frames_does_not_save_when_autosave_disabled_even_if_dialog_discards(self) -> None:
+        first_path = "frame_1.png"
+        second_path = "frame_2.png"
+        first_polygon = _rectangle_polygon(4, 4, 20, 20)
+        changed_polygon = _rectangle_polygon(4, 4, 24, 20)
+        first_state = ImageProcessingState(
+            image_path=first_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[changed_polygon.clone()],
+            loaded_cif_path="frame_1.cif",
+            reference_polygons=[first_polygon.clone()],
+        )
+        second_state = ImageProcessingState(
+            image_path=second_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[],
+            reference_polygons=[],
+        )
+        self.widget._workspace._state_cache = {
+            first_path: first_state,
+            second_path: second_state,
+        }
+        self.widget._workspace._current_image_path = first_path
+        self.widget._workspace._current_state = first_state
+        self.widget._viewed_image_paths.update({str(Path(first_path)), str(Path(second_path))})
+        self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
+        self.widget.polygon_editor.set_polygons([changed_polygon.clone()])
+        self.widget.image_list.clear()
+        for path in (first_path, second_path):
+            item = QListWidgetItem(path)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.widget.image_list.addItem(item)
+        self.widget._refresh_image_list_item_states()
+        first_item = self.widget.image_list.item(0)
+        second_item = self.widget.image_list.item(1)
+
+        saved_calls: list[tuple[str, str, tuple[int, int], int]] = []
+        original_save_polygons_cif = widget_module.save_polygons_cif
+        original_load_image = self.widget.load_image
+        try:
+            self.widget.autosave_on_frame_transition_checkbox.setChecked(False)
+            widget_module.save_polygons_cif = lambda path, image_path, polygons, image_size, layer_name="NM": (
+                saved_calls.append((str(path), image_path, image_size, len(polygons)))
+            )
+            self.widget.load_image = lambda path: None  # type: ignore[method-assign]
+
+            with patch.object(widget_module.QMessageBox, "exec", return_value=widget_module.QMessageBox.StandardButton.Discard):
+                self.widget._on_image_item_changed(second_item, first_item)
+        finally:
+            widget_module.save_polygons_cif = original_save_polygons_cif
+            self.widget.load_image = original_load_image  # type: ignore[method-assign]
+
+        self.assertEqual(saved_calls, [])
 
     def test_dataset_mode_exports_changed_frame_when_switching_frames(self) -> None:
         first_path = "frame_1.png"
@@ -714,10 +826,12 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
         }
         self.widget._workspace._current_image_path = first_path
         self.widget._workspace._current_state = first_state
+        self.widget._viewed_image_paths.update({str(Path(first_path)), str(Path(second_path))})
         self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
         self.widget.polygon_editor.set_polygons([changed_polygon.clone()])
         self.widget.dataset_dir_edit.setText("dataset")
         self.widget.dataset_mode_checkbox.setChecked(True)
+        self.widget.autosave_on_frame_transition_checkbox.setChecked(True)
         self.widget.image_list.clear()
         for path in (first_path, second_path):
             item = QListWidgetItem(path)

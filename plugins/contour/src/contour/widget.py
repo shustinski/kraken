@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PyQt6.QtCore import QEvent, QPointF, QRectF, QSettings, QSignalBlocker, QSize, Qt, QThreadPool, QTimer, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtGui import QBrush, QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -30,15 +30,32 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QTabWidget,
+    QTextEdit,
     QToolButton,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from .adapters.qt.directory_scan import ScanInputDirectoryRunnable, ScanInputDirectorySignals
 from .adapters.qt.image_conversion import cv_to_qimage
 from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
 from .application.dto import PersistedPaths
+from .application.frame_asset_sync import (
+    build_image_cif_matching_report,
+    classify_image_side_paint_status,
+    classify_vector_side_status,
+    background_hex_image_paint_status,
+    background_hex_vector_status,
+    foreground_hex_image_has_vector_overlay,
+    index_cif_file_paths,
+)
+from .application.transition_save_guard import (
+    TransitionPromptChoice,
+    navigation_allowed_after_autosave_attempt,
+    navigation_allowed_after_prompt,
+)
+from .application.vector_geometry_postprocess import VectorGeometrySettings, postprocess_polygons_for_frame_navigation
 from .application.processing import (
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
@@ -68,11 +85,11 @@ from .application.use_cases import (
     build_prepared_image_signature,
     build_preview_request_signature,
     index_cif_directory,
-    load_input_directory,
 )
 from .batch_processor import BatchProcessor
 from .domain import PolygonData
-from .graphics_view import EditorTool
+from .graphics.editor_hotkeys import append_shortcut_to_tooltip, build_editor_hotkeys_plain_text, tool_shortcut_native_text
+from .graphics_view import EditorTool, PolygonCreateMode
 from .i18n import active_language, tr
 from .infrastructure import WidgetDisplaySettingsStore, WidgetPathSettingsStore
 from .pipeline import (
@@ -142,9 +159,6 @@ __all__ = [
 
 
 FRAME_STATUS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
-FRAME_STATUS_UNCHANGED = "unchanged"
-FRAME_STATUS_VIEWED = "viewed"
-FRAME_STATUS_MODIFIED = "modified"
 VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
 
 
@@ -240,6 +254,18 @@ class PolygonExtractionWidget(QWidget):
         self._neighbor_image_cache: dict[str, object] = {}
         self._show_source_while_middle_held = False
 
+        self._persisted_highlight_paths: set[str] = set()
+        self._cif_load_failure_stems: set[str] = set()
+        self._directory_scan_busy = False
+        self._directory_scan_pending_directory: str | None = None
+        self._directory_scan_signals = ScanInputDirectorySignals(self)
+        self._directory_scan_signals.finished.connect(self._on_input_directory_scan_finished)
+        self._directory_scan_signals.failed.connect(self._on_input_directory_scan_failed)
+        self._scan_generation = 0
+        self._scan_thread_pool = QThreadPool(self)
+        self._scan_thread_pool.setMaxThreadCount(1)
+        self._scan_thread_pool.setExpiryTimeout(-1)
+
         self._batch_processor = BatchProcessor(self)
         self._batch_processor.set_ui_language(self._ui_language)
         self._batch_processor.resultReady.connect(self._on_batch_result)
@@ -315,7 +341,19 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.neighbor_max_grid_spin),
             QSignalBlocker(self.neighbor_opacity_spin),
             QSignalBlocker(self.neighbor_overlap_spin),
+            QSignalBlocker(self.autosave_on_frame_transition_checkbox),
         ]
+        if hasattr(self, "vector_geom_clip_checkbox"):
+            blockers.extend(
+                [
+                    QSignalBlocker(self.vector_geom_clip_checkbox),
+                    QSignalBlocker(self.vector_geom_min_outer_spin),
+                    QSignalBlocker(self.vector_geom_min_hole_spin),
+                    QSignalBlocker(self.vector_geom_merge_checkbox),
+                    QSignalBlocker(self.vector_geom_spike_angle_spin),
+                    QSignalBlocker(self.vector_geom_drop_triangle_checkbox),
+                ]
+            )
         self._restoring_display_settings = True
         try:
             self._update_color_button(self.external_color_button, self._display_settings.external_color)
@@ -336,14 +374,23 @@ class PolygonExtractionWidget(QWidget):
             self.neighbor_max_grid_spin.setValue(self._odd_neighbor_grid_size(int(payload.get("neighbor_max_grid", 7))))
             self.neighbor_opacity_spin.setValue(float(payload.get("neighbor_opacity", 0.35)))
             self.neighbor_overlap_spin.setValue(max(0, int(payload.get("neighbor_overlap_pixels", 0))))
+            self.autosave_on_frame_transition_checkbox.setChecked(bool(payload.get("autosave_on_frame_transition", False)))
             self._restore_main_splitter_sizes(payload.get("main_splitter_sizes"))
+            if hasattr(self, "vector_geom_clip_checkbox"):
+                self.vector_geom_clip_checkbox.setChecked(bool(payload.get("vector_geom_clip_on_sync", True)))
+                self.vector_geom_min_outer_spin.setValue(float(payload.get("vector_geom_min_outer_area", 9.0)))
+                self.vector_geom_min_hole_spin.setValue(float(payload.get("vector_geom_min_hole_area", 0.0)))
+                self.vector_geom_merge_checkbox.setChecked(bool(payload.get("vector_geom_merge_on_edit", True)))
+                self.vector_geom_spike_angle_spin.setValue(float(payload.get("vector_geom_spike_angle_deg", 30.0)))
+                self.vector_geom_drop_triangle_checkbox.setChecked(bool(payload.get("vector_geom_drop_triangles", True)))
         finally:
             self._restoring_display_settings = False
             del blockers
         self._sync_neighbor_frames()
+        self._apply_vector_geometry_editor_config()
 
     def _current_display_settings_payload(self) -> dict[str, object]:
-        return {
+        payload_out: dict[str, object] = {
             **self._display_settings.to_dict(),
             "random_object_colors": bool(self.random_object_colors_checkbox.isChecked()),
             "show_neighbor_frames": bool(self.show_neighbor_frames_checkbox.isChecked()),
@@ -351,13 +398,55 @@ class PolygonExtractionWidget(QWidget):
             "neighbor_max_grid": int(self.neighbor_max_grid_spin.value()),
             "neighbor_opacity": float(self.neighbor_opacity_spin.value()),
             "neighbor_overlap_pixels": int(self.neighbor_overlap_spin.value()),
+            "autosave_on_frame_transition": bool(self.autosave_on_frame_transition_checkbox.isChecked()),
             "main_splitter_sizes": self.main_splitter.sizes() if hasattr(self, "main_splitter") else [],
         }
+        if hasattr(self, "vector_geom_clip_checkbox"):
+            payload_out.update(
+                {
+                    "vector_geom_clip_on_sync": bool(self.vector_geom_clip_checkbox.isChecked()),
+                    "vector_geom_min_outer_area": float(self.vector_geom_min_outer_spin.value()),
+                    "vector_geom_min_hole_area": float(self.vector_geom_min_hole_spin.value()),
+                    "vector_geom_merge_on_edit": bool(self.vector_geom_merge_checkbox.isChecked()),
+                    "vector_geom_spike_angle_deg": float(self.vector_geom_spike_angle_spin.value()),
+                    "vector_geom_drop_triangles": bool(self.vector_geom_drop_triangle_checkbox.isChecked()),
+                }
+            )
+        return payload_out
 
     def _save_persisted_display_settings(self) -> None:
         if self._restoring_display_settings or not hasattr(self, "line_width_spin"):
             return
         self._display_settings_store.save(self._current_display_settings_payload())
+
+    def _vector_geometry_settings_from_widgets(self) -> VectorGeometrySettings:
+        if not hasattr(self, "vector_geom_clip_checkbox"):
+            return VectorGeometrySettings()
+        return VectorGeometrySettings(
+            clip_to_frame_on_sync=bool(self.vector_geom_clip_checkbox.isChecked()),
+            min_outer_area_px2=float(self.vector_geom_min_outer_spin.value()),
+            min_hole_area_to_remove_px2=float(self.vector_geom_min_hole_spin.value()),
+            merge_overlapping_on_edit=bool(self.vector_geom_merge_checkbox.isChecked()),
+            min_spike_interior_angle_deg=float(self.vector_geom_spike_angle_spin.value()),
+            drop_three_vertex_triangle_artifacts=bool(self.vector_geom_drop_triangle_checkbox.isChecked()),
+        )
+
+    def _apply_vector_geometry_editor_config(self) -> None:
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_vector_geometry_settings(self._vector_geometry_settings_from_widgets())
+
+    def _on_vector_geom_control_changed(self, *_args) -> None:
+        self._apply_vector_geometry_editor_config()
+        self._save_persisted_display_settings()
+
+    def _display_image_dimensions_for_vectors(self) -> tuple[int, int]:
+        frame = self._display_image_for_current_state()
+        if frame is None:
+            return (0, 0)
+        shape = getattr(frame, "shape", None)
+        if isinstance(shape, tuple) and len(shape) >= 2:
+            return (int(shape[1]), int(shape[0]))
+        return (0, 0)
 
     def _restore_main_splitter_sizes(self, raw_sizes: object) -> None:
         if not hasattr(self, "main_splitter"):
@@ -509,6 +598,13 @@ class PolygonExtractionWidget(QWidget):
             )
         )
         overview_action.triggered.connect(lambda _checked=False: self._show_help_dialog())
+        hotkeys_action = self._help_menu.addAction(
+            self._tr(
+                "help_editor_hotkeys_action",
+                "Горячие клавиши редактора" if self._ui_language == "ru" else "Editor hotkeys",
+            )
+        )
+        hotkeys_action.triggered.connect(lambda _checked=False: self._show_editor_hotkeys_dialog())
         self._help_menu.addSeparator()
         for group_key, labels, operations in PIPELINE_OPERATION_GROUPS:
             submenu = self._help_menu.addMenu(labels[0] if self._ui_language == "ru" else labels[1])
@@ -537,6 +633,28 @@ class PolygonExtractionWidget(QWidget):
             help_layout,
             [operation_name] if operation_name is not None else self._all_operation_names(),
         )
+        dialog.exec()
+
+    def _show_editor_hotkeys_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(
+            self._tr(
+                "help_editor_hotkeys_action",
+                "Горячие клавиши редактора" if self._ui_language == "ru" else "Editor hotkeys",
+            )
+        )
+        dialog.resize(520, 560)
+        layout = QVBoxLayout(dialog)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(build_editor_hotkeys_plain_text(ru=self._ui_language == "ru"))
+        layout.addWidget(text, 1)
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        close_button = QPushButton("Закрыть" if self._ui_language == "ru" else "Close")
+        close_button.clicked.connect(dialog.accept)
+        close_row.addWidget(close_button)
+        layout.addLayout(close_row)
         dialog.exec()
 
     def _populate_help_cards(self, layout: QVBoxLayout, operation_names: list[str]) -> None:
@@ -1635,6 +1753,8 @@ class PolygonExtractionWidget(QWidget):
                 "polygon_rectangle": "Прямоугольник",
                 "brush_freeform": "Произвольная",
                 "brush_45deg": "45° шаг",
+                "brush_stamp_add": "Кружок (добавить)",
+                "brush_stamp_erase": "Кружок (стереть)",
                 "delete_single": "Вершина",
                 "delete_area": "Область",
             }
@@ -1644,6 +1764,8 @@ class PolygonExtractionWidget(QWidget):
                 "polygon_rectangle": "Rectangle",
                 "brush_freeform": "Freeform",
                 "brush_45deg": "45° constrained",
+                "brush_stamp_add": "Circle (add)",
+                "brush_stamp_erase": "Circle (erase)",
                 "delete_single": "Single vertex",
                 "delete_area": "Area",
             }
@@ -1671,9 +1793,6 @@ class PolygonExtractionWidget(QWidget):
             EditorTool.RULER: self._tr("tool_ruler", "Ruler"),
             EditorTool.ADD_VIA: self._tr("tool_add_via", "Via"),
             EditorTool.SELECT: self._tr("tool_select", "Выбор" if self._ui_language == "ru" else "Select"),
-            EditorTool.SELECT_AREA: self._tr(
-                "tool_select_area", "Выбор рамкой" if self._ui_language == "ru" else "Area select"
-            ),
             EditorTool.PAN: self._tr("tool_pan", "Панорамирование" if self._ui_language == "ru" else "Pan"),
             EditorTool.ADD_POLYGON: self._tr(
                 "tool_add_polygon", "Полигон" if self._ui_language == "ru" else "Add polygon"
@@ -1697,12 +1816,16 @@ class PolygonExtractionWidget(QWidget):
             if tool == EditorTool.RULER:
                 label = self._tr("tool_ruler", "Линейка" if self._ui_language == "ru" else "Ruler")
             tooltip_pair = EDITOR_TOOL_TOOLTIPS.get(tool)
-            tooltip = (tooltip_pair[0] if self._ui_language == "ru" else tooltip_pair[1]) if tooltip_pair else label
+            base_tip = (tooltip_pair[0] if self._ui_language == "ru" else tooltip_pair[1]) if tooltip_pair else label
+            shortcut_tip = tool_shortcut_native_text(tool)
+            tooltip = append_shortcut_to_tooltip(base_tip, shortcut_tip)
             button.setToolTip(tooltip)
             button.setStatusTip(tooltip)
             button.setAccessibleName(label)
 
     def _update_action_button_texts(self) -> None:
+        undo_key = QKeySequence(QKeySequence.StandardKey.Undo).toString(QKeySequence.SequenceFormat.NativeText)
+        redo_key = QKeySequence(QKeySequence.StandardKey.Redo).toString(QKeySequence.SequenceFormat.NativeText)
         for button, label in [
             (self.undo_button, self._tr("undo_button", "Отменить" if self._ui_language == "ru" else "Undo")),
             (self.redo_button, self._tr("redo_button", "Повторить" if self._ui_language == "ru" else "Redo")),
@@ -1713,9 +1836,14 @@ class PolygonExtractionWidget(QWidget):
             ),
             (self.fit_button, self._tr("fit_button", "Подогнать" if self._ui_language == "ru" else "Fit")),
         ]:
-            button.setToolTip(label)
-            button.setStatusTip(label)
             button.setAccessibleName(label)
+        shortcuts_map = {
+            self.undo_button: undo_key,
+            self.redo_button: redo_key,
+            self.zoom_in_button: "",
+            self.zoom_out_button: "",
+            self.fit_button: "",
+        }
         for button, tooltip_key in (
             (self.undo_button, "undo_button"),
             (self.redo_button, "redo_button"),
@@ -1724,8 +1852,10 @@ class PolygonExtractionWidget(QWidget):
             (self.fit_button, "fit_button"),
         ):
             tooltip = _localized_text(EDITOR_ACTION_TOOLTIPS, tooltip_key, self._ui_language)
-            button.setToolTip(tooltip)
-            button.setStatusTip(tooltip)
+            shortcut = shortcuts_map.get(button, "")
+            full_tip = append_shortcut_to_tooltip(tooltip, shortcut) if shortcut else tooltip
+            button.setToolTip(full_tip)
+            button.setStatusTip(full_tip)
 
     def _on_editor_tool_changed(self, tool) -> None:
         is_ruler = tool == EditorTool.RULER
@@ -1741,6 +1871,33 @@ class PolygonExtractionWidget(QWidget):
             )
         elif not is_ruler:
             self.ruler_status_label.clear()
+        if hasattr(self, "_polygon_toolbar_block"):
+            self._polygon_toolbar_block.setVisible(tool == EditorTool.ADD_POLYGON)
+        if hasattr(self, "_brush_toolbar_block"):
+            self._brush_toolbar_block.setVisible(tool == EditorTool.BRUSH)
+        if hasattr(self, "_via_toolbar_block"):
+            self._via_toolbar_block.setVisible(tool == EditorTool.ADD_VIA)
+        if hasattr(self, "_delete_vertex_toolbar_block"):
+            self._delete_vertex_toolbar_block.setVisible(tool == EditorTool.DELETE_VERTEX)
+        self._on_effective_polygon_create_mode_changed(self.polygon_editor.effective_polygon_create_mode())
+
+    def _on_effective_polygon_create_mode_changed(self, mode: PolygonCreateMode) -> None:
+        if not hasattr(self, "polygon_draw_mode_indicator"):
+            return
+        if self.polygon_editor.current_tool != EditorTool.ADD_POLYGON:
+            self.polygon_draw_mode_indicator.clear()
+            return
+        if mode == PolygonCreateMode.POINTS:
+            text = self._tr(
+                "polygon_draw_now_points",
+                "Сейчас: по точкам" if self._ui_language == "ru" else "Now: by points",
+            )
+        else:
+            text = self._tr(
+                "polygon_draw_now_rectangle",
+                "Сейчас: прямоугольник" if self._ui_language == "ru" else "Now: rectangle",
+            )
+        self.polygon_draw_mode_indicator.setText(text)
 
     def _update_ruler_status(self, text: str) -> None:
         if not text:
@@ -1767,6 +1924,8 @@ class PolygonExtractionWidget(QWidget):
         self.polygon_mode_combo.setItemText(1, self._mode_text("polygon_rectangle"))
         self.brush_mode_combo.setItemText(0, self._mode_text("brush_freeform"))
         self.brush_mode_combo.setItemText(1, self._mode_text("brush_45deg"))
+        self.brush_mode_combo.setItemText(2, self._mode_text("brush_stamp_add"))
+        self.brush_mode_combo.setItemText(3, self._mode_text("brush_stamp_erase"))
         self.delete_vertex_mode_combo.setItemText(0, self._mode_text("delete_single"))
         self.delete_vertex_mode_combo.setItemText(1, self._mode_text("delete_area"))
 
@@ -1779,6 +1938,8 @@ class PolygonExtractionWidget(QWidget):
             self.brush_mode_combo.setCurrentIndex(brush_index)
         if delete_index >= 0:
             self.delete_vertex_mode_combo.setCurrentIndex(delete_index)
+
+        self._on_effective_polygon_create_mode_changed(self.polygon_editor.effective_polygon_create_mode())
 
     def _retranslate_contour_mode_combos(self) -> None:
         current_retrieval = self.retrieval_mode_combo.currentData()
@@ -3523,8 +3684,16 @@ class PolygonExtractionWidget(QWidget):
 
     def _on_image_item_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
         if previous is not None:
-            self._autosave_current_overlay_if_needed()
+            if not self._try_leave_current_frame():
+                self.image_list.blockSignals(True)
+                try:
+                    self.image_list.setCurrentItem(previous)
+                finally:
+                    self.image_list.blockSignals(False)
+                self._sync_frame_navigation_controls()
+                return
         if current is None:
+            self._sync_frame_navigation_controls()
             return
         image_path = current.data(Qt.ItemDataRole.UserRole)
         if image_path:
@@ -3533,6 +3702,367 @@ class PolygonExtractionWidget(QWidget):
             except Exception as exc:
                 self._append_log(self._tr("failed_to_load_image_log", image_path=image_path, error=exc))
                 QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
+        self._sync_frame_navigation_controls()
+
+    def _prune_tagged_sets_for_images(self, retained_paths: list[str]) -> None:
+        retained = {str(Path(p)) for p in retained_paths}
+        stems = {Path(p).stem.lower() for p in retained_paths}
+        self._persisted_highlight_paths.intersection_update(retained)
+        self._viewed_image_paths.intersection_update(retained)
+        self._cif_load_failure_stems.intersection_update(stems)
+
+    def _matching_report(self):
+        return build_image_cif_matching_report(
+            list(self._workspace.image_paths),
+            self._workspace.cif_paths_by_stem,
+        )
+
+    def _log_matching_gaps_after_refresh(self, report) -> None:
+        if report.stems_with_image_but_no_cif:
+            sample = sorted(report.stems_with_image_but_no_cif)[:12]
+            more_txt = ""
+            extra = len(report.stems_with_image_but_no_cif) - len(sample)
+            if extra > 0:
+                more_txt = f" (+{extra})"
+            self._append_log(
+                self._tr(
+                    "images_without_matching_cif_log",
+                    count=len(report.stems_with_image_but_no_cif),
+                    sample=", ".join(sample),
+                    more=more_txt,
+                )
+            )
+        if report.stems_with_cif_but_no_image:
+            sample = sorted(report.stems_with_cif_but_no_image)[:12]
+            more_txt = ""
+            extra = len(report.stems_with_cif_but_no_image) - len(sample)
+            if extra > 0:
+                more_txt = f" (+{extra})"
+            self._append_log(
+                self._tr(
+                    "cif_without_matching_image_log",
+                    count=len(report.stems_with_cif_but_no_image),
+                    sample=", ".join(sample),
+                    more=more_txt,
+                )
+            )
+
+    def _complete_directory_scan_turn(self) -> str | None:
+        self._directory_scan_busy = False
+        if hasattr(self, "files_scan_progress_bar"):
+            self.files_scan_progress_bar.setVisible(False)
+            self.files_scan_progress_bar.setRange(0, 100)
+            self.files_scan_progress_bar.setValue(0)
+        pending = self._directory_scan_pending_directory
+        self._directory_scan_pending_directory = None
+        return pending
+
+    def _begin_async_directory_scan(self, directory: str) -> None:
+        normalized = str(Path(directory))
+        if self._directory_scan_busy:
+            self._directory_scan_pending_directory = normalized
+            return
+        self._run_directory_scan_now(normalized)
+
+    def _maybe_start_pending_directory_scan(self, pending_directory: str | None) -> None:
+        if pending_directory:
+            self._run_directory_scan_now(pending_directory)
+
+    def _run_directory_scan_now(self, directory: str) -> None:
+        self._directory_scan_busy = True
+        scan_generation = self._scan_generation
+        if hasattr(self, "files_scan_progress_bar"):
+            self.files_scan_progress_bar.setVisible(True)
+            self.files_scan_progress_bar.setRange(0, 0)
+            self.files_scan_progress_bar.setFormat(self._tr("scanning_directory_progress"))
+        runnable = ScanInputDirectoryRunnable(
+            directory=directory,
+            signals=self._directory_scan_signals,
+            run_generation=scan_generation,
+        )
+        self._scan_thread_pool.start(runnable)
+
+    def _on_input_directory_scan_finished(self, paths: list[str], run_generation: int) -> None:
+        pending = self._complete_directory_scan_turn()
+        if run_generation != self._scan_generation:
+            self._maybe_start_pending_directory_scan(pending)
+            return
+        self.load_images(paths)
+        self._maybe_start_pending_directory_scan(pending)
+
+    def _on_input_directory_scan_failed(self, message: str, run_generation: int) -> None:
+        pending = self._complete_directory_scan_turn()
+        if run_generation == self._scan_generation:
+            self._append_log(
+                self._tr(
+                    "scan_input_directory_failed_log",
+                    error=message,
+                )
+            )
+        self._maybe_start_pending_directory_scan(pending)
+
+    def _on_sidebar_list_mode_changed(self, *_args) -> None:
+        mode = self.sidebar_list_mode_combo.currentData()
+        self.sidebar_list_stack.setCurrentIndex(0 if mode == "images" else 1)
+
+    def _image_path_for_cif_stem(self, stem: str) -> str | None:
+        target = stem.lower()
+        for path in self._workspace.image_paths:
+            if Path(path).stem.lower() == target:
+                return str(Path(path))
+        return None
+
+    def _paint_vector_list_item(self, item: QListWidgetItem, stem: str) -> None:
+        stem_lower = stem.lower()
+        status = self._vector_status_enum_for_stem(stem_lower)
+        item.setData(FRAME_STATUS_ROLE, status.value)
+        hex_background = background_hex_vector_status(status)
+        if hex_background:
+            item.setBackground(QBrush(QColor(hex_background)))
+        else:
+            item.setBackground(QBrush())
+        raw_path = item.data(Qt.ItemDataRole.UserRole)
+        if raw_path:
+            item.setText(Path(str(raw_path)).name)
+
+    def _vector_status_enum_for_stem(self, stem_lower: str):
+        ipath = self._image_path_for_cif_stem(stem_lower)
+        has_matching = ipath is not None
+        cif_failed = stem_lower in self._cif_load_failure_stems
+        normalized = "" if ipath is None else str(Path(ipath))
+        never_opened = (not normalized) or (normalized not in self._viewed_image_paths)
+        dirty = bool(ipath is not None and self._workspace.image_has_changes(normalized))
+        persist = normalized in self._persisted_highlight_paths if normalized else False
+        return classify_vector_side_status(
+            has_matching_image=has_matching,
+            cif_load_failed=cif_failed,
+            image_never_viewed=never_opened,
+            polygons_dirty=dirty,
+            persist_highlight=persist,
+        )
+
+    def _rebuild_vector_list(self) -> None:
+        if not hasattr(self, "vector_list"):
+            return
+        self.vector_list.blockSignals(True)
+        self.vector_list.clear()
+        mapping = sorted(self._workspace.cif_paths_by_stem.items(), key=lambda kv: kv[0].lower())
+        for stem, cif_path in mapping:
+            item = QListWidgetItem(Path(cif_path).name)
+            item.setToolTip(cif_path)
+            item.setData(Qt.ItemDataRole.UserRole, cif_path)
+            self._paint_vector_list_item(item, stem)
+            self.vector_list.addItem(item)
+        self.vector_list.blockSignals(False)
+
+    def _refresh_vector_rows_for_workspace(self) -> None:
+        if not hasattr(self, "vector_list"):
+            return
+        for index in range(self.vector_list.count()):
+            row = self.vector_list.item(index)
+            if row is None:
+                continue
+            tip = row.toolTip()
+            if not tip:
+                continue
+            self._paint_vector_list_item(row, Path(tip).stem.lower())
+
+    def _refresh_vector_items_for_stems(self, stems: set[str]) -> None:
+        if not stems or not hasattr(self, "vector_list"):
+            return
+        lowered = {s.lower() for s in stems}
+        for idx in range(self.vector_list.count()):
+            item = self.vector_list.item(idx)
+            if item is None:
+                continue
+            tip = item.toolTip()
+            if not tip:
+                continue
+            stem = Path(tip).stem.lower()
+            if stem in lowered:
+                self._paint_vector_list_item(item, stem)
+
+    def _select_input_image_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            self._tr("select_image_files_dialog"),
+            self.input_dir_edit.text() or str(Path.home()),
+            self._tr("supported_image_files_filter"),
+        )
+        if not paths:
+            return
+        self.input_dir_edit.setText(str(Path(paths[0]).parent))
+        self._save_persisted_paths()
+        self.load_images([str(Path(p)) for p in paths])
+
+    def _merge_cif_files_dialog(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            self._tr("merge_cif_files_dialog"),
+            self.cif_dir_edit.text() or str(Path.home()),
+            self._tr("cif_files_filter"),
+        )
+        if not paths:
+            return
+        additions = index_cif_file_paths(paths)
+        if not additions:
+            return
+        self._workspace.merge_cif_paths(additions)
+        self.cif_dir_edit.setText(str(Path(paths[0]).parent))
+        self._save_persisted_paths()
+        self._append_log(self._tr("cif_indexed_log", count=len(self._workspace.cif_paths_by_stem)))
+        self._sync_after_cif_index_changed()
+
+    def _sync_after_cif_index_changed(self) -> None:
+        self._clear_cif_transient_hints()
+        self._rebuild_vector_list()
+        self._refresh_image_list_item_states()
+        cur = self._workspace.current_image_path
+        if cur:
+            try:
+                self.load_image(cur)
+            except Exception as exc:
+                self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
+        report = self._matching_report()
+        self._log_matching_gaps_after_refresh(report)
+
+    def _clear_cif_transient_hints(self) -> None:
+        self._cif_load_failure_stems.clear()
+
+    def _invalidate_cif_overlay_for_stems(self, stems: set[str]) -> list[str]:
+        if not stems:
+            return []
+        paths: list[str] = []
+        for path in self._workspace.image_paths:
+            stem = Path(path).stem.lower()
+            if stem in stems:
+                self._cif_load_failure_stems.discard(stem)
+                paths.append(str(Path(path)))
+        if paths:
+            self._workspace.invalidate_image_states(paths)
+        return paths
+
+    def _reload_cif_overlays_for_selected_vectors(self) -> None:
+        stems: set[str] = set()
+        for row in self.vector_list.selectedItems():
+            tip = row.toolTip()
+            if tip:
+                stems.add(Path(tip).stem.lower())
+        if not stems:
+            self._append_log(self._tr("no_vector_selection_for_reload_log"))
+            return
+        affected = self._invalidate_cif_overlay_for_stems(stems)
+        self._finalize_overlay_reload(affected)
+
+    def _reload_cif_overlays_for_selected_images(self) -> None:
+        stems: set[str] = {Path(str(row.data(Qt.ItemDataRole.UserRole))).stem.lower() for row in self.image_list.selectedItems()}
+        cur = self._workspace.current_image_path
+        if not stems and cur:
+            stems.add(Path(cur).stem.lower())
+        if not stems:
+            self._append_log(self._tr("no_image_selection_for_reload_log"))
+            return
+        affected = self._invalidate_cif_overlay_for_stems(stems)
+        self._finalize_overlay_reload(affected)
+
+    def _finalize_overlay_reload(self, paths_for_message: list[str]) -> None:
+        if not paths_for_message:
+            self._append_log(self._tr("cif_reload_no_matching_images_log"))
+            return
+        unique_stems = sorted({Path(p).stem.lower() for p in paths_for_message})[:16]
+        more_txt = ""
+        extra = len({Path(p).stem.lower() for p in paths_for_message}) - len(unique_stems)
+        if extra > 0:
+            more_txt = f" (+{extra})"
+        self._append_log(
+            self._tr(
+                "cif_reload_invalidate_log",
+                stems=", ".join(unique_stems),
+                more=more_txt,
+            )
+        )
+        self._refresh_image_list_item_states()
+        self._refresh_vector_rows_for_workspace()
+        cur = self._workspace.current_image_path
+        if cur and cur in paths_for_message:
+            try:
+                self.load_image(cur)
+            except Exception as exc:
+                self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
+
+    def _sync_frame_navigation_controls(self) -> None:
+        if not hasattr(self, "frame_nav_spin"):
+            return
+        paths = list(self._workspace.image_paths)
+        total = len(paths)
+        self.frame_nav_spin.blockSignals(True)
+        if total <= 0:
+            self.visual_frame_nav_widget.setEnabled(False)
+            self.frame_nav_spin.setMinimum(1)
+            self.frame_nav_spin.setMaximum(1)
+            self.frame_nav_spin.setValue(1)
+            self.frame_nav_total_label.setText("/ 0")
+        else:
+            self.visual_frame_nav_widget.setEnabled(True)
+            self.frame_nav_spin.setMinimum(1)
+            self.frame_nav_spin.setMaximum(total)
+            current = self._workspace.current_image_path
+            position = paths.index(current) + 1 if current and current in paths else min(self.frame_nav_spin.value(), total)
+            position = max(1, min(position, total))
+            self.frame_nav_spin.setValue(position)
+            self.frame_nav_total_label.setText(f"/ {total}")
+        self.frame_nav_spin.blockSignals(False)
+
+    def _on_frame_nav_spin_changed(self, value: int) -> None:
+        paths = list(self._workspace.image_paths)
+        if not paths:
+            return
+        idx = max(0, min(int(value), len(paths)) - 1)
+        target_item = self.image_list.item(idx)
+        if target_item is not None:
+            self.image_list.setCurrentItem(target_item)
+
+    def _frame_nav_previous(self) -> None:
+        if not hasattr(self, "frame_nav_spin"):
+            return
+        self.frame_nav_spin.setValue(max(1, self.frame_nav_spin.value() - 1))
+
+    def _frame_nav_next(self) -> None:
+        if not hasattr(self, "frame_nav_spin"):
+            return
+        total = len(self._workspace.image_paths)
+        if not total:
+            return
+        self.frame_nav_spin.setValue(min(total, self.frame_nav_spin.value() + 1))
+
+    def _on_image_selection_changed(self) -> None:
+        rows = sorted({self.image_list.row(i) for i in self.image_list.selectedItems()})
+        paths = list(self._workspace.image_paths)
+        if len(rows) == 1 and paths:
+            with QSignalBlocker(self.frame_nav_spin):
+                self.frame_nav_spin.setValue(min(max(1, rows[0] + 1), len(paths)))
+
+    def _on_vector_item_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
+        del previous
+        if current is None:
+            return
+        tip = current.toolTip()
+        if not tip:
+            return
+        stem = Path(tip).stem.lower()
+        image_path = self._image_path_for_cif_stem(stem)
+        if not image_path:
+            self._append_log(self._tr("vector_row_no_matching_image_loaded_log"))
+            return
+        item = self._find_image_list_item(image_path)
+        if item is None:
+            return
+        with QSignalBlocker(self.sidebar_list_mode_combo):
+            self.sidebar_list_mode_combo.setCurrentIndex(0)
+        self.sidebar_list_stack.setCurrentIndex(0)
+        self.image_list.blockSignals(True)
+        self.image_list.setCurrentItem(item)
+        self.image_list.blockSignals(False)
 
     def _select_input_directory(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -3577,6 +4107,9 @@ class PolygonExtractionWidget(QWidget):
         else:
             self._workspace.replace_image_selection([], is_supported_image=is_image_path)
             self.image_list.clear()
+            self._rebuild_vector_list()
+            self._refresh_image_list_item_states()
+            self._sync_frame_navigation_controls()
             self._sync_current_state_views()
             self._save_persisted_paths()
 
@@ -3587,6 +4120,8 @@ class PolygonExtractionWidget(QWidget):
         else:
             self._workspace.clear_cif_index()
             self._save_persisted_paths()
+            self._rebuild_vector_list()
+            self._refresh_image_list_item_states()
             if self._workspace.current_image_path:
                 try:
                     self.load_image(self._workspace.current_image_path)
@@ -3631,10 +4166,11 @@ class PolygonExtractionWidget(QWidget):
             self._display_settings.fill_opacity = float(self.fill_opacity_spin.value())
             self._display_settings.show_vertices = bool(self.show_vertices_checkbox.isChecked())
             self._display_settings.show_labels = bool(self.show_labels_checkbox.isChecked())
-        if hasattr(self, "polygon_editor"):
-            self.polygon_editor.set_display_settings(self._display_settings)
-            if hasattr(self, "random_object_colors_checkbox"):
-                self.polygon_editor.set_random_object_colors_enabled(self.random_object_colors_checkbox.isChecked())
+            if hasattr(self, "polygon_editor"):
+                self.polygon_editor.set_display_settings(self._display_settings)
+                if hasattr(self, "random_object_colors_checkbox"):
+                    self.polygon_editor.set_random_object_colors_enabled(self.random_object_colors_checkbox.isChecked())
+        self._apply_vector_geometry_editor_config()
         self._save_persisted_display_settings()
 
     def _on_neighbor_display_settings_changed(self, *_args) -> None:
@@ -4945,28 +5481,27 @@ class PolygonExtractionWidget(QWidget):
             save_preview=self.save_preview_checkbox.isChecked(),
         )
 
-    def _frame_status_for_image(self, image_path: str) -> str:
-        if self._workspace.image_has_changes(image_path):
-            return FRAME_STATUS_MODIFIED
-        if str(Path(image_path)) in self._viewed_image_paths:
-            return FRAME_STATUS_VIEWED
-        return FRAME_STATUS_UNCHANGED
-
-    def _frame_status_brush(self, status: str) -> QBrush:
-        if status == FRAME_STATUS_MODIFIED:
-            return QBrush(QColor("#86EFAC"))
-        if status == FRAME_STATUS_VIEWED:
-            return QBrush(QColor("#D1D5DB"))
-        return QBrush(QColor("#D1D5DB"))
-
-    def _apply_frame_status_to_item(self, item: QListWidgetItem, status: str) -> None:
-        item.setData(FRAME_STATUS_ROLE, status)
-        item.setBackground(self._frame_status_brush(status))
+    def _paint_image_row_item(self, item: QListWidgetItem, image_path: str) -> None:
+        normalized = str(Path(image_path))
+        painted = classify_image_side_paint_status(
+            never_opened=normalized not in self._viewed_image_paths,
+            polygons_dirty=self._workspace.image_has_changes(normalized),
+            persist_highlight=normalized in self._persisted_highlight_paths,
+        )
+        item.setData(FRAME_STATUS_ROLE, painted.value)
+        hex_background = background_hex_image_paint_status(painted)
+        if hex_background:
+            item.setBackground(QBrush(QColor(hex_background)))
+        else:
+            item.setBackground(QBrush())
+        fg = QColor(foreground_hex_image_has_vector_overlay(bool(self._workspace.resolve_cif_path(normalized))))
+        item.setForeground(QBrush(fg))
 
     def _find_image_list_item(self, image_path: str) -> QListWidgetItem | None:
+        target = str(Path(image_path))
         for index in range(self.image_list.count()):
             item = self.image_list.item(index)
-            if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == image_path:
+            if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == target:
                 return item
         return None
 
@@ -4976,7 +5511,8 @@ class PolygonExtractionWidget(QWidget):
         item = self._find_image_list_item(image_path)
         if item is None:
             return
-        self._apply_frame_status_to_item(item, self._frame_status_for_image(image_path))
+        self._paint_image_row_item(item, str(Path(image_path)))
+        self._refresh_vector_items_for_stems({Path(str(image_path)).stem.lower()})
 
     def _refresh_image_list_item_states(self) -> None:
         for index in range(self.image_list.count()):
@@ -4984,60 +5520,226 @@ class PolygonExtractionWidget(QWidget):
             if item is None:
                 continue
             image_path = str(item.data(Qt.ItemDataRole.UserRole) or "")
-            self._apply_frame_status_to_item(item, self._frame_status_for_image(image_path))
+            if image_path:
+                self._paint_image_row_item(item, image_path)
+        self._refresh_vector_rows_for_workspace()
 
-    def _autosave_current_overlay_if_needed(self) -> None:
+    def _update_vector_edit_status_label(self) -> None:
+        if not hasattr(self, "vector_edit_status_label"):
+            return
+        if self._workspace.current_image_path is None:
+            self.vector_edit_status_label.clear()
+            return
+        if not self._updating_views:
+            self._workspace.update_current_polygons(self.get_polygons())
+        dirty = self._workspace.current_image_has_changes()
+        if self._ui_language == "ru":
+            self.vector_edit_status_label.setText("Изменено" if dirty else "Сохранено")
+        else:
+            self.vector_edit_status_label.setText("Modified" if dirty else "Saved")
+
+    def _persist_current_overlay_changes(self) -> bool:
+        """Persist editor polygons for the current frame (dataset export and/or linked CIF)."""
+
         current_state = self._workspace.current_state
         current_image_path = self._workspace.current_image_path
         if current_state is None or current_image_path is None:
-            return
+            return True
         current_polygons = self.get_polygons()
         self._workspace.update_current_polygons(current_polygons)
-        current_has_changes = self._workspace.current_image_has_changes()
-        if current_has_changes and self.dataset_mode_checkbox.isChecked():
-            self._export_dataset_frame_for_state(current_image_path, current_state, current_polygons)
-        if not current_state.loaded_cif_path or current_state.source_image is None:
+        if not self._workspace.current_image_has_changes():
             self._update_frame_item_status(current_image_path)
-            return
-        if not current_has_changes:
-            self._update_frame_item_status(current_image_path)
-            return
-        image_size = (int(current_state.source_image.shape[1]), int(current_state.source_image.shape[0]))
-        try:
-            save_polygons_cif(
-                current_state.loaded_cif_path,
-                current_image_path,
-                current_polygons,
-                image_size=image_size,
-            )
+            self._update_vector_edit_status_label()
+            return True
+
+        want_dataset = bool(self.dataset_mode_checkbox.isChecked())
+        can_cif = bool(current_state.loaded_cif_path and current_state.source_image is not None)
+
+        if not want_dataset and not can_cif:
             self._append_log(
                 self._tr(
-                    "autosaved_cif_log",
-                    "Автосохранен CIF: {path}" if self._ui_language == "ru" else "Autosaved CIF: {path}",
-                    path=current_state.loaded_cif_path,
-                )
-            )
-        except Exception as exc:
-            self._append_log(
-                self._tr(
-                    "autosave_failed_log",
-                    "Не удалось автосохранить CIF {path}: {error}"
+                    "vector_save_no_target_log",
+                    "Нет каталога набора данных или связанного CIF для сохранения правок текущего кадра."
                     if self._ui_language == "ru"
-                    else "Failed to autosave CIF {path}: {error}",
-                    path=current_state.loaded_cif_path,
-                    error=exc,
+                    else "No dataset directory or linked CIF available to save edits for the current frame.",
                 )
             )
+            return False
+
+        if want_dataset:
+            saved_ds = self._export_dataset_frame_for_state(current_image_path, current_state, current_polygons)
+            if not saved_ds:
+                return False
+
+        if can_cif:
+            image_size = (int(current_state.source_image.shape[1]), int(current_state.source_image.shape[0]))
+            try:
+                save_polygons_cif(
+                    current_state.loaded_cif_path,
+                    current_image_path,
+                    current_polygons,
+                    image_size=image_size,
+                )
+            except Exception as exc:
+                self._append_log(
+                    self._tr(
+                        "autosave_failed_log",
+                        "Не удалось сохранить CIF {path}: {error}"
+                        if self._ui_language == "ru"
+                        else "Failed to save CIF {path}: {error}",
+                        path=current_state.loaded_cif_path,
+                        error=exc,
+                    )
+                )
+                return False
+
+        persisted_path = str(Path(current_image_path))
+        self._persisted_highlight_paths.add(persisted_path)
+        self._workspace.sync_polygon_reference_to_current(persisted_path)
+        self._append_log(
+            self._tr(
+                "vectors_persisted_transition_log",
+                "Изменения векторов сохранены для кадра {name}"
+                if self._ui_language == "ru"
+                else "Vector edits saved for frame {name}",
+                name=Path(current_image_path).name,
+            )
+        )
         self._update_frame_item_status(current_image_path)
+        self._update_vector_edit_status_label()
+        return True
+
+    def _discard_current_vector_changes(self) -> None:
+        state = self._workspace.current_state
+        path = self._workspace.current_image_path
+        if state is None or path is None:
+            return
+        restored = [polygon.clone() for polygon in state.reference_polygons]
+        self._updating_views = True
+        try:
+            state.polygons = restored
+            self._workspace.update_current_polygons(restored)
+            self.polygon_editor.set_polygons(restored)
+        finally:
+            self._updating_views = False
+        self._persisted_highlight_paths.discard(str(Path(path)))
+        self._update_frame_item_status(path)
+        self._update_vector_edit_status_label()
+
+    def _prompt_transition_vector_save_dialog(self) -> TransitionPromptChoice:
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle(
+            self._tr(
+                "unsaved_vectors_dialog_title",
+                "Несохранённые изменения" if self._ui_language == "ru" else "Unsaved changes",
+            )
+        )
+        msg.setText(
+            self._tr(
+                "unsaved_vectors_dialog_text",
+                "Сохранить правки векторов текущего кадра перед переходом?"
+                if self._ui_language == "ru"
+                else "Save vector edits for the current frame before leaving?",
+            )
+        )
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel
+        )
+        msg.setDefaultButton(QMessageBox.StandardButton.Save)
+        answer = msg.exec()
+        if answer == QMessageBox.StandardButton.Cancel:
+            return TransitionPromptChoice.CANCEL
+        if answer == QMessageBox.StandardButton.Discard:
+            return TransitionPromptChoice.DISCARD
+        return TransitionPromptChoice.SAVE
+
+    def _warn_transition_blocked_after_failed_autosave(self) -> None:
+        QMessageBox.warning(
+            self,
+            self._tr(
+                "autosave_transition_blocked_title",
+                "Не удалось сохранить" if self._ui_language == "ru" else "Save failed",
+            ),
+            self._tr(
+                "autosave_transition_blocked_text",
+                "Автосохранение не выполнено; переход отменён, данные не потеряны."
+                if self._ui_language == "ru"
+                else "Autosave failed; navigation cancelled — your edits were kept.",
+            ),
+        )
+
+    def _warn_transition_blocked_after_failed_manual_save(self) -> None:
+        QMessageBox.warning(
+            self,
+            self._tr(
+                "manual_save_transition_blocked_title",
+                "Не удалось сохранить" if self._ui_language == "ru" else "Save failed",
+            ),
+            self._tr(
+                "manual_save_transition_blocked_text",
+                "Сохранение не выполнено; переход отменён, данные не потеряны."
+                if self._ui_language == "ru"
+                else "Save failed; navigation cancelled — your edits were kept.",
+            ),
+        )
+
+    def _try_leave_current_frame(self) -> bool:
+        self._workspace.update_current_polygons(self.get_polygons())
+        dirty = self._workspace.current_image_has_changes()
+        if not dirty:
+            self._update_vector_edit_status_label()
+            return True
+
+        autosave_on = bool(
+            hasattr(self, "autosave_on_frame_transition_checkbox")
+            and self.autosave_on_frame_transition_checkbox.isChecked()
+        )
+        if autosave_on:
+            save_ok = self._persist_current_overlay_changes()
+            allowed = navigation_allowed_after_autosave_attempt(dirty=True, save_ok=save_ok)
+            if not allowed:
+                self._warn_transition_blocked_after_failed_autosave()
+            return allowed
+
+        choice = self._prompt_transition_vector_save_dialog()
+        if choice == TransitionPromptChoice.CANCEL:
+            return False
+
+        if choice == TransitionPromptChoice.DISCARD:
+            self._discard_current_vector_changes()
+            return True
+
+        save_ok = self._persist_current_overlay_changes()
+        allowed = navigation_allowed_after_prompt(dirty=True, choice=TransitionPromptChoice.SAVE, save_ok=save_ok)
+        if not allowed:
+            self._warn_transition_blocked_after_failed_manual_save()
+        return allowed
+
+    def confirm_ok_to_leave_current_vectors(self) -> bool:
+        """Ask before closing or reloading images when the active frame has unsaved vector edits."""
+
+        return self._try_leave_current_frame()
 
     def _sync_current_state_views(self) -> None:
         self._updating_views = True
         try:
             display_image = self._display_image_for_current_state()
             current_state = self._workspace.current_state
-            polygons = current_state.polygons if current_state else []
+            polygons_raw = list(current_state.polygons) if current_state else []
             self.polygon_editor.set_image(display_image)
-            self.polygon_editor.set_polygons(polygons)
+            fw, fh = self._display_image_dimensions_for_vectors()
+            polygons_synced, geo_changed = postprocess_polygons_for_frame_navigation(
+                polygons_raw,
+                fw,
+                fh,
+                self._vector_geometry_settings_from_widgets(),
+            )
+            if geo_changed and current_state is not None:
+                self._workspace.update_current_polygons(polygons_synced)
+            self.polygon_editor.set_polygons(polygons_synced)
             self.polygon_editor.set_debug_candidates(list(current_state.debug_candidates) if current_state else [])
             self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
             if hasattr(self, "via_show_detected_checkbox"):
@@ -5066,6 +5768,7 @@ class PolygonExtractionWidget(QWidget):
             self._refresh_gradient_overlay()
         finally:
             self._updating_views = False
+        self._update_vector_edit_status_label()
 
     def _display_image_for_current_state(self):
         current_state = self._workspace.current_state
@@ -5152,7 +5855,6 @@ class PolygonExtractionWidget(QWidget):
 
     def _on_neighbor_frame_activated(self, image_path: str) -> None:
         if image_path in self._workspace.image_paths:
-            self._autosave_current_overlay_if_needed()
             item = self._find_image_list_item(image_path)
             if item is not None:
                 self.image_list.setCurrentItem(item)
@@ -5429,7 +6131,11 @@ class PolygonExtractionWidget(QWidget):
         if self._updating_views:
             return
         if self._workspace.update_current_polygons(self.get_polygons()):
+            current_path = self._workspace.current_image_path
+            if current_path:
+                self._persisted_highlight_paths.discard(str(Path(current_path)))
             self._update_frame_item_status(self._workspace.current_image_path)
+            self._update_vector_edit_status_label()
             self.polygonsEdited.emit()
 
     def _on_batch_result(self, result) -> None:
@@ -5463,30 +6169,33 @@ class PolygonExtractionWidget(QWidget):
         if not directory:
             self._append_log(self._tr("input_directory_empty_log"))
             return
-        self.load_images(scan_image_files(directory))
+        self._begin_async_directory_scan(directory)
 
     def set_input_directory(self, path: str) -> None:
-        directory_state = load_input_directory(path, scan_images=scan_image_files)
-        self.input_dir_edit.setText(directory_state.directory)
+        normalized = str(Path(path))
+        root = Path(normalized)
+        if not root.exists() or not root.is_dir():
+            self._append_log(
+                self._tr(
+                    "input_directory_missing_log",
+                    directory=normalized,
+                )
+            )
+            return
+        self.input_dir_edit.setText(normalized)
         self._save_persisted_paths()
-        self.load_images(list(directory_state.image_paths))
+        self._begin_async_directory_scan(normalized)
 
     def set_cif_directory(self, path: str) -> None:
         directory_state = index_cif_directory(path)
         self.cif_dir_edit.setText(directory_state.directory)
         self._save_persisted_paths()
         self._workspace.set_cif_index(directory_state.indexed_paths)
-        self._refresh_image_list_item_states()
         if directory_state.available:
             self._append_log(self._tr("cif_indexed_log", count=len(directory_state.indexed_paths)))
         else:
             self._append_log(self._tr("cif_directory_unavailable_log"))
-
-        if self._workspace.current_image_path:
-            try:
-                self.load_image(self._workspace.current_image_path)
-            except Exception as exc:
-                self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
+        self._sync_after_cif_index_changed()
 
     def set_output_directory(self, path: str) -> None:
         self.output_dir_edit.setText(path)
@@ -5497,34 +6206,46 @@ class PolygonExtractionWidget(QWidget):
         self._save_persisted_paths()
 
     def load_images(self, paths: list[str]) -> None:
+        if self._workspace.current_state is not None:
+            if not self._try_leave_current_frame():
+                return
+        self._scan_generation += 1
         normalized_paths = self._workspace.replace_image_selection(paths, is_supported_image=is_image_path)
         self._neighbor_image_cache.clear()
-        self._viewed_image_paths.intersection_update(str(Path(path)) for path in normalized_paths)
+        self._prune_tagged_sets_for_images(normalized_paths)
         self._abort_in_flight_interactive_processing(preview=True, prepared=True)
         self.image_list.clear()
         for path in normalized_paths:
             item = QListWidgetItem(Path(path).name)
             item.setToolTip(f"Путь к файлу: {path}" if self._ui_language == "ru" else f"File path: {path}")
             item.setData(Qt.ItemDataRole.UserRole, path)
-            self._apply_frame_status_to_item(item, self._frame_status_for_image(path))
+            self._paint_image_row_item(item, path)
             self.image_list.addItem(item)
         if normalized_paths:
             self.image_list.setCurrentRow(0)
         else:
             self._sync_current_state_views()
+        self._rebuild_vector_list()
+        self._refresh_vector_rows_for_workspace()
+        self._sync_frame_navigation_controls()
+        self._log_matching_gaps_after_refresh(self._matching_report())
 
     def _find_matching_cif_path(self, image_path: str) -> str | None:
         return self._workspace.resolve_cif_path(image_path)
 
     def _load_cif_overlay_polygons(self, image_path: str) -> list[PolygonData]:
+        stem_key = Path(image_path).stem.lower()
         cif_path = self._find_matching_cif_path(image_path)
         if not cif_path:
+            self._cif_load_failure_stems.discard(stem_key)
             return []
         try:
             referenced_image, image_size, polygons = load_polygons_cif(cif_path)
         except Exception as exc:
+            self._cif_load_failure_stems.add(stem_key)
             self._append_log(self._tr("cif_load_failed_log", file_name=Path(cif_path).name, error=exc))
             return []
+        self._cif_load_failure_stems.discard(stem_key)
         if referenced_image and Path(referenced_image).stem.lower() != Path(image_path).stem.lower():
             self._append_log(
                 self._tr(
@@ -5560,9 +6281,11 @@ class PolygonExtractionWidget(QWidget):
             image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
         if image_result.reused_current_state:
             self._update_frame_item_status(image_result.image_path)
+            self._sync_frame_navigation_controls()
             return
         self._sync_current_state_views()
         self._update_frame_item_status(image_result.image_path)
+        self._sync_frame_navigation_controls()
         if (
             image_result.prepared_image_required
             and image_result.state is not None
@@ -5651,6 +6374,11 @@ class PolygonExtractionWidget(QWidget):
         )
         if saved_files:
             self._append_log(self._tr("saved_result_log", saved_files=saved_files))
+            saved_key = str(Path(current_image_path))
+            self._persisted_highlight_paths.add(saved_key)
+            self._workspace.sync_polygon_reference_to_current(saved_key)
+            self._update_frame_item_status(current_image_path)
+            self._update_vector_edit_status_label()
         return saved_files
 
     def start_batch_processing(

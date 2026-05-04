@@ -13,6 +13,7 @@ polygonsEdited
 
 [methods]
 attach_help_menu
+confirm_ok_to_leave_current_vectors
 export_current_frame_to_dataset
 get_pipeline
 get_polygons

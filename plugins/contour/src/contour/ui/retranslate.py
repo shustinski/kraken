@@ -32,6 +32,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.browse_output_button, self._tr("browse_output_button")),
         (self.browse_dataset_button, self._tr("browse_dataset_button")),
         (self.refresh_button, self._tr("refresh_files_button")),
+        (self.pick_input_files_button, self._tr("pick_input_files_button")),
+        (self.merge_cif_files_button, self._tr("merge_cif_files_button")),
     ):
         button.setText("")
         button.setAccessibleName(accessible_name)
@@ -49,6 +51,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.browse_output_button, "browse_output"),
         (self.browse_dataset_button, "browse_dataset"),
         (self.refresh_button, "refresh_files"),
+        (self.pick_input_files_button, "pick_input_images"),
+        (self.merge_cif_files_button, "merge_cif_files"),
     ):
         self._set_common_tooltip(widget, tooltip_key)
 
@@ -59,7 +63,16 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     if hasattr(self, "right_tabs"):
         self.right_tabs.setTabText(0, self._tr("tab_files"))
 
-    self.images_label.setText(self._tr("images_label"))
+    if hasattr(self, "sidebar_list_mode_combo"):
+        self.sidebar_list_mode_combo.setItemText(0, self._tr("images_label"))
+        self.sidebar_list_mode_combo.setItemText(1, self._tr("vectors_tab_label"))
+        self._set_common_tooltip(self.sidebar_list_mode_combo, "sidebar_list_mode")
+    if hasattr(self, "reload_cif_selected_button"):
+        self.reload_cif_selected_button.setText(self._tr("reload_selected_cifs_button"))
+        self.reload_cif_for_frames_button.setText(self._tr("reload_cifs_for_frames_button"))
+        self._set_common_tooltip(self.reload_cif_selected_button, "reload_selected_cif_overlays")
+        self._set_common_tooltip(self.reload_cif_for_frames_button, "reload_cif_for_selected_frames")
+
     self.run_group.setTitle(self._tr("run_group_title"))
     if hasattr(self, "extra_layers_group"):
         self.extra_layers_group.setTitle(
@@ -81,7 +94,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.max_workers_label.setText(self._tr("max_workers_label"))
     for widget, tooltip_key in (
         (self.image_list, "image_list"),
-        (self.images_label, "image_list"),
+        (self.vector_list, "vector_list_sidebar"),
         (self.process_current_button, "process_current"),
         (self.batch_button, "start_batch"),
         (self.stop_batch_button, "stop_batch"),
@@ -614,6 +627,20 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     ):
         widget.setToolTip(tooltip)
         widget.setStatusTip(tooltip)
+
+    if hasattr(self, "frame_nav_prev_button"):
+        self._set_common_tooltip(self.frame_nav_prev_button, "frame_nav_previous")
+        self._set_common_tooltip(self.frame_nav_next_button, "frame_nav_next")
+        self._set_common_tooltip(self.frame_nav_spin, "frame_nav_jump")
+    if hasattr(self, "autosave_on_frame_transition_checkbox"):
+        self.autosave_on_frame_transition_checkbox.setText(
+            self._tr(
+                "autosave_on_frame_transition_label",
+                "Автосохранение при переходе к следующему кадру"
+                if self._ui_language == "ru"
+                else "Autosave when switching to another frame",
+            )
+        )
 
     self.editor_group.setTitle(self._tr("editor_group_title"))
     self._update_tool_button_texts()

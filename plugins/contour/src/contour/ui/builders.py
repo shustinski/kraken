@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
 )
 
+
 from ..application.processing import (
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
@@ -125,6 +126,13 @@ def build_path_panel(self) -> QWidget:
     self.browse_output_button.clicked.connect(self._select_output_directory)
     self.browse_dataset_button.clicked.connect(self._select_dataset_directory)
     self.refresh_button.clicked.connect(self.refresh_image_list)
+    self.pick_input_files_button = QPushButton()
+    file_pick_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogStart)
+    self._configure_icon_only_button(self.pick_input_files_button, file_pick_icon)
+    self.pick_input_files_button.clicked.connect(self._select_input_image_files)
+    self.merge_cif_files_button = QPushButton()
+    self._configure_icon_only_button(self.merge_cif_files_button, file_pick_icon)
+    self.merge_cif_files_button.clicked.connect(self._merge_cif_files_dialog)
     self.input_dir_edit.editingFinished.connect(self._apply_input_directory_edit)
     self.cif_dir_edit.editingFinished.connect(self._apply_cif_directory_edit)
     self.output_dir_edit.editingFinished.connect(self._apply_output_directory_edit)
@@ -132,7 +140,6 @@ def build_path_panel(self) -> QWidget:
 
     for label, edit, button in [
         (self.input_dir_label, self.input_dir_edit, self.browse_input_button),
-        (self.cif_dir_label, self.cif_dir_edit, self.browse_cif_button),
         (self.output_dir_label, self.output_dir_edit, self.browse_output_button),
         (self.dataset_dir_label, self.dataset_dir_edit, self.browse_dataset_button),
     ]:
@@ -144,15 +151,83 @@ def build_path_panel(self) -> QWidget:
         row_layout.addWidget(button)
         layout.addWidget(label)
         layout.addWidget(row)
-    layout.addWidget(self.refresh_button)
-    return self.path_group
 
+    cif_row = QWidget()
+    cif_row_layout = QHBoxLayout(cif_row)
+    cif_row_layout.setContentsMargins(0, 0, 0, 0)
+    cif_row_layout.setSpacing(6)
+    cif_row_layout.addWidget(self.cif_dir_edit, 1)
+    cif_row_layout.addWidget(self.browse_cif_button)
+    cif_row_layout.addWidget(self.merge_cif_files_button)
+    layout.addWidget(self.cif_dir_label)
+    layout.addWidget(cif_row)
+
+    refresh_row = QWidget()
+    refresh_row_layout = QHBoxLayout(refresh_row)
+    refresh_row_layout.setContentsMargins(0, 0, 0, 0)
+    refresh_row_layout.setSpacing(6)
+    refresh_row_layout.addWidget(self.refresh_button)
+    refresh_row_layout.addWidget(self.pick_input_files_button)
+    refresh_row_layout.addStretch(1)
+    layout.addWidget(refresh_row)
+    return self.path_group
 
 def build_paths_tab(self) -> QWidget:
     tab = QWidget()
     layout = QVBoxLayout(tab)
     self.path_panel = self._build_path_panel()
     layout.addWidget(self.path_panel)
+
+    self.vector_geom_group = QGroupBox("Vector geometry (edit & frame transitions)")
+    self.vector_geom_group.setToolTip(
+        "Post-process manual vectors when opening frames and after edits.\n"
+        "Triangle artifact removal drops unparented 3-vertex outers unless disabled or marked as via/box.",
+    )
+    vg_form = QFormLayout(self.vector_geom_group)
+    self._configure_compact_form(vg_form)
+    self.vector_geom_clip_checkbox = QCheckBox("Clip to frame & remove outside overlays")
+    self.vector_geom_clip_checkbox.setChecked(True)
+    self.vector_geom_min_outer_spin = QDoubleSpinBox()
+    self.vector_geom_min_outer_spin.setRange(0.0, 1_000_000.0)
+    self.vector_geom_min_outer_spin.setDecimals(3)
+    self.vector_geom_min_outer_spin.setSingleStep(1.0)
+    self.vector_geom_min_outer_spin.setValue(9.0)
+    self.vector_geom_min_hole_spin = QDoubleSpinBox()
+    self.vector_geom_min_hole_spin.setRange(0.0, 1_000_000.0)
+    self.vector_geom_min_hole_spin.setDecimals(3)
+    self.vector_geom_min_hole_spin.setSingleStep(1.0)
+    self.vector_geom_min_hole_spin.setValue(0.0)
+    self.vector_geom_merge_checkbox = QCheckBox("Merge overlapping polygons after moves")
+    self.vector_geom_merge_checkbox.setChecked(True)
+    self.vector_geom_spike_angle_spin = QDoubleSpinBox()
+    self.vector_geom_spike_angle_spin.setRange(0.0, 179.0)
+    self.vector_geom_spike_angle_spin.setDecimals(1)
+    self.vector_geom_spike_angle_spin.setSingleStep(1.0)
+    self.vector_geom_spike_angle_spin.setValue(30.0)
+    self.vector_geom_spike_angle_spin.setToolTip(
+        "Interior angle threshold in degrees below which a vertex spike is flattened. Set to 0 to disable spike removal.",
+    )
+    self.vector_geom_drop_triangle_checkbox = QCheckBox("Drop 3-vertex outer triangles (artifacts)")
+    self.vector_geom_drop_triangle_checkbox.setChecked(True)
+    vg_form.addRow(self.vector_geom_clip_checkbox)
+    vg_form.addRow("Min outer area (px²)", self.vector_geom_min_outer_spin)
+    vg_form.addRow("Min hole area to fill (px²)", self.vector_geom_min_hole_spin)
+    vg_form.addRow(self.vector_geom_merge_checkbox)
+    vg_form.addRow("Min spike angle (°)", self.vector_geom_spike_angle_spin)
+    vg_form.addRow(self.vector_geom_drop_triangle_checkbox)
+    for _w in (
+        self.vector_geom_clip_checkbox,
+        self.vector_geom_min_outer_spin,
+        self.vector_geom_min_hole_spin,
+        self.vector_geom_merge_checkbox,
+        self.vector_geom_spike_angle_spin,
+        self.vector_geom_drop_triangle_checkbox,
+    ):
+        if isinstance(_w, QCheckBox):
+            _w.stateChanged.connect(self._on_vector_geom_control_changed)
+        else:
+            _w.valueChanged.connect(self._on_vector_geom_control_changed)
+    layout.addWidget(self.vector_geom_group)
 
     self.extra_layers_group = QGroupBox("Additional layers")
     self.extra_layers_form = QFormLayout(self.extra_layers_group)
@@ -238,12 +313,57 @@ def build_files_tab(self) -> QWidget:
     tab = QWidget()
     layout = QVBoxLayout(tab)
 
+    list_header_row = QWidget()
+    list_header_layout = QHBoxLayout(list_header_row)
+    list_header_layout.setContentsMargins(0, 0, 0, 0)
+    list_header_layout.setSpacing(8)
+    self.sidebar_list_mode_combo = QComboBox()
+    self.sidebar_list_mode_combo.addItem("Images", "images")
+    self.sidebar_list_mode_combo.addItem("Vectors", "vectors")
+    self.sidebar_list_mode_combo.currentIndexChanged.connect(self._on_sidebar_list_mode_changed)
+    list_header_layout.addWidget(self.sidebar_list_mode_combo, 1)
+
+    self.files_scan_progress_bar = QProgressBar()
+    self.files_scan_progress_bar.setRange(0, 100)
+    self.files_scan_progress_bar.setValue(0)
+    self.files_scan_progress_bar.setTextVisible(True)
+    self.files_scan_progress_bar.setVisible(False)
+
+    self.sidebar_list_stack = QStackedWidget()
+    self.images_list_page = QWidget()
+    images_page_layout = QVBoxLayout(self.images_list_page)
+    images_page_layout.setContentsMargins(0, 0, 0, 0)
     self.image_list = QListWidget()
-    self.image_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    self.image_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     self.image_list.currentItemChanged.connect(self._on_image_item_changed)
-    self.images_label = QLabel("Images")
-    layout.addWidget(self.images_label)
-    layout.addWidget(self.image_list, 1)
+    self.image_list.itemSelectionChanged.connect(self._on_image_selection_changed)
+    images_page_layout.addWidget(self.image_list, 1)
+
+    self.vectors_list_page = QWidget()
+    vectors_page_layout = QVBoxLayout(self.vectors_list_page)
+    vectors_page_layout.setContentsMargins(0, 0, 0, 0)
+    self.vector_list = QListWidget()
+    self.vector_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    self.vector_list.currentItemChanged.connect(self._on_vector_item_changed)
+    vectors_page_layout.addWidget(self.vector_list, 1)
+    overlay_buttons_row = QWidget()
+    overlay_buttons_layout = QVBoxLayout(overlay_buttons_row)
+    overlay_buttons_layout.setContentsMargins(0, 0, 0, 0)
+    overlay_buttons_layout.setSpacing(6)
+    self.reload_cif_selected_button = QPushButton()
+    self.reload_cif_selected_button.clicked.connect(self._reload_cif_overlays_for_selected_vectors)
+    self.reload_cif_for_frames_button = QPushButton()
+    self.reload_cif_for_frames_button.clicked.connect(self._reload_cif_overlays_for_selected_images)
+    overlay_buttons_layout.addWidget(self.reload_cif_selected_button)
+    overlay_buttons_layout.addWidget(self.reload_cif_for_frames_button)
+    vectors_page_layout.addWidget(overlay_buttons_row)
+
+    self.sidebar_list_stack.addWidget(self.images_list_page)
+    self.sidebar_list_stack.addWidget(self.vectors_list_page)
+
+    layout.addWidget(list_header_row)
+    layout.addWidget(self.files_scan_progress_bar)
+    layout.addWidget(self.sidebar_list_stack, 1)
 
     self.run_group = QGroupBox("Run")
     run_layout = QGridLayout(self.run_group)
@@ -1658,6 +1778,7 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.viaDebugRequested.connect(self._on_via_debug_requested)
     self.polygon_editor.metalOverlayDetailRequested.connect(self._on_metal_overlay_detail_requested)
     self.polygon_editor.middlePreviewHoldChanged.connect(self._on_middle_preview_hold_changed)
+    self.polygon_editor.effectivePolygonCreateModeChanged.connect(self._on_effective_polygon_create_mode_changed)
     self.editor_toolbar = self._build_editor_toolbar()
     self.editor_toolbar_scroll = QScrollArea()
     self.editor_toolbar_scroll.setObjectName("editorToolbarScroll")
@@ -1676,6 +1797,33 @@ def build_visual_panel(self) -> QWidget:
     self.editor_toolbar_scroll.setMinimumHeight(toolbar_height)
     self.editor_toolbar_scroll.setMaximumHeight(toolbar_height)
     editor_layout.addWidget(self.editor_toolbar_scroll)
+    self.visual_frame_nav_widget = QWidget()
+    visual_nav_layout = QHBoxLayout(self.visual_frame_nav_widget)
+    visual_nav_layout.setContentsMargins(0, 4, 0, 4)
+    visual_nav_layout.setSpacing(10)
+    self.frame_nav_prev_button = QToolButton()
+    self.frame_nav_next_button = QToolButton()
+    prev_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
+    next_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
+    self._configure_toolbar_button(self.frame_nav_prev_button, prev_icon, "", checkable=False)
+    self._configure_toolbar_button(self.frame_nav_next_button, next_icon, "", checkable=False)
+    self.frame_nav_prev_button.clicked.connect(self._frame_nav_previous)
+    self.frame_nav_next_button.clicked.connect(self._frame_nav_next)
+    self.frame_nav_spin = QSpinBox()
+    self.frame_nav_spin.setMinimum(1)
+    self.frame_nav_spin.setMaximum(1)
+    self.frame_nav_spin.valueChanged.connect(self._on_frame_nav_spin_changed)
+    self.frame_nav_total_label = QLabel("/ 0")
+    visual_nav_layout.addWidget(self.frame_nav_prev_button)
+    visual_nav_layout.addWidget(self.frame_nav_next_button)
+    visual_nav_layout.addWidget(self.frame_nav_spin)
+    visual_nav_layout.addWidget(self.frame_nav_total_label)
+    self.autosave_on_frame_transition_checkbox = QCheckBox("Autosave when changing frame")
+    self.autosave_on_frame_transition_checkbox.setChecked(False)
+    self.autosave_on_frame_transition_checkbox.toggled.connect(lambda _checked: self._save_persisted_display_settings())
+    visual_nav_layout.addWidget(self.autosave_on_frame_transition_checkbox)
+    visual_nav_layout.addStretch(1)
+    editor_layout.addWidget(self.visual_frame_nav_widget)
     editor_layout.addWidget(self.polygon_editor, 1)
 
     layout.addWidget(self.editor_group, 1)
@@ -1693,7 +1841,6 @@ def build_editor_toolbar(self) -> QWidget:
     self._tool_buttons: dict[EditorTool, QToolButton] = {}
     for text, tool in [
         ("Select", EditorTool.SELECT),
-        ("Select Area", EditorTool.SELECT_AREA),
         ("Pan", EditorTool.PAN),
         ("Ruler", EditorTool.RULER),
         ("Add Polygon", EditorTool.ADD_POLYGON),
@@ -1713,6 +1860,10 @@ def build_editor_toolbar(self) -> QWidget:
         if tool == EditorTool.SELECT:
             button.setChecked(True)
 
+    self._polygon_toolbar_block = QWidget()
+    _polygon_blk = QHBoxLayout(self._polygon_toolbar_block)
+    _polygon_blk.setContentsMargins(0, 0, 0, 0)
+    _polygon_blk.setSpacing(6)
     self.polygon_mode_label = QLabel("Polygon")
     self.polygon_mode_combo = QComboBox()
     self.polygon_mode_combo.addItem(self._mode_text("polygon_points"), PolygonCreateMode.POINTS)
@@ -1720,28 +1871,42 @@ def build_editor_toolbar(self) -> QWidget:
     self.polygon_mode_combo.currentIndexChanged.connect(
         lambda _index: self.polygon_editor.set_polygon_create_mode(self.polygon_mode_combo.currentData())
     )
-    layout.addWidget(self.polygon_mode_label)
-    layout.addWidget(self.polygon_mode_combo)
+    self.polygon_draw_mode_indicator = QLabel("")
+    self.polygon_draw_mode_indicator.setMinimumWidth(160)
+    _polygon_blk.addWidget(self.polygon_mode_label)
+    _polygon_blk.addWidget(self.polygon_mode_combo)
+    _polygon_blk.addWidget(self.polygon_draw_mode_indicator)
+    layout.addWidget(self._polygon_toolbar_block)
 
+    self._brush_toolbar_block = QWidget()
+    _brush_blk = QHBoxLayout(self._brush_toolbar_block)
+    _brush_blk.setContentsMargins(0, 0, 0, 0)
+    _brush_blk.setSpacing(6)
     self.brush_mode_label = QLabel("Brush")
     self.brush_mode_combo = QComboBox()
     self.brush_mode_combo.addItem(self._mode_text("brush_freeform"), BrushMode.FREEFORM)
     self.brush_mode_combo.addItem(self._mode_text("brush_45deg"), BrushMode.ANGLED)
+    self.brush_mode_combo.addItem(self._mode_text("brush_stamp_add"), BrushMode.STAMP_ADD)
+    self.brush_mode_combo.addItem(self._mode_text("brush_stamp_erase"), BrushMode.STAMP_ERASE)
     self.brush_mode_combo.currentIndexChanged.connect(
         lambda _index: self.polygon_editor.set_brush_mode(self.brush_mode_combo.currentData())
     )
-    layout.addWidget(self.brush_mode_label)
-    layout.addWidget(self.brush_mode_combo)
-
     self.brush_size_label = QLabel("Толщина" if self._ui_language == "ru" else "Width")
     self.brush_size_spin = QSpinBox()
     self.brush_size_spin.setRange(1, 256)
     self.brush_size_spin.setValue(12)
     self.brush_size_spin.setFixedWidth(68)
     self.brush_size_spin.valueChanged.connect(lambda value: self.polygon_editor.set_brush_thickness(float(value)))
-    layout.addWidget(self.brush_size_label)
-    layout.addWidget(self.brush_size_spin)
+    _brush_blk.addWidget(self.brush_mode_label)
+    _brush_blk.addWidget(self.brush_mode_combo)
+    _brush_blk.addWidget(self.brush_size_label)
+    _brush_blk.addWidget(self.brush_size_spin)
+    layout.addWidget(self._brush_toolbar_block)
 
+    self._via_toolbar_block = QWidget()
+    _via_blk = QHBoxLayout(self._via_toolbar_block)
+    _via_blk.setContentsMargins(0, 0, 0, 0)
+    _via_blk.setSpacing(6)
     self.via_width_label = QLabel("Via W")
     self.via_width_spin = QSpinBox()
     self.via_width_spin.setRange(1, 100_000)
@@ -1754,11 +1919,16 @@ def build_editor_toolbar(self) -> QWidget:
     self.via_height_spin.setFixedWidth(74)
     self.via_width_spin.valueChanged.connect(lambda _value: self._sync_editor_via_size())
     self.via_height_spin.valueChanged.connect(lambda _value: self._sync_editor_via_size())
-    layout.addWidget(self.via_width_label)
-    layout.addWidget(self.via_width_spin)
-    layout.addWidget(self.via_height_label)
-    layout.addWidget(self.via_height_spin)
+    _via_blk.addWidget(self.via_width_label)
+    _via_blk.addWidget(self.via_width_spin)
+    _via_blk.addWidget(self.via_height_label)
+    _via_blk.addWidget(self.via_height_spin)
+    layout.addWidget(self._via_toolbar_block)
 
+    self._delete_vertex_toolbar_block = QWidget()
+    _dv_blk = QHBoxLayout(self._delete_vertex_toolbar_block)
+    _dv_blk.setContentsMargins(0, 0, 0, 0)
+    _dv_blk.setSpacing(6)
     self.delete_vertex_mode_label = QLabel("Delete")
     self.delete_vertex_mode_combo = QComboBox()
     self.delete_vertex_mode_combo.addItem(self._mode_text("delete_single"), DeleteVertexMode.SINGLE)
@@ -1766,8 +1936,9 @@ def build_editor_toolbar(self) -> QWidget:
     self.delete_vertex_mode_combo.currentIndexChanged.connect(
         lambda _index: self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
     )
-    layout.addWidget(self.delete_vertex_mode_label)
-    layout.addWidget(self.delete_vertex_mode_combo)
+    _dv_blk.addWidget(self.delete_vertex_mode_label)
+    _dv_blk.addWidget(self.delete_vertex_mode_combo)
+    layout.addWidget(self._delete_vertex_toolbar_block)
 
     self.ruler_status_label = QLabel("")
     self.ruler_status_label.setMinimumWidth(180)
@@ -1799,6 +1970,10 @@ def build_editor_toolbar(self) -> QWidget:
     ]:
         layout.addWidget(button)
 
+    self.vector_edit_status_label = QLabel("")
+    self.vector_edit_status_label.setMinimumWidth(88)
+    layout.addWidget(self.vector_edit_status_label)
+
     self.preview_busy_label = QLabel(self._busy_indicator_text())
     self.preview_busy_progress = QProgressBar()
     self.preview_busy_progress.setRange(0, 0)
@@ -1814,4 +1989,5 @@ def build_editor_toolbar(self) -> QWidget:
     self.polygon_editor.set_brush_thickness(float(self.brush_size_spin.value()))
     self._sync_editor_via_size()
     self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
+    self._on_editor_tool_changed(self.polygon_editor.current_tool)
     return toolbar

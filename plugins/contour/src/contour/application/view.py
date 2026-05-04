@@ -4,7 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 from PyQt6.QtCore import QSize
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QCloseEvent, QIcon
 from PyQt6.QtWidgets import QMainWindow
 from kraken_core.theme import add_theme_menu, apply_app_theme
 
@@ -106,6 +106,12 @@ class ContourMainView(QMainWindow):
 
     def bind_image_processed(self, handler: Callable[[str, list], None]) -> None:
         self._widget.imageProcessed.connect(handler)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if hasattr(self._widget, "confirm_ok_to_leave_current_vectors") and not self._widget.confirm_ok_to_leave_current_vectors():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 class ContourStandaloneWindow(ContourMainView):

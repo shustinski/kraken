@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from math import hypot
 
-import cv2
-import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
     QPainterPath,
+    QPainterPathStroker,
     QPen,
     QPixmap,
     QTransform,
@@ -25,33 +24,49 @@ from PyQt6.QtWidgets import (
 
 from ..adapters.qt.image_conversion import cv_to_qimage
 from ..application.processing import DisplaySettings
+from ..application.vector_geometry_postprocess import (
+    VectorGeometrySettings,
+    postprocess_after_editor_mutation,
+)
 from ..commands import (
     AddPolygonCommand,
     AddVertexCommand,
     DeletePolygonCommand,
     DeleteVertexCommand,
+    ReplacePolygonSetCommand,
 )
 from ..domain import PolygonData, compute_polygon_metrics
 from ..graphics_items import EditablePolygonItem, VertexHandleItem, _display_path_for_polygon
 from ..i18n import active_language, tr
+from .brush_vector import (
+    QUAD_SEGS_BRUSH_DEFAULT,
+    apply_boolean,
+    bbox_intersects_geom_bounds,
+    densify_chain_with_new_vertex,
+    polygon_equivalent_preserved,
+    polygon_footprint_geom,
+    region_geometry,
+    shapely_to_polygon_data_list,
+    tool_geometry,
+)
 from .geometry import (
     _bbox_from_points,
     _bboxes_intersect,
     _centered_rect,
-    _clip_bbox_to_scene,
     _distance_to_segment,
-    _draw_stroke_on_mask,
-    _fill_polygon_on_mask,
-    is_valid_closed_polygon_ring,
-    is_valid_open_polyline_last_edge,
     _measurement_label_position,
     _polygon_data_rect,
-    _polygons_from_mask,
-    _render_polygon_collection_on_mask,
-    resolve_conductor_hover_target_id,
     _smallest_containing_polygon,
     _stable_object_color,
-    _union_bbox,
+    is_valid_closed_polygon_ring,
+    is_valid_open_polyline_last_edge,
+    resolve_conductor_hover_target_id,
+)
+from .polygon_creation import (
+    POLYGON_COMMIT_INVALID_RING,
+    POLYGON_COMMIT_TOO_FEW_VERTICES,
+    POLYGON_COMMIT_TOO_SMALL_AREA,
+    polygon_commit_acceptability,
 )
 
 
@@ -91,6 +106,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._random_object_colors_enabled = False
         self._object_colors: dict[int, str] = {}
         self._hover_conductor_polygon_id: int | None = None
+        self._vector_geometry_settings = VectorGeometrySettings()
 
         self._main_frame_item = QGraphicsPathItem()
         self._main_frame_item.setZValue(2)
@@ -103,10 +119,13 @@ class PolygonEditorScene(QGraphicsScene):
 
         self._pending_points: list[tuple[float, float]] = []
         self._pending_cursor: tuple[float, float] | None = None
+        self._pending_polyline_for_brush = False
         self._pending_path_item = QGraphicsPathItem()
         self._pending_path_item.setZValue(10)
         pending_pen = QPen(QColor("#F7B801"), 1.5, Qt.PenStyle.DashLine)
         pending_pen.setCosmetic(True)
+        pending_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pending_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self._pending_path_item.setPen(pending_pen)
         self._pending_path_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.addItem(self._pending_path_item)
@@ -171,6 +190,8 @@ class PolygonEditorScene(QGraphicsScene):
     def set_pending_path_width(self, width: float, cosmetic: bool | None = None) -> None:
         pen = self._pending_path_item.pen()
         pen.setWidthF(max(1.0, float(width)))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         if cosmetic is not None:
             pen.setCosmetic(bool(cosmetic))
         self._pending_path_item.setPen(pen)
@@ -353,6 +374,13 @@ class PolygonEditorScene(QGraphicsScene):
     def warn_invalid_polygon_geometry(self) -> None:
         self.logRequested.emit(tr("polygon_invalid_geometry_log", language=self._ui_language))
 
+    def _log_polygon_commit_rejection(self, reason: str | None) -> None:
+        if reason == POLYGON_COMMIT_TOO_SMALL_AREA:
+            self.logRequested.emit(tr("polygon_too_small_area_commit_log", language=self._ui_language))
+            return
+        if reason == POLYGON_COMMIT_TOO_FEW_VERTICES:
+            self.logRequested.emit(tr("polygon_need_min_vertices_finish_log", language=self._ui_language))
+
     def set_display_settings(self, settings: DisplaySettings) -> None:
         self._display_settings = settings
         self._refresh_all_items()
@@ -398,6 +426,50 @@ class PolygonEditorScene(QGraphicsScene):
     def get_polygons(self) -> list[PolygonData]:
         return [self._polygons[polygon_id].clone() for polygon_id in sorted(self._polygons)]
 
+    def set_vector_geometry_settings(self, settings: VectorGeometrySettings | None) -> None:
+        self._vector_geometry_settings = settings if settings is not None else VectorGeometrySettings()
+
+    def _maybe_push_vector_postprocess(self, undo_text: str) -> None:
+        before = self.get_polygons()
+        final, changed = postprocess_after_editor_mutation(
+            before,
+            self._vector_geometry_settings,
+            frame_width_height=None,
+            include_merge=False,
+        )
+        if changed:
+            self.undo_stack.push(ReplacePolygonSetCommand(self, before, final, undo_text))
+
+    def _bulk_restore_polygons(self, polygons: list[PolygonData], *, emit_signal: bool = True) -> None:
+        prev_primary = self._selected_polygon_id
+        prev_selected_ids = set(self._selected_polygon_ids)
+        for item in list(self._polygon_items.values()):
+            self.removeItem(item)
+        self._polygon_items.clear()
+        self._polygons.clear()
+        self._hover_conductor_polygon_id = None
+        self._selected_polygon_id = None
+        self._selected_polygon_ids.clear()
+        self._next_polygon_id = 1
+        for polygon in polygons:
+            self._add_polygon_internal(polygon.clone(), emit_signal=False, refresh=False)
+        if polygons:
+            self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
+            new_ids = {polygon.id for polygon in polygons}
+            preserved_sorted = sorted(prev_selected_ids & new_ids)
+            if preserved_sorted:
+                self._selected_polygon_ids = set(preserved_sorted)
+                self._selected_polygon_id = (
+                    prev_primary if prev_primary in preserved_sorted else preserved_sorted[0]
+                )
+            else:
+                self._selected_polygon_id = None
+                self._selected_polygon_ids.clear()
+        self._refresh_all_items()
+        if emit_signal:
+            self.polygonsChanged.emit()
+            self.activePolygonChanged.emit(self._selected_polygon_id)
+
     def set_polygons(self, polygons: list[PolygonData]) -> None:
         self.undo_stack.clear()
         for item in list(self._polygon_items.values()):
@@ -412,8 +484,6 @@ class PolygonEditorScene(QGraphicsScene):
             self._add_polygon_internal(polygon.clone(), emit_signal=False, refresh=False)
         if polygons:
             self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
-            self._selected_polygon_id = polygons[0].id
-            self._selected_polygon_ids = {polygons[0].id}
         self._refresh_all_items()
         self.polygonsChanged.emit()
         self.activePolygonChanged.emit(self._selected_polygon_id)
@@ -625,9 +695,18 @@ class PolygonEditorScene(QGraphicsScene):
     def preview_polygon_move(self, polygon_id: int, points: list[tuple[float, float]]) -> None:
         self._replace_polygon_points_internal(polygon_id, points, emit_signal=False)
 
-    def start_pending_polygon(self) -> None:
+    def start_pending_polygon(self, *, for_brush: bool = False) -> None:
         self._pending_points.clear()
         self._pending_cursor = None
+        self._pending_polyline_for_brush = bool(for_brush)
+        self._update_pending_path()
+
+    def append_brush_vertex(self, scene_pos: QPointF, brush_diameter: float) -> None:
+        nx, ny = float(scene_pos.x()), float(scene_pos.y())
+        spacing = max(2.0, float(brush_diameter) * 0.48)
+        if self._pending_points and hypot(nx - self._pending_points[-1][0], ny - self._pending_points[-1][1]) < 0.2:
+            return
+        self._pending_points = densify_chain_with_new_vertex(self._pending_points, (nx, ny), max_segment_length=spacing)
         self._update_pending_path()
 
     def append_pending_point(self, scene_pos: QPointF) -> None:
@@ -653,15 +732,21 @@ class PolygonEditorScene(QGraphicsScene):
     def cancel_pending_polygon(self) -> None:
         self._pending_points.clear()
         self._pending_cursor = None
+        self._pending_polyline_for_brush = False
         self._update_pending_path()
         self.clear_preview_rect()
 
     def finish_pending_polygon(self) -> bool:
-        if len(self._pending_points) < 3:
-            self.cancel_pending_polygon()
-            return False
-        if not is_valid_closed_polygon_ring(self._pending_points):
-            self.warn_invalid_polygon_geometry()
+        acceptable, reason = polygon_commit_acceptability(self._pending_points)
+        if not acceptable:
+            if reason == POLYGON_COMMIT_TOO_FEW_VERTICES:
+                self.cancel_pending_polygon()
+                self._log_polygon_commit_rejection(reason)
+                return False
+            if reason == POLYGON_COMMIT_INVALID_RING:
+                self.warn_invalid_polygon_geometry()
+                return False
+            self._log_polygon_commit_rejection(reason)
             return False
         area, perimeter, bbox = compute_polygon_metrics(self._pending_points)
         polygon = PolygonData(
@@ -669,6 +754,7 @@ class PolygonEditorScene(QGraphicsScene):
             points=[(float(x), float(y)) for x, y in self._pending_points],
             is_hole=False,
             parent_id=None,
+            shape_hint="manual_outline",
             area=area,
             perimeter=perimeter,
             bbox=bbox,
@@ -764,8 +850,8 @@ class PolygonEditorScene(QGraphicsScene):
             perimeter=perimeter,
             bbox=bbox,
         )
-        self.undo_stack.push(AddPolygonCommand(self, polygon))
-        self.select_polygon(polygon.id)
+        self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+        self._maybe_push_vector_postprocess("Vector geometry cleanup")
         return True
 
     def add_rectangle_polygon(self, start: QPointF, end: QPointF, erase: bool = False) -> bool:
@@ -779,6 +865,14 @@ class PolygonEditorScene(QGraphicsScene):
             (rect.right(), rect.bottom()),
             (rect.left(), rect.bottom()),
         ]
+        acceptable, reason = polygon_commit_acceptability(points)
+        if not acceptable:
+            self.clear_preview_rect()
+            if reason == POLYGON_COMMIT_INVALID_RING:
+                self.warn_invalid_polygon_geometry()
+            else:
+                self._log_polygon_commit_rejection(reason)
+            return False
         area, perimeter, bbox = compute_polygon_metrics(points)
         polygon = PolygonData(
             id=self._next_polygon_id,
@@ -790,21 +884,35 @@ class PolygonEditorScene(QGraphicsScene):
             bbox=bbox,
         )
         if erase:
-            self._subtract_shape_from_scene(points=polygon.points, thickness=None, label="Erase rectangle")
-        else:
-            self._add_or_merge_polygon(polygon, label="Add rectangle")
+
+            erased_ok = bool(
+                self._subtract_shape_from_scene(points=list(polygon.points), thickness=None, label="Erase rectangle")
+            )
+
+            self.clear_preview_rect()
+
+
+            return erased_ok
+
+        self._add_or_merge_polygon(polygon, label="Add rectangle")
+
         self.clear_preview_rect()
+
+
         return True
 
     def add_brush_stroke(self, points: list[tuple[float, float]], thickness: float, erase: bool = False) -> bool:
-        if len(points) < 2:
+        if len(points) < 1:
             self.cancel_pending_polygon()
             return False
         if erase:
-            changed = self._subtract_shape_from_scene(points=points, thickness=thickness, label="Erase brush stroke")
+            changed = self._subtract_shape_from_scene(points=list(points), thickness=thickness, label="Erase brush stroke")
             self.cancel_pending_polygon()
             return changed
-        merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=points, thickness=thickness)
+        merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=list(points), thickness=thickness)
+        if merged_polygons is None:
+            self.cancel_pending_polygon()
+            return False
         if not merged_polygons:
             self.cancel_pending_polygon()
             return False
@@ -817,15 +925,20 @@ class PolygonEditorScene(QGraphicsScene):
         finally:
             self.undo_stack.endMacro()
         self.select_polygon(merged_polygons[0].id)
+        self._maybe_push_vector_postprocess("Vector geometry cleanup")
         self.cancel_pending_polygon()
         return True
 
     def subtract_pending_polygon(self) -> bool:
-        if len(self._pending_points) < 3:
-            self.cancel_pending_polygon()
-            return False
-        if not is_valid_closed_polygon_ring(self._pending_points):
-            self.warn_invalid_polygon_geometry()
+        acceptable, reason = polygon_commit_acceptability(self._pending_points)
+        if not acceptable:
+            if reason == POLYGON_COMMIT_TOO_FEW_VERTICES:
+                self.cancel_pending_polygon()
+                return False
+            if reason == POLYGON_COMMIT_INVALID_RING:
+                self.warn_invalid_polygon_geometry()
+                return False
+            self._log_polygon_commit_rejection(reason)
             return False
         changed = self._subtract_shape_from_scene(points=self._pending_points, thickness=None, label="Erase polygon")
         self.cancel_pending_polygon()
@@ -864,10 +977,19 @@ class PolygonEditorScene(QGraphicsScene):
         return deleted
 
     def _add_or_merge_polygon(self, polygon: PolygonData, label: str = "Add polygon") -> None:
+        if not self._polygons:
+            self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+            self._maybe_push_vector_postprocess("Vector geometry cleanup")
+            return
         merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=polygon.points, thickness=None)
+        if merged_polygons is None:
+            # Boolean union failed — keep the authored ring so simple shapes still land in the undo stack.
+            self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+            self._maybe_push_vector_postprocess("Vector geometry cleanup")
+            return
         if not merged_polygons:
-            self.undo_stack.push(AddPolygonCommand(self, polygon))
-            self.select_polygon(polygon.id)
+            self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+            self._maybe_push_vector_postprocess("Vector geometry cleanup")
             return
         self.undo_stack.beginMacro(label)
         try:
@@ -878,6 +1000,7 @@ class PolygonEditorScene(QGraphicsScene):
         finally:
             self.undo_stack.endMacro()
         self.select_polygon(merged_polygons[0].id)
+        self._maybe_push_vector_postprocess("Vector geometry cleanup")
 
     def _subtract_shape_from_scene(
         self,
@@ -892,20 +1015,23 @@ class PolygonEditorScene(QGraphicsScene):
         overlapping_ids = self._find_overlapping_polygon_ids(points=points, thickness=thickness, shape_bbox=shape_bbox)
         if not overlapping_ids:
             return False
-        region_boxes = [shape_bbox]
         render_ids = self._render_polygon_ids(overlapping_ids)
         touched_ids = self._touched_polygon_ids(render_ids, shape_bbox, points, thickness)
         preserved_polygons = self._preserved_polygons(render_ids, touched_ids, overlapping_ids)
-        for polygon_id in render_ids:
-            region_boxes.append(self._polygons[polygon_id].bbox)
-        region_bbox = _union_bbox(region_boxes)
-        remaining_polygons = self._apply_shape_mask(
-            region_bbox=region_bbox,
-            region_polygon_ids=render_ids,
-            points=points,
+        remaining_polygons, err_msg = self._apply_tool_boolean_to_polygon_subset(
+            render_ids=list(render_ids),
+            points=list(points),
             thickness=thickness,
             erase=True,
         )
+        if err_msg is not None:
+            detail = err_msg.strip() or repr(err_msg)
+
+            prefix = tr("brush_boolean_failed_log", language=self._ui_language)
+
+            self.logRequested.emit(f"{prefix} ({detail})")
+            return False
+        assert remaining_polygons is not None
         rebuilt_polygons = self._restore_preserved_polygons(remaining_polygons, render_ids, preserved_polygons)
 
         self.undo_stack.beginMacro(label)
@@ -928,28 +1054,51 @@ class PolygonEditorScene(QGraphicsScene):
         *,
         points: list[tuple[float, float]],
         thickness: float | None,
-    ) -> tuple[list[PolygonData], list[int]]:
+    ) -> tuple[list[PolygonData] | None, list[int]]:
         if not points:
             return [], []
         shape_bbox = _bbox_from_points(points, padding=(round(thickness / 2.0) + 2) if thickness else 2)
         overlapping_ids = self._find_overlapping_polygon_ids(points=points, thickness=thickness, shape_bbox=shape_bbox)
-        region_boxes = [shape_bbox]
         render_ids = self._render_polygon_ids(overlapping_ids)
         touched_ids = self._touched_polygon_ids(render_ids, shape_bbox, points, thickness)
         preserved_polygons = self._preserved_polygons(render_ids, touched_ids, overlapping_ids)
-        for polygon_id in render_ids:
-            region_boxes.append(self._polygons[polygon_id].bbox)
-        region_bbox = _union_bbox(region_boxes)
-        merged_contours = self._apply_shape_mask(
-            region_bbox=region_bbox,
-            region_polygon_ids=render_ids,
-            points=points,
+        merged_contours, err_msg = self._apply_tool_boolean_to_polygon_subset(
+            render_ids=list(render_ids),
+            points=list(points),
             thickness=thickness,
             erase=False,
         )
-        if not merged_contours:
-            return [], render_ids
+        if err_msg is not None:
+            prefix = tr("brush_boolean_failed_log", language=self._ui_language)
+
+            detail = err_msg.strip() or repr(err_msg)
+
+            self.logRequested.emit(f"{prefix} ({detail})")
+            return None, render_ids
+
+        assert merged_contours is not None
         return self._restore_preserved_polygons(merged_contours, render_ids, preserved_polygons), render_ids
+
+    def _apply_tool_boolean_to_polygon_subset(
+        self,
+        *,
+        render_ids: list[int],
+        points: list[tuple[float, float]],
+        thickness: float | None,
+        erase: bool,
+    ) -> tuple[list[PolygonData] | None, str | None]:
+        try:
+            brush_tool = tool_geometry(points, thickness, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: {exc}"
+        base_region = region_geometry(self._polygons, render_ids)
+        result_geom, err_msg = apply_boolean(base_region, brush_tool, subtract=erase)
+        if err_msg is not None:
+            return None, err_msg
+        assert result_geom is not None
+
+        polygons_list_out = shapely_to_polygon_data_list(result_geom)
+        return polygons_list_out, None
 
     def _find_overlapping_polygon_ids(
         self,
@@ -959,69 +1108,28 @@ class PolygonEditorScene(QGraphicsScene):
         shape_bbox: tuple[int, int, int, int],
     ) -> list[int]:
         overlapping_ids: list[int] = []
+        try:
+            tool_shape = tool_geometry(points, thickness, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+        except Exception:
+            return []
+        if tool_shape.is_empty:
+            return []
+
+        brush_bounds_xy = tuple(tool_shape.bounds)
+
+        buffered_tool = tool_shape.buffer(1e-7)
+
         for polygon_id, polygon in self._polygons.items():
             if polygon.is_hole:
                 continue
             if not _bboxes_intersect(shape_bbox, polygon.bbox):
                 continue
-            test_bbox = _union_bbox([shape_bbox, polygon.bbox])
-            shape_mask, origin = self._render_shape_mask(test_bbox, points, thickness)
-            polygon_mask = np.zeros_like(shape_mask)
-            _render_polygon_collection_on_mask(
-                polygon_mask,
-                [self._polygons[item_id] for item_id in self._polygon_family_ids(polygon_id)],
-                origin,
-            )
-            if np.any(cv2.bitwise_and(shape_mask, polygon_mask)):
+            if not bbox_intersects_geom_bounds(brush_bounds_xy, polygon.bbox):
+                continue
+            family_geometry_shape = region_geometry(self._polygons, self._polygon_family_ids(polygon_id))
+            if family_geometry_shape.intersects(buffered_tool):
                 overlapping_ids.append(polygon_id)
         return overlapping_ids
-
-    def _apply_shape_mask(
-        self,
-        region_bbox: tuple[int, int, int, int],
-        region_polygon_ids: list[int],
-        points: list[tuple[float, float]],
-        thickness: float | None,
-        *,
-        erase: bool,
-    ) -> list[PolygonData]:
-        base_mask, origin = self._render_region_polygon_mask(region_bbox, region_polygon_ids)
-        shape_mask, _ = self._render_shape_mask(region_bbox, points, thickness)
-        if erase:
-            result_mask = cv2.bitwise_and(base_mask, cv2.bitwise_not(shape_mask))
-        else:
-            result_mask = cv2.bitwise_or(base_mask, shape_mask)
-        return _polygons_from_mask(result_mask, origin)
-
-    def _render_region_polygon_mask(
-        self,
-        region_bbox: tuple[int, int, int, int],
-        region_polygon_ids: list[int],
-    ) -> tuple[np.ndarray, tuple[int, int]]:
-        x_coord, y_coord, width, height = _clip_bbox_to_scene(region_bbox, self.sceneRect())
-        mask = np.zeros((max(1, height), max(1, width)), dtype=np.uint8)
-        origin = (x_coord, y_coord)
-        _render_polygon_collection_on_mask(
-            mask,
-            [self._polygons[polygon_id] for polygon_id in region_polygon_ids],
-            origin,
-        )
-        return mask, origin
-
-    def _render_shape_mask(
-        self,
-        region_bbox: tuple[int, int, int, int],
-        points: list[tuple[float, float]],
-        thickness: float | None,
-    ) -> tuple[np.ndarray, tuple[int, int]]:
-        x_coord, y_coord, width, height = _clip_bbox_to_scene(region_bbox, self.sceneRect())
-        mask = np.zeros((max(1, height), max(1, width)), dtype=np.uint8)
-        origin = (x_coord, y_coord)
-        if thickness is None:
-            _fill_polygon_on_mask(mask, points, origin)
-        else:
-            _draw_stroke_on_mask(mask, points, origin, thickness)
-        return mask, origin
 
     def _allocate_polygon_ids(self, overlapping_ids: list[int], count: int) -> list[int]:
         ids: list[int] = []
@@ -1035,15 +1143,113 @@ class PolygonEditorScene(QGraphicsScene):
         return ids
 
     def _update_pending_path(self) -> None:
-        path = QPainterPath()
+
+        brush_width = float(self._pending_path_item.pen().widthF())
+
+        if self._pending_polyline_for_brush:
+
+            outline_color = QColor("#F7B801")
+
+            if self._pending_points and brush_width >= 1.0:
+
+                centerline = QPainterPath()
+
+                first_point = self._pending_points[0]
+
+                centerline.moveTo(first_point[0], first_point[1])
+
+                for xy in self._pending_points[1:]:
+                    centerline.lineTo(xy[0], xy[1])
+
+                if self._pending_cursor is not None:
+                    cursor_x, cursor_y = self._pending_cursor
+
+                    centerline.lineTo(cursor_x, cursor_y)
+
+                stroker = QPainterPathStroker()
+                stroker.setWidth(max(1.0, brush_width))
+
+                stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+
+                stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+
+                hull = stroker.createStroke(centerline)
+
+                fill_color = QColor("#F7B801")
+
+                fill_color.setAlpha(55)
+
+                self._pending_path_item.setBrush(QBrush(fill_color))
+
+                outline_pen = QPen(outline_color, 1.25)
+
+                outline_pen.setCosmetic(True)
+
+                self._pending_path_item.setPen(outline_pen)
+
+                self._pending_path_item.setPath(hull)
+
+                return
+
+            if len(self._pending_points) == 1 and self._pending_cursor is None:
+
+                radius = max(1.0, brush_width) / 2.0
+
+                hub_x, hub_y = self._pending_points[0]
+
+                dot = QPainterPath()
+
+                dot.addEllipse(QRectF(hub_x - radius, hub_y - radius, radius * 2.0, radius * 2.0))
+
+                fill_color = QColor("#F7B801")
+
+                fill_color.setAlpha(55)
+
+                self._pending_path_item.setBrush(QBrush(fill_color))
+
+                outline_pen = QPen(outline_color, 1.25)
+
+                outline_pen.setCosmetic(True)
+
+                self._pending_path_item.setPen(outline_pen)
+
+                self._pending_path_item.setPath(dot)
+
+                return
+
+        dashed_pen_setup = QPen(QColor("#F7B801"), 1.5, Qt.PenStyle.DashLine)
+
+        dashed_pen_setup.setCosmetic(True)
+
+        dashed_pen_setup.setCapStyle(Qt.PenCapStyle.RoundCap)
+
+        dashed_pen_setup.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+
+        dashed_pen_setup.setWidthF(self._pending_path_item.pen().widthF())
+
+        if self._pending_polyline_for_brush:
+
+            dashed_pen_setup.setCosmetic(False)
+
+        self._pending_path_item.setPen(dashed_pen_setup)
+
+        self._pending_path_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+
+        backbone = QPainterPath()
+
         if self._pending_points:
-            first = self._pending_points[0]
-            path.moveTo(first[0], first[1])
-            for point in self._pending_points[1:]:
-                path.lineTo(point[0], point[1])
+
+            head = self._pending_points[0]
+
+            backbone.moveTo(head[0], head[1])
+
+            for tail in self._pending_points[1:]:
+                backbone.lineTo(tail[0], tail[1])
+
             if self._pending_cursor is not None:
-                path.lineTo(self._pending_cursor[0], self._pending_cursor[1])
-        self._pending_path_item.setPath(path)
+                backbone.lineTo(self._pending_cursor[0], self._pending_cursor[1])
+
+        self._pending_path_item.setPath(backbone)
 
     def _refresh_all_items(self) -> None:
         for polygon_id, item in self._polygon_items.items():
@@ -1103,15 +1309,27 @@ class PolygonEditorScene(QGraphicsScene):
         thickness: float | None,
     ) -> set[int]:
         touched_ids: set[int] = set()
+        try:
+            tool_shape = tool_geometry(points, thickness, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+            buffered_tool = tool_shape.buffer(1e-7)
+        except Exception:
+            return touched_ids
+
+        if tool_shape.is_empty:
+            return touched_ids
+
         for polygon_id in candidate_ids:
+
             polygon = self._polygons.get(polygon_id)
+
             if polygon is None or not _bboxes_intersect(shape_bbox, polygon.bbox):
                 continue
-            test_bbox = _union_bbox([shape_bbox, polygon.bbox])
-            shape_mask, origin = self._render_shape_mask(test_bbox, points, thickness)
-            polygon_mask = np.zeros_like(shape_mask)
-            _fill_polygon_on_mask(polygon_mask, polygon.points, origin)
-            if np.any(cv2.bitwise_and(shape_mask, polygon_mask)):
+            polygon_region = polygon_footprint_geom(polygon.points)
+
+            if polygon_region.is_empty:
+
+                continue
+            if polygon_region.intersects(buffered_tool):
                 touched_ids.add(polygon_id)
         return touched_ids
 
@@ -1191,10 +1409,7 @@ class PolygonEditorScene(QGraphicsScene):
         return sorted(restored_polygons, key=lambda polygon: polygon.id)
 
     def _matches_any_preserved_polygon(self, polygon: PolygonData, preserved_polygons: list[PolygonData]) -> bool:
-        return any(
-            polygon.is_hole == preserved.is_hole and _bboxes_intersect(polygon.bbox, preserved.bbox)
-            for preserved in preserved_polygons
-        )
+        return polygon_equivalent_preserved(polygon, preserved_polygons)
 
     def _repair_preserved_parent_links(
         self,

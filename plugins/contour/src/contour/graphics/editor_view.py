@@ -3,21 +3,44 @@ from __future__ import annotations
 from math import hypot
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QKeySequence, QPainter, QPainterPath, QPen, QShortcut, QUndoStack
+from PyQt6.QtGui import (
+    QBrush,
+    QColor,
+    QGuiApplication,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QShortcut,
+    QUndoStack,
+)
 from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsView
 
 from ..application.processing import DisplaySettings
-from ..commands import MovePolygonCommand, MoveVertexCommand
+from ..application.vector_geometry_postprocess import (
+    VectorGeometrySettings,
+    apply_polygon_points_to_clone,
+    apply_vertex_position_to_clone,
+    postprocess_after_editor_mutation,
+    resolve_focus_id_after_geometry_pass,
+)
+from ..commands import ReplacePolygonSetCommand
 from ..domain import PolygonData
+from .editor_hotkeys import tool_shortcut_sequence
 from .editor_scene import PolygonEditorScene
 from .geometry import (
     _points_different,
     _polygon_points_different,
     _polygons_center,
-    is_valid_closed_polygon_ring,
     _snap_to_45,
+    is_valid_closed_polygon_ring,
 )
+from .tool_mode_logic import effective_polygon_create_mode, normalize_editor_tool
 from .tools import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode
+from .viewport_navigation import (
+    polygon_overlay_visibility_after_space_toggle,
+    viewport_scroll_correction_after_scale_reanchor,
+)
 
 
 class PolygonEditorView(QGraphicsView):
@@ -28,6 +51,7 @@ class PolygonEditorView(QGraphicsView):
     imageRegionSelected = pyqtSignal(float, float, float, float)
     rulerMeasurementChanged = pyqtSignal(str)
     toolChanged = pyqtSignal(object)
+    effectivePolygonCreateModeChanged = pyqtSignal(object)
     zoomChanged = pyqtSignal(float)
     neighborFrameActivated = pyqtSignal(str)
     viaDebugRequested = pyqtSignal(object)
@@ -44,6 +68,7 @@ class PolygonEditorView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setBackgroundBrush(QBrush(QColor("#171B22")))
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self._tool = EditorTool.SELECT
         self._polygon_create_mode = PolygonCreateMode.POINTS
@@ -52,6 +77,8 @@ class PolygonEditorView(QGraphicsView):
         self._via_width = 12.0
         self._via_height = 12.0
         self._delete_vertex_mode = DeleteVertexMode.SINGLE
+        self._select_press_polygon_id: int | None = None
+        self._select_press_start: QPointF | None = None
         self._drag_kind: str | None = None
         self._drag_polygon_id: int | None = None
         self._drag_vertex_index: int | None = None
@@ -60,7 +87,10 @@ class PolygonEditorView(QGraphicsView):
         self._last_pointer_scene_pos: QPointF | None = None
         self._drag_erases = False
         self._pending_polygon_erases: bool | None = None
-        self._middle_button_hides_overlays = False
+        self._middle_pan_active = False
+        self._middle_pan_last_viewport: QPointF | None = None
+        self._vectors_hidden_via_space_toggle = False
+        self._last_pointer_viewport_pos: QPointF | None = None
         self._image_click_mode = False
         self._image_region_selection_mode = False
         self._via_debug_inspection_enabled = False
@@ -68,6 +98,8 @@ class PolygonEditorView(QGraphicsView):
         self._clipboard_anchor = QPointF(0.0, 0.0)
         self._paste_mode = False
         self._paste_preview_items: list[QGraphicsPathItem] = []
+        self._vector_geometry_settings = VectorGeometrySettings()
+        self._drag_polygons_snapshot: list[PolygonData] | None = None
 
         self._editor_scene.polygonsChanged.connect(self.polygonsEdited.emit)
         self._editor_scene.activePolygonChanged.connect(self.activePolygonChanged.emit)
@@ -79,6 +111,14 @@ class PolygonEditorView(QGraphicsView):
         QShortcut(QKeySequence.StandardKey.Cut, self, activated=self.cut_selected)
         QShortcut(QKeySequence.StandardKey.Paste, self, activated=self.start_paste_mode)
 
+        for tool in EditorTool:
+            sequence = tool_shortcut_sequence(tool)
+            if sequence is None:
+                continue
+            shortcut = QShortcut(sequence, self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(lambda t=tool: self.set_tool(t))
+
     @property
     def undo_stack(self) -> QUndoStack:
         return self._editor_scene.undo_stack
@@ -88,7 +128,10 @@ class PolygonEditorView(QGraphicsView):
         return self._tool
 
     def set_tool(self, tool: EditorTool) -> None:
+        tool = normalize_editor_tool(tool)
         self._tool = tool
+        self._select_press_polygon_id = None
+        self._select_press_start = None
         self.setDragMode(
             QGraphicsView.DragMode.ScrollHandDrag if tool == EditorTool.PAN else QGraphicsView.DragMode.NoDrag
         )
@@ -106,11 +149,13 @@ class PolygonEditorView(QGraphicsView):
             self.rulerMeasurementChanged.emit("")
         self._update_tool_cursors()
         self.toolChanged.emit(tool)
+        self._emit_effective_polygon_create_mode_changed()
 
     def set_polygon_create_mode(self, mode: PolygonCreateMode) -> None:
         self._polygon_create_mode = mode
         self._editor_scene.cancel_pending_polygon()
         self._pending_polygon_erases = None
+        self._emit_effective_polygon_create_mode_changed()
 
     def set_brush_mode(self, mode: BrushMode) -> None:
         self._brush_mode = mode
@@ -127,9 +172,28 @@ class PolygonEditorView(QGraphicsView):
         self._via_height = max(1.0, float(height))
         self._update_tool_cursors()
 
+    def set_vector_geometry_settings(self, settings: VectorGeometrySettings | None) -> None:
+        self._vector_geometry_settings = settings if settings is not None else VectorGeometrySettings()
+        self._editor_scene.set_vector_geometry_settings(settings)
+
     def set_delete_vertex_mode(self, mode: DeleteVertexMode) -> None:
         self._delete_vertex_mode = mode
         self._editor_scene.clear_preview_rect()
+
+    def _effective_polygon_create_mode(self) -> PolygonCreateMode:
+        return effective_polygon_create_mode(
+            tool=self._tool,
+            base=self._polygon_create_mode,
+            shift_held=bool(QGuiApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier),
+            has_pending_polygon=self._editor_scene.has_pending_polygon(),
+        )
+
+    def effective_polygon_create_mode(self) -> PolygonCreateMode:
+        """Polygon draw mode including Shift override (read-only, for UI/tests)."""
+        return self._effective_polygon_create_mode()
+
+    def _emit_effective_polygon_create_mode_changed(self) -> None:
+        self.effectivePolygonCreateModeChanged.emit(self._effective_polygon_create_mode())
 
     def set_image(self, image) -> None:
         previous_rect = QRectF(self._editor_scene.sceneRect())
@@ -205,11 +269,13 @@ class PolygonEditorView(QGraphicsView):
             self.zoomChanged.emit(self.zoom_factor())
 
     def zoom_in(self) -> None:
-        self.scale(1.15, 1.15)
+        self._apply_zoom_at_viewport_pixel(self._zoom_focus_viewport_pixel(), 1.15)
+        self._update_tool_cursors()
         self.zoomChanged.emit(self.zoom_factor())
 
     def zoom_out(self) -> None:
-        self.scale(1 / 1.15, 1 / 1.15)
+        self._apply_zoom_at_viewport_pixel(self._zoom_focus_viewport_pixel(), 1.0 / 1.15)
+        self._update_tool_cursors()
         self.zoomChanged.emit(self.zoom_factor())
 
     def undo(self) -> None:
@@ -280,6 +346,8 @@ class PolygonEditorView(QGraphicsView):
             self._paste_preview_items.append(item)
 
     def wheelEvent(self, event) -> None:
+        # Coordinates are viewport-local (see QGraphicsView::wheelEvent).
+        viewport_point = event.position().toPoint()
         delta = event.angleDelta()
         modifiers = event.modifiers()
         if modifiers & Qt.KeyboardModifier.ControlModifier:
@@ -287,7 +355,7 @@ class PolygonEditorView(QGraphicsView):
                 event.accept()
                 return
             factor = 1.15 ** (delta.y() / 120.0)
-            self.scale(factor, factor)
+            self._apply_zoom_at_viewport_pixel(viewport_point, factor)
             self._update_tool_cursors()
             self.zoomChanged.emit(self.zoom_factor())
             event.accept()
@@ -303,9 +371,23 @@ class PolygonEditorView(QGraphicsView):
         event.accept()
 
     def mousePressEvent(self, event) -> None:
+        if event.button() in (
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.RightButton,
+            Qt.MouseButton.MiddleButton,
+        ):
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+        self._last_pointer_viewport_pos = QPointF(event.position())
         scene_pos = self.mapToScene(event.position().toPoint())
         self._last_pointer_scene_pos = scene_pos
         tolerance = self._scene_tolerance(8)
+
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._middle_pan_active = True
+            self._middle_pan_last_viewport = QPointF(event.position())
+            self.middlePreviewHoldChanged.emit(True)
+            event.accept()
+            return
 
         if self._paste_mode and event.button() == Qt.MouseButton.LeftButton:
             self._editor_scene.add_cloned_polygons_at(self._clipboard_polygons, self._clipboard_anchor, scene_pos)
@@ -336,25 +418,16 @@ class PolygonEditorView(QGraphicsView):
                 event.accept()
                 return
 
-        if event.button() == Qt.MouseButton.MiddleButton:
-            self._middle_button_hides_overlays = True
-            self._editor_scene.set_polygon_overlays_visible(False)
-            self.middlePreviewHoldChanged.emit(True)
-            event.accept()
-            return
-
         if self._tool == EditorTool.ADD_POLYGON:
-            if self._polygon_create_mode == PolygonCreateMode.RECTANGLE and event.button() == Qt.MouseButton.LeftButton:
+            create_mode = self._effective_polygon_create_mode()
+            if create_mode == PolygonCreateMode.RECTANGLE and event.button() == Qt.MouseButton.LeftButton:
                 self._drag_kind = "rect_polygon"
                 self._drag_start_scene_pos = scene_pos
                 self._drag_erases = False
                 self._editor_scene.set_preview_rect(scene_pos, scene_pos)
                 event.accept()
                 return
-            if (
-                self._polygon_create_mode == PolygonCreateMode.RECTANGLE
-                and event.button() == Qt.MouseButton.RightButton
-            ):
+            if create_mode == PolygonCreateMode.RECTANGLE and event.button() == Qt.MouseButton.RightButton:
                 self._drag_kind = "rect_polygon"
                 self._drag_start_scene_pos = scene_pos
                 self._drag_erases = True
@@ -373,15 +446,25 @@ class PolygonEditorView(QGraphicsView):
                 else:
                     self._pending_polygon_erases = requested_erase
                 self._editor_scene.append_pending_point(scene_pos)
+                self._emit_effective_polygon_create_mode_changed()
                 event.accept()
                 return
 
         if self._tool == EditorTool.BRUSH and event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+            self._drag_erases = False
             self._drag_kind = "brush"
             self._drag_start_scene_pos = scene_pos
-            self._drag_erases = event.button() == Qt.MouseButton.RightButton
-            self._editor_scene.start_pending_polygon()
+            if self._brush_mode in (BrushMode.STAMP_ADD, BrushMode.STAMP_ERASE):
+                self._drag_kind = "brush_stamp"
+                self._drag_erases = self._brush_mode == BrushMode.STAMP_ERASE
+                event.accept()
+                return
+            if event.button() == Qt.MouseButton.RightButton:
+                self._drag_erases = True
+
+            self._editor_scene.start_pending_polygon(for_brush=True)
             self._editor_scene.set_pending_path_width(self._brush_thickness, cosmetic=False)
+
             self._append_brush_point(scene_pos)
             event.accept()
             return
@@ -410,10 +493,29 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
 
-        if self._tool == EditorTool.SELECT_AREA:
-            self._drag_kind = "select_area"
-            self._drag_start_scene_pos = scene_pos
-            self._editor_scene.set_preview_rect(scene_pos, scene_pos)
+        if self._tool == EditorTool.SELECT:
+            polygon_id = self._editor_scene.polygon_at(scene_pos)
+            additive_selection = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            if polygon_id is None:
+                self._drag_kind = "select_area"
+                self._drag_start_scene_pos = scene_pos
+                self._select_press_polygon_id = None
+                self._select_press_start = None
+                self._editor_scene.set_preview_rect(scene_pos, scene_pos)
+                event.accept()
+                return
+            self._editor_scene.select_polygon(polygon_id, additive=additive_selection)
+            if self._via_debug_inspection_enabled and polygon_id is not None:
+                polygon = self._editor_scene.polygon_snapshot(polygon_id)
+                if polygon is not None:
+                    self.viaDebugRequested.emit(polygon)
+                    event.accept()
+                    return
+            if self._via_debug_inspection_enabled:
+                event.accept()
+                return
+            self._select_press_polygon_id = polygon_id
+            self._select_press_start = QPointF(scene_pos)
             event.accept()
             return
 
@@ -444,43 +546,53 @@ class PolygonEditorView(QGraphicsView):
                 self._drag_polygon_id = polygon_id
                 self._drag_vertex_index = vertex_index
                 self._drag_origin_points = self._editor_scene.polygon_points(polygon_id)
+                self._drag_polygons_snapshot = self._editor_scene.get_polygons()
                 self._drag_start_scene_pos = scene_pos
             event.accept()
             return
 
-        polygon_id = self._editor_scene.polygon_at(scene_pos)
-        additive_selection = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        self._editor_scene.select_polygon(polygon_id, additive=additive_selection)
-        if self._via_debug_inspection_enabled and polygon_id is not None:
-            polygon = self._editor_scene.polygon_snapshot(polygon_id)
-            if polygon is not None:
-                self.viaDebugRequested.emit(polygon)
-                event.accept()
-                return
-        if self._via_debug_inspection_enabled:
-            event.accept()
-            return
-        if polygon_id is not None and event.modifiers() & Qt.KeyboardModifier.AltModifier:
-            self._drag_kind = "polygon"
-            self._drag_polygon_id = polygon_id
-            self._drag_origin_points = self._editor_scene.polygon_points(polygon_id)
-            self._drag_start_scene_pos = scene_pos
-        event.accept()
-
     def mouseMoveEvent(self, event) -> None:
+        self._last_pointer_viewport_pos = QPointF(event.position())
         scene_pos = self.mapToScene(event.position().toPoint())
         self._last_pointer_scene_pos = scene_pos
         self._update_tool_cursors()
+        if self._middle_pan_active and self._middle_pan_last_viewport is not None:
+            cur = QPointF(event.position())
+            dv = cur - self._middle_pan_last_viewport
+            self.horizontalScrollBar().setValue(round(self.horizontalScrollBar().value() - dv.x()))
+            self.verticalScrollBar().setValue(round(self.verticalScrollBar().value() - dv.y()))
+            self._middle_pan_last_viewport = cur
+            event.accept()
+            return
         if self._paste_mode:
             self._editor_scene.clear_conductor_hover_highlight()
             self._update_paste_preview(scene_pos)
             event.accept()
             return
         self._editor_scene.sync_conductor_hover_highlight(scene_pos)
+        if (
+            self._tool == EditorTool.SELECT
+            and self._select_press_polygon_id is not None
+            and self._drag_kind is None
+            and self._select_press_start is not None
+        ):
+            dx = scene_pos.x() - self._select_press_start.x()
+            dy = scene_pos.y() - self._select_press_start.y()
+            if hypot(dx, dy) >= self._scene_tolerance(4.0):
+                self._drag_kind = "polygon"
+                self._drag_polygon_id = self._select_press_polygon_id
+                self._drag_origin_points = self._editor_scene.polygon_points(self._select_press_polygon_id)
+                self._drag_polygons_snapshot = self._editor_scene.get_polygons()
+                self._drag_start_scene_pos = QPointF(self._select_press_start)
+                self._select_press_polygon_id = None
+                self._select_press_start = None
         if self._tool == EditorTool.PAN:
             super().mouseMoveEvent(event)
             return
-        if self._tool == EditorTool.ADD_POLYGON and self._polygon_create_mode == PolygonCreateMode.POINTS:
+        if self._tool == EditorTool.ADD_POLYGON and (
+            self._effective_polygon_create_mode() == PolygonCreateMode.POINTS
+            or self._editor_scene.has_pending_polygon()
+        ):
             self._editor_scene.update_pending_cursor(scene_pos)
             event.accept()
             return
@@ -533,13 +645,23 @@ class PolygonEditorView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton and self._middle_pan_active:
+            self._middle_pan_active = False
+            self._middle_pan_last_viewport = None
+            self.middlePreviewHoldChanged.emit(False)
+            event.accept()
+            return
         if self._tool == EditorTool.PAN:
             super().mouseReleaseEvent(event)
             return
-        if event.button() == Qt.MouseButton.MiddleButton and self._middle_button_hides_overlays:
-            self._middle_button_hides_overlays = False
-            self._editor_scene.set_polygon_overlays_visible(True)
-            self.middlePreviewHoldChanged.emit(False)
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._tool == EditorTool.SELECT
+            and self._drag_kind is None
+            and self._select_press_polygon_id is not None
+        ):
+            self._select_press_polygon_id = None
+            self._select_press_start = None
             event.accept()
             return
         if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton) and self._drag_kind is not None:
@@ -555,6 +677,12 @@ class PolygonEditorView(QGraphicsView):
                     self._append_brush_point(release_pos)
                     brush_points = self._editor_scene.pending_points_snapshot()
                 self._editor_scene.add_brush_stroke(brush_points, self._brush_thickness, erase=self._drag_erases)
+
+            elif self._drag_kind == "brush_stamp":
+                release_pos = self.mapToScene(event.position().toPoint())
+                stamp_points = [(release_pos.x(), release_pos.y())]
+                self._editor_scene.add_brush_stroke(stamp_points, self._brush_thickness, erase=self._drag_erases)
+
             elif self._drag_kind == "rect_polygon" and self._drag_start_scene_pos is not None:
                 self._editor_scene.add_rectangle_polygon(
                     self._drag_start_scene_pos,
@@ -598,6 +726,7 @@ class PolygonEditorView(QGraphicsView):
                 and self._drag_polygon_id is not None
                 and self._drag_vertex_index is not None
                 and self._drag_origin_points is not None
+                and self._drag_polygons_snapshot is not None
             ):
                 new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
                 old_point = self._drag_origin_points[self._drag_vertex_index]
@@ -609,19 +738,37 @@ class PolygonEditorView(QGraphicsView):
                         )
                         self._editor_scene.warn_invalid_polygon_geometry()
                     else:
+                        trial = apply_vertex_position_to_clone(
+                            self._drag_polygons_snapshot,
+                            self._drag_polygon_id,
+                            self._drag_vertex_index,
+                            new_point,
+                        )
+                        processed, _changed = postprocess_after_editor_mutation(
+                            trial,
+                            self._vector_geometry_settings,
+                            frame_width_height=None,
+                            include_merge=True,
+                        )
+                        focus_id = resolve_focus_id_after_geometry_pass(
+                            self._drag_polygons_snapshot,
+                            self._drag_polygon_id,
+                            processed,
+                        )
                         self.undo_stack.push(
-                            MoveVertexCommand(
+                            ReplacePolygonSetCommand(
                                 self._editor_scene,
-                                self._drag_polygon_id,
-                                self._drag_vertex_index,
-                                old_point,
-                                new_point,
+                                self._drag_polygons_snapshot,
+                                processed,
+                                "Move vertex",
                             )
                         )
+                        self._editor_scene.select_polygon(focus_id)
             elif (
                 self._drag_kind == "polygon"
                 and self._drag_polygon_id is not None
                 and self._drag_origin_points is not None
+                and self._drag_polygons_snapshot is not None
             ):
                 new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
                 if _polygon_points_different(self._drag_origin_points, new_points):
@@ -629,19 +776,37 @@ class PolygonEditorView(QGraphicsView):
                         self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
                         self._editor_scene.warn_invalid_polygon_geometry()
                     else:
+                        trial = apply_polygon_points_to_clone(
+                            self._drag_polygons_snapshot,
+                            self._drag_polygon_id,
+                            new_points,
+                        )
+                        processed, _c = postprocess_after_editor_mutation(
+                            trial,
+                            self._vector_geometry_settings,
+                            frame_width_height=None,
+                            include_merge=True,
+                        )
+                        focus_id = resolve_focus_id_after_geometry_pass(
+                            self._drag_polygons_snapshot,
+                            self._drag_polygon_id,
+                            processed,
+                        )
                         self.undo_stack.push(
-                            MovePolygonCommand(
+                            ReplacePolygonSetCommand(
                                 self._editor_scene,
-                                self._drag_polygon_id,
-                                self._drag_origin_points,
-                                new_points,
+                                self._drag_polygons_snapshot,
+                                processed,
+                                "Move polygon",
                             )
                         )
+                        self._editor_scene.select_polygon(focus_id)
             self._drag_kind = None
             self._drag_polygon_id = None
             self._drag_vertex_index = None
             self._drag_origin_points = None
             self._drag_start_scene_pos = None
+            self._drag_polygons_snapshot = None
             self._drag_erases = False
             self._update_tool_cursors()
             event.accept()
@@ -657,7 +822,7 @@ class PolygonEditorView(QGraphicsView):
                 return
         if (
             self._tool == EditorTool.ADD_POLYGON
-            and self._polygon_create_mode == PolygonCreateMode.POINTS
+            and self._editor_scene.has_pending_polygon()
             and event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton)
         ):
             self._finish_pending_polygon()
@@ -667,9 +832,25 @@ class PolygonEditorView(QGraphicsView):
 
     def keyPressEvent(self, event) -> None:
         if (
+            event.key() == Qt.Key.Key_Space
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and self.isEnabled()
+            and (self.hasFocus() or self.viewport().hasFocus())
+        ):
+            if event.isAutoRepeat():
+                event.accept()
+                return
+            new_hidden, overlays_visible = polygon_overlay_visibility_after_space_toggle(
+                self._vectors_hidden_via_space_toggle
+            )
+            self._vectors_hidden_via_space_toggle = new_hidden
+            self._editor_scene.set_polygon_overlays_visible(overlays_visible)
+            event.accept()
+            return
+        if (
             event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return)
             and self._tool == EditorTool.ADD_POLYGON
-            and self._polygon_create_mode == PolygonCreateMode.POINTS
+            and self._editor_scene.has_pending_polygon()
         ):
             self._finish_pending_polygon()
             event.accept()
@@ -679,20 +860,25 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.clear_measurement()
             self._editor_scene.clear_preview_rect()
             self._exit_paste_mode()
-            if self._tool in (EditorTool.SELECT, EditorTool.SELECT_AREA):
+            if self._tool == EditorTool.SELECT:
                 self._editor_scene.select_polygon(None)
+            self._select_press_polygon_id = None
+            self._select_press_start = None
             if self._tool == EditorTool.RULER:
                 self.rulerMeasurementChanged.emit("")
             self._drag_kind = None
             self._drag_erases = False
             self._pending_polygon_erases = None
             self._update_tool_cursors()
+            self._emit_effective_polygon_create_mode_changed()
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete:
             self._editor_scene.delete_polygon()
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Shift and self._tool == EditorTool.ADD_POLYGON and not event.isAutoRepeat():
+            self._emit_effective_polygon_create_mode_changed()
         if (
             event.key() == Qt.Key.Key_Shift
             and self._drag_kind == "ruler"
@@ -720,7 +906,32 @@ class PolygonEditorView(QGraphicsView):
             self.rulerMeasurementChanged.emit(measurement_text)
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Shift and self._tool == EditorTool.ADD_POLYGON and not event.isAutoRepeat():
+            self._emit_effective_polygon_create_mode_changed()
         super().keyReleaseEvent(event)
+
+    def _zoom_focus_viewport_pixel(self) -> QPoint:
+        if self._last_pointer_viewport_pos is not None:
+            p = self._last_pointer_viewport_pos.toPoint()
+            vr = self.viewport().rect()
+            clamped = QPoint(p.x(), p.y())
+            if not vr.contains(clamped):
+                return vr.center()
+            return clamped
+        return self.viewport().rect().center()
+
+    def _apply_zoom_at_viewport_pixel(self, viewport_pixel: QPoint, factor: float) -> None:
+        if factor == 1.0 or factor <= 0:
+            return
+        scene_anchor = self.mapToScene(viewport_pixel)
+        self.scale(factor, factor)
+        vp_mapped = self.mapFromScene(scene_anchor)
+        dh, dv = viewport_scroll_correction_after_scale_reanchor(
+            (viewport_pixel.x(), viewport_pixel.y()),
+            (vp_mapped.x(), vp_mapped.y()),
+        )
+        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + dh)
+        self.verticalScrollBar().setValue(self.verticalScrollBar().value() + dv)
 
     def leaveEvent(self, event) -> None:
         self._editor_scene.clear_conductor_hover_highlight()
@@ -738,7 +949,7 @@ class PolygonEditorView(QGraphicsView):
             last_point = self._editor_scene.pending_last_point()
             if last_point is not None:
                 target = _snap_to_45(last_point, scene_pos)
-        self._editor_scene.append_pending_point(target)
+        self._editor_scene.append_brush_vertex(target, self._brush_thickness)
 
     def _update_tool_cursors(self) -> None:
         self._editor_scene.set_brush_cursor(
@@ -759,6 +970,7 @@ class PolygonEditorView(QGraphicsView):
         else:
             self._editor_scene.finish_pending_polygon()
         self._pending_polygon_erases = None
+        self._emit_effective_polygon_create_mode_changed()
 
     def _ruler_target(self, start: QPointF, target: QPointF, modifiers: Qt.KeyboardModifier) -> QPointF:
         if modifiers & Qt.KeyboardModifier.ShiftModifier:

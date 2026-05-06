@@ -120,6 +120,36 @@ class WorkspaceSessionTests(unittest.TestCase):
 
         self.assertFalse(session.current_image_has_changes())
 
+    def test_open_frame_is_clean_until_polygons_change(self) -> None:
+        session = WorkspaceSession()
+        polygon = _triangle_polygon()
+        session.load_image(
+            "sample.png",
+            load_source_image=lambda _path: "source",
+            load_cif_overlay=lambda _path: [polygon.clone()],
+        )
+        session.current_state.reference_polygons = [polygon.clone()]
+
+        self.assertFalse(session.current_image_has_changes())
+
+    def test_edit_polygon_marks_dirty_and_save_sync_marks_saved(self) -> None:
+        session = WorkspaceSession()
+        polygon = _triangle_polygon()
+        session.load_image(
+            "sample.png",
+            load_source_image=lambda _path: "source",
+            load_cif_overlay=lambda _path: [polygon.clone()],
+        )
+        session.current_state.reference_polygons = [polygon.clone()]
+        changed = polygon.clone()
+        changed.points[1] = (7.0, 0.0)
+        changed.area, changed.perimeter, changed.bbox = compute_polygon_metrics(changed.points)
+
+        session.update_current_polygons([changed])
+
+        self.assertTrue(session.current_image_has_changes())
+        self.assertTrue(session.sync_polygon_reference_to_current("sample.png"))
+        self.assertFalse(session.current_image_has_changes())
 
     def test_merge_cif_paths_overrides_conflicting_stems(self) -> None:
         session = WorkspaceSession()

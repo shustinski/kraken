@@ -778,15 +778,15 @@ PIPELINE_CONTROL_TOOLTIPS: LocalizedTextMap = {
 
 EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
     EditorTool.SELECT: (
-        "Выбор: клик по полигону; перетаскивание с пустого места — рамка; перетаскивание полигона — сдвиг. "
+        "Выбор: клик по полигону; перетаскивание с пустого места — рамка; Alt + перетаскивание — переместить полигон. "
         "Ctrl добавляет или убирает из выделения.",
-        "Select: click a polygon; drag on empty space for a marquee; drag a polygon to move. "
+        "Select: click a polygon; drag on empty space for a marquee; Alt + drag moves a polygon. "
         "Ctrl adds or toggles items in the selection.",
     ),
     EditorTool.SELECT_AREA: (
-        "Выбор: клик по полигону; перетаскивание с пустого места — рамка; перетаскивание полигона — сдвиг. "
+        "Выбор: клик по полигону; перетаскивание с пустого места — рамка; Alt + перетаскивание — переместить полигон. "
         "Ctrl добавляет или убирает из выделения.",
-        "Select: click a polygon; drag on empty space for a marquee; drag a polygon to move. "
+        "Select: click a polygon; drag on empty space for a marquee; Alt + drag moves a polygon. "
         "Ctrl adds or toggles items in the selection.",
     ),
     EditorTool.PAN: (

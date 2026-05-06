@@ -90,6 +90,18 @@ class FrameAssetSyncTests(unittest.TestCase):
         )
         self.assertEqual(viewed, VectorSideListStatus.VIEWED)
 
+    def test_vector_unseen_takes_priority_over_persist_highlight(self) -> None:
+        """Never-opened frames should not show saved (green) from a stale flag."""
+
+        status = classify_vector_side_status(
+            has_matching_image=True,
+            cif_load_failed=False,
+            image_never_viewed=True,
+            polygons_dirty=False,
+            persist_highlight=True,
+        )
+        self.assertEqual(status, VectorSideListStatus.UNSEEN)
+
     def test_image_paint_status_requires_opened_seen(self) -> None:
         unopened = classify_image_side_paint_status(
             never_opened=True,
@@ -116,7 +128,7 @@ class FrameAssetSyncTests(unittest.TestCase):
             background_hex_vector_status(VectorSideListStatus.MODIFIED),
             background_hex_image_paint_status(ImageSideListPaintStatus.MODIFIED),
         )
-        self.assertEqual(background_hex_vector_status(VectorSideListStatus.SAVED), "#86EFAC")
+        self.assertEqual(background_hex_vector_status(VectorSideListStatus.SAVED), "#1e4a35")
         self.assertEqual(
             background_hex_vector_status(VectorSideListStatus.NO_MATCHING_IMAGE),
             background_hex_vector_status(VectorSideListStatus.LOAD_ERROR),

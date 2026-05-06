@@ -575,6 +575,7 @@ class PolygonEditorView(QGraphicsView):
             and self._select_press_polygon_id is not None
             and self._drag_kind is None
             and self._select_press_start is not None
+            and bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
         ):
             dx = scene_pos.x() - self._select_press_start.x()
             dy = scene_pos.y() - self._select_press_start.y()
@@ -924,7 +925,12 @@ class PolygonEditorView(QGraphicsView):
         if factor == 1.0 or factor <= 0:
             return
         scene_anchor = self.mapToScene(viewport_pixel)
-        self.scale(factor, factor)
+        old_anchor = self.transformationAnchor()
+        try:
+            self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+            self.scale(factor, factor)
+        finally:
+            self.setTransformationAnchor(old_anchor)
         vp_mapped = self.mapFromScene(scene_anchor)
         dh, dv = viewport_scroll_correction_after_scale_reanchor(
             (viewport_pixel.x(), viewport_pixel.y()),
@@ -938,9 +944,10 @@ class PolygonEditorView(QGraphicsView):
         self._editor_scene.hide_tool_cursors()
         super().leaveEvent(event)
 
-    def _scene_tolerance(self, pixels: int) -> float:
+    def _scene_tolerance(self, pixels: float | int) -> float:
+        px = max(1, int(round(pixels)))
         start = self.mapToScene(QPoint(0, 0))
-        end = self.mapToScene(QPoint(pixels, 0))
+        end = self.mapToScene(QPoint(px, 0))
         return max(1.0, abs(end.x() - start.x()))
 
     def _append_brush_point(self, scene_pos: QPointF) -> None:

@@ -138,6 +138,10 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertEqual(process_calls, [])
 
+    def test_extraction_mode_defaults_to_no_extraction(self) -> None:
+        self.assertEqual(self.widget.recognition_mode_combo.currentData(), "disabled")
+        self.assertEqual(self.widget.recognition_mode_combo.currentText(), "Без извлечения")
+
     def test_extraction_change_processes_when_auto_apply_enabled(self) -> None:
         process_calls: list[bool] = []
         self.widget.process_current_image = lambda *_args, debounced=False: process_calls.append(debounced)  # type: ignore[method-assign]
@@ -226,6 +230,23 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.assertEqual(len(neighbor_items), 8)
             self.assertFalse(self.widget.polygon_editor._editor_scene._main_frame_item.path().isEmpty())
             self.assertTrue(self.widget.polygon_editor._editor_scene._main_frame_item.isVisible())
+
+    def test_file_list_uses_stems_and_thumbnail_click_navigates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths: list[str] = []
+            for name in ("frame_001.png", "frame_002.png"):
+                path = os.path.join(directory, name)
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+                paths.append(path)
+
+            self.widget.load_images(paths)
+            self.widget.load_image = lambda path: setattr(self.widget, "_last_loaded_from_thumb", path)  # type: ignore[method-assign]
+
+            self.assertEqual(self.widget.image_list.item(0).text(), "frame_001")
+            self.assertEqual(self.widget.thumbnail_grid.count(), 2)
+            self.widget._on_thumbnail_item_clicked(self.widget.thumbnail_grid.item(1))
+
+            self.assertEqual(getattr(self.widget, "_last_loaded_from_thumb"), paths[1])
 
     def test_neighbor_grid_expands_when_zoomed_out(self) -> None:
         self.widget.neighbor_max_grid_spin.setValue(7)
@@ -746,8 +767,55 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
             self.widget.load_image = original_load_image  # type: ignore[method-assign]
 
         self.assertEqual(saved_calls, [("frame_1.cif", first_path, (32, 32), 1)])
-        self.assertEqual(first_item.background().color().name().lower(), "#86efac")
-        self.assertEqual(second_item.background().color().name().lower(), "#d1d5db")
+        self.assertEqual(first_item.background().color().name().lower(), "#1e4a35")
+        self.assertEqual(second_item.background().color().name().lower(), "#3d4f66")
+
+    def test_switching_frames_without_edits_does_not_prompt_or_save(self) -> None:
+        first_path = "frame_1.png"
+        second_path = "frame_2.png"
+        polygon = _rectangle_polygon(4, 4, 20, 20)
+        first_state = ImageProcessingState(
+            image_path=first_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[polygon.clone()],
+            loaded_cif_path="frame_1.cif",
+            reference_polygons=[polygon.clone()],
+        )
+        second_state = ImageProcessingState(
+            image_path=second_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[],
+            reference_polygons=[],
+        )
+        self.widget._workspace._state_cache = {first_path: first_state, second_path: second_state}
+        self.widget._workspace._current_image_path = first_path
+        self.widget._workspace._current_state = first_state
+        self.widget._viewed_image_paths.add(str(Path(first_path)))
+        self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
+        self.widget.polygon_editor.set_polygons([polygon.clone()])
+        self.widget.image_list.clear()
+        for path in (first_path, second_path):
+            item = QListWidgetItem(Path(path).stem)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.widget.image_list.addItem(item)
+        first_item = self.widget.image_list.item(0)
+        second_item = self.widget.image_list.item(1)
+
+        saved_calls: list[str] = []
+        original_save_polygons_cif = widget_module.save_polygons_cif
+        original_load_image = self.widget.load_image
+        try:
+            widget_module.save_polygons_cif = lambda *args, **kwargs: saved_calls.append("save")
+            self.widget.load_image = lambda path: None  # type: ignore[method-assign]
+            with patch.object(widget_module.QMessageBox, "exec", side_effect=AssertionError("unexpected prompt")):
+                self.widget._on_image_item_changed(second_item, first_item)
+        finally:
+            widget_module.save_polygons_cif = original_save_polygons_cif
+            self.widget.load_image = original_load_image  # type: ignore[method-assign]
+
+        self.assertEqual(saved_calls, [])
+        self.widget._refresh_image_list_item_states()
+        self.assertEqual(first_item.background().color().name().lower(), "#3d4f66")
 
     def test_switching_frames_does_not_save_when_autosave_disabled_even_if_dialog_discards(self) -> None:
         first_path = "frame_1.png"

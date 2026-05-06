@@ -32,16 +32,17 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QStyle,
     QTabWidget,
     QToolButton,
     QTreeWidget,
     QVBoxLayout,
     QWidget,
-    QStackedWidget,
 )
 
 
+from .status_list_delegate import attach_status_row_delegate
 from ..application.processing import (
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
@@ -178,14 +179,14 @@ def build_paths_tab(self) -> QWidget:
     self.path_panel = self._build_path_panel()
     layout.addWidget(self.path_panel)
 
-    self.vector_geom_group = QGroupBox("Vector geometry (edit & frame transitions)")
+    self.vector_geom_group = QGroupBox("Геометрия векторов при переходе между кадрами")
     self.vector_geom_group.setToolTip(
         "Post-process manual vectors when opening frames and after edits.\n"
         "Triangle artifact removal drops unparented 3-vertex outers unless disabled or marked as via/box.",
     )
     vg_form = QFormLayout(self.vector_geom_group)
     self._configure_compact_form(vg_form)
-    self.vector_geom_clip_checkbox = QCheckBox("Clip to frame & remove outside overlays")
+    self.vector_geom_clip_checkbox = QCheckBox("Обрезать по границе кадра и удалить внешние объекты")
     self.vector_geom_clip_checkbox.setChecked(True)
     self.vector_geom_min_outer_spin = QDoubleSpinBox()
     self.vector_geom_min_outer_spin.setRange(0.0, 1_000_000.0)
@@ -197,7 +198,7 @@ def build_paths_tab(self) -> QWidget:
     self.vector_geom_min_hole_spin.setDecimals(3)
     self.vector_geom_min_hole_spin.setSingleStep(1.0)
     self.vector_geom_min_hole_spin.setValue(0.0)
-    self.vector_geom_merge_checkbox = QCheckBox("Merge overlapping polygons after moves")
+    self.vector_geom_merge_checkbox = QCheckBox("Объединять пересекающиеся полигоны после перемещения")
     self.vector_geom_merge_checkbox.setChecked(True)
     self.vector_geom_spike_angle_spin = QDoubleSpinBox()
     self.vector_geom_spike_angle_spin.setRange(0.0, 179.0)
@@ -207,13 +208,16 @@ def build_paths_tab(self) -> QWidget:
     self.vector_geom_spike_angle_spin.setToolTip(
         "Interior angle threshold in degrees below which a vertex spike is flattened. Set to 0 to disable spike removal.",
     )
-    self.vector_geom_drop_triangle_checkbox = QCheckBox("Drop 3-vertex outer triangles (artifacts)")
+    self.vector_geom_drop_triangle_checkbox = QCheckBox("Удалять внешние треугольники из 3 вершин как артефакты")
     self.vector_geom_drop_triangle_checkbox.setChecked(True)
     vg_form.addRow(self.vector_geom_clip_checkbox)
-    vg_form.addRow("Min outer area (px²)", self.vector_geom_min_outer_spin)
-    vg_form.addRow("Min hole area to fill (px²)", self.vector_geom_min_hole_spin)
+    vg_form.addRow("Минимальная площадь внешнего объекта, px²", self.vector_geom_min_outer_spin)
+    self.vector_geom_min_outer_label_widget = vg_form.labelForField(self.vector_geom_min_outer_spin)
+    vg_form.addRow("Минимальная площадь отверстия для заливки, px²", self.vector_geom_min_hole_spin)
+    self.vector_geom_min_hole_label_widget = vg_form.labelForField(self.vector_geom_min_hole_spin)
     vg_form.addRow(self.vector_geom_merge_checkbox)
-    vg_form.addRow("Min spike angle (°)", self.vector_geom_spike_angle_spin)
+    vg_form.addRow("Минимальный угол острого выброса, °", self.vector_geom_spike_angle_spin)
+    self.vector_geom_spike_angle_label_widget = vg_form.labelForField(self.vector_geom_spike_angle_spin)
     vg_form.addRow(self.vector_geom_drop_triangle_checkbox)
     for _w in (
         self.vector_geom_clip_checkbox,
@@ -313,15 +317,7 @@ def build_files_tab(self) -> QWidget:
     tab = QWidget()
     layout = QVBoxLayout(tab)
 
-    list_header_row = QWidget()
-    list_header_layout = QHBoxLayout(list_header_row)
-    list_header_layout.setContentsMargins(0, 0, 0, 0)
-    list_header_layout.setSpacing(8)
-    self.sidebar_list_mode_combo = QComboBox()
-    self.sidebar_list_mode_combo.addItem("Images", "images")
-    self.sidebar_list_mode_combo.addItem("Vectors", "vectors")
-    self.sidebar_list_mode_combo.currentIndexChanged.connect(self._on_sidebar_list_mode_changed)
-    list_header_layout.addWidget(self.sidebar_list_mode_combo, 1)
+    self.files_list_label = QLabel("Кадры")
 
     self.files_scan_progress_bar = QProgressBar()
     self.files_scan_progress_bar.setRange(0, 100)
@@ -329,23 +325,32 @@ def build_files_tab(self) -> QWidget:
     self.files_scan_progress_bar.setTextVisible(True)
     self.files_scan_progress_bar.setVisible(False)
 
-    self.sidebar_list_stack = QStackedWidget()
-    self.images_list_page = QWidget()
-    images_page_layout = QVBoxLayout(self.images_list_page)
-    images_page_layout.setContentsMargins(0, 0, 0, 0)
     self.image_list = QListWidget()
+    attach_status_row_delegate(self.image_list)
     self.image_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     self.image_list.currentItemChanged.connect(self._on_image_item_changed)
     self.image_list.itemSelectionChanged.connect(self._on_image_selection_changed)
-    images_page_layout.addWidget(self.image_list, 1)
 
-    self.vectors_list_page = QWidget()
-    vectors_page_layout = QVBoxLayout(self.vectors_list_page)
-    vectors_page_layout.setContentsMargins(0, 0, 0, 0)
+    self.thumbnail_grid_label = QLabel("Матрица кадров")
+    self.thumbnail_grid = QListWidget()
+    self.thumbnail_grid.setViewMode(QListWidget.ViewMode.IconMode)
+    self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Adjust)
+    self.thumbnail_grid.setMovement(QListWidget.Movement.Static)
+    self.thumbnail_grid.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    self.thumbnail_grid.setUniformItemSizes(True)
+    self.thumbnail_grid.setWrapping(True)
+    self.thumbnail_grid.setSpacing(4)
+    self.thumbnail_grid.setMinimumHeight(86)
+    self.thumbnail_grid.setMaximumHeight(172)
+    attach_status_row_delegate(self.thumbnail_grid)
+    self.thumbnail_grid.itemClicked.connect(self._on_thumbnail_item_clicked)
+
+    # Kept as an internal CIF-status model for reload/status logic; it is no longer a visible sidebar mode.
     self.vector_list = QListWidget()
+    attach_status_row_delegate(self.vector_list)
     self.vector_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-    self.vector_list.currentItemChanged.connect(self._on_vector_item_changed)
-    vectors_page_layout.addWidget(self.vector_list, 1)
+    self.vector_list.itemClicked.connect(self._on_vector_item_navigate_request)
+    self.vector_list.setVisible(False)
     overlay_buttons_row = QWidget()
     overlay_buttons_layout = QVBoxLayout(overlay_buttons_row)
     overlay_buttons_layout.setContentsMargins(0, 0, 0, 0)
@@ -356,14 +361,14 @@ def build_files_tab(self) -> QWidget:
     self.reload_cif_for_frames_button.clicked.connect(self._reload_cif_overlays_for_selected_images)
     overlay_buttons_layout.addWidget(self.reload_cif_selected_button)
     overlay_buttons_layout.addWidget(self.reload_cif_for_frames_button)
-    vectors_page_layout.addWidget(overlay_buttons_row)
+    self.reload_cif_selected_button.setVisible(False)
 
-    self.sidebar_list_stack.addWidget(self.images_list_page)
-    self.sidebar_list_stack.addWidget(self.vectors_list_page)
-
-    layout.addWidget(list_header_row)
+    layout.addWidget(self.files_list_label)
     layout.addWidget(self.files_scan_progress_bar)
-    layout.addWidget(self.sidebar_list_stack, 1)
+    layout.addWidget(self.image_list, 1)
+    layout.addWidget(self.thumbnail_grid_label)
+    layout.addWidget(self.thumbnail_grid, 0)
+    layout.addWidget(overlay_buttons_row)
 
     self.run_group = QGroupBox("Run")
     run_layout = QGridLayout(self.run_group)
@@ -1294,13 +1299,13 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_form.addRow("Минимальная яркость пика (карта отклика)", self.heuristic_min_abs_peak_spin)
     self.bright_via_form.addRow("", self.heuristic_use_bilateral_checkbox)
     self.recognition_mode_combo = QComboBox()
-    self.recognition_mode_combo.addItem("Без распознавания", "disabled")
+    self.recognition_mode_combo.addItem("Без извлечения", "disabled")
     self.recognition_mode_combo.addItem("Проводники", "conductors")
     self.recognition_mode_combo.addItem("Контакты / via", "via")
     self.recognition_mode_combo.setCurrentIndex(1)
     self.recognition_status_label = QLabel("Готово")
     _rm_row = QHBoxLayout()
-    _rm_row.addWidget(QLabel("Режим распознавания"))
+    _rm_row.addWidget(QLabel("Режим извлечения"))
     _rm_row.addWidget(self.recognition_mode_combo, 1)
     _rm_row.addWidget(self.recognition_status_label)
     self.recognition_stack = QStackedWidget()
@@ -1820,7 +1825,6 @@ def build_visual_panel(self) -> QWidget:
     visual_nav_layout.addWidget(self.frame_nav_total_label)
     self.autosave_on_frame_transition_checkbox = QCheckBox("Autosave when changing frame")
     self.autosave_on_frame_transition_checkbox.setChecked(False)
-    self.autosave_on_frame_transition_checkbox.toggled.connect(lambda _checked: self._save_persisted_display_settings())
     visual_nav_layout.addWidget(self.autosave_on_frame_transition_checkbox)
     visual_nav_layout.addStretch(1)
     editor_layout.addWidget(self.visual_frame_nav_widget)

@@ -4,10 +4,12 @@ import unittest
 
 from contour.application.vector_geometry_postprocess import (
     VectorGeometrySettings,
+    apply_vertex_position_to_clone,
     clip_polygons_to_frame_raster,
     dissolve_small_holes,
     drop_triangle_outer_artifacts,
     merge_overlapping_root_families,
+    postprocess_after_editor_mutation,
     postprocess_polygons_for_frame_navigation,
     remove_spikes_from_polygon_ring,
 )
@@ -159,6 +161,55 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         scene.set_polygons([sq, _rect(50.0, 50.0, 55.0, 55.0, 88)])
         self.assertIsNone(scene.selected_polygon_id())
         self.assertEqual(len(scene.get_polygons()), 2)
+
+    def test_geometry_postprocess_with_no_changes_reports_clean(self) -> None:
+        poly = _rect(5.0, 5.0, 35.0, 35.0, 1)
+        out, changed = postprocess_polygons_for_frame_navigation(
+            [poly],
+            100,
+            100,
+            VectorGeometrySettings(
+                clip_to_frame_on_sync=False,
+                min_outer_area_px2=1.0,
+                min_spike_interior_angle_deg=0.0,
+            ),
+        )
+        self.assertFalse(changed)
+        self.assertEqual(len(out), 1)
+
+    def test_geometry_postprocess_with_real_changes_reports_dirty(self) -> None:
+        tiny = _rect(5.0, 5.0, 6.0, 6.0, 1)
+        out, changed = postprocess_polygons_for_frame_navigation(
+            [tiny],
+            100,
+            100,
+            VectorGeometrySettings(min_outer_area_px2=10.0, min_spike_interior_angle_deg=0.0),
+        )
+        self.assertTrue(changed)
+        self.assertFalse(out)
+
+    def test_vertex_move_valid_polygon_succeeds(self) -> None:
+        poly = _rect(0.0, 0.0, 40.0, 40.0, 1)
+        moved = apply_vertex_position_to_clone([poly], 1, 1, (50.0, 0.0))
+        self.assertEqual(moved[0].points[1], (50.0, 0.0))
+
+    def test_vertex_move_invalid_polygon_is_rejected(self) -> None:
+        poly = _rect(0.0, 0.0, 40.0, 40.0, 1)
+        moved = apply_vertex_position_to_clone([poly], 1, 1, (0.0, 40.0))
+        self.assertEqual(moved[0].points, poly.points)
+
+    def test_vertex_move_causing_merge_merges_when_enabled(self) -> None:
+        left = _rect(0.0, 0.0, 40.0, 40.0, 1)
+        right = _rect(50.0, 0.0, 90.0, 40.0, 2)
+        moved = apply_vertex_position_to_clone([left, right], 1, 1, (60.0, 0.0))
+        processed, changed = postprocess_after_editor_mutation(
+            moved,
+            VectorGeometrySettings(merge_overlapping_on_edit=True, min_outer_area_px2=1.0, min_spike_interior_angle_deg=0.0),
+            include_merge=True,
+        )
+        roots = [p for p in processed if p.parent_id is None and not p.is_hole]
+        self.assertTrue(changed)
+        self.assertEqual(len(roots), 1)
 
 
 if __name__ == "__main__":

@@ -75,10 +75,10 @@ def classify_vector_side_status(
         return VectorSideListStatus.LOAD_ERROR
     if polygons_dirty:
         return VectorSideListStatus.MODIFIED
-    if persist_highlight:
-        return VectorSideListStatus.SAVED
     if image_never_viewed:
         return VectorSideListStatus.UNSEEN
+    if persist_highlight:
+        return VectorSideListStatus.SAVED
     return VectorSideListStatus.VIEWED
 
 
@@ -97,12 +97,12 @@ def classify_image_side_paint_status(
     return ImageSideListPaintStatus.VIEWED
 
 
-# Background (list row) fills — vector list
+# Background (list row) fills — vector list (muted for dark Kraken QSS)
 _HEX_VECTOR_UNSEEN = None
-_HEX_VECTOR_VIEWED = "#D1D5DB"
-_HEX_VECTOR_MODIFIED = "#FDBA74"
-_HEX_VECTOR_SAVED = "#86EFAC"
-_HEX_VECTOR_RED = "#FCA5A5"
+_HEX_VECTOR_VIEWED = "#3d4f66"
+_HEX_VECTOR_MODIFIED = "#6b3a1e"
+_HEX_VECTOR_SAVED = "#1e4a35"
+_HEX_VECTOR_RED = "#6b2c2c"
 
 
 def background_hex_vector_status(status: VectorSideListStatus) -> str | None:
@@ -121,9 +121,9 @@ def background_hex_vector_status(status: VectorSideListStatus) -> str | None:
 
 # Background fills — image list (same semantics; unopened has no tint)
 _HEX_IMAGE_UNOPENED = None
-_HEX_IMAGE_VIEWED = "#D1D5DB"
-_HEX_IMAGE_MODIFIED = "#FDBA74"
-_HEX_IMAGE_SAVED = "#86EFAC"
+_HEX_IMAGE_VIEWED = "#3d4f66"
+_HEX_IMAGE_MODIFIED = "#6b3a1e"
+_HEX_IMAGE_SAVED = "#1e4a35"
 
 
 def background_hex_image_paint_status(status: ImageSideListPaintStatus) -> str | None:

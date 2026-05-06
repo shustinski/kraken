@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from PyQt6.QtCore import QSignalBlocker
+
 from .i18n_content import PIPELINE_CONTROL_TOOLTIPS, _localized_text
 
 if TYPE_CHECKING:
@@ -63,9 +65,14 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     if hasattr(self, "right_tabs"):
         self.right_tabs.setTabText(0, self._tr("tab_files"))
 
+    if hasattr(self, "files_list_label"):
+        self.files_list_label.setText(self._tr("images_label"))
+    if hasattr(self, "thumbnail_grid_label"):
+        self.thumbnail_grid_label.setText("Матрица кадров" if self._ui_language == "ru" else "Frame thumbnails")
     if hasattr(self, "sidebar_list_mode_combo"):
-        self.sidebar_list_mode_combo.setItemText(0, self._tr("images_label"))
-        self.sidebar_list_mode_combo.setItemText(1, self._tr("vectors_tab_label"))
+        with QSignalBlocker(self.sidebar_list_mode_combo):
+            self.sidebar_list_mode_combo.setItemText(0, self._tr("images_label"))
+            self.sidebar_list_mode_combo.setItemText(1, self._tr("vectors_tab_label"))
         self._set_common_tooltip(self.sidebar_list_mode_combo, "sidebar_list_mode")
     if hasattr(self, "reload_cif_selected_button"):
         self.reload_cif_selected_button.setText(self._tr("reload_selected_cifs_button"))
@@ -80,6 +87,45 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
                 "extra_layers_group_title",
                 "Дополнительные слои" if self._ui_language == "ru" else "Additional layers",
             )
+        )
+    if hasattr(self, "vector_geom_group"):
+        self.vector_geom_group.setTitle(
+            "Геометрия векторов при переходе между кадрами"
+            if self._ui_language == "ru"
+            else "Vector geometry on frame transitions"
+        )
+        self.vector_geom_clip_checkbox.setText(
+            "Обрезать по границе кадра и удалить внешние объекты"
+            if self._ui_language == "ru"
+            else "Clip to frame and remove outside objects"
+        )
+        if getattr(self, "vector_geom_min_outer_label_widget", None) is not None:
+            self.vector_geom_min_outer_label_widget.setText(
+                "Минимальная площадь внешнего объекта, px²"
+                if self._ui_language == "ru"
+                else "Minimum outer object area, px²"
+            )
+        if getattr(self, "vector_geom_min_hole_label_widget", None) is not None:
+            self.vector_geom_min_hole_label_widget.setText(
+                "Минимальная площадь отверстия для заливки, px²"
+                if self._ui_language == "ru"
+                else "Minimum hole area to fill, px²"
+            )
+        self.vector_geom_merge_checkbox.setText(
+            "Объединять пересекающиеся полигоны после перемещения"
+            if self._ui_language == "ru"
+            else "Merge overlapping polygons after moves"
+        )
+        if getattr(self, "vector_geom_spike_angle_label_widget", None) is not None:
+            self.vector_geom_spike_angle_label_widget.setText(
+                "Минимальный угол острого выброса, °"
+                if self._ui_language == "ru"
+                else "Minimum spike angle, °"
+            )
+        self.vector_geom_drop_triangle_checkbox.setText(
+            "Удалять внешние треугольники из 3 вершин как артефакты"
+            if self._ui_language == "ru"
+            else "Drop 3-vertex outer triangles as artifacts"
         )
     for button, accessible_name in (
         (self.process_current_button, self._tr("process_current_button")),
@@ -638,7 +684,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
                 "autosave_on_frame_transition_label",
                 "Автосохранение при переходе к следующему кадру"
                 if self._ui_language == "ru"
-                else "Autosave when switching to another frame",
+                else "Autosave on next frame",
             )
         )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 
 import cv2
@@ -262,6 +263,7 @@ class PolygonExtractionWidget(QWidget):
         self._directory_scan_signals.finished.connect(self._on_input_directory_scan_finished)
         self._directory_scan_signals.failed.connect(self._on_input_directory_scan_failed)
         self._scan_generation = 0
+        self._vectors_list_ignore_navigate_until: float = 0.0
         self._scan_thread_pool = QThreadPool(self)
         self._scan_thread_pool.setMaxThreadCount(1)
         self._scan_thread_pool.setExpiryTimeout(-1)
@@ -284,6 +286,7 @@ class PolygonExtractionWidget(QWidget):
         self._populate_pipeline_list()
         self._apply_display_settings()
         self._set_extraction_settings(self._contour_settings_profiles[self._active_extraction_profile])
+        self._set_default_extraction_disabled()
         self.set_ui_language(self._ui_language)
 
     def _build_ui(self) -> None:
@@ -374,7 +377,7 @@ class PolygonExtractionWidget(QWidget):
             self.neighbor_max_grid_spin.setValue(self._odd_neighbor_grid_size(int(payload.get("neighbor_max_grid", 7))))
             self.neighbor_opacity_spin.setValue(float(payload.get("neighbor_opacity", 0.35)))
             self.neighbor_overlap_spin.setValue(max(0, int(payload.get("neighbor_overlap_pixels", 0))))
-            self.autosave_on_frame_transition_checkbox.setChecked(bool(payload.get("autosave_on_frame_transition", False)))
+            self.autosave_on_frame_transition_checkbox.setChecked(False)
             self._restore_main_splitter_sizes(payload.get("main_splitter_sizes"))
             if hasattr(self, "vector_geom_clip_checkbox"):
                 self.vector_geom_clip_checkbox.setChecked(bool(payload.get("vector_geom_clip_on_sync", True)))
@@ -398,7 +401,6 @@ class PolygonExtractionWidget(QWidget):
             "neighbor_max_grid": int(self.neighbor_max_grid_spin.value()),
             "neighbor_opacity": float(self.neighbor_opacity_spin.value()),
             "neighbor_overlap_pixels": int(self.neighbor_overlap_spin.value()),
-            "autosave_on_frame_transition": bool(self.autosave_on_frame_transition_checkbox.isChecked()),
             "main_splitter_sizes": self.main_splitter.sizes() if hasattr(self, "main_splitter") else [],
         }
         if hasattr(self, "vector_geom_clip_checkbox"):
@@ -434,6 +436,19 @@ class PolygonExtractionWidget(QWidget):
     def _apply_vector_geometry_editor_config(self) -> None:
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_vector_geometry_settings(self._vector_geometry_settings_from_widgets())
+
+    def _set_default_extraction_disabled(self) -> None:
+        if not hasattr(self, "recognition_mode_combo"):
+            return
+        idx = self.recognition_mode_combo.findData("disabled")
+        if idx < 0:
+            return
+        with QSignalBlocker(self.recognition_mode_combo):
+            self.recognition_mode_combo.setCurrentIndex(idx)
+        self._active_extraction_profile = "conductors"
+        self._sync_recognition_stack_visibility()
+        if hasattr(self, "_set_recognition_status"):
+            self._set_recognition_status("disabled")
 
     def _on_vector_geom_control_changed(self, *_args) -> None:
         self._apply_vector_geometry_editor_config()
@@ -1265,9 +1280,9 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "recognition_mode_combo"):
             self.recognition_mode_combo.setToolTip(
                 tt(
-                    "Выбор того, что автоматически ищется на изображении: отключение, via/контакты или маска металлизации.\n"
+                    "Выбор режима извлечения. По умолчанию включено «Без извлечения»; обработка запускается только после явного выбора режима.\n"
                     "Параметры на панели меняются в зависимости от режима.",
-                    "What to run automatically: off, vias, or metal mask; panel shows matching parameters.",
+                    "Extraction mode. Defaults to No extraction; processing runs only after an explicit mode choice.",
                 )
             )
         if hasattr(self, "via_search_sensitivity_combo"):
@@ -3801,9 +3816,20 @@ class PolygonExtractionWidget(QWidget):
             )
         self._maybe_start_pending_directory_scan(pending)
 
-    def _on_sidebar_list_mode_changed(self, *_args) -> None:
-        mode = self.sidebar_list_mode_combo.currentData()
-        self.sidebar_list_stack.setCurrentIndex(0 if mode == "images" else 1)
+    def _on_sidebar_list_mode_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        if hasattr(self, "sidebar_list_stack"):
+            self.sidebar_list_stack.setCurrentIndex(0 if index == 0 else 1)
+        if index == 1:
+            # Defer arming: the mouse release that closes the combo popup is often
+            # delivered to the vector list in the *next* event-loop tick.
+            def _arm_suppress() -> None:
+                self._vectors_list_ignore_navigate_until = time.monotonic() + 0.55
+
+            QTimer.singleShot(0, _arm_suppress)
+        else:
+            self._vectors_list_ignore_navigate_until = 0.0
 
     def _image_path_for_cif_stem(self, stem: str) -> str | None:
         target = stem.lower()
@@ -3818,12 +3844,16 @@ class PolygonExtractionWidget(QWidget):
         item.setData(FRAME_STATUS_ROLE, status.value)
         hex_background = background_hex_vector_status(status)
         if hex_background:
-            item.setBackground(QBrush(QColor(hex_background)))
+            tint = QColor(hex_background)
+            item.setBackground(QBrush(tint))
+            # Windows / some styles ignore setBackground for items; BackgroundRole is respected more reliably.
+            item.setData(Qt.ItemDataRole.BackgroundRole, tint)
         else:
             item.setBackground(QBrush())
+            item.setData(Qt.ItemDataRole.BackgroundRole, None)
         raw_path = item.data(Qt.ItemDataRole.UserRole)
         if raw_path:
-            item.setText(Path(str(raw_path)).name)
+            item.setText(Path(str(raw_path)).stem)
 
     def _vector_status_enum_for_stem(self, stem_lower: str):
         ipath = self._image_path_for_cif_stem(stem_lower)
@@ -3848,12 +3878,82 @@ class PolygonExtractionWidget(QWidget):
         self.vector_list.clear()
         mapping = sorted(self._workspace.cif_paths_by_stem.items(), key=lambda kv: kv[0].lower())
         for stem, cif_path in mapping:
-            item = QListWidgetItem(Path(cif_path).name)
+            item = QListWidgetItem(Path(cif_path).stem)
             item.setToolTip(cif_path)
             item.setData(Qt.ItemDataRole.UserRole, cif_path)
             self._paint_vector_list_item(item, stem)
             self.vector_list.addItem(item)
         self.vector_list.blockSignals(False)
+
+    def _configure_thumbnail_grid_geometry(self) -> None:
+        if not hasattr(self, "thumbnail_grid"):
+            return
+        columns = max(1, int(self.neighbor_columns_spin.value())) if hasattr(self, "neighbor_columns_spin") else 3
+        cell_w = 72
+        cell_h = 78
+        self.thumbnail_grid.setGridSize(QSize(cell_w, cell_h))
+        self.thumbnail_grid.setMinimumWidth(min(360, max(cell_w + 8, columns * cell_w + 8)))
+        self.thumbnail_grid.setMaximumHeight(172)
+
+    def _thumbnail_icon_for_path(self, path: str) -> QIcon:
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            pixmap = QPixmap(64, 48)
+            pixmap.fill(QColor("#1F2937"))
+        scaled = pixmap.scaled(
+            64,
+            48,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        return QIcon(scaled)
+
+    def _rebuild_thumbnail_grid(self) -> None:
+        if not hasattr(self, "thumbnail_grid"):
+            return
+        self._configure_thumbnail_grid_geometry()
+        self.thumbnail_grid.blockSignals(True)
+        try:
+            self.thumbnail_grid.clear()
+            for path in self._workspace.image_paths:
+                item = QListWidgetItem(self._thumbnail_icon_for_path(str(path)), Path(str(path)).stem)
+                item.setToolTip(str(path))
+                item.setData(Qt.ItemDataRole.UserRole, str(path))
+                self.thumbnail_grid.addItem(item)
+        finally:
+            self.thumbnail_grid.blockSignals(False)
+        self._update_thumbnail_grid_selection()
+
+    def _update_thumbnail_grid_selection(self) -> None:
+        if not hasattr(self, "thumbnail_grid"):
+            return
+        current = self._workspace.current_image_path
+        matched = False
+        self.thumbnail_grid.blockSignals(True)
+        try:
+            for index in range(self.thumbnail_grid.count()):
+                item = self.thumbnail_grid.item(index)
+                selected = bool(current and item is not None and item.data(Qt.ItemDataRole.UserRole) == current)
+                if selected:
+                    self.thumbnail_grid.setCurrentRow(index)
+                    matched = True
+                if item is not None:
+                    item.setData(Qt.ItemDataRole.BackgroundRole, QColor("#1D4ED8") if selected else None)
+            if not matched:
+                self.thumbnail_grid.clearSelection()
+                self.thumbnail_grid.setCurrentRow(-1)
+        finally:
+            self.thumbnail_grid.blockSignals(False)
+
+    def _on_thumbnail_item_clicked(self, item: QListWidgetItem) -> None:
+        if item is None:
+            return
+        path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not path:
+            return
+        image_item = self._find_image_list_item(path)
+        if image_item is not None:
+            self.image_list.setCurrentItem(image_item)
 
     def _refresh_vector_rows_for_workspace(self) -> None:
         if not hasattr(self, "vector_list"):
@@ -4042,11 +4142,14 @@ class PolygonExtractionWidget(QWidget):
             with QSignalBlocker(self.frame_nav_spin):
                 self.frame_nav_spin.setValue(min(max(1, rows[0] + 1), len(paths)))
 
-    def _on_vector_item_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
-        del previous
-        if current is None:
+    def _on_vector_item_navigate_request(self, item: QListWidgetItem) -> None:
+        """Jump to the matching image frame (Files → Images) after an explicit click."""
+
+        if item is None:
             return
-        tip = current.toolTip()
+        if time.monotonic() < self._vectors_list_ignore_navigate_until:
+            return
+        tip = item.toolTip()
         if not tip:
             return
         stem = Path(tip).stem.lower()
@@ -4054,14 +4157,16 @@ class PolygonExtractionWidget(QWidget):
         if not image_path:
             self._append_log(self._tr("vector_row_no_matching_image_loaded_log"))
             return
-        item = self._find_image_list_item(image_path)
-        if item is None:
+        image_item = self._find_image_list_item(image_path)
+        if image_item is None:
             return
-        with QSignalBlocker(self.sidebar_list_mode_combo):
-            self.sidebar_list_mode_combo.setCurrentIndex(0)
-        self.sidebar_list_stack.setCurrentIndex(0)
+        if hasattr(self, "sidebar_list_mode_combo"):
+            with QSignalBlocker(self.sidebar_list_mode_combo):
+                self.sidebar_list_mode_combo.setCurrentIndex(0)
+        if hasattr(self, "sidebar_list_stack"):
+            self.sidebar_list_stack.setCurrentIndex(0)
         self.image_list.blockSignals(True)
-        self.image_list.setCurrentItem(item)
+        self.image_list.setCurrentItem(image_item)
         self.image_list.blockSignals(False)
 
     def _select_input_directory(self) -> None:
@@ -4107,6 +4212,7 @@ class PolygonExtractionWidget(QWidget):
         else:
             self._workspace.replace_image_selection([], is_supported_image=is_image_path)
             self.image_list.clear()
+            self._rebuild_thumbnail_grid()
             self._rebuild_vector_list()
             self._refresh_image_list_item_states()
             self._sync_frame_navigation_controls()
@@ -4175,6 +4281,7 @@ class PolygonExtractionWidget(QWidget):
 
     def _on_neighbor_display_settings_changed(self, *_args) -> None:
         self._sync_neighbor_frames()
+        self._configure_thumbnail_grid_geometry()
         self._save_persisted_display_settings()
 
     def _refresh_extra_layers_list(self) -> None:
@@ -5458,7 +5565,7 @@ class PolygonExtractionWidget(QWidget):
         if self._ui_language == "ru":
             texts = {
                 "idle": "Готово",
-                "disabled": "Распознавание отключено",
+                "disabled": "Извлечение отключено",
                 "updating": "Выполняется обработка…",
                 "error": "Ошибка",
             }
@@ -5491,11 +5598,15 @@ class PolygonExtractionWidget(QWidget):
         item.setData(FRAME_STATUS_ROLE, painted.value)
         hex_background = background_hex_image_paint_status(painted)
         if hex_background:
-            item.setBackground(QBrush(QColor(hex_background)))
+            tint = QColor(hex_background)
+            item.setBackground(QBrush(tint))
+            item.setData(Qt.ItemDataRole.BackgroundRole, tint)
         else:
             item.setBackground(QBrush())
+            item.setData(Qt.ItemDataRole.BackgroundRole, None)
         fg = QColor(foreground_hex_image_has_vector_overlay(bool(self._workspace.resolve_cif_path(normalized))))
         item.setForeground(QBrush(fg))
+        item.setText(Path(normalized).stem)
 
     def _find_image_list_item(self, image_path: str) -> QListWidgetItem | None:
         target = str(Path(image_path))
@@ -5523,6 +5634,7 @@ class PolygonExtractionWidget(QWidget):
             if image_path:
                 self._paint_image_row_item(item, image_path)
         self._refresh_vector_rows_for_workspace()
+        self._update_thumbnail_grid_selection()
 
     def _update_vector_edit_status_label(self) -> None:
         if not hasattr(self, "vector_edit_status_label"):
@@ -5638,22 +5750,49 @@ class PolygonExtractionWidget(QWidget):
         msg.setText(
             self._tr(
                 "unsaved_vectors_dialog_text",
-                "Сохранить правки векторов текущего кадра перед переходом?"
-                if self._ui_language == "ru"
-                else "Save vector edits for the current frame before leaving?",
+                "Сохранить изменения?" if self._ui_language == "ru" else "Save changes?",
             )
         )
-        msg.setStandardButtons(
-            QMessageBox.StandardButton.Save
-            | QMessageBox.StandardButton.Discard
-            | QMessageBox.StandardButton.Cancel
+        save_button = msg.addButton(
+            "Сохранить" if self._ui_language == "ru" else "Save",
+            QMessageBox.ButtonRole.AcceptRole,
         )
-        msg.setDefaultButton(QMessageBox.StandardButton.Save)
-        answer = msg.exec()
-        if answer == QMessageBox.StandardButton.Cancel:
+        discard_button = msg.addButton(
+            "Не сохранять" if self._ui_language == "ru" else "Don't save",
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
+        cancel_button = msg.addButton(
+            "Отмена" if self._ui_language == "ru" else "Cancel",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        autosave_checkbox = QCheckBox(
+            "Автосохранение при переходе к следующему кадру"
+            if self._ui_language == "ru"
+            else "Autosave on next frame"
+        )
+        autosave_checkbox.setChecked(False)
+        msg.setCheckBox(autosave_checkbox)
+        msg.setDefaultButton(save_button)
+        result = msg.exec()
+        clicked = msg.clickedButton()
+        if clicked is None:
+            if result == QMessageBox.StandardButton.Cancel:
+                return TransitionPromptChoice.CANCEL
+            if result == QMessageBox.StandardButton.Discard:
+                return TransitionPromptChoice.DISCARD
+            if result == QMessageBox.StandardButton.Save and autosave_checkbox.isChecked() and hasattr(
+                self, "autosave_on_frame_transition_checkbox"
+            ):
+                self.autosave_on_frame_transition_checkbox.setChecked(True)
+            return TransitionPromptChoice.SAVE
+        if clicked is cancel_button:
             return TransitionPromptChoice.CANCEL
-        if answer == QMessageBox.StandardButton.Discard:
+        if clicked is discard_button:
             return TransitionPromptChoice.DISCARD
+        if clicked is save_button and autosave_checkbox.isChecked() and hasattr(
+            self, "autosave_on_frame_transition_checkbox"
+        ):
+            self.autosave_on_frame_transition_checkbox.setChecked(True)
         return TransitionPromptChoice.SAVE
 
     def _warn_transition_blocked_after_failed_autosave(self) -> None:
@@ -6216,11 +6355,12 @@ class PolygonExtractionWidget(QWidget):
         self._abort_in_flight_interactive_processing(preview=True, prepared=True)
         self.image_list.clear()
         for path in normalized_paths:
-            item = QListWidgetItem(Path(path).name)
+            item = QListWidgetItem(Path(path).stem)
             item.setToolTip(f"Путь к файлу: {path}" if self._ui_language == "ru" else f"File path: {path}")
             item.setData(Qt.ItemDataRole.UserRole, path)
             self._paint_image_row_item(item, path)
             self.image_list.addItem(item)
+        self._rebuild_thumbnail_grid()
         if normalized_paths:
             self.image_list.setCurrentRow(0)
         else:
@@ -6281,10 +6421,12 @@ class PolygonExtractionWidget(QWidget):
             image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
         if image_result.reused_current_state:
             self._update_frame_item_status(image_result.image_path)
+            self._update_thumbnail_grid_selection()
             self._sync_frame_navigation_controls()
             return
         self._sync_current_state_views()
         self._update_frame_item_status(image_result.image_path)
+        self._update_thumbnail_grid_selection()
         self._sync_frame_navigation_controls()
         if (
             image_result.prepared_image_required
@@ -6360,6 +6502,8 @@ class PolygonExtractionWidget(QWidget):
         if not target_directory:
             self._append_log(self._tr("output_directory_not_set_log"))
             return {}
+        self._workspace.update_current_polygons(self.get_polygons())
+        had_vector_edits = self._workspace.current_image_has_changes()
         saved_files = save_result_bundle(
             output_directory=target_directory,
             image_path=current_image_path,
@@ -6375,7 +6519,8 @@ class PolygonExtractionWidget(QWidget):
         if saved_files:
             self._append_log(self._tr("saved_result_log", saved_files=saved_files))
             saved_key = str(Path(current_image_path))
-            self._persisted_highlight_paths.add(saved_key)
+            if had_vector_edits:
+                self._persisted_highlight_paths.add(saved_key)
             self._workspace.sync_polygon_reference_to_current(saved_key)
             self._update_frame_item_status(current_image_path)
             self._update_vector_edit_status_label()

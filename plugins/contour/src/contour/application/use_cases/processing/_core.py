@@ -27,9 +27,8 @@ from ...processing import (
     RECOGNITION_MODE_CONDUCTORS,
     RECOGNITION_MODE_DISABLED,
     RECOGNITION_MODE_VIA,
-    VIA_SEARCH_MODE_BLOB,
+    VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
     VIA_SEARCH_MODE_HEURISTIC,
-    VIA_SEARCH_MODE_HYBRID,
     VIA_SEARCH_MODE_TEMPLATE,
     BatchImageResult,
     ContourDebugCandidate,
@@ -150,13 +149,58 @@ def build_via_vectorization_mask(
 def _build_modern_via_vectorization_mask(
     gray: np.ndarray, settings: ContourExtractionSettings
 ) -> tuple[np.ndarray, list[ContourDebugCandidate]]:
+    from ....vision.via.bright_tophat_dog import BrightViaDetectorConfig, detect_bright_vias
     from ....vision.via_detection.heuristic_detector import detect_vias_heuristic
+    from ....vision.via_detection.result import DetectionResult, ViaDetection
     from ....vision.via_detection.settings_bridge import heuristic_config_from_settings, template_config_from_settings
     from ....vision.via_detection.template_detector import detect_vias_template
 
     mode = normalize_via_search_mode(settings.via_search_mode)
     if mode == VIA_SEARCH_MODE_TEMPLATE:
         result = detect_vias_template(gray, template_config_from_settings(settings))
+    elif mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
+        bright_config = BrightViaDetectorConfig.from_legacy_settings(settings)
+        bright = detect_bright_vias(gray, bright_config)
+        accepted = [
+            ViaDetection(
+                x=float(det.center[0]),
+                y=float(det.center[1]),
+                bbox=det.bbox,
+                score=float(det.final_score),
+                diameter_estimate=float((det.bbox[2] + det.bbox[3]) * 0.5),
+                contrast=float(det.brightness_score),
+                prominence=float(det.tophat_response + det.dog_response) * 0.5,
+                compactness=float(det.circularity),
+                aspect=float(det.aspect),
+                polarity_hypothesis="bright",
+                reject_reason=det.hard_reason or None,
+            )
+            for det in bright.detections
+        ]
+        rejected = [
+            ViaDetection(
+                x=float(det.center[0]),
+                y=float(det.center[1]),
+                bbox=det.bbox,
+                score=float(det.final_score),
+                diameter_estimate=float((det.bbox[2] + det.bbox[3]) * 0.5),
+                contrast=float(det.brightness_score),
+                prominence=float(det.tophat_response + det.dog_response) * 0.5,
+                compactness=float(det.circularity),
+                aspect=float(det.aspect),
+                polarity_hypothesis="bright",
+                reject_reason=det.hard_reason or det.status,
+            )
+            for det in bright.candidates
+            if det not in bright.detections
+        ]
+        result = DetectionResult(
+            method=VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
+            accepted=accepted,
+            rejected=rejected,
+            debug_images=dict(bright.debug_images),
+            parameters_snapshot={"config": repr(bright_config)},
+        )
     else:
         result = detect_vias_heuristic(gray, heuristic_config_from_settings(settings))
     mask = np.zeros(gray.shape[:2], dtype=np.uint8)
@@ -181,8 +225,8 @@ def _build_modern_via_vectorization_mask(
                 perimeter=float(2.0 * (det.bbox[2] + det.bbox[3])),
                 roundness=float(det.compactness * 100.0),
                 accepted=True,
-                reason="accepted:heuristic_or_template",
-                source="heuristic" if mode != VIA_SEARCH_MODE_TEMPLATE else "template",
+                reason=f"accepted:{mode}",
+                source=mode,
                 score=float(det.score),
             )
         )
@@ -195,7 +239,7 @@ def _build_modern_via_vectorization_mask(
                 area=0.0,
                 accepted=False,
                 reason="below_threshold",
-                source="heuristic" if mode != VIA_SEARCH_MODE_TEMPLATE else "template",
+                source=mode,
                 score=float(det.score),
             )
         )
@@ -209,7 +253,7 @@ def _build_modern_via_vectorization_mask(
                 area=0.0,
                 accepted=False,
                 reason=f"rejected:{st}",
-                source="heuristic" if mode != VIA_SEARCH_MODE_TEMPLATE else "template",
+                source=mode,
                 score=float(getattr(det, "score", 0.0)),
             )
         )
@@ -266,7 +310,9 @@ def build_detection_debug_maps(
     if (settings.object_type == "via" or settings.output_mode == "box") and vmode in (
         VIA_SEARCH_MODE_HEURISTIC,
         VIA_SEARCH_MODE_TEMPLATE,
+        VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
     ):
+        from ....vision.via.bright_tophat_dog import BrightViaDetectorConfig, detect_bright_vias
         from ....vision.via_detection.heuristic_detector import detect_vias_heuristic
         from ....vision.via_detection.settings_bridge import heuristic_config_from_settings, template_config_from_settings
         from ....vision.via_detection.template_detector import detect_vias_template
@@ -274,9 +320,13 @@ def build_detection_debug_maps(
         try:
             if vmode == VIA_SEARCH_MODE_TEMPLATE:
                 r = detect_vias_template(source_gray, template_config_from_settings(settings))
+                dbg = dict(r.debug_images)
+            elif vmode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
+                r = detect_bright_vias(source_gray, BrightViaDetectorConfig.from_legacy_settings(settings))
+                dbg = dict(r.debug_images)
             else:
                 r = detect_vias_heuristic(source_gray, heuristic_config_from_settings(settings))
-            dbg = dict(r.debug_images)
+                dbg = dict(r.debug_images)
             for _guard in ("source_gray", "gradient_elevation", "gradient_color"):
                 dbg.pop(_guard, None)
             maps.update(dbg)
@@ -459,8 +509,8 @@ def _detect_via_candidates(
     polarity_scans = _via_polarity_scans(settings)
     line_suppression = max(0.0, min(1.0, float(settings.via_spot_line_suppression)))
     search_mode = normalize_via_search_mode(settings.via_search_mode)
-    run_blob = search_mode in {VIA_SEARCH_MODE_HYBRID, VIA_SEARCH_MODE_BLOB}
-    run_template = search_mode in {VIA_SEARCH_MODE_HYBRID, VIA_SEARCH_MODE_TEMPLATE}
+    run_blob = False
+    run_template = search_mode == VIA_SEARCH_MODE_TEMPLATE
     edge_method = _resolve_via_edge_method(settings)
     gradient = build_gradient_elevation(enhanced, edge_method)
     if gradient.size == 0:

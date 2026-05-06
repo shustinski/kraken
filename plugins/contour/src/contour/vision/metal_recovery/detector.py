@@ -37,23 +37,11 @@ def effective_conductor_width_px(width_from_dt: float, rw: float, rh: float) -> 
 def _normalize_metal_extraction_mode(value: str) -> str:
     """User-facing extraction mode: none | otsu | adaptive | hybrid."""
     t = str(value or "").strip().lower()
-    if t in {
-        "none",
-        "off",
-        "disabled",
-        "Р±РµР·",
-        "Р±РµР·_СЃРµРіРјРµРЅС‚Р°С†РёРё",
-        "Р±РµР· СЃРµРіРјРµРЅС‚Р°С†РёРё",
-        "grayscale",
-        "edges",
-        "edge",
-        "no_segmentation",
-        "no-segmentation",
-    }:
+    if t in {"none", "off", "disabled", "без", "без_сегментации", "без сегментации", "grayscale", "edges", "edge", "no_segmentation", "no-segmentation"}:
         return "none"
-    if t in {"hybrid", "РіРёР±СЂРёРґ", "both", "РєРѕРјР±РёРЅРёСЂРѕРІР°РЅРЅС‹Р№"}:
+    if t in {"hybrid", "гибрид", "гибридная", "both", "комбинированный"}:
         return "hybrid"
-    if t in {"adaptive", "Р°РґР°РїС‚РёРІ", "Р°РґР°РїС‚РёРІРЅР°СЏ"}:
+    if t in {"adaptive", "адаптив", "адаптивная"}:
         return "adaptive"
     if t in {"otsu"}:
         return "otsu"
@@ -62,14 +50,14 @@ def _normalize_metal_extraction_mode(value: str) -> str:
 
 def _normalize_metal_segmentation_method(value: str) -> str:
     """Threshold leg: Otsu vs Adaptive (only used inside `_segment_bright_metal`)."""
-    return "adaptive" if str(value).strip().lower() in {"adaptive", "Р°РґР°РїС‚РёРІ", "Р°РґР°РїС‚РёРІРЅР°СЏ"} else "otsu"
+    return "adaptive" if str(value).strip().lower() in {"adaptive", "адаптив", "адаптивная"} else "otsu"
 
 
 def _normalize_metal_sensitivity_token(value: str) -> str:
     t = str(value or "").strip().lower()
-    if t in {"low", "РЅРёР·РєР°СЏ", "РЅРёР·Рє"}:
+    if t in {"low", "низкая", "низк"}:
         return "low"
-    if t in {"high", "РІС‹СЃРѕРєР°СЏ", "РІС‹СЃРѕРє"}:
+    if t in {"high", "высокая", "высок"}:
         return "high"
     return "medium"
 
@@ -87,7 +75,7 @@ def _sensitivity_offsets(sensitivity_0_100: int, token: str) -> tuple[float, int
 
 @dataclass(slots=True)
 class MetalRecoveryConfig:
-    segmentation_method: str = "none"
+    segmentation_method: str = "otsu"
     sensitivity_0_100: int = 50
     sensitivity_token: str = "medium"
     morph_close_radius: int = 1
@@ -109,7 +97,8 @@ class MetalRecoveryConfig:
     min_straightness: float = 0.2
     allow_t_junction: bool = True
     border_mode: str = "mark"
-    check_contour_validity: bool = True
+    check_contour_validity: bool = False
+    min_inner_hole_area: float = 100.0
     preset_name: str = "standard"
     use_wide_conductor_gradient: bool = False
     wide_gradient_profile_radius_px: int = 8
@@ -164,76 +153,76 @@ def format_metal_reject_detail_ru(
     c = str(case or "").strip()
     tol = float(config.angle_tolerance_deg)
     mode = str(config.allowed_angles).strip()
-    if c == "РјР°Р»Рѕ_РІРµСЂС€РёРЅ":
+    if c in {"мало_вершин"}:
         return (
-            f"РўРѕРїРѕР»РѕРіРёСЏ: Сѓ РєРѕРЅС‚СѓСЂР° {int(vertex_count)} РІРµСЂС€РёРЅ(С‹), С‚СЂРµР±СѓРµС‚СЃСЏ РЅРµ РјРµРЅРµРµ 3 "
-            f"(РїР°СЂР°РјРµС‚СЂ В«РјРёРЅ. С‡РёСЃР»Рѕ С‚РѕС‡РµРєВ» РІ СѓРїСЂРѕС‰РµРЅРёРё: {int(config.min_points)})"
+            f"Топология: у контура {int(vertex_count)} вершин(ы), требуется не менее 3 "
+            f"(параметр «мин. число точек» в упрощении: {int(config.min_points)})"
         )
-    if c == "СЃР°РјРѕРїРµСЂРµСЃРµС‡РµРЅРёРµ_РёР»Рё_С‚РѕРїРѕР»РѕРіРёСЏ" or c.startswith("СЃР°РјРѕРїРµСЂРµСЃРµС‡РµРЅРёРµ"):
+    if c in {"самопересечение_или_топология"} or c.startswith("самопересечение"):
         return (
-            "РўРѕРїРѕР»РѕРіРёСЏ: РєРѕРЅС‚СѓСЂ СЃР°РјРѕРїРµСЂРµСЃРµРєР°РµС‚СЃСЏ, РєР°СЃР°РµС‚СЃСЏ СЃР°Рј СЃРµР±СЏ РёР»Рё РёРјРµРµС‚ РЅРµРґРѕРїСѓСЃС‚РёРјСѓСЋ РєРѕРЅС„РёРіСѓСЂР°С†РёСЋ СЂС‘Р±РµСЂ "
-            f"(РїСЂРѕРІРµСЂРєР° РІРєР»СЋС‡РµРЅР°: check_contour_validity={bool(config.check_contour_validity)})"
+            "Топология: контур самопересекается, касается сам себя или имеет недопустимую конфигурацию рёбер "
+            f"(проверка включена: check_contour_validity={bool(config.check_contour_validity)})"
         )
-    if c == "РЅРµРєРѕСЂСЂРµРєС‚РЅС‹Р№_РєРѕРЅС‚СѓСЂ" or c == "":
+    if c in {"некорректный_контур", ""}:
         return (
-            "РўРѕРїРѕР»РѕРіРёСЏ: РєРѕРЅС‚СѓСЂ РЅРµ РїСЂРѕС€С‘Р» РїСЂРѕРІРµСЂРєСѓ С†РµР»РѕСЃС‚РЅРѕСЃС‚Рё "
-            f"(РІРµСЂС€РёРЅ: {int(vertex_count)}, РїСЂРѕРІРµСЂРєР°: {bool(config.check_contour_validity)})"
+            "Топология: контур не прошёл проверку целостности "
+            f"(вершин: {int(vertex_count)}, проверка: {bool(config.check_contour_validity)})"
         )
-    if c == "С€РёСЂРёРЅР°":
+    if c in {"ширина"}:
         return (
-            "РћС†РµРЅРєР° С€РёСЂРёРЅС‹ (РјР°СЃРєР° + minAreaRect): "
-            f"Сѓ РїРѕР»РёРіРѕРЅР° {width_px:.2f} px, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјРёРЅРёРјСѓРј {float(config.min_width_px):.2f} px"
+            "Оценка ширины (маска + minAreaRect): "
+            f"у полигона {width_px:.2f} px, в настройках минимум {float(config.min_width_px):.2f} px"
         )
-    if c == "С€РёСЂРёРЅР°_РјР°РєСЃ":
-        cap_s = f"{float(config.max_width_px):.2f}" if config.max_width_px is not None else "вЂ”"
+    if c in {"ширина_макс"}:
+        cap_s = f"{float(config.max_width_px):.2f}" if config.max_width_px is not None else "—"
         return (
-            "РћС†РµРЅРєР° С€РёСЂРёРЅС‹ (РјР°СЃРєР° + minAreaRect): "
-            f"Сѓ РїРѕР»РёРіРѕРЅР° {width_px:.2f} px, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјР°РєСЃРёРјСѓРј {cap_s} px"
+            "Оценка ширины (маска + minAreaRect): "
+            f"у полигона {width_px:.2f} px, в настройках максимум {cap_s} px"
         )
-    if c == "РґР»РёРЅР°":
+    if c in {"длина"}:
         return (
-            "Р”Р»РёРЅР° РїРѕ minAreaRect (Р±РѕР»СЊС€Р°СЏ СЃС‚РѕСЂРѕРЅР°): "
-            f"Сѓ РїРѕР»РёРіРѕРЅР° {length_px:.2f} px, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјРёРЅРёРјСѓРј {float(config.min_length_px):.2f} px"
+            "Длина по minAreaRect (большая сторона): "
+            f"у полигона {length_px:.2f} px, в настройках минимум {float(config.min_length_px):.2f} px"
         )
-    if c == "РїР»РѕС‰Р°РґСЊ":
-        return f"РџР»РѕС‰Р°РґСЊ РєРѕРЅС‚СѓСЂР°: Сѓ РїРѕР»РёРіРѕРЅР° {area:.1f} pxВІ, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјРёРЅРёРјСѓРј {float(config.min_area):.1f} pxВІ"
-    if c == "РїР»РѕС‰Р°РґСЊ_РјР°РєСЃ":
-        cap_s = f"{float(config.max_area):.1f}" if config.max_area is not None else "вЂ”"
-        return f"РџР»РѕС‰Р°РґСЊ РєРѕРЅС‚СѓСЂР°: Сѓ РїРѕР»РёРіРѕРЅР° {area:.1f} pxВІ, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјР°РєСЃРёРјСѓРј {cap_s} pxВІ"
-    if c == "РїРµСЂРёРјРµС‚СЂ":
+    if c in {"площадь"}:
+        return f"Площадь контура: у полигона {area:.1f} px², в настройках минимум {float(config.min_area):.1f} px²"
+    if c in {"площадь_макс"}:
+        cap_s = f"{float(config.max_area):.1f}" if config.max_area is not None else "—"
+        return f"Площадь контура: у полигона {area:.1f} px², в настройках максимум {cap_s} px²"
+    if c in {"периметр"}:
         return (
-            "РџРµСЂРёРјРµС‚СЂ РєРѕРЅС‚СѓСЂР°: "
-            f"Сѓ РїРѕР»РёРіРѕРЅР° {perimeter:.1f} px, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјРёРЅРёРјСѓРј {float(config.min_perimeter):.1f} px"
+            "Периметр контура: "
+            f"у полигона {perimeter:.1f} px, в настройках минимум {float(config.min_perimeter):.1f} px"
         )
-    if c == "РїРµСЂРёРјРµС‚СЂ_РјР°РєСЃ":
-        cap_s = f"{float(config.max_perimeter):.1f}" if config.max_perimeter is not None else "вЂ”"
+    if c in {"периметр_макс"}:
+        cap_s = f"{float(config.max_perimeter):.1f}" if config.max_perimeter is not None else "—"
         return (
-            "РџРµСЂРёРјРµС‚СЂ РєРѕРЅС‚СѓСЂР°: "
-            f"Сѓ РїРѕР»РёРіРѕРЅР° {perimeter:.1f} px, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјР°РєСЃРёРјСѓРј {cap_s} px"
+            "Периметр контура: "
+            f"у полигона {perimeter:.1f} px, в настройках максимум {cap_s} px"
         )
-    if c == "РїСЂСЏРјРѕР»РёРЅРµР№РЅРѕСЃС‚СЊ":
+    if c in {"прямолинейность"}:
         return (
-            "РџСЂСЏРјРѕР»РёРЅРµР№РЅРѕСЃС‚СЊ (2В·max(СЃС‚РѕСЂРѕРЅС‹ minAreaRect) / РїРµСЂРёРјРµС‚СЂ): "
-            f"Сѓ РїРѕР»РёРіРѕРЅР° {straightness:.3f}, РІ РЅР°СЃС‚СЂРѕР№РєР°С… РјРёРЅРёРјСѓРј {float(config.min_straightness):.3f}"
+            "Прямолинейность (2·max(стороны minAreaRect) / периметр): "
+            f"у полигона {straightness:.3f}, в настройках минимум {float(config.min_straightness):.3f}"
         )
-    if c == "СѓРіР»С‹":
+    if c in {"углы"}:
         return (
-            f"РЈРіР»С‹ РїРѕР»РёРіРѕРЅР°: СЂРµР¶РёРј В«{mode}В», РґРѕРїСѓСЃРє В±{tol:.1f}В°; "
-            f"РјР°РєСЃРёРјР°Р»СЊРЅРѕРµ РѕС‚РєР»РѕРЅРµРЅРёРµ РѕС‚ РґРѕРїСѓСЃС‚РёРјС‹С… РЅР°РїСЂР°РІР»РµРЅРёР№ {max_angle_deviation:.2f}В° "
-            f"(РѕР¶РёРґР°Р»РѕСЃСЊ РЅРµ Р±РѕР»СЊС€Рµ {tol:.1f}В°)"
+            f"Углы полигона: режим «{mode}», допуск ±{tol:.1f}°; "
+            f"максимальное отклонение от допустимых направлений {max_angle_deviation:.2f}° "
+            f"(ожидалось не больше {tol:.1f}°)"
         )
-    if c == "С‚_СЃРѕРµРґРёРЅРµРЅРёРµ_Р·Р°РїСЂРµС‰РµРЅРѕ":
+    if c in {"т_соединение_запрещено"}:
         return (
-            "Рў-РѕР±СЂР°Р·РЅРѕРµ РІРµС‚РІР»РµРЅРёРµ (РІС‹РїСѓРєР»С‹Рµ РґРµС„РµРєС‚С‹ РєРѕРЅС‚СѓСЂР°): "
-            f"РѕС†РµРЅРєР° {int(t_branch_score)} > 2 РїСЂРё РІС‹РєР»СЋС‡РµРЅРЅРѕРј РїР°СЂР°РјРµС‚СЂРµ В«СЂР°Р·СЂРµС€РёС‚СЊ Рў-СЃРѕРµРґРёРЅРµРЅРёСЏВ» "
+            "Т-образное ветвление (выпуклые дефекты контура): "
+            f"оценка {int(t_branch_score)} > 2 при выключенном параметре «разрешить Т-соединения» "
             f"(allow_t_junction={bool(config.allow_t_junction)})"
         )
-    if c == "РіСЂР°РЅРёС†Р°":
+    if c in {"граница"}:
         return (
-            "РљР°СЃР°РЅРёРµ РіСЂР°РЅРёС†С‹ РєР°РґСЂР°: РєРѕРЅС‚СѓСЂ РєР°СЃР°РµС‚СЃСЏ РєСЂР°СЏ РёР·РѕР±СЂР°Р¶РµРЅРёСЏ; "
-            f"СЂРµР¶РёРј РѕР±СЂР°Р±РѕС‚РєРё С‚Р°РєРёС… РєРѕРЅС‚СѓСЂРѕРІ: В«{config.border_mode}В» (РѕР¶РёРґР°Р»РѕСЃСЊ РЅРµ РїРѕРїР°РґР°С‚СЊ РЅР° РєСЂР°Р№ РїСЂРё СЂРµР¶РёРјРµ ignore)"
+            "Касание границы кадра: контур касается края изображения; "
+            f"режим обработки таких контуров: «{config.border_mode}» (ожидалось не попадать на край при режиме ignore)"
         )
-    return f"РћС‚РєР»РѕРЅРµРЅРёРµ: {c}"
+    return f"Отклонение: {c}"
 
 
 def format_metal_suspicion_detail_ru(
@@ -251,17 +240,17 @@ def format_metal_suspicion_detail_ru(
     soft_s = min_s * 0.85
     if angle_soft:
         parts.append(
-            f"СѓРіР»С‹ Р±Р»РёР·РєРё Рє РїРѕСЂРѕРіСѓ: РѕС‚РєР»РѕРЅРµРЅРёРµ {max_angle_deviation:.2f}В° РїСЂРё Р¶С‘СЃС‚РєРѕРј РґРѕРїСѓСЃРєРµ В±{tol:.1f}В° "
-            f"(РјСЏРіРєРѕРµ РїСЂРµРґСѓРїСЂРµР¶РґРµРЅРёРµ СѓР¶Рµ РѕС‚ {soft_ang:.2f}В°)"
+            f"углы близки к порогу: отклонение {max_angle_deviation:.2f}° при жёстком допуске ±{tol:.1f}° "
+            f"(мягкое предупреждение уже от {soft_ang:.2f}°)"
         )
     if straight_soft:
         parts.append(
-            f"РїСЂСЏРјРѕР»РёРЅРµР№РЅРѕСЃС‚СЊ Р±Р»РёР·РєР° Рє РјРёРЅРёРјСѓРјСѓ: {straightness:.3f} РїСЂРё РїРѕСЂРѕРіРµ {min_s:.3f} "
-            f"(РјСЏРіРєРѕРµ РїСЂРµРґСѓРїСЂРµР¶РґРµРЅРёРµ РѕС‚ {soft_s:.3f})"
+            f"прямолинейность близка к минимуму: {straightness:.3f} при пороге {min_s:.3f} "
+            f"(мягкое предупреждение от {soft_s:.3f})"
         )
     if not parts:
-        return "РЎРѕРјРЅРёС‚РµР»СЊРЅС‹Р№ РєРѕРЅС‚СѓСЂ: СЃСЂР°Р±РѕС‚Р°Р»Рё РјСЏРіРєРёРµ СЌРІСЂРёСЃС‚РёРєРё Р±РµР· РґРµС‚Р°Р»РёР·Р°С†РёРё."
-    return "РЎРѕРјРЅРёС‚РµР»СЊРЅРѕ: " + "; ".join(parts)
+        return "Сомнительный контур: сработали мягкие эвристики без детализации."
+    return "Сомнительно: " + "; ".join(parts)
 
 
 @dataclass(slots=True)
@@ -497,10 +486,10 @@ def _angle_deviation_for_mode(
     if len(points) < 3:
         return 0.0, True
     mode = str(allowed).strip().lower()
-    if mode in {"free", "arbitrary", "РїСЂРѕРёР·РІРѕР»СЊРЅС‹Рµ", "any"}:
+    if mode in {"free", "arbitrary", "произвольные", "any"}:
         return 0.0, True
 
-    if mode in {"90_only", "90", "ortho", "С‚РѕР»СЊРєРѕ_90"}:
+    if mode in {"90_only", "90", "ortho", "только_90"}:
         canonical = _CANONICAL_90
     else:
         canonical = _CANONICAL_45
@@ -734,7 +723,7 @@ def _valid_topology(points: list[tuple[float, float]], *, enabled: bool) -> tupl
     if not enabled:
         return True, ""
     if len(points) < 3:
-        return False, "РјР°Р»Рѕ_РІРµСЂС€РёРЅ"
+        return False, "мало_вершин"
     sample: list[tuple[float, float]] = list(points)
     # Dense chains (SEM / CHAIN_APPROX): uniform subsampling [::step] can introduce
     # spurious segment crossings that are not present on the true boundary; use
@@ -743,7 +732,7 @@ def _valid_topology(points: list[tuple[float, float]], *, enabled: bool) -> tupl
         cnt = np.asarray(sample, dtype=np.float32).reshape(-1, 1, 2)
         peri = float(cv2.arcLength(cnt, True))
         if peri <= 1e-6:
-            return False, "СЃР°РјРѕРїРµСЂРµСЃРµС‡РµРЅРёРµ_РёР»Рё_С‚РѕРїРѕР»РѕРіРёСЏ"
+            return False, "самопересечение_или_топология"
         eps = max(0.45, 0.001 * peri)
         simplified = cnt
         for _ in range(18):
@@ -752,10 +741,10 @@ def _valid_topology(points: list[tuple[float, float]], *, enabled: bool) -> tupl
                 break
             eps *= 1.28
         if len(simplified) < 3:
-            return False, "РјР°Р»Рѕ_РІРµСЂС€РёРЅ"
+            return False, "мало_вершин"
         sample = [(float(simplified[i][0][0]), float(simplified[i][0][1])) for i in range(len(simplified))]
     if not is_valid_closed_polygon_ring(sample):
-        return False, "СЃР°РјРѕРїРµСЂРµСЃРµС‡РµРЅРёРµ_РёР»Рё_С‚РѕРїРѕР»РѕРіРёСЏ"
+        return False, "самопересечение_или_топология"
     return True, ""
 
 
@@ -818,6 +807,8 @@ def _append_hierarchy_holes(
             shape_hint="polygon",
         )
         hole.area, hole.perimeter, hole.bbox = compute_polygon_metrics(hole.points)
+        if abs(float(hole.area)) < float(config.min_inner_hole_area):
+            continue
         accepted.append(hole)
         cv2.drawContours(accepted_mask, [contour], 0, 0, thickness=-1)
         next_id += 1
@@ -894,25 +885,25 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
         if length_px + 1e-3 < config.min_length_px:
             reject_case = "length"
         elif False and n_vertices < max(3, int(config.min_points)):
-            reject_case = "РјР°Р»Рѕ_РІРµСЂС€РёРЅ"
+            reject_case = "мало_вершин"
         elif False and width_px + 1e-3 < config.min_width_px:
-            reject_case = "С€РёСЂРёРЅР°"
+            reject_case = "ширина"
         elif False and config.max_width_px is not None and width_px > float(config.max_width_px) + 1e-3:
-            reject_case = "С€РёСЂРёРЅР°_РјР°РєСЃ"
+            reject_case = "ширина_макс"
         elif False and length_px + 1e-3 < config.min_length_px:
-            reject_case = "РґР»РёРЅР°"
+            reject_case = "длина"
         elif area + 1e-3 < config.min_area:
-            reject_case = "РїР»РѕС‰Р°РґСЊ"
+            reject_case = "площадь"
         elif config.max_area is not None and area > float(config.max_area) + 1e-3:
-            reject_case = "РїР»РѕС‰Р°РґСЊ_РјР°РєСЃ"
+            reject_case = "площадь_макс"
         elif perimeter + 1e-3 < config.min_perimeter:
-            reject_case = "РїРµСЂРёРјРµС‚СЂ"
+            reject_case = "периметр"
         elif config.max_perimeter is not None and perimeter > float(config.max_perimeter) + 1e-3:
-            reject_case = "РїРµСЂРёРјРµС‚СЂ_РјР°РєСЃ"
+            reject_case = "периметр_макс"
         elif False and not config.allow_t_junction:
             t_branch_score = _convex_branching_score(contour)
             if t_branch_score > 2:
-                reject_case = "С‚_СЃРѕРµРґРёРЅРµРЅРёРµ_Р·Р°РїСЂРµС‰РµРЅРѕ"
+                reject_case = "т_соединение_запрещено"
         if not reject_case:
             width_dt, _wm = estimate_effective_polygon_width_px(mask, contour)
             width_px = effective_conductor_width_px(width_dt, rw, rh)
@@ -959,7 +950,7 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
         soft_suspicious = angle_soft or straight_soft
 
         if not reject_case and config.border_mode == "ignore" and b_touch:
-            reject_case = "РіСЂР°РЅРёС†Р°"
+            reject_case = "граница"
 
         reject_reason = ""
         if reject_case:

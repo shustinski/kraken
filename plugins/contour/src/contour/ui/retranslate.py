@@ -57,6 +57,10 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.merge_cif_files_button, "merge_cif_files"),
     ):
         self._set_common_tooltip(widget, tooltip_key)
+    self.pick_input_files_button.setToolTip("Выбрать кадры базового слоя")
+    self.pick_input_files_button.setStatusTip(self.pick_input_files_button.toolTip())
+    self.browse_input_button.setToolTip("Загрузить папку базового слоя")
+    self.browse_input_button.setStatusTip(self.browse_input_button.toolTip())
 
     self.control_tabs.setTabText(0, self._tr("tab_paths"))
     self.control_tabs.setTabText(1, self._tr("tab_pipeline"))
@@ -464,6 +468,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         )
     if self.min_hierarchy_depth_label_widget is not None:
         self.min_hierarchy_depth_label_widget.setText(self._tr("min_hierarchy_depth_label"))
+    if self.min_inner_hole_area_label_widget is not None:
+        self.min_inner_hole_area_label_widget.setText(self._tr("min_inner_hole_area_label"))
     if self.max_hierarchy_depth_label_widget is not None:
         self.max_hierarchy_depth_label_widget.setText(self._tr("max_hierarchy_depth_label"))
     if self.max_hole_area_ratio_label_widget is not None:
@@ -530,34 +536,10 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.extra_layers_label_widget.setText(
             self._tr("extra_layers_label", "Дополнительные слои" if self._ui_language == "ru" else "Additional layers")
         )
-    if self.extra_layer_path_label_widget is not None:
-        self.extra_layer_path_label_widget.setText(
-            self._tr("extra_layer_path_label", "Путь слоя" if self._ui_language == "ru" else "Layer path")
-        )
-    self.add_extra_layers_button.setText(
-        self._tr("add_extra_layers_button", "Добавить изображения" if self._ui_language == "ru" else "Add images")
-    )
-    self.remove_extra_layer_button.setText(
-        self._tr("remove_extra_layer_button", "Удалить слой" if self._ui_language == "ru" else "Remove layer")
-    )
-    self.extra_layer_visible_checkbox.setText(
-        self._tr(
-            "extra_layer_visible_checkbox",
-            "Показывать выбранный слой" if self._ui_language == "ru" else "Show selected layer",
-        )
-    )
-    if self.extra_layer_opacity_label_widget is not None:
-        self.extra_layer_opacity_label_widget.setText(
-            self._tr("extra_layer_opacity_label", "Прозрачность слоя" if self._ui_language == "ru" else "Layer opacity")
-        )
-    if self.extra_layer_dx_label_widget is not None:
-        self.extra_layer_dx_label_widget.setText(
-            self._tr("extra_layer_dx_label", "Смещение X" if self._ui_language == "ru" else "Offset X")
-        )
-    if self.extra_layer_dy_label_widget is not None:
-        self.extra_layer_dy_label_widget.setText(
-            self._tr("extra_layer_dy_label", "Смещение Y" if self._ui_language == "ru" else "Offset Y")
-        )
+    if hasattr(self, "add_extra_layers_button"):
+        self.add_extra_layers_button.setText("+")
+        self.add_extra_layers_button.setToolTip("Добавить дополнительный слой из папки")
+        self.add_extra_layers_button.setStatusTip(self.add_extra_layers_button.toolTip())
     for widget, tooltip_key in (
         (self.external_color_label_widget, "external_color"),
         (self.external_color_button, "external_color"),
@@ -618,57 +600,15 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         ),
         (
             self.extra_layers_widget,
-            "Список дополнительных JPG/PNG-слоев. Каждый слой можно включить, сделать прозрачнее и сдвинуть относительно основного изображения."
+            "Дополнительные слои загружаются только из папок и привязываются к базовым кадрам по номеру."
             if self._ui_language == "ru"
-            else "List of additional JPG/PNG layers. Each layer can be shown, faded, and shifted relative to the main image.",
-        ),
-        (
-            self.extra_layer_path_widget,
-            "Путь к файлу выбранного слоя. Можно вставить или набрать путь вручную, затем нажать Enter или убрать фокус с поля."
-            if self._ui_language == "ru"
-            else "Path to the selected layer file. You can paste or type it manually, then press Enter or move focus away.",
-        ),
-        (
-            self.extra_layer_path_browse_button,
-            "Выбрать изображение для выбранного слоя."
-            if self._ui_language == "ru"
-            else "Choose an image for the selected layer.",
+            else "Additional layers are loaded from folders and mapped to base frames by frame number.",
         ),
         (
             self.add_extra_layers_button,
-            "Добавляет один или несколько дополнительных JPG/PNG-слоев поверх основного изображения."
+            "Добавить дополнительный слой из папки"
             if self._ui_language == "ru"
-            else "Adds one or more additional JPG/PNG layers over the main image.",
-        ),
-        (
-            self.remove_extra_layer_button,
-            "Удаляет выбранный дополнительный слой из просмотра."
-            if self._ui_language == "ru"
-            else "Removes the selected additional layer from the view.",
-        ),
-        (
-            self.extra_layer_visible_checkbox,
-            "Включает или выключает отображение выбранного дополнительного слоя."
-            if self._ui_language == "ru"
-            else "Shows or hides the selected additional layer.",
-        ),
-        (
-            self.extra_layer_opacity_spin,
-            "Прозрачность выбранного слоя: 0 делает его невидимым, 1 показывает полностью."
-            if self._ui_language == "ru"
-            else "Opacity of the selected layer: 0 hides it, 1 shows it fully.",
-        ),
-        (
-            self.extra_layer_dx_spin,
-            "Горизонтальное смещение выбранного слоя в пикселях относительно основного кадра."
-            if self._ui_language == "ru"
-            else "Horizontal offset of the selected layer in pixels relative to the main frame.",
-        ),
-        (
-            self.extra_layer_dy_spin,
-            "Вертикальное смещение выбранного слоя в пикселях относительно основного кадра."
-            if self._ui_language == "ru"
-            else "Vertical offset of the selected layer in pixels relative to the main frame.",
+            else "Add additional layer from folder",
         ),
     ):
         widget.setToolTip(tooltip)

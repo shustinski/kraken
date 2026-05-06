@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..application.processing import (
+    VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
     VIA_SIZE_MODE_FIXED,
@@ -92,6 +93,14 @@ def build_ui(self) -> None:
     self.main_splitter.setStretchFactor(1, 1)
     self.main_splitter.setStretchFactor(2, 0)
     self.main_splitter.setSizes([340, 700, 240])
+
+
+def _apply_size_hint_geometry(widget: QWidget, *, width: bool = True, height: bool = True) -> None:
+    hint = widget.sizeHint()
+    if width and hint.width() > 0:
+        widget.setMinimumWidth(hint.width())
+    if height and hint.height() > 0:
+        widget.setMinimumHeight(hint.height())
 
 
 def build_path_panel(self) -> QWidget:
@@ -148,6 +157,8 @@ def build_path_panel(self) -> QWidget:
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(6)
         row_layout.addWidget(edit, 1)
+        if button is self.browse_input_button:
+            row_layout.addWidget(self.pick_input_files_button)
         row_layout.addWidget(button)
         layout.addWidget(label)
         layout.addWidget(row)
@@ -167,7 +178,6 @@ def build_path_panel(self) -> QWidget:
     refresh_row_layout.setContentsMargins(0, 0, 0, 0)
     refresh_row_layout.setSpacing(6)
     refresh_row_layout.addWidget(self.refresh_button)
-    refresh_row_layout.addWidget(self.pick_input_files_button)
     refresh_row_layout.addStretch(1)
     layout.addWidget(refresh_row)
     return self.path_group
@@ -240,58 +250,27 @@ def build_paths_tab(self) -> QWidget:
     extra_layers_layout.setContentsMargins(0, 0, 0, 0)
     extra_layers_layout.setSpacing(6)
     self.extra_layers_list = QListWidget()
-    self.extra_layers_list.setMaximumHeight(100)
+    self.extra_layers_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+    self.extra_layers_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+    self.extra_layers_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    self.extra_layers_list.setMaximumHeight(200)
     extra_layers_layout.addWidget(self.extra_layers_list)
-    self.extra_layer_path_widget = QWidget()
-    extra_layer_path_layout = QHBoxLayout(self.extra_layer_path_widget)
-    extra_layer_path_layout.setContentsMargins(0, 0, 0, 0)
-    extra_layer_path_layout.setSpacing(6)
-    self.extra_layer_path_edit = QLineEdit()
-    self.extra_layer_path_browse_button = QPushButton("...")
-    self.extra_layer_path_browse_button.setFixedWidth(34)
-    extra_layer_path_layout.addWidget(self.extra_layer_path_edit, 1)
-    extra_layer_path_layout.addWidget(self.extra_layer_path_browse_button)
-    extra_layer_buttons = QWidget()
-    extra_layer_buttons_layout = QHBoxLayout(extra_layer_buttons)
-    extra_layer_buttons_layout.setContentsMargins(0, 0, 0, 0)
-    self.add_extra_layers_button = QPushButton("Add images")
-    self.remove_extra_layer_button = QPushButton("Remove")
-    extra_layer_buttons_layout.addWidget(self.add_extra_layers_button)
-    extra_layer_buttons_layout.addWidget(self.remove_extra_layer_button)
-    extra_layers_layout.addWidget(extra_layer_buttons)
-    self.extra_layer_visible_checkbox = QCheckBox("Layer visible")
-    self.extra_layer_opacity_spin = QDoubleSpinBox()
-    self.extra_layer_opacity_spin.setRange(0.0, 1.0)
-    self.extra_layer_opacity_spin.setSingleStep(0.05)
-    self.extra_layer_opacity_spin.setValue(0.35)
-    self.extra_layer_dx_spin = QDoubleSpinBox()
-    self.extra_layer_dx_spin.setRange(-1_000_000.0, 1_000_000.0)
-    self.extra_layer_dx_spin.setDecimals(2)
-    self.extra_layer_dy_spin = QDoubleSpinBox()
-    self.extra_layer_dy_spin.setRange(-1_000_000.0, 1_000_000.0)
-    self.extra_layer_dy_spin.setDecimals(2)
+    self.add_extra_layers_button = QPushButton("+")
+    self.add_extra_layers_button.setMinimumHeight(28)
+    self.add_extra_layers_button.setStyleSheet(
+        "QPushButton { background-color: #16A34A; color: white; font-weight: 700; border-radius: 4px; padding: 2px 8px; }"
+    )
+    extra_layers_layout.addWidget(self.add_extra_layers_button)
 
-    self.extra_layers_list.currentRowChanged.connect(self._on_extra_layer_selected)
     self.add_extra_layers_button.clicked.connect(self._load_extra_layers)
-    self.remove_extra_layer_button.clicked.connect(self._remove_selected_extra_layer)
-    self.extra_layer_path_browse_button.clicked.connect(self._browse_selected_extra_layer_path)
-    self.extra_layer_path_edit.editingFinished.connect(self._on_extra_layer_path_changed)
-    self.extra_layer_visible_checkbox.stateChanged.connect(self._on_extra_layer_controls_changed)
-    self.extra_layer_opacity_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
-    self.extra_layer_dx_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
-    self.extra_layer_dy_spin.valueChanged.connect(self._on_extra_layer_controls_changed)
+    self.extra_layers_list.model().rowsMoved.connect(self._on_extra_layers_rows_moved)
 
-    self.extra_layers_form.addRow("Additional layers", self.extra_layers_widget)
-    self.extra_layers_label_widget = self.extra_layers_form.labelForField(self.extra_layers_widget)
-    self.extra_layers_form.addRow("Layer path", self.extra_layer_path_widget)
-    self.extra_layer_path_label_widget = self.extra_layers_form.labelForField(self.extra_layer_path_widget)
-    self.extra_layers_form.addRow(self.extra_layer_visible_checkbox)
-    self.extra_layers_form.addRow("Layer opacity", self.extra_layer_opacity_spin)
-    self.extra_layer_opacity_label_widget = self.extra_layers_form.labelForField(self.extra_layer_opacity_spin)
-    self.extra_layers_form.addRow("Layer dX", self.extra_layer_dx_spin)
-    self.extra_layer_dx_label_widget = self.extra_layers_form.labelForField(self.extra_layer_dx_spin)
-    self.extra_layers_form.addRow("Layer dY", self.extra_layer_dy_spin)
-    self.extra_layer_dy_label_widget = self.extra_layers_form.labelForField(self.extra_layer_dy_spin)
+    self.extra_layers_form.addRow(self.extra_layers_widget)
+    self.extra_layers_label_widget = None
+    self.extra_layer_path_label_widget = None
+    self.extra_layer_opacity_label_widget = None
+    self.extra_layer_dx_label_widget = None
+    self.extra_layer_dy_label_widget = None
     layout.addWidget(self.extra_layers_group)
 
     layout.addStretch(1)
@@ -341,10 +320,18 @@ def build_files_tab(self) -> QWidget:
     self.thumbnail_grid.setSpacing(0)
     self.thumbnail_grid.setIconSize(QSize(64, 48))
     self.thumbnail_grid.setContentsMargins(0, 0, 0, 0)
-    self.thumbnail_grid.setMinimumHeight(86)
-    self.thumbnail_grid.setMaximumHeight(172)
+    self.thumbnail_grid.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    self.thumbnail_grid.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     attach_status_row_delegate(self.thumbnail_grid)
     self.thumbnail_grid.itemClicked.connect(self._on_thumbnail_item_clicked)
+    self.thumbnail_grid_scroll_area = QScrollArea()
+    self.thumbnail_grid_scroll_area.setWidgetResizable(False)
+    self.thumbnail_grid_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+    self.thumbnail_grid_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    self.thumbnail_grid_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    self.thumbnail_grid_scroll_area.setMinimumHeight(96)
+    self.thumbnail_grid_scroll_area.setMaximumHeight(220)
+    self.thumbnail_grid_scroll_area.setWidget(self.thumbnail_grid)
 
     # Kept as an internal CIF-status model for reload/status logic; it is no longer a visible sidebar mode.
     self.vector_list = QListWidget()
@@ -368,7 +355,7 @@ def build_files_tab(self) -> QWidget:
     layout.addWidget(self.files_scan_progress_bar)
     layout.addWidget(self.image_list, 1)
     layout.addWidget(self.thumbnail_grid_label)
-    layout.addWidget(self.thumbnail_grid, 0)
+    layout.addWidget(self.thumbnail_grid_scroll_area, 0)
     layout.addWidget(overlay_buttons_row)
 
     self.run_group = QGroupBox("Run")
@@ -674,6 +661,11 @@ def build_extraction_tab(self) -> QWidget:
     self.via_search_mode_combo.addItem("По шаблону", VIA_SEARCH_MODE_TEMPLATE)
     self.via_search_mode_combo.addItem("Эвристический", VIA_SEARCH_MODE_HEURISTIC)
     self.via_search_mode_combo.setCurrentIndex(1)
+    self.via_search_mode_combo.clear()
+    self.via_search_mode_combo.addItem("Эвристический", VIA_SEARCH_MODE_HEURISTIC)
+    self.via_search_mode_combo.addItem("По шаблону", VIA_SEARCH_MODE_TEMPLATE)
+    self.via_search_mode_combo.addItem("Светлые via TopHat+DoG", VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG)
+    self.via_search_mode_combo.setCurrentIndex(0)
     self.via_heuristic_polarity_combo = QComboBox()
     self.via_heuristic_polarity_combo.addItem("Светлые", "bright")
     self.via_heuristic_polarity_combo.addItem("Тёмные", "dark")
@@ -1063,6 +1055,11 @@ def build_extraction_tab(self) -> QWidget:
     self.min_hierarchy_depth_spin = QSpinBox()
     self.min_hierarchy_depth_spin.setRange(0, 100)
     self.min_hierarchy_depth_spin.setValue(0)
+    self.min_inner_hole_area_spin = QDoubleSpinBox()
+    self.min_inner_hole_area_spin.setRange(0.0, 1_000_000_000.0)
+    self.min_inner_hole_area_spin.setDecimals(1)
+    self.min_inner_hole_area_spin.setSingleStep(10.0)
+    self.min_inner_hole_area_spin.setValue(100.0)
     self.max_hierarchy_depth_spin = QSpinBox()
     self.max_hierarchy_depth_spin.setRange(0, 100)
     self.max_hierarchy_depth_spin.setValue(0)
@@ -1176,6 +1173,7 @@ def build_extraction_tab(self) -> QWidget:
     self.min_via_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.max_via_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.min_hierarchy_depth_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.min_inner_hole_area_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.max_hierarchy_depth_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.max_hole_area_ratio_spin.valueChanged.connect(self._on_extraction_settings_changed)
 
@@ -1359,6 +1357,7 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_segmentation_method_combo.addItem("Otsu", "otsu")
     self.metal_segmentation_method_combo.addItem("Адаптивная", "adaptive")
     self.metal_segmentation_method_combo.addItem("Гибрид (границы + Otsu)", "hybrid")
+    self.metal_segmentation_method_combo.setCurrentIndex(self.metal_segmentation_method_combo.findData("otsu"))
     self.metal_sensitivity_combo = QComboBox()
     for _l, _d in (("Низкая", "low"), ("Средняя", "medium"), ("Высокая", "high")):
         self.metal_sensitivity_combo.addItem(_l, _d)
@@ -1473,7 +1472,7 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_border_handling_combo.addItem("Отдельно помечать", "mark")
     self.metal_border_handling_combo.setCurrentIndex(2)
     self.metal_validity_checkbox = QCheckBox("Проверять корректность контура")
-    self.metal_validity_checkbox.setChecked(True)
+    self.metal_validity_checkbox.setChecked(False)
     self.metal_morph_close_spin = QSpinBox()
     self.metal_morph_close_spin.setRange(1, 25)
     self.metal_morph_close_spin.setValue(1)
@@ -1614,6 +1613,8 @@ def build_extraction_tab(self) -> QWidget:
 
     self.topology_form.addRow("Min hierarchy depth", self.min_hierarchy_depth_spin)
     self.min_hierarchy_depth_label_widget = self.topology_form.labelForField(self.min_hierarchy_depth_spin)
+    self.topology_form.addRow("Min inner contour area", self.min_inner_hole_area_spin)
+    self.min_inner_hole_area_label_widget = self.topology_form.labelForField(self.min_inner_hole_area_spin)
     self.topology_form.addRow("Max hierarchy depth (0 = unlimited)", self.max_hierarchy_depth_spin)
     self.max_hierarchy_depth_label_widget = self.topology_form.labelForField(self.max_hierarchy_depth_spin)
     self.topology_form.addRow("Max hole area ratio (0 = unlimited)", self.max_hole_area_ratio_spin)
@@ -1793,7 +1794,7 @@ def build_visual_panel(self) -> QWidget:
     self.editor_toolbar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     self.editor_toolbar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.editor_toolbar_scroll.setFrameShape(QFrame.Shape.NoFrame)
-    self.editor_toolbar_scroll.setMinimumWidth(180)
+    self.editor_toolbar_scroll.setMinimumWidth(max(180, self.editor_toolbar.sizeHint().width()))
     self.editor_toolbar_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     toolbar_height = (
         self.editor_toolbar.sizeHint().height()
@@ -1838,6 +1839,7 @@ def build_visual_panel(self) -> QWidget:
 def build_editor_toolbar(self) -> QWidget:
     toolbar = QWidget()
     layout = QHBoxLayout(toolbar)
+    self._editor_toolbar_layout = layout
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(6)
 
@@ -1871,14 +1873,12 @@ def build_editor_toolbar(self) -> QWidget:
     _polygon_blk.setSpacing(6)
     self.polygon_mode_label = QLabel("Polygon")
     self.polygon_mode_combo = QComboBox()
-    self.polygon_mode_combo.setMinimumWidth(140)
     self.polygon_mode_combo.addItem(self._mode_text("polygon_points"), PolygonCreateMode.POINTS)
     self.polygon_mode_combo.addItem(self._mode_text("polygon_rectangle"), PolygonCreateMode.RECTANGLE)
     self.polygon_mode_combo.currentIndexChanged.connect(
         lambda _index: self.polygon_editor.set_polygon_create_mode(self.polygon_mode_combo.currentData())
     )
     self.polygon_draw_mode_indicator = QLabel("")
-    self.polygon_draw_mode_indicator.setMinimumWidth(160)
     _polygon_blk.addWidget(self.polygon_mode_label)
     _polygon_blk.addWidget(self.polygon_mode_combo)
     _polygon_blk.addWidget(self.polygon_draw_mode_indicator)
@@ -1890,11 +1890,8 @@ def build_editor_toolbar(self) -> QWidget:
     _brush_blk.setSpacing(6)
     self.brush_mode_label = QLabel("Brush")
     self.brush_mode_combo = QComboBox()
-    self.brush_mode_combo.setMinimumWidth(150)
     self.brush_mode_combo.addItem(self._mode_text("brush_freeform"), BrushMode.FREEFORM)
     self.brush_mode_combo.addItem(self._mode_text("brush_45deg"), BrushMode.ANGLED)
-    self.brush_mode_combo.addItem(self._mode_text("brush_stamp_add"), BrushMode.STAMP_ADD)
-    self.brush_mode_combo.addItem(self._mode_text("brush_stamp_erase"), BrushMode.STAMP_ERASE)
     self.brush_mode_combo.currentIndexChanged.connect(
         lambda _index: self.polygon_editor.set_brush_mode(self.brush_mode_combo.currentData())
     )
@@ -1902,7 +1899,6 @@ def build_editor_toolbar(self) -> QWidget:
     self.brush_size_spin = QSpinBox()
     self.brush_size_spin.setRange(1, 256)
     self.brush_size_spin.setValue(12)
-    self.brush_size_spin.setMinimumWidth(76)
     self.brush_size_spin.valueChanged.connect(lambda value: self.polygon_editor.set_brush_thickness(float(value)))
     _brush_blk.addWidget(self.brush_mode_label)
     _brush_blk.addWidget(self.brush_mode_combo)
@@ -1918,12 +1914,10 @@ def build_editor_toolbar(self) -> QWidget:
     self.via_width_spin = QSpinBox()
     self.via_width_spin.setRange(1, 100_000)
     self.via_width_spin.setValue(12)
-    self.via_width_spin.setMinimumWidth(82)
     self.via_height_label = QLabel("Via H")
     self.via_height_spin = QSpinBox()
     self.via_height_spin.setRange(1, 100_000)
     self.via_height_spin.setValue(12)
-    self.via_height_spin.setMinimumWidth(82)
     self.via_width_spin.valueChanged.connect(lambda _value: self._sync_editor_via_size())
     self.via_height_spin.valueChanged.connect(lambda _value: self._sync_editor_via_size())
     _via_blk.addWidget(self.via_width_label)
@@ -1938,7 +1932,6 @@ def build_editor_toolbar(self) -> QWidget:
     _dv_blk.setSpacing(6)
     self.delete_vertex_mode_label = QLabel("Delete")
     self.delete_vertex_mode_combo = QComboBox()
-    self.delete_vertex_mode_combo.setMinimumWidth(130)
     self.delete_vertex_mode_combo.addItem(self._mode_text("delete_single"), DeleteVertexMode.SINGLE)
     self.delete_vertex_mode_combo.addItem(self._mode_text("delete_area"), DeleteVertexMode.AREA)
     self.delete_vertex_mode_combo.currentIndexChanged.connect(
@@ -1947,9 +1940,14 @@ def build_editor_toolbar(self) -> QWidget:
     _dv_blk.addWidget(self.delete_vertex_mode_label)
     _dv_blk.addWidget(self.delete_vertex_mode_combo)
     layout.addWidget(self._delete_vertex_toolbar_block)
+    self._tool_parameter_blocks = {
+        EditorTool.ADD_POLYGON: self._polygon_toolbar_block,
+        EditorTool.BRUSH: self._brush_toolbar_block,
+        EditorTool.ADD_VIA: self._via_toolbar_block,
+        EditorTool.DELETE_VERTEX: self._delete_vertex_toolbar_block,
+    }
 
     self.ruler_status_label = QLabel("")
-    self.ruler_status_label.setMinimumWidth(180)
     self.ruler_status_label.setVisible(False)
     layout.addWidget(self.ruler_status_label)
 
@@ -1998,13 +1996,16 @@ def build_editor_toolbar(self) -> QWidget:
         self._via_toolbar_block,
         self._delete_vertex_toolbar_block,
         self.polygon_mode_combo,
+        self.polygon_draw_mode_indicator,
         self.brush_mode_combo,
         self.brush_size_spin,
         self.via_width_spin,
         self.via_height_spin,
         self.delete_vertex_mode_combo,
+        self.ruler_status_label,
     ):
-        widget.setMinimumHeight(28)
+        _apply_size_hint_geometry(widget, width=True, height=True)
+        widget.setMinimumHeight(max(30, widget.minimumHeight()))
         widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
     self.polygon_editor.set_polygon_create_mode(self.polygon_mode_combo.currentData())
     self.polygon_editor.set_brush_mode(self.brush_mode_combo.currentData())

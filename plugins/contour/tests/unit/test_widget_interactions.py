@@ -14,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QPoint, QPointF, Qt
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QListWidgetItem, QMenu
+from PyQt6.QtWidgets import QApplication, QCheckBox, QListWidgetItem, QMenu, QScrollArea, QSpinBox
 
 import contour.widget as widget_module
 from contour.application.processing import DisplaySettings, ImageProcessingState
@@ -275,6 +275,77 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.widget._on_thumbnail_loaded(self.widget._thumbnail_generation - 1, path, np.full((4, 4, 3), 255, dtype=np.uint8))
 
             self.assertEqual(item.icon().cacheKey(), before)
+
+    def test_thumbnail_grid_is_inside_scroll_area(self) -> None:
+        self.assertTrue(hasattr(self.widget, "thumbnail_grid_scroll_area"))
+        self.assertIsInstance(self.widget.thumbnail_grid_scroll_area, QScrollArea)
+        self.assertIs(self.widget.thumbnail_grid_scroll_area.widget(), self.widget.thumbnail_grid)
+
+    def test_additional_layer_plus_is_disabled_without_base_and_enabled_with_base(self) -> None:
+        self.assertFalse(self.widget.add_extra_layers_button.isEnabled())
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = os.path.join(directory, "frame_001.png")
+            cv2.imwrite(image_path, np.zeros((8, 8), dtype=np.uint8))
+            self.widget.load_images([image_path])
+            self.assertTrue(self.widget.add_extra_layers_button.isEnabled())
+
+    def test_additional_layer_loading_is_blocked_without_base_layer(self) -> None:
+        with patch.object(widget_module.QMessageBox, "information") as info_mock:
+            self.widget._load_extra_layers()
+        info_mock.assert_called_once()
+        self.assertIn("Сначала загрузите базовый слой", str(info_mock.call_args))
+
+    def test_extra_layer_row_controls_have_tooltips_and_compact_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base_path = os.path.join(directory, "base_1.png")
+            cv2.imwrite(base_path, np.zeros((8, 8), dtype=np.uint8))
+            self.widget.load_images([base_path])
+            layer_dir = os.path.join(directory, "layer")
+            os.makedirs(layer_dir, exist_ok=True)
+            cv2.imwrite(os.path.join(layer_dir, "overlay_1.png"), np.zeros((8, 8), dtype=np.uint8))
+            layer = self.widget._extra_layer_from_directory(layer_dir)
+            self.assertIsNotNone(layer)
+            self.widget._extra_layers.append(layer)
+            self.widget._refresh_extra_layers_list()
+
+            row_item = self.widget.extra_layers_list.item(0)
+            row_widget = self.widget.extra_layers_list.itemWidget(row_item)
+            checkbox = row_widget.findChild(QCheckBox)
+            spinboxes = row_widget.findChildren(QSpinBox)
+            self.assertIsNotNone(checkbox)
+            self.assertEqual(checkbox.text(), "")
+            self.assertEqual(checkbox.toolTip(), "Показать/скрыть слой")
+            self.assertEqual(len(spinboxes), 3)
+            self.assertEqual(spinboxes[0].toolTip(), "Смещение слоя по X")
+            self.assertEqual(spinboxes[1].toolTip(), "Смещение слоя по Y")
+            self.assertEqual(spinboxes[2].toolTip(), "Прозрачность слоя")
+
+    def test_reorder_extra_layers_updates_render_order_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base_paths = []
+            for index in (1, 2):
+                path = os.path.join(directory, f"base_{index}.png")
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+                base_paths.append(path)
+            self.widget.load_images(base_paths)
+
+            first_dir = os.path.join(directory, "layer_a")
+            second_dir = os.path.join(directory, "layer_b")
+            os.makedirs(first_dir, exist_ok=True)
+            os.makedirs(second_dir, exist_ok=True)
+            cv2.imwrite(os.path.join(first_dir, "a_1.png"), np.zeros((8, 8), dtype=np.uint8))
+            cv2.imwrite(os.path.join(second_dir, "b_1.png"), np.zeros((8, 8), dtype=np.uint8))
+            first = self.widget._extra_layer_from_directory(first_dir)
+            second = self.widget._extra_layer_from_directory(second_dir)
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.widget._extra_layers = [first, second]
+            self.widget._refresh_extra_layers_list()
+
+            moved = self.widget.extra_layers_list.takeItem(0)
+            self.widget.extra_layers_list.insertItem(1, moved)
+            self.widget._on_extra_layers_rows_moved()
+            self.assertEqual(self.widget._extra_layers[0]["name"], second["name"])
 
     def test_manual_tool_postprocess_settings_are_exposed_in_help_menu(self) -> None:
         menu = QMenu()
@@ -925,6 +996,49 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
 
         self.assertEqual(saved_calls, [])
 
+    def test_extraction_mode_switch_does_not_prompt_save_or_mark_viewed(self) -> None:
+        first_path = "frame_1.png"
+        second_path = "frame_2.png"
+        changed_polygon = _rectangle_polygon(4, 4, 24, 20)
+        first_state = ImageProcessingState(
+            image_path=first_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[changed_polygon.clone()],
+            reference_polygons=[],
+        )
+        second_state = ImageProcessingState(
+            image_path=second_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[],
+            reference_polygons=[],
+        )
+        self.widget._workspace._state_cache = {first_path: first_state, second_path: second_state}
+        self.widget._workspace._current_image_path = first_path
+        self.widget._workspace._current_state = first_state
+        self.widget.image_list.clear()
+        for path in (first_path, second_path):
+            item = QListWidgetItem(path)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.widget.image_list.addItem(item)
+        first_item = self.widget.image_list.item(0)
+        second_item = self.widget.image_list.item(1)
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
+
+        saved_calls: list[str] = []
+        original_save_polygons_cif = widget_module.save_polygons_cif
+        original_load_image = self.widget.load_image
+        try:
+            widget_module.save_polygons_cif = lambda *args, **kwargs: saved_calls.append("save")
+            self.widget.load_image = lambda path: None  # type: ignore[method-assign]
+            with patch.object(widget_module.QMessageBox, "exec", side_effect=AssertionError("unexpected prompt")):
+                self.widget._on_image_item_changed(second_item, first_item)
+        finally:
+            widget_module.save_polygons_cif = original_save_polygons_cif
+            self.widget.load_image = original_load_image  # type: ignore[method-assign]
+
+        self.assertEqual(saved_calls, [])
+        self.assertNotIn(first_path, self.widget._viewed_image_paths)
+
     def test_dataset_mode_exports_changed_frame_when_switching_frames(self) -> None:
         first_path = "frame_1.png"
         second_path = "frame_2.png"
@@ -982,6 +1096,25 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
             self.widget.load_image = original_load_image  # type: ignore[method-assign]
 
         self.assertEqual(exported_calls, [("dataset", first_path, 1)])
+
+
+class PolygonExtractionWidgetBrushModeUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = _app()
+
+    def setUp(self) -> None:
+        self.widget = PolygonExtractionWidget()
+
+    def tearDown(self) -> None:
+        self.widget.close()
+        self.widget.deleteLater()
+        self._app.processEvents()
+
+    def test_brush_mode_combo_exposes_only_freeform_and_angled(self) -> None:
+        modes = [str(self.widget.brush_mode_combo.itemData(index)) for index in range(self.widget.brush_mode_combo.count())]
+        self.assertEqual(self.widget.brush_mode_combo.count(), 2)
+        self.assertEqual(modes, ["freeform", "angled"])
 
 
 if __name__ == "__main__":

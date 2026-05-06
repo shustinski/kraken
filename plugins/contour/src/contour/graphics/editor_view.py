@@ -21,7 +21,7 @@ from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
     apply_polygon_points_to_clone,
     apply_vertex_position_to_clone,
-    postprocess_after_editor_mutation,
+    postprocess_changed_polygon_only,
     resolve_focus_id_after_geometry_pass,
 )
 from ..commands import ReplacePolygonSetCommand
@@ -158,6 +158,9 @@ class PolygonEditorView(QGraphicsView):
         self._emit_effective_polygon_create_mode_changed()
 
     def set_brush_mode(self, mode: BrushMode) -> None:
+        # Stamp modes were removed from UI; coerce legacy/persisted values.
+        if mode not in (BrushMode.FREEFORM, BrushMode.ANGLED):
+            mode = BrushMode.FREEFORM
         self._brush_mode = mode
         self._editor_scene.cancel_pending_polygon()
 
@@ -454,11 +457,6 @@ class PolygonEditorView(QGraphicsView):
             self._drag_erases = False
             self._drag_kind = "brush"
             self._drag_start_scene_pos = scene_pos
-            if self._brush_mode in (BrushMode.STAMP_ADD, BrushMode.STAMP_ERASE):
-                self._drag_kind = "brush_stamp"
-                self._drag_erases = self._brush_mode == BrushMode.STAMP_ERASE
-                event.accept()
-                return
             if event.button() == Qt.MouseButton.RightButton:
                 self._drag_erases = True
 
@@ -539,6 +537,9 @@ class PolygonEditorView(QGraphicsView):
 
         if self._tool == EditorTool.MOVE_VERTEX:
             hit = self._editor_scene.vertex_at(scene_pos, tolerance)
+            if hit is None:
+                # Practical fallback: users often click near the handle, not exactly on it.
+                hit = self._editor_scene.vertex_at(scene_pos, self._scene_tolerance(12))
             if hit is not None:
                 polygon_id, vertex_index = hit
                 self._editor_scene.select_polygon(polygon_id)
@@ -679,11 +680,6 @@ class PolygonEditorView(QGraphicsView):
                     brush_points = self._editor_scene.pending_points_snapshot()
                 self._editor_scene.add_brush_stroke(brush_points, self._brush_thickness, erase=self._drag_erases)
 
-            elif self._drag_kind == "brush_stamp":
-                release_pos = self.mapToScene(event.position().toPoint())
-                stamp_points = [(release_pos.x(), release_pos.y())]
-                self._editor_scene.add_brush_stroke(stamp_points, self._brush_thickness, erase=self._drag_erases)
-
             elif self._drag_kind == "rect_polygon" and self._drag_start_scene_pos is not None:
                 self._editor_scene.add_rectangle_polygon(
                     self._drag_start_scene_pos,
@@ -745,12 +741,14 @@ class PolygonEditorView(QGraphicsView):
                             self._drag_vertex_index,
                             new_point,
                         )
-                        processed, _changed = postprocess_after_editor_mutation(
+                        processed, _changed = postprocess_changed_polygon_only(
                             trial,
                             self._vector_geometry_settings,
-                            frame_width_height=None,
-                            include_merge=True,
+                            polygon_id=self._drag_polygon_id,
                         )
+                        if not _changed:
+                            # Keep direct vertex move if local cleanup produced no effective topology update.
+                            processed = trial
                         focus_id = resolve_focus_id_after_geometry_pass(
                             self._drag_polygons_snapshot,
                             self._drag_polygon_id,
@@ -782,12 +780,14 @@ class PolygonEditorView(QGraphicsView):
                             self._drag_polygon_id,
                             new_points,
                         )
-                        processed, _c = postprocess_after_editor_mutation(
+                        processed, _c = postprocess_changed_polygon_only(
                             trial,
                             self._vector_geometry_settings,
-                            frame_width_height=None,
-                            include_merge=True,
+                            polygon_id=self._drag_polygon_id,
                         )
+                        if not _c:
+                            # Keep direct polygon move if local cleanup produced no effective topology update.
+                            processed = trial
                         focus_id = resolve_focus_id_after_geometry_pass(
                             self._drag_polygons_snapshot,
                             self._drag_polygon_id,

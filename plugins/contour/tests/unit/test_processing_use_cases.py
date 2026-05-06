@@ -71,9 +71,9 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertEqual(loaded.via_min_score, 0.55)
         self.assertFalse(hasattr(loaded, "via_detector_gradient_enabled"))
 
-    def test_via_search_mode_defaults_to_hybrid_when_absent_from_payload(self) -> None:
+    def test_via_search_mode_defaults_to_heuristic_when_absent_from_payload(self) -> None:
         loaded = ContourExtractionSettings.from_dict({"via_min_score": 0.5})
-        self.assertEqual(loaded.via_search_mode, "hybrid")
+        self.assertEqual(loaded.via_search_mode, "heuristic")
 
     def test_process_image_path_reuses_provided_preprocessed_image(self) -> None:
         loader_calls: list[str] = []

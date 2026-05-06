@@ -430,6 +430,55 @@ def postprocess_after_editor_mutation(
     return work, changed
 
 
+def postprocess_changed_polygon_only(
+    polygons: list[PolygonData],
+    settings: VectorGeometrySettings,
+    *,
+    polygon_id: int | None,
+) -> tuple[list[PolygonData], bool]:
+    """Fast path: apply geometry checks only to the edited polygon."""
+
+    if polygon_id is None:
+        return [p.clone() for p in polygons], False
+    before = [p.clone() for p in polygons]
+    work = [p.clone() for p in polygons]
+    by_id = {p.id: p for p in work}
+    target = by_id.get(polygon_id)
+    if target is None:
+        return work, False
+    if len(target.points) < 3 or any(not _point_finite(pt) for pt in target.points):
+        work = [p for p in work if p.id != polygon_id and p.parent_id != polygon_id]
+        work = drop_orphan_holes(work)
+        return work, _polygons_topo_signature(before) != _polygons_topo_signature(work)
+
+    _refresh_metrics(target)
+    scoped = [target.clone()]
+    scoped = dissolve_small_holes(scoped, settings.min_hole_area_to_remove_px2)
+    scoped = apply_spike_removal_all(scoped, settings.min_spike_interior_angle_deg)
+    scoped = filter_simple_valid_polygons(scoped)
+    scoped = drop_small_outer_polygons(scoped, settings.min_outer_area_px2)
+    scoped = drop_triangle_outer_artifacts(
+        scoped,
+        settings.drop_three_vertex_triangle_artifacts,
+        min_outer_area_px2=settings.min_outer_area_px2,
+    )
+    if not scoped:
+        work = [p for p in work if p.id != polygon_id and p.parent_id != polygon_id]
+        work = drop_orphan_holes(work)
+        return work, _polygons_topo_signature(before) != _polygons_topo_signature(work)
+
+    replacement = scoped[0]
+    replacement.id = target.id
+    replacement.parent_id = target.parent_id
+    for index, poly in enumerate(work):
+        if poly.id == polygon_id:
+            work[index] = replacement
+            break
+    work = drop_orphan_holes(work)
+    changed = _polygons_topo_signature(before) != _polygons_topo_signature(work)
+    return work, changed
+
+
 def postprocess_polygons_for_frame_navigation(
     polygons: list[PolygonData],
     frame_width: int,

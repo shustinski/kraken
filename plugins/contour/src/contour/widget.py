@@ -65,6 +65,11 @@ from .application.frame_asset_sync import (
     foreground_hex_image_has_vector_overlay,
     index_cif_file_paths,
 )
+from .application.frame_layers import (
+    build_additional_layer_frame_map,
+    build_base_frame_number_map,
+    build_base_frame_records,
+)
 from .application.processing import (
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
@@ -160,7 +165,7 @@ from .ui.via_presets import (
     built_in_via_presets,
     noisy_traces_via_preset_payload,
 )
-from .utils import is_image_path, load_image_color
+from .utils import is_image_path, load_image_color, scan_image_files
 
 __all__ = [
     "EDITOR_ACTION_TOOLTIPS",
@@ -198,7 +203,7 @@ class ThumbnailLoadRunnable(QRunnable):
     def run(self) -> None:
         image = None
         try:
-            source = cv2.imread(self.path, cv2.IMREAD_COLOR)
+            source = load_image_color(self.path)
             if source is not None:
                 h, w = source.shape[:2]
                 if w > 0 and h > 0:
@@ -210,8 +215,16 @@ class ThumbnailLoadRunnable(QRunnable):
                     image = source
         except Exception:
             image = None
-        self.signals.result.emit(self.generation, self.path, image)
-        self.signals.finished.emit(self.generation, self.path)
+        # Widget shutdown can race with background thumbnail workers:
+        # in that case underlying QObject wrappers may already be deleted.
+        try:
+            self.signals.result.emit(self.generation, self.path, image)
+        except RuntimeError:
+            return
+        try:
+            self.signals.finished.emit(self.generation, self.path)
+        except RuntimeError:
+            return
 
 
 class PolygonExtractionWidget(QWidget):
@@ -289,6 +302,9 @@ class PolygonExtractionWidget(QWidget):
         self._viewed_image_paths: set[str] = set()
         self._user_via_presets: dict[str, dict[str, object]] = self._load_user_via_presets()
         self._extra_layers: list[dict[str, object]] = []
+        self._next_extra_layer_id = 1
+        self._base_frame_numbers: set[int] = set()
+        self._base_frame_number_by_path: dict[str, int] = {}
         self._prepared_image_thread_pool = QThreadPool(self)
         self._prepared_image_thread_pool.setMaxThreadCount(1)
         self._prepared_image_thread_pool.setExpiryTimeout(-1)
@@ -345,6 +361,7 @@ class PolygonExtractionWidget(QWidget):
         self._set_extraction_settings(self._contour_settings_profiles[self._active_extraction_profile])
         self._set_default_extraction_disabled()
         self.set_ui_language(self._ui_language)
+        self._update_extra_layers_enabled_state()
 
     def _build_ui(self) -> None:
         return build_ui(self)
@@ -1112,6 +1129,9 @@ class PolygonExtractionWidget(QWidget):
             self.min_hierarchy_depth_label_widget, self.min_hierarchy_depth_spin, "min_hierarchy_depth"
         )
         self._set_field_tooltip(
+            self.min_inner_hole_area_label_widget, self.min_inner_hole_area_spin, "min_inner_hole_area"
+        )
+        self._set_field_tooltip(
             self.max_hierarchy_depth_label_widget, self.max_hierarchy_depth_spin, "max_hierarchy_depth"
         )
         self._set_field_tooltip(
@@ -1522,8 +1542,8 @@ class PolygonExtractionWidget(QWidget):
             self.metal_segmentation_method_combo.setToolTip(
                 tt(
                     "По умолчанию — без глобальной пороговой сегментации: контуры строятся по границам на grayscale (Canny + локальная морфология), что лучше сохраняет топологию тонких проводников на SEM.\n"
-                    "Otsu / адаптивная — классическая бинаризация яркости (опционально). Гибрид — объединение граничной маски и Otsu, если нужны и островки по яркости.",
-                    "Default: grayscale edge-based mask (topology-first). Otsu/Adaptive: optional intensity thresholding. Hybrid: edges OR Otsu.",
+                    "По умолчанию — Otsu: классическая пороговая сегментация яркости. Адаптивная — для неравномерного освещения, гибрид — объединяет границы и Otsu.",
+                    "Default: Otsu thresholding. Adaptive handles uneven illumination. Hybrid combines edge mask with Otsu.",
                 )
             )
         if getattr(self, "metal_sensitivity_combo", None) is not None:
@@ -1719,7 +1739,7 @@ class PolygonExtractionWidget(QWidget):
     def _update_via_threshold_controls_state(self) -> None:
         mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
         advanced = self._advanced_extraction_enabled()
-        bright_enabled = mode == VIA_SEARCH_MODE_HEURISTIC
+        bright_enabled = mode in {VIA_SEARCH_MODE_HEURISTIC, "bright_tophat_dog"}
         blob_enabled = False
         template_enabled = mode == VIA_SEARCH_MODE_TEMPLATE
         for label_widget, field_widget in (
@@ -2004,7 +2024,33 @@ class PolygonExtractionWidget(QWidget):
             self._via_toolbar_block.setVisible(tool == EditorTool.ADD_VIA)
         if hasattr(self, "_delete_vertex_toolbar_block"):
             self._delete_vertex_toolbar_block.setVisible(tool == EditorTool.DELETE_VERTEX)
+        self._place_active_tool_parameters_near_tool_button(tool)
         self._on_effective_polygon_create_mode_changed(self.polygon_editor.effective_polygon_create_mode())
+
+    def _place_active_tool_parameters_near_tool_button(self, tool: EditorTool) -> None:
+        if not hasattr(self, "_editor_toolbar_layout") or not hasattr(self, "_tool_parameter_blocks"):
+            return
+        layout = self._editor_toolbar_layout
+        blocks = self._tool_parameter_blocks
+        for block in blocks.values():
+            if block is not None:
+                layout.removeWidget(block)
+        active_block = blocks.get(tool)
+        active_button = getattr(self, "_tool_buttons", {}).get(tool)
+        if active_block is None or active_button is None:
+            return
+        button_index = layout.indexOf(active_button)
+        if button_index < 0:
+            return
+        layout.insertWidget(button_index + 1, active_block)
+        active_block.setVisible(True)
+        active_block.adjustSize()
+        if hasattr(self, "editor_toolbar"):
+            self.editor_toolbar.adjustSize()
+            self.editor_toolbar.setMinimumWidth(self.editor_toolbar.sizeHint().width())
+        if hasattr(self, "editor_toolbar_scroll"):
+            top_left = active_block.mapTo(self.editor_toolbar, active_block.rect().topLeft())
+            self.editor_toolbar_scroll.ensureVisible(int(top_left.x()), int(top_left.y()), 24, 0)
 
     def _on_effective_polygon_create_mode_changed(self, mode: PolygonCreateMode) -> None:
         if not hasattr(self, "polygon_draw_mode_indicator"):
@@ -2047,10 +2093,10 @@ class PolygonExtractionWidget(QWidget):
 
         self.polygon_mode_combo.setItemText(0, self._mode_text("polygon_points"))
         self.polygon_mode_combo.setItemText(1, self._mode_text("polygon_rectangle"))
-        self.brush_mode_combo.setItemText(0, self._mode_text("brush_freeform"))
-        self.brush_mode_combo.setItemText(1, self._mode_text("brush_45deg"))
-        self.brush_mode_combo.setItemText(2, self._mode_text("brush_stamp_add"))
-        self.brush_mode_combo.setItemText(3, self._mode_text("brush_stamp_erase"))
+        if self.brush_mode_combo.count() > 0:
+            self.brush_mode_combo.setItemText(0, self._mode_text("brush_freeform"))
+        if self.brush_mode_combo.count() > 1:
+            self.brush_mode_combo.setItemText(1, self._mode_text("brush_45deg"))
         self.delete_vertex_mode_combo.setItemText(0, self._mode_text("delete_single"))
         self.delete_vertex_mode_combo.setItemText(1, self._mode_text("delete_area"))
 
@@ -2061,6 +2107,8 @@ class PolygonExtractionWidget(QWidget):
             self.polygon_mode_combo.setCurrentIndex(polygon_index)
         if brush_index >= 0:
             self.brush_mode_combo.setCurrentIndex(brush_index)
+        elif self.brush_mode_combo.count() > 0:
+            self.brush_mode_combo.setCurrentIndex(0)
         if delete_index >= 0:
             self.delete_vertex_mode_combo.setCurrentIndex(delete_index)
 
@@ -3779,6 +3827,9 @@ class PolygonExtractionWidget(QWidget):
         profile = "vias" if rec == "via" else "conductors"
         self._active_extraction_profile = profile
         settings = self._current_contour_settings()
+        # Keep profile snapshots stable: "disabled" is a temporary UI state and
+        # must not overwrite the conductors profile recognition mode.
+        settings.recognition_mode = "via" if profile == "vias" else "conductors"
         settings.extraction_profile = profile
         settings.object_type = "via" if profile == "vias" else "conductor"
         self._contour_settings_profiles[profile] = settings
@@ -4006,10 +4057,12 @@ class PolygonExtractionWidget(QWidget):
         self.thumbnail_grid.setGridSize(QSize(cell_w, cell_h))
         self.thumbnail_grid.setSpacing(0)
         frame = 2 * int(self.thumbnail_grid.frameWidth())
-        self.thumbnail_grid.setMinimumWidth(max(cell_w + frame, columns * cell_w + frame))
-        visible_rows = 2
-        self.thumbnail_grid.setMinimumHeight(cell_h + frame)
-        self.thumbnail_grid.setMaximumHeight(max(cell_h + frame, visible_rows * cell_h + frame))
+        item_count = max(1, self.thumbnail_grid.count())
+        rows = max(1, int(np.ceil(item_count / float(columns))))
+        content_width = max(cell_w + frame, columns * cell_w + frame)
+        content_height = max(cell_h + frame, rows * cell_h + frame)
+        self.thumbnail_grid.setFixedWidth(content_width)
+        self.thumbnail_grid.setFixedHeight(content_height)
 
     def _thumbnail_columns(self) -> int:
         if not hasattr(self, "neighbor_columns_spin"):
@@ -4053,6 +4106,7 @@ class PolygonExtractionWidget(QWidget):
                 self._thumbnail_thread_pool.start(runnable)
         finally:
             self.thumbnail_grid.blockSignals(False)
+        self._configure_thumbnail_grid_geometry()
         self._update_thumbnail_grid_selection()
 
     def _on_thumbnail_loaded(self, generation: int, path: str, image: object) -> None:
@@ -4368,8 +4422,12 @@ class PolygonExtractionWidget(QWidget):
             self.set_input_directory(path)
         else:
             self._workspace.replace_image_selection([], is_supported_image=is_image_path)
+            self._base_frame_number_by_path = {}
+            self._base_frame_numbers = set()
             self.image_list.clear()
             self._rebuild_thumbnail_grid()
+            self._clear_extra_layers()
+            self._update_extra_layers_enabled_state()
             self._rebuild_vector_list()
             self._refresh_image_list_item_states()
             self._sync_frame_navigation_controls()
@@ -4444,158 +4502,230 @@ class PolygonExtractionWidget(QWidget):
     def _refresh_extra_layers_list(self) -> None:
         if not hasattr(self, "extra_layers_list"):
             return
-        current_row = self.extra_layers_list.currentRow()
+        current_item = self.extra_layers_list.currentItem()
+        current_id = current_item.data(Qt.ItemDataRole.UserRole) if current_item is not None else None
+        self.extra_layers_list.blockSignals(True)
         self.extra_layers_list.clear()
-        for layer in self._extra_layers:
-            name = str(layer.get("name", "Layer"))
-            visible = bool(layer.get("visible", True))
-            pixmap = layer.get("pixmap")
-            loaded = isinstance(pixmap, QPixmap) and not pixmap.isNull()
-            prefix = "[x] " if visible else "[ ] "
-            if not loaded:
-                prefix = "[!] "
-            item = QListWidgetItem(prefix + name)
-            item.setToolTip(str(layer.get("path", "")))
+        for index, layer in enumerate(self._extra_layers):
+            layer_id = int(layer.get("id", index + 1))
+            folder_path = str(layer.get("folder_path", ""))
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, layer_id)
+            item.setToolTip(folder_path)
+            row_widget = self._build_extra_layer_row_widget(layer)
+            item.setSizeHint(row_widget.sizeHint())
             self.extra_layers_list.addItem(item)
-        if self._extra_layers:
-            self.extra_layers_list.setCurrentRow(max(0, min(current_row, len(self._extra_layers) - 1)))
-        else:
-            self._on_extra_layer_selected(-1)
+            self.extra_layers_list.setItemWidget(item, row_widget)
+        self.extra_layers_list.blockSignals(False)
+        if current_id is not None:
+            for row in range(self.extra_layers_list.count()):
+                candidate = self.extra_layers_list.item(row)
+                if candidate is not None and candidate.data(Qt.ItemDataRole.UserRole) == current_id:
+                    self.extra_layers_list.setCurrentRow(row)
+                    break
+
+    def _build_extra_layer_row_widget(self, layer: dict[str, object]) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layer_id = int(layer.get("id", 0))
+
+        visible_checkbox = QCheckBox("")
+        visible_checkbox.setChecked(bool(layer.get("visible", True)))
+        visible_checkbox.setToolTip("Показать/скрыть слой")
+        visible_checkbox.stateChanged.connect(
+            lambda _state, lid=layer_id: self._set_extra_layer_field(lid, "visible", visible_checkbox.isChecked())
+        )
+
+        dx_spin = QSpinBox()
+        dx_spin.setRange(-1_000_000, 1_000_000)
+        dx_spin.setValue(int(layer.get("dx", 0) or 0))
+        dx_spin.setMinimumWidth(0)
+        dx_spin.setMaximumWidth(self._compact_spinbox_width(dx_spin, "-1000000"))
+        dx_spin.setToolTip("Смещение слоя по X")
+        dx_spin.valueChanged.connect(lambda value, lid=layer_id: self._set_extra_layer_field(lid, "dx", int(value)))
+
+        dy_spin = QSpinBox()
+        dy_spin.setRange(-1_000_000, 1_000_000)
+        dy_spin.setValue(int(layer.get("dy", 0) or 0))
+        dy_spin.setMinimumWidth(0)
+        dy_spin.setMaximumWidth(self._compact_spinbox_width(dy_spin, "-1000000"))
+        dy_spin.setToolTip("Смещение слоя по Y")
+        dy_spin.valueChanged.connect(lambda value, lid=layer_id: self._set_extra_layer_field(lid, "dy", int(value)))
+
+        opacity_spin = QSpinBox()
+        opacity_spin.setRange(0, 100)
+        opacity_spin.setValue(int(layer.get("opacity", 100) or 100))
+        opacity_spin.setSuffix("%")
+        opacity_spin.setMinimumWidth(0)
+        opacity_spin.setMaximumWidth(self._compact_spinbox_width(opacity_spin, "100%"))
+        opacity_spin.setToolTip("Прозрачность слоя")
+        opacity_spin.valueChanged.connect(
+            lambda value, lid=layer_id: self._set_extra_layer_field(lid, "opacity", int(value))
+        )
+
+        remove_button = QPushButton("-")
+        remove_button.setFixedWidth(24)
+        remove_button.setStyleSheet("QPushButton { background-color: #DC2626; color: white; font-weight: 700; }")
+        remove_button.setToolTip("Удалить слой")
+        remove_button.clicked.connect(lambda _checked=False, lid=layer_id: self._remove_extra_layer_by_id(lid))
+
+        folder_name = str(layer.get("name", "Layer"))
+        folder_label = QLabel(folder_name)
+        folder_label.setToolTip(str(layer.get("folder_path", "")))
+
+        layout.addWidget(visible_checkbox)
+        layout.addWidget(folder_label, 1)
+        layout.addWidget(dx_spin)
+        layout.addWidget(dy_spin)
+        layout.addWidget(opacity_spin)
+        layout.addWidget(remove_button)
+        return row
+
+    @staticmethod
+    def _compact_spinbox_width(spinbox: QSpinBox, sample_text: str) -> int:
+        text_width = spinbox.fontMetrics().horizontalAdvance(sample_text)
+        arrow_width = max(24, spinbox.style().pixelMetric(spinbox.style().PixelMetric.PM_ScrollBarExtent))
+        frame = 16
+        return text_width + arrow_width + frame
+
+    def _set_extra_layer_field(self, layer_id: int, key: str, value: object) -> None:
+        for layer in self._extra_layers:
+            if int(layer.get("id", -1)) == layer_id:
+                layer[key] = value
+                self._sync_extra_layers()
+                return
+
+    def _remove_extra_layer_by_id(self, layer_id: int) -> None:
+        self._extra_layers = [layer for layer in self._extra_layers if int(layer.get("id", -1)) != layer_id]
+        self._refresh_extra_layers_list()
+        self._sync_extra_layers()
+
+    def _clear_extra_layers(self) -> None:
+        self._extra_layers.clear()
+        self._refresh_extra_layers_list()
+        self._sync_extra_layers()
+
+    def _update_extra_layers_enabled_state(self) -> None:
+        has_base = bool(self._workspace.image_paths)
+        if hasattr(self, "add_extra_layers_button"):
+            self.add_extra_layers_button.setEnabled(has_base)
 
     def _sync_extra_layers(self) -> None:
-        if hasattr(self, "polygon_editor"):
-            self.polygon_editor.set_extra_layers(self._extra_layers)
+        if not hasattr(self, "polygon_editor"):
+            return
+        current_path = self._workspace.current_image_path
+        current_number = self._base_frame_number_by_path.get(str(Path(current_path))) if current_path else None
+        active_layers: list[dict[str, object]] = []
+        if current_number is not None:
+            for layer in self._extra_layers:
+                if not bool(layer.get("visible", True)):
+                    continue
+                frame_map = layer.get("frame_map")
+                if not isinstance(frame_map, dict):
+                    continue
+                layer_image_path = frame_map.get(current_number)
+                if not isinstance(layer_image_path, str):
+                    continue
+                pixmap_cache = layer.setdefault("_pixmap_cache", {})
+                pixmap = pixmap_cache.get(layer_image_path) if isinstance(pixmap_cache, dict) else None
+                if not isinstance(pixmap, QPixmap):
+                    pixmap = QPixmap(layer_image_path)
+                    if isinstance(pixmap_cache, dict) and not pixmap.isNull():
+                        pixmap_cache[layer_image_path] = pixmap
+                if pixmap.isNull():
+                    continue
+                active_layers.append(
+                    {
+                        "name": layer.get("name", ""),
+                        "visible": bool(layer.get("visible", True)),
+                        "opacity": max(0.0, min(1.0, float(layer.get("opacity", 100)) / 100.0)),
+                        "dx": float(layer.get("dx", 0) or 0),
+                        "dy": float(layer.get("dy", 0) or 0),
+                        "pixmap": pixmap,
+                    }
+                )
+        self.polygon_editor.set_extra_layers(active_layers)
 
     def _load_extra_layers(self) -> None:
-        file_paths, _selected_filter = QFileDialog.getOpenFileNames(
+        if not self._workspace.image_paths:
+            QMessageBox.information(self, "Contour", "Сначала загрузите базовый слой")
+            return
+        folder_path = QFileDialog.getExistingDirectory(
             self,
-            "Выберите изображения слоев" if self._ui_language == "ru" else "Select layer images",
+            "Выберите папку дополнительного слоя"
+            if self._ui_language == "ru"
+            else "Select additional layer directory",
             "",
-            "Images (*.jpg *.jpeg *.png *.bmp *.tif *.tiff);;All files (*)",
         )
-        for file_path in file_paths:
-            layer = self._extra_layer_from_path(file_path)
-            if layer is not None:
-                self._extra_layers.append(layer)
-        self._refresh_extra_layers_list()
-        self._sync_extra_layers()
-
-    def _browse_selected_extra_layer_path(self) -> None:
-        current_path = ""
-        row = self.extra_layers_list.currentRow() if hasattr(self, "extra_layers_list") else -1
-        if 0 <= row < len(self._extra_layers):
-            current_path = str(self._extra_layers[row].get("path", ""))
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
-            self,
-            "Выберите изображение слоя" if self._ui_language == "ru" else "Select layer image",
-            str(Path(current_path).parent) if current_path else "",
-            "Images (*.jpg *.jpeg *.png *.bmp *.tif *.tiff);;All files (*)",
-        )
-        if not file_path:
+        if not folder_path:
             return
-        self.extra_layer_path_edit.setText(file_path)
-        self._on_extra_layer_path_changed()
-
-    def _on_extra_layer_path_changed(self) -> None:
-        path = self.extra_layer_path_edit.text().strip()
-        if not path:
-            return
-        layer = self._extra_layer_from_path(path)
+        layer = self._extra_layer_from_directory(folder_path)
         if layer is None:
             return
-        row = self.extra_layers_list.currentRow() if hasattr(self, "extra_layers_list") else -1
-        if row < 0 or row >= len(self._extra_layers):
-            self._extra_layers.append(layer)
-            row = len(self._extra_layers) - 1
-        else:
-            existing = self._extra_layers[row]
-            existing["name"] = layer["name"]
-            existing["path"] = layer["path"]
-            existing["pixmap"] = layer["pixmap"]
+        self._extra_layers.append(layer)
         self._refresh_extra_layers_list()
-        self.extra_layers_list.setCurrentRow(row)
         self._sync_extra_layers()
 
-    def _extra_layer_from_path(self, file_path: str) -> dict[str, object] | None:
-        path = Path(file_path.strip().strip("\"'")).expanduser()
-        if not path.is_file():
+    def _extra_layer_from_directory(self, directory_path: str) -> dict[str, object] | None:
+        path = Path(directory_path.strip().strip("\"'")).expanduser()
+        if not path.is_dir():
             self._append_log(
                 self._tr(
                     "extra_layer_missing_file_log",
-                    "Файл слоя не найден: {path}" if self._ui_language == "ru" else "Layer file not found: {path}",
-                    path=file_path,
+                    "Папка слоя не найдена: {path}" if self._ui_language == "ru" else "Layer folder not found: {path}",
+                    path=directory_path,
                 )
             )
             return None
-        pixmap = QPixmap(str(path))
-        if pixmap.isNull():
+        layer_image_paths = scan_image_files(path)
+        frame_map, warnings = build_additional_layer_frame_map(
+            layer_image_paths,
+            base_frame_numbers=set(self._base_frame_numbers),
+        )
+        for message in warnings:
+            self._append_log(message)
+        if not frame_map:
             self._append_log(
                 self._tr(
                     "extra_layer_load_failed_log",
-                    "Не удалось загрузить изображение слоя: {path}"
+                    "В папке слоя нет кадров, совпадающих с базовым слоем: {path}"
                     if self._ui_language == "ru"
-                    else "Failed to load layer image: {path}",
+                    else "Layer folder has no frames matching base layer: {path}",
                     path=str(path),
                 )
             )
             return None
+        layer_id = self._next_extra_layer_id
+        self._next_extra_layer_id += 1
         return {
+            "id": layer_id,
             "name": path.name,
-            "path": str(path),
-            "pixmap": pixmap,
+            "folder_path": str(path),
+            "frame_map": frame_map,
             "visible": True,
-            "opacity": 0.35,
-            "dx": 0.0,
-            "dy": 0.0,
+            "opacity": 100,
+            "dx": 0,
+            "dy": 0,
         }
 
-    def _remove_selected_extra_layer(self) -> None:
-        row = self.extra_layers_list.currentRow() if hasattr(self, "extra_layers_list") else -1
-        if row < 0 or row >= len(self._extra_layers):
+    def _on_extra_layers_rows_moved(self, *_args) -> None:
+        if not hasattr(self, "extra_layers_list"):
             return
-        self._extra_layers.pop(row)
-        self._refresh_extra_layers_list()
-        self._sync_extra_layers()
-
-    def _on_extra_layer_selected(self, row: int) -> None:
-        blockers = [
-            QSignalBlocker(self.extra_layer_path_edit),
-            QSignalBlocker(self.extra_layer_visible_checkbox),
-            QSignalBlocker(self.extra_layer_opacity_spin),
-            QSignalBlocker(self.extra_layer_dx_spin),
-            QSignalBlocker(self.extra_layer_dy_spin),
-        ]
-        if row < 0 or row >= len(self._extra_layers):
+        order: list[int] = []
+        for row in range(self.extra_layers_list.count()):
+            item = self.extra_layers_list.item(row)
+            if item is None:
+                continue
             try:
-                self.extra_layer_path_edit.clear()
-                self.extra_layer_visible_checkbox.setChecked(False)
-                self.extra_layer_opacity_spin.setValue(0.35)
-                self.extra_layer_dx_spin.setValue(0.0)
-                self.extra_layer_dy_spin.setValue(0.0)
-            finally:
-                del blockers
+                order.append(int(item.data(Qt.ItemDataRole.UserRole)))
+            except (TypeError, ValueError):
+                continue
+        if not order:
             return
-        layer = self._extra_layers[row]
-        try:
-            self.extra_layer_path_edit.setText(str(layer.get("path", "")))
-            self.extra_layer_visible_checkbox.setChecked(bool(layer.get("visible", True)))
-            self.extra_layer_opacity_spin.setValue(float(layer.get("opacity", 0.35) or 0.35))
-            self.extra_layer_dx_spin.setValue(float(layer.get("dx", 0.0) or 0.0))
-            self.extra_layer_dy_spin.setValue(float(layer.get("dy", 0.0) or 0.0))
-        finally:
-            del blockers
-
-    def _on_extra_layer_controls_changed(self, *_args) -> None:
-        row = self.extra_layers_list.currentRow() if hasattr(self, "extra_layers_list") else -1
-        if row < 0 or row >= len(self._extra_layers):
-            return
-        layer = self._extra_layers[row]
-        layer["visible"] = self.extra_layer_visible_checkbox.isChecked()
-        layer["opacity"] = float(self.extra_layer_opacity_spin.value())
-        layer["dx"] = float(self.extra_layer_dx_spin.value())
-        layer["dy"] = float(self.extra_layer_dy_spin.value())
-        self._refresh_extra_layers_list()
-        self.extra_layers_list.setCurrentRow(row)
+        by_id = {int(layer.get("id", -1)): layer for layer in self._extra_layers}
+        self._extra_layers = [by_id[layer_id] for layer_id in order if layer_id in by_id]
         self._sync_extra_layers()
 
     def _auto_apply_pipeline(self) -> None:
@@ -4729,6 +4859,7 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.min_via_height_spin),
             QSignalBlocker(self.max_via_height_spin),
             QSignalBlocker(self.min_hierarchy_depth_spin),
+            QSignalBlocker(self.min_inner_hole_area_spin),
             QSignalBlocker(self.max_hierarchy_depth_spin),
             QSignalBlocker(self.max_hole_area_ratio_spin),
             QSignalBlocker(self.advanced_extraction_checkbox),
@@ -4987,6 +5118,7 @@ class PolygonExtractionWidget(QWidget):
                 self._add_fixed_via_row(width=width, height=height)
             self._suspend_fixed_via_updates = False
             self.min_hierarchy_depth_spin.setValue(int(settings.min_hierarchy_depth))
+            self.min_inner_hole_area_spin.setValue(float(getattr(settings, "min_inner_hole_area", 100.0)))
             self.max_hierarchy_depth_spin.setValue(
                 0 if settings.max_hierarchy_depth is None else int(settings.max_hierarchy_depth)
             )
@@ -5035,7 +5167,7 @@ class PolygonExtractionWidget(QWidget):
                         float(getattr(settings, "metal_wide_gradient_min_overlap_ratio", 0.5) or 0.5)
                     )
                 _smi = self.metal_segmentation_method_combo.findData(
-                    str(getattr(settings, "metal_segmentation_method", "none") or "none")
+                    str(getattr(settings, "metal_segmentation_method", "otsu") or "otsu")
                 )
                 if _smi >= 0:
                     self.metal_segmentation_method_combo.setCurrentIndex(_smi)
@@ -5080,7 +5212,7 @@ class PolygonExtractionWidget(QWidget):
                 if _bhi >= 0:
                     self.metal_border_handling_combo.setCurrentIndex(_bhi)
                 self.metal_validity_checkbox.setChecked(
-                    bool(getattr(settings, "metal_check_contour_validity", True))
+                    bool(getattr(settings, "metal_check_contour_validity", False))
                 )
                 self.metal_morph_close_spin.setValue(int(getattr(settings, "metal_morph_close_radius", 1) or 1))
                 self.metal_morph_open_spin.setValue(int(getattr(settings, "metal_morph_open_radius", 0) or 0))
@@ -5424,6 +5556,7 @@ class PolygonExtractionWidget(QWidget):
             fixed_via_widths=fixed_via_widths,
             fixed_via_heights=fixed_via_heights,
             min_hierarchy_depth=self.min_hierarchy_depth_spin.value(),
+            min_inner_hole_area=self.min_inner_hole_area_spin.value(),
             max_hierarchy_depth=None if max_hierarchy_depth <= 0 else max_hierarchy_depth,
             max_hole_area_ratio=None if max_hole_area_ratio <= 0 else max_hole_area_ratio,
         )
@@ -5547,6 +5680,36 @@ class PolygonExtractionWidget(QWidget):
                 "tol": 6.0,
                 "tok": "medium",
             },
+            "wide_traces": {
+                "sens": 44,
+                "close": 4,
+                "open": 0,
+                "min_w": 14.0,
+                "max_w": 0.0,
+                "min_l": 24.0,
+                "min_a": 100.0,
+                "max_a": 0.0,
+                "min_p": 42.0,
+                "max_p": 0.0,
+                "str": 0.5,
+                "tol": 8.0,
+                "tok": "medium",
+            },
+            "weak_contrast": {
+                "sens": 68,
+                "close": 2,
+                "open": 0,
+                "min_w": 6.0,
+                "max_w": 0.0,
+                "min_l": 14.0,
+                "min_a": 40.0,
+                "max_a": 0.0,
+                "min_p": 24.0,
+                "max_p": 0.0,
+                "str": 0.35,
+                "tol": 10.0,
+                "tok": "high",
+            },
             "noisy_sem": {
                 "sens": 36,
                 "close": 4,
@@ -5576,6 +5739,22 @@ class PolygonExtractionWidget(QWidget):
                 "str": 0.72,
                 "tol": 5.0,
                 "tok": "low",
+            },
+            "angles_45_90": {
+                "sens": 52,
+                "close": 1,
+                "open": 0,
+                "min_w": 8.0,
+                "max_w": 0.0,
+                "min_l": 12.0,
+                "min_a": 60.0,
+                "max_a": 0.0,
+                "min_p": 32.0,
+                "max_p": 0.0,
+                "str": 0.35,
+                "tol": 6.0,
+                "tok": "medium",
+                "angles": "45_90",
             },
         }
 
@@ -5745,10 +5924,11 @@ class PolygonExtractionWidget(QWidget):
 
     def _paint_image_row_item(self, item: QListWidgetItem, image_path: str, *, show_text: bool = True) -> None:
         normalized = str(Path(image_path))
+        extraction_enabled = self._is_extraction_mode_enabled()
         painted = classify_image_side_paint_status(
-            never_opened=normalized not in self._viewed_image_paths,
-            polygons_dirty=self._workspace.image_has_changes(normalized),
-            persist_highlight=normalized in self._persisted_highlight_paths,
+            never_opened=True if extraction_enabled else normalized not in self._viewed_image_paths,
+            polygons_dirty=False if extraction_enabled else self._workspace.image_has_changes(normalized),
+            persist_highlight=False if extraction_enabled else normalized in self._persisted_highlight_paths,
         )
         item.setData(FRAME_STATUS_ROLE, painted.value)
         hex_background = background_hex_image_paint_status(painted)
@@ -5992,6 +6172,8 @@ class PolygonExtractionWidget(QWidget):
         )
 
     def _try_leave_current_frame(self) -> bool:
+        if self._is_extraction_mode_enabled():
+            return True
         self._workspace.update_current_polygons(self.get_polygons())
         dirty = self._workspace.current_image_has_changes()
         if not dirty:
@@ -6505,10 +6687,19 @@ class PolygonExtractionWidget(QWidget):
         if self._workspace.current_state is not None and not self._try_leave_current_frame():
             return
         self._scan_generation += 1
-        normalized_paths = self._workspace.replace_image_selection(paths, is_supported_image=is_image_path)
+        normalized_paths = [str(Path(path)) for path in paths if is_image_path(path)]
+        frame_records, warnings = build_base_frame_records(normalized_paths)
+        for message in warnings:
+            self._append_log(message)
+        ordered_paths = [record.path for record in frame_records]
+        self._base_frame_number_by_path = build_base_frame_number_map(frame_records)
+        self._base_frame_numbers = set(self._base_frame_number_by_path.values())
+        normalized_paths = self._workspace.replace_image_selection(ordered_paths, is_supported_image=is_image_path)
         self._neighbor_image_cache.clear()
         self._prune_tagged_sets_for_images(normalized_paths)
         self._abort_in_flight_interactive_processing(preview=True, prepared=True)
+        self._clear_extra_layers()
+        self._update_extra_layers_enabled_state()
         self.image_list.clear()
         for path in normalized_paths:
             item = QListWidgetItem(Path(path).stem)
@@ -6571,7 +6762,8 @@ class PolygonExtractionWidget(QWidget):
             load_source_image=load_image_color,
             load_cif_overlay=self._load_cif_overlay_polygons,
         )
-        self._viewed_image_paths.add(str(Path(image_result.image_path)))
+        if not self._is_extraction_mode_enabled():
+            self._viewed_image_paths.add(str(Path(image_result.image_path)))
         if image_result.state is not None and not image_result.cache_hit and not image_result.reused_current_state:
             image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
             image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
@@ -6595,6 +6787,11 @@ class PolygonExtractionWidget(QWidget):
         else:
             self._append_log(self._tr("loaded_image_log", image_path=image_result.image_path))
         self._try_extract_if_recognition_enabled()
+
+    def _is_extraction_mode_enabled(self) -> bool:
+        if not hasattr(self, "recognition_mode_combo"):
+            return False
+        return str(self.recognition_mode_combo.currentData() or "") != "disabled"
 
     def get_polygons(self) -> list[PolygonData]:
         return self.polygon_editor.get_polygons()

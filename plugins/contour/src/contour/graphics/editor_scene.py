@@ -26,6 +26,7 @@ from ..adapters.qt.image_conversion import cv_to_qimage
 from ..application.processing import DisplaySettings
 from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
+    postprocess_changed_polygon_only,
     postprocess_after_editor_mutation,
 )
 from ..commands import (
@@ -401,7 +402,7 @@ class PolygonEditorScene(QGraphicsScene):
                 continue
             dx = float(layer.get("dx", 0.0) or 0.0)
             dy = float(layer.get("dy", 0.0) or 0.0)
-            opacity = max(0.0, min(1.0, float(layer.get("opacity", 0.35) or 0.35)))
+            opacity = max(0.0, min(1.0, float(layer.get("opacity", 1.0) or 1.0)))
             item = QGraphicsPixmapItem(pixmap)
             item.setZValue(0.8)
             item.setOpacity(opacity)
@@ -431,12 +432,18 @@ class PolygonEditorScene(QGraphicsScene):
 
     def _maybe_push_vector_postprocess(self, undo_text: str) -> None:
         before = self.get_polygons()
-        final, changed = postprocess_after_editor_mutation(
+        final, changed = postprocess_changed_polygon_only(
             before,
             self._vector_geometry_settings,
-            frame_width_height=None,
-            include_merge=False,
+            polygon_id=self._selected_polygon_id,
         )
+        if not changed:
+            final, changed = postprocess_after_editor_mutation(
+                before,
+                self._vector_geometry_settings,
+                frame_width_height=None,
+                include_merge=False,
+            )
         if changed:
             self.undo_stack.push(ReplacePolygonSetCommand(self, before, final, undo_text))
 

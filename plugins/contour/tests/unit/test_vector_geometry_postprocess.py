@@ -10,6 +10,7 @@ from contour.application.vector_geometry_postprocess import (
     drop_triangle_outer_artifacts,
     merge_overlapping_root_families,
     postprocess_after_editor_mutation,
+    postprocess_changed_polygon_only,
     postprocess_polygons_for_frame_navigation,
     remove_spikes_from_polygon_ring,
 )
@@ -210,6 +211,17 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         roots = [p for p in processed if p.parent_id is None and not p.is_hole]
         self.assertTrue(changed)
         self.assertEqual(len(roots), 1)
+
+    def test_postprocess_changed_polygon_only_touches_target(self) -> None:
+        large = _rect(0.0, 0.0, 100.0, 100.0, 1)
+        tiny = _rect(120.0, 0.0, 121.0, 1.0, 2)
+        processed, changed = postprocess_changed_polygon_only(
+            [large, tiny],
+            VectorGeometrySettings(min_outer_area_px2=50.0, min_spike_interior_angle_deg=0.0),
+            polygon_id=1,
+        )
+        self.assertFalse(changed)
+        self.assertEqual({p.id for p in processed}, {1, 2})
 
 
 if __name__ == "__main__":

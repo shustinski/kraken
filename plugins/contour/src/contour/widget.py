@@ -2055,20 +2055,9 @@ class PolygonExtractionWidget(QWidget):
     def _on_effective_polygon_create_mode_changed(self, mode: PolygonCreateMode) -> None:
         if not hasattr(self, "polygon_draw_mode_indicator"):
             return
-        if self.polygon_editor.current_tool != EditorTool.ADD_POLYGON:
-            self.polygon_draw_mode_indicator.clear()
-            return
-        if mode == PolygonCreateMode.POINTS:
-            text = self._tr(
-                "polygon_draw_now_points",
-                "Сейчас: по точкам" if self._ui_language == "ru" else "Now: by points",
-            )
-        else:
-            text = self._tr(
-                "polygon_draw_now_rectangle",
-                "Сейчас: прямоугольник" if self._ui_language == "ru" else "Now: rectangle",
-            )
-        self.polygon_draw_mode_indicator.setText(text)
+        # Keep mode switching/hotkeys functional, but do not render mode text in work area/toolbar.
+        _ = mode
+        self.polygon_draw_mode_indicator.clear()
 
     def _update_ruler_status(self, text: str) -> None:
         if not text:

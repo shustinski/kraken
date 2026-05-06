@@ -11,7 +11,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QCheckBox, QListWidgetItem, QMenu, QScrollArea, QSpinBox
@@ -597,6 +597,148 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         final_area = _net_outline_area(self.view.get_polygons())
         self.assertLess(final_area, initial_area)
 
+    def test_brush_drag_skips_conductor_hover_sync_on_mouse_move(self) -> None:
+        self.view.set_tool(EditorTool.BRUSH)
+        calls: list[QPointF] = []
+        original_sync = self.view._editor_scene.sync_conductor_hover_highlight
+        self.view._editor_scene.sync_conductor_hover_highlight = lambda pos: calls.append(pos)  # type: ignore[method-assign]
+        try:
+            start_pos = self.view.mapFromScene(QPointF(25.0, 25.0))
+            move_pos = self.view.mapFromScene(QPointF(75.0, 75.0))
+            QTest.mousePress(
+                self.view.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                start_pos,
+            )
+            QTest.mouseMove(self.view.viewport(), move_pos)
+            QTest.mouseRelease(
+                self.view.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                move_pos,
+            )
+            self._app.processEvents()
+        finally:
+            self.view._editor_scene.sync_conductor_hover_highlight = original_sync  # type: ignore[method-assign]
+        self.assertEqual(calls, [])
+
+    def test_noop_brush_erase_does_not_create_undo_action(self) -> None:
+        self.view.set_polygons([_rectangle_polygon(20, 20, 80, 80)])
+        undo_before = self.view.undo_stack.count()
+
+        changed = self.view._editor_scene.add_brush_stroke([(150.0, 150.0), (180.0, 180.0)], thickness=12.0, erase=True)
+
+        self.assertFalse(changed)
+        self.assertEqual(self.view.undo_stack.count(), undo_before)
+
+    def test_brush_records_movement_of_at_least_one_pixel_as_segment(self) -> None:
+        self.view.set_tool(EditorTool.BRUSH)
+        self.view._editor_scene.start_pending_polygon(for_brush=True)
+        self.view._editor_scene.set_pending_path_width(12.0, cosmetic=False)
+
+        self.view._editor_scene.append_brush_vertex(QPointF(40.0, 40.0), 12.0)
+        self.view._editor_scene.append_brush_vertex(QPointF(41.2, 40.0), 12.0)
+
+        points = self.view._editor_scene.pending_points_snapshot()
+        self.assertGreaterEqual(len(points), 2)
+
+    def test_brush_drops_vertices_closer_than_one_pixel(self) -> None:
+        self.view.set_tool(EditorTool.BRUSH)
+        self.view._editor_scene.start_pending_polygon(for_brush=True)
+        self.view._editor_scene.set_pending_path_width(12.0, cosmetic=False)
+        self.view._append_brush_point(QPointF(40.0, 40.0))
+        self.view._append_brush_point(QPointF(40.8, 40.0))
+
+        points = self.view._editor_scene.pending_points_snapshot()
+        self.assertEqual(len(points), 1)
+
+    def test_brush_vertex_spacing_rule_is_one_image_pixel(self) -> None:
+        self.view.set_tool(EditorTool.BRUSH)
+        self.view.resetTransform()
+        self.view.scale(4.0, 4.0)
+        self._app.processEvents()
+        self.view._editor_scene.start_pending_polygon(for_brush=True)
+        self.view._editor_scene.set_pending_path_width(12.0, cosmetic=False)
+        self.view._append_brush_point(QPointF(40.0, 40.0))
+        self.view._append_brush_point(QPointF(40.8, 40.0))
+        points_after_small = self.view._editor_scene.pending_points_snapshot()
+        self.assertEqual(len(points_after_small), 1)
+
+        self.view._append_brush_point(QPointF(41.2, 40.0))
+        points_after_large = self.view._editor_scene.pending_points_snapshot()
+        self.assertGreaterEqual(len(points_after_large), 2)
+
+    def test_middle_pan_during_brush_does_not_shift_brush_position(self) -> None:
+        self.view.set_polygons([])
+        self.view.set_tool(EditorTool.BRUSH)
+        self.view.set_brush_thickness(12.0)
+        start = self.view.mapFromScene(QPointF(30.0, 30.0))
+
+        QTest.mousePress(self.view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+        QTest.mousePress(self.view.viewport(), Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.NoModifier, start)
+        QTest.mouseMove(self.view.viewport(), start + QPoint(90, 0), delay=10)
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.MiddleButton,
+            Qt.KeyboardModifier.NoModifier,
+            start + QPoint(90, 0),
+        )
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            start + QPoint(90, 0),
+        )
+        self._app.processEvents()
+
+        polygons = self.view.get_polygons()
+        self.assertTrue(polygons)
+        # Stroke remains around the original press location; pan does not drag the brush.
+        left, top, width, height = polygons[0].bbox
+        self.assertLessEqual(left, 31)
+        self.assertLessEqual(top, 31)
+        self.assertGreaterEqual(left + width, 29)
+        self.assertGreaterEqual(top + height, 29)
+
+    def test_middle_pan_during_brush_at_image_edge_keeps_brush_anchor(self) -> None:
+        self.view.set_polygons([])
+        self.view.set_tool(EditorTool.BRUSH)
+        self.view.set_brush_thickness(12.0)
+        self.view.resetTransform()
+        self.view.scale(4.0, 4.0)
+        self._app.processEvents()
+
+        edge_scene = QPointF(95.0, 50.0)
+        start = self.view.mapFromScene(edge_scene)
+
+        QTest.mousePress(self.view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+        QTest.mousePress(self.view.viewport(), Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.NoModifier, start)
+        # Push pan strongly so viewport hits scroll limits at image boundary.
+        for _ in range(3):
+            QTest.mouseMove(self.view.viewport(), start + QPoint(-600, 0), delay=8)
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.MiddleButton,
+            Qt.KeyboardModifier.NoModifier,
+            start + QPoint(-600, 0),
+        )
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            start + QPoint(-600, 0),
+        )
+        self._app.processEvents()
+
+        polygons = self.view.get_polygons()
+        self.assertTrue(polygons)
+        left, top, width, height = polygons[0].bbox
+        center_x = left + width / 2.0
+        center_y = top + height / 2.0
+        self.assertAlmostEqual(center_x, edge_scene.x(), delta=2.0)
+        self.assertAlmostEqual(center_y, edge_scene.y(), delta=2.0)
+
     def test_closed_brush_contour_preserves_empty_center(self) -> None:
         self.view.set_polygons([])
         points = [
@@ -689,6 +831,81 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
             any(not polygon.is_hole and polygon.bbox[0] >= 44 and polygon.bbox[1] >= 44 for polygon in after_polygons)
         )
         self.assertGreaterEqual(len(after_polygons), len(before_polygons))
+
+    def test_delete_vertices_area_affects_unselected_polygons_too(self) -> None:
+        first = _rectangle_polygon(10, 10, 40, 40)
+        second = _rectangle_polygon(60, 10, 90, 40)
+        second.id = 2
+        self.view.set_polygons([first, second])
+        self.view._editor_scene.select_polygon(1)
+
+        deleted = self.view._editor_scene.delete_vertices_in_rect(QRectF(QPointF(56.0, 6.0), QPointF(66.0, 16.0)))
+
+        self.assertEqual(deleted, 1)
+        polygons = {polygon.id: polygon for polygon in self.view.get_polygons()}
+        self.assertEqual(len(polygons[2].points), 3)
+        self.assertEqual(len(polygons[1].points), 4)
+
+    def test_delete_vertices_area_preview_highlights_all_touched_polygons(self) -> None:
+        first = _rectangle_polygon(10, 10, 40, 40)
+        second = _rectangle_polygon(60, 10, 90, 40)
+        second.id = 2
+        self.view.set_polygons([first, second])
+
+        self.view._editor_scene.preview_delete_vertices_in_rect(QPointF(5.0, 5.0), QPointF(65.0, 15.0))
+
+        self.assertEqual(self.view._editor_scene._delete_area_highlight_ids, {1, 2})
+        self.view._editor_scene.clear_preview_rect()
+        self.assertEqual(self.view._editor_scene._delete_area_highlight_ids, set())
+
+    def test_add_vertex_click_on_unselected_polygon_selects_and_edits_it(self) -> None:
+        first = _rectangle_polygon(10, 10, 40, 40)
+        second = _rectangle_polygon(60, 10, 90, 40)
+        second.id = 2
+        self.view.set_polygons([first, second])
+        self.view._editor_scene.select_polygon(1)
+        self.view.set_tool(EditorTool.ADD_VERTEX)
+
+        click_pos = self.view.mapFromScene(QPointF(75.0, 10.0))
+        QTest.mouseClick(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            click_pos,
+        )
+        self._app.processEvents()
+
+        polygons = {polygon.id: polygon for polygon in self.view.get_polygons()}
+        self.assertEqual(len(polygons[2].points), 5)
+        self.assertEqual(len(polygons[1].points), 4)
+        self.assertEqual(self.view._editor_scene.selected_polygon_id(), 2)
+
+    def test_move_vertex_click_inside_selected_polygon_moves_nearest_vertex(self) -> None:
+        poly = _rectangle_polygon(20, 20, 80, 80)
+        self.view.set_polygons([poly])
+        self.view._editor_scene.select_polygon(1)
+        self.view.set_tool(EditorTool.MOVE_VERTEX)
+        before = self.view.get_polygons()[0].points
+
+        press_pos = self.view.mapFromScene(QPointF(50.0, 50.0))
+        release_pos = self.view.mapFromScene(QPointF(62.0, 58.0))
+        QTest.mousePress(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            press_pos,
+        )
+        QTest.mouseMove(self.view.viewport(), release_pos)
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            release_pos,
+        )
+        self._app.processEvents()
+
+        after = self.view.get_polygons()[0].points
+        self.assertNotEqual(before, after)
 
     def test_repeated_outer_edits_do_not_expand_untouched_inner_contour(self) -> None:
         self.view.set_polygons([])
@@ -1115,6 +1332,14 @@ class PolygonExtractionWidgetBrushModeUiTests(unittest.TestCase):
         modes = [str(self.widget.brush_mode_combo.itemData(index)) for index in range(self.widget.brush_mode_combo.count())]
         self.assertEqual(self.widget.brush_mode_combo.count(), 2)
         self.assertEqual(modes, ["freeform", "angled"])
+
+    def test_polygon_mode_indicator_is_hidden_but_mode_switch_stays_operational(self) -> None:
+        self.widget.polygon_editor.set_tool(EditorTool.ADD_POLYGON)
+        self.widget.polygon_mode_combo.setCurrentIndex(self.widget.polygon_mode_combo.findData(PolygonCreateMode.RECTANGLE))
+        self._app.processEvents()
+
+        self.assertFalse(self.widget.polygon_draw_mode_indicator.isVisible())
+        self.assertEqual(self.widget.polygon_editor.effective_polygon_create_mode(), PolygonCreateMode.RECTANGLE)
 
 
 if __name__ == "__main__":

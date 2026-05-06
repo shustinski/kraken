@@ -1879,6 +1879,7 @@ def build_editor_toolbar(self) -> QWidget:
         lambda _index: self.polygon_editor.set_polygon_create_mode(self.polygon_mode_combo.currentData())
     )
     self.polygon_draw_mode_indicator = QLabel("")
+    self.polygon_draw_mode_indicator.setVisible(False)
     _polygon_blk.addWidget(self.polygon_mode_label)
     _polygon_blk.addWidget(self.polygon_mode_combo)
     _polygon_blk.addWidget(self.polygon_draw_mode_indicator)

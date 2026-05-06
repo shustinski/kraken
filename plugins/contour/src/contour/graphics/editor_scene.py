@@ -107,6 +107,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._random_object_colors_enabled = False
         self._object_colors: dict[int, str] = {}
         self._hover_conductor_polygon_id: int | None = None
+        self._delete_area_highlight_ids: set[int] = set()
         self._vector_geometry_settings = VectorGeometrySettings()
 
         self._main_frame_item = QGraphicsPathItem()
@@ -216,6 +217,12 @@ class PolygonEditorScene(QGraphicsScene):
 
     def main_image_rect(self) -> QRectF:
         return QRectF(self._image_rect)
+
+    def navigation_base_rect(self) -> QRectF:
+        rect = QRectF(self._image_rect)
+        if self._neighbor_grid_bounds is not None:
+            rect = rect.united(self._neighbor_grid_bounds)
+        return rect
 
     def clear_neighbor_frames(self) -> None:
         for item in self._neighbor_frame_items:
@@ -592,6 +599,46 @@ class PolygonEditorScene(QGraphicsScene):
                     return polygon_id, index
         return None
 
+    def nearest_vertex_in_polygon(self, polygon_id: int, scene_pos: QPointF) -> tuple[int, int] | None:
+        polygon = self._polygons.get(polygon_id)
+        if polygon is None or not polygon.points:
+            return None
+        best_index: int | None = None
+        best_distance = float("inf")
+        sx, sy = scene_pos.x(), scene_pos.y()
+        for index, (x_coord, y_coord) in enumerate(polygon.points):
+            distance = hypot(sx - x_coord, sy - y_coord)
+            if distance < best_distance:
+                best_distance = distance
+                best_index = index
+        if best_index is None:
+            return None
+        return polygon_id, best_index
+
+    def nearest_vertex(self, scene_pos: QPointF) -> tuple[int, int] | None:
+        candidate_ids: list[int] = []
+        if self._selected_polygon_id is not None:
+            candidate_ids.append(self._selected_polygon_id)
+        candidate_ids.extend(
+            polygon_id for polygon_id in sorted(self._selected_polygon_ids) if polygon_id != self._selected_polygon_id
+        )
+        candidate_ids.extend(
+            polygon_id for polygon_id in sorted(self._polygons) if polygon_id not in self._selected_polygon_ids
+        )
+        best_hit: tuple[int, int] | None = None
+        best_distance = float("inf")
+        sx, sy = scene_pos.x(), scene_pos.y()
+        for polygon_id in candidate_ids:
+            polygon = self._polygons.get(polygon_id)
+            if polygon is None:
+                continue
+            for index, (x_coord, y_coord) in enumerate(polygon.points):
+                distance = hypot(sx - x_coord, sy - y_coord)
+                if distance < best_distance:
+                    best_distance = distance
+                    best_hit = (polygon_id, index)
+        return best_hit
+
     def delete_polygon_at(self, scene_pos: QPointF) -> bool:
         polygon_id = self.polygon_at(scene_pos)
         if polygon_id is None:
@@ -711,7 +758,8 @@ class PolygonEditorScene(QGraphicsScene):
     def append_brush_vertex(self, scene_pos: QPointF, brush_diameter: float) -> None:
         nx, ny = float(scene_pos.x()), float(scene_pos.y())
         spacing = max(2.0, float(brush_diameter) * 0.48)
-        if self._pending_points and hypot(nx - self._pending_points[-1][0], ny - self._pending_points[-1][1]) < 0.2:
+        # Screen-pixel spacing is enforced in the view; keep only exact duplicates here.
+        if self._pending_points and hypot(nx - self._pending_points[-1][0], ny - self._pending_points[-1][1]) < 1e-6:
             return
         self._pending_points = densify_chain_with_new_vertex(self._pending_points, (nx, ny), max_segment_length=spacing)
         self._update_pending_path()
@@ -788,8 +836,28 @@ class PolygonEditorScene(QGraphicsScene):
         path.addRect(rect)
         self._preview_rect_item.setPath(path)
 
+    def preview_delete_vertices_in_rect(self, start: QPointF, end: QPointF) -> None:
+        rect = QRectF(start, end).normalized()
+        self.set_preview_rect(start, end)
+        if rect.width() < 1.0 and rect.height() < 1.0:
+            if self._delete_area_highlight_ids:
+                self._delete_area_highlight_ids.clear()
+                self._refresh_all_items()
+            return
+        highlighted = {
+            polygon_id
+            for polygon_id, polygon in self._polygons.items()
+            if any(rect.contains(QPointF(x_coord, y_coord)) for x_coord, y_coord in polygon.points)
+        }
+        if highlighted != self._delete_area_highlight_ids:
+            self._delete_area_highlight_ids = highlighted
+            self._refresh_all_items()
+
     def clear_preview_rect(self) -> None:
         self._preview_rect_item.setPath(QPainterPath())
+        if self._delete_area_highlight_ids:
+            self._delete_area_highlight_ids.clear()
+            self._refresh_all_items()
 
     def set_measurement(self, start: QPointF, end: QPointF, label_text: str = "") -> None:
         path = QPainterPath()
@@ -955,13 +1023,12 @@ class PolygonEditorScene(QGraphicsScene):
         normalized = rect.normalized()
         if normalized.width() < 1.0 and normalized.height() < 1.0:
             return 0
-        candidate_ids = [self._selected_polygon_id] if self._selected_polygon_id is not None else sorted(self._polygons)
+        # Area deletion applies to every touched polygon, not only the selected one.
+        candidate_ids = sorted(self._polygons)
         deleted = 0
         self.undo_stack.beginMacro("Delete vertices in area")
         try:
             for polygon_id in candidate_ids:
-                if polygon_id is None:
-                    continue
                 polygon = self._polygons.get(polygon_id)
                 if polygon is None:
                     continue
@@ -1264,7 +1331,7 @@ class PolygonEditorScene(QGraphicsScene):
                 self._hover_conductor_polygon_id is not None
                 and polygon_id == self._hover_conductor_polygon_id
                 and polygon_id not in self._selected_polygon_ids
-            )
+            ) or (polygon_id in self._delete_area_highlight_ids and polygon_id not in self._selected_polygon_ids)
             item.update_from_polygon(
                 self._polygons[polygon_id],
                 self._display_settings,

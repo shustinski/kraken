@@ -12,6 +12,7 @@ from PyQt6.QtGui import (
     QPainterPath,
     QPen,
     QShortcut,
+    QTabletEvent,
     QUndoStack,
 )
 from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsView
@@ -100,6 +101,7 @@ class PolygonEditorView(QGraphicsView):
         self._paste_preview_items: list[QGraphicsPathItem] = []
         self._vector_geometry_settings = VectorGeometrySettings()
         self._drag_polygons_snapshot: list[PolygonData] | None = None
+        self._brush_pan_guard = False
 
         self._editor_scene.polygonsChanged.connect(self.polygonsEdited.emit)
         self._editor_scene.activePolygonChanged.connect(self.activePolygonChanged.emit)
@@ -204,6 +206,7 @@ class PolygonEditorView(QGraphicsView):
         previous_was_placeholder = previous_rect.width() <= 1.0 and previous_rect.height() <= 1.0
         if previous_was_placeholder:
             self.fit_to_view()
+        self._update_navigation_scene_rect()
 
     def set_polygons(self, polygons: list[PolygonData]) -> None:
         self._editor_scene.set_polygons(polygons)
@@ -219,6 +222,7 @@ class PolygonEditorView(QGraphicsView):
         show_main_frame: bool = True,
     ) -> None:
         self._editor_scene.set_neighbor_frames(frames, opacity, overlap_pixels, show_main_frame)
+        self._update_navigation_scene_rect()
 
     def set_debug_candidates(self, candidates: list[object]) -> None:
         self._editor_scene.set_debug_candidates(candidates)
@@ -269,6 +273,7 @@ class PolygonEditorView(QGraphicsView):
         rect = self._editor_scene.main_image_rect()
         if rect.width() > 0 and rect.height() > 0:
             self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+            self._update_navigation_scene_rect()
             self.zoomChanged.emit(self.zoom_factor())
 
     def zoom_in(self) -> None:
@@ -386,6 +391,8 @@ class PolygonEditorView(QGraphicsView):
         tolerance = self._scene_tolerance(8)
 
         if event.button() == Qt.MouseButton.MiddleButton:
+            if self._drag_kind == "brush":
+                self._brush_pan_guard = True
             self._middle_pan_active = True
             self._middle_pan_last_viewport = QPointF(event.position())
             self.middlePreviewHoldChanged.emit(True)
@@ -454,16 +461,7 @@ class PolygonEditorView(QGraphicsView):
                 return
 
         if self._tool == EditorTool.BRUSH and event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
-            self._drag_erases = False
-            self._drag_kind = "brush"
-            self._drag_start_scene_pos = scene_pos
-            if event.button() == Qt.MouseButton.RightButton:
-                self._drag_erases = True
-
-            self._editor_scene.start_pending_polygon(for_brush=True)
-            self._editor_scene.set_pending_path_width(self._brush_thickness, cosmetic=False)
-
-            self._append_brush_point(scene_pos)
+            self._start_brush_drag(scene_pos, erase=event.button() == Qt.MouseButton.RightButton)
             event.accept()
             return
 
@@ -518,7 +516,12 @@ class PolygonEditorView(QGraphicsView):
             return
 
         if self._tool == EditorTool.ADD_VERTEX:
-            polygon_id = self._editor_scene.selected_polygon_id() or self._editor_scene.polygon_at(scene_pos)
+            clicked_polygon_id = self._editor_scene.polygon_at(scene_pos)
+            selected_polygon_id = self._editor_scene.selected_polygon_id()
+            polygon_id = selected_polygon_id or clicked_polygon_id
+            if clicked_polygon_id is not None and clicked_polygon_id != selected_polygon_id:
+                self._editor_scene.select_polygon(clicked_polygon_id)
+                polygon_id = clicked_polygon_id
             if polygon_id is not None:
                 self._editor_scene.add_vertex_at(polygon_id, scene_pos)
             event.accept()
@@ -528,7 +531,7 @@ class PolygonEditorView(QGraphicsView):
             if self._delete_vertex_mode == DeleteVertexMode.AREA:
                 self._drag_kind = "delete_area"
                 self._drag_start_scene_pos = scene_pos
-                self._editor_scene.set_preview_rect(scene_pos, scene_pos)
+                self._editor_scene.preview_delete_vertices_in_rect(scene_pos, scene_pos)
                 event.accept()
                 return
             self._editor_scene.delete_vertex_at(scene_pos, tolerance)
@@ -536,10 +539,22 @@ class PolygonEditorView(QGraphicsView):
             return
 
         if self._tool == EditorTool.MOVE_VERTEX:
+            selected_polygon_id = self._editor_scene.selected_polygon_id()
+            clicked_polygon_id = self._editor_scene.polygon_at(scene_pos)
+            target_polygon_id = selected_polygon_id or clicked_polygon_id
+            if clicked_polygon_id is not None and clicked_polygon_id != selected_polygon_id:
+                self._editor_scene.select_polygon(clicked_polygon_id)
+                target_polygon_id = clicked_polygon_id
             hit = self._editor_scene.vertex_at(scene_pos, tolerance)
             if hit is None:
                 # Practical fallback: users often click near the handle, not exactly on it.
                 hit = self._editor_scene.vertex_at(scene_pos, self._scene_tolerance(12))
+            if hit is None and target_polygon_id is not None:
+                # If a polygon is clicked but no handle was hit, move the nearest vertex.
+                hit = self._editor_scene.nearest_vertex_in_polygon(target_polygon_id, scene_pos)
+            if hit is None:
+                # Last-resort fallback in move mode: pick nearest vertex globally.
+                hit = self._editor_scene.nearest_vertex(scene_pos)
             if hit is not None:
                 polygon_id, vertex_index = hit
                 self._editor_scene.select_polygon(polygon_id)
@@ -555,7 +570,8 @@ class PolygonEditorView(QGraphicsView):
     def mouseMoveEvent(self, event) -> None:
         self._last_pointer_viewport_pos = QPointF(event.position())
         scene_pos = self.mapToScene(event.position().toPoint())
-        self._last_pointer_scene_pos = scene_pos
+        if not (self._middle_pan_active and self._drag_kind == "brush"):
+            self._last_pointer_scene_pos = scene_pos
         self._update_tool_cursors()
         if self._middle_pan_active and self._middle_pan_last_viewport is not None:
             cur = QPointF(event.position())
@@ -570,7 +586,11 @@ class PolygonEditorView(QGraphicsView):
             self._update_paste_preview(scene_pos)
             event.accept()
             return
-        self._editor_scene.sync_conductor_hover_highlight(scene_pos)
+        brush_drag_active = self._drag_kind == "brush"
+        if self._tool == EditorTool.BRUSH or brush_drag_active:
+            self._editor_scene.clear_conductor_hover_highlight()
+        else:
+            self._editor_scene.sync_conductor_hover_highlight(scene_pos)
         if (
             self._tool == EditorTool.SELECT
             and self._select_press_polygon_id is not None
@@ -610,7 +630,7 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if self._drag_kind == "delete_area" and self._drag_start_scene_pos is not None:
-            self._editor_scene.set_preview_rect(self._drag_start_scene_pos, scene_pos)
+            self._editor_scene.preview_delete_vertices_in_rect(self._drag_start_scene_pos, scene_pos)
             event.accept()
             return
         if self._drag_kind == "select_area" and self._drag_start_scene_pos is not None:
@@ -625,6 +645,11 @@ class PolygonEditorView(QGraphicsView):
             if self._brush_mode == BrushMode.ANGLED and self._drag_start_scene_pos is not None:
                 self._editor_scene.update_pending_cursor(_snap_to_45(self._drag_start_scene_pos, scene_pos))
             else:
+                if self._brush_pan_guard:
+                    # Ignore one post-pan pointer sample to avoid accidental long segment jump.
+                    self._brush_pan_guard = False
+                    event.accept()
+                    return
                 self._append_brush_point(scene_pos)
             event.accept()
             return
@@ -669,16 +694,7 @@ class PolygonEditorView(QGraphicsView):
         if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton) and self._drag_kind is not None:
             if self._drag_kind == "brush":
                 release_pos = self.mapToScene(event.position().toPoint())
-                if self._brush_mode == BrushMode.ANGLED and self._drag_start_scene_pos is not None:
-                    end_point = _snap_to_45(self._drag_start_scene_pos, release_pos)
-                    brush_points = [
-                        (self._drag_start_scene_pos.x(), self._drag_start_scene_pos.y()),
-                        (end_point.x(), end_point.y()),
-                    ]
-                else:
-                    self._append_brush_point(release_pos)
-                    brush_points = self._editor_scene.pending_points_snapshot()
-                self._editor_scene.add_brush_stroke(brush_points, self._brush_thickness, erase=self._drag_erases)
+                self._commit_brush_drag(release_pos)
 
             elif self._drag_kind == "rect_polygon" and self._drag_start_scene_pos is not None:
                 self._editor_scene.add_rectangle_polygon(
@@ -809,10 +825,44 @@ class PolygonEditorView(QGraphicsView):
             self._drag_start_scene_pos = None
             self._drag_polygons_snapshot = None
             self._drag_erases = False
+            self._brush_pan_guard = False
             self._update_tool_cursors()
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def tabletEvent(self, event: QTabletEvent) -> None:
+        scene_pos = self.mapToScene(event.position().toPoint())
+        self._last_pointer_scene_pos = scene_pos
+        self._update_tool_cursors()
+        if self._tool != EditorTool.BRUSH:
+            super().tabletEvent(event)
+            return
+        if event.type() == event.Type.TabletPress:
+            self._start_brush_drag(scene_pos, erase=False)
+            event.accept()
+            return
+        if event.type() == event.Type.TabletMove and self._drag_kind == "brush":
+            if self._brush_mode == BrushMode.ANGLED and self._drag_start_scene_pos is not None:
+                self._editor_scene.update_pending_cursor(_snap_to_45(self._drag_start_scene_pos, scene_pos))
+            else:
+                self._append_brush_point(scene_pos)
+            event.accept()
+            return
+        if event.type() == event.Type.TabletRelease and self._drag_kind == "brush":
+            self._commit_brush_drag(scene_pos)
+            # Keep cleanup symmetrical with mouse release branch.
+            self._drag_kind = None
+            self._drag_polygon_id = None
+            self._drag_vertex_index = None
+            self._drag_origin_points = None
+            self._drag_start_scene_pos = None
+            self._drag_polygons_snapshot = None
+            self._drag_erases = False
+            self._update_tool_cursors()
+            event.accept()
+            return
+        super().tabletEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -936,8 +986,13 @@ class PolygonEditorView(QGraphicsView):
             (viewport_pixel.x(), viewport_pixel.y()),
             (vp_mapped.x(), vp_mapped.y()),
         )
+        self._update_navigation_scene_rect()
         self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + dh)
         self.verticalScrollBar().setValue(self.verticalScrollBar().value() + dv)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_navigation_scene_rect()
 
     def leaveEvent(self, event) -> None:
         self._editor_scene.clear_conductor_hover_highlight()
@@ -950,13 +1005,50 @@ class PolygonEditorView(QGraphicsView):
         end = self.mapToScene(QPoint(px, 0))
         return max(1.0, abs(end.x() - start.x()))
 
+    def _update_navigation_scene_rect(self) -> None:
+        base_rect = QRectF(self._editor_scene.navigation_base_rect())
+        if base_rect.width() <= 0.0 or base_rect.height() <= 0.0:
+            self.setSceneRect(base_rect)
+            return
+        zoom = self.zoom_factor()
+        viewport_rect = self.viewport().rect()
+        margin_x = float(viewport_rect.width()) / max(zoom, 1e-6) + 2.0
+        margin_y = float(viewport_rect.height()) / max(zoom, 1e-6) + 2.0
+        self.setSceneRect(base_rect.adjusted(-margin_x, -margin_y, margin_x, margin_y))
+
     def _append_brush_point(self, scene_pos: QPointF) -> None:
         target = scene_pos
         if self._brush_mode == BrushMode.ANGLED:
             last_point = self._editor_scene.pending_last_point()
             if last_point is not None:
                 target = _snap_to_45(last_point, scene_pos)
+        last_point = self._editor_scene.pending_last_point()
+        if last_point is not None and hypot(target.x() - last_point.x(), target.y() - last_point.y()) < 1.0:
+            # Brush vertex spacing rule: at least 1 image pixel in scene/image coordinates.
+            return
         self._editor_scene.append_brush_vertex(target, self._brush_thickness)
+
+    def _start_brush_drag(self, scene_pos: QPointF, *, erase: bool) -> None:
+        self._drag_erases = bool(erase)
+        self._drag_kind = "brush"
+        self._drag_start_scene_pos = scene_pos
+        self._editor_scene.start_pending_polygon(for_brush=True)
+        self._editor_scene.set_pending_path_width(self._brush_thickness, cosmetic=False)
+        self._append_brush_point(scene_pos)
+
+    def _commit_brush_drag(self, release_pos: QPointF) -> None:
+        if self._brush_mode == BrushMode.ANGLED and self._drag_start_scene_pos is not None:
+            end_point = _snap_to_45(self._drag_start_scene_pos, release_pos)
+            brush_points = [
+                (self._drag_start_scene_pos.x(), self._drag_start_scene_pos.y()),
+                (end_point.x(), end_point.y()),
+            ]
+        else:
+            if not self._brush_pan_guard:
+                self._append_brush_point(release_pos)
+            brush_points = self._editor_scene.pending_points_snapshot()
+        self._brush_pan_guard = False
+        self._editor_scene.add_brush_stroke(brush_points, self._brush_thickness, erase=self._drag_erases)
 
     def _update_tool_cursors(self) -> None:
         self._editor_scene.set_brush_cursor(

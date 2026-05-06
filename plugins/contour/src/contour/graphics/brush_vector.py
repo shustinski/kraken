@@ -39,7 +39,8 @@ def densify_chain_with_new_vertex(
     if not chain:
         return [new_vertex]
     span = densify_polyline([chain[-1], new_vertex], max_segment_length=max_segment_length)
-    return [*chain[:-1], *span[1:]]
+    # Keep the existing stroke tail and append only new points from the latest segment.
+    return [*chain, *span[1:]]
 
 
 def capsule_shape_between_two_points(ax: float, ay: float, bx: float, by: float, diameter: float) -> BaseGeometry:

@@ -5,12 +5,14 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from shapely import unary_union
+from shapely.geometry import Point
 
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.graphics.brush_vector import (
     QUAD_SEGS_BRUSH_DEFAULT,
     apply_boolean,
     brush_stroke_geometry,
+    densify_chain_with_new_vertex,
     filled_polygon_geometry,
     polygon_equivalent_preserved,
     region_geometry,
@@ -32,6 +34,31 @@ def test_dense_multi_point_continuous_stroke() -> None:
     merged = unary_union([pair_u, brush_stroke_geometry([pts[1], pts[2]], 14.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)])
 
     assert abs(float(mono.area) - float(merged.area)) <= max(25.0, 0.04 * float(mono.area))
+
+
+def test_freehand_stroke_not_collapsed_to_start_end_line() -> None:
+    points = [(0.0, 0.0), (80.0, 60.0), (160.0, 0.0)]
+    freehand = brush_stroke_geometry(points, 16.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    straight = brush_stroke_geometry([points[0], points[-1]], 16.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+
+    # A bent stroke must have a larger filled footprint than the direct chord.
+    assert float(freehand.area) > float(straight.area) * 1.10
+
+
+def test_sparse_points_stroke_fills_gap_with_capsule_geometry() -> None:
+    sparse = brush_stroke_geometry([(0.0, 0.0), (300.0, 0.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+
+    # Midpoint must be inside the swept capsule footprint.
+    assert sparse.buffer(1e-7).contains(Point(150.0, 0.0))
+
+
+def test_densify_chain_keeps_initial_point_for_short_first_move() -> None:
+    chain = [(40.0, 40.0)]
+    out = densify_chain_with_new_vertex(chain, (40.05, 40.0), max_segment_length=6.0)
+
+    assert len(out) >= 2
+    assert out[0] == (40.0, 40.0)
+    assert out[-1] == (40.05, 40.0)
 
 
 def test_add_circle_one_point_equals_disk() -> None:

@@ -7,7 +7,20 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QEvent, QPointF, QRectF, QSettings, QSignalBlocker, QSize, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPointF,
+    QRectF,
+    QRunnable,
+    QSettings,
+    QSignalBlocker,
+    QSize,
+    Qt,
+    QThreadPool,
+    QTimer,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QBrush, QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -19,6 +32,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
@@ -43,20 +57,14 @@ from .adapters.qt.image_conversion import cv_to_qimage
 from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
 from .application.dto import PersistedPaths
 from .application.frame_asset_sync import (
+    background_hex_image_paint_status,
+    background_hex_vector_status,
     build_image_cif_matching_report,
     classify_image_side_paint_status,
     classify_vector_side_status,
-    background_hex_image_paint_status,
-    background_hex_vector_status,
     foreground_hex_image_has_vector_overlay,
     index_cif_file_paths,
 )
-from .application.transition_save_guard import (
-    TransitionPromptChoice,
-    navigation_allowed_after_autosave_attempt,
-    navigation_allowed_after_prompt,
-)
-from .application.vector_geometry_postprocess import VectorGeometrySettings, postprocess_polygons_for_frame_navigation
 from .application.processing import (
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
@@ -79,6 +87,11 @@ from .application.services import (
     load_pipeline_config_from_path,
     save_pipeline_config_to_path,
 )
+from .application.transition_save_guard import (
+    TransitionPromptChoice,
+    navigation_allowed_after_autosave_attempt,
+    navigation_allowed_after_prompt,
+)
 from .application.use_cases import (
     AutoTuneResult,
     PreparedImageRequest,
@@ -87,9 +100,14 @@ from .application.use_cases import (
     build_preview_request_signature,
     index_cif_directory,
 )
+from .application.vector_geometry_postprocess import VectorGeometrySettings
 from .batch_processor import BatchProcessor
 from .domain import PolygonData
-from .graphics.editor_hotkeys import append_shortcut_to_tooltip, build_editor_hotkeys_plain_text, tool_shortcut_native_text
+from .graphics.editor_hotkeys import (
+    append_shortcut_to_tooltip,
+    build_editor_hotkeys_plain_text,
+    tool_shortcut_native_text,
+)
 from .graphics_view import EditorTool, PolygonCreateMode
 from .i18n import active_language, tr
 from .infrastructure import WidgetDisplaySettingsStore, WidgetPathSettingsStore
@@ -142,7 +160,7 @@ from .ui.via_presets import (
     built_in_via_presets,
     noisy_traces_via_preset_payload,
 )
-from .utils import is_image_path, load_image_color, scan_image_files
+from .utils import is_image_path, load_image_color
 
 __all__ = [
     "EDITOR_ACTION_TOOLTIPS",
@@ -161,6 +179,39 @@ __all__ = [
 
 FRAME_STATUS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
+
+
+class ThumbnailLoadSignals(QObject):
+    result = pyqtSignal(int, str, object)
+    finished = pyqtSignal(int, str)
+
+
+class ThumbnailLoadRunnable(QRunnable):
+    def __init__(self, generation: int, path: str, width: int, height: int) -> None:
+        super().__init__()
+        self.generation = int(generation)
+        self.path = str(path)
+        self.width = max(1, int(width))
+        self.height = max(1, int(height))
+        self.signals = ThumbnailLoadSignals()
+
+    def run(self) -> None:
+        image = None
+        try:
+            source = cv2.imread(self.path, cv2.IMREAD_COLOR)
+            if source is not None:
+                h, w = source.shape[:2]
+                if w > 0 and h > 0:
+                    scale = min(self.width / float(w), self.height / float(h), 1.0)
+                    target_w = max(1, round(w * scale))
+                    target_h = max(1, round(h * scale))
+                    if target_w != w or target_h != h:
+                        source = cv2.resize(source, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                    image = source
+        except Exception:
+            image = None
+        self.signals.result.emit(self.generation, self.path, image)
+        self.signals.finished.emit(self.generation, self.path)
 
 
 class PolygonExtractionWidget(QWidget):
@@ -253,6 +304,12 @@ class PolygonExtractionWidget(QWidget):
         self._auto_tune_request_serial = 0
         self._auto_tune_running_request_id: int | None = None
         self._neighbor_image_cache: dict[str, object] = {}
+        self._thumbnail_thread_pool = QThreadPool(self)
+        self._thumbnail_thread_pool.setMaxThreadCount(2)
+        self._thumbnail_thread_pool.setExpiryTimeout(30000)
+        self._thumbnail_generation = 0
+        self._thumbnail_icon_size = QSize(64, 48)
+        self._thumbnail_placeholder_icon = QIcon()
         self._show_source_while_middle_held = False
 
         self._persisted_highlight_paths: set[str] = set()
@@ -454,6 +511,51 @@ class PolygonExtractionWidget(QWidget):
         self._apply_vector_geometry_editor_config()
         self._save_persisted_display_settings()
 
+    def _show_manual_tool_postprocess_dialog(self) -> None:
+        existing = getattr(self, "_manual_tool_postprocess_dialog", None)
+        if isinstance(existing, QDialog):
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+        dialog = QDialog(self)
+        self._manual_tool_postprocess_dialog = dialog
+        dialog.setObjectName("manualToolPostprocessDialog")
+        dialog.setWindowTitle("Постобработка ручных инструментов")
+        dialog.resize(460, 320)
+        dialog.setMinimumSize(420, 280)
+
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        root.addWidget(scroll, 1)
+
+        container = QWidget()
+        form = QFormLayout(container)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        scroll.setWidget(container)
+
+        form.addRow(self.vector_geom_clip_checkbox)
+        form.addRow("Минимальная площадь внешнего объекта, px²", self.vector_geom_min_outer_spin)
+        self.vector_geom_min_outer_label_widget = form.labelForField(self.vector_geom_min_outer_spin)
+        form.addRow("Минимальная площадь отверстия для заливки, px²", self.vector_geom_min_hole_spin)
+        self.vector_geom_min_hole_label_widget = form.labelForField(self.vector_geom_min_hole_spin)
+        form.addRow(self.vector_geom_merge_checkbox)
+        form.addRow("Минимальный угол острого выброса, °", self.vector_geom_spike_angle_spin)
+        self.vector_geom_spike_angle_label_widget = form.labelForField(self.vector_geom_spike_angle_spin)
+        form.addRow(self.vector_geom_drop_triangle_checkbox)
+
+        close_button = QPushButton("Закрыть" if self._ui_language == "ru" else "Close")
+        close_button.clicked.connect(dialog.accept)
+        root.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+        dialog.exec()
+
     def _display_image_dimensions_for_vectors(self) -> tuple[int, int]:
         frame = self._display_image_for_current_state()
         if frame is None:
@@ -607,6 +709,14 @@ class PolygonExtractionWidget(QWidget):
         if self._help_menu is None:
             return
         self._help_menu.clear()
+        postprocess_action = self._help_menu.addAction(
+            "Постобработка ручных инструментов"
+            if self._ui_language == "ru"
+            else "Manual tool post-processing"
+        )
+        postprocess_action.setObjectName("manualToolPostprocessAction")
+        postprocess_action.triggered.connect(lambda _checked=False: self._show_manual_tool_postprocess_dialog())
+        self._help_menu.addSeparator()
         overview_action = self._help_menu.addAction(
             self._tr(
                 "help_all_filters_action", "Все преобразования" if self._ui_language == "ru" else "All transformations"
@@ -3199,13 +3309,16 @@ class PolygonExtractionWidget(QWidget):
             if hasattr(self, "recognition_mode_combo")
             else ""
         )
-        if rec == "conductors":
-            if hasattr(self, "metal_show_mask_checkbox") and self.metal_show_mask_checkbox.isChecked():
-                _st = self._workspace.current_state
-                _maps: dict = getattr(_st, "debug_gradient_maps", None) or {} if _st is not None else {}
-                if any(k in _maps for k in ("metal_filtered_mask", "metal_binary_mask", "metal_mask")):
-                    self._apply_metal_visual_overlay()
-                    return
+        if (
+            rec == "conductors"
+            and hasattr(self, "metal_show_mask_checkbox")
+            and self.metal_show_mask_checkbox.isChecked()
+        ):
+            _st = self._workspace.current_state
+            _maps: dict = getattr(_st, "debug_gradient_maps", None) or {} if _st is not None else {}
+            if any(k in _maps for k in ("metal_filtered_mask", "metal_binary_mask", "metal_mask")):
+                self._apply_metal_visual_overlay()
+                return
         if not hasattr(self, "gradient_overlay_checkbox"):
             self.polygon_editor.clear_gradient_overlay()
             return
@@ -3600,9 +3713,7 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "epsilon_slider"):
             self.epsilon_slider.blockSignals(True)
             try:
-                self.epsilon_slider.setValue(
-                    min(1000, max(0, int(round(self.epsilon_spin.value() * 100.0))))
-                )
+                self.epsilon_slider.setValue(min(1000, max(0, round(self.epsilon_spin.value() * 100.0))))
             finally:
                 self.epsilon_slider.blockSignals(False)
         self._on_extraction_settings_changed()
@@ -3698,15 +3809,14 @@ class PolygonExtractionWidget(QWidget):
         self._append_log(self._tr("pipeline_loaded_log", path=path))
 
     def _on_image_item_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
-        if previous is not None:
-            if not self._try_leave_current_frame():
-                self.image_list.blockSignals(True)
-                try:
-                    self.image_list.setCurrentItem(previous)
-                finally:
-                    self.image_list.blockSignals(False)
-                self._sync_frame_navigation_controls()
-                return
+        if previous is not None and not self._try_leave_current_frame():
+            self.image_list.blockSignals(True)
+            try:
+                self.image_list.setCurrentItem(previous)
+            finally:
+                self.image_list.blockSignals(False)
+            self._sync_frame_navigation_controls()
+            return
         if current is None:
             self._sync_frame_navigation_controls()
             return
@@ -3888,41 +3998,83 @@ class PolygonExtractionWidget(QWidget):
     def _configure_thumbnail_grid_geometry(self) -> None:
         if not hasattr(self, "thumbnail_grid"):
             return
-        columns = max(1, int(self.neighbor_columns_spin.value())) if hasattr(self, "neighbor_columns_spin") else 3
-        cell_w = 72
-        cell_h = 78
+        columns = self._thumbnail_columns()
+        icon_size = self._thumbnail_icon_size if hasattr(self, "_thumbnail_icon_size") else QSize(64, 48)
+        cell_w = int(icon_size.width())
+        cell_h = int(icon_size.height())
+        self.thumbnail_grid.setIconSize(icon_size)
         self.thumbnail_grid.setGridSize(QSize(cell_w, cell_h))
-        self.thumbnail_grid.setMinimumWidth(min(360, max(cell_w + 8, columns * cell_w + 8)))
-        self.thumbnail_grid.setMaximumHeight(172)
+        self.thumbnail_grid.setSpacing(0)
+        frame = 2 * int(self.thumbnail_grid.frameWidth())
+        self.thumbnail_grid.setMinimumWidth(max(cell_w + frame, columns * cell_w + frame))
+        visible_rows = 2
+        self.thumbnail_grid.setMinimumHeight(cell_h + frame)
+        self.thumbnail_grid.setMaximumHeight(max(cell_h + frame, visible_rows * cell_h + frame))
 
-    def _thumbnail_icon_for_path(self, path: str) -> QIcon:
-        pixmap = QPixmap(path)
-        if pixmap.isNull():
-            pixmap = QPixmap(64, 48)
-            pixmap.fill(QColor("#1F2937"))
-        scaled = pixmap.scaled(
-            64,
-            48,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        return QIcon(scaled)
+    def _thumbnail_columns(self) -> int:
+        if not hasattr(self, "neighbor_columns_spin"):
+            return 3
+        try:
+            return max(1, int(self.neighbor_columns_spin.value()))
+        except (TypeError, ValueError):
+            return 1
+
+    def _thumbnail_placeholder(self) -> QIcon:
+        if not getattr(self, "_thumbnail_placeholder_icon", QIcon()).isNull():
+            return self._thumbnail_placeholder_icon
+        size = self._thumbnail_icon_size if hasattr(self, "_thumbnail_icon_size") else QSize(64, 48)
+        pixmap = QPixmap(size)
+        pixmap.fill(QColor("#1F2937"))
+        self._thumbnail_placeholder_icon = QIcon(pixmap)
+        return self._thumbnail_placeholder_icon
 
     def _rebuild_thumbnail_grid(self) -> None:
         if not hasattr(self, "thumbnail_grid"):
             return
+        self._thumbnail_generation += 1
+        generation = self._thumbnail_generation
         self._configure_thumbnail_grid_geometry()
         self.thumbnail_grid.blockSignals(True)
         try:
             self.thumbnail_grid.clear()
             for path in self._workspace.image_paths:
-                item = QListWidgetItem(self._thumbnail_icon_for_path(str(path)), Path(str(path)).stem)
-                item.setToolTip(str(path))
+                item = QListWidgetItem(self._thumbnail_placeholder(), "")
+                item.setToolTip(Path(str(path)).stem)
                 item.setData(Qt.ItemDataRole.UserRole, str(path))
+                self._paint_image_row_item(item, str(path), show_text=False)
                 self.thumbnail_grid.addItem(item)
+                runnable = ThumbnailLoadRunnable(
+                    generation,
+                    str(path),
+                    self._thumbnail_icon_size.width(),
+                    self._thumbnail_icon_size.height(),
+                )
+                runnable.signals.result.connect(self._on_thumbnail_loaded)
+                self._thumbnail_thread_pool.start(runnable)
         finally:
             self.thumbnail_grid.blockSignals(False)
         self._update_thumbnail_grid_selection()
+
+    def _on_thumbnail_loaded(self, generation: int, path: str, image: object) -> None:
+        if generation != self._thumbnail_generation or not hasattr(self, "thumbnail_grid"):
+            return
+        target = str(Path(path))
+        item = None
+        for index in range(self.thumbnail_grid.count()):
+            candidate = self.thumbnail_grid.item(index)
+            if candidate is not None and str(candidate.data(Qt.ItemDataRole.UserRole) or "") == target:
+                item = candidate
+                break
+        if item is None:
+            return
+        if image is None:
+            item.setIcon(self._thumbnail_placeholder())
+            return
+        pixmap = QPixmap.fromImage(cv_to_qimage(image))
+        if pixmap.isNull():
+            item.setIcon(self._thumbnail_placeholder())
+        else:
+            item.setIcon(QIcon(pixmap))
 
     def _update_thumbnail_grid_selection(self) -> None:
         if not hasattr(self, "thumbnail_grid"):
@@ -3938,7 +4090,12 @@ class PolygonExtractionWidget(QWidget):
                     self.thumbnail_grid.setCurrentRow(index)
                     matched = True
                 if item is not None:
-                    item.setData(Qt.ItemDataRole.BackgroundRole, QColor("#1D4ED8") if selected else None)
+                    path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+                    if selected:
+                        item.setBackground(QBrush(QColor("#1D4ED8")))
+                        item.setData(Qt.ItemDataRole.BackgroundRole, QColor("#1D4ED8"))
+                    elif path:
+                        self._paint_image_row_item(item, path, show_text=False)
             if not matched:
                 self.thumbnail_grid.clearSelection()
                 self.thumbnail_grid.setCurrentRow(-1)
@@ -4656,9 +4813,7 @@ class PolygonExtractionWidget(QWidget):
                 self.approximation_mode_combo.setCurrentIndex(approximation_index)
             self.epsilon_spin.setValue(float(settings.epsilon))
             if hasattr(self, "epsilon_slider"):
-                self.epsilon_slider.setValue(
-                    min(1000, max(0, int(round(float(settings.epsilon) * 100.0))))
-                )
+                self.epsilon_slider.setValue(min(1000, max(0, round(float(settings.epsilon) * 100.0))))
             self.epsilon_relative_checkbox.setChecked(bool(settings.epsilon_relative))
             self.min_area_spin.setValue(float(settings.min_area))
             self.max_area_spin.setValue(0.0 if settings.max_area is None else float(settings.max_area))
@@ -5588,7 +5743,7 @@ class PolygonExtractionWidget(QWidget):
             save_preview=self.save_preview_checkbox.isChecked(),
         )
 
-    def _paint_image_row_item(self, item: QListWidgetItem, image_path: str) -> None:
+    def _paint_image_row_item(self, item: QListWidgetItem, image_path: str, *, show_text: bool = True) -> None:
         normalized = str(Path(image_path))
         painted = classify_image_side_paint_status(
             never_opened=normalized not in self._viewed_image_paths,
@@ -5606,7 +5761,7 @@ class PolygonExtractionWidget(QWidget):
             item.setData(Qt.ItemDataRole.BackgroundRole, None)
         fg = QColor(foreground_hex_image_has_vector_overlay(bool(self._workspace.resolve_cif_path(normalized))))
         item.setForeground(QBrush(fg))
-        item.setText(Path(normalized).stem)
+        item.setText(Path(normalized).stem if show_text else "")
 
     def _find_image_list_item(self, image_path: str) -> QListWidgetItem | None:
         target = str(Path(image_path))
@@ -5624,6 +5779,7 @@ class PolygonExtractionWidget(QWidget):
             return
         self._paint_image_row_item(item, str(Path(image_path)))
         self._refresh_vector_items_for_stems({Path(str(image_path)).stem.lower()})
+        self._update_thumbnail_item_status(image_path)
 
     def _refresh_image_list_item_states(self) -> None:
         for index in range(self.image_list.count()):
@@ -5635,6 +5791,16 @@ class PolygonExtractionWidget(QWidget):
                 self._paint_image_row_item(item, image_path)
         self._refresh_vector_rows_for_workspace()
         self._update_thumbnail_grid_selection()
+
+    def _update_thumbnail_item_status(self, image_path: str | None) -> None:
+        if not image_path or not hasattr(self, "thumbnail_grid"):
+            return
+        normalized = str(Path(image_path))
+        for index in range(self.thumbnail_grid.count()):
+            item = self.thumbnail_grid.item(index)
+            if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == normalized:
+                self._paint_image_row_item(item, normalized, show_text=False)
+                break
 
     def _update_vector_edit_status_label(self) -> None:
         if not hasattr(self, "vector_edit_status_label"):
@@ -5867,17 +6033,8 @@ class PolygonExtractionWidget(QWidget):
         try:
             display_image = self._display_image_for_current_state()
             current_state = self._workspace.current_state
-            polygons_raw = list(current_state.polygons) if current_state else []
+            polygons_synced = [polygon.clone() for polygon in current_state.polygons] if current_state else []
             self.polygon_editor.set_image(display_image)
-            fw, fh = self._display_image_dimensions_for_vectors()
-            polygons_synced, geo_changed = postprocess_polygons_for_frame_navigation(
-                polygons_raw,
-                fw,
-                fh,
-                self._vector_geometry_settings_from_widgets(),
-            )
-            if geo_changed and current_state is not None:
-                self._workspace.update_current_polygons(polygons_synced)
             self.polygon_editor.set_polygons(polygons_synced)
             self.polygon_editor.set_debug_candidates(list(current_state.debug_candidates) if current_state else [])
             self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
@@ -6345,9 +6502,8 @@ class PolygonExtractionWidget(QWidget):
         self._save_persisted_paths()
 
     def load_images(self, paths: list[str]) -> None:
-        if self._workspace.current_state is not None:
-            if not self._try_leave_current_frame():
-                return
+        if self._workspace.current_state is not None and not self._try_leave_current_frame():
+            return
         self._scan_generation += 1
         normalized_paths = self._workspace.replace_image_selection(paths, is_supported_image=is_image_path)
         self._neighbor_image_cache.clear()

@@ -14,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QPoint, QPointF, Qt
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QListWidgetItem
+from PyQt6.QtWidgets import QApplication, QListWidgetItem, QMenu
 
 import contour.widget as widget_module
 from contour.application.processing import DisplaySettings, ImageProcessingState
@@ -244,9 +244,63 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
             self.assertEqual(self.widget.image_list.item(0).text(), "frame_001")
             self.assertEqual(self.widget.thumbnail_grid.count(), 2)
+            self.assertEqual(self.widget.thumbnail_grid.item(0).text(), "")
+            self.assertEqual(self.widget.thumbnail_grid.item(0).toolTip(), "frame_001")
             self.widget._on_thumbnail_item_clicked(self.widget.thumbnail_grid.item(1))
 
-            self.assertEqual(getattr(self.widget, "_last_loaded_from_thumb"), paths[1])
+            self.assertEqual(self.widget._last_loaded_from_thumb, paths[1])
+
+    def test_thumbnail_grid_uses_display_frames_per_row(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths: list[str] = []
+            for index in range(5):
+                path = os.path.join(directory, f"frame_{index}.png")
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+                paths.append(path)
+
+            self.widget.neighbor_columns_spin.setValue(4)
+            self.widget.load_images(paths)
+
+            self.assertEqual(self.widget._thumbnail_columns(), 4)
+            self.assertGreaterEqual(self.widget.thumbnail_grid.minimumWidth(), 4 * 64)
+
+    def test_thumbnail_stale_background_result_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "frame_001.png")
+            cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+            self.widget.load_images([path])
+            item = self.widget.thumbnail_grid.item(0)
+            before = item.icon().cacheKey()
+
+            self.widget._on_thumbnail_loaded(self.widget._thumbnail_generation - 1, path, np.full((4, 4, 3), 255, dtype=np.uint8))
+
+            self.assertEqual(item.icon().cacheKey(), before)
+
+    def test_manual_tool_postprocess_settings_are_exposed_in_help_menu(self) -> None:
+        menu = QMenu()
+        self.widget.attach_help_menu(menu)
+
+        action = next((action for action in menu.actions() if action.objectName() == "manualToolPostprocessAction"), None)
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action.text(), "Постобработка ручных инструментов")
+
+    def test_view_sync_does_not_postprocess_untouched_vectors_or_mark_dirty(self) -> None:
+        tiny = _rectangle_polygon(4, 4, 5, 5)
+        state = ImageProcessingState(
+            image_path="frame_1.png",
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[tiny.clone()],
+            reference_polygons=[tiny.clone()],
+        )
+        self.widget._workspace._current_image_path = "frame_1.png"
+        self.widget._workspace._current_state = state
+        self.widget._workspace._state_cache = {"frame_1.png": state}
+
+        self.widget._sync_current_state_views()
+
+        self.assertFalse(self.widget._workspace.current_image_has_changes())
+        self.assertEqual(len(self.widget.polygon_editor.get_polygons()), 1)
 
     def test_neighbor_grid_expands_when_zoomed_out(self) -> None:
         self.widget.neighbor_max_grid_spin.setValue(7)

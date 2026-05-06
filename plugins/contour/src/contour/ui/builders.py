@@ -41,8 +41,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-
-from .status_list_delegate import attach_status_row_delegate
 from ..application.processing import (
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
@@ -52,6 +50,7 @@ from ..application.processing import (
 from ..contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
 from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
 from .pipeline_list import PipelineListWidget
+from .status_list_delegate import attach_status_row_delegate
 
 if TYPE_CHECKING:
     pass
@@ -179,7 +178,7 @@ def build_paths_tab(self) -> QWidget:
     self.path_panel = self._build_path_panel()
     layout.addWidget(self.path_panel)
 
-    self.vector_geom_group = QGroupBox("Геометрия векторов при переходе между кадрами")
+    self.vector_geom_group = QGroupBox("Постобработка ручных инструментов")
     self.vector_geom_group.setToolTip(
         "Post-process manual vectors when opening frames and after edits.\n"
         "Triangle artifact removal drops unparented 3-vertex outers unless disabled or marked as via/box.",
@@ -231,7 +230,7 @@ def build_paths_tab(self) -> QWidget:
             _w.stateChanged.connect(self._on_vector_geom_control_changed)
         else:
             _w.valueChanged.connect(self._on_vector_geom_control_changed)
-    layout.addWidget(self.vector_geom_group)
+    self.vector_geom_group.setVisible(False)
 
     self.extra_layers_group = QGroupBox("Additional layers")
     self.extra_layers_form = QFormLayout(self.extra_layers_group)
@@ -339,7 +338,9 @@ def build_files_tab(self) -> QWidget:
     self.thumbnail_grid.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     self.thumbnail_grid.setUniformItemSizes(True)
     self.thumbnail_grid.setWrapping(True)
-    self.thumbnail_grid.setSpacing(4)
+    self.thumbnail_grid.setSpacing(0)
+    self.thumbnail_grid.setIconSize(QSize(64, 48))
+    self.thumbnail_grid.setContentsMargins(0, 0, 0, 0)
     self.thumbnail_grid.setMinimumHeight(86)
     self.thumbnail_grid.setMaximumHeight(172)
     attach_status_row_delegate(self.thumbnail_grid)
@@ -559,7 +560,7 @@ def build_extraction_tab(self) -> QWidget:
     self.epsilon_spin.setValue(2.5)
     self.epsilon_slider = QSlider(Qt.Orientation.Horizontal)
     self.epsilon_slider.setRange(0, 1000)
-    self.epsilon_slider.setValue(int(round(self.epsilon_spin.value() * 100.0)))
+    self.epsilon_slider.setValue(round(self.epsilon_spin.value() * 100.0))
     self.epsilon_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     self.epsilon_left_label = QLabel("—")
     self.epsilon_right_label = QLabel("—")
@@ -1827,7 +1828,7 @@ def build_visual_panel(self) -> QWidget:
     self.autosave_on_frame_transition_checkbox.setChecked(False)
     visual_nav_layout.addWidget(self.autosave_on_frame_transition_checkbox)
     visual_nav_layout.addStretch(1)
-    editor_layout.addWidget(self.visual_frame_nav_widget)
+    self.visual_frame_nav_widget.setVisible(False)
     editor_layout.addWidget(self.polygon_editor, 1)
 
     layout.addWidget(self.editor_group, 1)
@@ -1870,6 +1871,7 @@ def build_editor_toolbar(self) -> QWidget:
     _polygon_blk.setSpacing(6)
     self.polygon_mode_label = QLabel("Polygon")
     self.polygon_mode_combo = QComboBox()
+    self.polygon_mode_combo.setMinimumWidth(140)
     self.polygon_mode_combo.addItem(self._mode_text("polygon_points"), PolygonCreateMode.POINTS)
     self.polygon_mode_combo.addItem(self._mode_text("polygon_rectangle"), PolygonCreateMode.RECTANGLE)
     self.polygon_mode_combo.currentIndexChanged.connect(
@@ -1888,6 +1890,7 @@ def build_editor_toolbar(self) -> QWidget:
     _brush_blk.setSpacing(6)
     self.brush_mode_label = QLabel("Brush")
     self.brush_mode_combo = QComboBox()
+    self.brush_mode_combo.setMinimumWidth(150)
     self.brush_mode_combo.addItem(self._mode_text("brush_freeform"), BrushMode.FREEFORM)
     self.brush_mode_combo.addItem(self._mode_text("brush_45deg"), BrushMode.ANGLED)
     self.brush_mode_combo.addItem(self._mode_text("brush_stamp_add"), BrushMode.STAMP_ADD)
@@ -1899,7 +1902,7 @@ def build_editor_toolbar(self) -> QWidget:
     self.brush_size_spin = QSpinBox()
     self.brush_size_spin.setRange(1, 256)
     self.brush_size_spin.setValue(12)
-    self.brush_size_spin.setFixedWidth(68)
+    self.brush_size_spin.setMinimumWidth(76)
     self.brush_size_spin.valueChanged.connect(lambda value: self.polygon_editor.set_brush_thickness(float(value)))
     _brush_blk.addWidget(self.brush_mode_label)
     _brush_blk.addWidget(self.brush_mode_combo)
@@ -1915,12 +1918,12 @@ def build_editor_toolbar(self) -> QWidget:
     self.via_width_spin = QSpinBox()
     self.via_width_spin.setRange(1, 100_000)
     self.via_width_spin.setValue(12)
-    self.via_width_spin.setFixedWidth(74)
+    self.via_width_spin.setMinimumWidth(82)
     self.via_height_label = QLabel("Via H")
     self.via_height_spin = QSpinBox()
     self.via_height_spin.setRange(1, 100_000)
     self.via_height_spin.setValue(12)
-    self.via_height_spin.setFixedWidth(74)
+    self.via_height_spin.setMinimumWidth(82)
     self.via_width_spin.valueChanged.connect(lambda _value: self._sync_editor_via_size())
     self.via_height_spin.valueChanged.connect(lambda _value: self._sync_editor_via_size())
     _via_blk.addWidget(self.via_width_label)
@@ -1935,6 +1938,7 @@ def build_editor_toolbar(self) -> QWidget:
     _dv_blk.setSpacing(6)
     self.delete_vertex_mode_label = QLabel("Delete")
     self.delete_vertex_mode_combo = QComboBox()
+    self.delete_vertex_mode_combo.setMinimumWidth(130)
     self.delete_vertex_mode_combo.addItem(self._mode_text("delete_single"), DeleteVertexMode.SINGLE)
     self.delete_vertex_mode_combo.addItem(self._mode_text("delete_area"), DeleteVertexMode.AREA)
     self.delete_vertex_mode_combo.currentIndexChanged.connect(
@@ -1988,6 +1992,20 @@ def build_editor_toolbar(self) -> QWidget:
     layout.addWidget(self.preview_busy_label)
     layout.addWidget(self.preview_busy_progress)
     layout.addStretch(1)
+    for widget in (
+        self._polygon_toolbar_block,
+        self._brush_toolbar_block,
+        self._via_toolbar_block,
+        self._delete_vertex_toolbar_block,
+        self.polygon_mode_combo,
+        self.brush_mode_combo,
+        self.brush_size_spin,
+        self.via_width_spin,
+        self.via_height_spin,
+        self.delete_vertex_mode_combo,
+    ):
+        widget.setMinimumHeight(28)
+        widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
     self.polygon_editor.set_polygon_create_mode(self.polygon_mode_combo.currentData())
     self.polygon_editor.set_brush_mode(self.brush_mode_combo.currentData())
     self.polygon_editor.set_brush_thickness(float(self.brush_size_spin.value()))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
 from contour.application.services import WorkspaceSession
@@ -118,6 +119,61 @@ class WorkspaceSessionTests(unittest.TestCase):
         session.current_state.reference_polygons = [parent.clone(), hole.clone()]
 
         self.assertFalse(session.current_image_has_changes())
+
+    def test_open_frame_is_clean_until_polygons_change(self) -> None:
+        session = WorkspaceSession()
+        polygon = _triangle_polygon()
+        session.load_image(
+            "sample.png",
+            load_source_image=lambda _path: "source",
+            load_cif_overlay=lambda _path: [polygon.clone()],
+        )
+        session.current_state.reference_polygons = [polygon.clone()]
+
+        self.assertFalse(session.current_image_has_changes())
+
+    def test_edit_polygon_marks_dirty_and_save_sync_marks_saved(self) -> None:
+        session = WorkspaceSession()
+        polygon = _triangle_polygon()
+        session.load_image(
+            "sample.png",
+            load_source_image=lambda _path: "source",
+            load_cif_overlay=lambda _path: [polygon.clone()],
+        )
+        session.current_state.reference_polygons = [polygon.clone()]
+        changed = polygon.clone()
+        changed.points[1] = (7.0, 0.0)
+        changed.area, changed.perimeter, changed.bbox = compute_polygon_metrics(changed.points)
+
+        session.update_current_polygons([changed])
+
+        self.assertTrue(session.current_image_has_changes())
+        self.assertTrue(session.sync_polygon_reference_to_current("sample.png"))
+        self.assertFalse(session.current_image_has_changes())
+
+    def test_merge_cif_paths_overrides_conflicting_stems(self) -> None:
+        session = WorkspaceSession()
+        session.set_cif_index({"a": "/old/a.cif"})
+        session.merge_cif_paths({"a": "/new/a.cif", "b": "/q/b.cif"})
+        self.assertEqual(session.cif_paths_by_stem["a"], "/new/a.cif")
+        self.assertEqual(session.cif_paths_by_stem["b"], "/q/b.cif")
+
+    def test_invalidate_image_states_clears_cache_for_paths(self) -> None:
+        session = WorkspaceSession()
+
+        def load_source_image(path: str) -> str:
+            return f"src:{path}"
+
+        session.replace_image_selection(["a.png", "b.png"], is_supported_image=lambda _p: True)
+        session.load_image("a.png", load_source_image=load_source_image, load_cif_overlay=lambda _path: [])
+        session.load_image("b.png", load_source_image=load_source_image, load_cif_overlay=lambda _path: [])
+        key_a = str(Path("a.png"))
+        key_b = str(Path("b.png"))
+        self.assertIn(key_a, session._state_cache)
+
+        session.invalidate_image_states(["a.png"])
+        self.assertNotIn(key_a, session._state_cache)
+        self.assertIn(key_b, session._state_cache)
 
 
 if __name__ == "__main__":

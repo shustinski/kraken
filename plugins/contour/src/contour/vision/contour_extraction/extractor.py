@@ -57,6 +57,7 @@ class SemContourConfig:
     exclude_border_touching: bool = False
     min_hierarchy_depth: int = 0
     max_hierarchy_depth: int | None = None
+    min_inner_hole_area: float = 100.0
     max_hole_area_ratio: float | None = None
     box_from_holes: bool = False
     min_polygon_width_px: float = 0.0
@@ -94,6 +95,7 @@ class SemContourConfig:
             exclude_border_touching=bool(getattr(settings, "exclude_border_touching", False)),
             min_hierarchy_depth=max(0, int(getattr(settings, "min_hierarchy_depth", 0) or 0)),
             max_hierarchy_depth=_none_if_zero(getattr(settings, "max_hierarchy_depth", None), int),
+            min_inner_hole_area=max(0.0, float(getattr(settings, "min_inner_hole_area", 100.0) or 100.0)),
             max_hole_area_ratio=_none_if_zero(getattr(settings, "max_hole_area_ratio", None), float),
             min_polygon_width_px=max(0.0, float(getattr(settings, "min_polygon_width_px", 0.0) or 0.0)),
         )
@@ -181,6 +183,8 @@ class SemContourExtractor:
             if component.depth < self.config.min_hierarchy_depth:
                 continue
             if self.config.max_hierarchy_depth is not None and component.depth > self.config.max_hierarchy_depth:
+                continue
+            if component.is_hole and component.area < self.config.min_inner_hole_area:
                 continue
             if self.config.max_hole_area_ratio is not None and component.is_hole and component.parent_id is not None:
                 parent_area = area_by_id.get(component.parent_id, 0.0)

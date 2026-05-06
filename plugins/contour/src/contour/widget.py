@@ -2,12 +2,26 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QEvent, QPointF, QRectF, QSettings, QSignalBlocker, QSize, Qt, QThreadPool, QTimer, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPointF,
+    QRectF,
+    QRunnable,
+    QSettings,
+    QSignalBlocker,
+    QSize,
+    Qt,
+    QThreadPool,
+    QTimer,
+    pyqtSignal,
+)
+from PyQt6.QtGui import QBrush, QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -18,6 +32,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
@@ -30,15 +45,31 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QTabWidget,
+    QTextEdit,
     QToolButton,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from .adapters.qt.directory_scan import ScanInputDirectoryRunnable, ScanInputDirectorySignals
 from .adapters.qt.image_conversion import cv_to_qimage
 from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
 from .application.dto import PersistedPaths
+from .application.frame_asset_sync import (
+    background_hex_image_paint_status,
+    background_hex_vector_status,
+    build_image_cif_matching_report,
+    classify_image_side_paint_status,
+    classify_vector_side_status,
+    foreground_hex_image_has_vector_overlay,
+    index_cif_file_paths,
+)
+from .application.frame_layers import (
+    build_additional_layer_frame_map,
+    build_base_frame_number_map,
+    build_base_frame_records,
+)
 from .application.processing import (
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
@@ -61,6 +92,11 @@ from .application.services import (
     load_pipeline_config_from_path,
     save_pipeline_config_to_path,
 )
+from .application.transition_save_guard import (
+    TransitionPromptChoice,
+    navigation_allowed_after_autosave_attempt,
+    navigation_allowed_after_prompt,
+)
 from .application.use_cases import (
     AutoTuneResult,
     PreparedImageRequest,
@@ -68,11 +104,16 @@ from .application.use_cases import (
     build_prepared_image_signature,
     build_preview_request_signature,
     index_cif_directory,
-    load_input_directory,
 )
+from .application.vector_geometry_postprocess import VectorGeometrySettings
 from .batch_processor import BatchProcessor
 from .domain import PolygonData
-from .graphics_view import EditorTool
+from .graphics.editor_hotkeys import (
+    append_shortcut_to_tooltip,
+    build_editor_hotkeys_plain_text,
+    tool_shortcut_native_text,
+)
+from .graphics_view import EditorTool, PolygonCreateMode
 from .i18n import active_language, tr
 from .infrastructure import WidgetDisplaySettingsStore, WidgetPathSettingsStore
 from .pipeline import (
@@ -142,10 +183,48 @@ __all__ = [
 
 
 FRAME_STATUS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
-FRAME_STATUS_UNCHANGED = "unchanged"
-FRAME_STATUS_VIEWED = "viewed"
-FRAME_STATUS_MODIFIED = "modified"
 VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
+
+
+class ThumbnailLoadSignals(QObject):
+    result = pyqtSignal(int, str, object)
+    finished = pyqtSignal(int, str)
+
+
+class ThumbnailLoadRunnable(QRunnable):
+    def __init__(self, generation: int, path: str, width: int, height: int) -> None:
+        super().__init__()
+        self.generation = int(generation)
+        self.path = str(path)
+        self.width = max(1, int(width))
+        self.height = max(1, int(height))
+        self.signals = ThumbnailLoadSignals()
+
+    def run(self) -> None:
+        image = None
+        try:
+            source = load_image_color(self.path)
+            if source is not None:
+                h, w = source.shape[:2]
+                if w > 0 and h > 0:
+                    scale = min(self.width / float(w), self.height / float(h), 1.0)
+                    target_w = max(1, round(w * scale))
+                    target_h = max(1, round(h * scale))
+                    if target_w != w or target_h != h:
+                        source = cv2.resize(source, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                    image = source
+        except Exception:
+            image = None
+        # Widget shutdown can race with background thumbnail workers:
+        # in that case underlying QObject wrappers may already be deleted.
+        try:
+            self.signals.result.emit(self.generation, self.path, image)
+        except RuntimeError:
+            return
+        try:
+            self.signals.finished.emit(self.generation, self.path)
+        except RuntimeError:
+            return
 
 
 class PolygonExtractionWidget(QWidget):
@@ -223,6 +302,9 @@ class PolygonExtractionWidget(QWidget):
         self._viewed_image_paths: set[str] = set()
         self._user_via_presets: dict[str, dict[str, object]] = self._load_user_via_presets()
         self._extra_layers: list[dict[str, object]] = []
+        self._next_extra_layer_id = 1
+        self._base_frame_numbers: set[int] = set()
+        self._base_frame_number_by_path: dict[str, int] = {}
         self._prepared_image_thread_pool = QThreadPool(self)
         self._prepared_image_thread_pool.setMaxThreadCount(1)
         self._prepared_image_thread_pool.setExpiryTimeout(-1)
@@ -238,7 +320,26 @@ class PolygonExtractionWidget(QWidget):
         self._auto_tune_request_serial = 0
         self._auto_tune_running_request_id: int | None = None
         self._neighbor_image_cache: dict[str, object] = {}
+        self._thumbnail_thread_pool = QThreadPool(self)
+        self._thumbnail_thread_pool.setMaxThreadCount(2)
+        self._thumbnail_thread_pool.setExpiryTimeout(30000)
+        self._thumbnail_generation = 0
+        self._thumbnail_icon_size = QSize(64, 48)
+        self._thumbnail_placeholder_icon = QIcon()
         self._show_source_while_middle_held = False
+
+        self._persisted_highlight_paths: set[str] = set()
+        self._cif_load_failure_stems: set[str] = set()
+        self._directory_scan_busy = False
+        self._directory_scan_pending_directory: str | None = None
+        self._directory_scan_signals = ScanInputDirectorySignals(self)
+        self._directory_scan_signals.finished.connect(self._on_input_directory_scan_finished)
+        self._directory_scan_signals.failed.connect(self._on_input_directory_scan_failed)
+        self._scan_generation = 0
+        self._vectors_list_ignore_navigate_until: float = 0.0
+        self._scan_thread_pool = QThreadPool(self)
+        self._scan_thread_pool.setMaxThreadCount(1)
+        self._scan_thread_pool.setExpiryTimeout(-1)
 
         self._batch_processor = BatchProcessor(self)
         self._batch_processor.set_ui_language(self._ui_language)
@@ -258,7 +359,9 @@ class PolygonExtractionWidget(QWidget):
         self._populate_pipeline_list()
         self._apply_display_settings()
         self._set_extraction_settings(self._contour_settings_profiles[self._active_extraction_profile])
+        self._set_default_extraction_disabled()
         self.set_ui_language(self._ui_language)
+        self._update_extra_layers_enabled_state()
 
     def _build_ui(self) -> None:
         return build_ui(self)
@@ -315,7 +418,19 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.neighbor_max_grid_spin),
             QSignalBlocker(self.neighbor_opacity_spin),
             QSignalBlocker(self.neighbor_overlap_spin),
+            QSignalBlocker(self.autosave_on_frame_transition_checkbox),
         ]
+        if hasattr(self, "vector_geom_clip_checkbox"):
+            blockers.extend(
+                [
+                    QSignalBlocker(self.vector_geom_clip_checkbox),
+                    QSignalBlocker(self.vector_geom_min_outer_spin),
+                    QSignalBlocker(self.vector_geom_min_hole_spin),
+                    QSignalBlocker(self.vector_geom_merge_checkbox),
+                    QSignalBlocker(self.vector_geom_spike_angle_spin),
+                    QSignalBlocker(self.vector_geom_drop_triangle_checkbox),
+                ]
+            )
         self._restoring_display_settings = True
         try:
             self._update_color_button(self.external_color_button, self._display_settings.external_color)
@@ -336,14 +451,23 @@ class PolygonExtractionWidget(QWidget):
             self.neighbor_max_grid_spin.setValue(self._odd_neighbor_grid_size(int(payload.get("neighbor_max_grid", 7))))
             self.neighbor_opacity_spin.setValue(float(payload.get("neighbor_opacity", 0.35)))
             self.neighbor_overlap_spin.setValue(max(0, int(payload.get("neighbor_overlap_pixels", 0))))
+            self.autosave_on_frame_transition_checkbox.setChecked(False)
             self._restore_main_splitter_sizes(payload.get("main_splitter_sizes"))
+            if hasattr(self, "vector_geom_clip_checkbox"):
+                self.vector_geom_clip_checkbox.setChecked(bool(payload.get("vector_geom_clip_on_sync", True)))
+                self.vector_geom_min_outer_spin.setValue(float(payload.get("vector_geom_min_outer_area", 9.0)))
+                self.vector_geom_min_hole_spin.setValue(float(payload.get("vector_geom_min_hole_area", 0.0)))
+                self.vector_geom_merge_checkbox.setChecked(bool(payload.get("vector_geom_merge_on_edit", True)))
+                self.vector_geom_spike_angle_spin.setValue(float(payload.get("vector_geom_spike_angle_deg", 30.0)))
+                self.vector_geom_drop_triangle_checkbox.setChecked(bool(payload.get("vector_geom_drop_triangles", True)))
         finally:
             self._restoring_display_settings = False
             del blockers
         self._sync_neighbor_frames()
+        self._apply_vector_geometry_editor_config()
 
     def _current_display_settings_payload(self) -> dict[str, object]:
-        return {
+        payload_out: dict[str, object] = {
             **self._display_settings.to_dict(),
             "random_object_colors": bool(self.random_object_colors_checkbox.isChecked()),
             "show_neighbor_frames": bool(self.show_neighbor_frames_checkbox.isChecked()),
@@ -353,11 +477,110 @@ class PolygonExtractionWidget(QWidget):
             "neighbor_overlap_pixels": int(self.neighbor_overlap_spin.value()),
             "main_splitter_sizes": self.main_splitter.sizes() if hasattr(self, "main_splitter") else [],
         }
+        if hasattr(self, "vector_geom_clip_checkbox"):
+            payload_out.update(
+                {
+                    "vector_geom_clip_on_sync": bool(self.vector_geom_clip_checkbox.isChecked()),
+                    "vector_geom_min_outer_area": float(self.vector_geom_min_outer_spin.value()),
+                    "vector_geom_min_hole_area": float(self.vector_geom_min_hole_spin.value()),
+                    "vector_geom_merge_on_edit": bool(self.vector_geom_merge_checkbox.isChecked()),
+                    "vector_geom_spike_angle_deg": float(self.vector_geom_spike_angle_spin.value()),
+                    "vector_geom_drop_triangles": bool(self.vector_geom_drop_triangle_checkbox.isChecked()),
+                }
+            )
+        return payload_out
 
     def _save_persisted_display_settings(self) -> None:
         if self._restoring_display_settings or not hasattr(self, "line_width_spin"):
             return
         self._display_settings_store.save(self._current_display_settings_payload())
+
+    def _vector_geometry_settings_from_widgets(self) -> VectorGeometrySettings:
+        if not hasattr(self, "vector_geom_clip_checkbox"):
+            return VectorGeometrySettings()
+        return VectorGeometrySettings(
+            clip_to_frame_on_sync=bool(self.vector_geom_clip_checkbox.isChecked()),
+            min_outer_area_px2=float(self.vector_geom_min_outer_spin.value()),
+            min_hole_area_to_remove_px2=float(self.vector_geom_min_hole_spin.value()),
+            merge_overlapping_on_edit=bool(self.vector_geom_merge_checkbox.isChecked()),
+            min_spike_interior_angle_deg=float(self.vector_geom_spike_angle_spin.value()),
+            drop_three_vertex_triangle_artifacts=bool(self.vector_geom_drop_triangle_checkbox.isChecked()),
+        )
+
+    def _apply_vector_geometry_editor_config(self) -> None:
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_vector_geometry_settings(self._vector_geometry_settings_from_widgets())
+
+    def _set_default_extraction_disabled(self) -> None:
+        if not hasattr(self, "recognition_mode_combo"):
+            return
+        idx = self.recognition_mode_combo.findData("disabled")
+        if idx < 0:
+            return
+        with QSignalBlocker(self.recognition_mode_combo):
+            self.recognition_mode_combo.setCurrentIndex(idx)
+        self._active_extraction_profile = "conductors"
+        self._sync_recognition_stack_visibility()
+        if hasattr(self, "_set_recognition_status"):
+            self._set_recognition_status("disabled")
+
+    def _on_vector_geom_control_changed(self, *_args) -> None:
+        self._apply_vector_geometry_editor_config()
+        self._save_persisted_display_settings()
+
+    def _show_manual_tool_postprocess_dialog(self) -> None:
+        existing = getattr(self, "_manual_tool_postprocess_dialog", None)
+        if isinstance(existing, QDialog):
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+        dialog = QDialog(self)
+        self._manual_tool_postprocess_dialog = dialog
+        dialog.setObjectName("manualToolPostprocessDialog")
+        dialog.setWindowTitle("Постобработка ручных инструментов")
+        dialog.resize(460, 320)
+        dialog.setMinimumSize(420, 280)
+
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        root.addWidget(scroll, 1)
+
+        container = QWidget()
+        form = QFormLayout(container)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        scroll.setWidget(container)
+
+        form.addRow(self.vector_geom_clip_checkbox)
+        form.addRow("Минимальная площадь внешнего объекта, px²", self.vector_geom_min_outer_spin)
+        self.vector_geom_min_outer_label_widget = form.labelForField(self.vector_geom_min_outer_spin)
+        form.addRow("Минимальная площадь отверстия для заливки, px²", self.vector_geom_min_hole_spin)
+        self.vector_geom_min_hole_label_widget = form.labelForField(self.vector_geom_min_hole_spin)
+        form.addRow(self.vector_geom_merge_checkbox)
+        form.addRow("Минимальный угол острого выброса, °", self.vector_geom_spike_angle_spin)
+        self.vector_geom_spike_angle_label_widget = form.labelForField(self.vector_geom_spike_angle_spin)
+        form.addRow(self.vector_geom_drop_triangle_checkbox)
+
+        close_button = QPushButton("Закрыть" if self._ui_language == "ru" else "Close")
+        close_button.clicked.connect(dialog.accept)
+        root.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+        dialog.exec()
+
+    def _display_image_dimensions_for_vectors(self) -> tuple[int, int]:
+        frame = self._display_image_for_current_state()
+        if frame is None:
+            return (0, 0)
+        shape = getattr(frame, "shape", None)
+        if isinstance(shape, tuple) and len(shape) >= 2:
+            return (int(shape[1]), int(shape[0]))
+        return (0, 0)
 
     def _restore_main_splitter_sizes(self, raw_sizes: object) -> None:
         if not hasattr(self, "main_splitter"):
@@ -503,12 +726,27 @@ class PolygonExtractionWidget(QWidget):
         if self._help_menu is None:
             return
         self._help_menu.clear()
+        postprocess_action = self._help_menu.addAction(
+            "Постобработка ручных инструментов"
+            if self._ui_language == "ru"
+            else "Manual tool post-processing"
+        )
+        postprocess_action.setObjectName("manualToolPostprocessAction")
+        postprocess_action.triggered.connect(lambda _checked=False: self._show_manual_tool_postprocess_dialog())
+        self._help_menu.addSeparator()
         overview_action = self._help_menu.addAction(
             self._tr(
                 "help_all_filters_action", "Все преобразования" if self._ui_language == "ru" else "All transformations"
             )
         )
         overview_action.triggered.connect(lambda _checked=False: self._show_help_dialog())
+        hotkeys_action = self._help_menu.addAction(
+            self._tr(
+                "help_editor_hotkeys_action",
+                "Горячие клавиши редактора" if self._ui_language == "ru" else "Editor hotkeys",
+            )
+        )
+        hotkeys_action.triggered.connect(lambda _checked=False: self._show_editor_hotkeys_dialog())
         self._help_menu.addSeparator()
         for group_key, labels, operations in PIPELINE_OPERATION_GROUPS:
             submenu = self._help_menu.addMenu(labels[0] if self._ui_language == "ru" else labels[1])
@@ -537,6 +775,28 @@ class PolygonExtractionWidget(QWidget):
             help_layout,
             [operation_name] if operation_name is not None else self._all_operation_names(),
         )
+        dialog.exec()
+
+    def _show_editor_hotkeys_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(
+            self._tr(
+                "help_editor_hotkeys_action",
+                "Горячие клавиши редактора" if self._ui_language == "ru" else "Editor hotkeys",
+            )
+        )
+        dialog.resize(520, 560)
+        layout = QVBoxLayout(dialog)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(build_editor_hotkeys_plain_text(ru=self._ui_language == "ru"))
+        layout.addWidget(text, 1)
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        close_button = QPushButton("Закрыть" if self._ui_language == "ru" else "Close")
+        close_button.clicked.connect(dialog.accept)
+        close_row.addWidget(close_button)
+        layout.addLayout(close_row)
         dialog.exec()
 
     def _populate_help_cards(self, layout: QVBoxLayout, operation_names: list[str]) -> None:
@@ -869,6 +1129,9 @@ class PolygonExtractionWidget(QWidget):
             self.min_hierarchy_depth_label_widget, self.min_hierarchy_depth_spin, "min_hierarchy_depth"
         )
         self._set_field_tooltip(
+            self.min_inner_hole_area_label_widget, self.min_inner_hole_area_spin, "min_inner_hole_area"
+        )
+        self._set_field_tooltip(
             self.max_hierarchy_depth_label_widget, self.max_hierarchy_depth_spin, "max_hierarchy_depth"
         )
         self._set_field_tooltip(
@@ -1147,9 +1410,9 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "recognition_mode_combo"):
             self.recognition_mode_combo.setToolTip(
                 tt(
-                    "Выбор того, что автоматически ищется на изображении: отключение, via/контакты или маска металлизации.\n"
+                    "Выбор режима извлечения. По умолчанию включено «Без извлечения»; обработка запускается только после явного выбора режима.\n"
                     "Параметры на панели меняются в зависимости от режима.",
-                    "What to run automatically: off, vias, or metal mask; panel shows matching parameters.",
+                    "Extraction mode. Defaults to No extraction; processing runs only after an explicit mode choice.",
                 )
             )
         if hasattr(self, "via_search_sensitivity_combo"):
@@ -1279,8 +1542,8 @@ class PolygonExtractionWidget(QWidget):
             self.metal_segmentation_method_combo.setToolTip(
                 tt(
                     "По умолчанию — без глобальной пороговой сегментации: контуры строятся по границам на grayscale (Canny + локальная морфология), что лучше сохраняет топологию тонких проводников на SEM.\n"
-                    "Otsu / адаптивная — классическая бинаризация яркости (опционально). Гибрид — объединение граничной маски и Otsu, если нужны и островки по яркости.",
-                    "Default: grayscale edge-based mask (topology-first). Otsu/Adaptive: optional intensity thresholding. Hybrid: edges OR Otsu.",
+                    "По умолчанию — Otsu: классическая пороговая сегментация яркости. Адаптивная — для неравномерного освещения, гибрид — объединяет границы и Otsu.",
+                    "Default: Otsu thresholding. Adaptive handles uneven illumination. Hybrid combines edge mask with Otsu.",
                 )
             )
         if getattr(self, "metal_sensitivity_combo", None) is not None:
@@ -1476,7 +1739,7 @@ class PolygonExtractionWidget(QWidget):
     def _update_via_threshold_controls_state(self) -> None:
         mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
         advanced = self._advanced_extraction_enabled()
-        bright_enabled = mode == VIA_SEARCH_MODE_HEURISTIC
+        bright_enabled = mode in {VIA_SEARCH_MODE_HEURISTIC, "bright_tophat_dog"}
         blob_enabled = False
         template_enabled = mode == VIA_SEARCH_MODE_TEMPLATE
         for label_widget, field_widget in (
@@ -1635,6 +1898,8 @@ class PolygonExtractionWidget(QWidget):
                 "polygon_rectangle": "Прямоугольник",
                 "brush_freeform": "Произвольная",
                 "brush_45deg": "45° шаг",
+                "brush_stamp_add": "Кружок (добавить)",
+                "brush_stamp_erase": "Кружок (стереть)",
                 "delete_single": "Вершина",
                 "delete_area": "Область",
             }
@@ -1644,6 +1909,8 @@ class PolygonExtractionWidget(QWidget):
                 "polygon_rectangle": "Rectangle",
                 "brush_freeform": "Freeform",
                 "brush_45deg": "45° constrained",
+                "brush_stamp_add": "Circle (add)",
+                "brush_stamp_erase": "Circle (erase)",
                 "delete_single": "Single vertex",
                 "delete_area": "Area",
             }
@@ -1671,9 +1938,6 @@ class PolygonExtractionWidget(QWidget):
             EditorTool.RULER: self._tr("tool_ruler", "Ruler"),
             EditorTool.ADD_VIA: self._tr("tool_add_via", "Via"),
             EditorTool.SELECT: self._tr("tool_select", "Выбор" if self._ui_language == "ru" else "Select"),
-            EditorTool.SELECT_AREA: self._tr(
-                "tool_select_area", "Выбор рамкой" if self._ui_language == "ru" else "Area select"
-            ),
             EditorTool.PAN: self._tr("tool_pan", "Панорамирование" if self._ui_language == "ru" else "Pan"),
             EditorTool.ADD_POLYGON: self._tr(
                 "tool_add_polygon", "Полигон" if self._ui_language == "ru" else "Add polygon"
@@ -1697,12 +1961,16 @@ class PolygonExtractionWidget(QWidget):
             if tool == EditorTool.RULER:
                 label = self._tr("tool_ruler", "Линейка" if self._ui_language == "ru" else "Ruler")
             tooltip_pair = EDITOR_TOOL_TOOLTIPS.get(tool)
-            tooltip = (tooltip_pair[0] if self._ui_language == "ru" else tooltip_pair[1]) if tooltip_pair else label
+            base_tip = (tooltip_pair[0] if self._ui_language == "ru" else tooltip_pair[1]) if tooltip_pair else label
+            shortcut_tip = tool_shortcut_native_text(tool)
+            tooltip = append_shortcut_to_tooltip(base_tip, shortcut_tip)
             button.setToolTip(tooltip)
             button.setStatusTip(tooltip)
             button.setAccessibleName(label)
 
     def _update_action_button_texts(self) -> None:
+        undo_key = QKeySequence(QKeySequence.StandardKey.Undo).toString(QKeySequence.SequenceFormat.NativeText)
+        redo_key = QKeySequence(QKeySequence.StandardKey.Redo).toString(QKeySequence.SequenceFormat.NativeText)
         for button, label in [
             (self.undo_button, self._tr("undo_button", "Отменить" if self._ui_language == "ru" else "Undo")),
             (self.redo_button, self._tr("redo_button", "Повторить" if self._ui_language == "ru" else "Redo")),
@@ -1713,9 +1981,14 @@ class PolygonExtractionWidget(QWidget):
             ),
             (self.fit_button, self._tr("fit_button", "Подогнать" if self._ui_language == "ru" else "Fit")),
         ]:
-            button.setToolTip(label)
-            button.setStatusTip(label)
             button.setAccessibleName(label)
+        shortcuts_map = {
+            self.undo_button: undo_key,
+            self.redo_button: redo_key,
+            self.zoom_in_button: "",
+            self.zoom_out_button: "",
+            self.fit_button: "",
+        }
         for button, tooltip_key in (
             (self.undo_button, "undo_button"),
             (self.redo_button, "redo_button"),
@@ -1724,8 +1997,10 @@ class PolygonExtractionWidget(QWidget):
             (self.fit_button, "fit_button"),
         ):
             tooltip = _localized_text(EDITOR_ACTION_TOOLTIPS, tooltip_key, self._ui_language)
-            button.setToolTip(tooltip)
-            button.setStatusTip(tooltip)
+            shortcut = shortcuts_map.get(button, "")
+            full_tip = append_shortcut_to_tooltip(tooltip, shortcut) if shortcut else tooltip
+            button.setToolTip(full_tip)
+            button.setStatusTip(full_tip)
 
     def _on_editor_tool_changed(self, tool) -> None:
         is_ruler = tool == EditorTool.RULER
@@ -1741,6 +2016,48 @@ class PolygonExtractionWidget(QWidget):
             )
         elif not is_ruler:
             self.ruler_status_label.clear()
+        if hasattr(self, "_polygon_toolbar_block"):
+            self._polygon_toolbar_block.setVisible(tool == EditorTool.ADD_POLYGON)
+        if hasattr(self, "_brush_toolbar_block"):
+            self._brush_toolbar_block.setVisible(tool == EditorTool.BRUSH)
+        if hasattr(self, "_via_toolbar_block"):
+            self._via_toolbar_block.setVisible(tool == EditorTool.ADD_VIA)
+        if hasattr(self, "_delete_vertex_toolbar_block"):
+            self._delete_vertex_toolbar_block.setVisible(tool == EditorTool.DELETE_VERTEX)
+        self._place_active_tool_parameters_near_tool_button(tool)
+        self._on_effective_polygon_create_mode_changed(self.polygon_editor.effective_polygon_create_mode())
+
+    def _place_active_tool_parameters_near_tool_button(self, tool: EditorTool) -> None:
+        if not hasattr(self, "_editor_toolbar_layout") or not hasattr(self, "_tool_parameter_blocks"):
+            return
+        layout = self._editor_toolbar_layout
+        blocks = self._tool_parameter_blocks
+        for block in blocks.values():
+            if block is not None:
+                layout.removeWidget(block)
+        active_block = blocks.get(tool)
+        active_button = getattr(self, "_tool_buttons", {}).get(tool)
+        if active_block is None or active_button is None:
+            return
+        button_index = layout.indexOf(active_button)
+        if button_index < 0:
+            return
+        layout.insertWidget(button_index + 1, active_block)
+        active_block.setVisible(True)
+        active_block.adjustSize()
+        if hasattr(self, "editor_toolbar"):
+            self.editor_toolbar.adjustSize()
+            self.editor_toolbar.setMinimumWidth(self.editor_toolbar.sizeHint().width())
+        if hasattr(self, "editor_toolbar_scroll"):
+            top_left = active_block.mapTo(self.editor_toolbar, active_block.rect().topLeft())
+            self.editor_toolbar_scroll.ensureVisible(int(top_left.x()), int(top_left.y()), 24, 0)
+
+    def _on_effective_polygon_create_mode_changed(self, mode: PolygonCreateMode) -> None:
+        if not hasattr(self, "polygon_draw_mode_indicator"):
+            return
+        # Keep mode switching/hotkeys functional, but do not render mode text in work area/toolbar.
+        _ = mode
+        self.polygon_draw_mode_indicator.clear()
 
     def _update_ruler_status(self, text: str) -> None:
         if not text:
@@ -1765,8 +2082,10 @@ class PolygonExtractionWidget(QWidget):
 
         self.polygon_mode_combo.setItemText(0, self._mode_text("polygon_points"))
         self.polygon_mode_combo.setItemText(1, self._mode_text("polygon_rectangle"))
-        self.brush_mode_combo.setItemText(0, self._mode_text("brush_freeform"))
-        self.brush_mode_combo.setItemText(1, self._mode_text("brush_45deg"))
+        if self.brush_mode_combo.count() > 0:
+            self.brush_mode_combo.setItemText(0, self._mode_text("brush_freeform"))
+        if self.brush_mode_combo.count() > 1:
+            self.brush_mode_combo.setItemText(1, self._mode_text("brush_45deg"))
         self.delete_vertex_mode_combo.setItemText(0, self._mode_text("delete_single"))
         self.delete_vertex_mode_combo.setItemText(1, self._mode_text("delete_area"))
 
@@ -1777,8 +2096,12 @@ class PolygonExtractionWidget(QWidget):
             self.polygon_mode_combo.setCurrentIndex(polygon_index)
         if brush_index >= 0:
             self.brush_mode_combo.setCurrentIndex(brush_index)
+        elif self.brush_mode_combo.count() > 0:
+            self.brush_mode_combo.setCurrentIndex(0)
         if delete_index >= 0:
             self.delete_vertex_mode_combo.setCurrentIndex(delete_index)
+
+        self._on_effective_polygon_create_mode_changed(self.polygon_editor.effective_polygon_create_mode())
 
     def _retranslate_contour_mode_combos(self) -> None:
         current_retrieval = self.retrieval_mode_combo.currentData()
@@ -3023,13 +3346,16 @@ class PolygonExtractionWidget(QWidget):
             if hasattr(self, "recognition_mode_combo")
             else ""
         )
-        if rec == "conductors":
-            if hasattr(self, "metal_show_mask_checkbox") and self.metal_show_mask_checkbox.isChecked():
-                _st = self._workspace.current_state
-                _maps: dict = getattr(_st, "debug_gradient_maps", None) or {} if _st is not None else {}
-                if any(k in _maps for k in ("metal_filtered_mask", "metal_binary_mask", "metal_mask")):
-                    self._apply_metal_visual_overlay()
-                    return
+        if (
+            rec == "conductors"
+            and hasattr(self, "metal_show_mask_checkbox")
+            and self.metal_show_mask_checkbox.isChecked()
+        ):
+            _st = self._workspace.current_state
+            _maps: dict = getattr(_st, "debug_gradient_maps", None) or {} if _st is not None else {}
+            if any(k in _maps for k in ("metal_filtered_mask", "metal_binary_mask", "metal_mask")):
+                self._apply_metal_visual_overlay()
+                return
         if not hasattr(self, "gradient_overlay_checkbox"):
             self.polygon_editor.clear_gradient_overlay()
             return
@@ -3424,9 +3750,7 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "epsilon_slider"):
             self.epsilon_slider.blockSignals(True)
             try:
-                self.epsilon_slider.setValue(
-                    min(1000, max(0, int(round(self.epsilon_spin.value() * 100.0))))
-                )
+                self.epsilon_slider.setValue(min(1000, max(0, round(self.epsilon_spin.value() * 100.0))))
             finally:
                 self.epsilon_slider.blockSignals(False)
         self._on_extraction_settings_changed()
@@ -3492,6 +3816,9 @@ class PolygonExtractionWidget(QWidget):
         profile = "vias" if rec == "via" else "conductors"
         self._active_extraction_profile = profile
         settings = self._current_contour_settings()
+        # Keep profile snapshots stable: "disabled" is a temporary UI state and
+        # must not overwrite the conductors profile recognition mode.
+        settings.recognition_mode = "via" if profile == "vias" else "conductors"
         settings.extraction_profile = profile
         settings.object_type = "via" if profile == "vias" else "conductor"
         self._contour_settings_profiles[profile] = settings
@@ -3522,9 +3849,16 @@ class PolygonExtractionWidget(QWidget):
         self._append_log(self._tr("pipeline_loaded_log", path=path))
 
     def _on_image_item_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
-        if previous is not None:
-            self._autosave_current_overlay_if_needed()
+        if previous is not None and not self._try_leave_current_frame():
+            self.image_list.blockSignals(True)
+            try:
+                self.image_list.setCurrentItem(previous)
+            finally:
+                self.image_list.blockSignals(False)
+            self._sync_frame_navigation_controls()
+            return
         if current is None:
+            self._sync_frame_navigation_controls()
             return
         image_path = current.data(Qt.ItemDataRole.UserRole)
         if image_path:
@@ -3533,6 +3867,507 @@ class PolygonExtractionWidget(QWidget):
             except Exception as exc:
                 self._append_log(self._tr("failed_to_load_image_log", image_path=image_path, error=exc))
                 QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
+        self._sync_frame_navigation_controls()
+
+    def _prune_tagged_sets_for_images(self, retained_paths: list[str]) -> None:
+        retained = {str(Path(p)) for p in retained_paths}
+        stems = {Path(p).stem.lower() for p in retained_paths}
+        self._persisted_highlight_paths.intersection_update(retained)
+        self._viewed_image_paths.intersection_update(retained)
+        self._cif_load_failure_stems.intersection_update(stems)
+
+    def _matching_report(self):
+        return build_image_cif_matching_report(
+            list(self._workspace.image_paths),
+            self._workspace.cif_paths_by_stem,
+        )
+
+    def _log_matching_gaps_after_refresh(self, report) -> None:
+        if report.stems_with_image_but_no_cif:
+            sample = sorted(report.stems_with_image_but_no_cif)[:12]
+            more_txt = ""
+            extra = len(report.stems_with_image_but_no_cif) - len(sample)
+            if extra > 0:
+                more_txt = f" (+{extra})"
+            self._append_log(
+                self._tr(
+                    "images_without_matching_cif_log",
+                    count=len(report.stems_with_image_but_no_cif),
+                    sample=", ".join(sample),
+                    more=more_txt,
+                )
+            )
+        if report.stems_with_cif_but_no_image:
+            sample = sorted(report.stems_with_cif_but_no_image)[:12]
+            more_txt = ""
+            extra = len(report.stems_with_cif_but_no_image) - len(sample)
+            if extra > 0:
+                more_txt = f" (+{extra})"
+            self._append_log(
+                self._tr(
+                    "cif_without_matching_image_log",
+                    count=len(report.stems_with_cif_but_no_image),
+                    sample=", ".join(sample),
+                    more=more_txt,
+                )
+            )
+
+    def _complete_directory_scan_turn(self) -> str | None:
+        self._directory_scan_busy = False
+        if hasattr(self, "files_scan_progress_bar"):
+            self.files_scan_progress_bar.setVisible(False)
+            self.files_scan_progress_bar.setRange(0, 100)
+            self.files_scan_progress_bar.setValue(0)
+        pending = self._directory_scan_pending_directory
+        self._directory_scan_pending_directory = None
+        return pending
+
+    def _begin_async_directory_scan(self, directory: str) -> None:
+        normalized = str(Path(directory))
+        if self._directory_scan_busy:
+            self._directory_scan_pending_directory = normalized
+            return
+        self._run_directory_scan_now(normalized)
+
+    def _maybe_start_pending_directory_scan(self, pending_directory: str | None) -> None:
+        if pending_directory:
+            self._run_directory_scan_now(pending_directory)
+
+    def _run_directory_scan_now(self, directory: str) -> None:
+        self._directory_scan_busy = True
+        scan_generation = self._scan_generation
+        if hasattr(self, "files_scan_progress_bar"):
+            self.files_scan_progress_bar.setVisible(True)
+            self.files_scan_progress_bar.setRange(0, 0)
+            self.files_scan_progress_bar.setFormat(self._tr("scanning_directory_progress"))
+        runnable = ScanInputDirectoryRunnable(
+            directory=directory,
+            signals=self._directory_scan_signals,
+            run_generation=scan_generation,
+        )
+        self._scan_thread_pool.start(runnable)
+
+    def _on_input_directory_scan_finished(self, paths: list[str], run_generation: int) -> None:
+        pending = self._complete_directory_scan_turn()
+        if run_generation != self._scan_generation:
+            self._maybe_start_pending_directory_scan(pending)
+            return
+        self.load_images(paths)
+        self._maybe_start_pending_directory_scan(pending)
+
+    def _on_input_directory_scan_failed(self, message: str, run_generation: int) -> None:
+        pending = self._complete_directory_scan_turn()
+        if run_generation == self._scan_generation:
+            self._append_log(
+                self._tr(
+                    "scan_input_directory_failed_log",
+                    error=message,
+                )
+            )
+        self._maybe_start_pending_directory_scan(pending)
+
+    def _on_sidebar_list_mode_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        if hasattr(self, "sidebar_list_stack"):
+            self.sidebar_list_stack.setCurrentIndex(0 if index == 0 else 1)
+        if index == 1:
+            # Defer arming: the mouse release that closes the combo popup is often
+            # delivered to the vector list in the *next* event-loop tick.
+            def _arm_suppress() -> None:
+                self._vectors_list_ignore_navigate_until = time.monotonic() + 0.55
+
+            QTimer.singleShot(0, _arm_suppress)
+        else:
+            self._vectors_list_ignore_navigate_until = 0.0
+
+    def _image_path_for_cif_stem(self, stem: str) -> str | None:
+        target = stem.lower()
+        for path in self._workspace.image_paths:
+            if Path(path).stem.lower() == target:
+                return str(Path(path))
+        return None
+
+    def _paint_vector_list_item(self, item: QListWidgetItem, stem: str) -> None:
+        stem_lower = stem.lower()
+        status = self._vector_status_enum_for_stem(stem_lower)
+        item.setData(FRAME_STATUS_ROLE, status.value)
+        hex_background = background_hex_vector_status(status)
+        if hex_background:
+            tint = QColor(hex_background)
+            item.setBackground(QBrush(tint))
+            # Windows / some styles ignore setBackground for items; BackgroundRole is respected more reliably.
+            item.setData(Qt.ItemDataRole.BackgroundRole, tint)
+        else:
+            item.setBackground(QBrush())
+            item.setData(Qt.ItemDataRole.BackgroundRole, None)
+        raw_path = item.data(Qt.ItemDataRole.UserRole)
+        if raw_path:
+            item.setText(Path(str(raw_path)).stem)
+
+    def _vector_status_enum_for_stem(self, stem_lower: str):
+        ipath = self._image_path_for_cif_stem(stem_lower)
+        has_matching = ipath is not None
+        cif_failed = stem_lower in self._cif_load_failure_stems
+        normalized = "" if ipath is None else str(Path(ipath))
+        never_opened = (not normalized) or (normalized not in self._viewed_image_paths)
+        dirty = bool(ipath is not None and self._workspace.image_has_changes(normalized))
+        persist = normalized in self._persisted_highlight_paths if normalized else False
+        return classify_vector_side_status(
+            has_matching_image=has_matching,
+            cif_load_failed=cif_failed,
+            image_never_viewed=never_opened,
+            polygons_dirty=dirty,
+            persist_highlight=persist,
+        )
+
+    def _rebuild_vector_list(self) -> None:
+        if not hasattr(self, "vector_list"):
+            return
+        self.vector_list.blockSignals(True)
+        self.vector_list.clear()
+        mapping = sorted(self._workspace.cif_paths_by_stem.items(), key=lambda kv: kv[0].lower())
+        for stem, cif_path in mapping:
+            item = QListWidgetItem(Path(cif_path).stem)
+            item.setToolTip(cif_path)
+            item.setData(Qt.ItemDataRole.UserRole, cif_path)
+            self._paint_vector_list_item(item, stem)
+            self.vector_list.addItem(item)
+        self.vector_list.blockSignals(False)
+
+    def _configure_thumbnail_grid_geometry(self) -> None:
+        if not hasattr(self, "thumbnail_grid"):
+            return
+        columns = self._thumbnail_columns()
+        icon_size = self._thumbnail_icon_size if hasattr(self, "_thumbnail_icon_size") else QSize(64, 48)
+        cell_w = int(icon_size.width())
+        cell_h = int(icon_size.height())
+        self.thumbnail_grid.setIconSize(icon_size)
+        self.thumbnail_grid.setGridSize(QSize(cell_w, cell_h))
+        self.thumbnail_grid.setSpacing(0)
+        frame = 2 * int(self.thumbnail_grid.frameWidth())
+        item_count = max(1, self.thumbnail_grid.count())
+        rows = max(1, int(np.ceil(item_count / float(columns))))
+        content_width = max(cell_w + frame, columns * cell_w + frame)
+        content_height = max(cell_h + frame, rows * cell_h + frame)
+        self.thumbnail_grid.setFixedWidth(content_width)
+        self.thumbnail_grid.setFixedHeight(content_height)
+
+    def _thumbnail_columns(self) -> int:
+        if not hasattr(self, "neighbor_columns_spin"):
+            return 3
+        try:
+            return max(1, int(self.neighbor_columns_spin.value()))
+        except (TypeError, ValueError):
+            return 1
+
+    def _thumbnail_placeholder(self) -> QIcon:
+        if not getattr(self, "_thumbnail_placeholder_icon", QIcon()).isNull():
+            return self._thumbnail_placeholder_icon
+        size = self._thumbnail_icon_size if hasattr(self, "_thumbnail_icon_size") else QSize(64, 48)
+        pixmap = QPixmap(size)
+        pixmap.fill(QColor("#1F2937"))
+        self._thumbnail_placeholder_icon = QIcon(pixmap)
+        return self._thumbnail_placeholder_icon
+
+    def _rebuild_thumbnail_grid(self) -> None:
+        if not hasattr(self, "thumbnail_grid"):
+            return
+        self._thumbnail_generation += 1
+        generation = self._thumbnail_generation
+        self._configure_thumbnail_grid_geometry()
+        self.thumbnail_grid.blockSignals(True)
+        try:
+            self.thumbnail_grid.clear()
+            for path in self._workspace.image_paths:
+                item = QListWidgetItem(self._thumbnail_placeholder(), "")
+                item.setToolTip(Path(str(path)).stem)
+                item.setData(Qt.ItemDataRole.UserRole, str(path))
+                self._paint_image_row_item(item, str(path), show_text=False)
+                self.thumbnail_grid.addItem(item)
+                runnable = ThumbnailLoadRunnable(
+                    generation,
+                    str(path),
+                    self._thumbnail_icon_size.width(),
+                    self._thumbnail_icon_size.height(),
+                )
+                runnable.signals.result.connect(self._on_thumbnail_loaded)
+                self._thumbnail_thread_pool.start(runnable)
+        finally:
+            self.thumbnail_grid.blockSignals(False)
+        self._configure_thumbnail_grid_geometry()
+        self._update_thumbnail_grid_selection()
+
+    def _on_thumbnail_loaded(self, generation: int, path: str, image: object) -> None:
+        if generation != self._thumbnail_generation or not hasattr(self, "thumbnail_grid"):
+            return
+        target = str(Path(path))
+        item = None
+        for index in range(self.thumbnail_grid.count()):
+            candidate = self.thumbnail_grid.item(index)
+            if candidate is not None and str(candidate.data(Qt.ItemDataRole.UserRole) or "") == target:
+                item = candidate
+                break
+        if item is None:
+            return
+        if image is None:
+            item.setIcon(self._thumbnail_placeholder())
+            return
+        pixmap = QPixmap.fromImage(cv_to_qimage(image))
+        if pixmap.isNull():
+            item.setIcon(self._thumbnail_placeholder())
+        else:
+            item.setIcon(QIcon(pixmap))
+
+    def _update_thumbnail_grid_selection(self) -> None:
+        if not hasattr(self, "thumbnail_grid"):
+            return
+        current = self._workspace.current_image_path
+        matched = False
+        self.thumbnail_grid.blockSignals(True)
+        try:
+            for index in range(self.thumbnail_grid.count()):
+                item = self.thumbnail_grid.item(index)
+                selected = bool(current and item is not None and item.data(Qt.ItemDataRole.UserRole) == current)
+                if selected:
+                    self.thumbnail_grid.setCurrentRow(index)
+                    matched = True
+                if item is not None:
+                    path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+                    if selected:
+                        item.setBackground(QBrush(QColor("#1D4ED8")))
+                        item.setData(Qt.ItemDataRole.BackgroundRole, QColor("#1D4ED8"))
+                    elif path:
+                        self._paint_image_row_item(item, path, show_text=False)
+            if not matched:
+                self.thumbnail_grid.clearSelection()
+                self.thumbnail_grid.setCurrentRow(-1)
+        finally:
+            self.thumbnail_grid.blockSignals(False)
+
+    def _on_thumbnail_item_clicked(self, item: QListWidgetItem) -> None:
+        if item is None:
+            return
+        path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not path:
+            return
+        image_item = self._find_image_list_item(path)
+        if image_item is not None:
+            self.image_list.setCurrentItem(image_item)
+
+    def _refresh_vector_rows_for_workspace(self) -> None:
+        if not hasattr(self, "vector_list"):
+            return
+        for index in range(self.vector_list.count()):
+            row = self.vector_list.item(index)
+            if row is None:
+                continue
+            tip = row.toolTip()
+            if not tip:
+                continue
+            self._paint_vector_list_item(row, Path(tip).stem.lower())
+
+    def _refresh_vector_items_for_stems(self, stems: set[str]) -> None:
+        if not stems or not hasattr(self, "vector_list"):
+            return
+        lowered = {s.lower() for s in stems}
+        for idx in range(self.vector_list.count()):
+            item = self.vector_list.item(idx)
+            if item is None:
+                continue
+            tip = item.toolTip()
+            if not tip:
+                continue
+            stem = Path(tip).stem.lower()
+            if stem in lowered:
+                self._paint_vector_list_item(item, stem)
+
+    def _select_input_image_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            self._tr("select_image_files_dialog"),
+            self.input_dir_edit.text() or str(Path.home()),
+            self._tr("supported_image_files_filter"),
+        )
+        if not paths:
+            return
+        self.input_dir_edit.setText(str(Path(paths[0]).parent))
+        self._save_persisted_paths()
+        self.load_images([str(Path(p)) for p in paths])
+
+    def _merge_cif_files_dialog(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            self._tr("merge_cif_files_dialog"),
+            self.cif_dir_edit.text() or str(Path.home()),
+            self._tr("cif_files_filter"),
+        )
+        if not paths:
+            return
+        additions = index_cif_file_paths(paths)
+        if not additions:
+            return
+        self._workspace.merge_cif_paths(additions)
+        self.cif_dir_edit.setText(str(Path(paths[0]).parent))
+        self._save_persisted_paths()
+        self._append_log(self._tr("cif_indexed_log", count=len(self._workspace.cif_paths_by_stem)))
+        self._sync_after_cif_index_changed()
+
+    def _sync_after_cif_index_changed(self) -> None:
+        self._clear_cif_transient_hints()
+        self._rebuild_vector_list()
+        self._refresh_image_list_item_states()
+        cur = self._workspace.current_image_path
+        if cur:
+            try:
+                self.load_image(cur)
+            except Exception as exc:
+                self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
+        report = self._matching_report()
+        self._log_matching_gaps_after_refresh(report)
+
+    def _clear_cif_transient_hints(self) -> None:
+        self._cif_load_failure_stems.clear()
+
+    def _invalidate_cif_overlay_for_stems(self, stems: set[str]) -> list[str]:
+        if not stems:
+            return []
+        paths: list[str] = []
+        for path in self._workspace.image_paths:
+            stem = Path(path).stem.lower()
+            if stem in stems:
+                self._cif_load_failure_stems.discard(stem)
+                paths.append(str(Path(path)))
+        if paths:
+            self._workspace.invalidate_image_states(paths)
+        return paths
+
+    def _reload_cif_overlays_for_selected_vectors(self) -> None:
+        stems: set[str] = set()
+        for row in self.vector_list.selectedItems():
+            tip = row.toolTip()
+            if tip:
+                stems.add(Path(tip).stem.lower())
+        if not stems:
+            self._append_log(self._tr("no_vector_selection_for_reload_log"))
+            return
+        affected = self._invalidate_cif_overlay_for_stems(stems)
+        self._finalize_overlay_reload(affected)
+
+    def _reload_cif_overlays_for_selected_images(self) -> None:
+        stems: set[str] = {Path(str(row.data(Qt.ItemDataRole.UserRole))).stem.lower() for row in self.image_list.selectedItems()}
+        cur = self._workspace.current_image_path
+        if not stems and cur:
+            stems.add(Path(cur).stem.lower())
+        if not stems:
+            self._append_log(self._tr("no_image_selection_for_reload_log"))
+            return
+        affected = self._invalidate_cif_overlay_for_stems(stems)
+        self._finalize_overlay_reload(affected)
+
+    def _finalize_overlay_reload(self, paths_for_message: list[str]) -> None:
+        if not paths_for_message:
+            self._append_log(self._tr("cif_reload_no_matching_images_log"))
+            return
+        unique_stems = sorted({Path(p).stem.lower() for p in paths_for_message})[:16]
+        more_txt = ""
+        extra = len({Path(p).stem.lower() for p in paths_for_message}) - len(unique_stems)
+        if extra > 0:
+            more_txt = f" (+{extra})"
+        self._append_log(
+            self._tr(
+                "cif_reload_invalidate_log",
+                stems=", ".join(unique_stems),
+                more=more_txt,
+            )
+        )
+        self._refresh_image_list_item_states()
+        self._refresh_vector_rows_for_workspace()
+        cur = self._workspace.current_image_path
+        if cur and cur in paths_for_message:
+            try:
+                self.load_image(cur)
+            except Exception as exc:
+                self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
+
+    def _sync_frame_navigation_controls(self) -> None:
+        if not hasattr(self, "frame_nav_spin"):
+            return
+        paths = list(self._workspace.image_paths)
+        total = len(paths)
+        self.frame_nav_spin.blockSignals(True)
+        if total <= 0:
+            self.visual_frame_nav_widget.setEnabled(False)
+            self.frame_nav_spin.setMinimum(1)
+            self.frame_nav_spin.setMaximum(1)
+            self.frame_nav_spin.setValue(1)
+            self.frame_nav_total_label.setText("/ 0")
+        else:
+            self.visual_frame_nav_widget.setEnabled(True)
+            self.frame_nav_spin.setMinimum(1)
+            self.frame_nav_spin.setMaximum(total)
+            current = self._workspace.current_image_path
+            position = paths.index(current) + 1 if current and current in paths else min(self.frame_nav_spin.value(), total)
+            position = max(1, min(position, total))
+            self.frame_nav_spin.setValue(position)
+            self.frame_nav_total_label.setText(f"/ {total}")
+        self.frame_nav_spin.blockSignals(False)
+
+    def _on_frame_nav_spin_changed(self, value: int) -> None:
+        paths = list(self._workspace.image_paths)
+        if not paths:
+            return
+        idx = max(0, min(int(value), len(paths)) - 1)
+        target_item = self.image_list.item(idx)
+        if target_item is not None:
+            self.image_list.setCurrentItem(target_item)
+
+    def _frame_nav_previous(self) -> None:
+        if not hasattr(self, "frame_nav_spin"):
+            return
+        self.frame_nav_spin.setValue(max(1, self.frame_nav_spin.value() - 1))
+
+    def _frame_nav_next(self) -> None:
+        if not hasattr(self, "frame_nav_spin"):
+            return
+        total = len(self._workspace.image_paths)
+        if not total:
+            return
+        self.frame_nav_spin.setValue(min(total, self.frame_nav_spin.value() + 1))
+
+    def _on_image_selection_changed(self) -> None:
+        rows = sorted({self.image_list.row(i) for i in self.image_list.selectedItems()})
+        paths = list(self._workspace.image_paths)
+        if len(rows) == 1 and paths:
+            with QSignalBlocker(self.frame_nav_spin):
+                self.frame_nav_spin.setValue(min(max(1, rows[0] + 1), len(paths)))
+
+    def _on_vector_item_navigate_request(self, item: QListWidgetItem) -> None:
+        """Jump to the matching image frame (Files → Images) after an explicit click."""
+
+        if item is None:
+            return
+        if time.monotonic() < self._vectors_list_ignore_navigate_until:
+            return
+        tip = item.toolTip()
+        if not tip:
+            return
+        stem = Path(tip).stem.lower()
+        image_path = self._image_path_for_cif_stem(stem)
+        if not image_path:
+            self._append_log(self._tr("vector_row_no_matching_image_loaded_log"))
+            return
+        image_item = self._find_image_list_item(image_path)
+        if image_item is None:
+            return
+        if hasattr(self, "sidebar_list_mode_combo"):
+            with QSignalBlocker(self.sidebar_list_mode_combo):
+                self.sidebar_list_mode_combo.setCurrentIndex(0)
+        if hasattr(self, "sidebar_list_stack"):
+            self.sidebar_list_stack.setCurrentIndex(0)
+        self.image_list.blockSignals(True)
+        self.image_list.setCurrentItem(image_item)
+        self.image_list.blockSignals(False)
 
     def _select_input_directory(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -3576,7 +4411,15 @@ class PolygonExtractionWidget(QWidget):
             self.set_input_directory(path)
         else:
             self._workspace.replace_image_selection([], is_supported_image=is_image_path)
+            self._base_frame_number_by_path = {}
+            self._base_frame_numbers = set()
             self.image_list.clear()
+            self._rebuild_thumbnail_grid()
+            self._clear_extra_layers()
+            self._update_extra_layers_enabled_state()
+            self._rebuild_vector_list()
+            self._refresh_image_list_item_states()
+            self._sync_frame_navigation_controls()
             self._sync_current_state_views()
             self._save_persisted_paths()
 
@@ -3587,6 +4430,8 @@ class PolygonExtractionWidget(QWidget):
         else:
             self._workspace.clear_cif_index()
             self._save_persisted_paths()
+            self._rebuild_vector_list()
+            self._refresh_image_list_item_states()
             if self._workspace.current_image_path:
                 try:
                     self.load_image(self._workspace.current_image_path)
@@ -3631,171 +4476,245 @@ class PolygonExtractionWidget(QWidget):
             self._display_settings.fill_opacity = float(self.fill_opacity_spin.value())
             self._display_settings.show_vertices = bool(self.show_vertices_checkbox.isChecked())
             self._display_settings.show_labels = bool(self.show_labels_checkbox.isChecked())
-        if hasattr(self, "polygon_editor"):
-            self.polygon_editor.set_display_settings(self._display_settings)
-            if hasattr(self, "random_object_colors_checkbox"):
-                self.polygon_editor.set_random_object_colors_enabled(self.random_object_colors_checkbox.isChecked())
+            if hasattr(self, "polygon_editor"):
+                self.polygon_editor.set_display_settings(self._display_settings)
+                if hasattr(self, "random_object_colors_checkbox"):
+                    self.polygon_editor.set_random_object_colors_enabled(self.random_object_colors_checkbox.isChecked())
+        self._apply_vector_geometry_editor_config()
         self._save_persisted_display_settings()
 
     def _on_neighbor_display_settings_changed(self, *_args) -> None:
         self._sync_neighbor_frames()
+        self._configure_thumbnail_grid_geometry()
         self._save_persisted_display_settings()
 
     def _refresh_extra_layers_list(self) -> None:
         if not hasattr(self, "extra_layers_list"):
             return
-        current_row = self.extra_layers_list.currentRow()
+        current_item = self.extra_layers_list.currentItem()
+        current_id = current_item.data(Qt.ItemDataRole.UserRole) if current_item is not None else None
+        self.extra_layers_list.blockSignals(True)
         self.extra_layers_list.clear()
-        for layer in self._extra_layers:
-            name = str(layer.get("name", "Layer"))
-            visible = bool(layer.get("visible", True))
-            pixmap = layer.get("pixmap")
-            loaded = isinstance(pixmap, QPixmap) and not pixmap.isNull()
-            prefix = "[x] " if visible else "[ ] "
-            if not loaded:
-                prefix = "[!] "
-            item = QListWidgetItem(prefix + name)
-            item.setToolTip(str(layer.get("path", "")))
+        for index, layer in enumerate(self._extra_layers):
+            layer_id = int(layer.get("id", index + 1))
+            folder_path = str(layer.get("folder_path", ""))
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, layer_id)
+            item.setToolTip(folder_path)
+            row_widget = self._build_extra_layer_row_widget(layer)
+            item.setSizeHint(row_widget.sizeHint())
             self.extra_layers_list.addItem(item)
-        if self._extra_layers:
-            self.extra_layers_list.setCurrentRow(max(0, min(current_row, len(self._extra_layers) - 1)))
-        else:
-            self._on_extra_layer_selected(-1)
+            self.extra_layers_list.setItemWidget(item, row_widget)
+        self.extra_layers_list.blockSignals(False)
+        if current_id is not None:
+            for row in range(self.extra_layers_list.count()):
+                candidate = self.extra_layers_list.item(row)
+                if candidate is not None and candidate.data(Qt.ItemDataRole.UserRole) == current_id:
+                    self.extra_layers_list.setCurrentRow(row)
+                    break
+
+    def _build_extra_layer_row_widget(self, layer: dict[str, object]) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layer_id = int(layer.get("id", 0))
+
+        visible_checkbox = QCheckBox("")
+        visible_checkbox.setChecked(bool(layer.get("visible", True)))
+        visible_checkbox.setToolTip("Показать/скрыть слой")
+        visible_checkbox.stateChanged.connect(
+            lambda _state, lid=layer_id: self._set_extra_layer_field(lid, "visible", visible_checkbox.isChecked())
+        )
+
+        dx_spin = QSpinBox()
+        dx_spin.setRange(-1_000_000, 1_000_000)
+        dx_spin.setValue(int(layer.get("dx", 0) or 0))
+        dx_spin.setMinimumWidth(0)
+        dx_spin.setMaximumWidth(self._compact_spinbox_width(dx_spin, "-1000000"))
+        dx_spin.setToolTip("Смещение слоя по X")
+        dx_spin.valueChanged.connect(lambda value, lid=layer_id: self._set_extra_layer_field(lid, "dx", int(value)))
+
+        dy_spin = QSpinBox()
+        dy_spin.setRange(-1_000_000, 1_000_000)
+        dy_spin.setValue(int(layer.get("dy", 0) or 0))
+        dy_spin.setMinimumWidth(0)
+        dy_spin.setMaximumWidth(self._compact_spinbox_width(dy_spin, "-1000000"))
+        dy_spin.setToolTip("Смещение слоя по Y")
+        dy_spin.valueChanged.connect(lambda value, lid=layer_id: self._set_extra_layer_field(lid, "dy", int(value)))
+
+        opacity_spin = QSpinBox()
+        opacity_spin.setRange(0, 100)
+        opacity_spin.setValue(int(layer.get("opacity", 100) or 100))
+        opacity_spin.setSuffix("%")
+        opacity_spin.setMinimumWidth(0)
+        opacity_spin.setMaximumWidth(self._compact_spinbox_width(opacity_spin, "100%"))
+        opacity_spin.setToolTip("Прозрачность слоя")
+        opacity_spin.valueChanged.connect(
+            lambda value, lid=layer_id: self._set_extra_layer_field(lid, "opacity", int(value))
+        )
+
+        remove_button = QPushButton("-")
+        remove_button.setFixedWidth(24)
+        remove_button.setStyleSheet("QPushButton { background-color: #DC2626; color: white; font-weight: 700; }")
+        remove_button.setToolTip("Удалить слой")
+        remove_button.clicked.connect(lambda _checked=False, lid=layer_id: self._remove_extra_layer_by_id(lid))
+
+        folder_name = str(layer.get("name", "Layer"))
+        folder_label = QLabel(folder_name)
+        folder_label.setToolTip(str(layer.get("folder_path", "")))
+
+        layout.addWidget(visible_checkbox)
+        layout.addWidget(folder_label, 1)
+        layout.addWidget(dx_spin)
+        layout.addWidget(dy_spin)
+        layout.addWidget(opacity_spin)
+        layout.addWidget(remove_button)
+        return row
+
+    @staticmethod
+    def _compact_spinbox_width(spinbox: QSpinBox, sample_text: str) -> int:
+        text_width = spinbox.fontMetrics().horizontalAdvance(sample_text)
+        arrow_width = max(24, spinbox.style().pixelMetric(spinbox.style().PixelMetric.PM_ScrollBarExtent))
+        frame = 16
+        return text_width + arrow_width + frame
+
+    def _set_extra_layer_field(self, layer_id: int, key: str, value: object) -> None:
+        for layer in self._extra_layers:
+            if int(layer.get("id", -1)) == layer_id:
+                layer[key] = value
+                self._sync_extra_layers()
+                return
+
+    def _remove_extra_layer_by_id(self, layer_id: int) -> None:
+        self._extra_layers = [layer for layer in self._extra_layers if int(layer.get("id", -1)) != layer_id]
+        self._refresh_extra_layers_list()
+        self._sync_extra_layers()
+
+    def _clear_extra_layers(self) -> None:
+        self._extra_layers.clear()
+        self._refresh_extra_layers_list()
+        self._sync_extra_layers()
+
+    def _update_extra_layers_enabled_state(self) -> None:
+        has_base = bool(self._workspace.image_paths)
+        if hasattr(self, "add_extra_layers_button"):
+            self.add_extra_layers_button.setEnabled(has_base)
 
     def _sync_extra_layers(self) -> None:
-        if hasattr(self, "polygon_editor"):
-            self.polygon_editor.set_extra_layers(self._extra_layers)
+        if not hasattr(self, "polygon_editor"):
+            return
+        current_path = self._workspace.current_image_path
+        current_number = self._base_frame_number_by_path.get(str(Path(current_path))) if current_path else None
+        active_layers: list[dict[str, object]] = []
+        if current_number is not None:
+            for layer in self._extra_layers:
+                if not bool(layer.get("visible", True)):
+                    continue
+                frame_map = layer.get("frame_map")
+                if not isinstance(frame_map, dict):
+                    continue
+                layer_image_path = frame_map.get(current_number)
+                if not isinstance(layer_image_path, str):
+                    continue
+                pixmap_cache = layer.setdefault("_pixmap_cache", {})
+                pixmap = pixmap_cache.get(layer_image_path) if isinstance(pixmap_cache, dict) else None
+                if not isinstance(pixmap, QPixmap):
+                    pixmap = QPixmap(layer_image_path)
+                    if isinstance(pixmap_cache, dict) and not pixmap.isNull():
+                        pixmap_cache[layer_image_path] = pixmap
+                if pixmap.isNull():
+                    continue
+                active_layers.append(
+                    {
+                        "name": layer.get("name", ""),
+                        "visible": bool(layer.get("visible", True)),
+                        "opacity": max(0.0, min(1.0, float(layer.get("opacity", 100)) / 100.0)),
+                        "dx": float(layer.get("dx", 0) or 0),
+                        "dy": float(layer.get("dy", 0) or 0),
+                        "pixmap": pixmap,
+                    }
+                )
+        self.polygon_editor.set_extra_layers(active_layers)
 
     def _load_extra_layers(self) -> None:
-        file_paths, _selected_filter = QFileDialog.getOpenFileNames(
+        if not self._workspace.image_paths:
+            QMessageBox.information(self, "Contour", "Сначала загрузите базовый слой")
+            return
+        folder_path = QFileDialog.getExistingDirectory(
             self,
-            "Выберите изображения слоев" if self._ui_language == "ru" else "Select layer images",
+            "Выберите папку дополнительного слоя"
+            if self._ui_language == "ru"
+            else "Select additional layer directory",
             "",
-            "Images (*.jpg *.jpeg *.png *.bmp *.tif *.tiff);;All files (*)",
         )
-        for file_path in file_paths:
-            layer = self._extra_layer_from_path(file_path)
-            if layer is not None:
-                self._extra_layers.append(layer)
-        self._refresh_extra_layers_list()
-        self._sync_extra_layers()
-
-    def _browse_selected_extra_layer_path(self) -> None:
-        current_path = ""
-        row = self.extra_layers_list.currentRow() if hasattr(self, "extra_layers_list") else -1
-        if 0 <= row < len(self._extra_layers):
-            current_path = str(self._extra_layers[row].get("path", ""))
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
-            self,
-            "Выберите изображение слоя" if self._ui_language == "ru" else "Select layer image",
-            str(Path(current_path).parent) if current_path else "",
-            "Images (*.jpg *.jpeg *.png *.bmp *.tif *.tiff);;All files (*)",
-        )
-        if not file_path:
+        if not folder_path:
             return
-        self.extra_layer_path_edit.setText(file_path)
-        self._on_extra_layer_path_changed()
-
-    def _on_extra_layer_path_changed(self) -> None:
-        path = self.extra_layer_path_edit.text().strip()
-        if not path:
-            return
-        layer = self._extra_layer_from_path(path)
+        layer = self._extra_layer_from_directory(folder_path)
         if layer is None:
             return
-        row = self.extra_layers_list.currentRow() if hasattr(self, "extra_layers_list") else -1
-        if row < 0 or row >= len(self._extra_layers):
-            self._extra_layers.append(layer)
-            row = len(self._extra_layers) - 1
-        else:
-            existing = self._extra_layers[row]
-            existing["name"] = layer["name"]
-            existing["path"] = layer["path"]
-            existing["pixmap"] = layer["pixmap"]
+        self._extra_layers.append(layer)
         self._refresh_extra_layers_list()
-        self.extra_layers_list.setCurrentRow(row)
         self._sync_extra_layers()
 
-    def _extra_layer_from_path(self, file_path: str) -> dict[str, object] | None:
-        path = Path(file_path.strip().strip("\"'")).expanduser()
-        if not path.is_file():
+    def _extra_layer_from_directory(self, directory_path: str) -> dict[str, object] | None:
+        path = Path(directory_path.strip().strip("\"'")).expanduser()
+        if not path.is_dir():
             self._append_log(
                 self._tr(
                     "extra_layer_missing_file_log",
-                    "Файл слоя не найден: {path}" if self._ui_language == "ru" else "Layer file not found: {path}",
-                    path=file_path,
+                    "Папка слоя не найдена: {path}" if self._ui_language == "ru" else "Layer folder not found: {path}",
+                    path=directory_path,
                 )
             )
             return None
-        pixmap = QPixmap(str(path))
-        if pixmap.isNull():
+        layer_image_paths = scan_image_files(path)
+        frame_map, warnings = build_additional_layer_frame_map(
+            layer_image_paths,
+            base_frame_numbers=set(self._base_frame_numbers),
+        )
+        for message in warnings:
+            self._append_log(message)
+        if not frame_map:
             self._append_log(
                 self._tr(
                     "extra_layer_load_failed_log",
-                    "Не удалось загрузить изображение слоя: {path}"
+                    "В папке слоя нет кадров, совпадающих с базовым слоем: {path}"
                     if self._ui_language == "ru"
-                    else "Failed to load layer image: {path}",
+                    else "Layer folder has no frames matching base layer: {path}",
                     path=str(path),
                 )
             )
             return None
+        layer_id = self._next_extra_layer_id
+        self._next_extra_layer_id += 1
         return {
+            "id": layer_id,
             "name": path.name,
-            "path": str(path),
-            "pixmap": pixmap,
+            "folder_path": str(path),
+            "frame_map": frame_map,
             "visible": True,
-            "opacity": 0.35,
-            "dx": 0.0,
-            "dy": 0.0,
+            "opacity": 100,
+            "dx": 0,
+            "dy": 0,
         }
 
-    def _remove_selected_extra_layer(self) -> None:
-        row = self.extra_layers_list.currentRow() if hasattr(self, "extra_layers_list") else -1
-        if row < 0 or row >= len(self._extra_layers):
+    def _on_extra_layers_rows_moved(self, *_args) -> None:
+        if not hasattr(self, "extra_layers_list"):
             return
-        self._extra_layers.pop(row)
-        self._refresh_extra_layers_list()
-        self._sync_extra_layers()
-
-    def _on_extra_layer_selected(self, row: int) -> None:
-        blockers = [
-            QSignalBlocker(self.extra_layer_path_edit),
-            QSignalBlocker(self.extra_layer_visible_checkbox),
-            QSignalBlocker(self.extra_layer_opacity_spin),
-            QSignalBlocker(self.extra_layer_dx_spin),
-            QSignalBlocker(self.extra_layer_dy_spin),
-        ]
-        if row < 0 or row >= len(self._extra_layers):
+        order: list[int] = []
+        for row in range(self.extra_layers_list.count()):
+            item = self.extra_layers_list.item(row)
+            if item is None:
+                continue
             try:
-                self.extra_layer_path_edit.clear()
-                self.extra_layer_visible_checkbox.setChecked(False)
-                self.extra_layer_opacity_spin.setValue(0.35)
-                self.extra_layer_dx_spin.setValue(0.0)
-                self.extra_layer_dy_spin.setValue(0.0)
-            finally:
-                del blockers
+                order.append(int(item.data(Qt.ItemDataRole.UserRole)))
+            except (TypeError, ValueError):
+                continue
+        if not order:
             return
-        layer = self._extra_layers[row]
-        try:
-            self.extra_layer_path_edit.setText(str(layer.get("path", "")))
-            self.extra_layer_visible_checkbox.setChecked(bool(layer.get("visible", True)))
-            self.extra_layer_opacity_spin.setValue(float(layer.get("opacity", 0.35) or 0.35))
-            self.extra_layer_dx_spin.setValue(float(layer.get("dx", 0.0) or 0.0))
-            self.extra_layer_dy_spin.setValue(float(layer.get("dy", 0.0) or 0.0))
-        finally:
-            del blockers
-
-    def _on_extra_layer_controls_changed(self, *_args) -> None:
-        row = self.extra_layers_list.currentRow() if hasattr(self, "extra_layers_list") else -1
-        if row < 0 or row >= len(self._extra_layers):
-            return
-        layer = self._extra_layers[row]
-        layer["visible"] = self.extra_layer_visible_checkbox.isChecked()
-        layer["opacity"] = float(self.extra_layer_opacity_spin.value())
-        layer["dx"] = float(self.extra_layer_dx_spin.value())
-        layer["dy"] = float(self.extra_layer_dy_spin.value())
-        self._refresh_extra_layers_list()
-        self.extra_layers_list.setCurrentRow(row)
+        by_id = {int(layer.get("id", -1)): layer for layer in self._extra_layers}
+        self._extra_layers = [by_id[layer_id] for layer_id in order if layer_id in by_id]
         self._sync_extra_layers()
 
     def _auto_apply_pipeline(self) -> None:
@@ -3929,6 +4848,7 @@ class PolygonExtractionWidget(QWidget):
             QSignalBlocker(self.min_via_height_spin),
             QSignalBlocker(self.max_via_height_spin),
             QSignalBlocker(self.min_hierarchy_depth_spin),
+            QSignalBlocker(self.min_inner_hole_area_spin),
             QSignalBlocker(self.max_hierarchy_depth_spin),
             QSignalBlocker(self.max_hole_area_ratio_spin),
             QSignalBlocker(self.advanced_extraction_checkbox),
@@ -4013,9 +4933,7 @@ class PolygonExtractionWidget(QWidget):
                 self.approximation_mode_combo.setCurrentIndex(approximation_index)
             self.epsilon_spin.setValue(float(settings.epsilon))
             if hasattr(self, "epsilon_slider"):
-                self.epsilon_slider.setValue(
-                    min(1000, max(0, int(round(float(settings.epsilon) * 100.0))))
-                )
+                self.epsilon_slider.setValue(min(1000, max(0, round(float(settings.epsilon) * 100.0))))
             self.epsilon_relative_checkbox.setChecked(bool(settings.epsilon_relative))
             self.min_area_spin.setValue(float(settings.min_area))
             self.max_area_spin.setValue(0.0 if settings.max_area is None else float(settings.max_area))
@@ -4189,6 +5107,7 @@ class PolygonExtractionWidget(QWidget):
                 self._add_fixed_via_row(width=width, height=height)
             self._suspend_fixed_via_updates = False
             self.min_hierarchy_depth_spin.setValue(int(settings.min_hierarchy_depth))
+            self.min_inner_hole_area_spin.setValue(float(getattr(settings, "min_inner_hole_area", 100.0)))
             self.max_hierarchy_depth_spin.setValue(
                 0 if settings.max_hierarchy_depth is None else int(settings.max_hierarchy_depth)
             )
@@ -4237,7 +5156,7 @@ class PolygonExtractionWidget(QWidget):
                         float(getattr(settings, "metal_wide_gradient_min_overlap_ratio", 0.5) or 0.5)
                     )
                 _smi = self.metal_segmentation_method_combo.findData(
-                    str(getattr(settings, "metal_segmentation_method", "none") or "none")
+                    str(getattr(settings, "metal_segmentation_method", "otsu") or "otsu")
                 )
                 if _smi >= 0:
                     self.metal_segmentation_method_combo.setCurrentIndex(_smi)
@@ -4282,7 +5201,7 @@ class PolygonExtractionWidget(QWidget):
                 if _bhi >= 0:
                     self.metal_border_handling_combo.setCurrentIndex(_bhi)
                 self.metal_validity_checkbox.setChecked(
-                    bool(getattr(settings, "metal_check_contour_validity", True))
+                    bool(getattr(settings, "metal_check_contour_validity", False))
                 )
                 self.metal_morph_close_spin.setValue(int(getattr(settings, "metal_morph_close_radius", 1) or 1))
                 self.metal_morph_open_spin.setValue(int(getattr(settings, "metal_morph_open_radius", 0) or 0))
@@ -4626,6 +5545,7 @@ class PolygonExtractionWidget(QWidget):
             fixed_via_widths=fixed_via_widths,
             fixed_via_heights=fixed_via_heights,
             min_hierarchy_depth=self.min_hierarchy_depth_spin.value(),
+            min_inner_hole_area=self.min_inner_hole_area_spin.value(),
             max_hierarchy_depth=None if max_hierarchy_depth <= 0 else max_hierarchy_depth,
             max_hole_area_ratio=None if max_hole_area_ratio <= 0 else max_hole_area_ratio,
         )
@@ -4749,6 +5669,36 @@ class PolygonExtractionWidget(QWidget):
                 "tol": 6.0,
                 "tok": "medium",
             },
+            "wide_traces": {
+                "sens": 44,
+                "close": 4,
+                "open": 0,
+                "min_w": 14.0,
+                "max_w": 0.0,
+                "min_l": 24.0,
+                "min_a": 100.0,
+                "max_a": 0.0,
+                "min_p": 42.0,
+                "max_p": 0.0,
+                "str": 0.5,
+                "tol": 8.0,
+                "tok": "medium",
+            },
+            "weak_contrast": {
+                "sens": 68,
+                "close": 2,
+                "open": 0,
+                "min_w": 6.0,
+                "max_w": 0.0,
+                "min_l": 14.0,
+                "min_a": 40.0,
+                "max_a": 0.0,
+                "min_p": 24.0,
+                "max_p": 0.0,
+                "str": 0.35,
+                "tol": 10.0,
+                "tok": "high",
+            },
             "noisy_sem": {
                 "sens": 36,
                 "close": 4,
@@ -4778,6 +5728,22 @@ class PolygonExtractionWidget(QWidget):
                 "str": 0.72,
                 "tol": 5.0,
                 "tok": "low",
+            },
+            "angles_45_90": {
+                "sens": 52,
+                "close": 1,
+                "open": 0,
+                "min_w": 8.0,
+                "max_w": 0.0,
+                "min_l": 12.0,
+                "min_a": 60.0,
+                "max_a": 0.0,
+                "min_p": 32.0,
+                "max_p": 0.0,
+                "str": 0.35,
+                "tol": 6.0,
+                "tok": "medium",
+                "angles": "45_90",
             },
         }
 
@@ -4922,7 +5888,7 @@ class PolygonExtractionWidget(QWidget):
         if self._ui_language == "ru":
             texts = {
                 "idle": "Готово",
-                "disabled": "Распознавание отключено",
+                "disabled": "Извлечение отключено",
                 "updating": "Выполняется обработка…",
                 "error": "Ошибка",
             }
@@ -4945,28 +5911,32 @@ class PolygonExtractionWidget(QWidget):
             save_preview=self.save_preview_checkbox.isChecked(),
         )
 
-    def _frame_status_for_image(self, image_path: str) -> str:
-        if self._workspace.image_has_changes(image_path):
-            return FRAME_STATUS_MODIFIED
-        if str(Path(image_path)) in self._viewed_image_paths:
-            return FRAME_STATUS_VIEWED
-        return FRAME_STATUS_UNCHANGED
-
-    def _frame_status_brush(self, status: str) -> QBrush:
-        if status == FRAME_STATUS_MODIFIED:
-            return QBrush(QColor("#86EFAC"))
-        if status == FRAME_STATUS_VIEWED:
-            return QBrush(QColor("#D1D5DB"))
-        return QBrush(QColor("#D1D5DB"))
-
-    def _apply_frame_status_to_item(self, item: QListWidgetItem, status: str) -> None:
-        item.setData(FRAME_STATUS_ROLE, status)
-        item.setBackground(self._frame_status_brush(status))
+    def _paint_image_row_item(self, item: QListWidgetItem, image_path: str, *, show_text: bool = True) -> None:
+        normalized = str(Path(image_path))
+        extraction_enabled = self._is_extraction_mode_enabled()
+        painted = classify_image_side_paint_status(
+            never_opened=True if extraction_enabled else normalized not in self._viewed_image_paths,
+            polygons_dirty=False if extraction_enabled else self._workspace.image_has_changes(normalized),
+            persist_highlight=False if extraction_enabled else normalized in self._persisted_highlight_paths,
+        )
+        item.setData(FRAME_STATUS_ROLE, painted.value)
+        hex_background = background_hex_image_paint_status(painted)
+        if hex_background:
+            tint = QColor(hex_background)
+            item.setBackground(QBrush(tint))
+            item.setData(Qt.ItemDataRole.BackgroundRole, tint)
+        else:
+            item.setBackground(QBrush())
+            item.setData(Qt.ItemDataRole.BackgroundRole, None)
+        fg = QColor(foreground_hex_image_has_vector_overlay(bool(self._workspace.resolve_cif_path(normalized))))
+        item.setForeground(QBrush(fg))
+        item.setText(Path(normalized).stem if show_text else "")
 
     def _find_image_list_item(self, image_path: str) -> QListWidgetItem | None:
+        target = str(Path(image_path))
         for index in range(self.image_list.count()):
             item = self.image_list.item(index)
-            if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == image_path:
+            if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == target:
                 return item
         return None
 
@@ -4976,7 +5946,9 @@ class PolygonExtractionWidget(QWidget):
         item = self._find_image_list_item(image_path)
         if item is None:
             return
-        self._apply_frame_status_to_item(item, self._frame_status_for_image(image_path))
+        self._paint_image_row_item(item, str(Path(image_path)))
+        self._refresh_vector_items_for_stems({Path(str(image_path)).stem.lower()})
+        self._update_thumbnail_item_status(image_path)
 
     def _refresh_image_list_item_states(self) -> None:
         for index in range(self.image_list.count()):
@@ -4984,60 +5956,257 @@ class PolygonExtractionWidget(QWidget):
             if item is None:
                 continue
             image_path = str(item.data(Qt.ItemDataRole.UserRole) or "")
-            self._apply_frame_status_to_item(item, self._frame_status_for_image(image_path))
+            if image_path:
+                self._paint_image_row_item(item, image_path)
+        self._refresh_vector_rows_for_workspace()
+        self._update_thumbnail_grid_selection()
 
-    def _autosave_current_overlay_if_needed(self) -> None:
+    def _update_thumbnail_item_status(self, image_path: str | None) -> None:
+        if not image_path or not hasattr(self, "thumbnail_grid"):
+            return
+        normalized = str(Path(image_path))
+        for index in range(self.thumbnail_grid.count()):
+            item = self.thumbnail_grid.item(index)
+            if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == normalized:
+                self._paint_image_row_item(item, normalized, show_text=False)
+                break
+
+    def _update_vector_edit_status_label(self) -> None:
+        if not hasattr(self, "vector_edit_status_label"):
+            return
+        if self._workspace.current_image_path is None:
+            self.vector_edit_status_label.clear()
+            return
+        if not self._updating_views:
+            self._workspace.update_current_polygons(self.get_polygons())
+        dirty = self._workspace.current_image_has_changes()
+        if self._ui_language == "ru":
+            self.vector_edit_status_label.setText("Изменено" if dirty else "Сохранено")
+        else:
+            self.vector_edit_status_label.setText("Modified" if dirty else "Saved")
+
+    def _persist_current_overlay_changes(self) -> bool:
+        """Persist editor polygons for the current frame (dataset export and/or linked CIF)."""
+
         current_state = self._workspace.current_state
         current_image_path = self._workspace.current_image_path
         if current_state is None or current_image_path is None:
-            return
+            return True
         current_polygons = self.get_polygons()
         self._workspace.update_current_polygons(current_polygons)
-        current_has_changes = self._workspace.current_image_has_changes()
-        if current_has_changes and self.dataset_mode_checkbox.isChecked():
-            self._export_dataset_frame_for_state(current_image_path, current_state, current_polygons)
-        if not current_state.loaded_cif_path or current_state.source_image is None:
+        if not self._workspace.current_image_has_changes():
             self._update_frame_item_status(current_image_path)
-            return
-        if not current_has_changes:
-            self._update_frame_item_status(current_image_path)
-            return
-        image_size = (int(current_state.source_image.shape[1]), int(current_state.source_image.shape[0]))
-        try:
-            save_polygons_cif(
-                current_state.loaded_cif_path,
-                current_image_path,
-                current_polygons,
-                image_size=image_size,
-            )
+            self._update_vector_edit_status_label()
+            return True
+
+        want_dataset = bool(self.dataset_mode_checkbox.isChecked())
+        can_cif = bool(current_state.loaded_cif_path and current_state.source_image is not None)
+
+        if not want_dataset and not can_cif:
             self._append_log(
                 self._tr(
-                    "autosaved_cif_log",
-                    "Автосохранен CIF: {path}" if self._ui_language == "ru" else "Autosaved CIF: {path}",
-                    path=current_state.loaded_cif_path,
-                )
-            )
-        except Exception as exc:
-            self._append_log(
-                self._tr(
-                    "autosave_failed_log",
-                    "Не удалось автосохранить CIF {path}: {error}"
+                    "vector_save_no_target_log",
+                    "Нет каталога набора данных или связанного CIF для сохранения правок текущего кадра."
                     if self._ui_language == "ru"
-                    else "Failed to autosave CIF {path}: {error}",
-                    path=current_state.loaded_cif_path,
-                    error=exc,
+                    else "No dataset directory or linked CIF available to save edits for the current frame.",
                 )
             )
+            return False
+
+        if want_dataset:
+            saved_ds = self._export_dataset_frame_for_state(current_image_path, current_state, current_polygons)
+            if not saved_ds:
+                return False
+
+        if can_cif:
+            image_size = (int(current_state.source_image.shape[1]), int(current_state.source_image.shape[0]))
+            try:
+                save_polygons_cif(
+                    current_state.loaded_cif_path,
+                    current_image_path,
+                    current_polygons,
+                    image_size=image_size,
+                )
+            except Exception as exc:
+                self._append_log(
+                    self._tr(
+                        "autosave_failed_log",
+                        "Не удалось сохранить CIF {path}: {error}"
+                        if self._ui_language == "ru"
+                        else "Failed to save CIF {path}: {error}",
+                        path=current_state.loaded_cif_path,
+                        error=exc,
+                    )
+                )
+                return False
+
+        persisted_path = str(Path(current_image_path))
+        self._persisted_highlight_paths.add(persisted_path)
+        self._workspace.sync_polygon_reference_to_current(persisted_path)
+        self._append_log(
+            self._tr(
+                "vectors_persisted_transition_log",
+                "Изменения векторов сохранены для кадра {name}"
+                if self._ui_language == "ru"
+                else "Vector edits saved for frame {name}",
+                name=Path(current_image_path).name,
+            )
+        )
         self._update_frame_item_status(current_image_path)
+        self._update_vector_edit_status_label()
+        return True
+
+    def _discard_current_vector_changes(self) -> None:
+        state = self._workspace.current_state
+        path = self._workspace.current_image_path
+        if state is None or path is None:
+            return
+        restored = [polygon.clone() for polygon in state.reference_polygons]
+        self._updating_views = True
+        try:
+            state.polygons = restored
+            self._workspace.update_current_polygons(restored)
+            self.polygon_editor.set_polygons(restored)
+        finally:
+            self._updating_views = False
+        self._persisted_highlight_paths.discard(str(Path(path)))
+        self._update_frame_item_status(path)
+        self._update_vector_edit_status_label()
+
+    def _prompt_transition_vector_save_dialog(self) -> TransitionPromptChoice:
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle(
+            self._tr(
+                "unsaved_vectors_dialog_title",
+                "Несохранённые изменения" if self._ui_language == "ru" else "Unsaved changes",
+            )
+        )
+        msg.setText(
+            self._tr(
+                "unsaved_vectors_dialog_text",
+                "Сохранить изменения?" if self._ui_language == "ru" else "Save changes?",
+            )
+        )
+        save_button = msg.addButton(
+            "Сохранить" if self._ui_language == "ru" else "Save",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        discard_button = msg.addButton(
+            "Не сохранять" if self._ui_language == "ru" else "Don't save",
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
+        cancel_button = msg.addButton(
+            "Отмена" if self._ui_language == "ru" else "Cancel",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        autosave_checkbox = QCheckBox(
+            "Автосохранение при переходе к следующему кадру"
+            if self._ui_language == "ru"
+            else "Autosave on next frame"
+        )
+        autosave_checkbox.setChecked(False)
+        msg.setCheckBox(autosave_checkbox)
+        msg.setDefaultButton(save_button)
+        result = msg.exec()
+        clicked = msg.clickedButton()
+        if clicked is None:
+            if result == QMessageBox.StandardButton.Cancel:
+                return TransitionPromptChoice.CANCEL
+            if result == QMessageBox.StandardButton.Discard:
+                return TransitionPromptChoice.DISCARD
+            if result == QMessageBox.StandardButton.Save and autosave_checkbox.isChecked() and hasattr(
+                self, "autosave_on_frame_transition_checkbox"
+            ):
+                self.autosave_on_frame_transition_checkbox.setChecked(True)
+            return TransitionPromptChoice.SAVE
+        if clicked is cancel_button:
+            return TransitionPromptChoice.CANCEL
+        if clicked is discard_button:
+            return TransitionPromptChoice.DISCARD
+        if clicked is save_button and autosave_checkbox.isChecked() and hasattr(
+            self, "autosave_on_frame_transition_checkbox"
+        ):
+            self.autosave_on_frame_transition_checkbox.setChecked(True)
+        return TransitionPromptChoice.SAVE
+
+    def _warn_transition_blocked_after_failed_autosave(self) -> None:
+        QMessageBox.warning(
+            self,
+            self._tr(
+                "autosave_transition_blocked_title",
+                "Не удалось сохранить" if self._ui_language == "ru" else "Save failed",
+            ),
+            self._tr(
+                "autosave_transition_blocked_text",
+                "Автосохранение не выполнено; переход отменён, данные не потеряны."
+                if self._ui_language == "ru"
+                else "Autosave failed; navigation cancelled — your edits were kept.",
+            ),
+        )
+
+    def _warn_transition_blocked_after_failed_manual_save(self) -> None:
+        QMessageBox.warning(
+            self,
+            self._tr(
+                "manual_save_transition_blocked_title",
+                "Не удалось сохранить" if self._ui_language == "ru" else "Save failed",
+            ),
+            self._tr(
+                "manual_save_transition_blocked_text",
+                "Сохранение не выполнено; переход отменён, данные не потеряны."
+                if self._ui_language == "ru"
+                else "Save failed; navigation cancelled — your edits were kept.",
+            ),
+        )
+
+    def _try_leave_current_frame(self) -> bool:
+        if self._is_extraction_mode_enabled():
+            return True
+        self._workspace.update_current_polygons(self.get_polygons())
+        dirty = self._workspace.current_image_has_changes()
+        if not dirty:
+            self._update_vector_edit_status_label()
+            return True
+
+        autosave_on = bool(
+            hasattr(self, "autosave_on_frame_transition_checkbox")
+            and self.autosave_on_frame_transition_checkbox.isChecked()
+        )
+        if autosave_on:
+            save_ok = self._persist_current_overlay_changes()
+            allowed = navigation_allowed_after_autosave_attempt(dirty=True, save_ok=save_ok)
+            if not allowed:
+                self._warn_transition_blocked_after_failed_autosave()
+            return allowed
+
+        choice = self._prompt_transition_vector_save_dialog()
+        if choice == TransitionPromptChoice.CANCEL:
+            return False
+
+        if choice == TransitionPromptChoice.DISCARD:
+            self._discard_current_vector_changes()
+            return True
+
+        save_ok = self._persist_current_overlay_changes()
+        allowed = navigation_allowed_after_prompt(dirty=True, choice=TransitionPromptChoice.SAVE, save_ok=save_ok)
+        if not allowed:
+            self._warn_transition_blocked_after_failed_manual_save()
+        return allowed
+
+    def confirm_ok_to_leave_current_vectors(self) -> bool:
+        """Ask before closing or reloading images when the active frame has unsaved vector edits."""
+
+        return self._try_leave_current_frame()
 
     def _sync_current_state_views(self) -> None:
         self._updating_views = True
         try:
             display_image = self._display_image_for_current_state()
             current_state = self._workspace.current_state
-            polygons = current_state.polygons if current_state else []
+            polygons_synced = [polygon.clone() for polygon in current_state.polygons] if current_state else []
             self.polygon_editor.set_image(display_image)
-            self.polygon_editor.set_polygons(polygons)
+            self.polygon_editor.set_polygons(polygons_synced)
             self.polygon_editor.set_debug_candidates(list(current_state.debug_candidates) if current_state else [])
             self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
             if hasattr(self, "via_show_detected_checkbox"):
@@ -5066,6 +6235,7 @@ class PolygonExtractionWidget(QWidget):
             self._refresh_gradient_overlay()
         finally:
             self._updating_views = False
+        self._update_vector_edit_status_label()
 
     def _display_image_for_current_state(self):
         current_state = self._workspace.current_state
@@ -5152,7 +6322,6 @@ class PolygonExtractionWidget(QWidget):
 
     def _on_neighbor_frame_activated(self, image_path: str) -> None:
         if image_path in self._workspace.image_paths:
-            self._autosave_current_overlay_if_needed()
             item = self._find_image_list_item(image_path)
             if item is not None:
                 self.image_list.setCurrentItem(item)
@@ -5429,7 +6598,11 @@ class PolygonExtractionWidget(QWidget):
         if self._updating_views:
             return
         if self._workspace.update_current_polygons(self.get_polygons()):
+            current_path = self._workspace.current_image_path
+            if current_path:
+                self._persisted_highlight_paths.discard(str(Path(current_path)))
             self._update_frame_item_status(self._workspace.current_image_path)
+            self._update_vector_edit_status_label()
             self.polygonsEdited.emit()
 
     def _on_batch_result(self, result) -> None:
@@ -5463,30 +6636,33 @@ class PolygonExtractionWidget(QWidget):
         if not directory:
             self._append_log(self._tr("input_directory_empty_log"))
             return
-        self.load_images(scan_image_files(directory))
+        self._begin_async_directory_scan(directory)
 
     def set_input_directory(self, path: str) -> None:
-        directory_state = load_input_directory(path, scan_images=scan_image_files)
-        self.input_dir_edit.setText(directory_state.directory)
+        normalized = str(Path(path))
+        root = Path(normalized)
+        if not root.exists() or not root.is_dir():
+            self._append_log(
+                self._tr(
+                    "input_directory_missing_log",
+                    directory=normalized,
+                )
+            )
+            return
+        self.input_dir_edit.setText(normalized)
         self._save_persisted_paths()
-        self.load_images(list(directory_state.image_paths))
+        self._begin_async_directory_scan(normalized)
 
     def set_cif_directory(self, path: str) -> None:
         directory_state = index_cif_directory(path)
         self.cif_dir_edit.setText(directory_state.directory)
         self._save_persisted_paths()
         self._workspace.set_cif_index(directory_state.indexed_paths)
-        self._refresh_image_list_item_states()
         if directory_state.available:
             self._append_log(self._tr("cif_indexed_log", count=len(directory_state.indexed_paths)))
         else:
             self._append_log(self._tr("cif_directory_unavailable_log"))
-
-        if self._workspace.current_image_path:
-            try:
-                self.load_image(self._workspace.current_image_path)
-            except Exception as exc:
-                self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
+        self._sync_after_cif_index_changed()
 
     def set_output_directory(self, path: str) -> None:
         self.output_dir_edit.setText(path)
@@ -5497,34 +6673,55 @@ class PolygonExtractionWidget(QWidget):
         self._save_persisted_paths()
 
     def load_images(self, paths: list[str]) -> None:
-        normalized_paths = self._workspace.replace_image_selection(paths, is_supported_image=is_image_path)
+        if self._workspace.current_state is not None and not self._try_leave_current_frame():
+            return
+        self._scan_generation += 1
+        normalized_paths = [str(Path(path)) for path in paths if is_image_path(path)]
+        frame_records, warnings = build_base_frame_records(normalized_paths)
+        for message in warnings:
+            self._append_log(message)
+        ordered_paths = [record.path for record in frame_records]
+        self._base_frame_number_by_path = build_base_frame_number_map(frame_records)
+        self._base_frame_numbers = set(self._base_frame_number_by_path.values())
+        normalized_paths = self._workspace.replace_image_selection(ordered_paths, is_supported_image=is_image_path)
         self._neighbor_image_cache.clear()
-        self._viewed_image_paths.intersection_update(str(Path(path)) for path in normalized_paths)
+        self._prune_tagged_sets_for_images(normalized_paths)
         self._abort_in_flight_interactive_processing(preview=True, prepared=True)
+        self._clear_extra_layers()
+        self._update_extra_layers_enabled_state()
         self.image_list.clear()
         for path in normalized_paths:
-            item = QListWidgetItem(Path(path).name)
+            item = QListWidgetItem(Path(path).stem)
             item.setToolTip(f"Путь к файлу: {path}" if self._ui_language == "ru" else f"File path: {path}")
             item.setData(Qt.ItemDataRole.UserRole, path)
-            self._apply_frame_status_to_item(item, self._frame_status_for_image(path))
+            self._paint_image_row_item(item, path)
             self.image_list.addItem(item)
+        self._rebuild_thumbnail_grid()
         if normalized_paths:
             self.image_list.setCurrentRow(0)
         else:
             self._sync_current_state_views()
+        self._rebuild_vector_list()
+        self._refresh_vector_rows_for_workspace()
+        self._sync_frame_navigation_controls()
+        self._log_matching_gaps_after_refresh(self._matching_report())
 
     def _find_matching_cif_path(self, image_path: str) -> str | None:
         return self._workspace.resolve_cif_path(image_path)
 
     def _load_cif_overlay_polygons(self, image_path: str) -> list[PolygonData]:
+        stem_key = Path(image_path).stem.lower()
         cif_path = self._find_matching_cif_path(image_path)
         if not cif_path:
+            self._cif_load_failure_stems.discard(stem_key)
             return []
         try:
             referenced_image, image_size, polygons = load_polygons_cif(cif_path)
         except Exception as exc:
+            self._cif_load_failure_stems.add(stem_key)
             self._append_log(self._tr("cif_load_failed_log", file_name=Path(cif_path).name, error=exc))
             return []
+        self._cif_load_failure_stems.discard(stem_key)
         if referenced_image and Path(referenced_image).stem.lower() != Path(image_path).stem.lower():
             self._append_log(
                 self._tr(
@@ -5554,15 +6751,20 @@ class PolygonExtractionWidget(QWidget):
             load_source_image=load_image_color,
             load_cif_overlay=self._load_cif_overlay_polygons,
         )
-        self._viewed_image_paths.add(str(Path(image_result.image_path)))
+        if not self._is_extraction_mode_enabled():
+            self._viewed_image_paths.add(str(Path(image_result.image_path)))
         if image_result.state is not None and not image_result.cache_hit and not image_result.reused_current_state:
             image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
             image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
         if image_result.reused_current_state:
             self._update_frame_item_status(image_result.image_path)
+            self._update_thumbnail_grid_selection()
+            self._sync_frame_navigation_controls()
             return
         self._sync_current_state_views()
         self._update_frame_item_status(image_result.image_path)
+        self._update_thumbnail_grid_selection()
+        self._sync_frame_navigation_controls()
         if (
             image_result.prepared_image_required
             and image_result.state is not None
@@ -5574,6 +6776,11 @@ class PolygonExtractionWidget(QWidget):
         else:
             self._append_log(self._tr("loaded_image_log", image_path=image_result.image_path))
         self._try_extract_if_recognition_enabled()
+
+    def _is_extraction_mode_enabled(self) -> bool:
+        if not hasattr(self, "recognition_mode_combo"):
+            return False
+        return str(self.recognition_mode_combo.currentData() or "") != "disabled"
 
     def get_polygons(self) -> list[PolygonData]:
         return self.polygon_editor.get_polygons()
@@ -5637,6 +6844,8 @@ class PolygonExtractionWidget(QWidget):
         if not target_directory:
             self._append_log(self._tr("output_directory_not_set_log"))
             return {}
+        self._workspace.update_current_polygons(self.get_polygons())
+        had_vector_edits = self._workspace.current_image_has_changes()
         saved_files = save_result_bundle(
             output_directory=target_directory,
             image_path=current_image_path,
@@ -5651,6 +6860,12 @@ class PolygonExtractionWidget(QWidget):
         )
         if saved_files:
             self._append_log(self._tr("saved_result_log", saved_files=saved_files))
+            saved_key = str(Path(current_image_path))
+            if had_vector_edits:
+                self._persisted_highlight_paths.add(saved_key)
+            self._workspace.sync_polygon_reference_to_current(saved_key)
+            self._update_frame_item_status(current_image_path)
+            self._update_vector_edit_status_label()
         return saved_files
 
     def start_batch_processing(

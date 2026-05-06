@@ -8,13 +8,19 @@ from .domain import PolygonData
 
 
 class AddPolygonCommand(QUndoCommand):
-    def __init__(self, scene: Any, polygon: PolygonData) -> None:
+    def __init__(self, scene: Any, polygon: PolygonData, *, select_after_redo: bool = False) -> None:
         super().__init__("Add polygon")
         self._scene = scene
         self._polygon = polygon.clone()
+        self._select_after_redo = bool(select_after_redo)
 
     def redo(self) -> None:
-        self._scene._add_polygon_internal(self._polygon.clone())
+        polygon = self._polygon.clone()
+        if self._select_after_redo:
+            self._scene._add_polygon_internal(polygon, emit_signal=True, refresh=False)
+            self._scene.select_polygon(polygon.id)
+            return
+        self._scene._add_polygon_internal(polygon, emit_signal=True, refresh=True)
 
     def undo(self) -> None:
         self._scene._remove_polygon_internal(self._polygon.id)
@@ -105,3 +111,25 @@ class MovePolygonCommand(QUndoCommand):
 
     def undo(self) -> None:
         self._scene._replace_polygon_points_internal(self._polygon_id, self._old_points)
+
+
+class ReplacePolygonSetCommand(QUndoCommand):
+    """Replace the whole polygon layer (used for geometry post-processing with correct undo)."""
+
+    def __init__(
+        self,
+        scene: Any,
+        polygons_before: list[PolygonData],
+        polygons_after: list[PolygonData],
+        description: str = "Vector geometry cleanup",
+    ) -> None:
+        super().__init__(description)
+        self._scene = scene
+        self._before = [polygon.clone() for polygon in polygons_before]
+        self._after = [polygon.clone() for polygon in polygons_after]
+
+    def redo(self) -> None:
+        self._scene._bulk_restore_polygons(self._after, emit_signal=True)
+
+    def undo(self) -> None:
+        self._scene._bulk_restore_polygons(self._before, emit_signal=True)

@@ -760,7 +760,43 @@ def _contour_depth(contour_index: int, hierarchy: np.ndarray, cache: dict[int, i
     return depth
 
 
-def _append_hierarchy_holes(
+def _hierarchy_polygon_from_contour(
+    contour: np.ndarray,
+    *,
+    polygon_id: int,
+    parent_id: int,
+    is_hole: bool,
+    config: MetalRecoveryConfig,
+    image_shape: tuple[int, int],
+) -> PolygonData | None:
+    raw_pts = [(float(contour[i][0][0]), float(contour[i][0][1])) for i in range(len(contour))]
+    points = _contour_to_polygon(
+        contour,
+        epsilon=config.epsilon_simplify,
+        approx_enabled=config.approximation_enabled,
+        min_angle_deg=config.min_polygon_angle_deg,
+    )
+    topo_pts = points if len(points) >= 3 else raw_pts
+    topo_pts, valid, _reason = _repair_contour_polygon_for_topology(contour, topo_pts, config, image_shape)
+    if valid and len(topo_pts) >= 3:
+        points = topo_pts
+    use_pts = points if len(points) >= 3 else raw_pts
+    if len(use_pts) < 3:
+        return None
+
+    polygon = PolygonData(
+        id=polygon_id,
+        points=use_pts,
+        is_hole=is_hole,
+        parent_id=parent_id,
+        category="conductor",
+        shape_hint="polygon",
+    )
+    polygon.area, polygon.perimeter, polygon.bbox = compute_polygon_metrics(polygon.points)
+    return polygon
+
+
+def _append_hierarchy_descendants(
     accepted: list[PolygonData],
     accepted_mask: np.ndarray,
     raw_contours: tuple[np.ndarray, ...],
@@ -772,48 +808,77 @@ def _append_hierarchy_holes(
         return 0
     h, w = accepted_mask.shape[:2]
     depth_cache: dict[int, int] = {}
+    children_by_parent: dict[int, list[int]] = {}
+    for idx in range(min(len(raw_contours), hierarchy.shape[0])):
+        parent_index = int(hierarchy[idx][3])
+        if parent_index >= 0:
+            children_by_parent.setdefault(parent_index, []).append(idx)
+
     added = 0
     next_id = max((polygon.id for polygon in accepted), default=0) + 1
-    for idx, contour in enumerate(raw_contours):
-        if contour is None or len(contour) < 3 or idx >= hierarchy.shape[0]:
-            continue
-        parent_index = int(hierarchy[idx][3])
-        parent_id = contour_to_polygon_id.get(parent_index)
-        if parent_id is None:
-            continue
-        depth = _contour_depth(idx, hierarchy, depth_cache)
-        if depth % 2 == 0:
-            continue
-        raw_pts = [(float(contour[i][0][0]), float(contour[i][0][1])) for i in range(len(contour))]
-        points = _contour_to_polygon(
-            contour,
-            epsilon=config.epsilon_simplify,
-            approx_enabled=config.approximation_enabled,
-            min_angle_deg=config.min_polygon_angle_deg,
-        )
-        topo_pts = points if len(points) >= 3 else raw_pts
-        topo_pts, valid, _reason = _repair_contour_polygon_for_topology(contour, topo_pts, config, (h, w))
-        if valid and len(topo_pts) >= 3:
-            points = topo_pts
-        use_pts = points if len(points) >= 3 else raw_pts
-        if len(use_pts) < 3:
-            continue
-        hole = PolygonData(
-            id=next_id,
-            points=use_pts,
-            is_hole=True,
-            parent_id=parent_id,
-            category="conductor",
-            shape_hint="polygon",
-        )
-        hole.area, hole.perimeter, hole.bbox = compute_polygon_metrics(hole.points)
-        if abs(float(hole.area)) < float(config.min_inner_hole_area):
-            continue
-        accepted.append(hole)
-        cv2.drawContours(accepted_mask, [contour], 0, 0, thickness=-1)
-        next_id += 1
-        added += 1
+
+    def visit_children(parent_contour_index: int, parent_polygon_id: int) -> None:
+        nonlocal added, next_id
+        for idx in children_by_parent.get(parent_contour_index, []):
+            contour = raw_contours[idx]
+            if contour is None or len(contour) < 3:
+                continue
+            depth = _contour_depth(idx, hierarchy, depth_cache)
+            is_hole = bool(depth % 2)
+            polygon = _hierarchy_polygon_from_contour(
+                contour,
+                polygon_id=next_id,
+                parent_id=parent_polygon_id,
+                is_hole=is_hole,
+                config=config,
+                image_shape=(h, w),
+            )
+            accepted_current = False
+            if polygon is not None:
+                if is_hole:
+                    accepted_current = abs(float(polygon.area)) >= float(config.min_inner_hole_area)
+                else:
+                    accepted_current = (
+                        abs(float(polygon.area)) + 1e-3 >= float(config.min_area)
+                        and float(polygon.perimeter) + 1e-3 >= float(config.min_perimeter)
+                    )
+                    if accepted_current:
+                        width_px, _wm = estimate_effective_polygon_width_px(accepted_mask, contour)
+                        accepted_current = width_px + 1e-3 >= float(config.min_width_px)
+
+            if accepted_current and polygon is not None:
+                accepted.append(polygon)
+                contour_to_polygon_id[idx] = polygon.id
+                cv2.drawContours(accepted_mask, [contour], 0, 0 if is_hole else 255, thickness=-1)
+                child_parent_polygon_id = polygon.id
+                next_id += 1
+                added += 1
+            else:
+                child_parent_polygon_id = parent_polygon_id
+            visit_children(idx, child_parent_polygon_id)
+
+    for root_contour_index, root_polygon_id in list(contour_to_polygon_id.items()):
+        visit_children(root_contour_index, root_polygon_id)
     return added
+
+
+def _append_hierarchy_holes(
+    accepted: list[PolygonData],
+    accepted_mask: np.ndarray,
+    raw_contours: tuple[np.ndarray, ...],
+    hierarchy: np.ndarray,
+    contour_to_polygon_id: dict[int, int],
+    config: MetalRecoveryConfig,
+) -> int:
+    """Backward-compatible wrapper for the full RETR_TREE descendant import."""
+    return _append_hierarchy_descendants(
+        accepted,
+        accepted_mask,
+        raw_contours,
+        hierarchy,
+        contour_to_polygon_id,
+        config,
+    )
 
 
 def _renumber_polygons_preserving_parents(polygons: list[PolygonData]) -> None:

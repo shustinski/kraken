@@ -10,8 +10,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtBoundSignal
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtCore import Qt, pyqtBoundSignal
+from PyQt6.QtWidgets import QApplication, QListWidgetItem, QWidget
 
 from contour.widget import PolygonExtractionWidget
 
@@ -86,6 +86,54 @@ class WidgetSmokeTests(unittest.TestCase):
             settings = widget._current_contour_settings()
             self.assertEqual(settings.heuristic_background_sigma, 25.0)
             self.assertEqual(settings.via_search_mode, "heuristic")
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_extraction_hole_fill_area_drives_manual_postprocess(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            widget.min_inner_hole_area_spin.setValue(42.0)
+
+            self.assertEqual(widget._current_contour_settings().min_inner_hole_area, 42.0)
+            self.assertEqual(widget._vector_geometry_settings_from_widgets().min_hole_area_to_remove_px2, 42.0)
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_conductor_display_defaults_and_advanced_wide_gradient(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            self.assertTrue(widget.metal_show_rejected_checkbox.isChecked())
+            self.assertFalse(widget.metal_show_border_checkbox.isChecked())
+            self.assertFalse(widget.metal_basic_group.isAncestorOf(widget.metal_use_wide_gradient_checkbox))
+            self.assertTrue(widget.metal_advanced_group.isAncestorOf(widget.metal_use_wide_gradient_checkbox))
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_image_list_selection_selects_thumbnail_grid_item(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            paths = [r"d:\frames\a.png", r"d:\frames\b.png"]
+            widget._workspace.replace_image_selection(paths, is_supported_image=lambda _path: True)
+            for path in paths:
+                image_item = QListWidgetItem(Path(path).stem)
+                image_item.setData(Qt.ItemDataRole.UserRole, path)
+                widget.image_list.addItem(image_item)
+
+                thumbnail_item = QListWidgetItem()
+                thumbnail_item.setData(Qt.ItemDataRole.UserRole, path)
+                widget.thumbnail_grid.addItem(thumbnail_item)
+
+            def _fake_load_image(path: str) -> None:
+                widget._workspace._current_image_path = path
+
+            widget.load_image = _fake_load_image  # type: ignore[method-assign]
+            widget.image_list.setCurrentRow(1)
+
+            self.assertEqual(widget.thumbnail_grid.currentRow(), 1)
+            self.assertEqual(widget.thumbnail_grid.currentItem().data(Qt.ItemDataRole.UserRole), paths[1])
         finally:
             widget.close()
             widget.deleteLater()

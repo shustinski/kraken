@@ -144,8 +144,8 @@ EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
         "Minimum contour hierarchy depth. Zero means outer contours.",
     ),
     "min_inner_hole_area": (
-        "Минимальная площадь внутренних контуров. Внутренний контур с меньшей площадью будет удалён.",
-        "Minimum inner-contour area. Inner contours below this area are removed.",
+        "Минимальная площадь отверстия для заливки. Меньшие отверстия удаляются при извлечении проводников и ручной постобработке.",
+        "Minimum hole area to fill. Smaller holes are removed during conductor extraction and manual post-processing.",
     ),
     "max_hierarchy_depth": (
         "Максимальная глубина в иерархии контуров.",
@@ -522,8 +522,8 @@ EXTRACTION_HELP_TEXTS.update(
             "Minimum contour nesting depth. Zero means an outer contour; higher values select inner contours.",
         ),
         "min_inner_hole_area": (
-            "Минимальная площадь внутреннего контура. Внутренние контуры с меньшей площадью удаляются.",
-            "Minimum inner-contour area. Inner contours below this area are removed.",
+            "Минимальная площадь отверстия для заливки. Меньшие отверстия удаляются при извлечении проводников и ручной постобработке.",
+            "Minimum hole area to fill. Smaller holes are removed during conductor extraction and manual post-processing.",
         ),
         "max_hierarchy_depth": (
             "Максимальная глубина вложенности контура. Ограничивает, насколько глубоко искать внутренние контуры.",

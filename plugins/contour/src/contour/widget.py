@@ -25,6 +25,7 @@ from PyQt6.QtGui import QBrush, QColor, QIcon, QKeySequence, QPainter, QPen, QPi
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -236,6 +237,7 @@ class PolygonExtractionWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._apply_contour_application_icon()
         self.setObjectName("polygonExtractionWidget")
         self._ui_language = active_language()
         self._path_settings_store = WidgetPathSettingsStore()
@@ -362,6 +364,20 @@ class PolygonExtractionWidget(QWidget):
         self._set_default_extraction_disabled()
         self.set_ui_language(self._ui_language)
         self._update_extra_layers_enabled_state()
+
+    @staticmethod
+    def _apply_contour_application_icon() -> None:
+        app = QApplication.instance()
+        if app is None or not app.windowIcon().isNull():
+            return
+        plugin_root = Path(__file__).resolve().parents[2]
+        for icon_path in (
+            plugin_root / "resources" / "icons" / "contour.png",
+            plugin_root / "resources" / "icons" / "contour.ico",
+        ):
+            if icon_path.exists():
+                app.setWindowIcon(QIcon(str(icon_path)))
+                return
 
     def _build_ui(self) -> None:
         return build_ui(self)
@@ -511,6 +527,19 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_vector_geometry_settings(self._vector_geometry_settings_from_widgets())
 
+    def _sync_vector_geom_hole_area_from_extraction(self, *, persist: bool = False) -> None:
+        if not hasattr(self, "min_inner_hole_area_spin") or not hasattr(self, "vector_geom_min_hole_spin"):
+            return
+        with QSignalBlocker(self.vector_geom_min_hole_spin):
+            self.vector_geom_min_hole_spin.setValue(float(self.min_inner_hole_area_spin.value()))
+        self._apply_vector_geometry_editor_config()
+        if persist:
+            self._save_persisted_display_settings()
+
+    def _on_min_inner_hole_area_changed(self, *_args) -> None:
+        self._sync_vector_geom_hole_area_from_extraction(persist=True)
+        self._on_extraction_settings_changed()
+
     def _set_default_extraction_disabled(self) -> None:
         if not hasattr(self, "recognition_mode_combo"):
             return
@@ -561,8 +590,6 @@ class PolygonExtractionWidget(QWidget):
         form.addRow(self.vector_geom_clip_checkbox)
         form.addRow("Минимальная площадь внешнего объекта, px²", self.vector_geom_min_outer_spin)
         self.vector_geom_min_outer_label_widget = form.labelForField(self.vector_geom_min_outer_spin)
-        form.addRow("Минимальная площадь отверстия для заливки, px²", self.vector_geom_min_hole_spin)
-        self.vector_geom_min_hole_label_widget = form.labelForField(self.vector_geom_min_hole_spin)
         form.addRow(self.vector_geom_merge_checkbox)
         form.addRow("Минимальный угол острого выброса, °", self.vector_geom_spike_angle_spin)
         self.vector_geom_spike_angle_label_widget = form.labelForField(self.vector_geom_spike_angle_spin)
@@ -3859,6 +3886,7 @@ class PolygonExtractionWidget(QWidget):
             return
         if current is None:
             self._sync_frame_navigation_controls()
+            self._update_thumbnail_grid_selection()
             return
         image_path = current.data(Qt.ItemDataRole.UserRole)
         if image_path:
@@ -3868,6 +3896,7 @@ class PolygonExtractionWidget(QWidget):
                 self._append_log(self._tr("failed_to_load_image_log", image_path=image_path, error=exc))
                 QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
         self._sync_frame_navigation_controls()
+        self._update_thumbnail_grid_selection()
 
     def _prune_tagged_sets_for_images(self, retained_paths: list[str]) -> None:
         retained = {str(Path(p)) for p in retained_paths}
@@ -5228,6 +5257,7 @@ class PolygonExtractionWidget(QWidget):
             self._update_via_size_controls_state()
             self._update_via_threshold_controls_state()
             self._update_extraction_profile_controls_state()
+            self._sync_vector_geom_hole_area_from_extraction()
         finally:
             self._suspend_fixed_via_updates = False
             self._ignore_extraction_profile_change = False

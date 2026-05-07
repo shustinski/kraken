@@ -387,9 +387,9 @@ class ContourExtractionSettings:
     metal_display_show_conductors: bool = True
     metal_display_show_mask: bool = True
     metal_display_show_contours: bool = True
-    metal_display_show_rejected: bool = False
+    metal_display_show_rejected: bool = True
     metal_display_show_suspicious: bool = True
-    metal_display_show_border_highlight: bool = True
+    metal_display_show_border_highlight: bool = False
     metal_debug_visual: str = "overlay"
     metal_overlay_opacity: float = 0.45
     metal_use_wide_conductor_gradient: bool = False
@@ -785,10 +785,10 @@ class ContourExtractionSettings:
             metal_display_show_conductors=bool(payload.get("metal_display_show_conductors", True)),
             metal_display_show_mask=bool(payload.get("metal_display_show_mask", True)),
             metal_display_show_contours=bool(payload.get("metal_display_show_contours", True)),
-            metal_display_show_rejected=bool(payload.get("metal_display_show_rejected", False)),
+            metal_display_show_rejected=bool(payload.get("metal_display_show_rejected", True)),
             metal_display_show_suspicious=bool(payload.get("metal_display_show_suspicious", True)),
             metal_display_show_border_highlight=bool(
-                payload.get("metal_display_show_border_highlight", True)
+                payload.get("metal_display_show_border_highlight", False)
             ),
             metal_debug_visual=str(payload.get("metal_debug_visual", "overlay") or "overlay"),
             metal_overlay_opacity=max(

@@ -125,7 +125,7 @@ from .pipeline import (
     get_operation_display_name,
     get_parameter_display_label,
 )
-from .serializers import load_polygons_cif, save_polygons_cif, save_result_bundle
+from .serializers import load_polygons_vector, save_polygons_vector, save_result_bundle
 from .ui.builders import (
     build_display_tab,
     build_editor_toolbar,
@@ -298,6 +298,12 @@ class PolygonExtractionWidget(QWidget):
         self._preview_running_signature: tuple[str, str, str] | None = None
         self._preview_pending_signature: tuple[str, str, str] | None = None
         self._preview_run_cancel: threading.Event | None = None
+        self._preview_running_request_for_progress: PreviewProcessingRequest | None = None
+        self._busy_progress_timer = QTimer(self)
+        self._busy_progress_timer.setInterval(250)
+        self._busy_progress_timer.timeout.connect(self._advance_busy_progress)
+        self._busy_progress_value = 0
+        self._busy_progress_stage = ""
         self._help_menu: QMenu | None = None
         self._color_pick_pipeline_row: int | None = None
         self._via_template_images: list[np.ndarray] = []
@@ -527,17 +533,7 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_vector_geometry_settings(self._vector_geometry_settings_from_widgets())
 
-    def _sync_vector_geom_hole_area_from_extraction(self, *, persist: bool = False) -> None:
-        if not hasattr(self, "min_inner_hole_area_spin") or not hasattr(self, "vector_geom_min_hole_spin"):
-            return
-        with QSignalBlocker(self.vector_geom_min_hole_spin):
-            self.vector_geom_min_hole_spin.setValue(float(self.min_inner_hole_area_spin.value()))
-        self._apply_vector_geometry_editor_config()
-        if persist:
-            self._save_persisted_display_settings()
-
     def _on_min_inner_hole_area_changed(self, *_args) -> None:
-        self._sync_vector_geom_hole_area_from_extraction(persist=True)
         self._on_extraction_settings_changed()
 
     def _set_default_extraction_disabled(self) -> None:
@@ -590,6 +586,8 @@ class PolygonExtractionWidget(QWidget):
         form.addRow(self.vector_geom_clip_checkbox)
         form.addRow("Минимальная площадь внешнего объекта, px²", self.vector_geom_min_outer_spin)
         self.vector_geom_min_outer_label_widget = form.labelForField(self.vector_geom_min_outer_spin)
+        form.addRow("Минимальная площадь внутренней области для заливки, px²", self.vector_geom_min_hole_spin)
+        self.vector_geom_min_hole_label_widget = form.labelForField(self.vector_geom_min_hole_spin)
         form.addRow(self.vector_geom_merge_checkbox)
         form.addRow("Минимальный угол острого выброса, °", self.vector_geom_spike_angle_spin)
         self.vector_geom_spike_angle_label_widget = form.labelForField(self.vector_geom_spike_angle_spin)
@@ -1465,6 +1463,124 @@ class PolygonExtractionWidget(QWidget):
                     "Enable extra debug image maps in the gradient / inspect views.",
                 )
             )
+        via_help: list[tuple[str, str, str]] = [
+            (
+                "heuristic_background_sigma_spin",
+                "Размер размытия для оценки фона перед поиском локальных пиков.\n"
+                "Увеличение убирает крупный фон и помогает на плавной засветке, но может ослабить близкие via.\n"
+                "Уменьшение делает поиск локальнее и быстрее реагирует на мелкие перепады, но чаще принимает шум.",
+                "Background blur sigma. Higher removes broad illumination; lower is more local and noisier.",
+            ),
+            (
+                "heuristic_analysis_window_scale_spin",
+                "Размер окна анализа вокруг найденного пика в долях диаметра via.\n"
+                "Увеличение даёт больше контекста для формы и кольца, но медленнее и может захватить соседние дорожки.\n"
+                "Уменьшение ускоряет проверку и лучше для плотных via, но хуже оценивает окружение.",
+                "Analysis window in via diameters. Higher = more context/slower; lower = faster/tighter.",
+            ),
+            (
+                "heuristic_min_center_contrast_spin",
+                "Минимальная разница яркости центра и окружения.\n"
+                "Увеличение уменьшает ложные срабатывания на слабой текстуре, но пропускает тусклые via.\n"
+                "Уменьшение повышает полноту, но добавляет шумовые кандидаты.",
+                "Minimum center-vs-surround contrast. Higher = cleaner; lower = more recall.",
+            ),
+            (
+                "heuristic_min_peak_prominence_spin",
+                "Насколько пик должен выделяться внутри локального окна.\n"
+                "Увеличение отсекает плоские пятна и шум, но может потерять размытые via.\n"
+                "Уменьшение принимает слабые пики и увеличивает число проверяемых кандидатов.",
+                "Minimum local peak prominence. Higher = fewer candidates; lower = more recall/slower.",
+            ),
+            (
+                "heuristic_min_compactness_spin",
+                "Минимальная компактность локального компонента.\n"
+                "Увеличение строже требует круглую/плотную форму via и режет вытянутые артефакты.\n"
+                "Уменьшение допускает деформированные via, но чаще пропускает куски дорожек.",
+                "Minimum component compactness. Higher = rounder; lower = more tolerant.",
+            ),
+            (
+                "heuristic_max_elongation_spin",
+                "Максимальная вытянутость компонента.\n"
+                "Уменьшение сильнее отбрасывает линии и края дорожек.\n"
+                "Увеличение допускает вытянутые/размытые via, но растит ложные на трассах.",
+                "Maximum elongation. Lower rejects lines; higher tolerates stretched candidates.",
+            ),
+            (
+                "heuristic_line_penalty_spin",
+                "Штраф за похожесть на линию.\n"
+                "Увеличение сильнее снижает балл кандидатов на дорожках.\n"
+                "Уменьшение помогает via, слитым с проводником, но добавляет ложные вдоль линий.",
+                "Line penalty. Higher suppresses trace-like detections; lower is more permissive.",
+            ),
+            (
+                "heuristic_border_penalty_spin",
+                "Штраф для кандидатов у края окна/кадра.\n"
+                "Увеличение убирает неполные объекты у границ.\n"
+                "Уменьшение сохраняет via около края, но может принять обрезанные артефакты.",
+                "Border penalty. Higher rejects edge candidates; lower keeps edge vias.",
+            ),
+            (
+                "heuristic_local_binarize_percentile_spin",
+                "Процентиль локальной бинаризации компонента.\n"
+                "Увеличение делает компонент меньше и строже по яркости.\n"
+                "Уменьшение расширяет компонент и помогает слабым via, но может слить его с дорожкой.",
+                "Local binarization percentile. Higher = stricter/smaller; lower = larger/more tolerant.",
+            ),
+            (
+                "heuristic_min_abs_peak_spin",
+                "Абсолютный минимум отклика пика до детальной проверки.\n"
+                "Увеличение ускоряет поиск на шумных кадрах, потому что проверяется меньше seed-пиков.\n"
+                "Уменьшение ищет слабые via, но может сильно замедлить обработку.",
+                "Absolute seed floor. Higher is faster/stricter; lower finds weak vias but can be slower.",
+            ),
+            (
+                "heuristic_use_bilateral_checkbox",
+                "Билатеральное шумоподавление вместо медианного.\n"
+                "Включение лучше сохраняет края, но обычно медленнее.\n"
+                "Выключение быстрее и достаточно для большинства SEM-кадров.",
+                "Use bilateral denoise. Preserves edges but is slower than median filtering.",
+            ),
+            (
+                "via_template_min_score_spin",
+                "Минимальная корреляция с шаблоном.\n"
+                "Увеличение уменьшает ложные совпадения, но пропускает отличающиеся via.\n"
+                "Уменьшение повышает полноту и число кандидатов.",
+                "Template correlation threshold. Higher = cleaner; lower = more matches.",
+            ),
+            (
+                "via_template_nms_distance_spin",
+                "Расстояние подавления дублей для шаблонного поиска.\n"
+                "Увеличение сильнее сливает близкие совпадения.\n"
+                "Уменьшение сохраняет соседние via, но может давать дубли одного отверстия.",
+                "Template NMS distance. Higher merges duplicates; lower keeps close matches.",
+            ),
+            (
+                "via_template_scale_min_spin",
+                "Минимальный масштаб шаблона.\n"
+                "Уменьшение позволяет находить via меньше сохранённого шаблона, но добавляет лишние масштабы и замедляет поиск.\n"
+                "Увеличение сужает поиск и ускоряет, но может пропустить маленькие via.",
+                "Minimum template scale. Lower finds smaller vias but is slower.",
+            ),
+            (
+                "via_template_scale_max_spin",
+                "Максимальный масштаб шаблона.\n"
+                "Увеличение позволяет находить via крупнее шаблона, но добавляет вычисления и ложные совпадения.\n"
+                "Уменьшение ускоряет и делает поиск строже, но может пропустить крупные via.",
+                "Maximum template scale. Higher finds larger vias but is slower/noisier.",
+            ),
+            (
+                "via_template_scale_step_spin",
+                "Шаг перебора масштаба шаблона.\n"
+                "Увеличение ускоряет поиск, но может промахнуться по размеру.\n"
+                "Уменьшение точнее, но заметно медленнее.",
+                "Template scale step. Higher is faster; lower is more accurate but slower.",
+            ),
+        ]
+        for attr, ru_text, en_text in via_help:
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.setToolTip(tt(ru_text, en_text))
         if getattr(self, "metal_preset_combo", None) is not None:
             self.metal_preset_combo.setToolTip(
                 tt(
@@ -1838,6 +1954,17 @@ class PolygonExtractionWidget(QWidget):
             (self.via_roundness_label_widget, self.via_roundness_spin),
         ]
         in_via_extraction = rec in ("via", "disabled")
+        if hasattr(self, "contour_group"):
+            if rec == "via":
+                self.contour_group.setTitle("")
+                self.contour_group.setFlat(True)
+                self.contour_group.setStyleSheet(
+                    "QGroupBox#contourExtractionGroup { border: 0; margin-top: 0; padding-top: 0; }"
+                )
+            else:
+                self.contour_group.setTitle(self._tr("contour_extraction_group"))
+                self.contour_group.setFlat(False)
+                self.contour_group.setStyleSheet("")
         for label_widget, field_widget in advanced_via_widgets:
             if label_widget is not None:
                 label_widget.setVisible(advanced and is_via_profile and in_via_extraction)
@@ -1944,7 +2071,55 @@ class PolygonExtractionWidget(QWidget):
         return mapping[key]
 
     def _busy_indicator_text(self) -> str:
+        if self._busy_progress_stage:
+            return self._busy_progress_stage
         return "Обработка..." if self._ui_language == "ru" else "Processing..."
+
+    def _preview_progress_stages(self) -> list[tuple[int, str]]:
+        ru = self._ui_language == "ru"
+        if getattr(self, "_preview_running_signature", None) is not None:
+            request = getattr(self, "_preview_running_request_for_progress", None)
+            settings = getattr(request, "contour_settings", None)
+            if getattr(settings, "object_type", "") == "via" or getattr(settings, "output_mode", "") == "box":
+                return [
+                    (12, "Подготовка изображения" if ru else "Preparing image"),
+                    (32, "Поиск ярких/тёмных пиков via" if ru else "Finding via peaks"),
+                    (58, "Проверка размера, формы и контраста" if ru else "Checking size, shape and contrast"),
+                    (78, "Подавление дублей" if ru else "Merging duplicate candidates"),
+                    (92, "Построение контуров via" if ru else "Building via contours"),
+                ]
+        return [
+            (18, "Подготовка изображения" if ru else "Preparing image"),
+            (48, "Построение маски" if ru else "Building mask"),
+            (76, "Извлечение контуров" if ru else "Extracting contours"),
+            (92, "Обновление редактора" if ru else "Updating editor"),
+        ]
+
+    def _reset_busy_progress(self, request: PreviewProcessingRequest | None = None) -> None:
+        self._preview_running_request_for_progress = request
+        self._busy_progress_value = 0
+        self._busy_progress_stage = self._preview_progress_stages()[0][1]
+        if hasattr(self, "preview_busy_progress"):
+            self.preview_busy_progress.setRange(0, 100)
+            self.preview_busy_progress.setValue(0)
+            self.preview_busy_progress.setFormat("%p%")
+
+    def _advance_busy_progress(self) -> None:
+        if self._preview_running_request_id is None:
+            return
+        stages = self._preview_progress_stages()
+        cap = stages[-1][0]
+        if self._busy_progress_value < cap:
+            step = 3 if self._busy_progress_value < 60 else 1
+            self._busy_progress_value = min(cap, self._busy_progress_value + step)
+        for threshold, label in stages:
+            if self._busy_progress_value <= threshold:
+                self._busy_progress_stage = label
+                break
+        if hasattr(self, "preview_busy_progress"):
+            self.preview_busy_progress.setValue(self._busy_progress_value)
+        if hasattr(self, "preview_busy_label"):
+            self.preview_busy_label.setText(f"{self._busy_indicator_text()} — {self._busy_progress_value}%")
 
     def _set_progress_status(self, key: str, **kwargs) -> None:
         self._progress_status_key = key
@@ -1956,6 +2131,8 @@ class PolygonExtractionWidget(QWidget):
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_ui_language(self._ui_language)
         self._retranslate_ui()
+        if hasattr(self, "recognition_mode_combo"):
+            self._update_extraction_profile_controls_state()
 
     def _retranslate_ui(self) -> None:
         retranslate_ui(self)
@@ -5257,7 +5434,6 @@ class PolygonExtractionWidget(QWidget):
             self._update_via_size_controls_state()
             self._update_via_threshold_controls_state()
             self._update_extraction_profile_controls_state()
-            self._sync_vector_geom_hole_area_from_extraction()
         finally:
             self._suspend_fixed_via_updates = False
             self._ignore_extraction_profile_change = False
@@ -5915,6 +6091,9 @@ class PolygonExtractionWidget(QWidget):
     def _set_recognition_status(self, kind: str, message: str | None = None) -> None:
         if not hasattr(self, "recognition_status_label"):
             return
+        if kind == "disabled":
+            self.recognition_status_label.clear()
+            return
         if self._ui_language == "ru":
             texts = {
                 "idle": "Готово",
@@ -5935,9 +6114,7 @@ class PolygonExtractionWidget(QWidget):
     def _current_save_options(self) -> SaveOptions:
         return SaveOptions(
             save_cif=self.save_cif_checkbox.isChecked(),
-            save_csv=self.save_csv_checkbox.isChecked(),
-            save_txt=self.save_txt_checkbox.isChecked(),
-            save_svg=self.save_svg_checkbox.isChecked(),
+            save_cv=self.save_cv_checkbox.isChecked(),
             save_preview=self.save_preview_checkbox.isChecked(),
         )
 
@@ -6051,7 +6228,7 @@ class PolygonExtractionWidget(QWidget):
         if can_cif:
             image_size = (int(current_state.source_image.shape[1]), int(current_state.source_image.shape[0]))
             try:
-                save_polygons_cif(
+                save_polygons_vector(
                     current_state.loaded_cif_path,
                     current_image_path,
                     current_polygons,
@@ -6482,6 +6659,8 @@ class PolygonExtractionWidget(QWidget):
         self._preview_running_signature = request_signature
         cancel = threading.Event()
         self._preview_run_cancel = cancel
+        self._reset_busy_progress(request)
+        self._busy_progress_timer.start()
         worker = PreviewProcessingRunnable(request_id=request_id, request=request, cancel_event=cancel)
         worker.signals.result.connect(self._on_preview_processing_result)
         worker.signals.error.connect(self._on_preview_processing_error)
@@ -6504,10 +6683,18 @@ class PolygonExtractionWidget(QWidget):
             )
         )
         if hasattr(self, "preview_busy_label"):
-            self.preview_busy_label.setText(self._busy_indicator_text())
+            suffix = f" — {self._busy_progress_value}%" if active and self._busy_progress_value > 0 else ""
+            self.preview_busy_label.setText(f"{self._busy_indicator_text()}{suffix}")
             self.preview_busy_label.setVisible(active)
         if hasattr(self, "preview_busy_progress"):
+            if active:
+                self.preview_busy_progress.setValue(self._busy_progress_value)
             self.preview_busy_progress.setVisible(active)
+        if active and self._preview_running_request_id is not None:
+            if not self._busy_progress_timer.isActive():
+                self._busy_progress_timer.start()
+        else:
+            self._busy_progress_timer.stop()
         if hasattr(self, "auto_tune_button"):
             self.auto_tune_button.setEnabled(self._auto_tune_running_request_id is None)
 
@@ -6607,6 +6794,9 @@ class PolygonExtractionWidget(QWidget):
             self._preview_running_request_id = None
             self._preview_running_signature = None
             self._preview_run_cancel = None
+            self._preview_running_request_for_progress = None
+            self._busy_progress_stage = ""
+            self._busy_progress_value = 0
         if self._preview_pending_request is not None and not self._preview_update_timer.isActive():
             self._start_pending_preview_processing()
         self._refresh_busy_indicator()
@@ -6746,7 +6936,7 @@ class PolygonExtractionWidget(QWidget):
             self._cif_load_failure_stems.discard(stem_key)
             return []
         try:
-            referenced_image, image_size, polygons = load_polygons_cif(cif_path)
+            referenced_image, image_size, polygons = load_polygons_vector(cif_path)
         except Exception as exc:
             self._cif_load_failure_stems.add(stem_key)
             self._append_log(self._tr("cif_load_failed_log", file_name=Path(cif_path).name, error=exc))

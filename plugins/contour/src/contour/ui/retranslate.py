@@ -475,9 +475,11 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     if self.max_hole_area_ratio_label_widget is not None:
         self.max_hole_area_ratio_label_widget.setText(self._tr("max_hole_area_ratio_label"))
     self.save_group.setTitle(self._tr("save_options_group"))
-    self.save_svg_checkbox.setText(self._tr("save_svg_checkbox"))
+    self.save_cif_checkbox.setText(self._tr("save_cif_checkbox"))
+    self.save_cv_checkbox.setText(self._tr("save_cv_checkbox"))
     self.save_preview_checkbox.setText(self._tr("save_preview_checkbox"))
-    self._set_common_tooltip(self.save_svg_checkbox, "save_svg")
+    self._set_common_tooltip(self.save_cif_checkbox, "save_cif")
+    self._set_common_tooltip(self.save_cv_checkbox, "save_cv")
     self._set_common_tooltip(self.save_preview_checkbox, "save_preview")
     self._apply_extraction_tooltips()
     self._renumber_fixed_via_rows()

@@ -62,6 +62,7 @@ class HeuristicViaDetectorConfig:
     nms_distance: int = 5
     min_final_score: float = 38.0
     min_distance_between_peaks: int = 0  # 0 = derive from min diameter
+    max_seed_count: int = 900
     min_peak_grey: float = 0.0  # absolute floor on response map for a seed
     background_sigma: float = 25.0
     analysis_window_scale: float = 3.0
@@ -115,6 +116,7 @@ class HeuristicViaDetectorConfig:
             "sensitivity": self.sensitivity,
             "nms_distance": self.nms_distance,
             "min_final_score": self.min_final_score,
+            "max_seed_count": self.max_seed_count,
             "background_sigma": self.background_sigma,
             "min_center_contrast": self.min_center_contrast,
             "min_peak_prominence": self.min_peak_prominence,

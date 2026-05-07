@@ -523,6 +523,7 @@ def build_extraction_tab(self) -> QWidget:
     layout.setSpacing(4)
 
     self.contour_group = QGroupBox("Contour extraction")
+    self.contour_group.setObjectName("contourExtractionGroup")
     contour_layout = QVBoxLayout(self.contour_group)
     contour_layout.setSpacing(4)
     contour_layout.setContentsMargins(8, 8, 8, 8)
@@ -1637,16 +1638,12 @@ def build_extraction_tab(self) -> QWidget:
     save_layout = QVBoxLayout(self.save_group)
     self.save_cif_checkbox = QCheckBox("CIF")
     self.save_cif_checkbox.setChecked(True)
-    self.save_csv_checkbox = QCheckBox("CSV")
-    self.save_txt_checkbox = QCheckBox("TXT")
-    self.save_svg_checkbox = QCheckBox("SVG preview")
+    self.save_cv_checkbox = QCheckBox("CV")
     self.save_preview_checkbox = QCheckBox("Overlay preview image")
     self.save_preview_checkbox.setChecked(False)
     for checkbox in [
         self.save_cif_checkbox,
-        self.save_csv_checkbox,
-        self.save_txt_checkbox,
-        self.save_svg_checkbox,
+        self.save_cv_checkbox,
         self.save_preview_checkbox,
     ]:
         save_layout.addWidget(checkbox)
@@ -1982,9 +1979,11 @@ def build_editor_toolbar(self) -> QWidget:
 
     self.preview_busy_label = QLabel(self._busy_indicator_text())
     self.preview_busy_progress = QProgressBar()
-    self.preview_busy_progress.setRange(0, 0)
-    self.preview_busy_progress.setTextVisible(False)
-    self.preview_busy_progress.setFixedWidth(88)
+    self.preview_busy_progress.setRange(0, 100)
+    self.preview_busy_progress.setValue(0)
+    self.preview_busy_progress.setFormat("%p%")
+    self.preview_busy_progress.setTextVisible(True)
+    self.preview_busy_progress.setFixedWidth(220)
     self.preview_busy_label.setVisible(False)
     self.preview_busy_progress.setVisible(False)
     layout.addWidget(self.preview_busy_label)

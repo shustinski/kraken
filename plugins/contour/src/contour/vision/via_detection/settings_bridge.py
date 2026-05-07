@@ -28,6 +28,7 @@ def _norm_polarity(v: Any) -> str:
 def heuristic_config_from_settings(settings: ContourExtractionSettings) -> HeuristicViaDetectorConfig:
     from ...application.processing import VIA_SIZE_MODE_FIXED, normalize_via_size_mode, normalize_via_search_sensitivity
 
+    sensitivity = normalize_via_search_sensitivity(getattr(settings, "via_search_sensitivity", "medium"))
     mode = normalize_via_size_mode(getattr(settings, "via_size_mode", "range") or "range")
     dmin = max(1, int(getattr(settings, "bright_via_diameter_min", 6) or 6))
     dmax = max(dmin, int(getattr(settings, "bright_via_diameter_max", 8) or 8))
@@ -40,10 +41,11 @@ def heuristic_config_from_settings(settings: ContourExtractionSettings) -> Heuri
         diameter_max=dmax,
         fixed_diameters=fixed,
         polarity=_norm_polarity(getattr(settings, "via_heuristic_polarity", "auto")),
-        sensitivity=normalize_via_search_sensitivity(getattr(settings, "via_search_sensitivity", "medium")),
+        sensitivity=sensitivity,
         nms_distance=max(0, int(getattr(settings, "bright_via_nms_distance", 5) or 0)),
         min_final_score=float(getattr(settings, "bright_via_min_final_score", 38.0) or 0.0),
         min_distance_between_peaks=0,
+        max_seed_count={"low": 500, "medium": 900, "high": 1400}.get(sensitivity, 900),
         min_peak_grey=float(getattr(settings, "heuristic_min_abs_peak", 0.0) or 0.0),
         background_sigma=float(getattr(settings, "heuristic_background_sigma", 25.0) or 25.0),
         analysis_window_scale=float(getattr(settings, "heuristic_analysis_window_scale", 3.0) or 3.0),

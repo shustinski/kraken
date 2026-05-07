@@ -1,0 +1,15 @@
+{
+  "format": "contour-vector",
+  "version": 2,
+  "image": {"path": "sample.png", "size": [80, 80]},
+  "objects": [
+    {
+      "type": "Polygon",
+      "id": 3,
+      "coordinates": [
+        [[10, 10], [70, 10], [70, 70], [10, 70], [10, 10]],
+        [[32, 32], [48, 32], [48, 48], [32, 48], [32, 32]]
+      ]
+    }
+  ]
+}

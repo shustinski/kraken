@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+VECTOR_FILE_SUFFIXES = frozenset({".cif", ".cv"})
+
 
 @dataclass(frozen=True, slots=True)
 class ImageCifMatchingReport:
@@ -35,12 +37,12 @@ def build_image_cif_matching_report(
 
 
 def index_cif_file_paths(paths: Iterable[str | Path]) -> dict[str, str]:
-    """Map lowercase stem → absolute resolved path for existing ``.cif`` files."""
+    """Map lowercase stem to absolute resolved path for existing vector files."""
 
     indexed: dict[str, str] = {}
     for raw in paths:
         candidate = Path(raw)
-        if candidate.is_file() and candidate.suffix.lower() == ".cif":
+        if candidate.is_file() and candidate.suffix.lower() in VECTOR_FILE_SUFFIXES:
             indexed[candidate.stem.lower()] = str(candidate.resolve())
     return indexed
 

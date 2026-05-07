@@ -32,6 +32,340 @@ def save_polygons_json(
     return output
 
 
+def _polygon_bbox_values(polygon: PolygonData) -> tuple[float, float, float, float]:
+    if polygon.points:
+        x_values = [float(point[0]) for point in polygon.points]
+        y_values = [float(point[1]) for point in polygon.points]
+        return min(x_values), min(y_values), max(x_values), max(y_values)
+    left, top, width, height = polygon.bbox
+    return float(left), float(top), float(left + width), float(top + height)
+
+
+def _cv_coord(value: float) -> int:
+    return int(round(float(value)))
+
+
+def _cv_ring(points: list[tuple[float, float]]) -> list[list[int]]:
+    ring = [[_cv_coord(x_coord), _cv_coord(y_coord)] for x_coord, y_coord in points]
+    if ring and ring[0] != ring[-1]:
+        ring.append(list(ring[0]))
+    return ring
+
+
+def _cv_object_from_polygon(polygon: PolygonData, holes: list[PolygonData]) -> dict[str, object]:
+    if polygon.shape_hint == "box" or polygon.category == "via":
+        left, top, right, bottom = _polygon_bbox_values(polygon)
+        width = max(0.0, right - left)
+        height = max(0.0, bottom - top)
+        if polygon.category == "via":
+            return {
+                "type": "Point",
+                "id": int(polygon.id),
+                "shape": "ellipse",
+                "center": [_cv_coord((left + right) / 2.0), _cv_coord((top + bottom) / 2.0)],
+                "diagonals": [_cv_coord(width), _cv_coord(height)],
+            }
+        return {
+            "type": "Point",
+            "id": int(polygon.id),
+            "shape": "rectangle",
+            "coordinates": [_cv_coord(left), _cv_coord(top), _cv_coord(right), _cv_coord(bottom)],
+        }
+
+    coordinates = [_cv_ring(polygon.points)]
+    coordinates.extend(_cv_ring(hole.points) for hole in holes if len(hole.points) >= 3)
+    return {
+        "type": "Polygon",
+        "id": int(polygon.id),
+        "coordinates": coordinates,
+    }
+
+
+def _cv_objects_from_polygons(polygons: list[PolygonData]) -> list[dict[str, object]]:
+    sorted_polygons = sorted(polygons, key=lambda item: item.id)
+    holes_by_parent: dict[int, list[PolygonData]] = {}
+    orphan_holes: list[PolygonData] = []
+    for polygon in sorted_polygons:
+        if not polygon.is_hole:
+            continue
+        if polygon.parent_id is None:
+            orphan_holes.append(polygon)
+        else:
+            holes_by_parent.setdefault(int(polygon.parent_id), []).append(polygon)
+
+    objects: list[dict[str, object]] = []
+    for polygon in sorted_polygons:
+        if polygon.is_hole:
+            continue
+        objects.append(_cv_object_from_polygon(polygon, holes_by_parent.get(int(polygon.id), [])))
+    for hole in orphan_holes:
+        clone = hole.clone()
+        clone.is_hole = False
+        clone.parent_id = None
+        objects.append(_cv_object_from_polygon(clone, []))
+    return objects
+
+
+def _cv_json_array(values: list[object], *, indent: int) -> str:
+    if all(isinstance(value, int) for value in values):
+        return "[" + ", ".join(str(value) for value in values) + "]"
+    if all(isinstance(value, list) and all(isinstance(coord, int) for coord in value) for value in values):
+        prefix = " " * indent
+        inner_prefix = " " * (indent + 2)
+        rows = []
+        for start in range(0, len(values), 8):
+            chunk = values[start : start + 8]
+            rows.append(", ".join(_cv_json_array(value, indent=indent + 2) for value in chunk))
+        if len(rows) == 1:
+            return "[" + rows[0] + "]"
+        tail_rows = [inner_prefix + row for row in rows[1:]]
+        return "[" + rows[0] + ",\n" + ",\n".join(tail_rows) + "\n" + prefix + "]"
+    return json.dumps(values, ensure_ascii=False, indent=2)
+
+
+def _cv_json_object(item: dict[str, object], *, indent: int) -> str:
+    prefix = " " * indent
+    child_prefix = " " * (indent + 2)
+    lines = [prefix + "{"]
+    entries = list(item.items())
+    for index, (key, value) in enumerate(entries):
+        suffix = "," if index < len(entries) - 1 else ""
+        key_text = json.dumps(str(key), ensure_ascii=False)
+        if key == "coordinates" and isinstance(value, list):
+            if item.get("type") == "Polygon":
+                ring_blocks = [_cv_json_array(ring, indent=indent + 4) for ring in value if isinstance(ring, list)]
+                coordinates = "[\n" + ",\n".join(" " * (indent + 4) + block for block in ring_blocks) + "\n" + child_prefix + "]"
+            else:
+                coordinates = _cv_json_array(value, indent=indent + 2)
+            lines.append(f"{child_prefix}{key_text}: {coordinates}{suffix}")
+        elif isinstance(value, list):
+            lines.append(f"{child_prefix}{key_text}: {_cv_json_array(value, indent=indent + 2)}{suffix}")
+        else:
+            lines.append(f"{child_prefix}{key_text}: {json.dumps(value, ensure_ascii=False)}{suffix}")
+    lines.append(prefix + "}")
+    return "\n".join(lines)
+
+
+def _dumps_cv_payload(payload: dict[str, object]) -> str:
+    objects = payload.get("objects", [])
+    lines = ["{"]
+    prefix = " " * 2
+    lines.append(f'{prefix}"format": {json.dumps(payload["format"], ensure_ascii=False)},')
+    lines.append(f'{prefix}"version": {json.dumps(payload["version"], ensure_ascii=False)},')
+    lines.append(f'{prefix}"image": {json.dumps(payload["image"], ensure_ascii=False)},')
+    lines.append(f'{prefix}"objects": [')
+    if isinstance(objects, list):
+        object_blocks = [_cv_json_object(item, indent=4) for item in objects if isinstance(item, dict)]
+        for index, block in enumerate(object_blocks):
+            suffix = "," if index < len(object_blocks) - 1 else ""
+            lines.append(block + suffix)
+    lines.append(f"{prefix}]")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def save_polygons_cv(
+    path: str | Path,
+    image_path: str,
+    polygons: list[PolygonData],
+    image_size: tuple[int, int] | None = None,
+    metadata: dict[str, object] | None = None,
+) -> Path:
+    output = Path(path)
+    payload: dict[str, object] = {
+        "format": "contour-vector",
+        "version": 2,
+        "image": {
+            "path": image_path,
+            **({"size": [int(image_size[0]), int(image_size[1])]} if image_size is not None else {}),
+        },
+        "objects": _cv_objects_from_polygons(polygons),
+    }
+    del metadata
+    output.write_text(_dumps_cv_payload(payload), encoding="utf-8")
+    return output
+
+
+def _as_float_pair(raw: object) -> tuple[float, float]:
+    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        raise ValueError("Point coordinates must contain at least two numbers")
+    return float(raw[0]), float(raw[1])
+
+
+def _cv_box_points(left: float, top: float, right: float, bottom: float) -> list[tuple[float, float]]:
+    return [(left, top), (right, top), (right, bottom), (left, bottom)]
+
+
+def _cv_point_points(item: dict[str, object]) -> tuple[list[tuple[float, float]], str, str]:
+    point_shape = str(item.get("shape") or "").lower()
+    raw_coordinates = item.get("coordinates", [])
+    if point_shape == "rectangle" or (
+        isinstance(raw_coordinates, (list, tuple)) and len(raw_coordinates) >= 4 and point_shape != "ellipse"
+    ):
+        if not isinstance(raw_coordinates, (list, tuple)) or len(raw_coordinates) < 4:
+            raise ValueError("Rectangle point requires [left, top, right, bottom] coordinates")
+        left = float(raw_coordinates[0])
+        top = float(raw_coordinates[1])
+        right = float(raw_coordinates[2])
+        bottom = float(raw_coordinates[3])
+        return _cv_box_points(left, top, right, bottom), "conductor", "box"
+
+    center_x, center_y = _as_float_pair(item.get("center", raw_coordinates))
+    raw_diameters = item.get("diagonals") or item.get("diameters")
+    if not isinstance(raw_diameters, (list, tuple)) or len(raw_diameters) < 2:
+        raise ValueError("Ellipse point requires diagonals [width, height]")
+    width, height = max(0.0, float(raw_diameters[0])), max(0.0, float(raw_diameters[1]))
+    half_width = width / 2.0
+    half_height = height / 2.0
+    ellipse_points = _cv_box_points(
+        center_x - half_width,
+        center_y - half_height,
+        center_x + half_width,
+        center_y + half_height,
+    )
+    return ellipse_points, "via", "box"
+
+
+def _cv_polygon_from_points(
+    *,
+    polygon_id: int,
+    points: list[tuple[float, float]],
+    is_hole: bool,
+    parent_id: int | None,
+) -> PolygonData | None:
+    if len(points) >= 2 and points[0] == points[-1]:
+        points = points[:-1]
+    if len(points) < 3:
+        return None
+    area, perimeter, bbox = compute_polygon_metrics(points)
+    return PolygonData(
+        id=polygon_id,
+        points=points,
+        is_hole=is_hole,
+        parent_id=parent_id,
+        category="conductor",
+        shape_hint="polygon",
+        area=area,
+        perimeter=perimeter,
+        bbox=bbox,
+    )
+
+
+def _cv_points_from_ring(raw_points: object) -> list[tuple[float, float]]:
+    if not isinstance(raw_points, (list, tuple)):
+        return []
+    return [
+        (float(point[0]), float(point[1]))
+        for point in raw_points
+        if isinstance(point, (list, tuple)) and len(point) >= 2
+    ]
+
+
+def _cv_object_id(item: dict[str, object], fallback_id: int) -> int:
+    return int(item.get("id", fallback_id))
+
+
+def _polygons_from_cv_object(
+    item: dict[str, object],
+    fallback_id: int,
+    generated_id_start: int,
+) -> tuple[list[PolygonData], int]:
+    geometry_type = str(item.get("type", "")).lower()
+    if geometry_type == "point":
+        points, default_category, default_shape = _cv_point_points(item)
+        area, perimeter, bbox = compute_polygon_metrics(points)
+        return [
+            PolygonData(
+                id=int(item.get("id", fallback_id)),
+                points=points,
+                is_hole=False,
+                parent_id=None,
+                category=default_category,
+                shape_hint=default_shape,
+                area=area,
+                perimeter=perimeter,
+                bbox=bbox,
+            )
+        ], generated_id_start
+    elif geometry_type == "polygon":
+        raw_rings = item.get("coordinates", [])
+        if not isinstance(raw_rings, (list, tuple)) or not raw_rings:
+            return [], generated_id_start
+    else:
+        return [], generated_id_start
+
+    parent_id = _cv_object_id(item, fallback_id)
+    polygons: list[PolygonData] = []
+    outer = _cv_polygon_from_points(
+        polygon_id=parent_id,
+        points=_cv_points_from_ring(raw_rings[0]),
+        is_hole=False,
+        parent_id=None,
+    )
+    if outer is None:
+        return [], generated_id_start
+    polygons.append(outer)
+    next_id = generated_id_start
+    for raw_hole in raw_rings[1:]:
+        hole = _cv_polygon_from_points(
+            polygon_id=next_id,
+            points=_cv_points_from_ring(raw_hole),
+            is_hole=True,
+            parent_id=parent_id,
+        )
+        if hole is not None:
+            polygons.append(hole)
+            next_id += 1
+    return polygons, next_id
+
+
+def load_polygons_cv(path: str | Path) -> tuple[str | None, tuple[int, int] | None, list[PolygonData]]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("CV vector file must contain an object")
+    image_payload = payload.get("image")
+    image_name: str | None = None
+    image_size: tuple[int, int] | None = None
+    if isinstance(image_payload, dict):
+        if image_payload.get("path") is not None:
+            image_name = str(image_payload.get("path"))
+        raw_size = image_payload.get("size")
+        if isinstance(raw_size, (list, tuple)) and len(raw_size) >= 2:
+            image_size = (int(raw_size[0]), int(raw_size[1]))
+    objects = payload.get("objects", [])
+    if not isinstance(objects, list):
+        raise ValueError("CV vector file objects must be a list")
+    polygons: list[PolygonData] = []
+    object_items = [item for item in objects if isinstance(item, dict)]
+    reserved_ids = {_cv_object_id(item, index + 1) for index, item in enumerate(object_items)}
+    next_generated_id = (max(reserved_ids) + 1) if reserved_ids else 1
+    for index, item in enumerate(object_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        loaded, next_generated_id = _polygons_from_cv_object(item, index, next_generated_id)
+        polygons.extend(loaded)
+    return image_name, image_size, polygons
+
+
+def load_polygons_vector(path: str | Path) -> tuple[str | None, tuple[int, int] | None, list[PolygonData]]:
+    vector_path = Path(path)
+    if vector_path.suffix.lower() == ".cv":
+        return load_polygons_cv(vector_path)
+    return load_polygons_cif(vector_path)
+
+
+def save_polygons_vector(
+    path: str | Path,
+    image_path: str,
+    polygons: list[PolygonData],
+    image_size: tuple[int, int],
+) -> Path:
+    vector_path = Path(path)
+    if vector_path.suffix.lower() == ".cv":
+        return save_polygons_cv(vector_path, image_path, polygons, image_size=image_size)
+    return save_polygons_cif(vector_path, image_path, polygons, image_size=image_size)
+
+
 def _parse_cif_int(value: str) -> int:
     normalized = str(value or "").strip().rstrip(";")
     if not normalized:
@@ -608,6 +942,9 @@ def save_result_bundle(
     if options.save_cif and image_size is not None:
         path = root / f"{stem}.cif"
         saved["cif"] = str(save_polygons_cif(path, image_path, polygons, image_size=image_size))
+    if options.save_cv:
+        path = root / f"{stem}.cv"
+        saved["cv"] = str(save_polygons_cv(path, image_path, polygons, image_size=image_size, metadata=metadata))
     if options.save_json:
         path = root / f"{stem}.json"
         saved["json"] = str(save_polygons_json(path, image_path, polygons, metadata))

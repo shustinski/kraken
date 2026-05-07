@@ -59,6 +59,7 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
         raw_seeds = _spread_points(seeds_d, min_sep, h, w)
     else:
         raw_seeds = _merge_seeds(list(seeds_b) + list(seeds_d), min_sep, h, w)
+    raw_seeds = _limit_seed_count(raw_seeds, bright_map, dark_map, int(config.max_seed_count))
 
     hyps: list[str]
     if polar in ("auto", str(ViaPolarity.AUTO)):
@@ -261,6 +262,25 @@ def _merge_seeds(allp: list[tuple[int, int]], min_dist: int, h: int, w: int) -> 
 
 def _spread_points(pts: list[tuple[int, int]], min_dist: int, h: int, w: int) -> list[tuple[int, int]]:
     return _grid_suppressed_points(pts, min_dist, h, w)
+
+
+def _limit_seed_count(
+    pts: list[tuple[int, int]],
+    bright_map: np.ndarray,
+    dark_map: np.ndarray,
+    max_count: int,
+) -> list[tuple[int, int]]:
+    if max_count <= 0 or len(pts) <= max_count:
+        return pts
+    h, w = bright_map.shape[:2]
+
+    def score(point: tuple[int, int]) -> int:
+        y, x = point
+        yy = max(0, min(h - 1, int(y)))
+        xx = max(0, min(w - 1, int(x)))
+        return max(int(bright_map[yy, xx]), int(dark_map[yy, xx]))
+
+    return sorted(pts, key=score, reverse=True)[:max_count]
 
 
 def _dedupe_by_score(dets: list[ViaDetection], min_dist: float) -> list[ViaDetection]:

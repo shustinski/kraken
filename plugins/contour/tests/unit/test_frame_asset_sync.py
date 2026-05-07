@@ -31,10 +31,12 @@ class FrameAssetSyncTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             kept = root / "one.cif"
+            kept_cv = root / "two.cv"
             kept.write_text("placeholder", encoding="utf-8")
+            kept_cv.write_text("placeholder", encoding="utf-8")
             missing = root / "gone.cif"
-            indexed = index_cif_file_paths([str(kept), str(missing)])
-        self.assertEqual(indexed, {"one": str(kept.resolve())})
+            indexed = index_cif_file_paths([str(kept), str(kept_cv), str(missing)])
+        self.assertEqual(indexed, {"one": str(kept.resolve()), "two": str(kept_cv.resolve())})
 
     def test_vector_status_prioritizes_missing_image_then_error_then_dirty(self) -> None:
         status_no_image = classify_vector_side_status(

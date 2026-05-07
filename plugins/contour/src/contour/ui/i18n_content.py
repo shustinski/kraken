@@ -864,8 +864,8 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Folder with images that will appear in the file list.",
     ),
     "cif_dir": (
-        "Папка с CIF-разметкой для наложения на изображения. Можно оставить пустой, если CIF не нужен.",
-        "Folder with CIF annotations to overlay on images. Leave empty if CIF is not needed.",
+        "Папка с векторной разметкой CIF/CV для наложения на изображения. Можно оставить пустой, если разметка не нужна.",
+        "Folder with CIF/CV vector annotations to overlay on images. Leave empty if annotations are not needed.",
     ),
     "output_dir": (
         "Папка, куда сохраняются результаты обработки и векторизации.",
@@ -880,8 +880,8 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Choose the folder with source images.",
     ),
     "browse_cif": (
-        "Выбрать папку с CIF-разметкой для наложения.",
-        "Choose the folder with CIF annotations for overlay.",
+        "Выбрать папку с CIF/CV-разметкой для наложения.",
+        "Choose the folder with CIF/CV annotations for overlay.",
     ),
     "browse_output": (
         "Выбрать папку для сохранения результатов.",
@@ -900,8 +900,8 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Pick individual image files instead of scanning the entire folder.",
     ),
     "merge_cif_files": (
-        "Добавить в индекс отдельные .cif файлы (по имени сопоставляются с изображением).",
-        "Add individual .cif files to the overlay index (matched by basename to images).",
+        "Добавить в индекс отдельные .cif или .cv файлы (по имени сопоставляются с изображением).",
+        "Add individual .cif or .cv files to the overlay index (matched by basename to images).",
     ),
     "sidebar_list_mode": (
         "Переключить список справа между кадрами и векторами из папки CIF.",
@@ -950,6 +950,14 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
     "save_current": (
         "Сохранить результат для текущего изображения в выходную папку.",
         "Save the current image result to the output folder.",
+    ),
+    "save_cif": (
+        "Сохранять векторную разметку в CIF.",
+        "Save vector annotations as CIF.",
+    ),
+    "save_cv": (
+        "Сохранять векторную разметку в текстовый .cv файл",
+        "Save vector annotations as text .cv file.",
     ),
     "export_dataset": (
         "Экспортировать текущий кадр и разметку в папку датасета.",

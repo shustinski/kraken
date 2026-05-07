@@ -879,6 +879,7 @@ class DisplaySettings:
 @dataclass(slots=True)
 class SaveOptions:
     save_cif: bool = True
+    save_cv: bool = False
     save_json: bool = False
     save_csv: bool = False
     save_txt: bool = False
@@ -888,6 +889,7 @@ class SaveOptions:
     def to_dict(self) -> dict[str, Any]:
         return {
             "save_cif": self.save_cif,
+            "save_cv": self.save_cv,
             "save_json": self.save_json,
             "save_csv": self.save_csv,
             "save_txt": self.save_txt,
@@ -899,6 +901,7 @@ class SaveOptions:
     def from_dict(cls, payload: dict[str, Any]) -> SaveOptions:
         return cls(
             save_cif=bool(payload.get("save_cif", True)),
+            save_cv=bool(payload.get("save_cv", False)),
             save_json=bool(payload.get("save_json", False)),
             save_csv=bool(payload.get("save_csv", False)),
             save_txt=bool(payload.get("save_txt", False)),

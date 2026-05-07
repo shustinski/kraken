@@ -90,13 +90,14 @@ class WidgetSmokeTests(unittest.TestCase):
             widget.close()
             widget.deleteLater()
 
-    def test_extraction_hole_fill_area_drives_manual_postprocess(self) -> None:
+    def test_extraction_and_manual_hole_fill_areas_are_independent(self) -> None:
         widget = PolygonExtractionWidget()
         try:
             widget.min_inner_hole_area_spin.setValue(42.0)
+            widget.vector_geom_min_hole_spin.setValue(7.0)
 
             self.assertEqual(widget._current_contour_settings().min_inner_hole_area, 42.0)
-            self.assertEqual(widget._vector_geometry_settings_from_widgets().min_hole_area_to_remove_px2, 42.0)
+            self.assertEqual(widget._vector_geometry_settings_from_widgets().min_hole_area_to_remove_px2, 7.0)
         finally:
             widget.close()
             widget.deleteLater()
@@ -108,6 +109,18 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertFalse(widget.metal_show_border_checkbox.isChecked())
             self.assertFalse(widget.metal_basic_group.isAncestorOf(widget.metal_use_wide_gradient_checkbox))
             self.assertTrue(widget.metal_advanced_group.isAncestorOf(widget.metal_use_wide_gradient_checkbox))
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_via_mode_flattens_contour_extraction_group(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("via"))
+
+            self.assertEqual(widget.contour_group.title(), "")
+            self.assertTrue(widget.contour_group.isFlat())
+            self.assertFalse(widget.bright_via_group.isHidden())
         finally:
             widget.close()
             widget.deleteLater()

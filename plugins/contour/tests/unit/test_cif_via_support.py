@@ -246,7 +246,7 @@ class CifViaSupportTests(unittest.TestCase):
             payload = saved_cif.read_text(encoding="utf-8")
             self.assertIn("( R frame_1.png );", payload)
 
-    def test_cif_round_trip_restores_hole_topology_from_cut_polygon(self) -> None:
+    def test_cif_round_trip_restores_hole_topology(self) -> None:
         outer_points = [(10.0, 10.0), (70.0, 10.0), (70.0, 70.0), (10.0, 70.0)]
         inner_points = [(32.0, 32.0), (48.0, 32.0), (48.0, 48.0), (32.0, 48.0)]
         outer_area, outer_perimeter, outer_bbox = compute_polygon_metrics(outer_points)
@@ -280,6 +280,78 @@ class CifViaSupportTests(unittest.TestCase):
         self.assertTrue(any(polygon.is_hole for polygon in loaded))
         hole_parent_ids = {polygon.parent_id for polygon in loaded if polygon.is_hole}
         self.assertTrue(any(parent_id is not None for parent_id in hole_parent_ids))
+
+    def test_cif_saves_polygon_holes_as_single_linked_polygon(self) -> None:
+        outer_points = [(10.0, 10.0), (70.0, 10.0), (70.0, 70.0), (10.0, 70.0)]
+        inner_points = [(32.0, 32.0), (48.0, 32.0), (48.0, 48.0), (32.0, 48.0)]
+        outer_area, outer_perimeter, outer_bbox = compute_polygon_metrics(outer_points)
+        inner_area, inner_perimeter, inner_bbox = compute_polygon_metrics(inner_points)
+        outer = PolygonData(
+            id=3,
+            points=outer_points,
+            category="conductor",
+            shape_hint="polygon",
+            area=outer_area,
+            perimeter=outer_perimeter,
+            bbox=outer_bbox,
+        )
+        hole = PolygonData(
+            id=4,
+            points=inner_points,
+            is_hole=True,
+            parent_id=3,
+            category="conductor",
+            shape_hint="polygon",
+            area=inner_area,
+            perimeter=inner_perimeter,
+            bbox=inner_bbox,
+        )
+        cif_path = self._artifact_path("linked_polygon_hole.cif")
+
+        save_polygons_cif(cif_path, "sample.png", [outer, hole], image_size=(80, 80))
+        payload = cif_path.read_text(encoding="utf-8")
+        _image_name, _image_size, loaded = load_polygons_cif(cif_path)
+
+        self.assertNotIn("CONTOUR", payload)
+        self.assertEqual(payload.count("\nP "), 1)
+        self.assertIn(
+            "P 70 48 48 48 32 48 32 32 48 32 48 48 70 48 70 10 10 10 10 70 70 70 70 48;",
+            payload,
+        )
+        self.assertEqual(len(loaded), 2)
+        loaded_hole = next(polygon for polygon in loaded if polygon.is_hole)
+        self.assertIsNotNone(loaded_hole.parent_id)
+
+    def test_cif_loader_skips_legacy_raster_recovery_for_plain_polygons(self) -> None:
+        cif_path = self._artifact_path("plain_polygon_fast_load.cif")
+        cif_path.write_text(
+            "\n".join(
+                [
+                    "DS 1 1 1;",
+                    "L NM;",
+                    "( R sample.png );",
+                    "( S 100 100 );",
+                    "P 10 90 90 90 90 10 10 10 10 90;",
+                    "DF;",
+                    "E",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        original_morphology_ex = cv2.morphologyEx
+
+        def fail_morphology_ex(*_args, **_kwargs):
+            raise AssertionError("plain CIF polygon load should not run legacy raster recovery")
+
+        try:
+            cv2.morphologyEx = fail_morphology_ex
+            _image_name, _image_size, loaded = load_polygons_cif(cif_path)
+        finally:
+            cv2.morphologyEx = original_morphology_ex
+
+        self.assertEqual(len(loaded), 1)
+        self.assertFalse(loaded[0].is_hole)
 
     def test_cv_round_trip_saves_via_as_ellipse_point(self) -> None:
         polygon = _rectangle_polygon(10, 12, 22, 28)

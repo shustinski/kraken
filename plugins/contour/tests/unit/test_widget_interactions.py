@@ -19,9 +19,17 @@ from PyQt6.QtWidgets import QApplication, QCheckBox, QListWidgetItem, QMenu, QSc
 import contour.widget as widget_module
 from contour.application.processing import DisplaySettings, ImageProcessingState
 from contour.application.services.workspace_session import WorkspaceLoadResult
+from contour.application.vector_geometry_postprocess import VectorGeometrySettings
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.graphics_items import EditablePolygonItem
-from contour.graphics_view import EditorTool, PolygonCreateMode, PolygonEditorView
+from contour.graphics_view import (
+    BrushMode,
+    DeleteVertexMode,
+    EditorTool,
+    PolygonCreateMode,
+    PolygonEditorScene,
+    PolygonEditorView,
+)
 from contour.utils import draw_polygon_overlay
 from contour.widget import PolygonExtractionWidget
 
@@ -470,22 +478,22 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.assertEqual(self.view.current_tool, EditorTool.ADD_POLYGON)
         self.assertLessEqual(self.view.horizontalScrollBar().value(), h_before - 25)
 
-    def test_space_toggle_hides_vectors_without_mutating_polygon_data(self) -> None:
+    def test_space_hold_hides_vectors_without_mutating_polygon_data(self) -> None:
         QTest.mouseClick(self.view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(40, 40))
         before = [(p.points[0], p.points[2]) for p in self.view.get_polygons()]
-        QTest.keyClick(self.view, Qt.Key.Key_Space)
+        QTest.keyPress(self.view, Qt.Key.Key_Space)
 
         self._app.processEvents()
         self.assertFalse(self.view._editor_scene.polygon_overlays_visible())
-        after_first = [(p.points[0], p.points[2]) for p in self.view.get_polygons()]
+        after_press = [(p.points[0], p.points[2]) for p in self.view.get_polygons()]
         self.assertIsNotNone(self.view._editor_scene.selected_polygon_id())
-        self.assertEqual(before, after_first)
+        self.assertEqual(before, after_press)
 
-        QTest.keyClick(self.view, Qt.Key.Key_Space)
+        QTest.keyRelease(self.view, Qt.Key.Key_Space)
         self._app.processEvents()
         self.assertTrue(self.view._editor_scene.polygon_overlays_visible())
-        after_second = [(p.points[0], p.points[2]) for p in self.view.get_polygons()]
-        self.assertEqual(after_second, before)
+        after_release = [(p.points[0], p.points[2]) for p in self.view.get_polygons()]
+        self.assertEqual(after_release, before)
 
     def test_ctrl_wheel_keeps_scene_point_under_cursor_stable(self) -> None:
         self.view.fit_to_view()
@@ -906,6 +914,73 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
         after = self.view.get_polygons()[0].points
         self.assertNotEqual(before, after)
+
+    def test_move_vertex_keeps_closed_duplicate_endpoint_together(self) -> None:
+        points = [
+            (20.0, 20.0),
+            (80.0, 20.0),
+            (80.0, 80.0),
+            (20.0, 80.0),
+            (20.0, 20.0),
+        ]
+        area, perimeter, bbox = compute_polygon_metrics(points)
+        poly = PolygonData(id=1, points=points, area=area, perimeter=perimeter, bbox=bbox)
+        self.view.set_polygons([poly])
+        self.view._editor_scene.select_polygon(1)
+        self.view.set_tool(EditorTool.MOVE_VERTEX)
+
+        press_pos = self.view.mapFromScene(QPointF(20.0, 20.0))
+        release_pos = self.view.mapFromScene(QPointF(30.0, 30.0))
+        QTest.mousePress(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            press_pos,
+        )
+        QTest.mouseMove(self.view.viewport(), release_pos)
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            release_pos,
+        )
+        self._app.processEvents()
+
+        after = self.view.get_polygons()[0].points
+        self.assertAlmostEqual(after[0][0], 30.0, places=1)
+        self.assertAlmostEqual(after[0][1], 30.0, places=1)
+        self.assertEqual(after[-1], after[0])
+
+    def test_move_vertex_merges_when_it_overlaps_another_polygon(self) -> None:
+        first = _rectangle_polygon(20, 20, 50, 50)
+        second = _rectangle_polygon(55, 20, 85, 50)
+        second.id = 2
+        self.view.set_vector_geometry_settings(
+            VectorGeometrySettings(min_outer_area_px2=1.0, min_spike_interior_angle_deg=0.0)
+        )
+        self.view.set_polygons([first, second])
+        self.view._editor_scene.select_polygon(1)
+        self.view.set_tool(EditorTool.MOVE_VERTEX)
+
+        press_pos = self.view.mapFromScene(QPointF(50.0, 20.0))
+        release_pos = self.view.mapFromScene(QPointF(65.0, 20.0))
+        QTest.mousePress(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            press_pos,
+        )
+        QTest.mouseMove(self.view.viewport(), release_pos)
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            release_pos,
+        )
+        self._app.processEvents()
+
+        roots = [polygon for polygon in self.view.get_polygons() if polygon.parent_id is None and not polygon.is_hole]
+        self.assertEqual(len(roots), 1)
 
     def test_repeated_outer_edits_do_not_expand_untouched_inner_contour(self) -> None:
         self.view.set_polygons([])
@@ -1328,7 +1403,7 @@ class PolygonExtractionWidgetBrushModeUiTests(unittest.TestCase):
         self.widget.deleteLater()
         self._app.processEvents()
 
-    def test_brush_mode_combo_exposes_only_freeform_and_angled(self) -> None:
+    def test_brush_mode_combo_exposes_all_brush_modes(self) -> None:
         modes = [str(self.widget.brush_mode_combo.itemData(index)) for index in range(self.widget.brush_mode_combo.count())]
         self.assertEqual(self.widget.brush_mode_combo.count(), 2)
         self.assertEqual(modes, ["freeform", "angled"])
@@ -1340,6 +1415,61 @@ class PolygonExtractionWidgetBrushModeUiTests(unittest.TestCase):
 
         self.assertFalse(self.widget.polygon_draw_mode_indicator.isVisible())
         self.assertEqual(self.widget.polygon_editor.effective_polygon_create_mode(), PolygonCreateMode.RECTANGLE)
+
+    def test_space_hold_hides_vectors_after_selecting_drawing_tool_button(self) -> None:
+        self.widget.polygon_editor.set_image(np.zeros((100, 100), dtype=np.uint8))
+        self.widget.polygon_editor.set_polygons([_rectangle_polygon(20, 20, 80, 80)])
+        self.widget.show()
+        self._app.processEvents()
+
+        QTest.mouseClick(self.widget._tool_buttons[EditorTool.BRUSH], Qt.MouseButton.LeftButton)
+        self._app.processEvents()
+
+        self.assertEqual(QApplication.focusWidget(), self.widget.polygon_editor)
+        QTest.keyPress(self.widget.polygon_editor, Qt.Key.Key_Space)
+        self._app.processEvents()
+        self.assertFalse(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
+
+        QTest.keyRelease(self.widget.polygon_editor, Qt.Key.Key_Space)
+        self._app.processEvents()
+        self.assertTrue(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
+
+    def test_tool_mode_cycle_matches_shift_click_targets(self) -> None:
+        self.widget._cycle_editor_tool_mode(EditorTool.ADD_POLYGON)
+        self.widget._cycle_editor_tool_mode(EditorTool.BRUSH)
+        self.widget._cycle_editor_tool_mode(EditorTool.DELETE_VERTEX)
+        self._app.processEvents()
+
+        self.assertEqual(self.widget.polygon_mode_combo.currentData(), PolygonCreateMode.RECTANGLE)
+        self.assertEqual(self.widget.brush_mode_combo.currentData(), BrushMode.ANGLED)
+        self.assertEqual(self.widget.delete_vertex_mode_combo.currentData(), DeleteVertexMode.AREA)
+
+    def test_shift_key_cycles_active_tool_mode_and_updates_combo(self) -> None:
+        self.widget.polygon_editor.set_tool(EditorTool.BRUSH)
+        QTest.keyClick(self.widget.polygon_editor, Qt.Key.Key_Shift)
+        QTest.keyClick(self.widget.polygon_editor, Qt.Key.Key_Shift)
+        self._app.processEvents()
+
+        self.assertEqual(self.widget.brush_mode_combo.currentData(), BrushMode.FREEFORM)
+
+
+class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = _app()
+
+    def test_brush_preview_keeps_configured_width_across_mouse_updates(self) -> None:
+        scene = PolygonEditorScene()
+        scene.start_pending_polygon(for_brush=True)
+        scene.set_pending_path_width(40.0, cosmetic=False)
+        scene.append_brush_vertex(QPointF(10.0, 10.0), 40.0)
+        scene.update_pending_cursor(QPointF(110.0, 10.0))
+        first_height = scene._pending_path_item.path().boundingRect().height()
+        scene.update_pending_cursor(QPointF(120.0, 10.0))
+        second_height = scene._pending_path_item.path().boundingRect().height()
+
+        self.assertGreater(first_height, 35.0)
+        self.assertGreater(second_height, 35.0)
 
 
 if __name__ == "__main__":

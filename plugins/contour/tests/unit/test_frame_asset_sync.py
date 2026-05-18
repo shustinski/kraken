@@ -124,6 +124,26 @@ class FrameAssetSyncTests(unittest.TestCase):
         )
         self.assertEqual(persisted, ImageSideListPaintStatus.SAVED)
 
+    def test_image_paint_status_marks_missing_vector_when_index_active(self) -> None:
+        missing = classify_image_side_paint_status(
+            has_matching_cif=False,
+            vector_index_active=True,
+            never_opened=False,
+            polygons_dirty=True,
+            persist_highlight=True,
+        )
+        self.assertEqual(missing, ImageSideListPaintStatus.NO_MATCHING_VECTOR)
+        self.assertEqual(background_hex_image_paint_status(missing), "#6b2c2c")
+
+        inactive = classify_image_side_paint_status(
+            has_matching_cif=False,
+            vector_index_active=False,
+            never_opened=False,
+            polygons_dirty=False,
+            persist_highlight=False,
+        )
+        self.assertEqual(inactive, ImageSideListPaintStatus.VIEWED)
+
     def test_sidebar_hex_colors_follow_spec(self) -> None:
         self.assertIsNone(background_hex_vector_status(VectorSideListStatus.UNSEEN))
         self.assertEqual(

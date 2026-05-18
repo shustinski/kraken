@@ -10,6 +10,7 @@ from contour.application.vector_geometry_postprocess import (
     drop_triangle_outer_artifacts,
     merge_overlapping_root_families,
     postprocess_after_editor_mutation,
+    postprocess_after_vertex_move,
     postprocess_changed_polygon_only,
     postprocess_polygons_for_frame_navigation,
     remove_spikes_from_polygon_ring,
@@ -194,10 +195,29 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         moved = apply_vertex_position_to_clone([poly], 1, 1, (50.0, 0.0))
         self.assertEqual(moved[0].points[1], (50.0, 0.0))
 
+    def test_vertex_move_updates_both_closed_duplicate_endpoints(self) -> None:
+        points = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0), (0.0, 0.0)]
+        area, perimeter, bbox = compute_polygon_metrics(points)
+        poly = PolygonData(id=1, points=points, area=area, perimeter=perimeter, bbox=bbox)
+
+        moved = apply_vertex_position_to_clone([poly], 1, 0, (5.0, 5.0))
+
+        self.assertEqual(moved[0].points[0], (5.0, 5.0))
+        self.assertEqual(moved[0].points[-1], (5.0, 5.0))
+
     def test_vertex_move_invalid_polygon_is_rejected(self) -> None:
         poly = _rect(0.0, 0.0, 40.0, 40.0, 1)
         moved = apply_vertex_position_to_clone([poly], 1, 1, (0.0, 40.0))
         self.assertEqual(moved[0].points, poly.points)
+
+    def test_vertex_move_allows_unrelated_existing_ring_defect(self) -> None:
+        points = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (10.0, 10.0), (0.0, 40.0), (10.0, 10.0)]
+        area, perimeter, bbox = compute_polygon_metrics(points)
+        poly = PolygonData(id=1, points=points, area=area, perimeter=perimeter, bbox=bbox)
+
+        moved = apply_vertex_position_to_clone([poly], 1, 1, (45.0, 0.0))
+
+        self.assertEqual(moved[0].points[1], (45.0, 0.0))
 
     def test_vertex_move_causing_merge_merges_when_enabled(self) -> None:
         left = _rect(0.0, 0.0, 40.0, 40.0, 1)
@@ -211,6 +231,39 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         roots = [p for p in processed if p.parent_id is None and not p.is_hole]
         self.assertTrue(changed)
         self.assertEqual(len(roots), 1)
+
+    def test_postprocess_after_vertex_move_merges_when_enabled(self) -> None:
+        left = _rect(0.0, 0.0, 40.0, 40.0, 1)
+        right = _rect(50.0, 0.0, 90.0, 40.0, 2)
+        moved = apply_vertex_position_to_clone([left, right], 1, 1, (60.0, 0.0))
+        processed, changed = postprocess_after_vertex_move(
+            moved,
+            VectorGeometrySettings(
+                merge_overlapping_on_edit=True,
+                min_outer_area_px2=1.0,
+                min_spike_interior_angle_deg=0.0,
+            ),
+            polygon_id=1,
+        )
+        roots = [p for p in processed if p.parent_id is None and not p.is_hole]
+        self.assertTrue(changed)
+        self.assertEqual(len(roots), 1)
+
+    def test_postprocess_after_vertex_move_skips_merge_when_disabled(self) -> None:
+        left = _rect(0.0, 0.0, 40.0, 40.0, 1)
+        right = _rect(50.0, 0.0, 90.0, 40.0, 2)
+        moved = apply_vertex_position_to_clone([left, right], 1, 1, (60.0, 0.0))
+        processed, _changed = postprocess_after_vertex_move(
+            moved,
+            VectorGeometrySettings(
+                merge_overlapping_on_edit=False,
+                min_outer_area_px2=1.0,
+                min_spike_interior_angle_deg=0.0,
+            ),
+            polygon_id=1,
+        )
+        roots = [p for p in processed if p.parent_id is None and not p.is_hole]
+        self.assertEqual(len(roots), 2)
 
     def test_postprocess_changed_polygon_only_touches_target(self) -> None:
         large = _rect(0.0, 0.0, 100.0, 100.0, 1)

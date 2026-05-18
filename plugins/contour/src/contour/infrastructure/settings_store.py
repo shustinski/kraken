@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -8,6 +9,8 @@ from PyQt6.QtCore import QSettings
 
 from ..application.dto import PersistedPaths
 from ..application.processing import DisplaySettings
+
+VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
 
 
 def _build_contour_settings() -> QSettings:
@@ -84,4 +87,26 @@ class WidgetDisplaySettingsStore:
         settings = self._settings_factory()
         for key, value in payload.items():
             settings.setValue(f"display/{key}", value)
+        settings.sync()
+
+
+class WidgetViaPresetSettingsStore:
+    def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
+        self._settings_factory = settings_factory or _build_contour_settings
+
+    def load(self) -> dict[str, dict[str, object]]:
+        settings = self._settings_factory()
+        raw_payload = settings.value(VIA_PRESETS_SETTINGS_KEY, "{}", type=str)
+        settings.sync()
+        try:
+            payload = json.loads(str(raw_payload or "{}"))
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {str(name): dict(value) for name, value in payload.items() if isinstance(value, dict)}
+
+    def save(self, presets: dict[str, dict[str, object]]) -> None:
+        settings = self._settings_factory()
+        settings.setValue(VIA_PRESETS_SETTINGS_KEY, json.dumps(presets, ensure_ascii=False, sort_keys=True))
         settings.sync()

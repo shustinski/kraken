@@ -61,6 +61,7 @@ class ImageSideListPaintStatus(Enum):
     VIEWED = "viewed"
     MODIFIED = "modified"
     SAVED = "saved"
+    NO_MATCHING_VECTOR = "no_vector"
 
 
 def classify_vector_side_status(
@@ -86,10 +87,14 @@ def classify_vector_side_status(
 
 def classify_image_side_paint_status(
     *,
+    has_matching_cif: bool = True,
+    vector_index_active: bool = False,
     never_opened: bool,
     polygons_dirty: bool,
     persist_highlight: bool,
 ) -> ImageSideListPaintStatus:
+    if vector_index_active and not has_matching_cif:
+        return ImageSideListPaintStatus.NO_MATCHING_VECTOR
     if never_opened:
         return ImageSideListPaintStatus.UNOPENED
     if polygons_dirty:
@@ -126,9 +131,12 @@ _HEX_IMAGE_UNOPENED = None
 _HEX_IMAGE_VIEWED = "#3d4f66"
 _HEX_IMAGE_MODIFIED = "#6b3a1e"
 _HEX_IMAGE_SAVED = "#1e4a35"
+_HEX_IMAGE_RED = _HEX_VECTOR_RED
 
 
 def background_hex_image_paint_status(status: ImageSideListPaintStatus) -> str | None:
+    if status == ImageSideListPaintStatus.NO_MATCHING_VECTOR:
+        return _HEX_IMAGE_RED
     if status == ImageSideListPaintStatus.UNOPENED:
         return _HEX_IMAGE_UNOPENED
     if status == ImageSideListPaintStatus.VIEWED:

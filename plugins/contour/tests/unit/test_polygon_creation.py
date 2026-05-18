@@ -104,6 +104,17 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(active[-1], new_id)
 
+    def test_points_mode_rounds_vertices_to_integer_coordinates(self) -> None:
+        self._reset([])
+
+        self.scene.append_pending_point(QPointF(10.2, 10.6))
+        self.scene.append_pending_point(QPointF(40.4, 10.1))
+        self.scene.append_pending_point(QPointF(25.5, 50.5))
+        ok = self.scene.finish_pending_polygon()
+
+        self.assertTrue(ok)
+        self.assertEqual(self.scene.get_polygons()[0].points, [(10, 11), (40, 10), (26, 50)])
+
     def test_rectangle_adds_polygon_selected(self) -> None:
         self._reset([])
         ok = self.scene.add_rectangle_polygon(QPointF(5.0, 5.0), QPointF(35.0, 28.0), erase=False)
@@ -111,6 +122,14 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         ids = sorted(polygon.id for polygon in self.scene.get_polygons())
         self.assertEqual(len(ids), 1)
         self.assertEqual(self.scene.selected_polygon_id(), ids[0])
+
+    def test_rectangle_rounds_vertices_to_integer_coordinates(self) -> None:
+        self._reset([])
+
+        ok = self.scene.add_rectangle_polygon(QPointF(5.2, 5.6), QPointF(35.4, 28.5), erase=False)
+
+        self.assertTrue(ok)
+        self.assertEqual(self.scene.get_polygons()[0].points, [(5, 6), (35, 6), (35, 28), (5, 28)])
 
     def test_invalid_polygon_not_committed_keeps_pending(self) -> None:
         self._reset([])

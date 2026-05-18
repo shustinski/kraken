@@ -25,6 +25,20 @@ def _angle(
 
 
 class ContourExtractorFilterTests(unittest.TestCase):
+    def test_finalize_rounds_recognized_vertices_to_integer_coordinates(self) -> None:
+        raw = np.array([[[0, 0]], [[20, 0]], [[20, 20]], [[0, 20]]], dtype=np.int32)
+
+        out = _finalize_closed_polygon_points(
+            [(0.2, 0.6), (20.4, 0.1), (20.5, 20.5), (0.2, 20.4)],
+            raw,
+            (22, 22),
+            ContourExtractionSettings(
+                epsilon=0.0, min_polygon_angle=0.0, object_type="conductor", output_mode="polygon"
+            ),
+        )
+
+        self.assertEqual(out, [(0, 1), (20, 0), (20, 20), (0, 20)])
+
     def test_invalid_bow_tie_repaired_using_filled_lattice(self) -> None:
         # Order (0,0)->(W,H)->(0,H)->(W,0) self-intersects; same bounding square as a valid axis ring.
         raw = np.array([[[0, 0]], [[20, 0]], [[20, 20]], [[0, 20]]], dtype=np.int32)

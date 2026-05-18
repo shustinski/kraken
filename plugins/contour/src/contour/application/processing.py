@@ -923,6 +923,8 @@ class ImageProcessingState:
     metal_overlay_polygons: dict[str, list[PolygonData]] = field(default_factory=dict)
     loaded_cif_path: str | None = None
     reference_polygons: list[PolygonData] = field(default_factory=list)
+    #: Cached ``image_has_changes``; ``None`` means recompute on next query.
+    polygons_dirty: bool | None = None
 
 
 @dataclass(slots=True)

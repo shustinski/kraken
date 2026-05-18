@@ -89,6 +89,30 @@ def load_image_grayscale(path: str | Path) -> np.ndarray:
     return ensure_uint8(image)
 
 
+def load_image_color_thumbnail(path: str | Path, max_width: int, max_height: int) -> np.ndarray:
+    """Load a color image scaled down for thumbnail grids (avoids full-resolution decode)."""
+
+    target_w = max(1, int(max_width))
+    target_h = max(1, int(max_height))
+    image = _imread_unicode_safe(path, cv2.IMREAD_REDUCED_COLOR_4)
+    if image is None:
+        raise FileNotFoundError(tr("unable_to_load_image", path=path))
+    if image.ndim == 2:
+        image = cv2.cvtColor(ensure_uint8(image), cv2.COLOR_GRAY2BGR)
+    elif image.ndim == 3 and image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    else:
+        image = ensure_uint8(image)
+    h, w = image.shape[:2]
+    if w > 0 and h > 0:
+        scale = min(target_w / float(w), target_h / float(h), 1.0)
+        resized_w = max(1, round(w * scale))
+        resized_h = max(1, round(h * scale))
+        if resized_w != w or resized_h != h:
+            image = cv2.resize(image, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
+    return image
+
+
 def load_image_color(path: str | Path) -> np.ndarray:
     image = _imread_unicode_safe(path, cv2.IMREAD_UNCHANGED)
     if image is None:

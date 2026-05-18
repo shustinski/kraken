@@ -7,7 +7,6 @@ import unittest
 from contour.graphics.viewport_navigation import (
     image_coordinate_under_cursor,
     pan_offset_after_zoom_to_cursor,
-    polygon_overlay_visibility_after_space_toggle,
     viewport_scroll_correction_after_scale_reanchor,
     scroll_values_after_viewport_drag,
 )
@@ -81,16 +80,6 @@ class ZoomToCursorCoordinateTests(unittest.TestCase):
         )
         self.assertAlmostEqual(before[0], after[0], delta=1e-6)
         self.assertAlmostEqual(before[1], after[1], delta=1e-6)
-
-
-class VectorOverlaySpaceToggleTests(unittest.TestCase):
-    def test_toggle_alternates_visibility_flag(self) -> None:
-        hidden, visible = polygon_overlay_visibility_after_space_toggle(False)
-        self.assertTrue(hidden)
-        self.assertFalse(visible)
-        hidden2, visible2 = polygon_overlay_visibility_after_space_toggle(hidden)
-        self.assertFalse(hidden2)
-        self.assertTrue(visible2)
 
 
 if __name__ == "__main__":

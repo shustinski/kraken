@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import shutil
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -373,6 +374,23 @@ def _parse_cif_int(value: str) -> int:
     return int(normalized)
 
 
+def _clone_polygon_with_id(polygon: PolygonData, polygon_id: int) -> PolygonData:
+    """Copy polygon fields without re-normalizing already-integer vertex coordinates."""
+
+    return PolygonData(
+        id=polygon_id,
+        points=list(polygon.points),
+        is_hole=polygon.is_hole,
+        parent_id=polygon.parent_id,
+        category=str(polygon.category),
+        shape_hint=str(polygon.shape_hint),
+        area=float(polygon.area),
+        perimeter=float(polygon.perimeter),
+        bbox=(int(polygon.bbox[0]), int(polygon.bbox[1]), int(polygon.bbox[2]), int(polygon.bbox[3])),
+        reject_reason=str(polygon.reject_reason),
+    )
+
+
 def _extract_parenthesized_tokens(line: str) -> list[str]:
     text = line.strip()
     if "(" not in text or ")" not in text:
@@ -429,14 +447,14 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
             center_y = _parse_cif_int(payload[3])
 
             _, height = image_size
-            image_center_y = float(height - center_y)
-            half_width = float(box_width) / 2.0
-            half_height = float(box_height) / 2.0
+            image_center_y = int(height) - center_y
+            half_width = box_width / 2
+            half_height = box_height / 2
             image_points = [
-                (float(center_x) - half_width, image_center_y - half_height),
-                (float(center_x) + half_width, image_center_y - half_height),
-                (float(center_x) + half_width, image_center_y + half_height),
-                (float(center_x) - half_width, image_center_y + half_height),
+                (center_x - half_width, image_center_y - half_height),
+                (center_x + half_width, image_center_y - half_height),
+                (center_x + half_width, image_center_y + half_height),
+                (center_x - half_width, image_center_y + half_height),
             ]
             area, perimeter, bbox = compute_polygon_metrics(image_points)
             polygons.append(
@@ -471,7 +489,8 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
             continue
 
         _width, height = image_size
-        image_points = [(float(x_coord), float(height - y_coord)) for x_coord, y_coord in raw_points]
+        image_height = int(height)
+        image_points = [(x_coord, image_height - y_coord) for x_coord, y_coord in raw_points]
         area, perimeter, bbox = compute_polygon_metrics(image_points)
         polygons.append(
             PolygonData(
@@ -517,20 +536,6 @@ def _polygon_to_cif_line(polygon: PolygonData, image_width: int, image_height: i
     return f"P {coordinates};"
 
 
-def _local_mask_bounds(points_groups: list[list[tuple[float, float]]], image_width: int, image_height: int) -> tuple[int, int, int, int]:
-    all_x: list[float] = []
-    all_y: list[float] = []
-    for points in points_groups:
-        for x_coord, y_coord in points:
-            all_x.append(float(x_coord))
-            all_y.append(float(y_coord))
-    min_x = max(0, int(np.floor(min(all_x))) - 3)
-    min_y = max(0, int(np.floor(min(all_y))) - 3)
-    max_x = min(image_width - 1, int(np.ceil(max(all_x))) + 3)
-    max_y = min(image_height - 1, int(np.ceil(max(all_y))) + 3)
-    return min_x, min_y, max_x, max_y
-
-
 def _to_local_int_points(points: list[tuple[float, float]], left: int, top: int) -> np.ndarray:
     return np.array(
         [[round(x_coord - left), round(y_coord - top)] for x_coord, y_coord in points],
@@ -538,61 +543,73 @@ def _to_local_int_points(points: list[tuple[float, float]], left: int, top: int)
     )
 
 
-def _bridge_hole_to_outer(mask: np.ndarray, outer: np.ndarray, hole: np.ndarray) -> None:
-    if len(outer) == 0 or len(hole) == 0:
-        return
-    outer_pts = outer.reshape(-1, 2)
-    hole_pts = hole.reshape(-1, 2)
-    best_outer = outer_pts[0]
-    best_hole = hole_pts[0]
-    best_dist = float("inf")
-    for outer_point in outer_pts:
-        dx = hole_pts[:, 0] - outer_point[0]
-        dy = hole_pts[:, 1] - outer_point[1]
-        distances = dx * dx + dy * dy
-        nearest_index = int(np.argmin(distances))
-        nearest_dist = float(distances[nearest_index])
-        if nearest_dist < best_dist:
-            best_dist = nearest_dist
-            best_outer = outer_point
-            best_hole = hole_pts[nearest_index]
-    cv2.line(
-        mask,
-        (int(best_outer[0]), int(best_outer[1])),
-        (int(best_hole[0]), int(best_hole[1])),
-        color=0,
-        thickness=1,
-        lineType=cv2.LINE_8,
-    )
+def _dedupe_closed_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    cleaned = [(float(x_coord), float(y_coord)) for x_coord, y_coord in points]
+    while len(cleaned) >= 2 and cleaned[0] == cleaned[-1]:
+        cleaned = cleaned[:-1]
+    return cleaned
 
 
-def _encode_parent_with_holes_cut_path(
-    parent: PolygonData,
-    holes: list[PolygonData],
-    image_width: int,
-    image_height: int,
-) -> list[tuple[float, float]]:
-    groups = [parent.points] + [hole.points for hole in holes if len(hole.points) >= 3]
-    left, top, right, bottom = _local_mask_bounds(groups, image_width, image_height)
-    local_width = max(1, right - left + 1)
-    local_height = max(1, bottom - top + 1)
-    mask = np.zeros((local_height, local_width), dtype=np.uint8)
-    outer_local = _to_local_int_points(parent.points, left, top)
-    cv2.fillPoly(mask, [outer_local], 255)
-    hole_locals: list[np.ndarray] = []
-    for hole in holes:
-        hole_local = _to_local_int_points(hole.points, left, top)
-        cv2.fillPoly(mask, [hole_local], 0)
-        hole_locals.append(hole_local)
-    outer_contours, _ = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    outer_boundary = outer_contours[0] if outer_contours else outer_local.reshape(-1, 1, 2)
-    for hole_local in hole_locals:
-        _bridge_hole_to_outer(mask, outer_boundary, hole_local)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    if not contours:
+def _rightmost_point_index(points: list[tuple[float, float]]) -> int:
+    return max(range(len(points)), key=lambda index: (points[index][0], -points[index][1]))
+
+
+def _horizontal_bridge_to_outer(
+    outer: list[tuple[float, float]],
+    anchor: tuple[float, float],
+) -> tuple[tuple[float, float], int] | None:
+    anchor_x, anchor_y = anchor
+    candidates: list[tuple[float, int]] = []
+    for index, start in enumerate(outer):
+        end = outer[(index + 1) % len(outer)]
+        start_x, start_y = start
+        end_x, end_y = end
+        min_y, max_y = sorted((start_y, end_y))
+        if anchor_y < min_y or anchor_y > max_y:
+            continue
+        if start_y == end_y:
+            if anchor_y != start_y:
+                continue
+            for x_coord in (start_x, end_x):
+                if x_coord > anchor_x:
+                    candidates.append((x_coord, index + 1))
+            continue
+        ratio = (anchor_y - start_y) / (end_y - start_y)
+        x_coord = start_x + ratio * (end_x - start_x)
+        if x_coord > anchor_x:
+            candidates.append((x_coord, index + 1))
+    if not candidates:
+        return None
+    bridge_x, insert_index = min(candidates, key=lambda item: item[0])
+    return (float(bridge_x), float(anchor_y)), insert_index % len(outer)
+
+
+def _rotate_open_ring(points: list[tuple[float, float]], start_index: int) -> list[tuple[float, float]]:
+    return points[start_index:] + points[:start_index]
+
+
+def _encode_parent_with_holes_link_path(parent: PolygonData, holes: list[PolygonData]) -> list[tuple[float, float]]:
+    path = _dedupe_closed_points(parent.points)
+    if len(path) < 3:
         return parent.points
-    contour = max(contours, key=cv2.contourArea).reshape(-1, 2)
-    return [(float(point[0] + left), float(point[1] + top)) for point in contour]
+    for hole in sorted(holes, key=lambda item: item.id):
+        hole_points = _dedupe_closed_points(hole.points)
+        if len(hole_points) < 3:
+            continue
+        anchor_index = _rightmost_point_index(hole_points)
+        hole_anchor = hole_points[anchor_index]
+        bridge = _horizontal_bridge_to_outer(path, hole_anchor)
+        if bridge is None:
+            continue
+        outer_anchor, insert_index = bridge
+        outer_cycle = [outer_anchor, *_rotate_open_ring(path, insert_index), outer_anchor]
+        hole_cycle = list(reversed(_rotate_open_ring(hole_points, anchor_index)))
+        if hole_cycle[0] != hole_anchor:
+            hole_cycle = [hole_anchor, *hole_cycle]
+        if hole_cycle[-1] != hole_anchor:
+            hole_cycle.append(hole_anchor)
+        path = [outer_anchor, *hole_cycle, outer_anchor, *outer_cycle[1:]]
+    return path
 
 
 def _contour_points_to_polygon(
@@ -619,6 +636,45 @@ def _contour_points_to_polygon(
     )
 
 
+def _split_linked_polygon_rings(
+    points: list[tuple[float, float]],
+) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]:
+    open_points = _dedupe_closed_points(points)
+    point_count = len(open_points)
+    if len(set(open_points)) == point_count:
+        return open_points, []
+    bridge_return_indices: dict[tuple[tuple[float, float], tuple[float, float]], list[int]] = {}
+    for return_index in range(1, point_count - 1):
+        bridge_return_indices.setdefault(
+            (open_points[return_index], open_points[return_index + 1]),
+            [],
+        ).append(return_index)
+    for start_index in range(0, point_count - 3):
+        outer_anchor = open_points[start_index]
+        hole_anchor = open_points[start_index + 1]
+        for return_index in bridge_return_indices.get((hole_anchor, outer_anchor), ()):
+            if return_index < start_index + 3:
+                continue
+            hole_ring = _dedupe_closed_points(open_points[start_index + 1 : return_index + 1])
+            outer_ring = _dedupe_closed_points(
+                [outer_anchor, *open_points[return_index + 2 :], *open_points[: start_index + 1]]
+            )
+            if len(hole_ring) < 3 or len(outer_ring) < 3:
+                continue
+            base_outer, base_holes = _split_linked_polygon_rings(outer_ring)
+            return base_outer, [hole_ring, *base_holes]
+    return open_points, []
+
+
+def _legacy_cut_hole_recovery_enabled() -> bool:
+    return str(os.environ.get("CONTOUR_CIF_RECOVER_LEGACY_CUT_HOLES", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _recover_cut_hole_topology(polygons: list[PolygonData], image_size: tuple[int, int] | None) -> list[PolygonData]:
     if image_size is None:
         return polygons
@@ -626,11 +682,49 @@ def _recover_cut_hole_topology(polygons: list[PolygonData], image_size: tuple[in
     del image_height
     recovered: list[PolygonData] = []
     next_id = 1
+    recover_legacy_cut_holes = _legacy_cut_hole_recovery_enabled()
     for polygon in polygons:
         if polygon.shape_hint == "box" or polygon.category == "via" or len(polygon.points) < 3:
-            clone = polygon.clone()
-            clone.id = next_id
-            recovered.append(clone)
+            recovered.append(_clone_polygon_with_id(polygon, next_id))
+            next_id += 1
+            continue
+        linked_outer, linked_holes = _split_linked_polygon_rings(polygon.points)
+        if linked_holes:
+            area, perimeter, bbox = compute_polygon_metrics(linked_outer)
+            parent_id = next_id
+            recovered.append(
+                PolygonData(
+                    id=parent_id,
+                    points=linked_outer,
+                    is_hole=False,
+                    parent_id=None,
+                    category=polygon.category,
+                    shape_hint=polygon.shape_hint,
+                    area=area,
+                    perimeter=perimeter,
+                    bbox=bbox,
+                )
+            )
+            next_id += 1
+            for hole_points in linked_holes:
+                area, perimeter, bbox = compute_polygon_metrics(hole_points)
+                recovered.append(
+                    PolygonData(
+                        id=next_id,
+                        points=hole_points,
+                        is_hole=True,
+                        parent_id=parent_id,
+                        category=polygon.category,
+                        shape_hint=polygon.shape_hint,
+                        area=area,
+                        perimeter=perimeter,
+                        bbox=bbox,
+                    )
+                )
+                next_id += 1
+            continue
+        if not recover_legacy_cut_holes:
+            recovered.append(_clone_polygon_with_id(polygon, next_id))
             next_id += 1
             continue
         left = max(0, int(np.floor(min(point[0] for point in polygon.points))) - 3)
@@ -665,9 +759,7 @@ def _recover_cut_hole_topology(polygons: list[PolygonData], image_size: tuple[in
                 best_contours = [np.asarray(contour) for contour in contours_closed]
                 best_hierarchy = hierarchy_closed
         if best_hole_count <= raw_hole_count or best_hierarchy is None or not best_contours or len(best_hierarchy) == 0:
-            clone = polygon.clone()
-            clone.id = next_id
-            recovered.append(clone)
+            recovered.append(_clone_polygon_with_id(polygon, next_id))
             next_id += 1
             continue
         hierarchy = best_hierarchy[0]
@@ -724,8 +816,13 @@ def save_polygons_cif(
     ]
     sorted_polygons = sorted(polygons, key=lambda item: item.id)
     holes_by_parent: dict[int, list[PolygonData]] = {}
+    orphan_holes: list[PolygonData] = []
     for polygon in sorted_polygons:
-        if polygon.is_hole and polygon.parent_id is not None:
+        if not polygon.is_hole:
+            continue
+        if polygon.parent_id is None:
+            orphan_holes.append(polygon)
+        else:
             holes_by_parent.setdefault(int(polygon.parent_id), []).append(polygon)
     for polygon in sorted_polygons:
         if polygon.is_hole:
@@ -734,13 +831,11 @@ def save_polygons_cif(
         if polygon.category != "via" and polygon.shape_hint != "box":
             holes = holes_by_parent.get(int(polygon.id), [])
             if holes:
-                stitched_points = _encode_parent_with_holes_cut_path(
-                    polygon, holes, image_width=width, image_height=height
-                )
-                area, perimeter, bbox = compute_polygon_metrics(stitched_points)
+                linked_points = _encode_parent_with_holes_link_path(polygon, holes)
+                area, perimeter, bbox = compute_polygon_metrics(linked_points)
                 save_polygon = PolygonData(
                     id=polygon.id,
-                    points=stitched_points,
+                    points=linked_points,
                     is_hole=False,
                     parent_id=None,
                     category=polygon.category,
@@ -750,6 +845,13 @@ def save_polygons_cif(
                     bbox=bbox,
                 )
         line = _polygon_to_cif_line(save_polygon, image_width=width, image_height=height)
+        if line:
+            lines.append(line)
+    for hole in orphan_holes:
+        clone = hole.clone()
+        clone.is_hole = False
+        clone.parent_id = None
+        line = _polygon_to_cif_line(clone, image_width=width, image_height=height)
         if line:
             lines.append(line)
     lines.extend(["DF;", "E"])
@@ -787,8 +889,8 @@ def save_polygons_csv(path: str | Path, image_path: str, polygons: list[PolygonD
                         image_path,
                         polygon.id,
                         vertex_index,
-                        f"{x_coord:.6f}",
-                        f"{y_coord:.6f}",
+                        str(_cv_coord(x_coord)),
+                        str(_cv_coord(y_coord)),
                         int(polygon.is_hole),
                         "" if polygon.parent_id is None else polygon.parent_id,
                         polygon.category,
@@ -808,7 +910,7 @@ def save_polygons_txt(path: str | Path, image_path: str, polygons: list[PolygonD
     output = Path(path)
     lines = [f"image_path: {image_path}", f"polygon_count: {len(polygons)}", ""]
     for polygon in polygons:
-        points_repr = ", ".join(f"({x:.3f}, {y:.3f})" for x, y in polygon.points)
+        points_repr = ", ".join(f"({_cv_coord(x)}, {_cv_coord(y)})" for x, y in polygon.points)
         lines.extend(
             [
                 f"polygon_id: {polygon.id}",
@@ -858,7 +960,7 @@ def save_svg_preview(
                 f'stroke-width="{display_settings.line_width:.2f}"/>'
             )
         else:
-            points_attr = " ".join(f"{x:.3f},{y:.3f}" for x, y in polygon.points)
+            points_attr = " ".join(f"{_cv_coord(x)},{_cv_coord(y)}" for x, y in polygon.points)
             svg_lines.append(
                 f'<polygon points="{escape(points_attr)}" fill="{color}" fill-opacity="{alpha:.3f}" '
                 f'stroke="{color}" stroke-width="{display_settings.line_width:.2f}"/>'

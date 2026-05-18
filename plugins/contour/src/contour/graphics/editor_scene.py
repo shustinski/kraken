@@ -7,7 +7,6 @@ from PyQt6.QtGui import (
     QBrush,
     QColor,
     QPainterPath,
-    QPainterPathStroker,
     QPen,
     QPixmap,
     QTransform,
@@ -23,11 +22,12 @@ from PyQt6.QtWidgets import (
 )
 
 from ..adapters.qt.image_conversion import cv_to_qimage
+from ..application.polygon_antialiasing import antialias_polygons
 from ..application.processing import DisplaySettings
 from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
-    postprocess_changed_polygon_only,
     postprocess_after_editor_mutation,
+    postprocess_changed_polygon_only,
 )
 from ..commands import (
     AddPolygonCommand,
@@ -36,7 +36,7 @@ from ..commands import (
     DeleteVertexCommand,
     ReplacePolygonSetCommand,
 )
-from ..domain import PolygonData, compute_polygon_metrics
+from ..domain import PolygonData, compute_polygon_metrics, integer_point, integer_points
 from ..graphics_items import EditablePolygonItem, VertexHandleItem, _display_path_for_polygon
 from ..i18n import active_language, tr
 from .brush_vector import (
@@ -122,6 +122,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._pending_points: list[tuple[float, float]] = []
         self._pending_cursor: tuple[float, float] | None = None
         self._pending_polyline_for_brush = False
+        self._pending_brush_width = 1.5
         self._pending_path_item = QGraphicsPathItem()
         self._pending_path_item.setZValue(10)
         pending_pen = QPen(QColor("#F7B801"), 1.5, Qt.PenStyle.DashLine)
@@ -190,6 +191,7 @@ class PolygonEditorScene(QGraphicsScene):
         self.setSceneRect(QRectF(0, 0, 1, 1))
 
     def set_pending_path_width(self, width: float, cosmetic: bool | None = None) -> None:
+        self._pending_brush_width = max(1.0, float(width))
         pen = self._pending_path_item.pen()
         pen.setWidthF(max(1.0, float(width)))
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -668,6 +670,20 @@ class PolygonEditorScene(QGraphicsScene):
             if polygon_id in self._polygons
         ]
 
+    def antialias_selected_polygons(self, grade: int) -> bool:
+        target_ids = {polygon_id for polygon_id in self._selected_polygon_ids if polygon_id in self._polygons}
+        if not target_ids and self._selected_polygon_id is not None and self._selected_polygon_id in self._polygons:
+            target_ids = {self._selected_polygon_id}
+        if not target_ids:
+            return False
+        before = self.get_polygons()
+        after, changed = antialias_polygons(before, grade, only_ids=target_ids)
+        if not changed:
+            return False
+        self.undo_stack.push(ReplacePolygonSetCommand(self, before, after, "Antialias polygons"))
+        self.select_polygons(sorted(target_ids))
+        return True
+
     def add_cloned_polygons_at(
         self,
         polygons: list[PolygonData],
@@ -681,7 +697,7 @@ class PolygonEditorScene(QGraphicsScene):
         id_map: dict[int, int] = {}
         new_polygons: list[PolygonData] = []
         for polygon in polygons:
-            shifted_points = [(float(x) + dx, float(y) + dy) for x, y in polygon.points]
+            shifted_points = integer_points([(float(x) + dx, float(y) + dy) for x, y in polygon.points])
             area, perimeter, bbox = compute_polygon_metrics(shifted_points)
             new_id = self._next_polygon_id
             self._next_polygon_id += 1
@@ -715,7 +731,7 @@ class PolygonEditorScene(QGraphicsScene):
         if polygon_id not in self._polygons:
             return False
         insert_index = self._nearest_segment_insert_index(polygon_id, scene_pos)
-        new_point = (float(scene_pos.x()), float(scene_pos.y()))
+        new_point = integer_point((scene_pos.x(), scene_pos.y()))
         points = self.polygon_points(polygon_id)
         insert_at = max(0, min(len(points), insert_index))
         trial = list(points)
@@ -741,10 +757,10 @@ class PolygonEditorScene(QGraphicsScene):
         return True
 
     def polygon_points(self, polygon_id: int) -> list[tuple[float, float]]:
-        return [(float(x), float(y)) for x, y in self._polygons[polygon_id].points]
+        return integer_points(self._polygons[polygon_id].points)
 
     def preview_vertex_move(self, polygon_id: int, vertex_index: int, point: QPointF) -> None:
-        self._set_vertex_internal(polygon_id, vertex_index, (point.x(), point.y()), emit_signal=False)
+        self._set_vertex_internal(polygon_id, vertex_index, integer_point((point.x(), point.y())), emit_signal=False)
 
     def preview_polygon_move(self, polygon_id: int, points: list[tuple[float, float]]) -> None:
         self._replace_polygon_points_internal(polygon_id, points, emit_signal=False)
@@ -756,7 +772,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._update_pending_path()
 
     def append_brush_vertex(self, scene_pos: QPointF, brush_diameter: float) -> None:
-        nx, ny = float(scene_pos.x()), float(scene_pos.y())
+        nx, ny = integer_point((scene_pos.x(), scene_pos.y()))
         spacing = max(2.0, float(brush_diameter) * 0.48)
         # Screen-pixel spacing is enforced in the view; keep only exact duplicates here.
         if self._pending_points and hypot(nx - self._pending_points[-1][0], ny - self._pending_points[-1][1]) < 1e-6:
@@ -765,7 +781,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._update_pending_path()
 
     def append_pending_point(self, scene_pos: QPointF) -> None:
-        point = (scene_pos.x(), scene_pos.y())
+        point = integer_point((scene_pos.x(), scene_pos.y()))
         if (
             self._pending_points
             and hypot(point[0] - self._pending_points[-1][0], point[1] - self._pending_points[-1][1]) < 1.0
@@ -781,7 +797,7 @@ class PolygonEditorScene(QGraphicsScene):
     def update_pending_cursor(self, scene_pos: QPointF) -> None:
         if not self._pending_points:
             return
-        self._pending_cursor = (scene_pos.x(), scene_pos.y())
+        self._pending_cursor = integer_point((scene_pos.x(), scene_pos.y()))
         self._update_pending_path()
 
     def cancel_pending_polygon(self) -> None:
@@ -806,7 +822,7 @@ class PolygonEditorScene(QGraphicsScene):
         area, perimeter, bbox = compute_polygon_metrics(self._pending_points)
         polygon = PolygonData(
             id=self._next_polygon_id,
-            points=[(float(x), float(y)) for x, y in self._pending_points],
+            points=integer_points(self._pending_points),
             is_hole=False,
             parent_id=None,
             shape_hint="manual_outline",
@@ -913,6 +929,7 @@ class PolygonEditorScene(QGraphicsScene):
             (rect.right(), rect.bottom()),
             (rect.left(), rect.bottom()),
         ]
+        points = integer_points(points)
         area, perimeter, bbox = compute_polygon_metrics(points)
         polygon = PolygonData(
             id=self._next_polygon_id,
@@ -940,6 +957,7 @@ class PolygonEditorScene(QGraphicsScene):
             (rect.right(), rect.bottom()),
             (rect.left(), rect.bottom()),
         ]
+        points = integer_points(points)
         acceptable, reason = polygon_commit_acceptability(points)
         if not acceptable:
             self.clear_preview_rect()
@@ -1218,36 +1236,16 @@ class PolygonEditorScene(QGraphicsScene):
 
     def _update_pending_path(self) -> None:
 
-        brush_width = float(self._pending_path_item.pen().widthF())
+        brush_width = self._pending_brush_width if self._pending_polyline_for_brush else float(self._pending_path_item.pen().widthF())
 
         if self._pending_polyline_for_brush:
 
             outline_color = QColor("#F7B801")
 
             if self._pending_points and brush_width >= 1.0:
-
-                centerline = QPainterPath()
-
-                first_point = self._pending_points[0]
-
-                centerline.moveTo(first_point[0], first_point[1])
-
-                for xy in self._pending_points[1:]:
-                    centerline.lineTo(xy[0], xy[1])
-
+                preview_points = list(self._pending_points)
                 if self._pending_cursor is not None:
-                    cursor_x, cursor_y = self._pending_cursor
-
-                    centerline.lineTo(cursor_x, cursor_y)
-
-                stroker = QPainterPathStroker()
-                stroker.setWidth(max(1.0, brush_width))
-
-                stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
-
-                stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-
-                hull = stroker.createStroke(centerline)
+                    preview_points.append(self._pending_cursor)
 
                 fill_color = QColor("#F7B801")
 
@@ -1261,7 +1259,7 @@ class PolygonEditorScene(QGraphicsScene):
 
                 self._pending_path_item.setPen(outline_pen)
 
-                self._pending_path_item.setPath(hull)
+                self._pending_path_item.setPath(self._tool_preview_path(preview_points, brush_width))
 
                 return
 
@@ -1324,6 +1322,19 @@ class PolygonEditorScene(QGraphicsScene):
                 backbone.lineTo(self._pending_cursor[0], self._pending_cursor[1])
 
         self._pending_path_item.setPath(backbone)
+
+    def _tool_preview_path(self, points: list[tuple[float, float]], thickness: float) -> QPainterPath:
+        path = QPainterPath()
+        try:
+            polygons = shapely_to_polygon_data_list(
+                tool_geometry(points, float(thickness), quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+            )
+        except Exception:
+            return path
+        for polygon in polygons:
+            path.addPath(_display_path_for_polygon(polygon))
+        path.setFillRule(Qt.FillRule.OddEvenFill)
+        return path
 
     def _refresh_all_items(self) -> None:
         for polygon_id, item in self._polygon_items.items():
@@ -1503,7 +1514,7 @@ class PolygonEditorScene(QGraphicsScene):
         area, perimeter, bbox = compute_polygon_metrics(points)
         return PolygonData(
             id=existing.id,
-            points=[(float(x), float(y)) for x, y in points],
+            points=integer_points(points),
             is_hole=existing.is_hole,
             parent_id=existing.parent_id,
             category=existing.category,
@@ -1563,7 +1574,18 @@ class PolygonEditorScene(QGraphicsScene):
         if polygon_id not in self._polygons:
             return
         points = self.polygon_points(polygon_id)
-        points[vertex_index] = (float(point[0]), float(point[1]))
+        if vertex_index < 0 or vertex_index >= len(points):
+            return
+        new_point = integer_point(point)
+        closed_duplicate_endpoint = (
+            len(points) > 2 and hypot(points[0][0] - points[-1][0], points[0][1] - points[-1][1]) < 1e-5
+        )
+        points[vertex_index] = new_point
+        if closed_duplicate_endpoint:
+            if vertex_index == 0:
+                points[-1] = new_point
+            elif vertex_index == len(points) - 1:
+                points[0] = new_point
         self._replace_polygon_points_internal(polygon_id, points, emit_signal=emit_signal)
 
     def _insert_vertex_internal(
@@ -1575,7 +1597,7 @@ class PolygonEditorScene(QGraphicsScene):
     ) -> None:
         points = self.polygon_points(polygon_id)
         insert_at = max(0, min(len(points), insert_index))
-        points.insert(insert_at, (float(point[0]), float(point[1])))
+        points.insert(insert_at, integer_point(point))
         self._replace_polygon_points_internal(polygon_id, points, emit_signal=emit_signal)
 
     def _remove_vertex_internal(self, polygon_id: int, vertex_index: int, emit_signal: bool = True) -> None:

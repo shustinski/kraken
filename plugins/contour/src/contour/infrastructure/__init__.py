@@ -1,3 +1,3 @@
-from .settings_store import WidgetDisplaySettingsStore, WidgetPathSettingsStore
+from .settings_store import WidgetDisplaySettingsStore, WidgetPathSettingsStore, WidgetViaPresetSettingsStore
 
-__all__ = ["WidgetDisplaySettingsStore", "WidgetPathSettingsStore"]
+__all__ = ["WidgetDisplaySettingsStore", "WidgetPathSettingsStore", "WidgetViaPresetSettingsStore"]

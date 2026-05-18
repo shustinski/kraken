@@ -128,7 +128,7 @@ def editor_misc_hotkey_lines(*, ru: bool) -> list[tuple[str, str]]:
         ("Paste", paste),
         ("Delete selected polygons", "Del"),
         ("Clear selection / cancel paste", "Esc"),
-        ("Toggle vector overlay visibility", "Space"),
+        ("Temporarily hide vector overlays", "Space"),
         ("Finish point polygon", "Enter"),
         ("Zoom (wheel)", "Ctrl+wheel"),
         ("Scroll horizontally", "Shift+wheel"),

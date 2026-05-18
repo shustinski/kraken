@@ -80,3 +80,14 @@ def test_hub_prefers_root_plugin_launcher(tmp_path, monkeypatch):
     command = hub_app.build_launch_command(PluginMetadata(id="contour", display_name="Contour"), root=tmp_path)
 
     assert command == ["uv", "run", "python", "__main__.py"]
+
+
+def test_bundled_plugins_have_standalone_launchers():
+    plugins = load_plugin_catalog(hub_app.bundled_catalog_path())
+
+    assert plugins
+    for plugin in plugins:
+        launcher = hub_app.workspace_root() / "plugins" / plugin.id / "__main__.py"
+        assert launcher.is_file(), plugin.id
+        assert plugin.executable_for("windows").command == ("python", "__main__.py")
+        assert plugin.executable_for("linux").command == ("python", "__main__.py")

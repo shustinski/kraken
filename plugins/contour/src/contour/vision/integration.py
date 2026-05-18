@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from ..domain import PolygonData, compute_polygon_metrics
+from ..domain import PolygonData, compute_polygon_metrics, integer_points
 from .contour_extraction import SemContourConfig, SemContourExtractor
 from .io_normalize import make_image_ref, to_gray_u8
 from .schemas import AppMode, ContourExtractionOutput, HierarchicalComponent, OutputShapeKind, ViaDetectionOutput, ViaHit
@@ -168,7 +168,7 @@ def _run_sem_via_detection(
 def contour_output_to_polygons(output: ContourExtractionOutput, *, category: str = "conductor") -> list[PolygonData]:
     polygons: list[PolygonData] = []
     for index, component in enumerate(output.components, start=1):
-        points = list(component.points)
+        points = integer_points(list(component.points))
         area, perimeter, bbox = compute_polygon_metrics(points)
         polygons.append(
             PolygonData(
@@ -189,7 +189,7 @@ def contour_output_to_polygons(output: ContourExtractionOutput, *, category: str
 def via_output_to_polygons(output: ViaDetectionOutput) -> list[PolygonData]:
     polygons: list[PolygonData] = []
     for index, hit in enumerate(output.hits, start=1):
-        points = _via_hit_points(hit, output.output_kind)
+        points = integer_points(_via_hit_points(hit, output.output_kind))
         area, perimeter, bbox = compute_polygon_metrics(points)
         polygons.append(
             PolygonData(

@@ -12,8 +12,20 @@ from math import atan2, hypot, pi, radians
 import cv2
 import numpy as np
 
-from ..domain import PolygonData, compute_polygon_metrics
-from ..domain.polygon_ring import is_valid_closed_polygon_ring
+from ..domain import PolygonData, compute_polygon_metrics, integer_point, integer_points
+from ..domain.polygon_ring import (
+    TOPOLOGY_CHECK_MAX_VERTICES,
+    is_valid_closed_polygon_ring,
+    is_valid_closed_polygon_vertex_move,
+)
+
+
+def _ring_ok_after_spike_removal(points: list[tuple[float, float]]) -> bool:
+    if len(points) < 3:
+        return False
+    if len(points) > TOPOLOGY_CHECK_MAX_VERTICES:
+        return True
+    return is_valid_closed_polygon_ring(points)
 
 
 def _polygon_contains_point(poly: PolygonData, point: tuple[float, float]) -> bool:
@@ -155,7 +167,7 @@ def remove_spikes_from_polygon_ring(points: list[tuple[float, float]], min_inter
         return points
     min_rad = radians(min_interior_angle_deg)
     pts = list(points)
-    safety_cap = max(256, len(points) * len(points))
+    safety_cap = max(256, min(len(points) * 8, len(points) * len(points)))
     iterations = 0
     changed = True
     while changed and len(pts) >= 4 and iterations < safety_cap:
@@ -185,9 +197,12 @@ def apply_spike_removal_all(polygons: list[PolygonData], min_interior_angle_deg:
         if p.is_hole:
             out.append(p.clone())
             continue
+        if len(p.points) > TOPOLOGY_CHECK_MAX_VERTICES:
+            out.append(p.clone())
+            continue
         q = p.clone()
-        new_pts = remove_spikes_from_polygon_ring([(float(x), float(y)) for x, y in q.points], min_interior_angle_deg)
-        if len(new_pts) < 3 or not is_valid_closed_polygon_ring(new_pts):
+        new_pts = remove_spikes_from_polygon_ring(integer_points(q.points), min_interior_angle_deg)
+        if len(new_pts) < 3 or not _ring_ok_after_spike_removal(new_pts):
             out.append(p.clone())
             continue
         q.points = new_pts
@@ -366,20 +381,37 @@ def merge_overlapping_root_families(polygons: list[PolygonData]) -> list[Polygon
     return merged_all
 
 
+def _polygon_topo_points_key(points: list[tuple[float, float]]) -> object:
+    n = len(points)
+    if n <= TOPOLOGY_CHECK_MAX_VERTICES:
+        return tuple((round(float(x_coord), 4), round(float(y_coord), 4)) for x_coord, y_coord in points)
+    centroid_x = 0.0
+    centroid_y = 0.0
+    for x_coord, y_coord in points:
+        centroid_x += float(x_coord)
+        centroid_y += float(y_coord)
+    inv_n = 1.0 / float(n)
+    return (
+        "dense",
+        n,
+        int(round(centroid_x * inv_n * 10_000.0)),
+        int(round(centroid_y * inv_n * 10_000.0)),
+    )
+
+
+def _single_polygon_topo_signature(polygon: PolygonData) -> tuple[object, ...]:
+    return (
+        polygon.id,
+        bool(polygon.is_hole),
+        polygon.parent_id,
+        str(polygon.category),
+        str(polygon.shape_hint),
+        _polygon_topo_points_key(polygon.points),
+    )
+
+
 def _polygons_topo_signature(polygons: list[PolygonData]) -> tuple[tuple[object, ...], ...]:
-    rows: list[tuple[object, ...]] = []
-    for p in sorted(polygons, key=lambda q: q.id):
-        rows.append(
-            (
-                p.id,
-                bool(p.is_hole),
-                p.parent_id,
-                str(p.category),
-                str(p.shape_hint),
-                tuple((round(x, 4), round(y, 4)) for x, y in p.points),
-            )
-        )
-    return tuple(rows)
+    return tuple(_single_polygon_topo_signature(polygon) for polygon in sorted(polygons, key=lambda q: q.id))
 
 
 def postprocess_after_editor_mutation(
@@ -440,7 +472,11 @@ def postprocess_changed_polygon_only(
 
     if polygon_id is None:
         return [p.clone() for p in polygons], False
-    before = [p.clone() for p in polygons]
+    before_by_id = {p.id: p for p in polygons}
+    before_target = before_by_id.get(polygon_id)
+    if before_target is None:
+        return [p.clone() for p in polygons], False
+    before_signature = _single_polygon_topo_signature(before_target)
     work = [p.clone() for p in polygons]
     by_id = {p.id: p for p in work}
     target = by_id.get(polygon_id)
@@ -449,7 +485,7 @@ def postprocess_changed_polygon_only(
     if len(target.points) < 3 or any(not _point_finite(pt) for pt in target.points):
         work = [p for p in work if p.id != polygon_id and p.parent_id != polygon_id]
         work = drop_orphan_holes(work)
-        return work, _polygons_topo_signature(before) != _polygons_topo_signature(work)
+        return work, len(work) != len(polygons)
 
     _refresh_metrics(target)
     scoped = [target.clone()]
@@ -465,7 +501,7 @@ def postprocess_changed_polygon_only(
     if not scoped:
         work = [p for p in work if p.id != polygon_id and p.parent_id != polygon_id]
         work = drop_orphan_holes(work)
-        return work, _polygons_topo_signature(before) != _polygons_topo_signature(work)
+        return work, len(work) != len(polygons)
 
     replacement = scoped[0]
     replacement.id = target.id
@@ -475,7 +511,28 @@ def postprocess_changed_polygon_only(
             work[index] = replacement
             break
     work = drop_orphan_holes(work)
-    changed = _polygons_topo_signature(before) != _polygons_topo_signature(work)
+    changed = len(work) != len(polygons) or before_signature != _single_polygon_topo_signature(replacement)
+    return work, changed
+
+
+def postprocess_after_vertex_move(
+    polygons: list[PolygonData],
+    settings: VectorGeometrySettings,
+    *,
+    polygon_id: int | None,
+) -> tuple[list[PolygonData], bool]:
+    """Vertex-move postprocess: local cleanup on the edited polygon, then optional family merge."""
+
+    work, changed = postprocess_changed_polygon_only(polygons, settings, polygon_id=polygon_id)
+    if not settings.merge_overlapping_on_edit:
+        return work, changed
+    before_merge = _polygons_topo_signature(work)
+    work = merge_overlapping_root_families(work)
+    work = drop_polygons_invalid_points(work)
+    work = filter_simple_valid_polygons(work)
+    work = drop_orphan_holes(work)
+    if before_merge != _polygons_topo_signature(work):
+        changed = True
     return work, changed
 
 
@@ -521,9 +578,16 @@ def apply_vertex_position_to_clone(
     if target is None or vertex_index < 0 or vertex_index >= len(target.points):
         return work
     pts = [(float(x), float(y)) for x, y in target.points]
-    pts[vertex_index] = (float(new_point[0]), float(new_point[1]))
+    moved_point = integer_point(new_point)
+    closed_duplicate_endpoint = len(pts) > 2 and hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) < 1e-5
+    pts[vertex_index] = moved_point
+    if closed_duplicate_endpoint:
+        if vertex_index == 0:
+            pts[-1] = moved_point
+        elif vertex_index == len(pts) - 1:
+            pts[0] = moved_point
     target.points = pts
-    if not is_valid_closed_polygon_ring(target.points):
+    if not is_valid_closed_polygon_vertex_move(target.points, vertex_index):
         return [p.clone() for p in polygons]
     _refresh_metrics(target)
     return work
@@ -539,7 +603,7 @@ def apply_polygon_points_to_clone(
     target = by_id.get(polygon_id)
     if target is None:
         return work
-    target.points = [(float(x), float(y)) for x, y in new_points]
+    target.points = integer_points(new_points)
     if not is_valid_closed_polygon_ring(target.points):
         return [p.clone() for p in polygons]
     _refresh_metrics(target)

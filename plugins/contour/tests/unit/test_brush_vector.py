@@ -52,6 +52,18 @@ def test_sparse_points_stroke_fills_gap_with_capsule_geometry() -> None:
     assert sparse.buffer(1e-7).contains(Point(150.0, 0.0))
 
 
+def test_straight_brush_stroke_does_not_emit_collinear_side_vertices() -> None:
+    stroke = brush_stroke_geometry([(0.0, 0.0), (300.0, 0.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    polys = shapely_to_polygon_data_list(stroke)
+    assert len(polys) == 1
+
+    top_side = [point for point in polys[0].points if abs(point[1] - 10.0) < 1e-6 and 0.0 <= point[0] <= 300.0]
+    bottom_side = [point for point in polys[0].points if abs(point[1] + 10.0) < 1e-6 and 0.0 <= point[0] <= 300.0]
+
+    assert len(top_side) == 2
+    assert len(bottom_side) == 2
+
+
 def test_densify_chain_keeps_initial_point_for_short_first_move() -> None:
     chain = [(40.0, 40.0)]
     out = densify_chain_with_new_vertex(chain, (40.05, 40.0), max_segment_length=6.0)

@@ -6,6 +6,38 @@ from typing import Any
 Point = tuple[float, float]
 
 
+def integer_coord(value: float) -> int:
+    return int(round(float(value)))
+
+
+def _coord_is_integer(value: object) -> bool:
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        rounded = round(value)
+        return rounded == value or abs(value - rounded) < 1e-9
+    return False
+
+
+def _points_are_integer(points: list[Point]) -> bool:
+    if not points:
+        return True
+    return all(_coord_is_integer(x_coord) and _coord_is_integer(y_coord) for x_coord, y_coord in points)
+
+
+def integer_point(point: Point) -> tuple[int, int]:
+    x_coord, y_coord = point
+    if isinstance(x_coord, int) and isinstance(y_coord, int):
+        return x_coord, y_coord
+    return integer_coord(x_coord), integer_coord(y_coord)
+
+
+def integer_points(points: list[Point]) -> list[tuple[int, int]]:
+    if _points_are_integer(points):
+        return [(int(x_coord), int(y_coord)) for x_coord, y_coord in points]
+    return [integer_point(point) for point in points]
+
+
 @dataclass(slots=True)
 class PolygonData:
     id: int
@@ -20,10 +52,13 @@ class PolygonData:
     #: Metal recovery / debug only; not written to CIF by default.
     reject_reason: str = ""
 
+    def __post_init__(self) -> None:
+        self.points = integer_points(self.points)
+
     def clone(self) -> PolygonData:
         return PolygonData(
             id=self.id,
-            points=[(float(x_coord), float(y_coord)) for x_coord, y_coord in self.points],
+            points=list(self.points),
             is_hole=self.is_hole,
             parent_id=self.parent_id,
             category=str(self.category),
@@ -37,7 +72,7 @@ class PolygonData:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
-            "points": [[float(x_coord), float(y_coord)] for x_coord, y_coord in self.points],
+            "points": [[integer_coord(x_coord), integer_coord(y_coord)] for x_coord, y_coord in self.points],
             "is_hole": self.is_hole,
             "parent_id": self.parent_id,
             "category": self.category,
@@ -57,7 +92,7 @@ class PolygonData:
         bbox: tuple[int, int, int, int] = (bbox_values[0], bbox_values[1], bbox_values[2], bbox_values[3])
         return cls(
             id=int(payload["id"]),
-            points=[(float(x_coord), float(y_coord)) for x_coord, y_coord in payload.get("points", [])],
+            points=integer_points([(float(x_coord), float(y_coord)) for x_coord, y_coord in payload.get("points", [])]),
             is_hole=bool(payload.get("is_hole", False)),
             parent_id=payload.get("parent_id"),
             category=str(payload.get("category", "conductor")),

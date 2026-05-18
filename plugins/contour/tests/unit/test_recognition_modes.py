@@ -80,7 +80,6 @@ def test_mode_switching_hides_irrelevant_ui_settings() -> None:
         assert not widget.bright_via_group.isHidden()
         assert widget.recognition_stack.isHidden()
         assert [widget.via_search_mode_combo.itemData(i) for i in range(widget.via_search_mode_combo.count())] == [
-            "heuristic",
             "template",
             "bright_tophat_dog",
         ]

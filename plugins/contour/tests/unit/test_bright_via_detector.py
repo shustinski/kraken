@@ -254,3 +254,41 @@ def test_sem_backend_routes_heuristic_to_modern_detector() -> None:
     assert output.selected_strategy == "heuristic"
     assert any("heuristic: polar=" in line for line in output.attempt_log)
     assert len(output.hits) >= 1
+
+
+def test_large_image_2000x2000_detects_bright_vias() -> None:
+    image = np.full((2000, 2000), 100, dtype=np.uint8)
+    centers = [(300, 300), (900, 700), (1600, 1200), (1400, 1700)]
+    for cx, cy in centers:
+        cv2.circle(image, (cx, cy), 8, 245, thickness=-1, lineType=cv2.LINE_AA)
+    result = detect_bright_vias(
+        image,
+        BrightViaDetectorConfig(
+            use_metal_mask=False,
+            threshold_percentile=99.0,
+            min_final_score=25.0,
+            bright_center_min_score=20.0,
+            diameter_min=10,
+            diameter_max=20,
+        ).validated(),
+    )
+    assert len(result.detections) >= 4
+
+
+def test_faint_candidates_rejected_by_bright_center_threshold() -> None:
+    image = np.full((120, 120), 95, dtype=np.uint8)
+    cv2.circle(image, (40, 60), 5, 150, thickness=-1, lineType=cv2.LINE_AA)
+    cv2.circle(image, (82, 60), 5, 235, thickness=-1, lineType=cv2.LINE_AA)
+    result = detect_bright_vias(
+        image,
+        BrightViaDetectorConfig(
+            use_metal_mask=False,
+            threshold_percentile=98.0,
+            min_final_score=10.0,
+            bright_center_min_score=180.0,
+            diameter_min=8,
+            diameter_max=14,
+        ).validated(),
+    )
+    assert any(abs(d.center[0] - 82) < 6 for d in result.detections)
+    assert not any(abs(d.center[0] - 40) < 6 for d in result.detections)

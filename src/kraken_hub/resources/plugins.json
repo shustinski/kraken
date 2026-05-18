@@ -8,8 +8,8 @@
       "enabled": true,
       "platforms": ["windows", "linux"],
       "executables": {
-        "windows": {"command": ["python", "-m", "neuralimage"]},
-        "linux": {"command": ["python", "-m", "neuralimage"]}
+        "windows": {"command": ["python", "__main__.py"]},
+        "linux": {"command": ["python", "__main__.py"]}
       },
       "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
     },
@@ -34,8 +34,8 @@
       "enabled": true,
       "platforms": ["windows", "linux"],
       "executables": {
-        "windows": {"command": ["python", "-m", "krona"]},
-        "linux": {"command": ["python", "-m", "krona"]}
+        "windows": {"command": ["python", "__main__.py"]},
+        "linux": {"command": ["python", "__main__.py"]}
       },
       "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
     },
@@ -50,8 +50,8 @@
       "enabled": true,
       "platforms": ["windows", "linux"],
       "executables": {
-        "windows": {"command": ["python", "-m", "csliser"]},
-        "linux": {"command": ["python", "-m", "csliser"]}
+        "windows": {"command": ["python", "__main__.py"]},
+        "linux": {"command": ["python", "__main__.py"]}
       },
       "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
     },
@@ -66,8 +66,8 @@
       "enabled": true,
       "platforms": ["windows", "linux"],
       "executables": {
-        "windows": {"command": ["python", "-m", "kategb"]},
-        "linux": {"command": ["python", "-m", "kategb"]}
+        "windows": {"command": ["python", "__main__.py"]},
+        "linux": {"command": ["python", "__main__.py"]}
       },
       "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
     },
@@ -79,8 +79,8 @@
       "enabled": true,
       "platforms": ["windows", "linux"],
       "executables": {
-        "windows": {"command": ["python", "-m", "karakal"]},
-        "linux": {"command": ["python", "-m", "karakal"]}
+        "windows": {"command": ["python", "__main__.py"]},
+        "linux": {"command": ["python", "__main__.py"]}
       },
       "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
     }

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QTimer, QSize, Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -43,7 +43,6 @@ from PyQt6.QtWidgets import (
 
 from ..application.processing import (
     VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
-    VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
     VIA_SIZE_MODE_FIXED,
     VIA_SIZE_MODE_RANGE,
@@ -55,6 +54,19 @@ from .status_list_delegate import attach_status_row_delegate
 
 if TYPE_CHECKING:
     pass
+
+
+def _connect_line_edit_with_delay(self, line_edit: QLineEdit, slot, *, delay_ms: int = 500) -> None:
+    if not hasattr(self, "_line_edit_debounce_timers"):
+        self._line_edit_debounce_timers = []
+
+    timer = QTimer(self)
+    timer.setSingleShot(True)
+    timer.setInterval(delay_ms)
+    timer.timeout.connect(slot)
+    self._line_edit_debounce_timers.append(timer)
+
+    line_edit.textEdited.connect(lambda *_args, _timer=timer: _timer.start())
 
 
 def build_ui(self) -> None:
@@ -142,10 +154,10 @@ def build_path_panel(self) -> QWidget:
     self.merge_cif_files_button = QPushButton()
     self._configure_icon_only_button(self.merge_cif_files_button, file_pick_icon)
     self.merge_cif_files_button.clicked.connect(self._merge_cif_files_dialog)
-    self.input_dir_edit.editingFinished.connect(self._apply_input_directory_edit)
-    self.cif_dir_edit.editingFinished.connect(self._apply_cif_directory_edit)
-    self.output_dir_edit.editingFinished.connect(self._apply_output_directory_edit)
-    self.dataset_dir_edit.editingFinished.connect(self._apply_dataset_directory_edit)
+    _connect_line_edit_with_delay(self, self.input_dir_edit, self._apply_input_directory_edit)
+    _connect_line_edit_with_delay(self, self.cif_dir_edit, self._apply_cif_directory_edit)
+    _connect_line_edit_with_delay(self, self.output_dir_edit, self._apply_output_directory_edit)
+    _connect_line_edit_with_delay(self, self.dataset_dir_edit, self._apply_dataset_directory_edit)
 
     for label, edit, button in [
         (self.input_dir_label, self.input_dir_edit, self.browse_input_button),
@@ -168,8 +180,8 @@ def build_path_panel(self) -> QWidget:
     cif_row_layout.setContentsMargins(0, 0, 0, 0)
     cif_row_layout.setSpacing(6)
     cif_row_layout.addWidget(self.cif_dir_edit, 1)
-    cif_row_layout.addWidget(self.browse_cif_button)
     cif_row_layout.addWidget(self.merge_cif_files_button)
+    cif_row_layout.addWidget(self.browse_cif_button)
     layout.addWidget(self.cif_dir_label)
     layout.addWidget(cif_row)
 
@@ -319,6 +331,11 @@ def build_files_tab(self) -> QWidget:
     self.thumbnail_grid.setSpacing(0)
     self.thumbnail_grid.setIconSize(QSize(64, 48))
     self.thumbnail_grid.setContentsMargins(0, 0, 0, 0)
+    self.thumbnail_grid.setFrameShape(QFrame.Shape.NoFrame)
+    self.thumbnail_grid.setStyleSheet(
+        "QListWidget { padding: 0px; border: 0px; }"
+        "QListWidget::item { margin: 0px; padding: 0px; border: 0px; }"
+    )
     self.thumbnail_grid.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     attach_status_row_delegate(self.thumbnail_grid)
@@ -659,13 +676,8 @@ def build_extraction_tab(self) -> QWidget:
     self.via_size_mode_combo.addItem("Fixed values", VIA_SIZE_MODE_FIXED)
     self.via_search_mode_combo = QComboBox()
     self.via_search_mode_combo.addItem("По шаблону", VIA_SEARCH_MODE_TEMPLATE)
-    self.via_search_mode_combo.addItem("Эвристический", VIA_SEARCH_MODE_HEURISTIC)
+    self.via_search_mode_combo.addItem("Эвристический", VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG)
     self.via_search_mode_combo.setCurrentIndex(1)
-    self.via_search_mode_combo.clear()
-    self.via_search_mode_combo.addItem("Эвристический", VIA_SEARCH_MODE_HEURISTIC)
-    self.via_search_mode_combo.addItem("По шаблону", VIA_SEARCH_MODE_TEMPLATE)
-    self.via_search_mode_combo.addItem("Светлые via TopHat+DoG", VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG)
-    self.via_search_mode_combo.setCurrentIndex(0)
     self.via_heuristic_polarity_combo = QComboBox()
     self.via_heuristic_polarity_combo.addItem("Светлые", "bright")
     self.via_heuristic_polarity_combo.addItem("Тёмные", "dark")
@@ -1098,7 +1110,12 @@ def build_extraction_tab(self) -> QWidget:
     self.via_search_mode_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.via_diameter_size_mode_combo.currentIndexChanged.connect(self._sync_via_diameter_size_mode)
     self.via_heuristic_polarity_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
-    self.via_fixed_diameters_edit.textChanged.connect(self._on_extraction_settings_changed)
+    _connect_line_edit_with_delay(
+        self,
+        self.via_fixed_diameters_edit,
+        self._on_extraction_settings_changed,
+        delay_ms=350,
+    )
     self.via_template_nms_distance_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_template_scale_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_template_scale_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -1782,6 +1799,9 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.metalOverlayDetailRequested.connect(self._on_metal_overlay_detail_requested)
     self.polygon_editor.middlePreviewHoldChanged.connect(self._on_middle_preview_hold_changed)
     self.polygon_editor.effectivePolygonCreateModeChanged.connect(self._on_effective_polygon_create_mode_changed)
+    self.polygon_editor.polygonCreateModeChanged.connect(self._sync_polygon_mode_combo)
+    self.polygon_editor.brushModeChanged.connect(self._sync_brush_mode_combo)
+    self.polygon_editor.deleteVertexModeChanged.connect(self._sync_delete_vertex_mode_combo)
     self.editor_toolbar = self._build_editor_toolbar()
     self.editor_toolbar_scroll = QScrollArea()
     self.editor_toolbar_scroll.setObjectName("editorToolbarScroll")
@@ -1790,7 +1810,7 @@ def build_visual_panel(self) -> QWidget:
     self.editor_toolbar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     self.editor_toolbar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.editor_toolbar_scroll.setFrameShape(QFrame.Shape.NoFrame)
-    self.editor_toolbar_scroll.setMinimumWidth(max(180, self.editor_toolbar.sizeHint().width()))
+    self.editor_toolbar_scroll.setMinimumWidth(min(760, max(180, self.editor_toolbar.sizeHint().width())))
     self.editor_toolbar_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     toolbar_height = (
         self.editor_toolbar.sizeHint().height()
@@ -1856,7 +1876,7 @@ def build_editor_toolbar(self) -> QWidget:
     ]:
         button = QToolButton()
         self._configure_toolbar_button(button, self._create_editor_tool_icon(tool), text, checkable=True)
-        button.clicked.connect(lambda checked=False, tool_value=tool: self.polygon_editor.set_tool(tool_value))
+        button.clicked.connect(lambda checked=False, tool_value=tool: self._on_editor_tool_button_clicked(tool_value))
         self._tool_button_group.addButton(button)
         self._tool_buttons[tool] = button
         layout.addWidget(button)
@@ -1963,6 +1983,24 @@ def build_editor_toolbar(self) -> QWidget:
     self.fit_button = QToolButton()
     self._configure_toolbar_button(self.fit_button, self._create_editor_action_icon("fit"), "Fit")
     self.fit_button.clicked.connect(self.polygon_editor.fit_to_view)
+    self.antialias_grade_label = QLabel("AA")
+    self.antialias_grade_spin = QSpinBox()
+    self.antialias_grade_spin.setRange(1, 5)
+    self.antialias_grade_spin.setValue(1)
+    self.antialias_selected_button = QToolButton()
+    self._configure_toolbar_button(
+        self.antialias_selected_button,
+        self._create_editor_action_icon("antialias"),
+        "Antialias selected polygons",
+    )
+    self.antialias_selected_button.clicked.connect(self._antialias_selected_polygons)
+    self.antialias_opened_cif_button = QToolButton()
+    self._configure_toolbar_button(
+        self.antialias_opened_cif_button,
+        self._create_editor_action_icon("antialias_all"),
+        "Antialias all opened CIF files",
+    )
+    self.antialias_opened_cif_button.clicked.connect(self._antialias_opened_cif_files)
 
     for button in [
         self.undo_button,
@@ -1972,6 +2010,10 @@ def build_editor_toolbar(self) -> QWidget:
         self.fit_button,
     ]:
         layout.addWidget(button)
+    layout.addWidget(self.antialias_grade_label)
+    layout.addWidget(self.antialias_grade_spin)
+    layout.addWidget(self.antialias_selected_button)
+    layout.addWidget(self.antialias_opened_cif_button)
 
     self.vector_edit_status_label = QLabel("")
     self.vector_edit_status_label.setMinimumWidth(88)
@@ -1983,7 +2025,9 @@ def build_editor_toolbar(self) -> QWidget:
     self.preview_busy_progress.setValue(0)
     self.preview_busy_progress.setFormat("%p%")
     self.preview_busy_progress.setTextVisible(True)
-    self.preview_busy_progress.setFixedWidth(220)
+    self.preview_busy_progress.setMinimumWidth(260)
+    self.preview_busy_progress.setTextVisible(True)
+    self.preview_busy_progress.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     self.preview_busy_label.setVisible(False)
     self.preview_busy_progress.setVisible(False)
     layout.addWidget(self.preview_busy_label)
@@ -2002,6 +2046,10 @@ def build_editor_toolbar(self) -> QWidget:
         self.via_height_spin,
         self.delete_vertex_mode_combo,
         self.ruler_status_label,
+        self.antialias_grade_label,
+        self.antialias_grade_spin,
+        self.antialias_selected_button,
+        self.antialias_opened_cif_button,
     ):
         _apply_size_hint_geometry(widget, width=True, height=True)
         widget.setMinimumHeight(max(30, widget.minimumHeight()))

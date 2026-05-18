@@ -297,6 +297,20 @@ def create_editor_action_icon(action: str) -> QIcon:
         _paint_zoom_icon(painter, stroke, accent, add=True)
     elif action == "zoom_out":
         _paint_zoom_icon(painter, stroke, accent, add=False)
+    elif action == "antialias":
+        pen = QPen(accent, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        painter.drawArc(QRectF(5.0, 6.0, 18.0, 16.0), 190 * 16, -250 * 16)
+        painter.setPen(QPen(stroke, 1.4, Qt.PenStyle.DashLine, Qt.PenCapStyle.RoundCap))
+        painter.drawPolyline(QPolygonF([QPointF(5.0, 18.0), QPointF(10.0, 8.0), QPointF(17.0, 20.0), QPointF(23.0, 9.0)]))
+    elif action == "antialias_all":
+        painter.setPen(QPen(stroke, 1.4))
+        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        painter.drawRect(QRectF(5.0, 6.0, 12.0, 12.0))
+        painter.drawRect(QRectF(10.0, 10.0, 12.0, 12.0))
+        painter.setPen(QPen(accent, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawArc(QRectF(7.0, 7.0, 16.0, 15.0), 200 * 16, -245 * 16)
     else:
         _paint_fit_icon(painter, stroke, accent)
     painter.end()

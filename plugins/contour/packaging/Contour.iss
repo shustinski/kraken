@@ -4,8 +4,8 @@
 #endif
 #define MyAppPublisher "ViaLaNet"
 #define MyAppExeName "Contour.exe"
-#define MyAppDistDir "..\\dist\\Contour"
-#define MyAppIcon "...\\resources\\\icons\\contour.ico"
+#define MyAppDistDir "D:\\code\\kraken\\dist\\Contour"
+#define MyAppIcon "..\\resources\\\icons\\contour.ico"
 
 [Setup]
 AppId={{3D57BB57-5DD3-40F8-8521-0FC09E6EF8B5}

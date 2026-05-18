@@ -8,7 +8,7 @@ from shapely import BufferCapStyle, BufferJoinStyle, make_valid, unary_union
 from shapely.geometry import LinearRing, LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 
-from ..domain import PolygonData, compute_polygon_metrics
+from ..domain import PolygonData, compute_polygon_metrics, integer_points
 
 QUAD_SEGS_BRUSH_DEFAULT = 8
 
@@ -70,9 +70,7 @@ def brush_stroke_geometry(points: list[tuple[float, float]], diameter: float, *,
         )
         return unary_union(make_valid(gp))
 
-    spaced = densify_polyline(cleaned, max_segment_length=min(radius * 0.48, radius * 0.9))
-
-    gp = LineString(spaced).buffer(
+    gp = LineString(cleaned).buffer(
         radius,
         quad_segs=quad_segs,
         cap_style=BufferCapStyle.round,
@@ -263,11 +261,12 @@ def shapely_to_polygon_data_list(result: BaseGeometry) -> list[PolygonData]:
         return value
 
     def push_polygon(poly: Polygon) -> None:
-        coords = [(float(x), float(y)) for x, y in poly.exterior.coords[:-1]]
+        coords = integer_points([(float(x), float(y)) for x, y in poly.exterior.coords[:-1]])
         if len(coords) < 3:
             return
 
         exterior_id = allocate_id()
+        area, perimeter, bbox = compute_polygon_metrics(coords)
 
         polygons_out.append(
             PolygonData(
@@ -275,14 +274,14 @@ def shapely_to_polygon_data_list(result: BaseGeometry) -> list[PolygonData]:
                 points=coords,
                 is_hole=False,
                 parent_id=None,
-                area=float(poly.area),
-                perimeter=float(poly.exterior.length),
-                bbox=compute_polygon_metrics(coords)[2],
+                area=area,
+                perimeter=perimeter,
+                bbox=bbox,
             )
         )
 
         for interior_ring in poly.interiors:
-            hcoords = [(float(x), float(y)) for x, y in interior_ring.coords[:-1]]
+            hcoords = integer_points([(float(x), float(y)) for x, y in interior_ring.coords[:-1]])
             if len(hcoords) < 3:
                 continue
 

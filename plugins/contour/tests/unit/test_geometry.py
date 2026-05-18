@@ -3,6 +3,10 @@ from __future__ import annotations
 import unittest
 
 from contour.domain import PolygonData, compute_polygon_metrics
+from contour.domain.polygon_ring import (
+    TOPOLOGY_CHECK_MAX_VERTICES,
+    is_valid_closed_polygon_vertex_move,
+)
 from contour.graphics.geometry import (
     is_valid_closed_polygon_ring,
     is_valid_open_polyline_last_edge,
@@ -39,6 +43,20 @@ class GeometryTests(unittest.TestCase):
     def test_is_valid_closed_accepts_convex_square(self) -> None:
         sq = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
         self.assertTrue(is_valid_closed_polygon_ring(sq))
+
+    def test_vertex_move_validation_ignores_unrelated_existing_defect(self) -> None:
+        pts = [(0.0, 0.0), (45.0, 0.0), (40.0, 40.0), (10.0, 10.0), (0.0, 40.0), (10.0, 10.0)]
+        self.assertFalse(is_valid_closed_polygon_ring(pts))
+        self.assertTrue(is_valid_closed_polygon_vertex_move(pts, 1))
+
+    def test_large_dense_ring_skips_full_topology_check(self) -> None:
+        n = TOPOLOGY_CHECK_MAX_VERTICES + 50
+        ring = [(float(i), 0.0) for i in range(n)]
+        self.assertTrue(is_valid_closed_polygon_ring(ring))
+
+    def test_vertex_move_validation_rejects_moved_edge_crossing(self) -> None:
+        pts = [(0.0, 0.0), (20.0, 60.0), (40.0, 0.0), (0.0, 40.0)]
+        self.assertFalse(is_valid_closed_polygon_vertex_move(pts, 1))
 
     def test_open_polyline_rejects_segment_crossing_prior_edge(self) -> None:
         pts = [(0.0, 0.0), (2.0, 0.0), (1.0, 0.5), (1.0, -0.5)]

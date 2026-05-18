@@ -83,14 +83,3 @@ def pan_offset_after_zoom_to_cursor(
         float(cx) - center_x - anchor_x * float(new_scale),
         float(cy) - center_y - anchor_y * float(new_scale),
     )
-
-
-def polygon_overlay_visibility_after_space_toggle(
-    currently_hidden_via_space_toggle: bool,
-) -> tuple[bool, bool]:
-    """Return ``(new_hidden_flag, overlays_visible)`` after one Space press.
-
-    Does not describe polygon data or selection — only visibility flags.
-    """
-    new_hidden = not currently_hidden_via_space_toggle
-    return (new_hidden, not new_hidden)

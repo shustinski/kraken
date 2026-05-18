@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,8 +24,15 @@ class WorkspaceLoadResult:
     prepared_image_required: bool = False
 
 
-def _normalize_polygon_points(points: list[tuple[float, float]]) -> tuple[tuple[float, float], ...]:
-    return tuple((round(float(x_coord), 6), round(float(y_coord), 6)) for x_coord, y_coord in points)
+_POINT_SIGNATURE_SCALE = 1_000_000
+
+
+def _normalize_polygon_points(points: list[tuple[float, float]]) -> tuple[tuple[int, int], ...]:
+    scale = _POINT_SIGNATURE_SCALE
+    return tuple(
+        (int(round(float(x_coord) * scale)), int(round(float(y_coord) * scale)))
+        for x_coord, y_coord in points
+    )
 
 
 def _sortable_optional_int(value: int | None) -> tuple[int, int]:
@@ -75,6 +83,9 @@ class WorkspaceSession:
     def cif_paths_by_stem(self) -> dict[str, str]:
         return dict(self._cif_paths_by_stem)
 
+    def cached_states(self) -> tuple[tuple[str, ImageProcessingState], ...]:
+        return tuple((path, state) for path, state in self._state_cache.items())
+
     def replace_image_selection(
         self,
         paths: Iterable[str | Path],
@@ -122,6 +133,7 @@ class WorkspaceSession:
         if state is None:
             return False
         state.reference_polygons = [polygon.clone() for polygon in state.polygons]
+        state.polygons_dirty = False
         return True
 
     def load_image(
@@ -155,11 +167,14 @@ class WorkspaceSession:
                 and cached_state.source_image is not None,
             )
 
-        state = ImageProcessingState(
-            image_path=image_path,
-            source_image=load_source_image(image_path),
-            polygons=load_cif_overlay(image_path),
-        )
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="contour-load") as executor:
+            source_future = executor.submit(load_source_image, image_path)
+            cif_future = executor.submit(load_cif_overlay, image_path)
+            state = ImageProcessingState(
+                image_path=image_path,
+                source_image=source_future.result(),
+                polygons=cif_future.result(),
+            )
         self._state_cache[image_path] = state
         self._current_image_path = image_path
         self._current_state = state
@@ -210,6 +225,7 @@ class WorkspaceSession:
         if self._current_state is None or self._current_image_path is None:
             return False
         self._current_state.polygons = polygons
+        self._current_state.polygons_dirty = None
         self._state_cache[self._current_image_path] = self._current_state
         return True
 
@@ -217,7 +233,11 @@ class WorkspaceSession:
         state = self._state_cache.get(str(Path(image_path)))
         if state is None:
             return False
-        return not _polygons_equal(state.polygons, state.reference_polygons)
+        dirty = state.polygons_dirty
+        if dirty is None:
+            dirty = not _polygons_equal(state.polygons, state.reference_polygons)
+            state.polygons_dirty = dirty
+        return dirty
 
     def current_image_has_changes(self) -> bool:
         if self._current_image_path is None:

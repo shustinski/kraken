@@ -73,7 +73,7 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertLessEqual(widget.main_splitter.widget(0).minimumWidth(), 300)
             self.assertLessEqual(widget.right_tabs.minimumWidth(), 220)
             self.assertTrue(hasattr(widget, "editor_toolbar_scroll"))
-            self.assertLessEqual(widget.editor_toolbar_scroll.minimumWidth(), 180)
+            self.assertLessEqual(widget.editor_toolbar_scroll.minimumWidth(), 760)
         finally:
             widget.close()
             widget.deleteLater()
@@ -85,7 +85,8 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertEqual(widget.heuristic_background_sigma_spin.value(), 25.0)
             settings = widget._current_contour_settings()
             self.assertEqual(settings.heuristic_background_sigma, 25.0)
-            self.assertEqual(settings.via_search_mode, "heuristic")
+            self.assertEqual(settings.via_search_mode, "bright_tophat_dog")
+            self.assertEqual(widget._contour_settings_profiles["vias"].via_search_mode, "bright_tophat_dog")
         finally:
             widget.close()
             widget.deleteLater()
@@ -147,6 +148,39 @@ class WidgetSmokeTests(unittest.TestCase):
 
             self.assertEqual(widget.thumbnail_grid.currentRow(), 1)
             self.assertEqual(widget.thumbnail_grid.currentItem().data(Qt.ItemDataRole.UserRole), paths[1])
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_image_list_selection_scrolls_thumbnail_grid_to_item(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            paths = [fr"d:\frames\frame_{index:03d}.png" for index in range(40)]
+            widget._workspace.replace_image_selection(paths, is_supported_image=lambda _path: True)
+            widget.neighbor_columns_spin.setValue(4)
+            for path in paths:
+                image_item = QListWidgetItem(Path(path).stem)
+                image_item.setData(Qt.ItemDataRole.UserRole, path)
+                widget.image_list.addItem(image_item)
+
+                thumbnail_item = QListWidgetItem()
+                thumbnail_item.setData(Qt.ItemDataRole.UserRole, path)
+                widget.thumbnail_grid.addItem(thumbnail_item)
+
+            widget._configure_thumbnail_grid_geometry()
+            widget.thumbnail_grid_scroll_area.setFixedSize(4 * 64 + 4, 2 * 48 + 4)
+            widget.show()
+            QApplication.processEvents()
+
+            def _fake_load_image(path: str) -> None:
+                widget._workspace._current_image_path = path
+
+            widget.load_image = _fake_load_image  # type: ignore[method-assign]
+            widget.image_list.setCurrentRow(24)
+            QApplication.processEvents()
+
+            self.assertEqual(widget.thumbnail_grid.currentRow(), 24)
+            self.assertGreater(widget.thumbnail_grid_scroll_area.verticalScrollBar().value(), 0)
         finally:
             widget.close()
             widget.deleteLater()

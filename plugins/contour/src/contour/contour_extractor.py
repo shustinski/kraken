@@ -8,7 +8,7 @@ import numpy as np
 
 from .application.preview_cancellation import raise_if_preview_cancelled
 from .application.processing import ContourDebugCandidate, ContourExtractionSettings
-from .domain import PolygonData, compute_polygon_metrics
+from .domain import PolygonData, compute_polygon_metrics, integer_points
 from .domain.polygon_ring import is_valid_closed_polygon_ring
 from .utils import ensure_binary_mask
 
@@ -170,12 +170,12 @@ def _bbox_box_points(bbox: tuple[int, int, int, int]) -> list[tuple[float, float
     top = float(y_coord)
     right = float(x_coord + max(1, width))
     bottom = float(y_coord + max(1, height))
-    return [
+    return integer_points([
         (left, top),
         (right, top),
         (right, bottom),
         (left, bottom),
-    ]
+    ])
 
 
 def _bboxes_overlap(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> bool:
@@ -582,7 +582,7 @@ def _finalize_closed_polygon_points(
     config: ContourExtractionSettings,
 ) -> list[tuple[float, float]] | None:
     """Dedupe, optional acute-vertex cull, then if the ring is invalid try stronger simplification *on the same raw OpenCV* contour."""
-    points = _dedupe_consecutive_polygon_vertices(points)
+    points = _dedupe_consecutive_polygon_vertices(integer_points(points))
     points = _remove_acute_polygon_vertices(points, config.min_polygon_angle)
     points = _dedupe_consecutive_polygon_vertices(points)
     if config.object_type == "via" or config.output_mode == "box":
@@ -602,7 +602,7 @@ def _finalize_closed_polygon_points(
         apx = _adaptive_approximate_contour(raw_contour, eff, config.preserve_corners)
         if apx is None or len(apx) < 3:
             continue
-        cand = [(float(p[0][0]), float(p[0][1])) for p in apx]
+        cand = integer_points([(float(p[0][0]), float(p[0][1])) for p in apx])
         cand = _dedupe_consecutive_polygon_vertices(cand)
         cand = _remove_acute_polygon_vertices(cand, config.min_polygon_angle)
         cand = _dedupe_consecutive_polygon_vertices(cand)

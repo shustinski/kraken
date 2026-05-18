@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from math import ceil, floor, hypot
 
-from .polygon import Point
+from .polygon import Point, integer_points
 
 
 def compute_polygon_metrics(points: Iterable[Point]) -> tuple[float, float, tuple[int, int, int, int]]:
-    vertices = [(float(x_coord), float(y_coord)) for x_coord, y_coord in points]
+    point_list = list(points)
+    vertices = [(float(x_coord), float(y_coord)) for x_coord, y_coord in integer_points(point_list)]
     if not vertices:
         return 0.0, 0.0, (0, 0, 0, 0)
     if len(vertices) == 1:

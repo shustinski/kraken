@@ -71,6 +71,7 @@ include = [
 [tool.setuptools.package-data]
 contour = [
     "pipeline_example.json",
+    "resources/ui_texts_*.json",
 ]
 
 [tool.setuptools.data-files]

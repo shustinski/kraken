@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import cProfile
 import json
+import hashlib
+import io
+import os
+import pstats
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
@@ -70,6 +75,27 @@ class _ViaCandidate:
     contrast: float = 0.0
     edge_strength: float = 0.0
     reason: str = ""
+
+
+_VIA_DETECTION_CACHE: dict[tuple[str, str, str], Any] = {}
+_VIA_DETECTION_CACHE_MAX_ITEMS = 8
+PROFILE_PROCESSING = True
+_PROFILE_TOP_LINES = 25
+
+
+def _make_image_signature(gray: np.ndarray) -> str:
+    digest = hashlib.sha1(gray.tobytes()).hexdigest()
+    return f"{gray.shape[0]}x{gray.shape[1]}:{digest}"
+
+
+def _bounded_cache_set(key: tuple[str, str, str], value: Any) -> None:
+    if key in _VIA_DETECTION_CACHE:
+        _VIA_DETECTION_CACHE[key] = value
+        return
+    if len(_VIA_DETECTION_CACHE) >= _VIA_DETECTION_CACHE_MAX_ITEMS:
+        oldest = next(iter(_VIA_DETECTION_CACHE))
+        _VIA_DETECTION_CACHE.pop(oldest, None)
+    _VIA_DETECTION_CACHE[key] = value
 
 
 # ---------------------------------------------------------------------------
@@ -149,18 +175,85 @@ def build_via_vectorization_mask(
 def _build_modern_via_vectorization_mask(
     gray: np.ndarray, settings: ContourExtractionSettings
 ) -> tuple[np.ndarray, list[ContourDebugCandidate]]:
-    from ....vision.via.bright_tophat_dog import BrightViaDetectorConfig, detect_bright_vias
+    from ....vision.via.bright_tophat_dog import (
+        BrightViaDetectorConfig,
+        prepare_bright_via_candidates,
+        score_bright_via_candidates,
+    )
     from ....vision.via_detection.heuristic_detector import detect_vias_heuristic
     from ....vision.via_detection.result import DetectionResult, ViaDetection
     from ....vision.via_detection.settings_bridge import heuristic_config_from_settings, template_config_from_settings
-    from ....vision.via_detection.template_detector import detect_vias_template
+    from ....vision.via_detection.template_detector import (
+        detect_vias_template_raw,
+        score_vias_template_raw,
+    )
 
     mode = normalize_via_search_mode(settings.via_search_mode)
+    image_sig = _make_image_signature(gray)
     if mode == VIA_SEARCH_MODE_TEMPLATE:
-        result = detect_vias_template(gray, template_config_from_settings(settings))
+        tcfg = template_config_from_settings(settings)
+        if not tcfg.templates:
+            empty = np.zeros(gray.shape[:2], dtype=np.uint8)
+            debug_candidates = [
+                ContourDebugCandidate(
+                    contour_index=0,
+                    bbox=(0, 0, 0, 0),
+                    accepted=False,
+                    reason="Для режима поиска по шаблону добавьте хотя бы один шаблон",
+                    source=VIA_SEARCH_MODE_TEMPLATE,
+                    score=0.0,
+                )
+            ]
+            return empty, debug_candidates
+        heavy_key = (
+            VIA_SEARCH_MODE_TEMPLATE,
+            image_sig,
+            json.dumps(
+                {
+                    "via_search_mode": mode,
+                    "via_template_images": len(tcfg.templates),
+                    "via_template_scale_min": float(tcfg.scale_min),
+                    "via_template_scale_max": float(tcfg.scale_max),
+                    "via_template_scale_step": float(tcfg.scale_step),
+                },
+                sort_keys=True,
+            ),
+        )
+        raw_payload = _VIA_DETECTION_CACHE.get(heavy_key)
+        if raw_payload is None:
+            raw_payload = detect_vias_template_raw(gray, tcfg)
+            _bounded_cache_set(heavy_key, raw_payload)
+        raw_matches, shape = raw_payload
+        result = score_vias_template_raw(raw_matches, shape, tcfg)
     elif mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
         bright_config = BrightViaDetectorConfig.from_legacy_settings(settings)
-        bright = detect_bright_vias(gray, bright_config)
+        heavy_key = (
+            VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
+            image_sig,
+            json.dumps(
+                {
+                    "via_search_mode": mode,
+                    "bright_via_diameter_min": bright_config.diameter_min,
+                    "bright_via_diameter_max": bright_config.diameter_max,
+                    "bright_via_clahe_clip_limit": bright_config.clahe_clip_limit,
+                    "bright_via_clahe_tile_grid_size": bright_config.clahe_tile_grid_size,
+                    "bright_via_median_blur_kernel": bright_config.median_blur_kernel,
+                    "bright_via_tophat_kernel_size": bright_config.tophat_kernel_size,
+                    "bright_via_dog_sigma_small": bright_config.dog_sigma_small,
+                    "bright_via_dog_sigma_large": bright_config.dog_sigma_large,
+                    "bright_via_threshold_percentile": bright_config.threshold_percentile,
+                    "bright_via_mask_combine_mode": bright_config.mask_combine_mode,
+                    "bright_via_use_metal_mask": bright_config.use_metal_mask,
+                    "bright_via_metal_constraint_mode": bright_config.metal_constraint_mode,
+                },
+                sort_keys=True,
+            ),
+        )
+        prepared = _VIA_DETECTION_CACHE.get(heavy_key)
+        if prepared is None:
+            prepared = prepare_bright_via_candidates(gray, bright_config)
+            _bounded_cache_set(heavy_key, prepared)
+        bright = score_bright_via_candidates(prepared, bright_config)
         accepted = [
             ViaDetection(
                 x=float(det.center[0]),
@@ -1571,6 +1664,66 @@ def process_image_path(
     save_options: SaveOptions | None = None,
     display_settings: DisplaySettings | None = None,
     *,
+    source_image: Any | None = None,
+    preprocessed_image: Any | None = None,
+    pipeline: PreprocessingPipeline | None = None,
+    image_loader: Callable[[str], Any] = load_image_color,
+    save_bundle: Callable[..., dict[str, str]] = save_result_bundle,
+    include_images_in_result: bool = True,
+    passthrough_polygons: list[PolygonData] | None = None,
+) -> BatchImageResult:
+    if PROFILE_PROCESSING:
+        profiler = cProfile.Profile()
+        profiler.enable()
+        try:
+            return _process_image_path_impl(
+                image_path=image_path,
+                pipeline_config=pipeline_config,
+                contour_settings=contour_settings,
+                output_directory=output_directory,
+                save_options=save_options,
+                display_settings=display_settings,
+                source_image=source_image,
+                preprocessed_image=preprocessed_image,
+                pipeline=pipeline,
+                image_loader=image_loader,
+                save_bundle=save_bundle,
+                include_images_in_result=include_images_in_result,
+                passthrough_polygons=passthrough_polygons,
+            )
+        finally:
+            profiler.disable()
+            stream = io.StringIO()
+            stats = pstats.Stats(profiler, stream=stream).sort_stats("cumtime")
+            stats.print_stats(_PROFILE_TOP_LINES)
+            print(f"[contour profiling] image={image_path} top={_PROFILE_TOP_LINES}")
+            print(stream.getvalue())
+
+    return _process_image_path_impl(
+        image_path=image_path,
+        pipeline_config=pipeline_config,
+        contour_settings=contour_settings,
+        output_directory=output_directory,
+        save_options=save_options,
+        display_settings=display_settings,
+        source_image=source_image,
+        preprocessed_image=preprocessed_image,
+        pipeline=pipeline,
+        image_loader=image_loader,
+        save_bundle=save_bundle,
+        include_images_in_result=include_images_in_result,
+        passthrough_polygons=passthrough_polygons,
+    )
+
+
+def _process_image_path_impl(
+    *,
+    image_path: str,
+    pipeline_config: dict[str, Any],
+    contour_settings: ContourExtractionSettings,
+    output_directory: str | None = None,
+    save_options: SaveOptions | None = None,
+    display_settings: DisplaySettings | None = None,
     source_image: Any | None = None,
     preprocessed_image: Any | None = None,
     pipeline: PreprocessingPipeline | None = None,

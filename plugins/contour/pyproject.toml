@@ -72,6 +72,8 @@ include = [
 contour = [
     "pipeline_example.json",
     "resources/ui_texts_*.json",
+    "gamification/assets/gamification.qrc",
+    "gamification/assets/pets/*/*/*.png",
 ]
 
 [tool.setuptools.data-files]

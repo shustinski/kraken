@@ -255,13 +255,21 @@ class WidgetPipelineActionsMixin:
             self.files_scan_progress_bar.setRange(0, 100)
             self.files_scan_progress_bar.setValue(0)
 
-    def _begin_async_directory_scan(self, directory: str) -> None:
+    def _begin_async_directory_scan(self, directory: str, *, append: bool = False) -> None:
+        self._directory_scan_append_mode = bool(append)
         self._directory_scanner.start(directory)
 
     def _on_input_directory_scan_finished(self, paths: list[str]) -> None:
-        self.load_images(paths)
+        if getattr(self, "_directory_scan_append_mode", False):
+            self._directory_scan_append_mode = False
+            self.append_images(paths)
+            return
+        preferred = getattr(self, "_pending_restore_current_image_path", None)
+        self._pending_restore_current_image_path = None
+        self.load_images(paths, preferred_current_image_path=preferred)
 
     def _on_input_directory_scan_failed(self, message: str) -> None:
+        self._directory_scan_append_mode = False
         self._append_log(
             self._tr(
                 "scan_input_directory_failed_log",

@@ -17,6 +17,11 @@ def is_image_path(path: str | Path) -> bool:
     return Path(path).suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
 
 
+def is_visible_image_path(path: str | Path) -> bool:
+    normalized = Path(path)
+    return is_image_path(normalized) and not normalized.name.startswith("_")
+
+
 def scan_image_files(directory: str | Path) -> list[str]:
     root = Path(directory)
     if not root.exists() or not root.is_dir():
@@ -24,7 +29,7 @@ def scan_image_files(directory: str | Path) -> list[str]:
     return [
         str(path)
         for path in sorted(root.iterdir(), key=lambda item: item.name.lower())
-        if path.is_file() and is_image_path(path)
+        if path.is_file() and is_visible_image_path(path)
     ]
 
 

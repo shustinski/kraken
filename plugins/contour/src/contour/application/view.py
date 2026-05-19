@@ -49,6 +49,10 @@ class ContourMainView(QMainWindow):
         self._presenter: Any | None = None
         self._widget = PolygonExtractionWidget(self)
         self.setCentralWidget(self._widget)
+        self._file_menu = self.menuBar().addMenu("")
+        self._new_project_action = self._file_menu.addAction("")
+        self._new_project_action.triggered.connect(lambda _checked=False: self._widget.reset_project())
+        self._refresh_file_menu()
         add_theme_menu(self, initial_theme="dark", on_theme_changed=apply_app_theme)
         self._help_menu = self.menuBar().addMenu(self._widget.help_menu_title())
         self._widget.attach_help_menu(self._help_menu)
@@ -81,7 +85,13 @@ class ContourMainView(QMainWindow):
 
     def set_ui_language(self, language: str) -> None:
         self._widget.set_ui_language(language)
+        self._refresh_file_menu()
         self._help_menu.setTitle(self._widget.help_menu_title())
+
+    def _refresh_file_menu(self) -> None:
+        language = getattr(self._widget, "_ui_language", "ru")
+        self._file_menu.setTitle("Файл" if language == "ru" else "File")
+        self._new_project_action.setText("Новый проект" if language == "ru" else "New project")
 
     def set_input_directory(self, path: str) -> None:
         self._widget.set_input_directory(path)
@@ -111,6 +121,7 @@ class ContourMainView(QMainWindow):
         if hasattr(self._widget, "confirm_ok_to_leave_current_vectors") and not self._widget.confirm_ok_to_leave_current_vectors():
             event.ignore()
             return
+        self._widget._persist_session_state()
         super().closeEvent(event)
 
 

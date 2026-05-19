@@ -112,8 +112,22 @@ from ..graphics.editor_hotkeys import (
     tool_shortcut_native_text,
 )
 from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode
+from ..gamification import (
+    CorrectionEvent,
+    CorrectionType,
+    GamificationProfileService,
+    GamificationService,
+    RewardEventType,
+)
+from ..gamification.ui import GamificationPanel
 from ..i18n import active_language, tr
-from ..infrastructure import WidgetDisplaySettingsStore, WidgetPathSettingsStore, WidgetViaPresetSettingsStore
+from ..infrastructure import (
+    WidgetDisplaySettingsStore,
+    WidgetGamificationProfileStore,
+    WidgetPathSettingsStore,
+    WidgetSessionSettingsStore,
+    WidgetViaPresetSettingsStore,
+)
 from ..pipeline import (
     PreprocessingPipeline,
     available_operations,
@@ -164,7 +178,7 @@ from ..ui.via_presets import (
     built_in_via_presets,
     noisy_traces_via_preset_payload,
 )
-from ..utils import is_image_path, load_image_color, scan_image_files
+from ..utils import is_image_path, is_visible_image_path, load_image_color, scan_image_files
 
 __all__ = [name for name in globals() if not name.startswith("__")]
 

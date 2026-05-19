@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PyQt6.QtWidgets import QApplication
+
 from contour.application.model import ContourApplicationModel
-from contour.application.view import _bounded_initial_window_size
+from contour.application.view import ContourMainView, _bounded_initial_window_size
+
+
+def _app() -> QApplication:
+    instance = QApplication.instance()
+    return instance if instance is not None else QApplication([])
 
 
 def test_model_initial_size_matches_compact_window_minimum() -> None:
@@ -42,3 +53,17 @@ def test_initial_window_size_can_fit_very_small_screens() -> None:
 
     assert size.width() == 468
     assert size.height() == 328
+
+
+def test_main_view_exposes_file_menu_new_project_action() -> None:
+    _app()
+    view = ContourMainView()
+    try:
+        file_menu = view.menuBar().actions()[0].menu()
+
+        assert file_menu is not None
+        assert file_menu.title() in {"Файл", "File"}
+        assert any(action.text() in {"Новый проект", "New project"} for action in file_menu.actions())
+    finally:
+        view.close()
+        view.deleteLater()

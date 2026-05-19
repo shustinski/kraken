@@ -68,6 +68,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.control_tabs.setTabText(3, self._tr("tab_display"))
     if hasattr(self, "right_tabs"):
         self.right_tabs.setTabText(0, self._tr("tab_files"))
+        if self.right_tabs.count() > 1:
+            self.right_tabs.setTabText(1, "Питомец" if self._ui_language == "ru" else "Pet")
 
     if hasattr(self, "files_list_label"):
         self.files_list_label.setText(self._tr("images_label"))

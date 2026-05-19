@@ -101,6 +101,12 @@ class WorkspaceSession:
         self._current_image_path = None
         self._current_state = None
 
+    def clear_project(self) -> None:
+        self._image_paths.clear()
+        self.clear_current_selection()
+        self._state_cache.clear()
+        self._cif_paths_by_stem.clear()
+
     def set_cif_index(self, indexed_paths: Mapping[str, str]) -> None:
         self._cif_paths_by_stem = dict(indexed_paths)
         self._state_cache.clear()

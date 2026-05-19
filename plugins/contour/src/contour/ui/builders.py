@@ -48,6 +48,7 @@ from ..application.processing import (
     VIA_SIZE_MODE_RANGE,
 )
 from ..contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
+from ..gamification.ui import GamificationPanel
 from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
 from .pipeline_list import PipelineListWidget
 from .status_list_delegate import attach_status_row_delegate
@@ -100,6 +101,10 @@ def build_ui(self) -> None:
     self.right_tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
     self.files_tab = self._build_files_tab()
     self.right_tabs.addTab(self.files_tab, "Files")
+    # if hasattr(self, "_gamification_profile_service"):
+    #     self.gamification_panel = GamificationPanel(self._gamification_profile_service, parent=self.right_tabs)
+    #     self.gamification_panel.messageRequested.connect(self._append_log)
+    #     self.right_tabs.addTab(self.gamification_panel, "Питомец")
     self.main_splitter.addWidget(self.right_tabs)
     self.main_splitter.setStretchFactor(0, 0)
     self.main_splitter.setStretchFactor(1, 1)

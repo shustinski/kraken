@@ -17,7 +17,7 @@ from PyQt6.QtCore import (
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QBrush, QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtGui import QBrush, QCloseEvent, QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -111,8 +111,15 @@ from .graphics.editor_hotkeys import (
     tool_shortcut_native_text,
 )
 from .graphics_view import EditorTool, PolygonCreateMode
+from .gamification import GamificationProfileService, GamificationService
 from .i18n import active_language, tr
-from .infrastructure import WidgetDisplaySettingsStore, WidgetPathSettingsStore, WidgetViaPresetSettingsStore
+from .infrastructure import (
+    WidgetDisplaySettingsStore,
+    WidgetGamificationProfileStore,
+    WidgetPathSettingsStore,
+    WidgetSessionSettingsStore,
+    WidgetViaPresetSettingsStore,
+)
 from .pipeline import (
     PreprocessingPipeline,
     available_operations,
@@ -163,7 +170,7 @@ from .ui.via_presets import (
     built_in_via_presets,
     noisy_traces_via_preset_payload,
 )
-from .utils import is_image_path, load_image_color, scan_image_files
+from .utils import is_image_path, is_visible_image_path, load_image_color, scan_image_files
 
 from .widget_parts import (
     WidgetDebugMixin,
@@ -219,7 +226,10 @@ class PolygonExtractionWidget(
         self._ui_language = active_language()
         self._path_settings = PathSettingsController(WidgetPathSettingsStore())
         self._display_settings_store = WidgetDisplaySettingsStore()
+        self._session_settings_store = WidgetSessionSettingsStore()
         self._via_preset_settings_store = WidgetViaPresetSettingsStore()
+        self._gamification_profile_service = GamificationProfileService(WidgetGamificationProfileStore())
+        self._gamification_service = GamificationService(self._gamification_profile_service)
         self._workspace = WorkspaceSession()
         self._pipeline = PreprocessingPipeline()
         self._display_settings = DisplaySettings()
@@ -291,6 +301,8 @@ class PolygonExtractionWidget(
         self._persisted_highlight_paths: set[str] = set()
         self._cif_load_failure_stems: set[str] = set()
         self._loading_image_path: str | None = None
+        self._pending_restore_current_image_path = self._session_settings_store.load_current_image_path()
+        self._directory_scan_append_mode = False
         self._directory_scanner = DirectoryScanController(self)
         self._directory_scanner.started.connect(self._on_input_directory_scan_started)
         self._directory_scanner.idle.connect(self._on_input_directory_scan_idle)
@@ -319,3 +331,7 @@ class PolygonExtractionWidget(
         self._set_default_extraction_disabled()
         self.set_ui_language(self._ui_language)
         self._update_extra_layers_enabled_state()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._persist_session_state()
+        super().closeEvent(event)

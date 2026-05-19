@@ -108,7 +108,9 @@ class WidgetSettingsMixin:
             self.neighbor_max_grid_spin.setValue(self._odd_neighbor_grid_size(int(payload.get("neighbor_max_grid", 7))))
             self.neighbor_opacity_spin.setValue(float(payload.get("neighbor_opacity", 0.35)))
             self.neighbor_overlap_spin.setValue(max(0, int(payload.get("neighbor_overlap_pixels", 0))))
-            self.autosave_on_frame_transition_checkbox.setChecked(False)
+            self.autosave_on_frame_transition_checkbox.setChecked(
+                bool(payload.get("autosave_on_frame_transition", False))
+            )
             self._restore_main_splitter_sizes(payload.get("main_splitter_sizes"))
             if hasattr(self, "vector_geom_clip_checkbox"):
                 self.vector_geom_clip_checkbox.setChecked(bool(payload.get("vector_geom_clip_on_sync", True)))
@@ -132,6 +134,7 @@ class WidgetSettingsMixin:
             "neighbor_max_grid": int(self.neighbor_max_grid_spin.value()),
             "neighbor_opacity": float(self.neighbor_opacity_spin.value()),
             "neighbor_overlap_pixels": int(self.neighbor_overlap_spin.value()),
+            "autosave_on_frame_transition": bool(self.autosave_on_frame_transition_checkbox.isChecked()),
             "main_splitter_sizes": self.main_splitter.sizes() if hasattr(self, "main_splitter") else [],
         }
         if hasattr(self, "vector_geom_clip_checkbox"):
@@ -151,6 +154,15 @@ class WidgetSettingsMixin:
         if self._restoring_display_settings or not hasattr(self, "line_width_spin"):
             return
         self._display_settings_store.save(self._current_display_settings_payload())
+
+    def _save_persisted_current_image_path(self: Any, image_path: str | Path | None) -> None:
+        if hasattr(self, "_session_settings_store"):
+            self._session_settings_store.save_current_image_path(image_path)
+
+    def _persist_session_state(self: Any) -> None:
+        self._save_persisted_display_settings()
+        current_path = self._workspace.current_image_path if hasattr(self, "_workspace") else None
+        self._save_persisted_current_image_path(current_path)
 
     def _vector_geometry_settings_from_widgets(self: Any) -> VectorGeometrySettings:
         if not hasattr(self, "vector_geom_clip_checkbox"):

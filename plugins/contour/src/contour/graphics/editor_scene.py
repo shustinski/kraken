@@ -1289,7 +1289,16 @@ class PolygonEditorScene(QGraphicsScene):
 
                 return
 
-        dashed_pen_setup = QPen(QColor("#F7B801"), 1.5, Qt.PenStyle.DashLine)
+        preview_points = list(self._pending_points)
+        if self._pending_cursor is not None:
+            preview_points.append(self._pending_cursor)
+        can_preview_closed = len(preview_points) >= 3
+        preview_valid = False
+        if can_preview_closed:
+            preview_valid, _reason = polygon_commit_acceptability(preview_points)
+        preview_color = QColor("#38BDF8" if preview_valid else "#EF4444" if can_preview_closed else "#F7B801")
+
+        dashed_pen_setup = QPen(preview_color, 1.5, Qt.PenStyle.DashLine)
 
         dashed_pen_setup.setCosmetic(True)
 
@@ -1305,21 +1314,26 @@ class PolygonEditorScene(QGraphicsScene):
 
         self._pending_path_item.setPen(dashed_pen_setup)
 
-        self._pending_path_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        if can_preview_closed:
+            fill_color = QColor(preview_color)
+            fill_color.setAlpha(48)
+            self._pending_path_item.setBrush(QBrush(fill_color))
+        else:
+            self._pending_path_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
 
         backbone = QPainterPath()
 
-        if self._pending_points:
+        if preview_points:
 
-            head = self._pending_points[0]
+            head = preview_points[0]
 
             backbone.moveTo(head[0], head[1])
 
-            for tail in self._pending_points[1:]:
+            for tail in preview_points[1:]:
                 backbone.lineTo(tail[0], tail[1])
 
-            if self._pending_cursor is not None:
-                backbone.lineTo(self._pending_cursor[0], self._pending_cursor[1])
+            if can_preview_closed:
+                backbone.closeSubpath()
 
         self._pending_path_item.setPath(backbone)
 

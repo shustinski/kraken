@@ -299,6 +299,12 @@ class PolygonEditorView(QGraphicsView):
             self._update_navigation_scene_rect()
             self.zoomChanged.emit(self.zoom_factor())
 
+    def center_main_image(self) -> None:
+        rect = self._editor_scene.main_image_rect()
+        if rect.width() > 0 and rect.height() > 0:
+            self.centerOn(rect.center())
+            self._update_navigation_scene_rect()
+
     def zoom_in(self) -> None:
         self._apply_zoom_at_viewport_pixel(self._zoom_focus_viewport_pixel(), 1.15)
         self._update_tool_cursors()

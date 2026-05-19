@@ -23,6 +23,14 @@ COMPACT_UI_STYLE = """
 #polygonExtractionWidget QToolButton {
     padding: 2px;
 }
+#polygonExtractionWidget QToolButton:checked {
+    background-color: #2563EB;
+    border: 2px solid #93C5FD;
+    border-radius: 4px;
+}
+#polygonExtractionWidget QToolButton:checked:hover {
+    background-color: #1D4ED8;
+}
 #polygonExtractionWidget QLineEdit,
 #polygonExtractionWidget QComboBox,
 #polygonExtractionWidget QSpinBox,

@@ -258,6 +258,77 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
             self.assertEqual(self.widget._last_loaded_from_thumb, paths[1])
 
+    def test_append_images_keeps_existing_rows_skips_duplicates_and_underscore_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first = os.path.join(directory, "frame_001.png")
+            second = os.path.join(directory, "frame_002.png")
+            hidden = os.path.join(directory, "_frame_003.png")
+            for path in (first, second, hidden):
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+
+            self.widget.load_images([first])
+            self.widget.append_images([first, hidden, second])
+
+            self.assertEqual(self.widget.image_list.count(), 2)
+            self.assertEqual([self.widget.image_list.item(i).text() for i in range(2)], ["frame_001", "frame_002"])
+            self.assertEqual(self.widget._workspace.current_image_path, str(Path(second)))
+
+    def test_scan_finish_restores_persisted_current_file_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for name in ("frame_001.png", "frame_002.png"):
+                path = os.path.join(directory, name)
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+                paths.append(path)
+
+            self.widget._pending_restore_current_image_path = str(Path(paths[1]))
+            self.widget._on_input_directory_scan_finished(paths)
+
+            self.assertEqual(self.widget._workspace.current_image_path, str(Path(paths[1])))
+            self.assertEqual(self.widget.image_list.currentRow(), 1)
+
+    def test_reset_project_clears_loaded_state_without_resetting_display_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "frame_001.png")
+            cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+            self.widget.load_images([path])
+            self.widget.input_dir_edit.setText(directory)
+            self.widget.cif_dir_edit.setText(directory)
+            self.widget.line_width_spin.setValue(4.0)
+
+            self.widget.reset_project()
+
+            self.assertEqual(self.widget.image_list.count(), 0)
+            self.assertEqual(self.widget.thumbnail_grid.count(), 0)
+            self.assertEqual(self.widget.vector_list.count(), 0)
+            self.assertEqual(self.widget._workspace.image_paths, ())
+            self.assertIsNone(self.widget._workspace.current_image_path)
+            self.assertEqual(self.widget.input_dir_edit.text(), "")
+            self.assertEqual(self.widget.cif_dir_edit.text(), "")
+            self.assertEqual(self.widget.line_width_spin.value(), 4.0)
+            self.assertIsNone(self.widget._session_settings_store.load_current_image_path())
+
+    def test_image_row_navigation_recenters_editor_view(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for name in ("frame_001.png", "frame_002.png"):
+                path = os.path.join(directory, name)
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+                paths.append(path)
+
+            self.widget.load_images(paths)
+            with patch.object(self.widget.polygon_editor, "center_main_image") as center_mock:
+                self.widget.image_list.setCurrentRow(1)
+                self._app.processEvents()
+
+            center_mock.assert_called()
+
+    def test_checked_toolbar_tool_has_explicit_high_contrast_style(self) -> None:
+        stylesheet = self.widget.styleSheet()
+
+        self.assertIn("QToolButton:checked", stylesheet)
+        self.assertIn("#2563EB", stylesheet)
+
     def test_thumbnail_grid_uses_display_frames_per_row(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             paths: list[str] = []

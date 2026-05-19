@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
 
-from contour.utils import _imread_unicode_safe
+from contour.utils import _imread_unicode_safe, scan_image_files
 
 
 class UtilsTests(unittest.TestCase):
@@ -38,6 +39,18 @@ class UtilsTests(unittest.TestCase):
                 _imread_unicode_safe(missing_path, 1)
 
         cv2_imread.assert_not_called()
+
+    def test_scan_image_files_skips_underscore_prefixed_images(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            keep = root / "frame_001.png"
+            hidden = root / "_frame_002.png"
+            not_image = root / "notes.txt"
+            keep.write_bytes(b"")
+            hidden.write_bytes(b"")
+            not_image.write_text("ignore", encoding="utf-8")
+
+            self.assertEqual(scan_image_files(root), [str(keep)])
 
 
 if __name__ == "__main__":

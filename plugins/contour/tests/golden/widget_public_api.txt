@@ -12,6 +12,7 @@ logMessage
 polygonsEdited
 
 [methods]
+append_images
 attach_help_menu
 confirm_ok_to_leave_current_vectors
 export_current_frame_to_dataset
@@ -22,6 +23,7 @@ load_image
 load_images
 process_current_image
 refresh_image_list
+reset_project
 save_current_result
 set_cif_directory
 set_dataset_directory

@@ -308,7 +308,7 @@ class WidgetNavigationMixin:
             return
         self.input_dir_edit.setText(str(Path(paths[0]).parent))
         self._save_persisted_paths()
-        self.load_images([str(Path(p)) for p in paths])
+        self.append_images([str(Path(p)) for p in paths])
 
     def _merge_cif_files_dialog(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -490,8 +490,15 @@ class WidgetNavigationMixin:
             self._tr("select_input_directory_dialog"),
             self.input_dir_edit.text(),
         )
-        if path:
-            self.set_input_directory(path)
+        if not path:
+            return
+        directory = self._path_settings.validate_input_directory(path)
+        if not directory.available:
+            self._append_log(self._tr("input_directory_missing_log", directory=directory.path))
+            return
+        self.input_dir_edit.setText(directory.path)
+        self._save_persisted_paths()
+        self._begin_async_directory_scan(directory.path, append=True)
 
     def _select_cif_directory(self) -> None:
         path = QFileDialog.getExistingDirectory(

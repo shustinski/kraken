@@ -141,6 +141,22 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         self.assertEqual(len(self.scene.get_polygons()), 0)
         self.assertTrue(self.scene.has_pending_polygon())
 
+    def test_points_mode_preview_fills_valid_polygon_blue(self) -> None:
+        self._reset([])
+        self.scene.append_pending_point(QPointF(10.0, 10.0))
+        self.scene.append_pending_point(QPointF(40.0, 10.0))
+        self.scene.append_pending_point(QPointF(25.0, 50.0))
+
+        self.assertEqual(self.scene._pending_path_item.brush().color().name().lower(), "#38bdf8")
+
+    def test_points_mode_preview_fills_unfinishable_polygon_red(self) -> None:
+        self._reset([])
+        self.scene.append_pending_point(QPointF(10.0, 10.0))
+        self.scene.append_pending_point(QPointF(20.0, 10.0))
+        self.scene.append_pending_point(QPointF(15.0, 10.0))
+
+        self.assertEqual(self.scene._pending_path_item.brush().color().name().lower(), "#ef4444")
+
     def test_finish_with_under_three_vertices_clears_pending(self) -> None:
         self._reset([])
         self.scene.append_pending_point(QPointF(1.0, 1.0))

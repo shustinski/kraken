@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import cProfile
+import hashlib
 import io
 import os
 import pstats
-from time import perf_counter
+from time import perf_counter, time_ns
 
 from ._imports import *  # noqa: F403
 
@@ -882,23 +883,7 @@ class WidgetProcessingMixin:
         self.dataset_dir_edit.setText(path)
         self._save_persisted_paths()
 
-    def load_images(self, paths: list[str]) -> None:
-        if self._workspace.current_state is not None and not self._try_leave_current_frame():
-            return
-        self._directory_scanner.invalidate_pending_results()
-        normalized_paths = [str(Path(path)) for path in paths if is_image_path(path)]
-        frame_records, warnings = build_base_frame_records(normalized_paths)
-        for message in warnings:
-            self._append_log(message)
-        ordered_paths = [record.path for record in frame_records]
-        self._base_frame_number_by_path = build_base_frame_number_map(frame_records)
-        self._base_frame_numbers = set(self._base_frame_number_by_path.values())
-        normalized_paths = self._workspace.replace_image_selection(ordered_paths, is_supported_image=is_image_path)
-        self._neighbor_image_cache.clear()
-        self._prune_tagged_sets_for_images(normalized_paths)
-        self._abort_in_flight_interactive_processing(preview=True, prepared=True)
-        self._clear_extra_layers()
-        self._update_extra_layers_enabled_state()
+    def _rebuild_image_list_items(self, normalized_paths: list[str]) -> None:
         self.image_list.clear()
         for path in normalized_paths:
             item = QListWidgetItem(Path(path).stem)
@@ -907,14 +892,112 @@ class WidgetProcessingMixin:
             self._paint_image_row_item(item, path)
             self.image_list.addItem(item)
         self._rebuild_thumbnail_grid()
-        if normalized_paths:
+
+    def _select_loaded_image_path(self, image_path: str | None, *, fallback_to_first: bool = True) -> None:
+        if image_path:
+            item = self._find_image_list_item(image_path)
+            if item is not None:
+                self.image_list.setCurrentItem(item)
+                return
+        if fallback_to_first and self.image_list.count() > 0:
             self.image_list.setCurrentRow(0)
-        else:
+        elif self.image_list.count() <= 0:
             self._sync_current_state_views()
+
+    def _apply_image_paths_to_workspace(
+        self,
+        paths: list[str],
+        *,
+        clear_extra_layers: bool,
+        select_path: str | None,
+        fallback_to_first: bool,
+    ) -> None:
+        frame_records, warnings = build_base_frame_records(paths)
+        for message in warnings:
+            self._append_log(message)
+        ordered_paths = [record.path for record in frame_records]
+        self._base_frame_number_by_path = build_base_frame_number_map(frame_records)
+        self._base_frame_numbers = set(self._base_frame_number_by_path.values())
+        normalized_paths = self._workspace.replace_image_selection(ordered_paths, is_supported_image=is_image_path)
+        if not normalized_paths:
+            self._save_persisted_current_image_path(None)
+        self._neighbor_image_cache.clear()
+        self._prune_tagged_sets_for_images(normalized_paths)
+        self._abort_in_flight_interactive_processing(preview=True, prepared=True)
+        if clear_extra_layers:
+            self._clear_extra_layers()
+        self._update_extra_layers_enabled_state()
+        self._rebuild_image_list_items(normalized_paths)
+        self._select_loaded_image_path(select_path, fallback_to_first=fallback_to_first)
         self._rebuild_vector_list()
         self._refresh_vector_rows_for_workspace()
         self._sync_frame_navigation_controls()
         self._log_matching_gaps_after_refresh(self._matching_report())
+
+    def load_images(self, paths: list[str], *, preferred_current_image_path: str | None = None) -> None:
+        if self._workspace.current_state is not None and not self._try_leave_current_frame():
+            return
+        self._directory_scanner.invalidate_pending_results()
+        normalized_paths = [str(Path(path)) for path in paths if is_image_path(path)]
+        preferred = str(Path(preferred_current_image_path)) if preferred_current_image_path else None
+        if preferred not in normalized_paths:
+            preferred = None
+        self._apply_image_paths_to_workspace(
+            normalized_paths,
+            clear_extra_layers=True,
+            select_path=preferred,
+            fallback_to_first=True,
+        )
+        return
+
+    def append_images(self, paths: list[str], *, select_first_new: bool = True) -> None:
+        existing_paths = [str(Path(path)) for path in self._workspace.image_paths]
+        existing_set = set(existing_paths)
+        additions: list[str] = []
+        seen = set(existing_set)
+        for path in paths:
+            normalized = str(Path(path))
+            if normalized in seen or not is_visible_image_path(normalized):
+                continue
+            seen.add(normalized)
+            additions.append(normalized)
+        if not additions:
+            return
+        if self._workspace.current_state is not None and not self._try_leave_current_frame():
+            return
+        self._directory_scanner.invalidate_pending_results()
+        select_path = additions[0] if select_first_new else self._workspace.current_image_path
+        self._apply_image_paths_to_workspace(
+            [*existing_paths, *additions],
+            clear_extra_layers=False,
+            select_path=select_path,
+            fallback_to_first=not bool(self._workspace.current_image_path),
+        )
+
+    def reset_project(self) -> None:
+        if self._workspace.current_state is not None and not self._try_leave_current_frame():
+            return
+        self._directory_scanner.invalidate_pending_results()
+        self._abort_in_flight_interactive_processing(preview=True, prepared=True)
+        self._workspace.clear_project()
+        self._base_frame_number_by_path = {}
+        self._base_frame_numbers = set()
+        self._neighbor_image_cache.clear()
+        self._persisted_highlight_paths.clear()
+        self._viewed_image_paths.clear()
+        self._cif_load_failure_stems.clear()
+        self.input_dir_edit.setText("")
+        self.cif_dir_edit.setText("")
+        self._save_persisted_paths()
+        self._save_persisted_current_image_path(None)
+        self.image_list.clear()
+        self._rebuild_thumbnail_grid()
+        self._clear_extra_layers()
+        self._update_extra_layers_enabled_state()
+        self._rebuild_vector_list()
+        self._refresh_image_list_item_states()
+        self._sync_frame_navigation_controls()
+        self._sync_current_state_views()
 
     def _find_matching_cif_path(self, image_path: str) -> str | None:
         return self._workspace.resolve_cif_path(image_path)
@@ -998,11 +1081,13 @@ class WidgetProcessingMixin:
                 load_source_image=load_source_image_timed,
                 load_cif_overlay=load_cif_overlay_timed,
             )
+            self._save_persisted_current_image_path(image_result.image_path)
             if profile_enabled:
                 profile_timings["workspace_load"] = (perf_counter() - phase_start) * 1000.0
                 phase_start = perf_counter()
             if not self._is_extraction_mode_enabled():
                 self._viewed_image_paths.add(str(Path(image_result.image_path)))
+                self._handle_gamification_ui_event(RewardEventType.IMAGE_VIEWED)
             if image_result.state is not None and not image_result.cache_hit and not image_result.reused_current_state:
                 image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
                 image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
@@ -1011,6 +1096,7 @@ class WidgetProcessingMixin:
                 self._update_frame_item_status(image_result.image_path)
                 self._update_thumbnail_grid_selection()
                 self._sync_frame_navigation_controls()
+                self.polygon_editor.center_main_image()
                 if profile_enabled:
                     profile_timings["sync_reused"] = (perf_counter() - phase_start) * 1000.0
                     profile_timings["total_wall"] = (perf_counter() - profile_total_start) * 1000.0
@@ -1025,6 +1111,7 @@ class WidgetProcessingMixin:
                     )
                 return
             self._sync_current_state_views()
+            self.polygon_editor.center_main_image()
             self._update_frame_item_status(image_result.image_path)
             self._update_thumbnail_grid_selection()
             self._sync_frame_navigation_controls()
@@ -1180,6 +1267,13 @@ class WidgetProcessingMixin:
         )
         if saved_files:
             self._append_log(self._tr("saved_result_log", saved_files=saved_files))
+            self._handle_gamification_after_save(
+                image_path=current_image_path,
+                state=current_state,
+                polygons=self.get_polygons(),
+                saved_files=saved_files,
+                had_vector_edits=had_vector_edits,
+            )
             saved_key = str(Path(current_image_path))
             if had_vector_edits:
                 self._persisted_highlight_paths.add(saved_key)
@@ -1222,3 +1316,72 @@ class WidgetProcessingMixin:
     def stop_batch_processing(self) -> None:
         self._batch_controller.stop()
 
+    def _handle_gamification_after_save(
+        self,
+        *,
+        image_path: str,
+        state: ImageProcessingState,
+        polygons: list[PolygonData],
+        saved_files: dict[str, str],
+        had_vector_edits: bool,
+    ) -> None:
+        if not hasattr(self, "_gamification_service"):
+            return
+        try:
+            reference_polygons = list(getattr(state, "reference_polygons", []))
+            event = CorrectionEvent(
+                correction_id=self._build_gamification_correction_id(
+                    image_path=image_path,
+                    polygons=polygons,
+                    saved_files=saved_files,
+                ),
+                image_id=str(Path(image_path)),
+                has_real_mask_changes=bool(had_vector_edits),
+                accepted_without_changes=not bool(had_vector_edits),
+                correction_type=CorrectionType.UNKNOWN if had_vector_edits else None,
+                edit_count=None,
+                added_objects=max(0, len(polygons) - len(reference_polygons)),
+                removed_objects=max(0, len(reference_polygons) - len(polygons)),
+            )
+            results = self._gamification_service.handle_correction_event(event)
+            if hasattr(self, "gamification_panel"):
+                if results:
+                    self.gamification_panel.set_last_results(results)
+                elif event.accepted_without_changes:
+                    self.gamification_panel.react_to_event(RewardEventType.IMAGE_ACCEPTED_WITHOUT_CHANGES)
+            else:
+                for result in results:
+                    if result.success and result.message:
+                        self._append_log(result.message)
+        except Exception as exc:
+            self._append_log(f"Gamification error: {exc}")
+
+    def _handle_gamification_ui_event(self, event_type: RewardEventType) -> None:
+        try:
+            if hasattr(self, "gamification_panel"):
+                self.gamification_panel.react_to_event(event_type)
+        except Exception as exc:
+            self._append_log(f"Gamification UI error: {exc}")
+
+    @staticmethod
+    def _build_gamification_correction_id(
+        *,
+        image_path: str,
+        polygons: list[PolygonData],
+        saved_files: dict[str, str],
+    ) -> str:
+        digest = hashlib.sha256()
+        digest.update(str(Path(image_path)).encode("utf-8", errors="replace"))
+        for polygon in sorted(polygons, key=lambda item: int(item.id)):
+            digest.update(
+                (
+                    f"|{polygon.id}:{polygon.is_hole}:{polygon.parent_id}:"
+                    f"{polygon.category}:{polygon.shape_hint}:"
+                    f"{polygon.bbox}:{len(polygon.points)}"
+                ).encode("utf-8", errors="replace")
+            )
+            for x_coord, y_coord in polygon.points:
+                digest.update(f":{float(x_coord):.6f},{float(y_coord):.6f}".encode("ascii"))
+        for key, value in sorted(saved_files.items()):
+            digest.update(f"|{key}:{value}".encode("utf-8", errors="replace"))
+        return f"{Path(image_path).stem}:{time_ns()}:{digest.hexdigest()[:16]}"

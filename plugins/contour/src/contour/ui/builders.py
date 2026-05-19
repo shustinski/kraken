@@ -56,6 +56,8 @@ from .status_list_delegate import attach_status_row_delegate
 if TYPE_CHECKING:
     pass
 
+USE_GAMIFICATION = False
+
 
 def _connect_line_edit_with_delay(self, line_edit: QLineEdit, slot, *, delay_ms: int = 500) -> None:
     if not hasattr(self, "_line_edit_debounce_timers"):
@@ -101,10 +103,10 @@ def build_ui(self) -> None:
     self.right_tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
     self.files_tab = self._build_files_tab()
     self.right_tabs.addTab(self.files_tab, "Files")
-    # if hasattr(self, "_gamification_profile_service"):
-    #     self.gamification_panel = GamificationPanel(self._gamification_profile_service, parent=self.right_tabs)
-    #     self.gamification_panel.messageRequested.connect(self._append_log)
-    #     self.right_tabs.addTab(self.gamification_panel, "Питомец")
+    if hasattr(self, "_gamification_profile_service") and USE_GAMIFICATION:
+        self.gamification_panel = GamificationPanel(self._gamification_profile_service, parent=self.right_tabs)
+        self.gamification_panel.messageRequested.connect(self._append_log)
+        self.right_tabs.addTab(self.gamification_panel, "Питомец")
     self.main_splitter.addWidget(self.right_tabs)
     self.main_splitter.setStretchFactor(0, 0)
     self.main_splitter.setStretchFactor(1, 1)

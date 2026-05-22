@@ -12,6 +12,7 @@ from .pipeline_controller import load_pipeline_config_from_path, save_pipeline_c
 from .preview_orchestrator import PreviewOrchestrator
 from .quality_gates import SemQualityGateThresholds, SemQualityMetrics, evaluate_sem_quality_gates
 from .workspace_session import WorkspaceLoadResult, WorkspaceSession
+from .vector_index_controller import VectorIndexController
 
 __all__ = [
     "BatchController",
@@ -24,6 +25,7 @@ __all__ = [
     "PreviewOrchestrator",
     "SemQualityGateThresholds",
     "SemQualityMetrics",
+    "VectorIndexController",
     "WorkspaceLoadResult",
     "WorkspaceSession",
     "evaluate_sem_quality_gates",

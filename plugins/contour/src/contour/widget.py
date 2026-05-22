@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QCheckBox,
+    QListView,
     QColorDialog,
     QComboBox,
     QDialog,
@@ -55,6 +56,7 @@ from .adapters.qt.thumbnails import ThumbnailLoadRunnable
 from .application.dto import PersistedPaths
 from .application.extraction_profiles import default_contour_settings_profiles
 from .application.frame_asset_sync import (
+    build_frame_asset_sets,
     build_image_cif_matching_report,
     classify_vector_side_status,
     index_cif_file_paths,
@@ -84,6 +86,7 @@ from .application.services import (
     BatchStartRequest,
     DirectoryScanController,
     PathSettingsController,
+    VectorIndexController,
     WorkspaceSession,
     export_frame_to_dataset,
     load_pipeline_config_from_path,
@@ -93,6 +96,7 @@ from .application.transition_save_guard import (
     TransitionPromptChoice,
     navigation_allowed_after_autosave_attempt,
     navigation_allowed_after_prompt,
+
 )
 from .application.use_cases import (
     AutoTuneResult,
@@ -149,7 +153,9 @@ from .ui.editor_icons import (
     create_editor_action_icon,
     create_editor_tool_icon,
 )
+from .ui.frame_path_list_model import FramePathFilterProxyModel, FramePathListModel
 from .ui.item_status_painting import FRAME_STATUS_ROLE, paint_image_row_item, paint_vector_row_item
+from .ui.large_dataset import LARGE_FRAME_COUNT_THRESHOLD
 from .ui.i18n_content import (
     EDITOR_ACTION_TOOLTIPS,
     EDITOR_TOOL_TOOLTIPS,
@@ -213,17 +219,23 @@ class PolygonExtractionWidget(
     WidgetProcessingMixin,
     QWidget,
 ):
+    _ui_theme: str
+    show_frame_matrix_checkbox: QCheckBox
+    image_list: QListView
+
     imageProcessed = pyqtSignal(str, list)
     batchProgress = pyqtSignal(int, int)
     batchFinished = pyqtSignal()
     polygonsEdited = pyqtSignal()
     logMessage = pyqtSignal(str)
+    workSimulationActiveChanged = pyqtSignal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._apply_contour_application_icon()
         self.setObjectName("polygonExtractionWidget")
         self._ui_language = active_language()
+        self._ui_theme = "dark"
         self._path_settings = PathSettingsController(WidgetPathSettingsStore())
         self._display_settings_store = WidgetDisplaySettingsStore()
         self._session_settings_store = WidgetSessionSettingsStore()
@@ -288,14 +300,58 @@ class PolygonExtractionWidget(
         self._auto_tune_request_serial = 0
         self._auto_tune_running_request_id: int | None = None
         self._neighbor_image_cache: dict[str, object] = {}
+        self._neighbor_thread_pool = QThreadPool(self)
+        self._neighbor_thread_pool.setMaxThreadCount(2)
+        self._neighbor_thread_pool.setExpiryTimeout(30000)
+        self._neighbor_sync_image_path: str | None = None
+        self._neighbor_frame_specs: list[tuple[int, int, str]] = []
+        self._neighbor_queued_paths: set[str] = set()
+        self._neighbor_sync_timer = QTimer(self)
+        self._neighbor_sync_timer.setSingleShot(True)
+        self._neighbor_sync_timer.timeout.connect(self._sync_neighbor_frames)
         self._thumbnail_thread_pool = QThreadPool(self)
         self._thumbnail_thread_pool.setMaxThreadCount(1)
         self._thumbnail_thread_pool.setExpiryTimeout(30000)
+        self._frame_load_thread_pool = QThreadPool(self)
+        self._frame_load_thread_pool.setMaxThreadCount(2)
+        self._frame_load_thread_pool.setExpiryTimeout(30000)
+        self._frame_load_request_serial = 0
+        self._frame_load_running_path: str | None = None
+        self._frame_load_pending: tuple[str, bool] | None = None
+        self._defer_vector_load_until_cif_index = False
+        self._pending_thumbnail_rebuild_after_vectors = False
+        self._thumbnail_flush_retry_count = 0
+        self._editor_display_thread_pool = QThreadPool(self)
+        self._editor_display_thread_pool.setMaxThreadCount(1)
+        self._editor_display_request_serial = 0
+        self._editor_pixmap_cache: dict[tuple[str, str], QPixmap] = {}
+        self._editor_polygons_signature: tuple[str, int, int] | None = None
+        self._pending_editor_frame_apply: tuple[str, list, bool] | None = None
+        self._frame_switch_profile = None
+        self._frame_switch_profile_generation = 0
+        self._thumbnail_path_to_row: dict[str, int] = {}
+        self._thumbnail_sparse_recenter_timer: QTimer | None = None
+        self._pending_frame_chrome_path: str | None = None
         self._thumbnail_generation = 0
         self._thumbnail_icon_size = QSize(64, 48)
         self._thumbnail_placeholder_icon = QIcon()
-        self._thumbnail_loaded_paths: set[str] = set()
+        self._thumbnail_loaded_generation: dict[str, int] = {}
         self._thumbnail_queued_paths: set[str] = set()
+        self._thumbnail_rebuild_in_progress = False
+        self._thumbnail_selected_path: str | None = None
+        self._thumbnail_build_chunk_size = 50
+        self._thumbnail_build_interval_ms = 25
+        self._thumbnail_pending_apply: dict[str, object] = {}
+        self._thumbnail_icon_cache: dict[str, QIcon] = {}
+        self._thumbnail_apply_timer = QTimer(self)
+        self._thumbnail_apply_timer.setSingleShot(True)
+        self._thumbnail_apply_timer.timeout.connect(self._flush_thumbnail_icon_batch)
+        self._thumbnail_radial_paths: list[str] = []
+        self._thumbnail_radial_cursor = 0
+        self._thumbnail_radial_center_path: str | None = None
+        self._thumbnail_radial_pump_timer = QTimer(self)
+        self._thumbnail_radial_pump_timer.setSingleShot(True)
+        self._thumbnail_radial_pump_timer.timeout.connect(self._pump_thumbnail_radial_loads)
         self._show_source_while_middle_held = False
 
         self._persisted_highlight_paths: set[str] = set()
@@ -308,7 +364,35 @@ class PolygonExtractionWidget(
         self._directory_scanner.idle.connect(self._on_input_directory_scan_idle)
         self._directory_scanner.finished.connect(self._on_input_directory_scan_finished)
         self._directory_scanner.failed.connect(self._on_input_directory_scan_failed)
+        self._vector_indexer = VectorIndexController(self)
+        self._vector_indexer.started.connect(self._on_cif_directory_index_started)
+        self._vector_indexer.idle.connect(self._on_cif_directory_index_idle)
+        self._vector_indexer.finished.connect(self._on_cif_directory_index_finished)
+        self._vector_indexer.failed.connect(self._on_cif_directory_index_failed)
         self._vectors_list_ignore_navigate_until: float = 0.0
+        self._image_list_build_generation = 0
+        self._image_list_build_chunk_size = 250
+        self._image_list_rebuild_in_progress = False
+        self._pending_image_list_post_build: dict[str, object] | None = None
+        self._asset_list_build_generation = 0
+        self._pending_cif_directory_state: object | None = None
+        self._pending_cif_directory_path_after_images: str | None = None
+        self._indexed_cif_directory: str | None = None
+        self._asset_filter_match_only = False
+        self._image_path_to_index: dict[str, int] = {}
+        self._thumbnail_sparse_window_start = 0
+        self._work_simulation_interval_ms = 200
+        self._work_simulation_timer = QTimer(self)
+        self._work_simulation_timer.setSingleShot(False)
+        self._work_simulation_timer.timeout.connect(self._advance_work_simulation)
+        self._work_simulation_running = False
+        self._work_simulation_paths: list[str] = []
+        self._work_simulation_path_index = -1
+        self._work_simulation_target_polygons: list[PolygonData] = []
+        self._work_simulation_visible_points = 0
+        self._work_simulation_total_points = 0
+        self._work_simulation_original_dirty: bool | None = None
+        self._work_simulation_original_reference_polygons: list[PolygonData] = []
 
         self._batch_processor = BatchProcessor(self)
         self._batch_processor.set_ui_language(self._ui_language)
@@ -320,6 +404,13 @@ class PolygonExtractionWidget(
         self._batch_controller = BatchController(self._batch_processor)
 
         self._build_ui()
+        self._image_list_model = FramePathListModel(self)
+        self._image_list_proxy = FramePathFilterProxyModel(self)
+        self._image_list_proxy.setSourceModel(self._image_list_model)
+        self.image_list.setModel(self._image_list_proxy)
+        image_list_selection = self.image_list.selectionModel()
+        if image_list_selection is not None:
+            image_list_selection.currentChanged.connect(self._on_image_list_current_changed)
         self._apply_compact_ui_style()
         self._disable_spinbox_wheel_changes()
         self._restore_persisted_paths()

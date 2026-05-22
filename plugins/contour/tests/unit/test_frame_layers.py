@@ -16,18 +16,31 @@ class FrameLayerMappingTests(unittest.TestCase):
         self.assertEqual(extract_frame_number("xxxx_1.png"), 1)
         self.assertEqual(extract_frame_number("xxxx_1237.tif"), 1237)
         self.assertEqual(extract_frame_number("sample_name_00042.jpg"), 42)
+        self.assertEqual(extract_frame_number("sample42.jpg"), 42)
         self.assertIsNone(extract_frame_number("sample_name.jpg"))
 
-    def test_sort_uses_numeric_suffix(self) -> None:
+    def test_sort_uses_name_then_numeric_suffix(self) -> None:
         ordered = sort_base_frame_records(
             [
-                "demo_10.png",
+                "zeta_1.png",
                 "demo_2.png",
-                "demo_1237.png",
+                "alpha_12.png",
                 "demo_1.png",
+                "alpha_3.png",
+                "sample.png",
+                "demo_10.png",
             ]
         )
-        self.assertEqual([record.frame_number for record in ordered], [1, 2, 10, 1237])
+        self.assertEqual(
+            [record.stem for record in ordered],
+            ["alpha_3", "alpha_12", "demo_1", "demo_2", "demo_10", "sample", "zeta_1"],
+        )
+
+    def test_build_base_records_preserves_name_order_after_duplicate_filtering(self) -> None:
+        records, warnings = build_base_frame_records(["z_3.png", "a_2.png", "b_10.png"])
+
+        self.assertEqual([record.stem for record in records], ["a_2", "b_10", "z_3"])
+        self.assertEqual(warnings, [])
 
     def test_build_base_map_ignores_duplicate_numbers_deterministically(self) -> None:
         records, warnings = build_base_frame_records(["frame_1.png", "frame_001.png", "frame_2.png"])

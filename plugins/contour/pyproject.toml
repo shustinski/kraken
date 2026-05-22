@@ -81,6 +81,10 @@ contour = [
     "resources/icons/contour.ico",
     "resources/icons/contour.png",
 ]
+"plugins/contour/resources" = [
+    "resources/update_client.json",
+    "resources/update_client.example.json",
+]
 
 [tool.ruff]
 line-length = 120

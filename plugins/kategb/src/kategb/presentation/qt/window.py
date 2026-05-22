@@ -26,12 +26,14 @@ from PyQt6.QtWidgets import (
 
 from kategb.application.dto import AnalyzeVerificationRequest, GenerateManifestRequest, SampleRequest
 from kategb.application.use_cases import AnalyzeVerification, BuildSample, GenerateVerificationManifest
+from kategb import __version__
 from kategb.domain.models import CopyPlan, CopySource, CrystalInfo, LayerInfo
 from kategb.infrastructure.file_copy import CopyReport
 from kategb.infrastructure.markup_reader import OpenPyxlCrystalInfoReader
 from kategb.infrastructure.xml_repository import IncorrectXmlReader
 from kategb.presentation.qt.worker import CopyWorker
 from kraken_core.theme import add_theme_menu, apply_app_theme
+from updater.qt import QtUpdateController
 
 _HELP_TEXT = (
     "1. Загрузите Excel-файл разметки или введите данные слоя вручную.\n"
@@ -53,6 +55,7 @@ class KateGBWindow(QMainWindow):
         self._copy_thread: QThread | None = None
         self._copy_worker: CopyWorker | None = None
         self._theme = "dark"
+        self._update_controller: QtUpdateController | None = None
 
         self._font = QtGui.QFont("sans-serif")
         self._font.setPixelSize(14)
@@ -72,6 +75,15 @@ class KateGBWindow(QMainWindow):
             dark_text="Темная",
             light_text="Светлая",
         )
+        help_menu = self.menuBar().addMenu("Справка")
+        self._update_controller = QtUpdateController(
+            self,
+            app_id="kategb",
+            app_name="KateGB",
+            current_version=__version__,
+            status_callback=self._set_status_text,
+        )
+        self._update_controller.add_menu_action(help_menu, "Проверить обновления", submenu_title="Обновление")
         page = QWidget(self)
         self.setCentralWidget(page)
         layout = QGridLayout(page)
@@ -82,6 +94,10 @@ class KateGBWindow(QMainWindow):
 
     def _apply_theme(self, theme: str) -> None:
         self._theme = apply_app_theme(theme)
+
+    def _set_status_text(self, message: str) -> None:
+        if hasattr(self, "status"):
+            self.status.setText(message)
 
     def _build_sample_tab(self) -> QWidget:
         page = QWidget()

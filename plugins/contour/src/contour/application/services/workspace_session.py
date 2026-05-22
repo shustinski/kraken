@@ -22,6 +22,7 @@ class WorkspaceLoadResult:
     cache_hit: bool = False
     reused_current_state: bool = False
     prepared_image_required: bool = False
+    vectors_only: bool = False
 
 
 _POINT_SIGNATURE_SCALE = 1_000_000
@@ -108,8 +109,14 @@ class WorkspaceSession:
         self._cif_paths_by_stem.clear()
 
     def set_cif_index(self, indexed_paths: Mapping[str, str]) -> None:
+        """Update stem → vector path map; clear overlays but keep loaded source pixels."""
+
         self._cif_paths_by_stem = dict(indexed_paths)
-        self._state_cache.clear()
+        for state in self._state_cache.values():
+            state.polygons = []
+            state.loaded_cif_path = None
+            state.reference_polygons = []
+            state.polygons_dirty = None
 
     def merge_cif_paths(self, indexed_paths: Mapping[str, str]) -> None:
         """Update stem → CIF mapping; clears cache like :meth:`set_cif_index`."""
@@ -142,13 +149,7 @@ class WorkspaceSession:
         state.polygons_dirty = False
         return True
 
-    def load_image(
-        self,
-        path: str | Path,
-        *,
-        load_source_image: Callable[[str], Any],
-        load_cif_overlay: Callable[[str], list[PolygonData]],
-    ) -> WorkspaceLoadResult:
+    def resolve_cached_load(self, path: str | Path) -> WorkspaceLoadResult | None:
         image_path = str(Path(path))
         if (
             self._current_image_path == image_path
@@ -172,6 +173,19 @@ class WorkspaceSession:
                 prepared_image_required=cached_state.preprocessed_image is None
                 and cached_state.source_image is not None,
             )
+        return None
+
+    def load_image(
+        self,
+        path: str | Path,
+        *,
+        load_source_image: Callable[[str], Any],
+        load_cif_overlay: Callable[[str], list[PolygonData]],
+    ) -> WorkspaceLoadResult:
+        image_path = str(Path(path))
+        cached = self.resolve_cached_load(image_path)
+        if cached is not None:
+            return cached
 
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="contour-load") as executor:
             source_future = executor.submit(load_source_image, image_path)
@@ -181,6 +195,51 @@ class WorkspaceSession:
                 source_image=source_future.result(),
                 polygons=cif_future.result(),
             )
+        return self._store_loaded_state(image_path, state)
+
+    def apply_loaded_frame(
+        self,
+        image_path: str | Path,
+        *,
+        source_image: Any,
+        polygons: list[PolygonData],
+    ) -> WorkspaceLoadResult:
+        path = str(Path(image_path))
+        state = ImageProcessingState(
+            image_path=path,
+            source_image=source_image,
+            polygons=list(polygons),
+        )
+        return self._store_loaded_state(path, state)
+
+    def apply_frame_vectors(
+        self,
+        image_path: str | Path,
+        *,
+        polygons: list[PolygonData],
+        loaded_cif_path: str | None = None,
+    ) -> WorkspaceLoadResult | None:
+        path = str(Path(image_path))
+        state = self._state_cache.get(path)
+        if state is None and self._current_image_path == path and self._current_state is not None:
+            state = self._current_state
+        if state is None or state.source_image is None:
+            return None
+        state.polygons = list(polygons)
+        if loaded_cif_path is not None:
+            state.loaded_cif_path = loaded_cif_path
+        self._state_cache[path] = state
+        if self._current_image_path == path:
+            self._current_state = state
+        return WorkspaceLoadResult(
+            image_path=path,
+            state=state,
+            cache_hit=True,
+            prepared_image_required=state.preprocessed_image is None,
+            vectors_only=True,
+        )
+
+    def _store_loaded_state(self, image_path: str, state: ImageProcessingState) -> WorkspaceLoadResult:
         self._state_cache[image_path] = state
         self._current_image_path = image_path
         self._current_state = state

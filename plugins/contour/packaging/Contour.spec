@@ -11,6 +11,9 @@ datas = collect_data_files(
     "contour",
     includes=[
         "pipeline_example.json",
+        "resources/ui_texts_*.json",
+        "gamification/assets/gamification.qrc",
+        "gamification/assets/pets/*/*/*.png",
     ],
 )
 datas += collect_data_files(

@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QProgressBar,
     QPushButton,
@@ -80,20 +81,20 @@ def build_ui(self) -> None:
     self.main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
     root_layout.addWidget(self.main_splitter, 1)
 
-    left_scroll = QScrollArea()
-    left_scroll.setWidgetResizable(True)
-    left_scroll.setFrameShape(QFrame.Shape.NoFrame)
-    left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    left_scroll.setMinimumWidth(280)
-    left_scroll.setMaximumWidth(560)
-    left_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+    self.left_controls_scroll = QScrollArea()
+    self.left_controls_scroll.setWidgetResizable(True)
+    self.left_controls_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    self.left_controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    self.left_controls_scroll.setMinimumWidth(280)
+    self.left_controls_scroll.setMaximumWidth(560)
+    self.left_controls_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
     controls_container = QWidget()
-    left_scroll.setWidget(controls_container)
+    self.left_controls_scroll.setWidget(controls_container)
     controls_layout = QVBoxLayout(controls_container)
     self.control_tabs = self._build_tabs()
     self.control_tabs.currentChanged.connect(self._on_control_tab_changed)
     controls_layout.addWidget(self.control_tabs, 1)
-    self.main_splitter.addWidget(left_scroll)
+    self.main_splitter.addWidget(self.left_controls_scroll)
     self.visual_panel = self._build_visual_panel()
     self.main_splitter.addWidget(self.visual_panel)
     self.right_tabs = QTabWidget()
@@ -281,7 +282,9 @@ def build_paths_tab(self) -> QWidget:
     extra_layers_layout.addWidget(self.add_extra_layers_button)
 
     self.add_extra_layers_button.clicked.connect(self._load_extra_layers)
-    self.extra_layers_list.model().rowsMoved.connect(self._on_extra_layers_rows_moved)
+    extra_layers_model = self.extra_layers_list.model()
+    if extra_layers_model is not None:
+        extra_layers_model.rowsMoved.connect(self._on_extra_layers_rows_moved)
 
     self.extra_layers_form.addRow(self.extra_layers_widget)
     self.extra_layers_label_widget = None
@@ -313,24 +316,42 @@ def build_files_tab(self) -> QWidget:
     tab = QWidget()
     layout = QVBoxLayout(tab)
 
-    self.files_list_label = QLabel("Кадры")
-
     self.files_scan_progress_bar = QProgressBar()
     self.files_scan_progress_bar.setRange(0, 100)
     self.files_scan_progress_bar.setValue(0)
     self.files_scan_progress_bar.setTextVisible(True)
     self.files_scan_progress_bar.setVisible(False)
 
-    self.image_list = QListWidget()
+    self.image_list = QListView()
     attach_status_row_delegate(self.image_list)
     self.image_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-    self.image_list.currentItemChanged.connect(self._on_image_item_changed)
-    self.image_list.itemSelectionChanged.connect(self._on_image_selection_changed)
+    self.image_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 
-    self.thumbnail_grid_label = QLabel("Матрица кадров")
+    self.image_vector_list = QListWidget()
+    attach_status_row_delegate(self.image_vector_list)
+    self.image_vector_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    self.image_vector_list.itemClicked.connect(self._on_asset_image_item_clicked)
+    self.image_only_list = QListWidget()
+    attach_status_row_delegate(self.image_only_list)
+    self.image_only_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    self.image_only_list.itemClicked.connect(self._on_asset_image_item_clicked)
+    self.vector_only_list = QListWidget()
+    attach_status_row_delegate(self.vector_only_list)
+    self.vector_only_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    self.vector_only_list.itemClicked.connect(self._on_asset_vector_item_clicked)
+
+    self.asset_view_tabs = QTabWidget()
+    self.asset_view_tabs.setUsesScrollButtons(True)
+    self.asset_view_tabs.addTab(self.image_list, "All")
+    self.asset_view_tabs.addTab(self.image_vector_list, "Image+Vector")
+    self.asset_view_tabs.addTab(self.image_only_list, "Image only")
+    self.asset_view_tabs.addTab(self.vector_only_list, "Vector only")
+
+    self.thumbnail_grid_label = QLabel("")
+    self.thumbnail_grid_label.setVisible(False)
     self.thumbnail_grid = QListWidget()
     self.thumbnail_grid.setViewMode(QListWidget.ViewMode.IconMode)
-    self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Adjust)
+    self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Fixed)
     self.thumbnail_grid.setMovement(QListWidget.Movement.Static)
     self.thumbnail_grid.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     self.thumbnail_grid.setUniformItemSizes(True)
@@ -353,8 +374,18 @@ def build_files_tab(self) -> QWidget:
     self.thumbnail_grid_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     self.thumbnail_grid_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     self.thumbnail_grid_scroll_area.setMinimumHeight(96)
-    self.thumbnail_grid_scroll_area.setMaximumHeight(220)
     self.thumbnail_grid_scroll_area.setWidget(self.thumbnail_grid)
+    thumbnail_h_scroll = self.thumbnail_grid_scroll_area.horizontalScrollBar()
+    thumbnail_v_scroll = self.thumbnail_grid_scroll_area.verticalScrollBar()
+    if thumbnail_h_scroll is not None:
+        thumbnail_h_scroll.valueChanged.connect(self._on_thumbnail_viewport_changed)
+    if thumbnail_v_scroll is not None:
+        thumbnail_v_scroll.valueChanged.connect(self._on_thumbnail_viewport_changed)
+    self.thumbnail_matrix_panel = QWidget()
+    thumbnail_matrix_layout = QVBoxLayout(self.thumbnail_matrix_panel)
+    thumbnail_matrix_layout.setContentsMargins(0, 0, 0, 0)
+    thumbnail_matrix_layout.setSpacing(4)
+    thumbnail_matrix_layout.addWidget(self.thumbnail_grid_scroll_area, 1)
 
     # Kept as an internal CIF-status model for reload/status logic; it is no longer a visible sidebar mode.
     self.vector_list = QListWidget()
@@ -374,11 +405,9 @@ def build_files_tab(self) -> QWidget:
     overlay_buttons_layout.addWidget(self.reload_cif_for_frames_button)
     self.reload_cif_selected_button.setVisible(False)
 
-    layout.addWidget(self.files_list_label)
     layout.addWidget(self.files_scan_progress_bar)
-    layout.addWidget(self.image_list, 1)
-    layout.addWidget(self.thumbnail_grid_label)
-    layout.addWidget(self.thumbnail_grid_scroll_area, 0)
+    layout.addWidget(self.asset_view_tabs, 1)
+    layout.addWidget(self.thumbnail_matrix_panel, 0)
     layout.addWidget(overlay_buttons_row)
 
     self.run_group = QGroupBox("Run")
@@ -406,10 +435,6 @@ def build_files_tab(self) -> QWidget:
     self.export_dataset_button = QPushButton("Export frame to dataset")
     self.export_dataset_button.clicked.connect(self.export_current_frame_to_dataset)
     self.dataset_mode_checkbox = QCheckBox("Dataset mode")
-    self.max_workers_spin = QSpinBox()
-    self.max_workers_spin.setRange(1, 32)
-    self.max_workers_spin.setValue(4)
-    self.max_workers_label = QLabel("Max workers")
     run_buttons_row = QWidget()
     run_buttons_layout = QHBoxLayout(run_buttons_row)
     run_buttons_layout.setContentsMargins(0, 0, 0, 0)
@@ -419,19 +444,17 @@ def build_files_tab(self) -> QWidget:
     run_buttons_layout.addWidget(self.stop_batch_button)
     run_buttons_layout.addStretch(1)
     run_layout.addWidget(run_buttons_row, 0, 0, 1, 2)
-    run_layout.addWidget(self.max_workers_label, 1, 0)
-    run_layout.addWidget(self.max_workers_spin, 1, 1)
-    run_layout.addWidget(self.save_current_button, 2, 0, 1, 2)
-    run_layout.addWidget(self.export_dataset_button, 3, 0, 1, 2)
-    run_layout.addWidget(self.dataset_mode_checkbox, 4, 0, 1, 2)
-    layout.addWidget(self.run_group)
     self.batch_progress_bar = QProgressBar()
     self.batch_progress_bar.setRange(0, 100)
     self.batch_progress_bar.setValue(0)
     self.batch_progress_bar.setFormat("%p% (%v/%m)")
     self.batch_progress_bar.setTextVisible(True)
     self.batch_progress_bar.setVisible(False)
-    layout.addWidget(self.batch_progress_bar)
+    run_layout.addWidget(self.save_current_button, 1, 0, 1, 2)
+    run_layout.addWidget(self.export_dataset_button, 2, 0, 1, 2)
+    run_layout.addWidget(self.dataset_mode_checkbox, 3, 0, 1, 2)
+    run_layout.addWidget(self.batch_progress_bar, 4, 0, 1, 2)
+    layout.addWidget(self.run_group)
     return tab
 
 
@@ -1326,11 +1349,9 @@ def build_extraction_tab(self) -> QWidget:
     self.recognition_mode_combo.addItem("Проводники", "conductors")
     self.recognition_mode_combo.addItem("Контакты / via", "via")
     self.recognition_mode_combo.setCurrentIndex(1)
-    self.recognition_status_label = QLabel("Готово")
     _rm_row = QHBoxLayout()
     _rm_row.addWidget(QLabel("Режим извлечения"))
     _rm_row.addWidget(self.recognition_mode_combo, 1)
-    _rm_row.addWidget(self.recognition_status_label)
     self.recognition_stack = QStackedWidget()
     self.recognition_page_off = QWidget()
     _off_l = QVBoxLayout(self.recognition_page_off)
@@ -1706,6 +1727,12 @@ def build_display_tab(self) -> QWidget:
     self.show_labels_checkbox = QCheckBox("Show polygon IDs")
     self.show_labels_checkbox.setChecked(self._display_settings.show_labels)
     self.random_object_colors_checkbox = QCheckBox("Random object colors")
+    self.autosave_on_frame_transition_checkbox = QCheckBox("Autosave when changing frame")
+    self.autosave_on_frame_transition_checkbox.setChecked(False)
+    self.show_frame_matrix_checkbox = QCheckBox("Show frame matrix")
+    self.show_frame_matrix_checkbox.setChecked(True)
+    self.show_frame_matrix_thumbnails_checkbox = QCheckBox("Load frame matrix thumbnails")
+    self.show_frame_matrix_thumbnails_checkbox.setChecked(True)
     self.show_neighbor_frames_checkbox = QCheckBox("Show neighboring frames")
     self.neighbor_columns_spin = QSpinBox()
     self.neighbor_columns_spin.setRange(1, 1000)
@@ -1735,6 +1762,8 @@ def build_display_tab(self) -> QWidget:
         else:
             widget.valueChanged.connect(self._apply_display_settings)
     self.show_neighbor_frames_checkbox.stateChanged.connect(self._on_neighbor_display_settings_changed)
+    self.show_frame_matrix_checkbox.stateChanged.connect(self._on_frame_matrix_display_settings_changed)
+    self.show_frame_matrix_thumbnails_checkbox.stateChanged.connect(self._on_frame_matrix_thumbnail_settings_changed)
     self.neighbor_columns_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
     self.neighbor_max_grid_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
     self.neighbor_opacity_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
@@ -1761,10 +1790,13 @@ def build_display_tab(self) -> QWidget:
     self.display_form.addRow(self.show_vertices_checkbox)
     self.display_form.addRow(self.show_labels_checkbox)
     self.display_form.addRow(self.random_object_colors_checkbox)
+    self.display_form.addRow(self.autosave_on_frame_transition_checkbox)
+    self.display_form.addRow(self.show_frame_matrix_checkbox)
+    self.display_form.addRow(self.show_frame_matrix_thumbnails_checkbox)
     self.display_form.addRow(self.show_neighbor_frames_checkbox)
     self.display_form.addRow("Frames per row", self.neighbor_columns_spin)
     self.neighbor_columns_label_widget = self.display_form.labelForField(self.neighbor_columns_spin)
-    self.display_form.addRow("Max neighbor grid", self.neighbor_max_grid_spin)
+    self.display_form.addRow("Neighbor grid size", self.neighbor_max_grid_spin)
     self.neighbor_max_grid_label_widget = self.display_form.labelForField(self.neighbor_max_grid_spin)
     self.display_form.addRow("Neighbor opacity", self.neighbor_opacity_spin)
     self.neighbor_opacity_label_widget = self.display_form.labelForField(self.neighbor_opacity_spin)
@@ -1800,7 +1832,6 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.imageRegionSelected.connect(self._on_editor_image_region_selected)
     self.polygon_editor.rulerMeasurementChanged.connect(self._update_ruler_status)
     self.polygon_editor.toolChanged.connect(self._on_editor_tool_changed)
-    self.polygon_editor.zoomChanged.connect(lambda _zoom: self._sync_neighbor_frames())
     self.polygon_editor.neighborFrameActivated.connect(self._on_neighbor_frame_activated)
     self.polygon_editor.viaDebugRequested.connect(self._on_via_debug_requested)
     self.polygon_editor.metalOverlayDetailRequested.connect(self._on_metal_overlay_detail_requested)
@@ -1819,40 +1850,12 @@ def build_visual_panel(self) -> QWidget:
     self.editor_toolbar_scroll.setFrameShape(QFrame.Shape.NoFrame)
     self.editor_toolbar_scroll.setMinimumWidth(min(760, max(180, self.editor_toolbar.sizeHint().width())))
     self.editor_toolbar_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    toolbar_height = (
-        self.editor_toolbar.sizeHint().height()
-        + self.editor_toolbar_scroll.horizontalScrollBar().sizeHint().height()
-        + 2
-    )
+    toolbar_scrollbar = self.editor_toolbar_scroll.horizontalScrollBar()
+    toolbar_scrollbar_height = toolbar_scrollbar.sizeHint().height() if toolbar_scrollbar is not None else 0
+    toolbar_height = self.editor_toolbar.sizeHint().height() + toolbar_scrollbar_height + 2
     self.editor_toolbar_scroll.setMinimumHeight(toolbar_height)
     self.editor_toolbar_scroll.setMaximumHeight(toolbar_height)
     editor_layout.addWidget(self.editor_toolbar_scroll)
-    self.visual_frame_nav_widget = QWidget()
-    visual_nav_layout = QHBoxLayout(self.visual_frame_nav_widget)
-    visual_nav_layout.setContentsMargins(0, 4, 0, 4)
-    visual_nav_layout.setSpacing(10)
-    self.frame_nav_prev_button = QToolButton()
-    self.frame_nav_next_button = QToolButton()
-    prev_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
-    next_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
-    self._configure_toolbar_button(self.frame_nav_prev_button, prev_icon, "", checkable=False)
-    self._configure_toolbar_button(self.frame_nav_next_button, next_icon, "", checkable=False)
-    self.frame_nav_prev_button.clicked.connect(self._frame_nav_previous)
-    self.frame_nav_next_button.clicked.connect(self._frame_nav_next)
-    self.frame_nav_spin = QSpinBox()
-    self.frame_nav_spin.setMinimum(1)
-    self.frame_nav_spin.setMaximum(1)
-    self.frame_nav_spin.valueChanged.connect(self._on_frame_nav_spin_changed)
-    self.frame_nav_total_label = QLabel("/ 0")
-    visual_nav_layout.addWidget(self.frame_nav_prev_button)
-    visual_nav_layout.addWidget(self.frame_nav_next_button)
-    visual_nav_layout.addWidget(self.frame_nav_spin)
-    visual_nav_layout.addWidget(self.frame_nav_total_label)
-    self.autosave_on_frame_transition_checkbox = QCheckBox("Autosave when changing frame")
-    self.autosave_on_frame_transition_checkbox.setChecked(False)
-    visual_nav_layout.addWidget(self.autosave_on_frame_transition_checkbox)
-    visual_nav_layout.addStretch(1)
-    self.visual_frame_nav_widget.setVisible(False)
     editor_layout.addWidget(self.polygon_editor, 1)
 
     layout.addWidget(self.editor_group, 1)
@@ -1868,18 +1871,19 @@ def build_editor_toolbar(self) -> QWidget:
 
     self._tool_button_group = QButtonGroup(self)
     self._tool_button_group.setExclusive(True)
-    self._tool_buttons: dict[EditorTool, QToolButton] = {}
+    self._tool_buttons = {}
     for text, tool in [
         ("Select", EditorTool.SELECT),
         ("Pan", EditorTool.PAN),
         ("Ruler", EditorTool.RULER),
         ("Add Polygon", EditorTool.ADD_POLYGON),
         ("Brush", EditorTool.BRUSH),
+        ("Trace Pen", EditorTool.TRACE_PEN),
         ("Via", EditorTool.ADD_VIA),
         ("Add Vertex", EditorTool.ADD_VERTEX),
         ("Delete Vertex", EditorTool.DELETE_VERTEX),
         ("Move Vertex", EditorTool.MOVE_VERTEX),
-        ("Delete Polygon", EditorTool.DELETE_POLYGON),
+        ("Antialias", EditorTool.ANTIALIAS),
     ]:
         button = QToolButton()
         self._configure_toolbar_button(button, self._create_editor_tool_icon(tool), text, checkable=True)
@@ -1906,7 +1910,6 @@ def build_editor_toolbar(self) -> QWidget:
     _polygon_blk.addWidget(self.polygon_mode_label)
     _polygon_blk.addWidget(self.polygon_mode_combo)
     _polygon_blk.addWidget(self.polygon_draw_mode_indicator)
-    layout.addWidget(self._polygon_toolbar_block)
 
     self._brush_toolbar_block = QWidget()
     _brush_blk = QHBoxLayout(self._brush_toolbar_block)
@@ -1928,7 +1931,18 @@ def build_editor_toolbar(self) -> QWidget:
     _brush_blk.addWidget(self.brush_mode_combo)
     _brush_blk.addWidget(self.brush_size_label)
     _brush_blk.addWidget(self.brush_size_spin)
-    layout.addWidget(self._brush_toolbar_block)
+
+    self._trace_toolbar_block = QWidget()
+    _trace_blk = QHBoxLayout(self._trace_toolbar_block)
+    _trace_blk.setContentsMargins(0, 0, 0, 0)
+    _trace_blk.setSpacing(6)
+    self.trace_width_label = QLabel("РЁРёСЂРёРЅР°" if self._ui_language == "ru" else "Width")
+    self.trace_width_spin = QSpinBox()
+    self.trace_width_spin.setRange(1, 256)
+    self.trace_width_spin.setValue(12)
+    self.trace_width_spin.valueChanged.connect(lambda value: self.polygon_editor.set_trace_width(float(value)))
+    _trace_blk.addWidget(self.trace_width_label)
+    _trace_blk.addWidget(self.trace_width_spin)
 
     self._via_toolbar_block = QWidget()
     _via_blk = QHBoxLayout(self._via_toolbar_block)
@@ -1948,7 +1962,6 @@ def build_editor_toolbar(self) -> QWidget:
     _via_blk.addWidget(self.via_width_spin)
     _via_blk.addWidget(self.via_height_label)
     _via_blk.addWidget(self.via_height_spin)
-    layout.addWidget(self._via_toolbar_block)
 
     self._delete_vertex_toolbar_block = QWidget()
     _dv_blk = QHBoxLayout(self._delete_vertex_toolbar_block)
@@ -1963,12 +1976,41 @@ def build_editor_toolbar(self) -> QWidget:
     )
     _dv_blk.addWidget(self.delete_vertex_mode_label)
     _dv_blk.addWidget(self.delete_vertex_mode_combo)
-    layout.addWidget(self._delete_vertex_toolbar_block)
+
+    self._antialias_toolbar_block = QWidget()
+    _aa_blk = QHBoxLayout(self._antialias_toolbar_block)
+    _aa_blk.setContentsMargins(0, 0, 0, 0)
+    _aa_blk.setSpacing(6)
+    self.antialias_grade_label = QLabel("AA")
+    self.antialias_grade_spin = QSpinBox()
+    self.antialias_grade_spin.setRange(1, 5)
+    self.antialias_grade_spin.setValue(1)
+    self.antialias_grade_spin.valueChanged.connect(lambda value: self.polygon_editor.set_antialias_grade(value))
+    _aa_blk.addWidget(self.antialias_grade_label)
+    _aa_blk.addWidget(self.antialias_grade_spin)
+
+    self.tool_settings_strip = QWidget()
+    self.tool_settings_strip.setObjectName("toolSettingsStrip")
+    self.tool_settings_layout = QHBoxLayout(self.tool_settings_strip)
+    self.tool_settings_layout.setContentsMargins(0, 0, 0, 0)
+    self.tool_settings_layout.setSpacing(6)
+    for block in (
+        self._polygon_toolbar_block,
+        self._brush_toolbar_block,
+        self._trace_toolbar_block,
+        self._via_toolbar_block,
+        self._delete_vertex_toolbar_block,
+        self._antialias_toolbar_block,
+    ):
+        self.tool_settings_layout.addWidget(block)
+    layout.addWidget(self.tool_settings_strip)
     self._tool_parameter_blocks = {
         EditorTool.ADD_POLYGON: self._polygon_toolbar_block,
         EditorTool.BRUSH: self._brush_toolbar_block,
+        EditorTool.TRACE_PEN: self._trace_toolbar_block,
         EditorTool.ADD_VIA: self._via_toolbar_block,
         EditorTool.DELETE_VERTEX: self._delete_vertex_toolbar_block,
+        EditorTool.ANTIALIAS: self._antialias_toolbar_block,
     }
 
     self.ruler_status_label = QLabel("")
@@ -1990,17 +2032,6 @@ def build_editor_toolbar(self) -> QWidget:
     self.fit_button = QToolButton()
     self._configure_toolbar_button(self.fit_button, self._create_editor_action_icon("fit"), "Fit")
     self.fit_button.clicked.connect(self.polygon_editor.fit_to_view)
-    self.antialias_grade_label = QLabel("AA")
-    self.antialias_grade_spin = QSpinBox()
-    self.antialias_grade_spin.setRange(1, 5)
-    self.antialias_grade_spin.setValue(1)
-    self.antialias_selected_button = QToolButton()
-    self._configure_toolbar_button(
-        self.antialias_selected_button,
-        self._create_editor_action_icon("antialias"),
-        "Antialias selected polygons",
-    )
-    self.antialias_selected_button.clicked.connect(self._antialias_selected_polygons)
     self.antialias_opened_cif_button = QToolButton()
     self._configure_toolbar_button(
         self.antialias_opened_cif_button,
@@ -2017,9 +2048,6 @@ def build_editor_toolbar(self) -> QWidget:
         self.fit_button,
     ]:
         layout.addWidget(button)
-    layout.addWidget(self.antialias_grade_label)
-    layout.addWidget(self.antialias_grade_spin)
-    layout.addWidget(self.antialias_selected_button)
     layout.addWidget(self.antialias_opened_cif_button)
 
     self.vector_edit_status_label = QLabel("")
@@ -2045,6 +2073,8 @@ def build_editor_toolbar(self) -> QWidget:
         self._brush_toolbar_block,
         self._via_toolbar_block,
         self._delete_vertex_toolbar_block,
+        self._antialias_toolbar_block,
+        self.tool_settings_strip,
         self.polygon_mode_combo,
         self.polygon_draw_mode_indicator,
         self.brush_mode_combo,
@@ -2055,7 +2085,6 @@ def build_editor_toolbar(self) -> QWidget:
         self.ruler_status_label,
         self.antialias_grade_label,
         self.antialias_grade_spin,
-        self.antialias_selected_button,
         self.antialias_opened_cif_button,
     ):
         _apply_size_hint_geometry(widget, width=True, height=True)
@@ -2066,5 +2095,15 @@ def build_editor_toolbar(self) -> QWidget:
     self.polygon_editor.set_brush_thickness(float(self.brush_size_spin.value()))
     self._sync_editor_via_size()
     self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
+    self.polygon_editor.set_antialias_grade(int(self.antialias_grade_spin.value()))
+    self.tool_settings_strip.setMinimumWidth(
+        max(
+            self._polygon_toolbar_block.sizeHint().width(),
+            self._brush_toolbar_block.sizeHint().width(),
+            self._via_toolbar_block.sizeHint().width(),
+            self._delete_vertex_toolbar_block.sizeHint().width(),
+            self._antialias_toolbar_block.sizeHint().width(),
+        )
+    )
     self._on_editor_tool_changed(self.polygon_editor.current_tool)
     return toolbar

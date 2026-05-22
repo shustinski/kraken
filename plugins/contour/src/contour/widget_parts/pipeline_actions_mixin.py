@@ -156,7 +156,7 @@ class WidgetPipelineActionsMixin:
         path, _ = QFileDialog.getSaveFileName(
             self,
             self._tr("save_pipeline_dialog_title"),
-            "",
+            self._dialog_start_directory_from_line_edit(self.output_dir_edit),
             self._tr("json_file_filter"),
         )
         if not path:
@@ -168,7 +168,7 @@ class WidgetPipelineActionsMixin:
         path, _ = QFileDialog.getOpenFileName(
             self,
             self._tr("load_pipeline_dialog_title"),
-            "",
+            self._dialog_start_directory_from_line_edit(self.input_dir_edit),
             self._tr("json_file_filter"),
         )
         if not path:
@@ -177,27 +177,42 @@ class WidgetPipelineActionsMixin:
         self.set_pipeline(payload)
         self._append_log(self._tr("pipeline_loaded_log", path=path))
 
-    def _on_image_item_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
-        if previous is not None and not self._try_leave_current_frame():
-            self.image_list.blockSignals(True)
-            try:
-                self.image_list.setCurrentItem(previous)
-            finally:
-                self.image_list.blockSignals(False)
-            self._sync_frame_navigation_controls()
+    def _on_image_list_current_changed(self, current: QModelIndex, previous: QModelIndex) -> None:
+        image_path = self._image_list_path_from_proxy_index(current)
+        selection_start = time.perf_counter()
+        session = None
+        if image_path:
+            session = self._start_frame_switch_profile(str(image_path))
+            if session is not None:
+                self._append_log(
+                    f"[contour frame switch profiling] click image={Path(str(image_path)).name} "
+                    "(measures selection until UI is interactive)"
+                )
+        if previous.isValid() and not self._try_leave_current_frame():
+            if session is not None:
+                session.note_timing("selection_try_leave_cancelled", (time.perf_counter() - selection_start) * 1000.0)
+                self._schedule_frame_switch_profile_until_interactive(
+                    str(image_path),
+                    cif_path=self._find_matching_cif_path(str(image_path)),
+                    polygon_count=0,
+                    failed=True,
+                )
+            selection = self.image_list.selectionModel()
+            if selection is not None:
+                with QSignalBlocker(selection):
+                    self.image_list.setCurrentIndex(previous)
             return
-        if current is None:
-            self._sync_frame_navigation_controls()
+        if session is not None:
+            session.note_timing("selection_try_leave", (time.perf_counter() - selection_start) * 1000.0)
+        if not image_path:
             self._update_thumbnail_grid_selection()
             return
-        image_path = current.data(Qt.ItemDataRole.UserRole)
         if image_path:
             try:
                 self.load_image(str(image_path))
             except Exception as exc:
                 self._append_log(self._tr("failed_to_load_image_log", image_path=image_path, error=exc))
                 QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
-        self._sync_frame_navigation_controls()
         self._update_thumbnail_grid_selection()
 
     def _prune_tagged_sets_for_images(self, retained_paths: list[str]) -> None:
@@ -208,8 +223,11 @@ class WidgetPipelineActionsMixin:
         self._cif_load_failure_stems.intersection_update(stems)
 
     def _matching_report(self):
+        image_paths = list(self._workspace.image_paths)
+        if len(image_paths) > LARGE_FRAME_COUNT_THRESHOLD:
+            return build_image_cif_matching_report(image_paths[:0], self._workspace.cif_paths_by_stem)
         return build_image_cif_matching_report(
-            list(self._workspace.image_paths),
+            image_paths,
             self._workspace.cif_paths_by_stem,
         )
 
@@ -276,5 +294,78 @@ class WidgetPipelineActionsMixin:
                 error=message,
             )
         )
+
+    def _on_cif_directory_index_started(self, _directory: str) -> None:
+        if hasattr(self, "files_scan_progress_bar"):
+            self.files_scan_progress_bar.setVisible(True)
+            self.files_scan_progress_bar.setRange(0, 0)
+            self.files_scan_progress_bar.setFormat(
+                "Индексация векторов..." if self._ui_language == "ru" else "Indexing vectors..."
+            )
+
+    def _on_cif_directory_index_idle(self) -> None:
+        if hasattr(self, "files_scan_progress_bar"):
+            self.files_scan_progress_bar.setVisible(False)
+            self.files_scan_progress_bar.setRange(0, 100)
+            self.files_scan_progress_bar.setValue(0)
+
+    def _begin_async_cif_directory_index(self, directory: str) -> None:
+        self._vector_indexer.start(directory)
+
+    def _start_vector_index_or_rebuild_frame_matrix_after_images(self) -> None:
+        if bool(getattr(self, "_image_list_rebuild_in_progress", False)):
+            return
+        pending_directory = getattr(self, "_pending_cif_directory_path_after_images", None)
+        if pending_directory:
+            self._pending_cif_directory_path_after_images = None
+            self._begin_async_cif_directory_index(str(Path(pending_directory)))
+            return
+        directory = self.cif_dir_edit.text().strip() if hasattr(self, "cif_dir_edit") else ""
+        normalized_directory = str(Path(directory)) if directory else ""
+        if normalized_directory and getattr(self, "_indexed_cif_directory", None) != normalized_directory:
+            self._mark_thumbnail_grid_rebuild_pending()
+            self._begin_async_cif_directory_index(normalized_directory)
+            return
+        self._schedule_thumbnail_grid_rebuild(force=True)
+
+    def _on_cif_directory_index_finished(self, directory_state) -> None:
+        if bool(getattr(self, "_image_list_rebuild_in_progress", False)):
+            self._pending_cif_directory_state = directory_state
+            return
+        self._apply_cif_directory_state(directory_state)
+
+    def _apply_pending_cif_directory_state_after_image_rebuild(self) -> bool:
+        directory_state = getattr(self, "_pending_cif_directory_state", None)
+        if directory_state is None:
+            return False
+        self._pending_cif_directory_state = None
+        self._apply_cif_directory_state(directory_state)
+        return True
+
+    def _apply_cif_directory_state(self, directory_state) -> None:
+        self.cif_dir_edit.setText(directory_state.directory)
+        self._save_persisted_paths()
+        self._workspace.set_cif_index(directory_state.indexed_paths)
+        self._indexed_cif_directory = directory_state.directory
+        if directory_state.available:
+            self._append_log(self._tr("cif_indexed_log", count=len(directory_state.indexed_paths)))
+        else:
+            self._append_log(self._tr("cif_directory_unavailable_log"))
+        self._defer_vector_load_until_cif_index = False
+        self._rebuild_vector_list()
+        self._mark_thumbnail_grid_rebuild_pending()
+        self._sync_after_cif_index_changed()
+
+    def _on_cif_directory_index_failed(self, message: str) -> None:
+        self._indexed_cif_directory = None
+        self._append_log(
+            self._tr(
+                "cif_index_failed_log",
+                "Не удалось индексировать векторы: {error}" if self._ui_language == "ru" else "Failed to index vectors: {error}",
+                error=message,
+            )
+        )
+        if not bool(getattr(self, "_image_list_rebuild_in_progress", False)):
+            self._rebuild_thumbnail_grid()
 
 

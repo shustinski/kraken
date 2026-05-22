@@ -12,10 +12,12 @@ class EditorTool(StrEnum):
     RULER = "ruler"
     ADD_POLYGON = "add_polygon"
     BRUSH = "brush"
+    TRACE_PEN = "trace_pen"
     ADD_VIA = "add_via"
     ADD_VERTEX = "add_vertex"
     DELETE_VERTEX = "delete_vertex"
     MOVE_VERTEX = "move_vertex"
+    ANTIALIAS = "antialias"
     DELETE_POLYGON = "delete_polygon"
 
 

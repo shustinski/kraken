@@ -62,19 +62,37 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.browse_input_button.setToolTip("Загрузить папку базового слоя")
     self.browse_input_button.setStatusTip(self.browse_input_button.toolTip())
 
-    self.control_tabs.setTabText(0, self._tr("tab_paths"))
-    self.control_tabs.setTabText(1, self._tr("tab_pipeline"))
-    self.control_tabs.setTabText(2, self._tr("tab_extraction"))
-    self.control_tabs.setTabText(3, self._tr("tab_display"))
+    for tab, key in (
+        (getattr(self, "paths_tab", None), "tab_paths"),
+        (getattr(self, "pipeline_tab", None), "tab_pipeline"),
+        (getattr(self, "extraction_tab", None), "tab_extraction"),
+        (getattr(self, "display_tab", None), "tab_display"),
+    ):
+        index = self.control_tabs.indexOf(tab) if tab is not None else -1
+        if index >= 0:
+            self.control_tabs.setTabText(index, self._tr(key))
     if hasattr(self, "right_tabs"):
-        self.right_tabs.setTabText(0, self._tr("tab_files"))
+        if self.right_tabs.count() > 0:
+            self.right_tabs.setTabText(0, self._tr("tab_files"))
         if self.right_tabs.count() > 1:
             self.right_tabs.setTabText(1, "Питомец" if self._ui_language == "ru" else "Pet")
 
-    if hasattr(self, "files_list_label"):
-        self.files_list_label.setText(self._tr("images_label"))
     if hasattr(self, "thumbnail_grid_label"):
         self.thumbnail_grid_label.setText("Матрица кадров" if self._ui_language == "ru" else "Frame thumbnails")
+    if hasattr(self, "asset_view_tabs"):
+        self.asset_view_tabs.setTabText(0, self._tr("asset_tab_all", "Все" if self._ui_language == "ru" else "All"))
+        self.asset_view_tabs.setTabText(
+            1,
+            self._tr("asset_tab_image_vector", "Изображение+вектор" if self._ui_language == "ru" else "Image+Vector"),
+        )
+        self.asset_view_tabs.setTabText(
+            2,
+            self._tr("asset_tab_image_only", "Только изображения" if self._ui_language == "ru" else "Image only"),
+        )
+        self.asset_view_tabs.setTabText(
+            3,
+            self._tr("asset_tab_vector_only", "Только векторы" if self._ui_language == "ru" else "Vector only"),
+        )
     if hasattr(self, "sidebar_list_mode_combo"):
         with QSignalBlocker(self.sidebar_list_mode_combo):
             self.sidebar_list_mode_combo.setItemText(0, self._tr("images_label"))
@@ -143,7 +161,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.save_current_button.setText(self._tr("save_current_button"))
     self.export_dataset_button.setText(self._tr("export_dataset_button"))
     self.dataset_mode_checkbox.setText(self._tr("dataset_mode_checkbox"))
-    self.max_workers_label.setText(self._tr("max_workers_label"))
     for widget, tooltip_key in (
         (self.image_list, "image_list"),
         (self.vector_list, "vector_list_sidebar"),
@@ -153,8 +170,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.save_current_button, "save_current"),
         (self.export_dataset_button, "export_dataset"),
         (self.dataset_mode_checkbox, "dataset_mode"),
-        (self.max_workers_label, "max_workers"),
-        (self.max_workers_spin, "max_workers"),
     ):
         self._set_common_tooltip(widget, tooltip_key)
 
@@ -511,6 +526,20 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             "Случайные цвета объектов" if self._ui_language == "ru" else "Random object colors",
         )
     )
+    if hasattr(self, "show_frame_matrix_checkbox"):
+        self.show_frame_matrix_checkbox.setText(
+            self._tr(
+                "show_frame_matrix_checkbox",
+                "Show frame matrix",
+            )
+        )
+    if hasattr(self, "show_frame_matrix_thumbnails_checkbox"):
+        self.show_frame_matrix_thumbnails_checkbox.setText(
+            self._tr(
+                "show_frame_matrix_thumbnails_checkbox",
+                "Load frame matrix thumbnails",
+            )
+        )
     self.show_neighbor_frames_checkbox.setText(
         self._tr(
             "show_neighbor_frames_checkbox",
@@ -523,7 +552,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         )
     if self.neighbor_max_grid_label_widget is not None:
         self.neighbor_max_grid_label_widget.setText(
-            self._tr("neighbor_max_grid_label", "Макс. сетка" if self._ui_language == "ru" else "Max grid")
+            self._tr("neighbor_max_grid_label", "Макс. сетка" if self._ui_language == "ru" else "Grid size")
         )
     if self.neighbor_opacity_label_widget is not None:
         self.neighbor_opacity_label_widget.setText(
@@ -588,7 +617,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             self.neighbor_max_grid_spin,
             "Максимальный размер фоновой матрицы: 3, 5 или 7 кадров по стороне. При уменьшении масштаба сетка раскрывается до этого значения."
             if self._ui_language == "ru"
-            else "Maximum background matrix size: 3, 5, or 7 frames per side. Zooming out expands the grid up to this value.",
+            else "Centered neighbor grid size: 3 shows one ring around the current frame, 5 shows two rings, 7 shows three rings.",
         ),
         (
             self.neighbor_opacity_spin,
@@ -618,10 +647,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         widget.setToolTip(tooltip)
         widget.setStatusTip(tooltip)
 
-    if hasattr(self, "frame_nav_prev_button"):
-        self._set_common_tooltip(self.frame_nav_prev_button, "frame_nav_previous")
-        self._set_common_tooltip(self.frame_nav_next_button, "frame_nav_next")
-        self._set_common_tooltip(self.frame_nav_spin, "frame_nav_jump")
     if hasattr(self, "autosave_on_frame_transition_checkbox"):
         self.autosave_on_frame_transition_checkbox.setText(
             self._tr(
@@ -672,3 +697,4 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             self.operation_tree.setCurrentItem(target_item)
     self._update_pipeline_help_preview(self._selected_available_operation_name())
     self._refresh_help_menu()
+

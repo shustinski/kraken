@@ -6,7 +6,7 @@ import kraken_hub.app as hub_app
 from kraken_core.ipc import ActionRegistry, ActionRequest
 from kraken_core.plugins import PluginMetadata, load_plugin_catalog
 from kraken_core.qt import resolve_icon_path
-from kraken_core.styles import plugin_icon_path, shared_icon_path
+from kraken_core.styles import load_shared_stylesheet, plugin_icon_path, shared_icon_path, shared_styles_root
 from kraken_core.updater import compare_versions, parse_update_payload, select_platform_release
 
 
@@ -69,6 +69,17 @@ def test_plugin_icons_live_in_plugin_resources():
     assert not shared_icon_path("contour", suffix=".png").exists()
     assert not shared_icon_path("krona", suffix=".png").exists()
     assert resolve_icon_path("contour") == plugin_icon_path("contour", suffix=".ico")
+
+
+def test_shared_stylesheet_includes_tab_scroller_arrow_assets():
+    stylesheet = load_shared_stylesheet("dark_modern.qss")
+
+    expected_left = (shared_styles_root() / "icons" / "chevron_left_light.svg").resolve().as_posix()
+    expected_right = (shared_styles_root() / "icons" / "chevron_right_light.svg").resolve().as_posix()
+    assert f'url("{expected_left}")' in stylesheet
+    assert f'url("{expected_right}")' in stylesheet
+    assert "QTabBar QToolButton::left-arrow" in stylesheet
+    assert "QTabBar QToolButton::right-arrow" in stylesheet
 
 
 def test_hub_prefers_root_plugin_launcher(tmp_path, monkeypatch):

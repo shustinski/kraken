@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import Any
 
 Point = tuple[float, float]
@@ -51,8 +51,12 @@ class PolygonData:
     bbox: tuple[int, int, int, int] = (0, 0, 0, 0)
     #: Metal recovery / debug only; not written to CIF by default.
     reject_reason: str = ""
+    _points_normalized: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _points_normalized: bool) -> None:
+        if _points_normalized:
+            self.points = list(self.points)
+            return
         self.points = integer_points(self.points)
 
     def clone(self) -> PolygonData:
@@ -67,6 +71,7 @@ class PolygonData:
             perimeter=float(self.perimeter),
             bbox=(int(self.bbox[0]), int(self.bbox[1]), int(self.bbox[2]), int(self.bbox[3])),
             reject_reason=str(self.reject_reason),
+            _points_normalized=True,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -101,4 +106,5 @@ class PolygonData:
             perimeter=float(payload.get("perimeter", 0.0)),
             bbox=bbox,
             reject_reason=str(payload.get("reject_reason", "") or ""),
+            _points_normalized=True,
         )

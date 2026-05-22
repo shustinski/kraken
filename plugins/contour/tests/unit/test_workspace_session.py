@@ -44,7 +44,7 @@ class WorkspaceSessionTests(unittest.TestCase):
         self.assertFalse(second.prepared_image_required)
         self.assertEqual(second.state.preprocessed_image, "prepared:image.png")
 
-    def test_updating_cif_index_invalidates_cached_image_state(self) -> None:
+    def test_updating_cif_index_clears_overlays_but_keeps_source_pixels(self) -> None:
         session = WorkspaceSession()
         loader_calls: list[str] = []
 
@@ -58,23 +58,29 @@ class WorkspaceSessionTests(unittest.TestCase):
             load_cif_overlay=lambda _path: [],
         )
         session.set_cif_index({"sample": "sample.cif"})
-        session.clear_current_selection()
+        cached = session.resolve_cached_load("sample.png")
+        self.assertIsNotNone(cached)
+        assert cached is not None
+        self.assertTrue(cached.cache_hit or cached.reused_current_state)
+        self.assertEqual(cached.state.source_image, "source:sample.png")
+        self.assertEqual(cached.state.polygons, [])
+        self.assertEqual(loader_calls, ["sample.png"])
 
-        reloaded = session.load_image(
+        overlay = session.apply_frame_vectors(
             "sample.png",
-            load_source_image=load_source_image,
-            load_cif_overlay=lambda _path: [
+            polygons=[
                 PolygonData(
                     id=1,
                     points=[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)],
                 )
             ],
+            loaded_cif_path="sample.cif",
         )
-
-        self.assertFalse(reloaded.cache_hit)
-        self.assertEqual(loader_calls, ["sample.png", "sample.png"])
-        self.assertEqual(len(reloaded.state.polygons), 1)
-        self.assertEqual(reloaded.state.polygons[0].id, 1)
+        self.assertIsNotNone(overlay)
+        assert overlay is not None
+        self.assertEqual(len(overlay.state.polygons), 1)
+        self.assertEqual(overlay.state.polygons[0].id, 1)
+        self.assertEqual(loader_calls, ["sample.png"])
 
     def test_image_has_changes_compares_against_reference_polygons(self) -> None:
         session = WorkspaceSession()

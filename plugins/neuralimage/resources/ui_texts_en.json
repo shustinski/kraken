@@ -45,6 +45,7 @@
     "menu_open_help": "Open help",
     "menu_open_tic_tac_toe": "Tic-tac-toe: neural network",
     "menu_open_changelog": "Changelog",
+    "menu_update": "Update",
     "menu_check_updates": "Check for updates",
     "menu_update_channel": "Update channel",
     "update_channel_stable": "Stable",

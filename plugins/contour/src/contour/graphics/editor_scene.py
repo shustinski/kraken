@@ -6,6 +6,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
+    QImage,
     QPainterPath,
     QPen,
     QPixmap,
@@ -20,6 +21,8 @@ from PyQt6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QGraphicsView,
 )
+from shapely import make_valid, unary_union
+from shapely.geometry import box as shapely_box
 
 from ..adapters.qt.image_conversion import cv_to_qimage
 from ..application.polygon_antialiasing import antialias_polygons
@@ -47,8 +50,8 @@ from .brush_vector import (
     polygon_equivalent_preserved,
     polygon_footprint_geom,
     region_geometry,
-    shapely_to_polygon_data_list,
-    tool_geometry,
+        shapely_to_polygon_data_list,
+        tool_geometry,
 )
 from .geometry import (
     _bbox_from_points,
@@ -96,6 +99,10 @@ class PolygonEditorScene(QGraphicsScene):
         self._neighbor_frame_items: list[QGraphicsPixmapItem] = []
         self._neighbor_frame_paths: dict[QGraphicsPixmapItem, str] = {}
         self._neighbor_grid_bounds: QRectF | None = None
+        self._pending_neighbor_frames: list[tuple[int, int, object, str]] | None = None
+        self._pending_neighbor_opacity: float = 0.0
+        self._pending_neighbor_overlap_pixels: int = 0
+        self._pending_neighbor_show_main_frame: bool = True
         self._debug_candidate_items: list[QGraphicsPathItem | QGraphicsSimpleTextItem] = []
         self._metal_overlay_items: list[QGraphicsPathItem] = []
         self._extra_layer_items: list[QGraphicsPixmapItem] = []
@@ -107,6 +114,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._random_object_colors_enabled = False
         self._object_colors: dict[int, str] = {}
         self._hover_conductor_polygon_id: int | None = None
+        self._vertex_preview_polygon_id: int | None = None
         self._delete_area_highlight_ids: set[int] = set()
         self._vector_geometry_settings = VectorGeometrySettings()
 
@@ -202,20 +210,29 @@ class PolygonEditorScene(QGraphicsScene):
 
     def set_image(self, image) -> None:
         if image is None:
+            self.set_image_pixmap(QPixmap())
+            return
+        pixmap = QPixmap.fromImage(cv_to_qimage(image))
+        self.set_image_pixmap(pixmap)
+
+    def set_image_pixmap(self, pixmap: QPixmap) -> None:
+        if pixmap is None or pixmap.isNull():
             self._image_item.setPixmap(QPixmap())
             self._image_rect = QRectF(0, 0, 1, 1)
             self._main_frame_item.setPath(QPainterPath())
             self._main_frame_item.hide()
+            self._pending_neighbor_frames = None
             self.clear_neighbor_frames()
             self.set_debug_candidates([])
             self.set_metal_overlays({}, {})
             self._update_scene_rect()
             return
-        pixmap = QPixmap.fromImage(cv_to_qimage(image))
         self._image_item.setPixmap(pixmap)
         self._image_rect = QRectF(pixmap.rect())
         self._update_main_frame()
         self._update_scene_rect()
+        if self._pending_neighbor_frames:
+            self._render_pending_neighbor_frames()
 
     def main_image_rect(self) -> QRectF:
         return QRectF(self._image_rect)
@@ -234,6 +251,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._neighbor_grid_bounds = None
         self._main_frame_item.hide()
         self._update_scene_rect()
+        self.update(self.sceneRect())
 
     def set_neighbor_frames(
         self,
@@ -242,10 +260,22 @@ class PolygonEditorScene(QGraphicsScene):
         overlap_pixels: int = 0,
         show_main_frame: bool = True,
     ) -> None:
-        self.clear_neighbor_frames()
-        self._main_frame_item.setVisible(bool(show_main_frame))
-        if self._image_rect.width() <= 1.0 or self._image_rect.height() <= 1.0:
+        self._pending_neighbor_frames = list(frames)
+        self._pending_neighbor_opacity = float(opacity)
+        self._pending_neighbor_overlap_pixels = int(overlap_pixels)
+        self._pending_neighbor_show_main_frame = bool(show_main_frame)
+        self._render_pending_neighbor_frames()
+
+    def _render_pending_neighbor_frames(self) -> None:
+        frames = self._pending_neighbor_frames
+        if frames is None:
             return
+        self.clear_neighbor_frames()
+        self._main_frame_item.setVisible(bool(self._pending_neighbor_show_main_frame))
+        if not frames or self._image_rect.width() <= 1.0 or self._image_rect.height() <= 1.0:
+            return
+        opacity = self._pending_neighbor_opacity
+        overlap_pixels = self._pending_neighbor_overlap_pixels
         main_width = float(self._image_rect.width())
         main_height = float(self._image_rect.height())
         overlap = max(0.0, min(float(overlap_pixels), min(main_width, main_height) - 1.0))
@@ -255,7 +285,7 @@ class PolygonEditorScene(QGraphicsScene):
         for column_offset, row_offset, image, image_path in frames:
             if column_offset == 0 and row_offset == 0:
                 continue
-            pixmap = QPixmap.fromImage(cv_to_qimage(image))
+            pixmap = QPixmap.fromImage(image if isinstance(image, QImage) else cv_to_qimage(image))
             if pixmap.isNull():
                 continue
             item = QGraphicsPixmapItem(pixmap)
@@ -272,6 +302,7 @@ class PolygonEditorScene(QGraphicsScene):
             bounds = bounds.united(QRectF(item.pos().x(), item.pos().y(), main_width, main_height))
         self._neighbor_grid_bounds = bounds if self._neighbor_frame_items else None
         self._update_scene_rect()
+        self.update(self.sceneRect())
 
     def neighbor_frame_path_at(self, scene_pos: QPointF) -> str | None:
         for item in self.items(scene_pos):
@@ -376,6 +407,8 @@ class PolygonEditorScene(QGraphicsScene):
         rect = QRectF(self._image_rect)
         if self._neighbor_grid_bounds is not None:
             rect = rect.united(self._neighbor_grid_bounds)
+        for item in self._neighbor_frame_items:
+            rect = rect.united(item.sceneBoundingRect())
         self.setSceneRect(rect)
 
     def set_ui_language(self, language: str | None) -> None:
@@ -464,11 +497,12 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygon_items.clear()
         self._polygons.clear()
         self._hover_conductor_polygon_id = None
+        self._vertex_preview_polygon_id = None
         self._selected_polygon_id = None
         self._selected_polygon_ids.clear()
         self._next_polygon_id = 1
         for polygon in polygons:
-            self._add_polygon_internal(polygon.clone(), emit_signal=False, refresh=False)
+            self._add_polygon_internal(polygon, emit_signal=False, refresh=False)
         if polygons:
             self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
             new_ids = {polygon.id for polygon in polygons}
@@ -493,11 +527,12 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygon_items.clear()
         self._polygons.clear()
         self._hover_conductor_polygon_id = None
+        self._vertex_preview_polygon_id = None
         self._selected_polygon_id = None
         self._selected_polygon_ids.clear()
         self._next_polygon_id = 1
         for polygon in polygons:
-            self._add_polygon_internal(polygon.clone(), emit_signal=False, refresh=False)
+            self._add_polygon_internal(polygon, emit_signal=False, refresh=False)
         if polygons:
             self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
         self._refresh_all_items()
@@ -515,12 +550,29 @@ class PolygonEditorScene(QGraphicsScene):
     def clear_conductor_hover_highlight(self) -> None:
         self._set_hover_conductor_polygon_id(None)
 
+    def sync_vertex_preview(self, scene_pos: QPointF) -> None:
+        if not self._polygon_overlays_visible:
+            self._set_vertex_preview_polygon_id(None)
+            return
+        self._set_vertex_preview_polygon_id(self.polygon_at(scene_pos))
+
+    def clear_vertex_preview(self) -> None:
+        self._set_vertex_preview_polygon_id(None)
+
     def _set_hover_conductor_polygon_id(self, conductor_id: int | None) -> None:
         if conductor_id is not None and conductor_id not in self._polygons:
             conductor_id = None
         if conductor_id == self._hover_conductor_polygon_id:
             return
         self._hover_conductor_polygon_id = conductor_id
+        self._refresh_all_items()
+
+    def _set_vertex_preview_polygon_id(self, polygon_id: int | None) -> None:
+        if polygon_id is not None and polygon_id not in self._polygons:
+            polygon_id = None
+        if polygon_id == self._vertex_preview_polygon_id:
+            return
+        self._vertex_preview_polygon_id = polygon_id
         self._refresh_all_items()
 
     def selected_polygon_id(self) -> int | None:
@@ -684,6 +736,40 @@ class PolygonEditorScene(QGraphicsScene):
         self.select_polygons(sorted(target_ids))
         return True
 
+    def antialias_polygon(self, polygon_id: int | None, grade: int) -> bool:
+        if polygon_id is None or polygon_id not in self._polygons:
+            return False
+        before = self.get_polygons()
+        after, changed = antialias_polygons(before, grade, only_ids={polygon_id})
+        if not changed:
+            self.select_polygon(polygon_id)
+            return False
+        self.undo_stack.push(ReplacePolygonSetCommand(self, before, after, "Antialias polygon"))
+        self.select_polygon(polygon_id)
+        self._set_vertex_preview_polygon_id(polygon_id)
+        return True
+
+    def antialias_polygons_in_rect(self, rect: QRectF, grade: int) -> bool:
+        normalized = rect.normalized()
+        if normalized.width() <= 0.0 or normalized.height() <= 0.0:
+            return False
+        target_ids = {
+            polygon_id
+            for polygon_id, polygon in self._polygons.items()
+            if _polygon_data_rect(polygon).intersects(normalized)
+        }
+        if not target_ids:
+            return False
+        before = self.get_polygons()
+        after, changed = antialias_polygons(before, grade, only_ids=target_ids)
+        if not changed:
+            self.select_polygons(sorted(target_ids))
+            return False
+        self.undo_stack.push(ReplacePolygonSetCommand(self, before, after, "Antialias polygons"))
+        self.select_polygons(sorted(target_ids))
+        self._set_vertex_preview_polygon_id(None)
+        return True
+
     def add_cloned_polygons_at(
         self,
         polygons: list[PolygonData],
@@ -780,6 +866,11 @@ class PolygonEditorScene(QGraphicsScene):
         self._pending_points = densify_chain_with_new_vertex(self._pending_points, (nx, ny), max_segment_length=spacing)
         self._update_pending_path()
 
+    def replace_pending_points(self, points: list[tuple[float, float]]) -> None:
+        self._pending_points = integer_points(points)
+        self._pending_cursor = None
+        self._update_pending_path()
+
     def append_pending_point(self, scene_pos: QPointF) -> None:
         point = integer_point((scene_pos.x(), scene_pos.y()))
         if (
@@ -830,7 +921,12 @@ class PolygonEditorScene(QGraphicsScene):
             perimeter=perimeter,
             bbox=bbox,
         )
-        self._add_or_merge_polygon(polygon)
+        clipped_polygons = self._clip_authored_polygon_to_image(polygon)
+        if not clipped_polygons:
+            self.cancel_pending_polygon()
+            return False
+        for clipped_polygon in clipped_polygons:
+            self._add_or_merge_polygon(clipped_polygon)
         self.cancel_pending_polygon()
         return True
 
@@ -976,6 +1072,11 @@ class PolygonEditorScene(QGraphicsScene):
             perimeter=perimeter,
             bbox=bbox,
         )
+        clipped_polygons = self._clip_authored_polygon_to_image(polygon, allocate_ids=not erase)
+        if not clipped_polygons:
+            self.clear_preview_rect()
+            return False
+        polygon = clipped_polygons[0]
         if erase:
 
             erased_ok = bool(
@@ -994,6 +1095,46 @@ class PolygonEditorScene(QGraphicsScene):
 
         return True
 
+    def _clip_authored_polygon_to_image(
+        self,
+        polygon: PolygonData,
+        *,
+        allocate_ids: bool = True,
+    ) -> list[PolygonData]:
+        image_rect = QRectF(self._image_rect).normalized()
+        if image_rect.width() <= 1.0 or image_rect.height() <= 1.0:
+            out = [polygon.clone()]
+        else:
+            try:
+                polygon_geom = tool_geometry(polygon.points, None, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+                image_geom = shapely_box(
+                    float(image_rect.left()),
+                    float(image_rect.top()),
+                    float(image_rect.right()),
+                    float(image_rect.bottom()),
+                )
+                clipped_geom = unary_union(make_valid(polygon_geom.intersection(image_geom)))
+                out = shapely_to_polygon_data_list(clipped_geom)
+            except Exception:
+                out = [polygon.clone()]
+        if not out:
+            return []
+        source_id = polygon.id
+        id_map: dict[int, int] = {}
+        for clipped in out:
+            clipped.category = polygon.category
+            clipped.shape_hint = polygon.shape_hint
+            if allocate_ids:
+                new_id = self._next_polygon_id
+                self._next_polygon_id += 1
+            else:
+                new_id = clipped.id if clipped.id != source_id else polygon.id
+            id_map[clipped.id] = new_id
+            clipped.id = new_id
+        for clipped in out:
+            clipped.parent_id = None if clipped.parent_id is None else id_map.get(clipped.parent_id)
+        return out
+
     def add_brush_stroke(self, points: list[tuple[float, float]], thickness: float, erase: bool = False) -> bool:
         if len(points) < 1:
             self.cancel_pending_polygon()
@@ -1010,6 +1151,40 @@ class PolygonEditorScene(QGraphicsScene):
             self.cancel_pending_polygon()
             return False
         self.undo_stack.beginMacro("Add brush stroke")
+        try:
+            for polygon_id in overlapping_ids:
+                self.undo_stack.push(DeletePolygonCommand(self, self._polygons[polygon_id]))
+            for polygon in merged_polygons:
+                self.undo_stack.push(AddPolygonCommand(self, polygon))
+        finally:
+            self.undo_stack.endMacro()
+        self.select_polygon(merged_polygons[0].id)
+        self._maybe_push_vector_postprocess("Vector geometry cleanup")
+        self.cancel_pending_polygon()
+        return True
+
+    def add_trace_stroke(self, points: list[tuple[float, float]], width: float, erase: bool = False) -> bool:
+        if len(points) < 2:
+            self.cancel_pending_polygon()
+            return False
+        label = "Erase trace" if erase else "Add trace"
+        if erase:
+            changed = self._subtract_shape_from_scene(points=list(points), thickness=width, label=label)
+            self.cancel_pending_polygon()
+            return changed
+        merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=list(points), thickness=width)
+        if merged_polygons is None:
+            self.cancel_pending_polygon()
+            return False
+        if not merged_polygons:
+            self.cancel_pending_polygon()
+            return False
+        for polygon in merged_polygons:
+            if not str(getattr(polygon, "category", "") or ""):
+                polygon.category = "conductor"
+            if str(getattr(polygon, "shape_hint", "") or "") in {"", "polygon"}:
+                polygon.shape_hint = "trace_pen"
+        self.undo_stack.beginMacro(label)
         try:
             for polygon_id in overlapping_ids:
                 self.undo_stack.push(DeletePolygonCommand(self, self._polygons[polygon_id]))
@@ -1364,6 +1539,7 @@ class PolygonEditorScene(QGraphicsScene):
                 cutout_polygons=self._cutout_polygons_for(polygon_id),
                 custom_color=self._object_color_for(polygon_id),
                 conductor_hover_highlight=conductor_hover_highlight,
+                preview_vertices=polygon_id == self._vertex_preview_polygon_id,
             )
             poly = self._polygons[polygon_id]
             cat = str(getattr(poly, "category", "") or "")
@@ -1557,6 +1733,8 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygons.pop(polygon_id, None)
         if self._hover_conductor_polygon_id == polygon_id:
             self._hover_conductor_polygon_id = None
+        if self._vertex_preview_polygon_id == polygon_id:
+            self._vertex_preview_polygon_id = None
         if item is not None:
             self.removeItem(item)
         if self._selected_polygon_id == polygon_id:

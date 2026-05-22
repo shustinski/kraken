@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import cv2
+import numpy as np
+
 from ..domain import PolygonData, compute_polygon_metrics, integer_points
 
 MIN_ANTIALIASING_GRADE = 1
@@ -14,17 +17,26 @@ def normalize_antialiasing_grade(value: int | float | str | None) -> int:
     return max(MIN_ANTIALIASING_GRADE, min(MAX_ANTIALIASING_GRADE, grade))
 
 
-def _chaikin_closed_ring(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    if len(points) < 3:
+def _deduplicate_closed_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    deduped: list[tuple[float, float]] = []
+    for point in points:
+        normalized = (float(point[0]), float(point[1]))
+        if not deduped or deduped[-1] != normalized:
+            deduped.append(normalized)
+    if len(deduped) >= 2 and deduped[0] == deduped[-1]:
+        deduped.pop()
+    return deduped
+
+
+def _simplify_closed_ring(points: list[tuple[float, float]], epsilon: float) -> list[tuple[float, float]]:
+    points = _deduplicate_closed_points(points)
+    if len(points) < 3 or epsilon <= 0.0:
         return points
-    smoothed: list[tuple[float, float]] = []
-    for index, current in enumerate(points):
-        next_point = points[(index + 1) % len(points)]
-        current_x, current_y = float(current[0]), float(current[1])
-        next_x, next_y = float(next_point[0]), float(next_point[1])
-        smoothed.append((0.75 * current_x + 0.25 * next_x, 0.75 * current_y + 0.25 * next_y))
-        smoothed.append((0.25 * current_x + 0.75 * next_x, 0.25 * current_y + 0.75 * next_y))
-    return smoothed
+    contour = np.asarray(points, dtype=np.float32).reshape((-1, 1, 2))
+    simplified = cv2.approxPolyDP(contour, float(epsilon), True).reshape((-1, 2))
+    simplified_points = [(float(x_coord), float(y_coord)) for x_coord, y_coord in simplified]
+    simplified_points = _deduplicate_closed_points(simplified_points)
+    return simplified_points if len(simplified_points) >= 3 else points
 
 
 def _point_signature(points: list[tuple[float, float]]) -> tuple[tuple[float, float], ...]:
@@ -43,15 +55,12 @@ def _polygon_signature(polygon: PolygonData) -> tuple[object, ...]:
 
 
 def antialias_polygon(polygon: PolygonData, grade: int) -> PolygonData:
-    """Return a corner-smoothed clone using repeated Chaikin corner cutting."""
+    """Return a clone simplified with approxPolyDP-style epsilon smoothing."""
 
     if polygon.shape_hint == "box" or polygon.category == "via" or len(polygon.points) < 3:
         return polygon.clone()
     points = [(float(x_coord), float(y_coord)) for x_coord, y_coord in polygon.points]
-    if len(points) >= 2 and points[0] == points[-1]:
-        points = points[:-1]
-    for _ in range(normalize_antialiasing_grade(grade)):
-        points = _chaikin_closed_ring(points)
+    points = _simplify_closed_ring(points, float(normalize_antialiasing_grade(grade)))
     clone = polygon.clone()
     clone.points = integer_points(points)
     clone.area, clone.perimeter, clone.bbox = compute_polygon_metrics(clone.points)

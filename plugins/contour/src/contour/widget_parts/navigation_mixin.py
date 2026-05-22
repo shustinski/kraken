@@ -4,6 +4,27 @@ from ._imports import *  # noqa: F403
 
 
 class WidgetNavigationMixin:
+    def _dialog_start_directory_from_value(self, value: str | Path | None, fallback: str | Path | None = None) -> str:
+        candidates = [value, fallback, Path.home()]
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            text = str(candidate).strip().strip("\"'")
+            if not text:
+                continue
+            path = Path(text).expanduser()
+            if path.is_dir():
+                return str(path)
+            if path.is_file() and path.parent.is_dir():
+                return str(path.parent)
+            if path.parent.is_dir():
+                return str(path.parent)
+        return str(Path.home())
+
+    def _dialog_start_directory_from_line_edit(self, line_edit, fallback: str | Path | None = None) -> str:
+        text = line_edit.text() if hasattr(line_edit, "text") else ""
+        return self._dialog_start_directory_from_value(text, fallback)
+
     def _on_sidebar_list_mode_changed(self, index: int) -> None:
         if index < 0:
             return
@@ -29,7 +50,7 @@ class WidgetNavigationMixin:
     def _paint_vector_list_item(self, item: QListWidgetItem, stem: str) -> None:
         stem_lower = stem.lower()
         status = self._vector_status_enum_for_stem(stem_lower)
-        paint_vector_row_item(item, stem, status)
+        paint_vector_row_item(item, stem, status, theme=getattr(self, "_ui_theme", "dark"))
 
     def _vector_status_enum_for_stem(self, stem_lower: str):
         ipath = self._image_path_for_cif_stem(stem_lower)
@@ -53,16 +74,264 @@ class WidgetNavigationMixin:
         self.vector_list.blockSignals(True)
         self.vector_list.clear()
         mapping = sorted(self._workspace.cif_paths_by_stem.items(), key=lambda kv: kv[0].lower())
-        for stem, cif_path in mapping:
-            item = QListWidgetItem(Path(cif_path).stem)
-            item.setToolTip(cif_path)
-            item.setData(Qt.ItemDataRole.UserRole, cif_path)
-            self._paint_vector_list_item(item, stem)
+        if len(mapping) > LARGE_FRAME_COUNT_THRESHOLD:
+            count = len(mapping)
+            summary = (
+                f"Проиндексировано {count} векторов — используйте навигацию по кадрам."
+                if self._ui_language == "ru"
+                else f"{count} vectors indexed — use frame navigation."
+            )
+            item = QListWidgetItem(summary)
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.vector_list.addItem(item)
+        else:
+            for stem, cif_path in mapping:
+                item = QListWidgetItem(Path(cif_path).stem)
+                item.setToolTip(cif_path)
+                item.setData(Qt.ItemDataRole.UserRole, cif_path)
+                self._paint_vector_list_item(item, stem)
+                self.vector_list.addItem(item)
         self.vector_list.blockSignals(False)
+        if len(self._workspace.image_paths) <= ASSET_FILTER_LISTS_MAX_FRAMES:
+            self._rebuild_asset_filter_lists()
+            self._apply_asset_view_filter()
+
+    def _vector_index_active(self) -> bool:
+        return bool(getattr(self._workspace, "_cif_paths_by_stem", {}))
+
+    def _image_path_has_matching_vector(self, image_path: str) -> bool:
+        return bool(self._workspace.resolve_cif_path(image_path))
+
+    def _make_asset_image_item(self, image_path: str, *, show_text: bool = True) -> QListWidgetItem:
+        item = QListWidgetItem(Path(image_path).stem)
+        item.setToolTip(f"Путь к файлу: {image_path}" if self._ui_language == "ru" else f"File path: {image_path}")
+        item.setData(Qt.ItemDataRole.UserRole, image_path)
+        self._paint_image_row_item(item, image_path, show_text=show_text)
+        return item
+
+    def _make_asset_vector_item(self, stem: str, vector_path: str) -> QListWidgetItem:
+        item = QListWidgetItem(Path(vector_path).stem)
+        item.setToolTip(vector_path)
+        item.setData(Qt.ItemDataRole.UserRole, vector_path)
+        self._paint_vector_list_item(item, stem)
+        return item
+
+    def _update_asset_items_for_image_path(self, image_path: str) -> None:
+        if not hasattr(self, "image_vector_list"):
+            return
+        normalized = str(Path(image_path))
+        match_only = bool(getattr(self, "_asset_filter_match_only", False))
+        has_vector = self._image_path_has_matching_vector(normalized)
+        for list_widget in (self.image_vector_list, self.image_only_list):
+            for index in range(list_widget.count()):
+                item = list_widget.item(index)
+                if item is None:
+                    continue
+                if str(item.data(Qt.ItemDataRole.UserRole) or "") != normalized:
+                    continue
+                self._paint_image_row_item(item, normalized)
+                item.setHidden(bool(match_only and not has_vector))
+                return
+
+    def _rebuild_asset_filter_lists(self) -> None:
+        if not hasattr(self, "image_vector_list"):
+            return
+        if len(self._workspace.image_paths) > ASSET_FILTER_LISTS_MAX_FRAMES:
+            return
+        self._asset_list_build_generation += 1
+        generation = self._asset_list_build_generation
+        image_paths = [str(Path(path)) for path in self._workspace.image_paths]
+        vector_items = sorted(self._workspace.cif_paths_by_stem.items(), key=lambda kv: kv[0].lower())
+        sets = build_frame_asset_sets(image_paths, self._workspace.cif_paths_by_stem)
+        list_widgets = (self.image_vector_list, self.image_only_list, self.vector_only_list)
+        for list_widget in list_widgets:
+            list_widget.clear()
+
+        chunk_size = max(1, int(getattr(self, "_image_list_build_chunk_size", 250)))
+
+        def _set_updates_enabled(enabled: bool) -> None:
+            for widget in list_widgets:
+                widget.setUpdatesEnabled(enabled)
+
+        def _add_image_chunk(start: int) -> None:
+            if generation != self._asset_list_build_generation:
+                return
+            end = min(len(image_paths), start + chunk_size)
+            for list_widget in list_widgets:
+                list_widget.blockSignals(True)
+            _set_updates_enabled(False)
+            try:
+                for image_path in image_paths[start:end]:
+                    stem = Path(image_path).stem.lower()
+                    if stem in sets.image_and_vector_stems:
+                        self.image_vector_list.addItem(self._make_asset_image_item(image_path))
+                    elif stem in sets.image_only_stems:
+                        self.image_only_list.addItem(self._make_asset_image_item(image_path))
+            finally:
+                _set_updates_enabled(True)
+                for list_widget in list_widgets:
+                    list_widget.blockSignals(False)
+            if end < len(image_paths):
+                QTimer.singleShot(0, lambda next_start=end: _add_image_chunk(next_start))
+                return
+            _add_vector_chunk(0)
+
+        def _add_vector_chunk(start: int) -> None:
+            if generation != self._asset_list_build_generation:
+                return
+            end = min(len(vector_items), start + chunk_size)
+            self.vector_only_list.blockSignals(True)
+            self.vector_only_list.setUpdatesEnabled(False)
+            try:
+                for stem, vector_path in vector_items[start:end]:
+                    if stem.lower() in sets.vector_only_stems:
+                        self.vector_only_list.addItem(self._make_asset_vector_item(stem, vector_path))
+            finally:
+                self.vector_only_list.setUpdatesEnabled(True)
+                self.vector_only_list.blockSignals(False)
+            if end < len(vector_items):
+                QTimer.singleShot(0, lambda next_start=end: _add_vector_chunk(next_start))
+
+        QTimer.singleShot(0, lambda: _add_image_chunk(0))
+
+    def _apply_asset_view_filter(self) -> None:
+        match_only = bool(getattr(self, "_asset_filter_match_only", False))
+        if hasattr(self, "image_list"):
+            self._image_list_proxy.invalidateFilter()
+            if not self._uses_large_frame_list():
+                self._image_list_model.invalidate_all_rows()
+        if self._frame_matrix_enabled() and hasattr(self, "thumbnail_grid"):
+            for index in range(self.thumbnail_grid.count()):
+                item = self.thumbnail_grid.item(index)
+                if item is None:
+                    continue
+                path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+                item.setHidden(bool(match_only and path and not self._image_path_has_matching_vector(path)))
+            if not bool(getattr(self, "_thumbnail_rebuild_in_progress", False)):
+                self._configure_thumbnail_grid_geometry()
+                self._update_thumbnail_grid_selection()
+
+    def _on_asset_image_item_clicked(self, item: QListWidgetItem) -> None:
+        if item is None:
+            return
+        path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not path:
+            return
+        self._set_image_list_current_path(path, fallback_to_first=False)
+
+    def _on_asset_vector_item_clicked(self, item: QListWidgetItem) -> None:
+        self._on_vector_item_navigate_request(item)
+
+    def _take_thumbnail_matrix_panel(self) -> QWidget:
+        panel = self.thumbnail_matrix_panel
+        if hasattr(self, "files_tab") and self.files_tab.layout() is not None:
+            self.files_tab.layout().removeWidget(panel)
+        return panel
+
+    def _take_files_panel(self) -> QWidget:
+        panel = self.files_tab
+        if hasattr(self, "right_tabs"):
+            index = self.right_tabs.indexOf(panel)
+            if index >= 0:
+                self.right_tabs.removeTab(index)
+            if self.right_tabs.count() == 0:
+                self.right_tabs.hide()
+                if hasattr(self, "main_splitter"):
+                    self.right_tabs.setParent(None)
+        return panel
+
+    def _take_paths_panel(self) -> QWidget:
+        return self._take_control_tab(self.paths_tab)
+
+    def _take_pipeline_panel(self) -> QWidget:
+        return self._take_control_tab(self.pipeline_tab)
+
+    def _take_display_panel(self) -> QWidget:
+        return self._take_control_tab(self.display_tab)
+
+    def _take_recognition_panel(self) -> QWidget:
+        return self._take_control_tab(self.extraction_tab)
+
+    def _take_control_tab(self, panel: QWidget) -> QWidget:
+        if hasattr(self, "control_tabs"):
+            index = self.control_tabs.indexOf(panel)
+            if index >= 0:
+                self.control_tabs.removeTab(index)
+            if self.control_tabs.count() == 0:
+                self.control_tabs.hide()
+                if hasattr(self, "left_controls_scroll"):
+                    self.left_controls_scroll.hide()
+                    if hasattr(self, "main_splitter"):
+                        self.left_controls_scroll.setParent(None)
+        return panel
+
+    def _take_run_panel(self) -> QWidget:
+        panel = self.run_group
+        if hasattr(self, "files_tab") and self.files_tab.layout() is not None:
+            self.files_tab.layout().removeWidget(panel)
+        return panel
+
+    def _frame_matrix_enabled(self) -> bool:
+        if not hasattr(self, "show_frame_matrix_checkbox"):
+            return True
+        return bool(self.show_frame_matrix_checkbox.isChecked())
+
+    def _frame_matrix_thumbnails_enabled(self) -> bool:
+        if not self._frame_matrix_enabled():
+            return False
+        if not hasattr(self, "show_frame_matrix_thumbnails_checkbox"):
+            return True
+        return bool(self.show_frame_matrix_thumbnails_checkbox.isChecked())
+
+    def _sync_frame_matrix_controls(self) -> None:
+        enabled = self._frame_matrix_enabled()
+        if hasattr(self, "show_frame_matrix_thumbnails_checkbox"):
+            self.show_frame_matrix_thumbnails_checkbox.setEnabled(enabled)
+        if hasattr(self, "thumbnail_matrix_panel"):
+            self.thumbnail_matrix_panel.setVisible(enabled)
+
+    def _disable_frame_matrix_runtime(self) -> None:
+        self._pending_thumbnail_rebuild_after_vectors = False
+        self._thumbnail_flush_retry_count = 0
+        self._thumbnail_rebuild_in_progress = False
+        self._thumbnail_path_to_row.clear()
+        self._thumbnail_selected_path = None
+        self._thumbnail_loaded_generation.clear()
+        getattr(self, "_thumbnail_icon_cache", {}).clear()
+        self._cancel_thumbnail_loading()
+        if hasattr(self, "thumbnail_grid"):
+            self.thumbnail_grid.clear()
+        if hasattr(self, "thumbnail_matrix_panel"):
+            self.thumbnail_matrix_panel.hide()
+
+    def _on_frame_matrix_display_settings_changed(self, *_args) -> None:
+        self._sync_frame_matrix_controls()
+        if self._frame_matrix_enabled():
+            self._schedule_thumbnail_grid_rebuild(force=True)
+        else:
+            self._disable_frame_matrix_runtime()
+        self._save_persisted_display_settings()
+
+    def _on_frame_matrix_thumbnail_settings_changed(self, *_args) -> None:
+        if not self._frame_matrix_thumbnails_enabled():
+            self._cancel_thumbnail_loading()
+        self._thumbnail_loaded_generation.clear()
+        getattr(self, "_thumbnail_icon_cache", {}).clear()
+        if hasattr(self, "thumbnail_grid"):
+                placeholder = self._thumbnail_placeholder()
+                for index in range(self.thumbnail_grid.count()):
+                    item = self.thumbnail_grid.item(index)
+                    if item is not None:
+                        item.setIcon(placeholder)
+        else:
+            self._schedule_visible_thumbnail_loads()
+        self._save_persisted_display_settings()
+
+    def _on_thumbnail_viewport_changed(self, *_args) -> None:
+        self._schedule_visible_thumbnail_loads()
 
     def _configure_thumbnail_grid_geometry(self) -> None:
-        if not hasattr(self, "thumbnail_grid"):
+        if not self._frame_matrix_enabled() or not hasattr(self, "thumbnail_grid"):
             return
         columns = self._thumbnail_columns()
         icon_size = self._thumbnail_icon_size if hasattr(self, "_thumbnail_icon_size") else QSize(64, 48)
@@ -72,12 +341,25 @@ class WidgetNavigationMixin:
         self.thumbnail_grid.setGridSize(QSize(cell_w, cell_h))
         self.thumbnail_grid.setSpacing(0)
         frame = 2 * int(self.thumbnail_grid.frameWidth())
-        item_count = max(1, self.thumbnail_grid.count())
+        item_count = max(1, self._thumbnail_layout_slot_count())
         rows = max(1, int(np.ceil(item_count / float(columns))))
-        content_width = max(cell_w + frame, columns * cell_w + frame)
-        content_height = max(cell_h + frame, rows * cell_h + frame)
-        self.thumbnail_grid.setFixedWidth(content_width)
-        self.thumbnail_grid.setFixedHeight(content_height)
+        # QListView icon wrap treats width==columns*cell_w as one column too few.
+        grid_width = columns * cell_w + 1 + frame
+        grid_height = max(cell_h + frame, rows * cell_h + frame)
+        self.thumbnail_grid.setFixedSize(grid_width, grid_height)
+        self.thumbnail_grid.doItemsLayout()
+
+    def _thumbnail_layout_slot_count(self) -> int:
+        if not hasattr(self, "thumbnail_grid"):
+            return 0
+        if not bool(getattr(self, "_asset_filter_match_only", False)):
+            return self.thumbnail_grid.count()
+        highest_visible_index = -1
+        for index in range(self.thumbnail_grid.count()):
+            item = self.thumbnail_grid.item(index)
+            if item is not None and not item.isHidden():
+                highest_visible_index = index
+        return highest_visible_index + 1
 
     def _thumbnail_columns(self) -> int:
         if not hasattr(self, "neighbor_columns_spin"):
@@ -96,36 +378,304 @@ class WidgetNavigationMixin:
         self._thumbnail_placeholder_icon = QIcon(pixmap)
         return self._thumbnail_placeholder_icon
 
+    def _thumbnail_paths_for_matrix(self) -> list[str]:
+        if not self._frame_matrix_enabled():
+            self._thumbnail_sparse_window_start = 0
+            return []
+        all_paths = [str(Path(path)) for path in self._workspace.image_paths]
+        self._thumbnail_sparse_window_start = 0
+        return all_paths
+
     def _rebuild_thumbnail_grid(self) -> None:
+        if not self._frame_matrix_enabled():
+            self._disable_frame_matrix_runtime()
+            return
         if not hasattr(self, "thumbnail_grid"):
             return
-        self._thumbnail_generation += 1
+        self._cancel_thumbnail_loading()
         generation = self._thumbnail_generation
-        self._thumbnail_loaded_paths.clear()
+        self._thumbnail_loaded_generation.clear()
+        self._thumbnail_rebuild_in_progress = True
+        getattr(self, "_thumbnail_icon_cache", {}).clear()
+        self._thumbnail_selected_path = None
+        try:
+            self._thumbnail_thread_pool.clear()
+        except AttributeError:
+            pass
+        self.thumbnail_grid.blockSignals(True)
+        self.thumbnail_grid.setUpdatesEnabled(False)
+        try:
+            self.thumbnail_grid.clear()
+        finally:
+            self.thumbnail_grid.setUpdatesEnabled(True)
+            self.thumbnail_grid.blockSignals(False)
+        paths = self._thumbnail_paths_for_matrix()
+        chunk_size = max(1, int(getattr(self, "_thumbnail_build_chunk_size", 50)))
+        default_interval = 25
+        if self._uses_large_frame_list():
+            default_interval = 8
+        chunk_interval_ms = max(1, int(getattr(self, "_thumbnail_build_interval_ms", default_interval)))
+        if len(paths) <= chunk_size:
+            self.thumbnail_grid.blockSignals(True)
+            self.thumbnail_grid.setUpdatesEnabled(False)
+            try:
+                for path in paths:
+                    self.thumbnail_grid.addItem(self._make_thumbnail_grid_item(path))
+            finally:
+                self.thumbnail_grid.setUpdatesEnabled(True)
+                self.thumbnail_grid.blockSignals(False)
+            self._finish_thumbnail_grid_build()
+            return
+
+        def _add_thumbnail_chunk(start: int) -> None:
+            if generation != self._thumbnail_generation or not hasattr(self, "thumbnail_grid"):
+                return
+            end = min(len(paths), start + chunk_size)
+            self.thumbnail_grid.blockSignals(True)
+            self.thumbnail_grid.setUpdatesEnabled(False)
+            try:
+                for path in paths[start:end]:
+                    self.thumbnail_grid.addItem(self._make_thumbnail_grid_item(path))
+            finally:
+                self.thumbnail_grid.setUpdatesEnabled(True)
+                self.thumbnail_grid.blockSignals(False)
+            if end < len(paths):
+                QTimer.singleShot(chunk_interval_ms, lambda next_start=end: _add_thumbnail_chunk(next_start))
+                return
+            self._finish_thumbnail_grid_build()
+
+        QTimer.singleShot(chunk_interval_ms, lambda: _add_thumbnail_chunk(0))
+
+    def _finish_thumbnail_grid_build(self) -> None:
+        self._thumbnail_rebuild_in_progress = False
+        self._configure_thumbnail_grid_geometry()
+        self._rebuild_thumbnail_path_index()
+        self._apply_asset_view_filter()
+        self._update_thumbnail_grid_selection()
+        self._schedule_visible_thumbnail_loads()
+
+    def _rebuild_thumbnail_path_index(self) -> None:
+        mapping: dict[str, int] = {}
+        if hasattr(self, "thumbnail_grid"):
+            for index in range(self.thumbnail_grid.count()):
+                item = self.thumbnail_grid.item(index)
+                if item is None:
+                    continue
+                path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+                if path:
+                    mapping[path] = index
+        self._thumbnail_path_to_row = mapping
+
+    def _schedule_thumbnail_sparse_recenter(self) -> None:
+        self._schedule_visible_thumbnail_loads()
+
+    def _ensure_thumbnail_sparse_window_covers_current(self) -> None:
+        self._schedule_thumbnail_sparse_recenter()
+
+    def _make_thumbnail_grid_item(self, path: str) -> QListWidgetItem:
+        item = QListWidgetItem(self._thumbnail_placeholder(), "")
+        item.setSizeHint(self._thumbnail_icon_size)
+        item.setToolTip(Path(str(path)).stem)
+        item.setData(Qt.ItemDataRole.UserRole, str(path))
+        if bool(getattr(self, "_asset_filter_match_only", False)) and not self._image_path_has_matching_vector(str(path)):
+            item.setHidden(True)
+        return item
+
+    def _thumbnail_loading_blocked(self) -> bool:
+        if not self._frame_matrix_enabled() or not self._frame_matrix_thumbnails_enabled():
+            return True
+        if bool(getattr(self, "_thumbnail_rebuild_in_progress", False)):
+            return True
+        if getattr(self, "_frame_load_running_path", None) is not None:
+            return True
+        if getattr(self, "_loading_image_path", None) is not None:
+            return True
+        return False
+
+    def _cancel_thumbnail_loading(self) -> None:
+        self._thumbnail_generation += 1
+        self._thumbnail_queued_paths.clear()
+        getattr(self, "_thumbnail_pending_apply", {}).clear()
+        self._thumbnail_radial_paths = []
+        self._thumbnail_radial_cursor = 0
+        self._thumbnail_radial_center_path = None
+        if hasattr(self, "_thumbnail_radial_pump_timer"):
+            self._thumbnail_radial_pump_timer.stop()
+        if hasattr(self, "_thumbnail_apply_timer"):
+            self._thumbnail_apply_timer.stop()
+        try:
+            self._thumbnail_thread_pool.clear()
+        except AttributeError:
+            pass
+
+    def _pause_thumbnail_radial_fill(self) -> None:
+        self._thumbnail_generation += 1
+        if hasattr(self, "_thumbnail_radial_pump_timer"):
+            self._thumbnail_radial_pump_timer.stop()
+        if hasattr(self, "_thumbnail_apply_timer"):
+            self._thumbnail_apply_timer.stop()
+        self._thumbnail_queued_paths.clear()
+        getattr(self, "_thumbnail_pending_apply", {}).clear()
+        try:
+            self._thumbnail_thread_pool.clear()
+        except AttributeError:
+            pass
+
+    def _thumbnail_grid_paths_in_radial_order(self, center_row: int) -> list[str]:
+        if not self._frame_matrix_enabled() or not hasattr(self, "thumbnail_grid"):
+            return []
+        columns = max(1, self._thumbnail_columns())
+        center_r = center_row // columns
+        center_c = center_row % columns
+        ordered: list[tuple[int, int, str]] = []
+        for index in range(self.thumbnail_grid.count()):
+            item = self.thumbnail_grid.item(index)
+            if item is None or item.isHidden():
+                continue
+            path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            if not path:
+                continue
+            row = index // columns
+            col = index % columns
+            ring = max(abs(row - center_r), abs(col - center_c))
+            ordered.append((ring, index, str(Path(path))))
+        ordered.sort(key=lambda entry: (entry[0], entry[1]))
+        return [path for _, _, path in ordered]
+
+    def _reseed_thumbnail_radial_fill(self) -> None:
+        if not self._frame_matrix_thumbnails_enabled():
+            return
+        if not hasattr(self, "thumbnail_grid") or self.thumbnail_grid.count() <= 0:
+            return
+        if self._thumbnail_loading_blocked():
+            return
+        current = self._workspace.current_image_path
+        if not current:
+            return
+        normalized_current = str(Path(current))
+        path_index = getattr(self, "_thumbnail_path_to_row", {})
+        center_row = path_index.get(normalized_current)
+        if center_row is None:
+            return
+        self._thumbnail_generation += 1
         self._thumbnail_queued_paths.clear()
         try:
             self._thumbnail_thread_pool.clear()
         except AttributeError:
             pass
-        self._configure_thumbnail_grid_geometry()
-        self.thumbnail_grid.blockSignals(True)
+        loaded_generation = getattr(self, "_thumbnail_loaded_generation", {})
+        current_generation = self._thumbnail_generation
+        self._thumbnail_radial_paths = [
+            path
+            for path in self._thumbnail_grid_paths_in_radial_order(center_row)
+            if loaded_generation.get(path) != current_generation
+        ]
+        self._thumbnail_radial_cursor = 0
+        self._thumbnail_radial_center_path = normalized_current
+        self._schedule_thumbnail_radial_pump()
+
+    def _resume_thumbnail_radial_fill(self) -> None:
+        if not self._frame_matrix_thumbnails_enabled():
+            return
+        if self._thumbnail_loading_blocked():
+            return
+        current = self._workspace.current_image_path
+        if not current:
+            return
+        normalized = str(Path(current))
+        if normalized != getattr(self, "_thumbnail_radial_center_path", None):
+            self._reseed_thumbnail_radial_fill()
+            return
+        paths = getattr(self, "_thumbnail_radial_paths", [])
+        cursor = int(getattr(self, "_thumbnail_radial_cursor", 0))
+        if cursor < len(paths):
+            self._schedule_thumbnail_radial_pump()
+            return
+        self._reseed_thumbnail_radial_fill()
+
+    def _schedule_thumbnail_radial_pump(self) -> None:
+        if not hasattr(self, "_thumbnail_radial_pump_timer"):
+            return
+        if self._thumbnail_loading_blocked():
+            return
+        if not getattr(self, "_thumbnail_radial_paths", []):
+            return
+        self._thumbnail_radial_pump_timer.stop()
+        self._thumbnail_radial_pump_timer.start(max(16, int(THUMBNAIL_RADIAL_PUMP_INTERVAL_MS)))
+
+    def _pump_thumbnail_radial_loads(self) -> None:
+        if self._thumbnail_loading_blocked():
+            return
+        paths: list[str] = getattr(self, "_thumbnail_radial_paths", [])
+        cursor = int(getattr(self, "_thumbnail_radial_cursor", 0))
+        if cursor >= len(paths):
+            return
+        generation = self._thumbnail_generation
+        per_pump = max(1, int(THUMBNAIL_RADIAL_LOADS_PER_PUMP))
+        queued = 0
+        while cursor < len(paths) and queued < per_pump:
+            path = paths[cursor]
+            cursor += 1
+            before = len(self._thumbnail_queued_paths)
+            self._queue_thumbnail_load(generation, path)
+            if len(self._thumbnail_queued_paths) > before:
+                queued += 1
+        self._thumbnail_radial_cursor = cursor
+        if cursor < len(paths):
+            self._schedule_thumbnail_radial_pump()
+
+    def _schedule_thumbnail_icon_apply(self) -> None:
+        if not hasattr(self, "_thumbnail_apply_timer"):
+            return
+        self._thumbnail_apply_timer.stop()
+        self._thumbnail_apply_timer.start(16)
+
+    def _flush_thumbnail_icon_batch(self) -> None:
+        if not self._frame_matrix_thumbnails_enabled() or not hasattr(self, "thumbnail_grid"):
+            getattr(self, "_thumbnail_pending_apply", {}).clear()
+            return
+        if bool(getattr(self, "_thumbnail_rebuild_in_progress", False)):
+            self._schedule_thumbnail_icon_apply()
+            return
+        pending: dict[str, object] = getattr(self, "_thumbnail_pending_apply", {})
+        if not pending:
+            return
+        per_tick = max(1, int(THUMBNAIL_ICONS_APPLY_PER_TICK))
+        batch_paths = list(pending.keys())[:per_tick]
+        placeholder = self._thumbnail_placeholder()
+        icon_cache = getattr(self, "_thumbnail_icon_cache", {})
+        self.thumbnail_grid.setUpdatesEnabled(False)
         try:
-            self.thumbnail_grid.clear()
-            for path in self._workspace.image_paths:
-                item = QListWidgetItem(self._thumbnail_placeholder(), "")
-                item.setSizeHint(self._thumbnail_icon_size)
-                item.setToolTip(Path(str(path)).stem)
-                item.setData(Qt.ItemDataRole.UserRole, str(path))
-                self._paint_image_row_item(item, str(path), show_text=False)
-                self.thumbnail_grid.addItem(item)
+            for path in batch_paths:
+                qimage = pending.pop(path, None)
+                row = getattr(self, "_thumbnail_path_to_row", {}).get(path)
+                if row is None:
+                    continue
+                item = self.thumbnail_grid.item(row)
+                if item is None:
+                    continue
+                icon = icon_cache.get(path)
+                if icon is None:
+                    if qimage is None or (hasattr(qimage, "isNull") and qimage.isNull()):
+                        icon = placeholder
+                    else:
+                        pixmap = QPixmap.fromImage(qimage)
+                        icon = QIcon(pixmap) if not pixmap.isNull() else placeholder
+                    icon_cache[path] = icon
+                item.setIcon(icon)
         finally:
-            self.thumbnail_grid.blockSignals(False)
-        self._configure_thumbnail_grid_geometry()
-        self._update_thumbnail_grid_selection()
+            self.thumbnail_grid.setUpdatesEnabled(True)
+        if pending:
+            self._schedule_thumbnail_icon_apply()
 
     def _queue_thumbnail_load(self, generation: int, path: str) -> None:
+        if self._thumbnail_loading_blocked():
+            return
         normalized = str(Path(path))
-        if normalized in self._thumbnail_loaded_paths or normalized in self._thumbnail_queued_paths:
+        if (
+            getattr(self, "_thumbnail_loaded_generation", {}).get(normalized) == generation
+            or normalized in self._thumbnail_queued_paths
+        ):
             return
         self._thumbnail_queued_paths.add(normalized)
         runnable = ThumbnailLoadRunnable(
@@ -137,106 +687,148 @@ class WidgetNavigationMixin:
         runnable.signals.result.connect(self._on_thumbnail_loaded)
         self._thumbnail_thread_pool.start(runnable)
 
-    def _queue_thumbnail_loads_near_current(self) -> None:
-        if not hasattr(self, "thumbnail_grid") or self.thumbnail_grid.count() <= 0:
+    def _visible_thumbnail_rows(self, *, buffer_rows: int = 2) -> tuple[int, int]:
+        if not hasattr(self, "thumbnail_grid_scroll_area"):
+            return (0, -1)
+        icon_size = self._thumbnail_icon_size if hasattr(self, "_thumbnail_icon_size") else QSize(64, 48)
+        cell_h = max(1, int(icon_size.height()))
+        vertical = self.thumbnail_grid_scroll_area.verticalScrollBar()
+        viewport_h = max(1, int(self.thumbnail_grid_scroll_area.viewport().height()))
+        first_row = max(0, (int(vertical.value()) // cell_h) - buffer_rows)
+        last_row = max(first_row, ((int(vertical.value()) + viewport_h) // cell_h) + buffer_rows)
+        return first_row, last_row
+
+    def _visible_thumbnail_indexes(self) -> list[int]:
+        if not self._frame_matrix_thumbnails_enabled() or not hasattr(self, "thumbnail_grid"):
+            return []
+        columns = max(1, self._thumbnail_columns())
+        first_row, last_row = self._visible_thumbnail_rows()
+        count = self.thumbnail_grid.count()
+        indexes: set[int] = set()
+        for row in range(first_row, last_row + 1):
+            start = row * columns
+            end = min(count, start + columns)
+            indexes.update(range(start, end))
+        current = self._workspace.current_image_path
+        if current:
+            center = getattr(self, "_thumbnail_path_to_row", {}).get(str(Path(current)))
+            if center is not None:
+                current_row = center // columns
+                for row in range(max(0, current_row - 2), current_row + 3):
+                    start = row * columns
+                    end = min(count, start + columns)
+                    indexes.update(range(start, end))
+        return sorted(index for index in indexes if 0 <= index < count)
+
+    def _schedule_visible_thumbnail_loads(self) -> None:
+        if self._thumbnail_loading_blocked() or not hasattr(self, "thumbnail_grid"):
             return
         generation = self._thumbnail_generation
-        current = self._workspace.current_image_path
-        if not current:
-            return
-        current_row = -1
-        for index in range(self.thumbnail_grid.count()):
+        queued_paths: list[str] = []
+        for index in self._visible_thumbnail_indexes():
             item = self.thumbnail_grid.item(index)
-            if item is not None and current and item.data(Qt.ItemDataRole.UserRole) == current:
-                current_row = index
-                break
-        if current_row < 0:
-            return
-        columns = self._thumbnail_columns()
-        icon_h = max(1, int(self._thumbnail_icon_size.height()))
-        viewport_h = icon_h
-        if hasattr(self, "thumbnail_grid_scroll_area"):
-            viewport_h = max(icon_h, int(self.thumbnail_grid_scroll_area.viewport().height()))
-        visible_rows = max(1, int(np.ceil(viewport_h / float(icon_h))))
-        radius = max(columns * 4, columns * (visible_rows + 2))
-        start = max(0, current_row - radius)
-        end = min(self.thumbnail_grid.count(), current_row + radius + 1)
-        priority_indexes = [current_row, *range(start, end)]
-        seen: set[int] = set()
-        for index in priority_indexes:
-            if index in seen or index < 0 or index >= self.thumbnail_grid.count():
-                continue
-            seen.add(index)
-            item = self.thumbnail_grid.item(index)
-            if item is None:
+            if item is None or item.isHidden():
                 continue
             path = str(item.data(Qt.ItemDataRole.UserRole) or "")
             if path:
-                self._queue_thumbnail_load(generation, path)
+                queued_paths.append(str(Path(path)))
+        keep = set(queued_paths)
+        current = self._workspace.current_image_path
+        if current:
+            keep.add(str(Path(current)))
+        icon_cache = getattr(self, "_thumbnail_icon_cache", {})
+        if len(icon_cache) > 256:
+            for path in list(icon_cache.keys()):
+                if path not in keep:
+                    icon_cache.pop(path, None)
+        for path in queued_paths:
+            self._queue_thumbnail_load(generation, path)
 
-    def _on_thumbnail_loaded(self, generation: int, path: str, image: object) -> None:
+    def _on_thumbnail_loaded(self, generation: int, path: str, qimage: object) -> None:
         normalized_path = str(Path(path))
         self._thumbnail_queued_paths.discard(normalized_path)
         if generation != self._thumbnail_generation or not hasattr(self, "thumbnail_grid"):
             return
-        self._thumbnail_loaded_paths.add(normalized_path)
-        target = normalized_path
-        item = None
-        for index in range(self.thumbnail_grid.count()):
-            candidate = self.thumbnail_grid.item(index)
-            if candidate is not None and str(candidate.data(Qt.ItemDataRole.UserRole) or "") == target:
-                item = candidate
-                break
-        if item is None:
+        if not self._frame_matrix_thumbnails_enabled():
             return
-        if image is None:
-            item.setIcon(self._thumbnail_placeholder())
-            return
-        pixmap = QPixmap.fromImage(cv_to_qimage(image))
-        if pixmap.isNull():
-            item.setIcon(self._thumbnail_placeholder())
-        else:
-            scaled = pixmap.scaled(
-                self._thumbnail_icon_size,
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            item.setIcon(QIcon(scaled))
+        getattr(self, "_thumbnail_loaded_generation", {})[normalized_path] = generation
+        pending = getattr(self, "_thumbnail_pending_apply", {})
+        pending[normalized_path] = qimage
+        getattr(self, "_thumbnail_icon_cache", {}).pop(normalized_path, None)
+        self._schedule_thumbnail_icon_apply()
 
-    def _update_thumbnail_grid_selection(self) -> None:
+    def _prime_visible_thumbnail_reload(self) -> None:
         if not hasattr(self, "thumbnail_grid"):
             return
+        loaded_generation = getattr(self, "_thumbnail_loaded_generation", {})
+        icon_cache = getattr(self, "_thumbnail_icon_cache", {})
+        paths: set[str] = set()
+        for index in self._visible_thumbnail_indexes():
+            item = self.thumbnail_grid.item(index)
+            if item is None or item.isHidden():
+                continue
+            path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            if path:
+                paths.add(str(Path(path)))
         current = self._workspace.current_image_path
-        matched = False
+        if current:
+            paths.add(str(Path(current)))
+        for path in paths:
+            loaded_generation.pop(path, None)
+            icon_cache.pop(path, None)
+
+    def _resume_frame_matrix_thumbnail_loading(self) -> None:
+        if not self._frame_matrix_thumbnails_enabled() or not hasattr(self, "thumbnail_grid"):
+            return
+        if self._thumbnail_loading_blocked():
+            return
+        self._prime_visible_thumbnail_reload()
+        self._schedule_thumbnail_icon_apply()
+        QTimer.singleShot(0, self._schedule_visible_thumbnail_loads)
+        QTimer.singleShot(0, self._reseed_thumbnail_radial_fill)
+
+    def _update_thumbnail_grid_selection(self) -> None:
+        if not self._frame_matrix_enabled() or not hasattr(self, "thumbnail_grid"):
+            return
+        current = self._workspace.current_image_path
+        previous = getattr(self, "_thumbnail_selected_path", None)
+        path_index = getattr(self, "_thumbnail_path_to_row", {})
         matched_index = -1
+        previous_item = None
+        current_item = None
+        if previous:
+            previous_row = path_index.get(str(Path(previous)))
+            if previous_row is not None:
+                previous_item = self.thumbnail_grid.item(previous_row)
+        if current:
+            matched_index = path_index.get(str(Path(current)), -1)
+            if matched_index >= 0:
+                current_item = self.thumbnail_grid.item(matched_index)
         self.thumbnail_grid.blockSignals(True)
         try:
-            for index in range(self.thumbnail_grid.count()):
-                item = self.thumbnail_grid.item(index)
-                selected = bool(current and item is not None and item.data(Qt.ItemDataRole.UserRole) == current)
-                if selected:
-                    self.thumbnail_grid.setCurrentRow(index)
-                    matched = True
-                    matched_index = index
-                if item is not None:
-                    path = str(item.data(Qt.ItemDataRole.UserRole) or "")
-                    if selected:
-                        item.setBackground(QBrush(QColor("#1D4ED8")))
-                        item.setData(Qt.ItemDataRole.BackgroundRole, QColor("#1D4ED8"))
-                    elif path:
-                        self._paint_image_row_item(item, path, show_text=False)
-            if not matched:
+            if previous_item is not None:
+                previous_item.setBackground(QBrush())
+                previous_item.setData(Qt.ItemDataRole.BackgroundRole, None)
+            if current_item is not None and matched_index >= 0 and not current_item.isHidden():
+                self.thumbnail_grid.setCurrentRow(matched_index)
+                current_item.setBackground(QBrush(QColor("#1D4ED8")))
+                current_item.setData(Qt.ItemDataRole.BackgroundRole, QColor("#1D4ED8"))
+                self._thumbnail_selected_path = str(current)
+            else:
                 self.thumbnail_grid.clearSelection()
                 self.thumbnail_grid.setCurrentRow(-1)
+                self._thumbnail_selected_path = None
         finally:
             self.thumbnail_grid.blockSignals(False)
         if matched_index >= 0:
             self._scroll_thumbnail_grid_to_row(matched_index)
-            QTimer.singleShot(0, lambda row=matched_index: self._scroll_thumbnail_grid_to_row(row))
-            self._queue_thumbnail_loads_near_current()
+        current_path = str(Path(current)) if current else None
+        if current_path and current_path != getattr(self, "_thumbnail_radial_center_path", None):
+            if not self._thumbnail_loading_blocked():
+                self._schedule_visible_thumbnail_loads()
 
     def _scroll_thumbnail_grid_to_row(self, row: int) -> None:
-        if not hasattr(self, "thumbnail_grid") or not hasattr(self, "thumbnail_grid_scroll_area"):
+        if not self._frame_matrix_enabled() or not hasattr(self, "thumbnail_grid") or not hasattr(self, "thumbnail_grid_scroll_area"):
             return
         if row < 0 or row >= self.thumbnail_grid.count():
             return
@@ -259,6 +851,7 @@ class WidgetNavigationMixin:
             vertical.setValue(max(vertical.minimum(), rect.top() - margin))
         elif rect.bottom() > vertical.value() + viewport.height():
             vertical.setValue(min(vertical.maximum(), rect.bottom() - viewport.height() + margin))
+        self._schedule_visible_thumbnail_loads()
 
     def _on_thumbnail_item_clicked(self, item: QListWidgetItem) -> None:
         if item is None:
@@ -266,12 +859,12 @@ class WidgetNavigationMixin:
         path = str(item.data(Qt.ItemDataRole.UserRole) or "")
         if not path:
             return
-        image_item = self._find_image_list_item(path)
-        if image_item is not None:
-            self.image_list.setCurrentItem(image_item)
+        self._set_image_list_current_path(path, fallback_to_first=False)
 
     def _refresh_vector_rows_for_workspace(self) -> None:
         if not hasattr(self, "vector_list"):
+            return
+        if len(self._workspace.cif_paths_by_stem) > LARGE_FRAME_COUNT_THRESHOLD:
             return
         for index in range(self.vector_list.count()):
             row = self.vector_list.item(index)
@@ -301,7 +894,7 @@ class WidgetNavigationMixin:
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             self._tr("select_image_files_dialog"),
-            self.input_dir_edit.text() or str(Path.home()),
+            self._dialog_start_directory_from_line_edit(self.input_dir_edit),
             self._tr("supported_image_files_filter"),
         )
         if not paths:
@@ -314,7 +907,7 @@ class WidgetNavigationMixin:
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             self._tr("merge_cif_files_dialog"),
-            self.cif_dir_edit.text() or str(Path.home()),
+            self._dialog_start_directory_from_line_edit(self.cif_dir_edit),
             self._tr("cif_files_filter"),
         )
         if not paths:
@@ -330,16 +923,23 @@ class WidgetNavigationMixin:
 
     def _sync_after_cif_index_changed(self) -> None:
         self._clear_cif_transient_hints()
-        self._rebuild_vector_list()
         self._refresh_image_list_item_states()
         cur = self._workspace.current_image_path
         if cur:
-            try:
-                self.load_image(cur)
-            except Exception as exc:
-                self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
-        report = self._matching_report()
-        self._log_matching_gaps_after_refresh(report)
+            state = self._workspace.current_state
+            if state is not None and state.source_image is not None:
+                try:
+                    self._reload_current_frame_vectors()
+                except Exception as exc:
+                    self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
+            else:
+                try:
+                    self.load_image(cur, load_vectors=True)
+                except Exception as exc:
+                    self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
+        if not self._uses_large_frame_list():
+            report = self._matching_report()
+            self._log_matching_gaps_after_refresh(report)
 
     def _clear_cif_transient_hints(self) -> None:
         self._cif_load_failure_stems.clear()
@@ -370,7 +970,7 @@ class WidgetNavigationMixin:
         self._finalize_overlay_reload(affected)
 
     def _reload_cif_overlays_for_selected_images(self) -> None:
-        stems: set[str] = {Path(str(row.data(Qt.ItemDataRole.UserRole))).stem.lower() for row in self.image_list.selectedItems()}
+        stems: set[str] = {Path(path).stem.lower() for path in self._image_list_selected_paths()}
         cur = self._workspace.current_image_path
         if not stems and cur:
             stems.add(Path(cur).stem.lower())
@@ -405,58 +1005,6 @@ class WidgetNavigationMixin:
             except Exception as exc:
                 self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
 
-    def _sync_frame_navigation_controls(self) -> None:
-        if not hasattr(self, "frame_nav_spin"):
-            return
-        paths = list(self._workspace.image_paths)
-        total = len(paths)
-        self.frame_nav_spin.blockSignals(True)
-        if total <= 0:
-            self.visual_frame_nav_widget.setEnabled(False)
-            self.frame_nav_spin.setMinimum(1)
-            self.frame_nav_spin.setMaximum(1)
-            self.frame_nav_spin.setValue(1)
-            self.frame_nav_total_label.setText("/ 0")
-        else:
-            self.visual_frame_nav_widget.setEnabled(True)
-            self.frame_nav_spin.setMinimum(1)
-            self.frame_nav_spin.setMaximum(total)
-            current = self._workspace.current_image_path
-            position = paths.index(current) + 1 if current and current in paths else min(self.frame_nav_spin.value(), total)
-            position = max(1, min(position, total))
-            self.frame_nav_spin.setValue(position)
-            self.frame_nav_total_label.setText(f"/ {total}")
-        self.frame_nav_spin.blockSignals(False)
-
-    def _on_frame_nav_spin_changed(self, value: int) -> None:
-        paths = list(self._workspace.image_paths)
-        if not paths:
-            return
-        idx = max(0, min(int(value), len(paths)) - 1)
-        target_item = self.image_list.item(idx)
-        if target_item is not None:
-            self.image_list.setCurrentItem(target_item)
-
-    def _frame_nav_previous(self) -> None:
-        if not hasattr(self, "frame_nav_spin"):
-            return
-        self.frame_nav_spin.setValue(max(1, self.frame_nav_spin.value() - 1))
-
-    def _frame_nav_next(self) -> None:
-        if not hasattr(self, "frame_nav_spin"):
-            return
-        total = len(self._workspace.image_paths)
-        if not total:
-            return
-        self.frame_nav_spin.setValue(min(total, self.frame_nav_spin.value() + 1))
-
-    def _on_image_selection_changed(self) -> None:
-        rows = sorted({self.image_list.row(i) for i in self.image_list.selectedItems()})
-        paths = list(self._workspace.image_paths)
-        if len(rows) == 1 and paths:
-            with QSignalBlocker(self.frame_nav_spin):
-                self.frame_nav_spin.setValue(min(max(1, rows[0] + 1), len(paths)))
-
     def _on_vector_item_navigate_request(self, item: QListWidgetItem) -> None:
         """Jump to the matching image frame (Files → Images) after an explicit click."""
 
@@ -472,23 +1020,20 @@ class WidgetNavigationMixin:
         if not image_path:
             self._append_log(self._tr("vector_row_no_matching_image_loaded_log"))
             return
-        image_item = self._find_image_list_item(image_path)
-        if image_item is None:
+        if not self._image_path_in_image_list(image_path):
             return
         if hasattr(self, "sidebar_list_mode_combo"):
             with QSignalBlocker(self.sidebar_list_mode_combo):
                 self.sidebar_list_mode_combo.setCurrentIndex(0)
         if hasattr(self, "sidebar_list_stack"):
             self.sidebar_list_stack.setCurrentIndex(0)
-        self.image_list.blockSignals(True)
-        self.image_list.setCurrentItem(image_item)
-        self.image_list.blockSignals(False)
+        self._set_image_list_current_path(image_path, fallback_to_first=False)
 
     def _select_input_directory(self) -> None:
         path = QFileDialog.getExistingDirectory(
             self,
             self._tr("select_input_directory_dialog"),
-            self.input_dir_edit.text(),
+            self._dialog_start_directory_from_line_edit(self.input_dir_edit),
         )
         if not path:
             return
@@ -504,7 +1049,7 @@ class WidgetNavigationMixin:
         path = QFileDialog.getExistingDirectory(
             self,
             self._tr("select_cif_directory_dialog"),
-            self.cif_dir_edit.text(),
+            self._dialog_start_directory_from_line_edit(self.cif_dir_edit),
         )
         if path:
             self.set_cif_directory(path)
@@ -513,7 +1058,7 @@ class WidgetNavigationMixin:
         path = QFileDialog.getExistingDirectory(
             self,
             self._tr("select_output_directory_dialog"),
-            self.output_dir_edit.text(),
+            self._dialog_start_directory_from_line_edit(self.output_dir_edit),
         )
         if path:
             self.set_output_directory(path)
@@ -522,7 +1067,7 @@ class WidgetNavigationMixin:
         path = QFileDialog.getExistingDirectory(
             self,
             self._tr("select_dataset_directory_dialog"),
-            self.dataset_dir_edit.text(),
+            self._dialog_start_directory_from_line_edit(self.dataset_dir_edit),
         )
         if path:
             self.set_dataset_directory(path)
@@ -535,13 +1080,12 @@ class WidgetNavigationMixin:
             self._workspace.replace_image_selection([], is_supported_image=is_image_path)
             self._base_frame_number_by_path = {}
             self._base_frame_numbers = set()
-            self.image_list.clear()
+            self._set_image_list_paths([])
             self._rebuild_thumbnail_grid()
             self._clear_extra_layers()
             self._update_extra_layers_enabled_state()
             self._rebuild_vector_list()
             self._refresh_image_list_item_states()
-            self._sync_frame_navigation_controls()
             self._sync_current_state_views()
             self._save_persisted_paths()
 
@@ -550,10 +1094,13 @@ class WidgetNavigationMixin:
         if path:
             self.set_cif_directory(path)
         else:
+            self._vector_indexer.invalidate_pending_results()
             self._workspace.clear_cif_index()
             self._save_persisted_paths()
             self._rebuild_vector_list()
             self._refresh_image_list_item_states()
+            self._rebuild_asset_filter_lists()
+            self._apply_asset_view_filter()
             if self._workspace.current_image_path:
                 try:
                     self.load_image(self._workspace.current_image_path)
@@ -768,7 +1315,7 @@ class WidgetNavigationMixin:
             "Выберите папку дополнительного слоя"
             if self._ui_language == "ru"
             else "Select additional layer directory",
-            "",
+            self._dialog_start_directory_from_line_edit(self.input_dir_edit),
         )
         if not folder_path:
             return

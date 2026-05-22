@@ -9,9 +9,13 @@ description = "Reserved Kraken plugin."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "kraken",
     "numpy>=1.26",
     "PyQt6>=6.6",
 ]
+
+[tool.uv.sources]
+kraken = { workspace = true }
 
 [project.scripts]
 karakal = "karakal.__main__:main"

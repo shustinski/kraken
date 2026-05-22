@@ -46,6 +46,7 @@ class StartupConfiguration:
 @dataclass(slots=True)
 class ContourApplicationModel:
     language: str | None = None
+    theme: str | None = "dark"
     width: int = 1680
     height: int = 980
     window_title: str = "Contour"

@@ -18,6 +18,8 @@ class ContourPresenter:
         self.view.set_window_title(self.model.window_title)
         self.view.resize_window(*self.model.initial_size)
         self.view.set_ui_language(active_language(self.model.language))
+        if self.model.theme is not None:
+            self.view.apply_theme(self.model.theme)
         self._apply_startup_configuration()
 
     def _bind_view(self) -> None:

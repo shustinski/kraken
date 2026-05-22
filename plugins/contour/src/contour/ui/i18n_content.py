@@ -813,6 +813,10 @@ EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
         "Рисование или стирание области кистью. Круг под курсором показывает текущую толщину кисти.",
         "Draw or erase an area with the brush. The circle under the cursor shows the current brush width.",
     ),
+    EditorTool.TRACE_PEN: (
+        "Trace pen: drag from a trace centerline start to its end. Shift snaps to 45 degrees; right drag erases.",
+        "Trace pen: drag from a trace centerline start to its end. Shift snaps to 45 degrees; right drag erases.",
+    ),
     EditorTool.ADD_VIA: (
         "Поставить переходное отверстие заданной ширины и высоты в месте клика.",
         "Place a via of the configured width and height at the click position.",
@@ -828,6 +832,10 @@ EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
     EditorTool.MOVE_VERTEX: (
         "Переместить отдельную вершину выбранного полигона.",
         "Move a single vertex of the selected polygon.",
+    ),
+    EditorTool.ANTIALIAS: (
+        "Antialias polygon under cursor.",
+        "Shows vertices for the polygon under the cursor and reduces its vertex count on click.",
     ),
     EditorTool.DELETE_POLYGON: (
         "Удалить полигон, по которому вы кликнете.",

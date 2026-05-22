@@ -17,7 +17,7 @@
       "id": "contour",
       "display_name": "Contour",
       "description": "Polygon extraction and editing.",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "enabled": true,
       "platforms": ["windows", "linux"],
       "executables": {

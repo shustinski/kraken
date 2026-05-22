@@ -17,11 +17,13 @@ _TOOL_SEQUENCE_STRINGS: dict[EditorTool, str | None] = {
     EditorTool.RULER: "K",
     EditorTool.ADD_POLYGON: "P",
     EditorTool.BRUSH: "B",
+    EditorTool.TRACE_PEN: "T",
     EditorTool.ADD_VIA: "U",
     EditorTool.ADD_VERTEX: "A",
     EditorTool.DELETE_VERTEX: "D",
     EditorTool.MOVE_VERTEX: "M",
-    EditorTool.DELETE_POLYGON: "E",
+    EditorTool.ANTIALIAS: None,
+    EditorTool.DELETE_POLYGON: None,
 }
 
 
@@ -49,10 +51,12 @@ _EDITOR_TOOL_SHORT_LABELS: dict[EditorTool, tuple[str, str]] = {
     EditorTool.RULER: ("Линейка", "Ruler"),
     EditorTool.ADD_POLYGON: ("Полигон", "Polygon"),
     EditorTool.BRUSH: ("Кисть", "Brush"),
+    EditorTool.TRACE_PEN: ("Трасса", "Trace"),
     EditorTool.ADD_VIA: ("Переход", "Via"),
     EditorTool.ADD_VERTEX: ("Добавить вершину", "Add vertex"),
     EditorTool.DELETE_VERTEX: ("Удалить вершину", "Delete vertex"),
     EditorTool.MOVE_VERTEX: ("Перемещение вершины", "Move vertex"),
+    EditorTool.ANTIALIAS: ("Антиалиасинг", "Antialias"),
     EditorTool.DELETE_POLYGON: ("Удалить полигон", "Delete polygon"),
 }
 
@@ -65,11 +69,11 @@ def editor_tool_hotkey_rows(*, ru: bool) -> list[tuple[str, str]]:
         EditorTool.RULER,
         EditorTool.ADD_POLYGON,
         EditorTool.BRUSH,
+        EditorTool.TRACE_PEN,
         EditorTool.ADD_VIA,
         EditorTool.ADD_VERTEX,
         EditorTool.DELETE_VERTEX,
         EditorTool.MOVE_VERTEX,
-        EditorTool.DELETE_POLYGON,
     ]
     rows: list[tuple[str, str]] = []
     for tool in order:

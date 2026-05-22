@@ -45,6 +45,7 @@
     "menu_open_help": "Открыть справку",
     "menu_open_tic_tac_toe": "Крестики-нолики: нейросеть",
     "menu_open_changelog": "Список изменений",
+    "menu_update": "Обновление",
     "menu_check_updates": "Проверить обновления",
     "menu_update_channel": "Канал обновлений",
     "update_channel_stable": "Стабильный",

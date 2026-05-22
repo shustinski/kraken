@@ -33,6 +33,7 @@ from csliser.domain.ranges import FrameRangeError
 from csliser.infrastructure.settings_store import CSliserPreset, WindowSettings, WindowSettingsStore
 from csliser.presentation.qt.widgets import AnimatedToggle, ExtensionCheckbox
 from csliser.presentation.qt.worker import TransferWorker
+from updater.qt import QtUpdateController
 
 _IDLE_TEXT = "Жду начала копирования, чтобы информировать о своей работе"
 
@@ -108,6 +109,7 @@ class CSliserWindow(QMainWindow):
         self._busy = False
         self._theme = "dark"
         self._dynamic_extensions = False
+        self._update_controller: QtUpdateController | None = None
 
         self.font = QtGui.QFont("sans-serif")
         self.font.setPixelSize(14)
@@ -244,6 +246,14 @@ class CSliserWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("Действия")
         add_theme_menu(self, initial_theme=self._theme, on_theme_changed=self._apply_theme)
         help_menu = self.menuBar().addMenu("Справка")
+        self._update_controller = QtUpdateController(
+            self,
+            app_id="csliser",
+            app_name="CSlicer",
+            current_version=__version__,
+            status_callback=self.label_info.setText,
+        )
+        self._update_controller.add_menu_action(help_menu, "Проверить обновления", submenu_title="Обновление")
         self._add_menu_action(file_menu, "Создать полный пресет", lambda: self._save_preset(include_sources=True))
         self._add_menu_action(file_menu, "Создать пресет кадров", lambda: self._save_preset(include_sources=False))
         self._add_menu_action(file_menu, "Восстановить полный пресет", lambda: self._restore_preset(include_sources=True))

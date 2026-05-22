@@ -39,13 +39,13 @@ class WidgetSettingsMixin:
         paths = self._path_settings.load()
 
         if paths.output_directory:
-            self.set_output_directory(paths.output_directory)
+            self.output_dir_edit.setText(paths.output_directory)
         if paths.dataset_directory:
-            self.set_dataset_directory(paths.dataset_directory)
+            self.dataset_dir_edit.setText(paths.dataset_directory)
         if paths.cif_directory:
-            self.set_cif_directory(paths.cif_directory)
+            self.cif_dir_edit.setText(paths.cif_directory)
         if paths.input_directory:
-            self.set_input_directory(paths.input_directory)
+            self.input_dir_edit.setText(paths.input_directory)
 
     def _save_persisted_paths(self: Any) -> None:
         self._path_settings.save(
@@ -70,6 +70,8 @@ class WidgetSettingsMixin:
             QSignalBlocker(self.show_vertices_checkbox),
             QSignalBlocker(self.show_labels_checkbox),
             QSignalBlocker(self.random_object_colors_checkbox),
+            QSignalBlocker(self.show_frame_matrix_checkbox),
+            QSignalBlocker(self.show_frame_matrix_thumbnails_checkbox),
             QSignalBlocker(self.show_neighbor_frames_checkbox),
             QSignalBlocker(self.neighbor_columns_spin),
             QSignalBlocker(self.neighbor_max_grid_spin),
@@ -103,6 +105,10 @@ class WidgetSettingsMixin:
             self.show_vertices_checkbox.setChecked(bool(self._display_settings.show_vertices))
             self.show_labels_checkbox.setChecked(bool(self._display_settings.show_labels))
             self.random_object_colors_checkbox.setChecked(bool(payload.get("random_object_colors", False)))
+            self.show_frame_matrix_checkbox.setChecked(bool(payload.get("show_frame_matrix", True)))
+            self.show_frame_matrix_thumbnails_checkbox.setChecked(
+                bool(payload.get("show_frame_matrix_thumbnails", True))
+            )
             self.show_neighbor_frames_checkbox.setChecked(bool(payload.get("show_neighbor_frames", False)))
             self.neighbor_columns_spin.setValue(max(1, int(payload.get("neighbor_columns", 3))))
             self.neighbor_max_grid_spin.setValue(self._odd_neighbor_grid_size(int(payload.get("neighbor_max_grid", 7))))
@@ -123,12 +129,19 @@ class WidgetSettingsMixin:
             self._restoring_display_settings = False
             del blockers
         self._sync_neighbor_frames()
+        self._sync_frame_matrix_controls()
+        if self._frame_matrix_enabled():
+            self._schedule_thumbnail_grid_rebuild(force=True)
+        else:
+            self._disable_frame_matrix_runtime()
         self._apply_vector_geometry_editor_config()
 
     def _current_display_settings_payload(self: Any) -> dict[str, object]:
         payload_out: dict[str, object] = {
             **self._display_settings.to_dict(),
             "random_object_colors": bool(self.random_object_colors_checkbox.isChecked()),
+            "show_frame_matrix": bool(self.show_frame_matrix_checkbox.isChecked()),
+            "show_frame_matrix_thumbnails": bool(self.show_frame_matrix_thumbnails_checkbox.isChecked()),
             "show_neighbor_frames": bool(self.show_neighbor_frames_checkbox.isChecked()),
             "neighbor_columns": int(self.neighbor_columns_spin.value()),
             "neighbor_max_grid": int(self.neighbor_max_grid_spin.value()),

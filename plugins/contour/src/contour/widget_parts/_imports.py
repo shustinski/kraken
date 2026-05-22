@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import threading
 import time
+import multiprocessing as mp
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PyQt6.QtCore import (
     QEvent,
+    QModelIndex,
     QPointF,
     QRectF,
     QSignalBlocker,
@@ -50,11 +52,14 @@ from PyQt6.QtWidgets import (
 )
 
 from ..adapters.qt.image_conversion import cv_to_qimage
+from ..adapters.qt.editor_display import EditorDisplayRunnable
+from ..adapters.qt.frame_load import FrameLoadPayload, FrameLoadRunnable
 from ..adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
 from ..adapters.qt.thumbnails import ThumbnailLoadRunnable
 from ..application.dto import PersistedPaths
 from ..application.extraction_profiles import default_contour_settings_profiles
 from ..application.frame_asset_sync import (
+    build_frame_asset_sets,
     build_image_cif_matching_report,
     classify_vector_side_status,
     index_cif_file_paths,
@@ -85,6 +90,8 @@ from ..application.services import (
     BatchStartRequest,
     DirectoryScanController,
     PathSettingsController,
+    VectorIndexController,
+    WorkspaceLoadResult,
     WorkspaceSession,
     export_frame_to_dataset,
     load_pipeline_config_from_path,
@@ -157,7 +164,16 @@ from ..ui.editor_icons import (
     create_editor_action_icon,
     create_editor_tool_icon,
 )
+from ..ui.frame_path_list_model import FramePathFilterProxyModel, FramePathListModel
 from ..ui.item_status_painting import FRAME_STATUS_ROLE, paint_image_row_item, paint_vector_row_item
+from ..ui.large_dataset import (
+    ASSET_FILTER_LISTS_MAX_FRAMES,
+    LARGE_FRAME_COUNT_THRESHOLD,
+    THUMBNAIL_ICONS_APPLY_PER_TICK,
+    THUMBNAIL_RADIAL_LOADS_PER_PUMP,
+    THUMBNAIL_RADIAL_PUMP_INTERVAL_MS,
+    THUMBNAIL_SPARSE_WINDOW_RADIUS,
+)
 from ..ui.i18n_content import (
     EDITOR_ACTION_TOOLTIPS,
     EDITOR_TOOL_TOOLTIPS,
@@ -178,7 +194,13 @@ from ..ui.via_presets import (
     built_in_via_presets,
     noisy_traces_via_preset_payload,
 )
-from ..utils import is_image_path, is_visible_image_path, load_image_color, scan_image_files
+from ..utils import (
+    is_image_path,
+    is_visible_image_path,
+    load_image_color,
+    load_image_color_thumbnail,
+    scan_image_files,
+)
 
 __all__ = [name for name in globals() if not name.startswith("__")]
 

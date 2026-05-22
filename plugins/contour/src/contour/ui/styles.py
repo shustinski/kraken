@@ -24,12 +24,12 @@ COMPACT_UI_STYLE = """
     padding: 2px;
 }
 #polygonExtractionWidget QToolButton:checked {
-    background-color: #2563EB;
-    border: 2px solid #93C5FD;
+    background-color: #16A34A;
+    border: 2px solid #86EFAC;
     border-radius: 4px;
 }
 #polygonExtractionWidget QToolButton:checked:hover {
-    background-color: #1D4ED8;
+    background-color: #15803D;
 }
 #polygonExtractionWidget QLineEdit,
 #polygonExtractionWidget QComboBox,

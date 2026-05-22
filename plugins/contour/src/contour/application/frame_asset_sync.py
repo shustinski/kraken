@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from kraken_core.theme import normalize_theme
+
 VECTOR_FILE_SUFFIXES = frozenset({".cif", ".cv"})
 
 
@@ -18,6 +20,13 @@ VECTOR_FILE_SUFFIXES = frozenset({".cif", ".cv"})
 class ImageCifMatchingReport:
     stems_with_image_but_no_cif: frozenset[str]
     stems_with_cif_but_no_image: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class FrameAssetSets:
+    image_and_vector_stems: frozenset[str]
+    image_only_stems: frozenset[str]
+    vector_only_stems: frozenset[str]
 
 
 def stems_lowercase(paths: Iterable[str | Path]) -> frozenset[str]:
@@ -33,6 +42,19 @@ def build_image_cif_matching_report(
     return ImageCifMatchingReport(
         stems_with_image_but_no_cif=frozenset(image_stems - cif_stems),
         stems_with_cif_but_no_image=frozenset(cif_stems - image_stems),
+    )
+
+
+def build_frame_asset_sets(
+    image_paths: Iterable[str | Path],
+    cif_paths_by_stem: Mapping[str, str],
+) -> FrameAssetSets:
+    image_stems = stems_lowercase(image_paths)
+    vector_stems = frozenset(dict(cif_paths_by_stem))
+    return FrameAssetSets(
+        image_and_vector_stems=frozenset(image_stems & vector_stems),
+        image_only_stems=frozenset(image_stems - vector_stems),
+        vector_only_stems=frozenset(vector_stems - image_stems),
     )
 
 
@@ -113,6 +135,12 @@ _HEX_VECTOR_RED = "#6b2c2c"
 
 
 def background_hex_vector_status(status: VectorSideListStatus) -> str | None:
+    return background_hex_vector_status_for_theme(status, theme="dark")
+
+
+def background_hex_vector_status_for_theme(status: VectorSideListStatus, *, theme: str | None = "dark") -> str | None:
+    if normalize_theme(theme) == "light":
+        return None if status == VectorSideListStatus.UNSEEN else "#FFFFFF"
     if status == VectorSideListStatus.NO_MATCHING_IMAGE or status == VectorSideListStatus.LOAD_ERROR:
         return _HEX_VECTOR_RED
     if status == VectorSideListStatus.UNSEEN:
@@ -135,6 +163,16 @@ _HEX_IMAGE_RED = _HEX_VECTOR_RED
 
 
 def background_hex_image_paint_status(status: ImageSideListPaintStatus) -> str | None:
+    return background_hex_image_paint_status_for_theme(status, theme="dark")
+
+
+def background_hex_image_paint_status_for_theme(
+    status: ImageSideListPaintStatus,
+    *,
+    theme: str | None = "dark",
+) -> str | None:
+    if normalize_theme(theme) == "light":
+        return None if status == ImageSideListPaintStatus.UNOPENED else "#FFFFFF"
     if status == ImageSideListPaintStatus.NO_MATCHING_VECTOR:
         return _HEX_IMAGE_RED
     if status == ImageSideListPaintStatus.UNOPENED:
@@ -153,3 +191,36 @@ _HEX_IMAGE_FG_WITHOUT_VECTOR = "#64748B"
 
 def foreground_hex_image_has_vector_overlay(has_matching_cif: bool) -> str:
     return _HEX_IMAGE_FG_WITH_VECTOR if has_matching_cif else _HEX_IMAGE_FG_WITHOUT_VECTOR
+
+
+def foreground_hex_vector_status_for_theme(status: VectorSideListStatus, *, theme: str | None = "dark") -> str | None:
+    if normalize_theme(theme) != "light":
+        return None
+    if status in {VectorSideListStatus.NO_MATCHING_IMAGE, VectorSideListStatus.LOAD_ERROR}:
+        return "#B91C1C"
+    if status == VectorSideListStatus.SAVED:
+        return "#047857"
+    if status == VectorSideListStatus.MODIFIED:
+        return "#B45309"
+    if status == VectorSideListStatus.VIEWED:
+        return "#475569"
+    return None
+
+
+def foreground_hex_image_paint_status_for_theme(
+    status: ImageSideListPaintStatus,
+    *,
+    has_matching_cif: bool,
+    theme: str | None = "dark",
+) -> str:
+    if normalize_theme(theme) != "light":
+        return foreground_hex_image_has_vector_overlay(has_matching_cif)
+    if status == ImageSideListPaintStatus.NO_MATCHING_VECTOR:
+        return "#B91C1C"
+    if status == ImageSideListPaintStatus.SAVED:
+        return "#047857"
+    if status == ImageSideListPaintStatus.MODIFIED:
+        return "#B45309"
+    if status == ImageSideListPaintStatus.VIEWED:
+        return "#475569"
+    return "#111827" if has_matching_cif else "#64748B"

@@ -45,6 +45,12 @@ def _mask_helpers():
     return _bbox_from_points, _polygons_from_mask, _render_polygon_collection_on_mask, _union_bbox
 
 
+def _bboxes_intersect(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+
+
 @dataclass(slots=True)
 class VectorGeometrySettings:
     """Editor / frame-sync vector cleanup (independent of mask extraction settings)."""
@@ -328,6 +334,28 @@ def _families_mask_overlap(polygons: list[PolygonData], root_a: int, root_b: int
     return bool(np.any(cv2.bitwise_and(mask1, mask2)))
 
 
+def _families_mask_overlap_cached(
+    root_a: int,
+    root_b: int,
+    *,
+    families: dict[int, list[PolygonData]],
+    bboxes: dict[int, tuple[int, int, int, int]],
+) -> bool:
+    _, _, _render_polygon_collection_on_mask, _union_bbox = _mask_helpers()
+    if root_a == root_b:
+        return False
+    bbox_a = bboxes[root_a]
+    bbox_b = bboxes[root_b]
+    if not _bboxes_intersect(bbox_a, bbox_b):
+        return False
+    x, y, w, h = _union_bbox([bbox_a, bbox_b])
+    mask1 = np.zeros((max(1, h), max(1, w)), dtype=np.uint8)
+    mask2 = np.zeros_like(mask1)
+    _render_polygon_collection_on_mask(mask1, families[root_a], (x, y))
+    _render_polygon_collection_on_mask(mask2, families[root_b], (x, y))
+    return bool(np.any(cv2.bitwise_and(mask1, mask2)))
+
+
 def merge_overlapping_root_families(polygons: list[PolygonData]) -> list[PolygonData]:
     _bbox_from_points, _polygons_from_mask, _render_polygon_collection_on_mask, _union_bbox = _mask_helpers()
     roots = [p.id for p in polygons if p.parent_id is None]
@@ -335,9 +363,11 @@ def merge_overlapping_root_families(polygons: list[PolygonData]) -> list[Polygon
         return polygons
     uf = _UnionFind(roots)
     ordered = sorted(roots)
+    families = {root_id: _collect_family(polygons, root_id) for root_id in ordered}
+    bboxes = {root_id: _family_bbox(polygons, root_id) for root_id in ordered}
     for idx, ra in enumerate(ordered):
         for rb in ordered[idx + 1 :]:
-            if _families_mask_overlap(polygons, ra, rb):
+            if _families_mask_overlap_cached(ra, rb, families=families, bboxes=bboxes):
                 uf.union(ra, rb)
     clusters: dict[int, set[int]] = {}
     for r in roots:

@@ -35,9 +35,11 @@ from PyQt6.QtWidgets import (
     QWidget,
     QWidgetAction,
 )
+from updater.qt import QtUpdateController
 
 from ..infra.services import KarakalSettingsService
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
+from ..version import __version__
 from ..ui.i18n import Translator, set_current_language
 from ..ui.matrix_view import MatrixListWidget, MatrixMiniMapWidget
 from ..ui.ui_constants import (
@@ -395,6 +397,7 @@ class KarakalWidget(QWidget):
         set_current_language(language)
         self._i18n = Translator(language)
         self._t = self._i18n.tr
+        self._update_controller: QtUpdateController | None = None
 
         self._build_ui()
         self._setup_menu_bar()
@@ -822,6 +825,18 @@ class KarakalWidget(QWidget):
 
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()
+        help_menu = self._menu_bar.addMenu("Help" if self._i18n.language == "en" else "Справка")
+        self._update_controller = QtUpdateController(
+            self,
+            app_id="karakal",
+            app_name="Karakal",
+            current_version=__version__,
+        )
+        self._update_controller.add_menu_action(
+            help_menu,
+            "Check for updates" if self._i18n.language == "en" else "Проверить обновления",
+            submenu_title="Update" if self._i18n.language == "en" else "Обновление",
+        )
         self._menu_bar.setCornerWidget(self.language_toggle_button, Qt.Corner.TopRightCorner)
 
     def _populate_app_mode_combo(self, selected_mode: str | None) -> None:

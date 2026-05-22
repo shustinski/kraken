@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-_FRAME_SUFFIX_RE = re.compile(r"_(\d+)$")
+_FRAME_SUFFIX_RE = re.compile(r"(\d+)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +23,14 @@ def extract_frame_number(file_name: str | Path) -> int | None:
     return int(match.group(1))
 
 
+def _frame_name_prefix(file_name: str | Path) -> str:
+    stem = Path(file_name).stem
+    match = _FRAME_SUFFIX_RE.search(stem)
+    if match is None:
+        return stem
+    return stem[: match.start()]
+
+
 def sort_base_frame_records(paths: Iterable[str | Path]) -> list[BaseFrameRecord]:
     records = [
         BaseFrameRecord(path=str(Path(path)), stem=Path(path).stem, frame_number=extract_frame_number(path))
@@ -31,6 +39,7 @@ def sort_base_frame_records(paths: Iterable[str | Path]) -> list[BaseFrameRecord
     return sorted(
         records,
         key=lambda record: (
+            _frame_name_prefix(record.path).lower(),
             record.frame_number is None,
             record.frame_number if record.frame_number is not None else 0,
             record.stem.lower(),
@@ -42,6 +51,7 @@ def sort_base_frame_records(paths: Iterable[str | Path]) -> list[BaseFrameRecord
 def build_base_frame_records(paths: Iterable[str | Path]) -> tuple[list[BaseFrameRecord], list[str]]:
     warnings: list[str] = []
     unique_by_number: dict[int, BaseFrameRecord] = {}
+    numbered_frames: list[BaseFrameRecord] = []
     unnamed_frames: list[BaseFrameRecord] = []
 
     for record in sort_base_frame_records(paths):
@@ -56,9 +66,9 @@ def build_base_frame_records(paths: Iterable[str | Path]) -> tuple[list[BaseFram
             )
             continue
         unique_by_number[record.frame_number] = record
+        numbered_frames.append(record)
 
-    numbered = [unique_by_number[key] for key in sorted(unique_by_number)]
-    return numbered + unnamed_frames, warnings
+    return numbered_frames + unnamed_frames, warnings
 
 
 def build_base_frame_number_map(records: Iterable[BaseFrameRecord]) -> dict[str, int]:

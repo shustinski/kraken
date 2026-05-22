@@ -5,14 +5,18 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
+from kraken_core.theme import normalize_theme
 from PyQt6.QtCore import QSettings
 
 from ..application.dto import PersistedPaths
 from ..application.processing import DisplaySettings
+from ..i18n import active_language
 
 VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
 GAMIFICATION_PROFILE_SETTINGS_KEY = "gamification/profile_v1"
 SESSION_CURRENT_IMAGE_PATH_KEY = "session/current_image_path"
+APPEARANCE_LANGUAGE_SETTINGS_KEY = "appearance/language"
+APPEARANCE_THEME_SETTINGS_KEY = "appearance/theme"
 
 
 def _build_contour_settings() -> QSettings:
@@ -74,6 +78,8 @@ class WidgetDisplaySettingsStore:
             "show_vertices": settings.value("display/show_vertices", defaults.show_vertices, type=bool),
             "show_labels": settings.value("display/show_labels", defaults.show_labels, type=bool),
             "random_object_colors": settings.value("display/random_object_colors", False, type=bool),
+            "show_frame_matrix": settings.value("display/show_frame_matrix", True, type=bool),
+            "show_frame_matrix_thumbnails": settings.value("display/show_frame_matrix_thumbnails", True, type=bool),
             "show_neighbor_frames": settings.value("display/show_neighbor_frames", False, type=bool),
             "neighbor_columns": settings.value("display/neighbor_columns", 3, type=int),
             "neighbor_max_grid": settings.value("display/neighbor_max_grid", 7, type=int),
@@ -95,6 +101,33 @@ class WidgetDisplaySettingsStore:
         settings = self._settings_factory()
         for key, value in payload.items():
             settings.setValue(f"display/{key}", value)
+        settings.sync()
+
+
+class WidgetAppearanceSettingsStore:
+    def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
+        self._settings_factory = settings_factory or _build_contour_settings
+
+    def load_language(self, default: str = "ru") -> str:
+        settings = self._settings_factory()
+        value = settings.value(APPEARANCE_LANGUAGE_SETTINGS_KEY, default, type=str)
+        settings.sync()
+        return active_language(str(value or default))
+
+    def save_language(self, language: str | None) -> None:
+        settings = self._settings_factory()
+        settings.setValue(APPEARANCE_LANGUAGE_SETTINGS_KEY, active_language(language))
+        settings.sync()
+
+    def load_theme(self, default: str = "dark") -> str:
+        settings = self._settings_factory()
+        value = settings.value(APPEARANCE_THEME_SETTINGS_KEY, default, type=str)
+        settings.sync()
+        return normalize_theme(str(value or default))
+
+    def save_theme(self, theme: str | None) -> None:
+        settings = self._settings_factory()
+        settings.setValue(APPEARANCE_THEME_SETTINGS_KEY, normalize_theme(theme))
         settings.sync()
 
 

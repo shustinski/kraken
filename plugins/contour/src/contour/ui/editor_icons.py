@@ -34,6 +34,9 @@ def _draw_badge(painter: QPainter, center: QPointF, color: QColor, symbol: str) 
         painter.drawLine(QPointF(center.x(), center.y() - 2.2), QPointF(center.x(), center.y() + 2.2))
     elif symbol == "-":
         painter.drawLine(QPointF(center.x() - 2.2, center.y()), QPointF(center.x() + 2.2, center.y()))
+    elif symbol == "~":
+        painter.drawArc(QRectF(center.x() - 2.8, center.y() - 1.8, 3.0, 3.0), 20 * 16, 160 * 16)
+        painter.drawArc(QRectF(center.x() - 0.2, center.y() - 1.2, 3.0, 3.0), 200 * 16, 160 * 16)
     else:
         painter.drawLine(
             QPointF(center.x() - 1.9, center.y() - 1.9),
@@ -185,6 +188,15 @@ def _paint_brush_icon(painter: QPainter, stroke: QColor, accent: QColor) -> None
     painter.drawEllipse(QRectF(18.8, 5.2, 4.6, 4.6))
 
 
+def _paint_trace_pen_icon(painter: QPainter, stroke: QColor, accent: QColor) -> None:
+    painter.setPen(QPen(accent, 5.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    painter.drawPolyline(QPolygonF([QPointF(5.0, 20.5), QPointF(12.5, 12.5), QPointF(22.5, 7.0)]))
+    painter.setPen(QPen(stroke, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    painter.drawPolyline(QPolygonF([QPointF(5.0, 20.5), QPointF(12.5, 12.5), QPointF(22.5, 7.0)]))
+    _draw_vertex_marker(painter, QPointF(5.0, 20.5), stroke, QColor("#FFFFFF"), radius=1.7)
+    _draw_vertex_marker(painter, QPointF(22.5, 7.0), stroke, QColor("#FFFFFF"), radius=1.7)
+
+
 def _paint_via_icon(painter: QPainter, stroke: QColor, accent: QColor) -> None:
     painter.setPen(QPen(stroke, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
     painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -270,6 +282,8 @@ def create_editor_tool_icon(tool: EditorTool) -> QIcon:
         _paint_polygon_badge_icon(painter, stroke, accent, "+")
     elif tool == EditorTool.BRUSH:
         _paint_brush_icon(painter, stroke, success)
+    elif tool == EditorTool.TRACE_PEN:
+        _paint_trace_pen_icon(painter, stroke, QColor("#22D3EE"))
     elif tool == EditorTool.ADD_VIA:
         _paint_via_icon(painter, stroke, QColor("#A78BFA"))
     elif tool == EditorTool.ADD_VERTEX:
@@ -278,6 +292,8 @@ def create_editor_tool_icon(tool: EditorTool) -> QIcon:
         _paint_vertex_edit_icon(painter, stroke, neutral, danger, "-")
     elif tool == EditorTool.MOVE_VERTEX:
         _paint_move_vertex_icon(painter, stroke, warning)
+    elif tool == EditorTool.ANTIALIAS:
+        _paint_polygon_badge_icon(painter, stroke, accent, "~")
     elif tool == EditorTool.DELETE_POLYGON:
         _paint_polygon_badge_icon(painter, stroke, danger, "x")
     painter.end()
@@ -290,9 +306,9 @@ def create_editor_action_icon(action: str) -> QIcon:
     accent = QColor("#38BDF8")
 
     if action == "undo":
-        _paint_history_icon(painter, stroke, mirrored=False)
-    elif action == "redo":
         _paint_history_icon(painter, stroke, mirrored=True)
+    elif action == "redo":
+        _paint_history_icon(painter, stroke, mirrored=False)
     elif action == "zoom_in":
         _paint_zoom_icon(painter, stroke, accent, add=True)
     elif action == "zoom_out":

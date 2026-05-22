@@ -196,6 +196,7 @@ class WidgetUiHelpersMixin:
                 "tool_add_polygon", "Полигон" if self._ui_language == "ru" else "Add polygon"
             ),
             EditorTool.BRUSH: self._tr("tool_brush", "Кисть" if self._ui_language == "ru" else "Brush"),
+            EditorTool.TRACE_PEN: self._tr("tool_trace_pen", "Trace pen"),
             EditorTool.ADD_VERTEX: self._tr(
                 "tool_add_vertex", "Добавить вершину" if self._ui_language == "ru" else "Add vertex"
             ),
@@ -205,8 +206,8 @@ class WidgetUiHelpersMixin:
             EditorTool.MOVE_VERTEX: self._tr(
                 "tool_move_vertex", "Переместить вершину" if self._ui_language == "ru" else "Move vertex"
             ),
-            EditorTool.DELETE_POLYGON: self._tr(
-                "tool_delete_polygon", "Удалить полигон" if self._ui_language == "ru" else "Delete polygon"
+            EditorTool.ANTIALIAS: self._tr(
+                "tool_antialias", "Антиалиасинг" if self._ui_language == "ru" else "Antialias"
             ),
         }
         for tool, button in self._tool_buttons.items():
@@ -273,6 +274,8 @@ class WidgetUiHelpersMixin:
             self._polygon_toolbar_block.setVisible(tool == EditorTool.ADD_POLYGON)
         if hasattr(self, "_brush_toolbar_block"):
             self._brush_toolbar_block.setVisible(tool == EditorTool.BRUSH)
+        if hasattr(self, "_trace_toolbar_block"):
+            self._trace_toolbar_block.setVisible(tool == EditorTool.TRACE_PEN)
         if hasattr(self, "_via_toolbar_block"):
             self._via_toolbar_block.setVisible(tool == EditorTool.ADD_VIA)
         if hasattr(self, "_delete_vertex_toolbar_block"):
@@ -281,29 +284,16 @@ class WidgetUiHelpersMixin:
         self._on_effective_polygon_create_mode_changed(self.polygon_editor.effective_polygon_create_mode())
 
     def _place_active_tool_parameters_near_tool_button(self, tool: EditorTool) -> None:
-        if not hasattr(self, "_editor_toolbar_layout") or not hasattr(self, "_tool_parameter_blocks"):
+        if not hasattr(self, "_tool_parameter_blocks"):
             return
-        layout = self._editor_toolbar_layout
         blocks = self._tool_parameter_blocks
         for block in blocks.values():
             if block is not None:
-                layout.removeWidget(block)
+                block.setVisible(False)
         active_block = blocks.get(tool)
-        active_button = getattr(self, "_tool_buttons", {}).get(tool)
-        if active_block is None or active_button is None:
+        if active_block is None:
             return
-        button_index = layout.indexOf(active_button)
-        if button_index < 0:
-            return
-        layout.insertWidget(button_index + 1, active_block)
         active_block.setVisible(True)
-        active_block.adjustSize()
-        if hasattr(self, "editor_toolbar"):
-            self.editor_toolbar.adjustSize()
-            self.editor_toolbar.setMinimumWidth(self.editor_toolbar.sizeHint().width())
-        if hasattr(self, "editor_toolbar_scroll"):
-            top_left = active_block.mapTo(self.editor_toolbar, active_block.rect().topLeft())
-            self.editor_toolbar_scroll.ensureVisible(int(top_left.x()), int(top_left.y()), 24, 0)
 
     def _on_effective_polygon_create_mode_changed(self, mode: PolygonCreateMode) -> None:
         if not hasattr(self, "polygon_draw_mode_indicator"):

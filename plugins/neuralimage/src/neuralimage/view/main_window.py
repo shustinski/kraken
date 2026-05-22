@@ -175,6 +175,7 @@ class MainView(QMainWindow):
         self._help_action = None
         self._changelog_action = None
         self._check_updates_action = None
+        self._update_menu = None
         self._update_channel_menu = None
         self._update_channel_action_group = None
         self._update_channel_actions: dict[str, QAction] = {}
@@ -549,10 +550,11 @@ class MainView(QMainWindow):
         changelog_action.triggered.connect(lambda: show_changelog_dialog(self))
         info_menu.addAction(changelog_action)
         self._changelog_action = changelog_action
+        self._update_menu = info_menu.addMenu(t.get("menu_update", "Update"))
         check_updates_action = QAction(t.get("menu_check_updates", "Проверить обновления"), self)
-        info_menu.addAction(check_updates_action)
+        self._update_menu.addAction(check_updates_action)
         self._check_updates_action = check_updates_action
-        self._update_channel_menu = info_menu.addMenu(t.get("menu_update_channel", "Канал обновлений"))
+        self._update_channel_menu = self._update_menu.addMenu(t.get("menu_update_channel", "Канал обновлений"))
         self.configure_update_channels(self._available_update_channels or ['stable'], self._selected_update_channel)
         menu_action = info_menu.menuAction()
         if menu_action is not None:
@@ -618,12 +620,6 @@ class MainView(QMainWindow):
             WorkMode.recognition_only.value,
             WorkMode.further_training.value,
         }
-        uses_epochs = resolved_mode in {
-            WorkMode.train_only.value,
-            WorkMode.train_and_recognition.value,
-            WorkMode.further_training.value,
-        }
-
         if not resolved_mode:
             self.lbl_source.setEnabled(True)
             self.recursive_file_search_check_box.setEnabled(True)
@@ -1353,6 +1349,8 @@ class MainView(QMainWindow):
             self._tools_menu.setTitle(t.get("menu_tools", "Инструменты"))
         if self._update_channel_menu is not None:
             self._update_channel_menu.setTitle(t.get("menu_update_channel", "Update channel"))
+        if self._update_menu is not None:
+            self._update_menu.setTitle(t.get("menu_update", "Update"))
         if self._open_config_action is not None:
             self._open_config_action.setText(t.get("menu_open_config", "Открыть"))
         if self._language_menu is not None:

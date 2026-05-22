@@ -31,13 +31,13 @@ class EditablePolygonItem(QGraphicsPathItem):
     def __init__(self, polygon: PolygonData, display_settings: DisplaySettings) -> None:
         super().__init__()
         self.polygon_id = polygon.id
-        self._polygon = polygon.clone()
+        self._polygon = polygon
         self._label_item = QGraphicsSimpleTextItem(str(polygon.id), self)
         self._label_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self._handles: list[VertexHandleItem] = []
         self.setZValue(3)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
-        self.update_from_polygon(self._polygon, display_settings, selected=False)
+        self.update_from_polygon(polygon, display_settings, selected=False)
 
     def update_from_polygon(
         self,
@@ -48,6 +48,7 @@ class EditablePolygonItem(QGraphicsPathItem):
         custom_color: str | None = None,
         *,
         conductor_hover_highlight: bool = False,
+        preview_vertices: bool = False,
     ) -> None:
         self._polygon = polygon.clone()
         path = QPainterPath()
@@ -89,7 +90,11 @@ class EditablePolygonItem(QGraphicsPathItem):
         self._label_item.setPos(bbox.left(), bbox.top() - 16.0)
 
         handle_color = QColor(display_settings.vertex_color)
-        show_handles = display_settings.show_vertices and selected and not _is_ellipse_display_polygon(self._polygon)
+        show_handles = (
+            display_settings.show_vertices
+            and (selected or preview_vertices)
+            and not _is_ellipse_display_polygon(self._polygon)
+        )
         target_handle_count = len(self._polygon.points) if show_handles else 0
         while len(self._handles) < target_handle_count:
             self._handles.append(VertexHandleItem(self.polygon_id, len(self._handles), self))

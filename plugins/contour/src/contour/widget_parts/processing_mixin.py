@@ -2,31 +2,30 @@ from __future__ import annotations
 
 import cProfile
 import hashlib
-import io
-import os
-import pstats
 from time import perf_counter, time_ns
 
-from ._imports import *  # noqa: F403
+from typing import Any
 
-PROFILE_CIF_OPEN = str(os.environ.get("CONTOUR_PROFILE_CIF_OPEN", "")).strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-_PROFILE_CIF_OPEN_TOP_LINES = 40
+from PyQt6.QtGui import QImage
+
+from ..infrastructure.frame_switch_profiler import (
+    MAX_IDLE_POLLS,
+    FrameSwitchProfile,
+    frame_switch_profiling_enabled,
+    profile_callable,
+)
+from ._imports import *  # noqa: F403
 
 
 class WidgetProcessingMixin:
-    def _current_save_options(self) -> SaveOptions:
+    def _current_save_options(self: Any) -> SaveOptions:
         return SaveOptions(
             save_cif=self.save_cif_checkbox.isChecked(),
             save_cv=self.save_cv_checkbox.isChecked(),
             save_preview=self.save_preview_checkbox.isChecked(),
         )
 
-    def _paint_image_row_item(self, item: QListWidgetItem, image_path: str, *, show_text: bool = True) -> None:
+    def _paint_image_row_item(self: Any, item: QListWidgetItem, image_path: str, *, show_text: bool = True) -> None:
         normalized = str(Path(image_path))
         extraction_enabled = self._is_extraction_mode_enabled()
         paint_image_row_item(
@@ -34,44 +33,135 @@ class WidgetProcessingMixin:
             normalized,
             image_has_changes=self._workspace.image_has_changes(normalized),
             has_vector_overlay=bool(self._workspace.resolve_cif_path(normalized)),
-            vector_index_active=bool(self.cif_dir_edit.text().strip()) if hasattr(self, "cif_dir_edit") else False,
+            vector_index_active=self._vector_index_active(),
             extraction_enabled=extraction_enabled,
             viewed=normalized in self._viewed_image_paths,
             persisted_highlight=normalized in self._persisted_highlight_paths,
+            theme=getattr(self, "_ui_theme", "dark"),
             show_text=show_text,
         )
 
-    def _find_image_list_item(self, image_path: str) -> QListWidgetItem | None:
-        target = str(Path(image_path))
-        for index in range(self.image_list.count()):
-            item = self.image_list.item(index)
-            if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == target:
-                return item
+    def _uses_large_frame_list(self: Any) -> bool:
+        image_paths = getattr(self._workspace, "_image_paths", None)
+        if image_paths is None:
+            image_paths = self._workspace.image_paths
+        return len(image_paths) > LARGE_FRAME_COUNT_THRESHOLD
+
+    def _image_path_index(self: Any, image_path: str | Path) -> int | None:
+        return self._image_path_to_index.get(str(Path(image_path)))
+
+    def _image_list_model_item_data(self: Any, image_path: str, role: int):
+        from ..application.frame_asset_sync import (
+            background_hex_image_paint_status_for_theme,
+            classify_image_side_paint_status,
+            foreground_hex_image_paint_status_for_theme,
+        )
+
+        normalized = str(Path(image_path))
+        cif_paths = getattr(self._workspace, "_cif_paths_by_stem", {})
+        stem_lower = getattr(self, "_image_path_stem_lower", {}).get(normalized)
+        if stem_lower is None:
+            stem_lower = Path(normalized).stem.lower()
+        has_vector = stem_lower in cif_paths
+        extraction_enabled = self._is_extraction_mode_enabled()
+        current_path = self._workspace.current_image_path
+        if extraction_enabled or current_path == normalized:
+            polygons_dirty = False if extraction_enabled else self._workspace.image_has_changes(normalized)
+        elif self._uses_large_frame_list():
+            polygons_dirty = False
+        else:
+            polygons_dirty = self._workspace.image_has_changes(normalized)
+        painted = classify_image_side_paint_status(
+            has_matching_cif=has_vector,
+            vector_index_active=self._vector_index_active(),
+            never_opened=True if extraction_enabled else normalized not in self._viewed_image_paths,
+            polygons_dirty=polygons_dirty,
+            persist_highlight=False if extraction_enabled else normalized in self._persisted_highlight_paths,
+        )
+        theme = getattr(self, "_ui_theme", "dark")
+        if role == FRAME_STATUS_ROLE:
+            return painted.value
+        if role == int(Qt.ItemDataRole.BackgroundRole):
+            hex_background = background_hex_image_paint_status_for_theme(painted, theme=theme)
+            return QColor(hex_background) if hex_background else None
+        if role == int(Qt.ItemDataRole.ForegroundRole):
+            return QColor(
+                foreground_hex_image_paint_status_for_theme(
+                    painted,
+                    has_matching_cif=has_vector,
+                    theme=theme,
+                )
+            )
         return None
 
-    def _update_frame_item_status(self, image_path: str | None) -> None:
+    def _set_image_list_paths(self: Any, normalized_paths: list[str]) -> None:
+        paths = [str(Path(path)) for path in normalized_paths]
+        self._image_path_to_index = {path: index for index, path in enumerate(paths)}
+        self._image_path_stem_lower = {path: Path(path).stem.lower() for path in paths}
+        self._image_list_model.set_paths(paths)
+
+    def _image_list_source_index(self: Any, proxy_index: QModelIndex) -> QModelIndex:
+        if not proxy_index.isValid():
+            return QModelIndex()
+        return self._image_list_proxy.mapToSource(proxy_index)
+
+    def _image_list_path_from_proxy_index(self: Any, proxy_index: QModelIndex) -> str | None:
+        source_index = self._image_list_source_index(proxy_index)
+        if not source_index.isValid():
+            return None
+        value = self._image_list_model.data(source_index, Qt.ItemDataRole.UserRole)
+        return str(value) if value else None
+
+    def _image_list_selected_paths(self: Any) -> list[str]:
+        paths: list[str] = []
+        selection = self.image_list.selectionModel()
+        if selection is None:
+            return paths
+        for proxy_index in selection.selectedIndexes():
+            path = self._image_list_path_from_proxy_index(proxy_index)
+            if path:
+                paths.append(path)
+        return paths
+
+    def _set_image_list_current_path(self: Any, image_path: str | None, *, fallback_to_first: bool = True) -> None:
+        if image_path:
+            row = self._image_path_index(image_path)
+            if row is not None:
+                proxy_index = self._image_list_proxy.mapFromSource(self._image_list_model.index(row))
+                if proxy_index.isValid():
+                    self.image_list.setCurrentIndex(proxy_index)
+                return
+        if fallback_to_first and self._image_list_proxy.rowCount() > 0:
+            self.image_list.setCurrentIndex(self._image_list_proxy.index(0, 0))
+        elif self._image_list_proxy.rowCount() <= 0:
+            self._sync_current_state_views()
+
+    def _image_path_in_image_list(self: Any, image_path: str) -> bool:
+        return self._image_path_index(image_path) is not None
+
+    def _update_frame_item_status(self: Any, image_path: str | None) -> None:
         if not image_path:
             return
-        item = self._find_image_list_item(image_path)
-        if item is None:
-            return
-        self._paint_image_row_item(item, str(Path(image_path)))
+        self._image_list_model.invalidate_path(image_path)
         self._refresh_vector_items_for_stems({Path(str(image_path)).stem.lower()})
         self._update_thumbnail_item_status(image_path)
+        self._update_asset_items_for_image_path(image_path)
 
-    def _refresh_image_list_item_states(self) -> None:
-        for index in range(self.image_list.count()):
-            item = self.image_list.item(index)
-            if item is None:
-                continue
-            image_path = str(item.data(Qt.ItemDataRole.UserRole) or "")
-            if image_path:
-                self._paint_image_row_item(item, image_path)
+    def _refresh_image_list_item_states(self: Any) -> None:
+        if self._uses_large_frame_list():
+            current = self._workspace.current_image_path
+            if current:
+                self._image_list_model.invalidate_path(current)
+        else:
+            self._image_list_model.invalidate_all_rows()
         self._refresh_vector_rows_for_workspace()
+        if len(self._workspace.image_paths) <= ASSET_FILTER_LISTS_MAX_FRAMES:
+            self._rebuild_asset_filter_lists()
+            self._apply_asset_view_filter()
         self._update_thumbnail_grid_selection()
 
-    def _update_thumbnail_item_status(self, image_path: str | None) -> None:
-        if not image_path or not hasattr(self, "thumbnail_grid"):
+    def _update_thumbnail_item_status(self: Any, image_path: str | None) -> None:
+        if not image_path or not self._frame_matrix_enabled() or not hasattr(self, "thumbnail_grid"):
             return
         normalized = str(Path(image_path))
         for index in range(self.thumbnail_grid.count()):
@@ -80,7 +170,7 @@ class WidgetProcessingMixin:
                 self._paint_image_row_item(item, normalized, show_text=False)
                 break
 
-    def _update_vector_edit_status_label(self) -> None:
+    def _update_vector_edit_status_label(self: Any) -> None:
         if not hasattr(self, "vector_edit_status_label"):
             return
         if self._workspace.current_image_path is None:
@@ -94,7 +184,7 @@ class WidgetProcessingMixin:
         else:
             self.vector_edit_status_label.setText("Modified" if dirty else "Saved")
 
-    def _persist_current_overlay_changes(self) -> bool:
+    def _persist_current_overlay_changes(self: Any) -> bool:
         """Persist editor polygons for the current frame (dataset export and/or linked CIF)."""
 
         current_state = self._workspace.current_state
@@ -165,7 +255,7 @@ class WidgetProcessingMixin:
         self._update_vector_edit_status_label()
         return True
 
-    def _discard_current_vector_changes(self) -> None:
+    def _discard_current_vector_changes(self: Any) -> None:
         state = self._workspace.current_state
         path = self._workspace.current_image_path
         if state is None or path is None:
@@ -182,7 +272,7 @@ class WidgetProcessingMixin:
         self._update_frame_item_status(path)
         self._update_vector_edit_status_label()
 
-    def _prompt_transition_vector_save_dialog(self) -> TransitionPromptChoice:
+    def _prompt_transition_vector_save_dialog(self: Any) -> TransitionPromptChoice:
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setWindowTitle(
@@ -239,7 +329,7 @@ class WidgetProcessingMixin:
             self.autosave_on_frame_transition_checkbox.setChecked(True)
         return TransitionPromptChoice.SAVE
 
-    def _warn_transition_blocked_after_failed_autosave(self) -> None:
+    def _warn_transition_blocked_after_failed_autosave(self: Any) -> None:
         QMessageBox.warning(
             self,
             self._tr(
@@ -254,7 +344,7 @@ class WidgetProcessingMixin:
             ),
         )
 
-    def _warn_transition_blocked_after_failed_manual_save(self) -> None:
+    def _warn_transition_blocked_after_failed_manual_save(self: Any) -> None:
         QMessageBox.warning(
             self,
             self._tr(
@@ -269,7 +359,7 @@ class WidgetProcessingMixin:
             ),
         )
 
-    def _try_leave_current_frame(self) -> bool:
+    def _try_leave_current_frame(self: Any) -> bool:
         if self._is_extraction_mode_enabled():
             return True
         self._workspace.update_current_polygons(self.get_polygons())
@@ -303,109 +393,362 @@ class WidgetProcessingMixin:
             self._warn_transition_blocked_after_failed_manual_save()
         return allowed
 
-    def confirm_ok_to_leave_current_vectors(self) -> bool:
+    def confirm_ok_to_leave_current_vectors(self: Any) -> bool:
         """Ask before closing or reloading images when the active frame has unsaved vector edits."""
 
         return self._try_leave_current_frame()
 
-    def _sync_current_state_views(self) -> None:
-        self._updating_views = True
-        try:
-            display_image = self._display_image_for_current_state()
+    def _editor_display_cache_key(self: Any, image_path: str, state) -> tuple[str, str]:
+        if state is not None and state.preprocessed_image is not None:
+            return (str(Path(image_path)), "preprocessed")
+        return (str(Path(image_path)), "source")
+
+    def _polygons_editor_signature(self: Any, image_path: str, polygons: list) -> tuple[str, int, int]:
+        point_count = sum(len(getattr(polygon, "points", ())) for polygon in polygons)
+        return (str(Path(image_path)), len(polygons), point_count)
+
+    def _sync_polygons_to_editor(self: Any, image_path: str, polygons: list) -> None:
+        signature = self._polygons_editor_signature(image_path, polygons)
+        if getattr(self, "_editor_polygons_signature", None) == signature:
+            return
+        self.polygon_editor.set_polygons(polygons)
+        self._editor_polygons_signature = signature
+
+    def _request_neighbor_frame_sync(self: Any, *, delay_ms: int = 0) -> None:
+        if not hasattr(self, "show_neighbor_frames_checkbox") or not self.show_neighbor_frames_checkbox.isChecked():
+            return
+        timer = getattr(self, "_neighbor_sync_timer", None)
+        if timer is None:
+            QTimer.singleShot(max(0, int(delay_ms)), self._sync_neighbor_frames)
+            return
+        timer.stop()
+        timer.start(max(0, int(delay_ms)))
+
+    def _schedule_neighbor_frames_after_main_image_ready(self: Any) -> None:
+        self._request_neighbor_frame_sync(delay_ms=0)
+
+    def _neighbor_sync_is_current(self: Any) -> bool:
+        sync_path = getattr(self, "_neighbor_sync_image_path", None)
+        current_path = self._workspace.current_image_path
+        if not sync_path or not current_path:
+            return False
+        return str(Path(sync_path)) == str(Path(current_path))
+
+    def _queue_editor_display_pixmap(self: Any, image_path: str, display_image: object) -> None:
+        if display_image is None:
+            self.polygon_editor.set_image_pixmap(QPixmap())
+            return
+        session = self._frame_switch_profile_for_path(image_path)
+        if session is not None:
+            session.mark_pending("editor_display")
+        self._editor_display_request_serial = int(getattr(self, "_editor_display_request_serial", 0)) + 1
+        request_id = self._editor_display_request_serial
+        target_path = str(Path(image_path))
+        runnable = EditorDisplayRunnable(request_id, target_path, display_image)
+
+        def _on_display_ready(req_id: int, path: str, qimage: object) -> None:
+            if req_id != self._editor_display_request_serial:
+                return
+            if str(Path(path)) != str(Path(self._workspace.current_image_path or "")):
+                return
+            pixmap = QPixmap()
+            if isinstance(qimage, QImage):
+                try:
+                    pixmap = QPixmap.fromImage(qimage)
+                except Exception:
+                    pixmap = QPixmap()
+            if pixmap.isNull():
+                self.polygon_editor.set_image_pixmap(QPixmap())
+                self._pending_editor_frame_apply = None
+                return
             current_state = self._workspace.current_state
-            polygons_synced = [polygon.clone() for polygon in current_state.polygons] if current_state else []
-            self.polygon_editor.set_image(display_image)
-            self.polygon_editor.set_polygons(polygons_synced)
-            self.polygon_editor.set_debug_candidates(list(current_state.debug_candidates) if current_state else [])
-            self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
-            if hasattr(self, "via_show_detected_checkbox"):
-                self.polygon_editor.set_polygon_category_visible(
-                    "via", self.via_show_detected_checkbox.isChecked()
-                )
-            if hasattr(self, "polygon_editor") and hasattr(self, "metal_show_rejected_checkbox"):
-                layers = getattr(current_state, "metal_overlay_polygons", None) or {}
-                self.polygon_editor.set_metal_overlays(
-                    layers,
-                    {
-                        "rejected": self.metal_show_rejected_checkbox.isChecked(),
-                        "suspicious": self.metal_show_suspicious_checkbox.isChecked(),
-                        "border": self.metal_show_border_checkbox.isChecked(),
-                        "wide_pairs_suspicious": self.metal_show_suspicious_checkbox.isChecked(),
-                        "wide_pairs_rejected": self.metal_show_rejected_checkbox.isChecked(),
-                    },
-                )
-            if hasattr(self, "metal_show_conductors_checkbox"):
-                show_c = self.metal_show_conductors_checkbox.isChecked()
-                self.polygon_editor.set_polygon_category_visible("conductor", show_c)
-                self.polygon_editor.set_polygon_category_visible("metal_border", show_c)
-                self.polygon_editor.set_polygon_category_visible("metal_wide_gradient", show_c)
-            self._sync_neighbor_frames()
+            if current_state is not None:
+                cache_key = self._editor_display_cache_key(path, current_state)
+                cache = getattr(self, "_editor_pixmap_cache", {})
+                cache[cache_key] = pixmap
+                while len(cache) > 48:
+                    cache.pop(next(iter(cache)))
+                self._editor_pixmap_cache = cache
+            self.polygon_editor.set_image_pixmap(pixmap)
+            session = self._frame_switch_profile_for_path(path)
+            if session is not None:
+                session.complete_pending("editor_display", suffix="_ready")
+            self._flush_pending_editor_frame_apply(str(Path(path)))
+
+        runnable.signals.result.connect(_on_display_ready)
+        self._editor_display_thread_pool.start(runnable)
+
+    def _apply_display_image_to_editor(self: Any, image_path: str, display_image: object, *, state) -> bool:
+        if display_image is None:
+            self.polygon_editor.set_image_pixmap(QPixmap())
+            return True
+        cache_key = self._editor_display_cache_key(image_path, state)
+        cached = getattr(self, "_editor_pixmap_cache", {}).get(cache_key)
+        if cached is not None and not cached.isNull():
+            self.polygon_editor.set_image_pixmap(cached)
+            return True
+        self._queue_editor_display_pixmap(image_path, display_image)
+        return False
+
+    def _apply_editor_vectors_for_frame(
+        self: Any,
+        image_path: str,
+        state,
+        polygons: list,
+        *,
+        defer_heavy_overlays: bool,
+    ) -> None:
+        self._sync_polygons_to_editor(image_path, polygons)
+        if defer_heavy_overlays:
+            return
+        self.polygon_editor.set_debug_candidates(list(state.debug_candidates))
+        self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
+        if hasattr(self, "via_show_detected_checkbox"):
+            self.polygon_editor.set_polygon_category_visible(
+                "via", self.via_show_detected_checkbox.isChecked()
+            )
+        if hasattr(self, "polygon_editor") and hasattr(self, "metal_show_rejected_checkbox"):
+            layers = getattr(state, "metal_overlay_polygons", None) or {}
+            self.polygon_editor.set_metal_overlays(
+                layers,
+                {
+                    "rejected": self.metal_show_rejected_checkbox.isChecked(),
+                    "suspicious": self.metal_show_suspicious_checkbox.isChecked(),
+                    "border": self.metal_show_border_checkbox.isChecked(),
+                    "wide_pairs_suspicious": self.metal_show_suspicious_checkbox.isChecked(),
+                    "wide_pairs_rejected": self.metal_show_rejected_checkbox.isChecked(),
+                },
+            )
+        if hasattr(self, "metal_show_conductors_checkbox"):
+            show_c = self.metal_show_conductors_checkbox.isChecked()
+            self.polygon_editor.set_polygon_category_visible("conductor", show_c)
+            self.polygon_editor.set_polygon_category_visible("metal_border", show_c)
+            self.polygon_editor.set_polygon_category_visible("metal_wide_gradient", show_c)
+
+    def _flush_pending_editor_frame_apply(self: Any, image_path: str) -> None:
+        pending = getattr(self, "_pending_editor_frame_apply", None)
+        if pending is None:
+            session = self._frame_switch_profile_for_path(image_path)
+            if session is not None:
+                session.complete_pending("editor_vectors", suffix="_none_pending")
+            self._schedule_neighbor_frames_after_main_image_ready()
+            return
+        pending_path, polygons, defer_heavy_overlays = pending
+        self._pending_editor_frame_apply = None
+        if str(Path(pending_path)) != str(Path(image_path)):
+            return
+        if str(Path(pending_path)) != str(Path(self._workspace.current_image_path or "")):
+            return
+        current_state = self._workspace.current_state
+        if current_state is None:
+            return
+        step_start = perf_counter()
+        self._apply_editor_vectors_for_frame(
+            pending_path,
+            current_state,
+            polygons,
+            defer_heavy_overlays=defer_heavy_overlays,
+        )
+        session = self._frame_switch_profile_for_path(image_path)
+        if session is not None:
+            session.note_timing("editor_vectors_apply", (perf_counter() - step_start) * 1000.0)
+            session.complete_pending("editor_vectors", suffix="_flushed")
+        self._schedule_neighbor_frames_after_main_image_ready()
+
+    def _apply_frame_to_editor(self: Any, *, defer_neighbors: bool = True, defer_heavy_overlays: bool = False) -> None:
+        current_state = self._workspace.current_state
+        image_path = self._workspace.current_image_path
+        if current_state is None or not image_path:
+            self._pending_editor_frame_apply = None
+            self.polygon_editor.set_image_pixmap(QPixmap())
+            self.polygon_editor.set_polygons([])
+            self._editor_polygons_signature = None
+            return
+        display_image = self._display_image_for_current_state()
+        polygons = list(current_state.polygons)
+        image_ready = self._apply_display_image_to_editor(image_path, display_image, state=current_state)
+        if image_ready:
+            self._pending_editor_frame_apply = None
+            self._apply_editor_vectors_for_frame(
+                image_path,
+                current_state,
+                polygons,
+                defer_heavy_overlays=defer_heavy_overlays,
+            )
+        else:
+            self._pending_editor_frame_apply = (str(Path(image_path)), polygons, defer_heavy_overlays)
+            session = self._frame_switch_profile_for_path(image_path)
+            if session is not None:
+                session.mark_pending("editor_vectors")
+        neighbor_delay_ms = 200 if self._uses_large_frame_list() else 0
+        if defer_neighbors:
+            self._request_neighbor_frame_sync(delay_ms=neighbor_delay_ms)
+        else:
+            self._request_neighbor_frame_sync(delay_ms=0)
+        if not defer_heavy_overlays:
             self._sync_extra_layers()
             self._refresh_gradient_overlay()
-        finally:
-            self._updating_views = False
         self._update_vector_edit_status_label()
 
-    def _display_image_for_current_state(self):
+    def _sync_current_state_views(self: Any, *, defer_neighbors: bool = True) -> None:
+        self._updating_views = True
+        try:
+            self._apply_frame_to_editor(defer_neighbors=defer_neighbors, defer_heavy_overlays=False)
+        finally:
+            self._updating_views = False
+
+    def _display_image_for_current_state(self: Any):
         current_state = self._workspace.current_state
         if self._show_source_while_middle_held and current_state is not None and current_state.source_image is not None:
             return current_state.source_image
         return self._workspace.current_display_image()
 
-    def _via_debug_inspection_enabled(self) -> bool:
+    def _via_debug_inspection_enabled(self: Any) -> bool:
         return bool(hasattr(self, "debug_candidates_checkbox") and self.debug_candidates_checkbox.isChecked())
 
-    def _neighbor_frame_image(self, image_path: str):
-        state = getattr(self._workspace, "_state_cache", {}).get(image_path)
+    def _neighbor_preview_max_dimension(self: Any) -> int:
+        state = self._workspace.current_state
+        if state is not None and state.source_image is not None:
+            height, width = state.source_image.shape[:2]
+            return max(128, min(512, int(min(width, height))))
+        return 256
+
+    def _neighbor_frame_image(self: Any, image_path: str):
+        normalized = str(Path(image_path))
+        state = getattr(self._workspace, "_state_cache", {}).get(normalized)
         if state is not None:
             return state.preprocessed_image if state.preprocessed_image is not None else state.source_image
-        cached = self._neighbor_image_cache.get(image_path)
+        cached = self._neighbor_image_cache.get(normalized)
         if cached is not None:
             return cached
-        try:
-            image = load_image_color(image_path)
-        except Exception as exc:
-            self._append_log(
-                self._tr(
-                    "neighbor_frame_load_failed_log",
-                    "Не удалось загрузить соседний кадр {path}: {error}"
-                    if self._ui_language == "ru"
-                    else "Failed to load neighbor frame {path}: {error}",
-                    path=image_path,
-                    error=exc,
-                )
-            )
-            return None
-        self._neighbor_image_cache[image_path] = image
-        return image
+        return None
 
-    def _odd_neighbor_grid_size(self, value: int) -> int:
+    def _queue_neighbor_frame_load(self: Any, image_path: str) -> None:
+        normalized = str(Path(image_path))
+        if normalized in getattr(self, "_neighbor_queued_paths", set()):
+            return
+        self._neighbor_queued_paths.add(normalized)
+        try:
+            max_dim = self._neighbor_preview_max_dimension()
+            runnable = ThumbnailLoadRunnable(0, normalized, max_dim, max_dim)
+            runnable.signals.result.connect(
+                self._on_neighbor_frame_loaded,
+                Qt.ConnectionType.QueuedConnection,
+            )
+            runnable.signals.finished.connect(
+                self._on_neighbor_frame_load_finished,
+                Qt.ConnectionType.QueuedConnection,
+            )
+            self._neighbor_thread_pool.start(runnable)
+        except RuntimeError:
+            self._neighbor_queued_paths.discard(normalized)
+
+    def _on_neighbor_frame_loaded(self: Any, _generation: int, image_path: str, qimage: object) -> None:
+        normalized = str(Path(image_path))
+        self._neighbor_queued_paths.discard(normalized)
+        if not self._neighbor_sync_is_current():
+            return
+        if not any(str(Path(path)) == normalized for *_offsets, path in getattr(self, "_neighbor_frame_specs", [])):
+            return
+        if qimage is None:
+            return
+        self._neighbor_image_cache[normalized] = qimage
+        self._schedule_neighbor_frame_apply(delay_ms=0)
+
+    def _on_neighbor_frame_load_finished(self: Any, _generation: int, image_path: str) -> None:
+        self._neighbor_queued_paths.discard(str(Path(image_path)))
+
+    def _schedule_neighbor_frame_apply(self: Any, *, delay_ms: int = 0) -> None:
+        if not self._neighbor_sync_is_current():
+            return
+        QTimer.singleShot(max(0, int(delay_ms)), self._apply_cached_neighbor_frames)
+
+    def _try_load_neighbor_preview_image(self: Any, image_path: str):
+        return self._neighbor_frame_image(str(image_path))
+
+    def _apply_cached_neighbor_frames(self: Any) -> None:
+        if not self._neighbor_sync_is_current():
+            return
+        frames: list[tuple[int, int, object, str]] = []
+        for column_offset, row_offset, image_path in getattr(self, "_neighbor_frame_specs", []):
+            image = self._try_load_neighbor_preview_image(image_path)
+            if image is None:
+                continue
+            frames.append((column_offset, row_offset, image, image_path))
+        if not frames and getattr(self, "_neighbor_queued_paths", set()):
+            return
+        self.polygon_editor.set_neighbor_frames(
+            frames,
+            float(self.neighbor_opacity_spin.value()),
+            int(self.neighbor_overlap_spin.value()),
+            True,
+        )
+        if getattr(self, "_neighbor_queued_paths", set()):
+            self._schedule_neighbor_frame_apply(delay_ms=100)
+        else:
+            current_path = self._workspace.current_image_path
+            session = (
+                self._frame_switch_profile_for_path(str(current_path))
+                if current_path
+                else None
+            )
+            if session is not None:
+                session.complete_pending("neighbor_sync", suffix="_applied")
+            QTimer.singleShot(0, self._center_editor_on_current_main_image)
+
+    def _center_editor_on_current_main_image(self: Any) -> None:
+        if not hasattr(self, "polygon_editor") or not self._workspace.current_image_path:
+            return
+        self.polygon_editor.center_main_image()
+
+    def _odd_neighbor_grid_size(self: Any, value: int) -> int:
         size = max(3, min(7, int(value)))
         return size if size % 2 else size - 1
 
-    def _neighbor_grid_size_for_zoom(self) -> int:
-        max_grid = self._odd_neighbor_grid_size(self.neighbor_max_grid_spin.value())
-        zoom = self.polygon_editor.zoom_factor() if hasattr(self, "polygon_editor") else 1.0
-        requested = 7 if zoom < 0.25 else 5 if zoom < 0.45 else 3
-        return min(max_grid, requested)
+    def _neighbor_grid_size(self: Any) -> int:
+        return self._odd_neighbor_grid_size(self.neighbor_max_grid_spin.value())
 
-    def _sync_neighbor_frames(self) -> None:
+    def _sync_neighbor_frames(self: Any) -> None:
         if not hasattr(self, "polygon_editor"):
             return
-        if not hasattr(self, "show_neighbor_frames_checkbox") or not self.show_neighbor_frames_checkbox.isChecked():
-            self.polygon_editor.set_neighbor_frames([], 0.0, 0, False)
-            return
         current_path = self._workspace.current_image_path
-        image_paths = list(self._workspace.image_paths)
-        if not current_path or current_path not in image_paths:
+        session = (
+            self._frame_switch_profile_for_path(str(current_path))
+            if current_path
+            else None
+        )
+        if session is not None:
+            session.mark_pending("neighbor_sync")
+        if not hasattr(self, "show_neighbor_frames_checkbox") or not self.show_neighbor_frames_checkbox.isChecked():
+            self._neighbor_sync_image_path = None
+            self._neighbor_frame_specs = []
+            self._neighbor_queued_paths.clear()
             self.polygon_editor.set_neighbor_frames([], 0.0, 0, False)
+            if session is not None:
+                session.complete_pending("neighbor_sync", suffix="_disabled")
+            QTimer.singleShot(0, self._center_editor_on_current_main_image)
             return
-        current_index = image_paths.index(current_path)
+        image_paths = [str(Path(path)) for path in self._workspace.image_paths]
+        normalized_current_path = str(Path(current_path)) if current_path else ""
+        if not normalized_current_path or normalized_current_path not in image_paths:
+            self._neighbor_sync_image_path = None
+            self._neighbor_frame_specs = []
+            self._neighbor_queued_paths.clear()
+            self.polygon_editor.set_neighbor_frames([], 0.0, 0, False)
+            if session is not None:
+                session.complete_pending("neighbor_sync", suffix="_no_current")
+            QTimer.singleShot(0, self._center_editor_on_current_main_image)
+            return
+        current_index = image_paths.index(normalized_current_path)
         columns = max(1, int(self.neighbor_columns_spin.value()))
         current_row = current_index // columns
         current_column = current_index % columns
-        radius = self._neighbor_grid_size_for_zoom() // 2
-        frames: list[tuple[int, int, object, str]] = []
+        radius = self._neighbor_grid_size() // 2
+        self._neighbor_sync_image_path = normalized_current_path
+        scene = self.polygon_editor._editor_scene
+        scene._pending_neighbor_frames = None
+        scene.clear_neighbor_frames()
+        specs: list[tuple[int, int, str]] = []
         for row_offset in range(-radius, radius + 1):
             for column_offset in range(-radius, radius + 1):
                 if row_offset == 0 and column_offset == 0:
@@ -418,26 +761,27 @@ class WidgetProcessingMixin:
                 if index < 0 or index >= len(image_paths):
                     continue
                 image_path = image_paths[index]
-                image = self._neighbor_frame_image(image_path)
-                if image is None:
-                    continue
-                frames.append((column_offset, row_offset, image, image_path))
-        self.polygon_editor.set_neighbor_frames(
-            frames,
-            float(self.neighbor_opacity_spin.value()),
-            int(self.neighbor_overlap_spin.value()),
-            True,
-        )
+                specs.append((column_offset, row_offset, image_path))
+        self._neighbor_frame_specs = specs
+        self._apply_cached_neighbor_frames()
+        for _column_offset, _row_offset, image_path in specs:
+            if self._neighbor_frame_image(image_path) is None:
+                self._queue_neighbor_frame_load(image_path)
+        if getattr(self, "_neighbor_queued_paths", set()):
+            self._schedule_neighbor_frame_apply(delay_ms=50)
+        elif session is not None:
+            session.complete_pending("neighbor_sync", suffix="_cached_only")
+        if self._uses_large_frame_list() and len(self._neighbor_image_cache) > 48:
+            self._neighbor_image_cache.clear()
 
-    def _on_neighbor_frame_activated(self, image_path: str) -> None:
+    def _on_neighbor_frame_activated(self: Any, image_path: str) -> None:
         if image_path in self._workspace.image_paths:
-            item = self._find_image_list_item(image_path)
-            if item is not None:
-                self.image_list.setCurrentItem(item)
+            if self._image_path_in_image_list(image_path):
+                self._set_image_list_current_path(image_path, fallback_to_first=False)
             else:
                 self.load_image(image_path)
 
-    def _abort_in_flight_interactive_processing(self, *, preview: bool, prepared: bool) -> None:
+    def _abort_in_flight_interactive_processing(self: Any, *, preview: bool, prepared: bool) -> None:
         self._preview_update_timer.stop()
         if preview:
             if self._preview_run_cancel is not None:
@@ -451,7 +795,7 @@ class WidgetProcessingMixin:
             self._prepared_image_pending_signature = None
         self._refresh_busy_indicator()
 
-    def _queue_prepared_image_update(self, image_path: str, source_image) -> None:
+    def _queue_prepared_image_update(self: Any, image_path: str, source_image) -> None:
         request = PreparedImageRequest(
             image_path=image_path,
             source_image=source_image,
@@ -468,7 +812,7 @@ class WidgetProcessingMixin:
         self._refresh_busy_indicator()
         self._start_pending_prepared_image_update()
 
-    def _start_pending_prepared_image_update(self) -> None:
+    def _start_pending_prepared_image_update(self: Any) -> None:
         if self._prepared_image_pending_request is None:
             return
         if self._prepared_image_running_request_id is not None:
@@ -492,7 +836,7 @@ class WidgetProcessingMixin:
         self._prepared_image_thread_pool.start(worker)
         self._refresh_busy_indicator()
 
-    def _build_preview_request(self) -> PreviewProcessingRequest | None:
+    def _build_preview_request(self: Any) -> PreviewProcessingRequest | None:
         if not self._workspace.current_image_path:
             return None
         source_image = None
@@ -515,13 +859,13 @@ class WidgetProcessingMixin:
             passthrough_polygons=passthrough,
         )
 
-    def _preview_request_signature(self, request: PreviewProcessingRequest) -> tuple[str, str, str, int]:
+    def _preview_request_signature(self: Any, request: PreviewProcessingRequest) -> tuple[str, str, str, int]:
         return build_preview_request_signature(request)
 
-    def _prepared_image_request_signature(self, request: PreparedImageRequest) -> tuple[str, str]:
+    def _prepared_image_request_signature(self: Any, request: PreparedImageRequest) -> tuple[str, str]:
         return build_prepared_image_signature(request)
 
-    def _queue_preview_processing(self, *, debounced: bool) -> None:
+    def _queue_preview_processing(self: Any, *, debounced: bool) -> None:
         request = self._build_preview_request()
         if request is None:
             self._append_log(self._tr("no_image_selected_log"))
@@ -549,7 +893,7 @@ class WidgetProcessingMixin:
         self._preview_update_timer.stop()
         self._start_pending_preview_processing()
 
-    def _start_pending_preview_processing(self) -> None:
+    def _start_pending_preview_processing(self: Any) -> None:
         if self._preview_pending_request is None:
             return
         if self._preview_running_request_id is not None:
@@ -575,10 +919,10 @@ class WidgetProcessingMixin:
         self._preview_thread_pool.start(worker)
         self._refresh_busy_indicator()
 
-    def _append_log(self, message: str) -> None:
+    def _append_log(self: Any, message: str) -> None:
         self.logMessage.emit(message)
 
-    def _refresh_busy_indicator(self) -> None:
+    def _refresh_busy_indicator(self: Any) -> None:
         active = any(
             (
                 self._preview_running_request_id is not None,
@@ -606,7 +950,7 @@ class WidgetProcessingMixin:
             self.auto_tune_button.setEnabled(self._auto_tune_running_request_id is None)
 
     def _on_prepared_image_result(
-        self, request_id: int, image_path: str, preprocessed_image, pipeline_config: dict
+        self: Any, request_id: int, image_path: str, preprocessed_image, pipeline_config: dict
     ) -> None:
         if request_id != self._prepared_image_running_request_id:
             return
@@ -616,12 +960,12 @@ class WidgetProcessingMixin:
             self._sync_current_state_views()
             self._try_extract_if_recognition_enabled()
 
-    def _on_prepared_image_error(self, request_id: int, message: str) -> None:
+    def _on_prepared_image_error(self: Any, request_id: int, message: str) -> None:
         if request_id != self._prepared_image_running_request_id:
             return
         self._append_log(self._tr("processing_failed_log", error=message))
 
-    def _on_prepared_image_finished(self, request_id: int) -> None:
+    def _on_prepared_image_finished(self: Any, request_id: int) -> None:
         if request_id == self._prepared_image_running_request_id:
             self._prepared_image_running_request_id = None
             self._prepared_image_running_signature = None
@@ -630,7 +974,7 @@ class WidgetProcessingMixin:
             self._start_pending_prepared_image_update()
         self._refresh_busy_indicator()
 
-    def _on_auto_tune_result(self, request_id: int, result: AutoTuneResult) -> None:
+    def _on_auto_tune_result(self: Any, request_id: int, result: AutoTuneResult) -> None:
         if request_id != self._auto_tune_running_request_id:
             return
         self._apply_auto_tune_result(result)
@@ -649,7 +993,7 @@ class WidgetProcessingMixin:
             )
         )
 
-    def _on_auto_tune_error(self, request_id: int, message: str) -> None:
+    def _on_auto_tune_error(self: Any, request_id: int, message: str) -> None:
         if request_id != self._auto_tune_running_request_id:
             return
         self._append_log(
@@ -660,12 +1004,12 @@ class WidgetProcessingMixin:
             )
         )
 
-    def _on_auto_tune_finished(self, request_id: int) -> None:
+    def _on_auto_tune_finished(self: Any, request_id: int) -> None:
         if request_id == self._auto_tune_running_request_id:
             self._auto_tune_running_request_id = None
         self._refresh_busy_indicator()
 
-    def _on_preview_processing_result(self, request_id: int, result) -> None:
+    def _on_preview_processing_result(self: Any, request_id: int, result) -> None:
         if request_id != self._preview_running_request_id:
             return
         if self._workspace.current_image_path != result.image_path:
@@ -689,14 +1033,14 @@ class WidgetProcessingMixin:
         )
         self.imageProcessed.emit(result.image_path, result.polygons)
 
-    def _on_preview_processing_error(self, request_id: int, message: str) -> None:
+    def _on_preview_processing_error(self: Any, request_id: int, message: str) -> None:
         if request_id != self._preview_running_request_id:
             return
         if hasattr(self, "recognition_mode_combo"):
             self._set_recognition_status("error", message)
         self._append_log(self._tr("processing_failed_log", error=message))
 
-    def _on_preview_processing_finished(self, request_id: int) -> None:
+    def _on_preview_processing_finished(self: Any, request_id: int) -> None:
         if request_id == self._preview_running_request_id:
             self._preview_running_request_id = None
             self._preview_running_signature = None
@@ -708,7 +1052,7 @@ class WidgetProcessingMixin:
             self._start_pending_preview_processing()
         self._refresh_busy_indicator()
 
-    def _show_batch_progress(self, total: int) -> None:
+    def _show_batch_progress(self: Any, total: int) -> None:
         if not self._batch_progress_enabled:
             self._hide_batch_progress()
             return
@@ -716,12 +1060,12 @@ class WidgetProcessingMixin:
         self.batch_progress_bar.setValue(0)
         self.batch_progress_bar.setVisible(True)
 
-    def _hide_batch_progress(self) -> None:
+    def _hide_batch_progress(self: Any) -> None:
         self.batch_progress_bar.setVisible(False)
         self.batch_progress_bar.setRange(0, 100)
         self.batch_progress_bar.setValue(0)
 
-    def _on_polygons_edited(self) -> None:
+    def _on_polygons_edited(self: Any) -> None:
         if self._updating_views:
             return
         if self._workspace.update_current_polygons(self.get_polygons()):
@@ -732,13 +1076,13 @@ class WidgetProcessingMixin:
             self._update_vector_edit_status_label()
             self.polygonsEdited.emit()
 
-    def _antialias_selected_polygons(self) -> None:
+    def _antialias_selected_polygons(self: Any) -> None:
         grade = int(self.antialias_grade_spin.value()) if hasattr(self, "antialias_grade_spin") else 1
         if not self.polygon_editor.antialias_selected_polygons(grade):
             self._append_log(
                 self._tr(
                     "antialias_selected_none_log",
-                    "Р’С‹Р±РµСЂРёС‚Рµ РїРѕР»РёРіРѕРЅС‹ РґР»СЏ СЃРіР»Р°Р¶РёРІР°РЅРёСЏ."
+                    "Выберите полигоны для сглаживания."
                     if self._ui_language == "ru"
                     else "Select polygons to antialias.",
                 )
@@ -747,14 +1091,14 @@ class WidgetProcessingMixin:
         self._append_log(
             self._tr(
                 "antialias_selected_done_log",
-                "РЎРіР»Р°Р¶РёРІР°РЅРёРµ РїСЂРёРјРµРЅРµРЅРѕ Рє РІС‹Р±СЂР°РЅРЅС‹Рј РїРѕР»РёРіРѕРЅР°Рј, grade={grade}."
+                "Сглаживание применено к выбранным полигонам, grade={grade}."
                 if self._ui_language == "ru"
                 else "Antialiasing applied to selected polygons, grade={grade}.",
                 grade=grade,
             )
         )
 
-    def _antialias_opened_cif_files(self) -> None:
+    def _antialias_opened_cif_files(self: Any) -> None:
         grade = int(self.antialias_grade_spin.value()) if hasattr(self, "antialias_grade_spin") else 1
         current_path = self._workspace.current_image_path
         if current_path is not None:
@@ -797,7 +1141,7 @@ class WidgetProcessingMixin:
             self._append_log(
                 self._tr(
                     "antialias_opened_failed_log",
-                    "РЎРіР»Р°Р¶РёРІР°РЅРёРµ CIF: СЃРѕС…СЂР°РЅРµРЅРѕ {saved}/{changed}, РѕС€РёР±РєРё: {errors}"
+                    "Сглаживание CIF: сохранено {saved}/{changed}, ошибки: {errors}"
                     if self._ui_language == "ru"
                     else "CIF antialiasing: saved {saved}/{changed}, errors: {errors}",
                     saved=saved_count,
@@ -809,7 +1153,7 @@ class WidgetProcessingMixin:
         self._append_log(
             self._tr(
                 "antialias_opened_done_log",
-                "РЎРіР»Р°Р¶РёРІР°РЅРёРµ РїСЂРёРјРµРЅРµРЅРѕ Рё СЃРѕС…СЂР°РЅРµРЅРѕ РґР»СЏ {count} РѕС‚РєСЂС‹С‚С‹С… CIF, grade={grade}."
+                "Сглаживание применено и сохранено для {count} открытых CIF, grade={grade}."
                 if self._ui_language == "ru"
                 else "Antialiasing applied and saved for {count} opened CIF files, grade={grade}.",
                 count=saved_count,
@@ -817,7 +1161,7 @@ class WidgetProcessingMixin:
             )
         )
 
-    def _on_batch_result(self, result) -> None:
+    def _on_batch_result(self: Any, result) -> None:
         self.imageProcessed.emit(result.image_path, result.polygons)
         self._append_log(
             self._tr(
@@ -827,30 +1171,30 @@ class WidgetProcessingMixin:
             )
         )
 
-    def _on_batch_progress(self, current: int, total: int) -> None:
+    def _on_batch_progress(self: Any, current: int, total: int) -> None:
         if self._batch_progress_enabled:
             self.batch_progress_bar.setRange(0, max(1, total))
             self.batch_progress_bar.setValue(current)
         self._set_progress_status("batch_progress_status", current=current, total=total)
         self.batchProgress.emit(current, total)
 
-    def _on_batch_finished(self) -> None:
+    def _on_batch_finished(self: Any) -> None:
         self._batch_progress_enabled = False
         self._hide_batch_progress()
         self._set_progress_status("batch_finished_status")
         self.batchFinished.emit()
 
-    def _on_batch_error(self, image_path: str, message: str) -> None:
+    def _on_batch_error(self: Any, image_path: str, message: str) -> None:
         self._append_log(self._tr("batch_error_log", image_name=Path(image_path).name, message=message))
 
-    def refresh_image_list(self) -> None:
+    def refresh_image_list(self: Any) -> None:
         directory = self.input_dir_edit.text().strip()
         if not directory:
             self._append_log(self._tr("input_directory_empty_log"))
             return
         self._begin_async_directory_scan(directory)
 
-    def set_input_directory(self, path: str) -> None:
+    def set_input_directory(self: Any, path: str) -> None:
         directory = self._path_settings.validate_input_directory(path)
         if not directory.available:
             self._append_log(
@@ -864,26 +1208,27 @@ class WidgetProcessingMixin:
         self._save_persisted_paths()
         self._begin_async_directory_scan(directory.path)
 
-    def set_cif_directory(self, path: str) -> None:
-        directory_state = index_cif_directory(path)
-        self.cif_dir_edit.setText(directory_state.directory)
+    def set_cif_directory(self: Any, path: str) -> None:
+        directory = str(Path(path))
+        self.cif_dir_edit.setText(directory)
         self._save_persisted_paths()
-        self._workspace.set_cif_index(directory_state.indexed_paths)
-        if directory_state.available:
-            self._append_log(self._tr("cif_indexed_log", count=len(directory_state.indexed_paths)))
-        else:
-            self._append_log(self._tr("cif_directory_unavailable_log"))
-        self._sync_after_cif_index_changed()
+        self._indexed_cif_directory = None
+        if bool(getattr(self, "_image_list_rebuild_in_progress", False)):
+            self._pending_cif_directory_path_after_images = directory
+            return
+        self._begin_async_cif_directory_index(directory)
 
-    def set_output_directory(self, path: str) -> None:
+    def set_output_directory(self: Any, path: str) -> None:
         self.output_dir_edit.setText(path)
         self._save_persisted_paths()
 
-    def set_dataset_directory(self, path: str) -> None:
+    def set_dataset_directory(self: Any, path: str) -> None:
         self.dataset_dir_edit.setText(path)
         self._save_persisted_paths()
 
-    def _rebuild_image_list_items(self, normalized_paths: list[str]) -> None:
+    def _rebuild_image_list_items(self: Any, normalized_paths: list[str]) -> None:
+        self._rebuild_image_list_items_responsive(normalized_paths)
+        return
         self.image_list.clear()
         for path in normalized_paths:
             item = QListWidgetItem(Path(path).stem)
@@ -893,19 +1238,56 @@ class WidgetProcessingMixin:
             self.image_list.addItem(item)
         self._rebuild_thumbnail_grid()
 
-    def _select_loaded_image_path(self, image_path: str | None, *, fallback_to_first: bool = True) -> None:
-        if image_path:
-            item = self._find_image_list_item(image_path)
-            if item is not None:
-                self.image_list.setCurrentItem(item)
-                return
-        if fallback_to_first and self.image_list.count() > 0:
-            self.image_list.setCurrentRow(0)
-        elif self.image_list.count() <= 0:
-            self._sync_current_state_views()
+    def _rebuild_image_list_items_responsive(self: Any, normalized_paths: list[str]) -> None:
+        self._image_list_build_generation += 1
+        self._image_list_rebuild_in_progress = True
+        paths = [str(Path(path)) for path in normalized_paths]
+        if hasattr(self, "image_vector_list") and len(paths) <= ASSET_FILTER_LISTS_MAX_FRAMES:
+            for list_widget in (self.image_vector_list, self.image_only_list, self.vector_only_list):
+                list_widget.clear()
+        if hasattr(self, "files_scan_progress_bar"):
+            self.files_scan_progress_bar.setVisible(False)
+            self.files_scan_progress_bar.setRange(0, 100)
+            self.files_scan_progress_bar.setValue(0)
+        self._set_image_list_paths(paths)
+        if len(paths) <= ASSET_FILTER_LISTS_MAX_FRAMES:
+            self._rebuild_asset_filter_lists()
+            self._apply_asset_view_filter()
+        self._finish_pending_image_list_rebuild()
+
+    def _finish_pending_image_list_rebuild(self: Any) -> None:
+        self._image_list_rebuild_in_progress = False
+        directory = self.cif_dir_edit.text().strip() if hasattr(self, "cif_dir_edit") else ""
+        normalized_directory = str(Path(directory)) if directory else ""
+        self._defer_vector_load_until_cif_index = bool(
+            normalized_directory and getattr(self, "_indexed_cif_directory", None) != normalized_directory
+        )
+        pending = getattr(self, "_pending_image_list_post_build", None)
+        if not pending:
+            if self._defer_vector_load_until_cif_index:
+                self._mark_thumbnail_grid_rebuild_pending()
+            if not self._apply_pending_cif_directory_state_after_image_rebuild():
+                self._start_vector_index_or_rebuild_frame_matrix_after_images()
+            return
+        self._pending_image_list_post_build = None
+        select_path = pending.get("select_path")
+        self._select_loaded_image_path(
+            str(select_path) if select_path else None,
+            fallback_to_first=bool(pending.get("fallback_to_first", True)),
+        )
+        self._refresh_vector_rows_for_workspace()
+        if not self._uses_large_frame_list():
+            self._log_matching_gaps_after_refresh(self._matching_report())
+        if self._defer_vector_load_until_cif_index:
+            self._mark_thumbnail_grid_rebuild_pending()
+        if not self._apply_pending_cif_directory_state_after_image_rebuild():
+            self._start_vector_index_or_rebuild_frame_matrix_after_images()
+
+    def _select_loaded_image_path(self: Any, image_path: str | None, *, fallback_to_first: bool = True) -> None:
+        self._set_image_list_current_path(image_path, fallback_to_first=fallback_to_first)
 
     def _apply_image_paths_to_workspace(
-        self,
+        self: Any,
         paths: list[str],
         *,
         clear_extra_layers: bool,
@@ -927,17 +1309,18 @@ class WidgetProcessingMixin:
         if clear_extra_layers:
             self._clear_extra_layers()
         self._update_extra_layers_enabled_state()
+        self._pending_image_list_post_build = {
+            "select_path": select_path,
+            "fallback_to_first": fallback_to_first,
+        }
         self._rebuild_image_list_items(normalized_paths)
-        self._select_loaded_image_path(select_path, fallback_to_first=fallback_to_first)
-        self._rebuild_vector_list()
-        self._refresh_vector_rows_for_workspace()
-        self._sync_frame_navigation_controls()
-        self._log_matching_gaps_after_refresh(self._matching_report())
+        return
 
-    def load_images(self, paths: list[str], *, preferred_current_image_path: str | None = None) -> None:
+    def load_images(self: Any, paths: list[str], *, preferred_current_image_path: str | None = None) -> None:
         if self._workspace.current_state is not None and not self._try_leave_current_frame():
             return
         self._directory_scanner.invalidate_pending_results()
+        self._stop_work_simulation()
         normalized_paths = [str(Path(path)) for path in paths if is_image_path(path)]
         preferred = str(Path(preferred_current_image_path)) if preferred_current_image_path else None
         if preferred not in normalized_paths:
@@ -950,7 +1333,7 @@ class WidgetProcessingMixin:
         )
         return
 
-    def append_images(self, paths: list[str], *, select_first_new: bool = True) -> None:
+    def append_images(self: Any, paths: list[str], *, select_first_new: bool = True) -> None:
         existing_paths = [str(Path(path)) for path in self._workspace.image_paths]
         existing_set = set(existing_paths)
         additions: list[str] = []
@@ -966,6 +1349,7 @@ class WidgetProcessingMixin:
         if self._workspace.current_state is not None and not self._try_leave_current_frame():
             return
         self._directory_scanner.invalidate_pending_results()
+        self._stop_work_simulation()
         select_path = additions[0] if select_first_new else self._workspace.current_image_path
         self._apply_image_paths_to_workspace(
             [*existing_paths, *additions],
@@ -974,10 +1358,12 @@ class WidgetProcessingMixin:
             fallback_to_first=not bool(self._workspace.current_image_path),
         )
 
-    def reset_project(self) -> None:
+    def reset_project(self: Any) -> None:
         if self._workspace.current_state is not None and not self._try_leave_current_frame():
             return
         self._directory_scanner.invalidate_pending_results()
+        self._vector_indexer.invalidate_pending_results()
+        self._stop_work_simulation()
         self._abort_in_flight_interactive_processing(preview=True, prepared=True)
         self._workspace.clear_project()
         self._base_frame_number_by_path = {}
@@ -986,23 +1372,98 @@ class WidgetProcessingMixin:
         self._persisted_highlight_paths.clear()
         self._viewed_image_paths.clear()
         self._cif_load_failure_stems.clear()
+        self._editor_pixmap_cache.clear()
+        self._editor_polygons_signature = None
+        self._thumbnail_path_to_row.clear()
+        if hasattr(self, "_cancel_thumbnail_loading"):
+            self._cancel_thumbnail_loading()
+        getattr(self, "_thumbnail_icon_cache", {}).clear()
         self.input_dir_edit.setText("")
         self.cif_dir_edit.setText("")
         self._save_persisted_paths()
         self._save_persisted_current_image_path(None)
-        self.image_list.clear()
+        self._set_image_list_paths([])
         self._rebuild_thumbnail_grid()
         self._clear_extra_layers()
         self._update_extra_layers_enabled_state()
         self._rebuild_vector_list()
         self._refresh_image_list_item_states()
-        self._sync_frame_navigation_controls()
         self._sync_current_state_views()
 
-    def _find_matching_cif_path(self, image_path: str) -> str | None:
+    def _find_matching_cif_path(self: Any, image_path: str) -> str | None:
         return self._workspace.resolve_cif_path(image_path)
 
-    def _load_cif_overlay_polygons(self, image_path: str) -> list[PolygonData]:
+    def _should_defer_vector_load(self: Any) -> bool:
+        return bool(getattr(self, "_defer_vector_load_until_cif_index", False))
+
+    def _flush_pending_thumbnail_grid_rebuild(self: Any) -> None:
+        if not self._frame_matrix_enabled():
+            self._pending_thumbnail_rebuild_after_vectors = False
+            self._thumbnail_flush_retry_count = 0
+            return
+        if not bool(getattr(self, "_pending_thumbnail_rebuild_after_vectors", False)):
+            return
+        if getattr(self, "_frame_load_running_path", None) is not None or getattr(self, "_loading_image_path", None):
+            attempts = int(getattr(self, "_thumbnail_flush_retry_count", 0)) + 1
+            self._thumbnail_flush_retry_count = attempts
+            if attempts > 600:
+                self._pending_thumbnail_rebuild_after_vectors = False
+                self._thumbnail_flush_retry_count = 0
+                QTimer.singleShot(0, self._rebuild_thumbnail_grid)
+                return
+            QTimer.singleShot(100, self._flush_pending_thumbnail_grid_rebuild)
+            return
+        self._pending_thumbnail_rebuild_after_vectors = False
+        self._thumbnail_flush_retry_count = 0
+        QTimer.singleShot(0, self._rebuild_thumbnail_grid)
+
+    def _mark_thumbnail_grid_rebuild_pending(self: Any) -> None:
+        if not self._frame_matrix_enabled():
+            self._pending_thumbnail_rebuild_after_vectors = False
+            self._thumbnail_flush_retry_count = 0
+            return
+        self._pending_thumbnail_rebuild_after_vectors = True
+        self._thumbnail_flush_retry_count = 0
+
+    def _defer_frame_chrome_updates(self: Any, image_path: str) -> None:
+        normalized = str(Path(image_path))
+        session = self._frame_switch_profile_for_path(normalized)
+        if session is not None:
+            session.mark_pending("deferred_chrome")
+        if not hasattr(self, "_frame_chrome_update_timer"):
+            self._frame_chrome_update_timer = QTimer(self)
+            self._frame_chrome_update_timer.setSingleShot(True)
+            self._frame_chrome_update_timer.timeout.connect(self._apply_deferred_frame_chrome_updates)
+        self._pending_frame_chrome_path = normalized
+        self._frame_chrome_update_timer.stop()
+        self._frame_chrome_update_timer.start(0 if not self._uses_large_frame_list() else 32)
+
+    def _apply_deferred_frame_chrome_updates(self: Any) -> None:
+        image_path = str(getattr(self, "_pending_frame_chrome_path", "") or "")
+        if not image_path or str(Path(self._workspace.current_image_path or "")) != image_path:
+            return
+        session = self._frame_switch_profile_for_path(image_path)
+        if session is not None:
+            session.complete_pending("deferred_chrome", suffix="_apply")
+        self._image_list_model.invalidate_path(image_path)
+        self._update_thumbnail_grid_selection()
+        self._schedule_thumbnail_sparse_recenter()
+        if self._frame_matrix_thumbnails_enabled() and hasattr(self, "_resume_thumbnail_radial_fill"):
+            self._resume_thumbnail_radial_fill()
+
+    def _schedule_thumbnail_grid_rebuild(self: Any, *, force: bool = False) -> None:
+        if not self._frame_matrix_enabled():
+            self._disable_frame_matrix_runtime()
+            return
+        if force and not getattr(self, "_frame_load_running_path", None) and not getattr(self, "_loading_image_path", None):
+            self._pending_thumbnail_rebuild_after_vectors = False
+            self._thumbnail_flush_retry_count = 0
+            QTimer.singleShot(0, self._rebuild_thumbnail_grid)
+            return
+        self._mark_thumbnail_grid_rebuild_pending()
+        self._flush_pending_thumbnail_grid_rebuild()
+
+    def _load_cif_overlay_polygons(self: Any, image_path: str) -> list[PolygonData]:
         stem_key = Path(image_path).stem.lower()
         cif_path = self._find_matching_cif_path(image_path)
         if not cif_path:
@@ -1037,174 +1498,807 @@ class WidgetProcessingMixin:
             self._append_log(self._tr("cif_overlay_loaded_log", file_name=Path(cif_path).name, count=len(polygons)))
         return polygons
 
-    def load_image(self, path: str) -> None:
+    def load_image(self: Any, path: str, *, load_vectors: bool | None = None) -> None:
         normalized_load_path = str(Path(path))
+        if load_vectors is None:
+            load_vectors = not self._should_defer_vector_load()
         active_load_path = getattr(self, "_loading_image_path", None)
         if active_load_path is not None:
             if active_load_path == normalized_load_path:
                 return
-            QTimer.singleShot(0, lambda queued_path=normalized_load_path: self.load_image(queued_path))
+            self._frame_load_pending = (normalized_load_path, bool(load_vectors))
+            return
+        running_path = getattr(self, "_frame_load_running_path", None)
+        if running_path is not None:
+            self._frame_load_pending = (normalized_load_path, bool(load_vectors))
             return
         self._loading_image_path = normalized_load_path
-        cif_path_for_profile = self._find_matching_cif_path(path)
-        profile_enabled = PROFILE_CIF_OPEN and bool(cif_path_for_profile)
-        profiler = cProfile.Profile() if profile_enabled else None
+        if hasattr(self, "_pause_thumbnail_radial_fill"):
+            self._pause_thumbnail_radial_fill()
+        try:
+            self._begin_frame_load(normalized_load_path, load_vectors=bool(load_vectors))
+        except Exception:
+            if getattr(self, "_loading_image_path", None) == normalized_load_path:
+                self._loading_image_path = None
+            raise
+
+    def _begin_frame_load(self: Any, normalized_load_path: str, *, load_vectors: bool) -> None:
+        session = self._frame_switch_profile_for_path(normalized_load_path)
+        if session is None:
+            session = self._start_frame_switch_profile(normalized_load_path)
+        if session is not None:
+            self._append_log(
+                f"[contour frame switch profiling] started image={Path(normalized_load_path).name} "
+                "(runs until UI is interactive; set CONTOUR_PROFILE=0 or CONTOUR_PROFILE_FRAME_SWITCH=0 to disable)"
+            )
+        cif_path_for_profile = self._find_matching_cif_path(normalized_load_path)
         profile_timings: dict[str, float] = {}
         profile_total_start = perf_counter()
         try:
-            if profiler is not None:
-                profiler.enable()
             phase_start = perf_counter()
             self._abort_in_flight_interactive_processing(preview=True, prepared=True)
-            if profile_enabled:
-                profile_timings["abort_in_flight"] = (perf_counter() - phase_start) * 1000.0
-                phase_start = perf_counter()
+            profile_timings["abort_in_flight"] = (perf_counter() - phase_start) * 1000.0
+            phase_start = perf_counter()
+
+            sync_result = self._workspace.resolve_cached_load(normalized_load_path)
+            if sync_result is not None:
+                state = sync_result.state
+                needs_vectors = (
+                    load_vectors
+                    and state is not None
+                    and not state.polygons
+                    and bool(self._find_matching_cif_path(normalized_load_path))
+                )
+                if needs_vectors:
+                    self._loading_image_path = normalized_load_path
+                    self._begin_frame_vectors_reload(normalized_load_path)
+                    return
+                session = getattr(self, "_frame_switch_profile", None)
+                if session is not None:
+                    session.enable_main_profiler()
+                self._finish_frame_load_ui(
+                    sync_result,
+                    load_vectors=load_vectors,
+                    profile_enabled=session is not None,
+                    profile_timings=profile_timings,
+                    profile_total_start=profile_total_start,
+                    profiler=session.profiler if session is not None else None,
+                    cif_path_for_profile=cif_path_for_profile,
+                    phase_start=perf_counter(),
+                )
+                return
+
+            self._frame_load_running_path = normalized_load_path
+            self._frame_load_request_serial = int(getattr(self, "_frame_load_request_serial", 0)) + 1
+            request_id = self._frame_load_request_serial
 
             def load_source_image_timed(image_path: str):
                 inner_start = perf_counter()
-                try:
+                session = getattr(self, "_frame_switch_profile", None)
+
+                def _load() -> object:
                     return load_image_color(image_path)
+
+                try:
+                    return profile_callable("worker_source_image", session, _load)
                 finally:
-                    if profile_enabled:
-                        profile_timings["source_image_load"] = (perf_counter() - inner_start) * 1000.0
+                    profile_timings["source_image_load"] = (perf_counter() - inner_start) * 1000.0
 
             def load_cif_overlay_timed(image_path: str) -> list[PolygonData]:
                 inner_start = perf_counter()
-                try:
-                    return self._load_cif_overlay_polygons(image_path)
-                finally:
-                    if profile_enabled:
-                        profile_timings["cif_overlay_load"] = (perf_counter() - inner_start) * 1000.0
+                session = getattr(self, "_frame_switch_profile", None)
 
-            image_result = self._workspace.load_image(
+                def _load() -> list[PolygonData]:
+                    return self._load_cif_overlay_polygons(image_path)
+
+                try:
+                    return profile_callable("worker_cif_overlay", session, _load)
+                finally:
+                    profile_timings["cif_overlay_load"] = (perf_counter() - inner_start) * 1000.0
+
+            runnable = FrameLoadRunnable(
+                request_id,
                 normalized_load_path,
                 load_source_image=load_source_image_timed,
                 load_cif_overlay=load_cif_overlay_timed,
+                load_vectors=load_vectors,
+                vectors_only=False,
             )
-            self._save_persisted_current_image_path(image_result.image_path)
-            if profile_enabled:
-                profile_timings["workspace_load"] = (perf_counter() - phase_start) * 1000.0
-                phase_start = perf_counter()
-            if not self._is_extraction_mode_enabled():
-                self._viewed_image_paths.add(str(Path(image_result.image_path)))
-                self._handle_gamification_ui_event(RewardEventType.IMAGE_VIEWED)
-            if image_result.state is not None and not image_result.cache_hit and not image_result.reused_current_state:
-                image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
-                image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
-                image_result.state.polygons_dirty = False
-            if image_result.reused_current_state:
-                self._update_frame_item_status(image_result.image_path)
-                self._update_thumbnail_grid_selection()
-                self._sync_frame_navigation_controls()
-                self.polygon_editor.center_main_image()
-                if profile_enabled:
-                    profile_timings["sync_reused"] = (perf_counter() - phase_start) * 1000.0
-                    profile_timings["total_wall"] = (perf_counter() - profile_total_start) * 1000.0
-                    if profiler is not None:
-                        profiler.disable()
-                    self._emit_cif_open_profile(
-                        profile_timings,
-                        image_path=image_result.image_path,
-                        cif_path=cif_path_for_profile,
-                        polygon_count=0 if image_result.state is None else len(image_result.state.polygons),
-                        profiler=profiler,
-                    )
+
+            def _on_result(req_id: int, payload_obj: object) -> None:
+                if req_id != self._frame_load_request_serial:
+                    return
+                payload = payload_obj
+                if not isinstance(payload, FrameLoadPayload):
+                    return
+                session = self._frame_switch_profile_for_path(payload.image_path)
+                if session is not None:
+                    session.enable_main_profiler()
+                apply_start = perf_counter()
+                image_result = self._workspace.apply_loaded_frame(
+                    payload.image_path,
+                    source_image=payload.source_image,
+                    polygons=list(payload.polygons),
+                )
+                profile_timings["workspace_apply_loaded_frame"] = (perf_counter() - apply_start) * 1000.0
+                self._frame_load_running_path = None
+                self._finish_frame_load_ui(
+                    image_result,
+                    load_vectors=load_vectors,
+                    profile_enabled=session is not None,
+                    profile_timings=profile_timings,
+                    profile_total_start=profile_total_start,
+                    profiler=session.profiler if session is not None else None,
+                    cif_path_for_profile=cif_path_for_profile,
+                    phase_start=perf_counter(),
+                )
+                if getattr(self, "_loading_image_path", None) == payload.image_path:
+                    self._loading_image_path = None
+                self._resume_frame_matrix_thumbnail_loading()
+                self._flush_pending_thumbnail_grid_rebuild()
+                self._drain_pending_frame_load()
+
+            def _on_error(req_id: int, image_path: str, message: str) -> None:
+                if req_id != self._frame_load_request_serial:
+                    return
+                self._frame_load_running_path = None
+                if getattr(self, "_loading_image_path", None) == image_path:
+                    self._loading_image_path = None
+                self._append_log(self._tr("failed_to_load_image_log", image_path=image_path, error=message))
+                failed_session = getattr(self, "_frame_switch_profile", None)
+                if failed_session is not None:
+                    failed_session.disable_main_profiler()
+                    self._frame_switch_profile = None
+                QMessageBox.warning(self, self._tr("image_load_error_title"), message)
+                self._resume_frame_matrix_thumbnail_loading()
+                self._flush_pending_thumbnail_grid_rebuild()
+                self._drain_pending_frame_load()
+
+            runnable.signals.result.connect(_on_result)
+            runnable.signals.error.connect(_on_error)
+            session = getattr(self, "_frame_switch_profile", None)
+            if session is not None:
+                session.disable_main_profiler()
+            self._frame_load_thread_pool.start(runnable)
+        finally:
+            pass
+
+    def _reload_current_frame_vectors(self: Any) -> None:
+        current = self._workspace.current_image_path
+        if not current:
+            return
+        normalized = str(Path(current))
+        state = self._workspace.current_state
+        if state is None or state.source_image is None:
+            self.load_image(normalized, load_vectors=True)
+            return
+        running_path = getattr(self, "_frame_load_running_path", None)
+        if running_path is not None or getattr(self, "_loading_image_path", None) is not None:
+            self._mark_thumbnail_grid_rebuild_pending()
+            self._frame_load_pending = (normalized, True)
+            return
+        self._loading_image_path = normalized
+        try:
+            self._begin_frame_vectors_reload(normalized)
+        except Exception:
+            if getattr(self, "_loading_image_path", None) == normalized:
+                self._loading_image_path = None
+            raise
+
+    def _begin_frame_vectors_reload(self: Any, normalized_load_path: str) -> None:
+        if self._frame_switch_profile_for_path(normalized_load_path) is None:
+            self._start_frame_switch_profile(normalized_load_path)
+        cif_path_for_profile = self._find_matching_cif_path(normalized_load_path)
+        profile_timings: dict[str, float] = {}
+        profile_total_start = perf_counter()
+        self._frame_load_running_path = normalized_load_path
+        self._frame_load_request_serial = int(getattr(self, "_frame_load_request_serial", 0)) + 1
+        request_id = self._frame_load_request_serial
+
+        def load_cif_overlay_timed(image_path: str) -> list[PolygonData]:
+            inner_start = perf_counter()
+            session = getattr(self, "_frame_switch_profile", None)
+
+            def _load() -> list[PolygonData]:
+                return self._load_cif_overlay_polygons(image_path)
+
+            try:
+                return profile_callable("worker_cif_overlay", session, _load)
+            finally:
+                profile_timings["cif_overlay_load"] = (perf_counter() - inner_start) * 1000.0
+
+        runnable = FrameLoadRunnable(
+            request_id,
+            normalized_load_path,
+            load_source_image=None,
+            load_cif_overlay=load_cif_overlay_timed,
+            load_vectors=True,
+            vectors_only=True,
+        )
+
+        def _on_vectors(req_id: int, payload_obj: object) -> None:
+            if req_id != self._frame_load_request_serial:
                 return
-            self._sync_current_state_views()
-            self.polygon_editor.center_main_image()
-            self._update_frame_item_status(image_result.image_path)
-            self._update_thumbnail_grid_selection()
-            self._sync_frame_navigation_controls()
-            if profile_enabled:
-                profile_timings["sync_views"] = (perf_counter() - phase_start) * 1000.0
-                phase_start = perf_counter()
-            if (
-                image_result.prepared_image_required
-                and image_result.state is not None
-                and image_result.state.source_image is not None
-            ):
-                self._queue_prepared_image_update(image_result.image_path, image_result.state.source_image)
-            if profile_enabled:
-                profile_timings["queue_prepared"] = (perf_counter() - phase_start) * 1000.0
-                phase_start = perf_counter()
-            if image_result.cache_hit:
-                self._append_log(self._tr("loaded_cached_state_log", image_path=image_result.image_path))
+            payload = payload_obj
+            if not isinstance(payload, FrameLoadPayload):
+                return
+            session = self._frame_switch_profile_for_path(payload.image_path)
+            if session is not None:
+                session.enable_main_profiler()
+            apply_start = perf_counter()
+            image_result = self._workspace.apply_frame_vectors(
+                payload.image_path,
+                polygons=list(payload.polygons),
+                loaded_cif_path=self._find_matching_cif_path(payload.image_path),
+            )
+            profile_timings["workspace_apply_frame_vectors"] = (perf_counter() - apply_start) * 1000.0
+            self._frame_load_running_path = None
+            if image_result is not None:
+                self._finish_frame_load_ui(
+                    image_result,
+                    load_vectors=True,
+                    profile_enabled=session is not None,
+                    profile_timings=profile_timings,
+                    profile_total_start=profile_total_start,
+                    profiler=session.profiler if session is not None else None,
+                    cif_path_for_profile=cif_path_for_profile,
+                    phase_start=perf_counter(),
+                )
             else:
-                self._append_log(self._tr("loaded_image_log", image_path=image_result.image_path))
+                self.load_image(payload.image_path, load_vectors=True)
+            if getattr(self, "_loading_image_path", None) == payload.image_path:
+                self._loading_image_path = None
+            self._flush_pending_thumbnail_grid_rebuild()
+            self._drain_pending_frame_load()
+
+        def _on_vectors_error(req_id: int, image_path: str, message: str) -> None:
+            if req_id != self._frame_load_request_serial:
+                return
+            self._frame_load_running_path = None
+            if getattr(self, "_loading_image_path", None) == image_path:
+                self._loading_image_path = None
+            self._append_log(self._tr("reload_with_cif_failed_log", error=message))
+            profile_timings["total_wall"] = (perf_counter() - profile_total_start) * 1000.0
+            self._emit_cif_open_profile(
+                profile_timings,
+                image_path=image_path,
+                cif_path=cif_path_for_profile,
+                polygon_count=0,
+                profiler=None,
+                vectors_only=True,
+                failed=True,
+            )
+            self._flush_pending_thumbnail_grid_rebuild()
+            self._drain_pending_frame_load()
+
+        runnable.signals.result.connect(_on_vectors)
+        runnable.signals.error.connect(_on_vectors_error)
+        session = getattr(self, "_frame_switch_profile", None)
+        if session is not None:
+            session.disable_main_profiler()
+        self._frame_load_thread_pool.start(runnable)
+
+    def _drain_pending_frame_load(self: Any) -> None:
+        pending = getattr(self, "_frame_load_pending", None)
+        if pending:
+            self._frame_load_pending = None
+            path, load_vectors = pending
+            self.load_image(path, load_vectors=load_vectors)
+            return
+        self._flush_pending_thumbnail_grid_rebuild()
+
+    def _finish_frame_load_ui(
+        self: Any,
+        image_result: WorkspaceLoadResult,
+        *,
+        load_vectors: bool,
+        profile_enabled: bool = False,
+        profile_timings: dict[str, float] | None = None,
+        profile_total_start: float = 0.0,
+        profiler: cProfile.Profile | None = None,
+        cif_path_for_profile: str | None = None,
+        phase_start: float = 0.0,
+    ) -> None:
+        profile_timings = profile_timings or {}
+        phase_start = phase_start or perf_counter()
+        self._save_persisted_current_image_path(image_result.image_path)
+        if not self._is_extraction_mode_enabled():
+            self._viewed_image_paths.add(str(Path(image_result.image_path)))
+            self._handle_gamification_ui_event(RewardEventType.IMAGE_VIEWED)
+        if (
+            image_result.state is not None
+            and not image_result.cache_hit
+            and not image_result.reused_current_state
+            and not image_result.vectors_only
+        ):
+            image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
+            image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
+            image_result.state.polygons_dirty = False
+        elif image_result.state is not None and image_result.vectors_only:
+            image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
+            image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
+            image_result.state.polygons_dirty = False
+        if image_result.reused_current_state:
+            step_start = perf_counter()
+            self._defer_frame_chrome_updates(image_result.image_path)
             if profile_enabled:
-                profile_timings["log"] = (perf_counter() - phase_start) * 1000.0
-                phase_start = perf_counter()
-            self._try_extract_if_recognition_enabled()
+                profile_timings["defer_frame_chrome"] = (perf_counter() - step_start) * 1000.0
+            step_start = perf_counter()
+            self.polygon_editor.center_main_image()
             if profile_enabled:
-                profile_timings["maybe_extract"] = (perf_counter() - phase_start) * 1000.0
-                profile_timings["total_wall"] = (perf_counter() - profile_total_start) * 1000.0
-                if profiler is not None:
-                    profiler.disable()
+                profile_timings["center_main_image"] = (perf_counter() - step_start) * 1000.0
+            if getattr(self, "_loading_image_path", None) == image_result.image_path:
+                self._loading_image_path = None
+            step_start = perf_counter()
+            self._resume_frame_matrix_thumbnail_loading()
+            if profile_enabled:
+                profile_timings["resume_frame_matrix_thumbnails"] = (perf_counter() - step_start) * 1000.0
+            if profile_enabled:
+                profile_timings["sync_reused"] = (perf_counter() - phase_start) * 1000.0
                 self._emit_cif_open_profile(
                     profile_timings,
                     image_path=image_result.image_path,
                     cif_path=cif_path_for_profile,
                     polygon_count=0 if image_result.state is None else len(image_result.state.polygons),
                     profiler=profiler,
+                    vectors_only=image_result.vectors_only,
                 )
-        finally:
-            if profiler is not None:
-                profiler.disable()
-            if getattr(self, "_loading_image_path", None) == normalized_load_path:
-                self._loading_image_path = None
+            return
+        if image_result.vectors_only:
+            current_state = self._workspace.current_state
+            if current_state is not None:
+                step_start = perf_counter()
+                self._sync_polygons_to_editor(image_result.image_path, list(current_state.polygons))
+                if profile_enabled:
+                    profile_timings["editor_set_polygons"] = (perf_counter() - step_start) * 1000.0
+            step_start = perf_counter()
+            self._defer_frame_chrome_updates(image_result.image_path)
+            if profile_enabled:
+                profile_timings["defer_frame_chrome"] = (perf_counter() - step_start) * 1000.0
+            step_start = perf_counter()
+            self._update_vector_edit_status_label()
+            if profile_enabled:
+                profile_timings["update_vector_status"] = (perf_counter() - step_start) * 1000.0
+        elif image_result.cache_hit:
+            self._updating_views = True
+            try:
+                step_start = perf_counter()
+                self._apply_frame_to_editor(defer_neighbors=True, defer_heavy_overlays=False)
+                if profile_enabled:
+                    profile_timings["apply_frame_to_editor"] = (perf_counter() - step_start) * 1000.0
+            finally:
+                self._updating_views = False
+            step_start = perf_counter()
+            self._request_neighbor_frame_sync(delay_ms=0)
+            if profile_enabled:
+                profile_timings["sync_neighbor_frames"] = (perf_counter() - step_start) * 1000.0
+            step_start = perf_counter()
+            self._defer_frame_chrome_updates(image_result.image_path)
+            if profile_enabled:
+                profile_timings["defer_frame_chrome"] = (perf_counter() - step_start) * 1000.0
+        else:
+            self._updating_views = True
+            try:
+                step_start = perf_counter()
+                self._apply_frame_to_editor(defer_neighbors=True, defer_heavy_overlays=False)
+                if profile_enabled:
+                    profile_timings["apply_frame_to_editor"] = (perf_counter() - step_start) * 1000.0
+            finally:
+                self._updating_views = False
+            step_start = perf_counter()
+            self._request_neighbor_frame_sync(delay_ms=0)
+            if profile_enabled:
+                profile_timings["sync_neighbor_frames"] = (perf_counter() - step_start) * 1000.0
+            step_start = perf_counter()
+            self._defer_frame_chrome_updates(image_result.image_path)
+            if profile_enabled:
+                profile_timings["defer_frame_chrome"] = (perf_counter() - step_start) * 1000.0
+        if getattr(self, "_loading_image_path", None) == image_result.image_path:
+            self._loading_image_path = None
+        step_start = perf_counter()
+        self._resume_frame_matrix_thumbnail_loading()
+        if profile_enabled:
+            profile_timings["resume_frame_matrix_thumbnails"] = (perf_counter() - step_start) * 1000.0
+        if bool(getattr(self, "_pending_thumbnail_rebuild_after_vectors", False)):
+            step_start = perf_counter()
+            self._flush_pending_thumbnail_grid_rebuild()
+            if profile_enabled:
+                profile_timings["flush_pending_thumbnail_rebuild"] = (perf_counter() - step_start) * 1000.0
+        if profile_enabled:
+            profile_timings["sync_views"] = (perf_counter() - phase_start) * 1000.0
+            phase_start = perf_counter()
+        if (
+            image_result.prepared_image_required
+            and image_result.state is not None
+            and image_result.state.source_image is not None
+            and not image_result.vectors_only
+        ):
+            self._queue_prepared_image_update(image_result.image_path, image_result.state.source_image)
+        if profile_enabled:
+            profile_timings["queue_prepared"] = (perf_counter() - phase_start) * 1000.0
+            phase_start = perf_counter()
+        if image_result.cache_hit and not image_result.vectors_only:
+            self._append_log(self._tr("loaded_cached_state_log", image_path=image_result.image_path))
+        elif not image_result.vectors_only:
+            self._append_log(self._tr("loaded_image_log", image_path=image_result.image_path))
+        if profile_enabled:
+            profile_timings["log"] = (perf_counter() - phase_start) * 1000.0
+            phase_start = perf_counter()
+        if load_vectors and not image_result.vectors_only:
+            profile_session = self._frame_switch_profile_for_path(image_result.image_path)
+            if profile_session is not None:
+                profile_session.disable_main_profiler()
+            self._try_extract_if_recognition_enabled()
+        if profile_enabled:
+            profile_timings["maybe_extract"] = (perf_counter() - phase_start) * 1000.0
+            profile_session = self._frame_switch_profile_for_path(image_result.image_path)
+            if profile_session is not None:
+                profile_session.enable_main_profiler()
+            self._emit_cif_open_profile(
+                profile_timings,
+                image_path=image_result.image_path,
+                cif_path=cif_path_for_profile,
+                polygon_count=0 if image_result.state is None else len(image_result.state.polygons),
+                profiler=profiler,
+                vectors_only=image_result.vectors_only,
+            )
+
+    def _frame_switch_profiling_active(self: Any) -> bool:
+        return frame_switch_profiling_enabled()
+
+    def _start_frame_switch_profile(self: Any, image_path: str) -> FrameSwitchProfile | None:
+        if not self._frame_switch_profiling_active():
+            return None
+        self._frame_switch_profile_generation = int(getattr(self, "_frame_switch_profile_generation", 0)) + 1
+        session = FrameSwitchProfile.begin(
+            image_path,
+            generation=self._frame_switch_profile_generation,
+        )
+        self._frame_switch_profile = session
+        return session
+
+    def _frame_switch_profile_for_path(self: Any, image_path: str) -> FrameSwitchProfile | None:
+        session = getattr(self, "_frame_switch_profile", None)
+        if session is None:
+            return None
+        if str(Path(session.image_path)) != str(Path(image_path)):
+            return None
+        return session
+
+    def _frame_switch_profile_is_interactive(self: Any, image_path: str) -> bool:
+        normalized = str(Path(image_path))
+        if str(Path(self._workspace.current_image_path or "")) != normalized:
+            return False
+        if getattr(self, "_loading_image_path", None) is not None:
+            return False
+        if getattr(self, "_frame_load_running_path", None) is not None:
+            return False
+        if getattr(self, "_pending_editor_frame_apply", None) is not None:
+            return False
+        if getattr(self, "_thumbnail_rebuild_in_progress", False):
+            return False
+        if self._editor_display_thread_pool.activeThreadCount() > 0:
+            return False
+        if self._frame_load_thread_pool.activeThreadCount() > 0:
+            return False
+        chrome_timer = getattr(self, "_frame_chrome_update_timer", None)
+        if chrome_timer is not None and chrome_timer.isActive():
+            return False
+        neighbor_timer = getattr(self, "_neighbor_sync_timer", None)
+        if neighbor_timer is not None and neighbor_timer.isActive():
+            return False
+        session = self._frame_switch_profile_for_path(normalized)
+        if session is not None and session.pending_since:
+            return False
+        return True
+
+    def _schedule_frame_switch_profile_until_interactive(
+        self: Any,
+        image_path: str,
+        *,
+        cif_path: str | None,
+        polygon_count: int,
+        vectors_only: bool = False,
+        failed: bool = False,
+    ) -> None:
+        session = self._frame_switch_profile_for_path(image_path)
+        if session is None:
+            return
+        generation = session.generation
+        QTimer.singleShot(
+            0,
+            lambda: self._poll_frame_switch_profile_until_interactive(
+                image_path,
+                generation,
+                cif_path=cif_path,
+                polygon_count=polygon_count,
+                vectors_only=vectors_only,
+                failed=failed,
+            ),
+        )
+
+    def _poll_frame_switch_profile_until_interactive(
+        self: Any,
+        image_path: str,
+        generation: int,
+        *,
+        cif_path: str | None,
+        polygon_count: int,
+        vectors_only: bool,
+        failed: bool,
+    ) -> None:
+        session = getattr(self, "_frame_switch_profile", None)
+        if session is None or session.generation != generation:
+            return
+        session.poll_count += 1
+        interactive = failed or self._frame_switch_profile_is_interactive(image_path)
+        if not interactive and session.poll_count < MAX_IDLE_POLLS:
+            QTimer.singleShot(
+                0,
+                lambda: self._poll_frame_switch_profile_until_interactive(
+                    image_path,
+                    generation,
+                    cif_path=cif_path,
+                    polygon_count=polygon_count,
+                    vectors_only=vectors_only,
+                    failed=failed,
+                ),
+            )
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+        self._finalize_frame_switch_profile(
+            session,
+            cif_path=cif_path,
+            polygon_count=polygon_count,
+            vectors_only=vectors_only,
+            failed=failed,
+            interactive=interactive and not failed,
+        )
+
+    def _finalize_frame_switch_profile(
+        self: Any,
+        session: FrameSwitchProfile,
+        *,
+        cif_path: str | None,
+        polygon_count: int,
+        vectors_only: bool,
+        failed: bool,
+        interactive: bool,
+    ) -> None:
+        if getattr(self, "_frame_switch_profile", None) is session:
+            self._frame_switch_profile = None
+        session.timings_ms["total_wall"] = session.total_wall_ms()
+        main_profiler = session.disable_main_profiler()
+        summary = session.format_summary(
+            polygon_count=polygon_count,
+            cif_path=cif_path,
+            vectors_only=vectors_only,
+            failed=failed,
+            interactive=interactive,
+        )
+        print(summary)
+        self._append_log(summary)
+        if session.profiling_active or main_profiler.getstats():
+            print(session.format_stats(main_profiler, title="main_thread_until_interactive"))
+        elif session.main_stats_skipped:
+            print(
+                "[contour frame switch profiling stats] main_thread_until_interactive skipped "
+                "(another cProfile session was active, e.g. contour processing extract)"
+            )
+        for label, worker_profiler in session.worker_profilers:
+            print(session.format_stats(worker_profiler, title=f"worker_{label}"))
+        self._append_log(
+            "[contour frame switch profiling stats] printed to console "
+            "(main thread until interactive; see worker_* sections for background load)"
+        )
+        QTimer.singleShot(100, self._resume_frame_matrix_thumbnail_loading)
 
     def _emit_cif_open_profile(
         self,
         timings_ms: dict[str, float],
         *,
         image_path: str,
-        cif_path: str,
+        cif_path: str | None,
         polygon_count: int,
         profiler: cProfile.Profile | None,
+        vectors_only: bool = False,
+        failed: bool = False,
     ) -> None:
-        if not PROFILE_CIF_OPEN:
+        session = self._frame_switch_profile_for_path(image_path)
+        if session is not None:
+            session.merge_timings(timings_ms)
+            if profiler is not None and profiler is not session.profiler:
+                session.attach_worker_profile("ui_finish", profiler)
+            self._schedule_frame_switch_profile_until_interactive(
+                image_path,
+                cif_path=cif_path,
+                polygon_count=polygon_count,
+                vectors_only=vectors_only,
+                failed=failed,
+            )
             return
         total_ms = timings_ms.get("total_wall", sum(timings_ms.values()))
         detail = " ".join(
             f"{name}={elapsed:.3f}ms" for name, elapsed in timings_ms.items() if name != "total_wall"
         )
+        mode = "vector" if vectors_only else "image+vector"
+        status = "failed" if failed else "ok"
         message = (
-            f"[contour cif open profiling] total={total_ms:.3f}ms polygons={polygon_count} "
-            f"image={Path(image_path).name} cif={Path(cif_path).name} {detail}"
+            f"[contour frame open profiling] mode={mode} status={status} total={total_ms:.3f}ms "
+            f"polygons={polygon_count} image={Path(image_path).name} "
+            f"cif={Path(cif_path).name if cif_path else '<none>'} {detail}"
         )
         print(message)
         self._append_log(message)
-        if profiler is None:
-            return
-        stream = io.StringIO()
-        stats = pstats.Stats(profiler, stream=stream).sort_stats("cumtime")
-        stats.print_stats(_PROFILE_CIF_OPEN_TOP_LINES)
-        report = stream.getvalue()
-        print(f"[contour cif open profiling stats] top={_PROFILE_CIF_OPEN_TOP_LINES}")
-        print(report)
-        self._append_log(f"[contour cif open profiling stats] top={_PROFILE_CIF_OPEN_TOP_LINES}\n{report}")
 
-    def _is_extraction_mode_enabled(self) -> bool:
+    def _set_work_simulation_running(self: Any, running: bool) -> None:
+        running = bool(running)
+        if getattr(self, "_work_simulation_running", False) == running:
+            return
+        self._work_simulation_running = running
+        if hasattr(self, "workSimulationActiveChanged"):
+            self.workSimulationActiveChanged.emit(running)
+
+    def _toggle_work_simulation(self: Any) -> None:
+        if getattr(self, "_work_simulation_running", False):
+            self._stop_work_simulation(restore_current=True)
+            self._append_log("Симуляция остановлена." if self._ui_language == "ru" else "Work simulation stopped.")
+            return
+        self._start_work_simulation()
+
+    def _start_work_simulation(self: Any) -> None:
+        self._stop_work_simulation(restore_current=True)
+        if self._workspace.current_state is not None and not self._try_leave_current_frame():
+            return
+        paths = [
+            str(Path(path))
+            for path in self._workspace.image_paths
+            if self._workspace.resolve_cif_path(str(Path(path)))
+        ]
+        if not paths:
+            self._append_log(
+                "Нет кадров с изображением и вектором для симуляции."
+                if self._ui_language == "ru"
+                else "No image+vector frames are available for simulation."
+            )
+            return
+        self._set_work_simulation_running(True)
+        self._work_simulation_paths = paths
+        self._work_simulation_path_index = -1
+        self._work_simulation_target_polygons = []
+        self._work_simulation_visible_points = 0
+        self._work_simulation_total_points = 0
+        self._work_simulation_timer.setInterval(max(1, int(self._work_simulation_interval_ms)))
+        self._advance_work_simulation()
+
+    def _stop_work_simulation(self: Any, *, restore_current: bool = True) -> None:
+        if hasattr(self, "_work_simulation_timer"):
+            self._work_simulation_timer.stop()
+        if restore_current and getattr(self, "_work_simulation_target_polygons", None):
+            self._restore_work_simulation_frame()
+        self._work_simulation_paths = []
+        self._work_simulation_path_index = -1
+        self._work_simulation_target_polygons = []
+        self._work_simulation_visible_points = 0
+        self._work_simulation_total_points = 0
+        self._work_simulation_original_dirty = None
+        self._work_simulation_original_reference_polygons = []
+        self._set_work_simulation_running(False)
+
+    def _advance_work_simulation(self: Any) -> None:
+        if not getattr(self, "_work_simulation_running", False):
+            return
+        if not getattr(self, "_work_simulation_target_polygons", None):
+            self._begin_next_work_simulation_frame()
+            return
+        self._work_simulation_visible_points += 1
+        if self._work_simulation_visible_points >= self._work_simulation_total_points:
+            self._work_simulation_timer.stop()
+            self._restore_work_simulation_frame()
+            self._work_simulation_target_polygons = []
+            QTimer.singleShot(max(1, int(self._work_simulation_interval_ms)), self._begin_next_work_simulation_frame)
+            return
+        partial = self._partial_work_simulation_polygons(
+            self._work_simulation_target_polygons,
+            self._work_simulation_visible_points,
+        )
+        self._set_editor_polygons_for_work_simulation(partial)
+        self._work_simulation_timer.start(max(1, int(self._work_simulation_interval_ms)))
+
+    def _begin_next_work_simulation_frame(self: Any) -> None:
+        if not getattr(self, "_work_simulation_running", False):
+            return
+        self._work_simulation_timer.stop()
+        self._work_simulation_path_index += 1
+        if self._work_simulation_path_index >= len(self._work_simulation_paths):
+            self._stop_work_simulation(restore_current=False)
+            self._append_log("Симуляция завершена." if self._ui_language == "ru" else "Work simulation finished.")
+            return
+        path = self._work_simulation_paths[self._work_simulation_path_index]
+        if self._workspace.current_image_path != path:
+            if self._image_path_in_image_list(path):
+                self._set_image_list_current_path(path, fallback_to_first=False)
+            else:
+                self.load_image(path)
+        state = self._workspace.current_state
+        if state is None or self._workspace.current_image_path != path:
+            QTimer.singleShot(0, self._begin_next_work_simulation_frame)
+            return
+        target = [polygon.clone() for polygon in state.polygons]
+        if not target:
+            QTimer.singleShot(0, self._begin_next_work_simulation_frame)
+            return
+        self._work_simulation_target_polygons = target
+        self._work_simulation_visible_points = 0
+        self._work_simulation_total_points = max(1, sum(len(polygon.points) for polygon in target))
+        self._work_simulation_original_dirty = state.polygons_dirty
+        self._work_simulation_original_reference_polygons = [polygon.clone() for polygon in state.reference_polygons]
+        self._set_editor_polygons_for_work_simulation([])
+        self._work_simulation_timer.start(max(1, int(self._work_simulation_interval_ms)))
+
+    def _set_editor_polygons_for_work_simulation(self: Any, polygons: list[PolygonData]) -> None:
+        self._updating_views = True
+        try:
+            self.polygon_editor.set_polygons([polygon.clone() for polygon in polygons])
+        finally:
+            self._updating_views = False
+
+    def _partial_work_simulation_polygons(
+        self,
+        polygons: list[PolygonData],
+        visible_points: int,
+    ) -> list[PolygonData]:
+        remaining = max(0, int(visible_points))
+        partial: list[PolygonData] = []
+        for polygon in polygons:
+            if remaining <= 0:
+                break
+            point_count = min(len(polygon.points), remaining)
+            if point_count > 0:
+                clone = polygon.clone()
+                clone.points = list(clone.points[:point_count])
+                partial.append(clone)
+            remaining -= len(polygon.points)
+        return partial
+
+    def _restore_work_simulation_frame(self: Any) -> None:
+        target = [polygon.clone() for polygon in getattr(self, "_work_simulation_target_polygons", [])]
+        if not target:
+            return
+        state = self._workspace.current_state
+        if state is not None:
+            state.polygons = [polygon.clone() for polygon in target]
+            state.reference_polygons = [
+                polygon.clone() for polygon in getattr(self, "_work_simulation_original_reference_polygons", [])
+            ]
+            state.polygons_dirty = getattr(self, "_work_simulation_original_dirty", None)
+        self._set_editor_polygons_for_work_simulation(target)
+        self._update_frame_item_status(self._workspace.current_image_path)
+        self._update_vector_edit_status_label()
+
+    def _is_extraction_mode_enabled(self: Any) -> bool:
         if not hasattr(self, "recognition_mode_combo"):
             return False
         return str(self.recognition_mode_combo.currentData() or "") != "disabled"
 
-    def get_polygons(self) -> list[PolygonData]:
+    def get_polygons(self: Any) -> list[PolygonData]:
         return self.polygon_editor.get_polygons()
 
-    def set_pipeline(self, config: dict) -> None:
+    def set_pipeline(self: Any, config: dict) -> None:
         self._pipeline = PreprocessingPipeline.from_dict(config)
         self._populate_pipeline_list()
         self._auto_apply_pipeline()
 
-    def get_pipeline(self) -> dict:
+    def get_pipeline(self: Any) -> dict:
         return self._pipeline.to_dict()
 
-    def process_current_image(self, *_args, debounced: bool = False) -> None:
+    def process_current_image(self: Any, *_args, debounced: bool = False) -> None:
         self._queue_preview_processing(debounced=debounced)
 
     def _export_dataset_frame_for_state(
-        self,
+        self: Any,
         image_path: str,
         state: ImageProcessingState,
         polygons: list[PolygonData],
@@ -1221,7 +2315,7 @@ class WidgetProcessingMixin:
             self._append_log(self._tr(result.message_key, **(result.message_kwargs or {})))
         return result.saved_files
 
-    def export_current_frame_to_dataset(self, dataset_directory: str | None = None) -> dict[str, str]:
+    def export_current_frame_to_dataset(self: Any, dataset_directory: str | None = None) -> dict[str, str]:
         current_state = self._workspace.current_state
         current_image_path = self._workspace.current_image_path
         if current_state is None or current_image_path is None:
@@ -1238,7 +2332,7 @@ class WidgetProcessingMixin:
         )
 
     def save_current_result(
-        self,
+        self: Any,
         output_directory: str | None = None,
         save_options: SaveOptions | None = None,
     ) -> dict[str, str]:
@@ -1283,7 +2377,7 @@ class WidgetProcessingMixin:
         return saved_files
 
     def start_batch_processing(
-        self,
+        self: Any,
         image_paths: list[str] | None = None,
         max_workers: int | None = None,
     ) -> None:
@@ -1304,7 +2398,7 @@ class WidgetProcessingMixin:
                 display_settings=self._display_settings,
                 save_options=save_options,
                 output_directory=output_directory,
-                max_workers=max_workers or self.max_workers_spin.value(),
+                max_workers=mp.cpu_count(),
                 )
             )
         if not started:
@@ -1313,11 +2407,11 @@ class WidgetProcessingMixin:
         self._show_batch_progress(len(paths))
         self._set_progress_status("batch_started_status")
 
-    def stop_batch_processing(self) -> None:
+    def stop_batch_processing(self: Any) -> None:
         self._batch_controller.stop()
 
     def _handle_gamification_after_save(
-        self,
+        self: Any,
         *,
         image_path: str,
         state: ImageProcessingState,
@@ -1356,7 +2450,7 @@ class WidgetProcessingMixin:
         except Exception as exc:
             self._append_log(f"Gamification error: {exc}")
 
-    def _handle_gamification_ui_event(self, event_type: RewardEventType) -> None:
+    def _handle_gamification_ui_event(self: Any, event_type: RewardEventType) -> None:
         try:
             if hasattr(self, "gamification_panel"):
                 self.gamification_panel.react_to_event(event_type)

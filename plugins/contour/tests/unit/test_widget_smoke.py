@@ -74,6 +74,7 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertLessEqual(widget.right_tabs.minimumWidth(), 220)
             self.assertTrue(hasattr(widget, "editor_toolbar_scroll"))
             self.assertLessEqual(widget.editor_toolbar_scroll.minimumWidth(), 760)
+            self.assertFalse(hasattr(widget, "visual_frame_nav_widget"))
         finally:
             widget.close()
             widget.deleteLater()

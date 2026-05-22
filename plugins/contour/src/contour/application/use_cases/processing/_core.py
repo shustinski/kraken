@@ -4,7 +4,6 @@ import cProfile
 import json
 import hashlib
 import io
-import os
 import pstats
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -27,6 +26,12 @@ from ....pipeline import PreprocessingPipeline
 from ....serializers import save_result_bundle
 from ....utils import ensure_binary_mask, ensure_uint8, load_image_color
 from ...preview_cancellation import raise_if_preview_cancelled
+from ....infrastructure.profiling import (
+    processing_profiling_enabled,
+    processing_top_lines,
+    try_disable_profiler,
+    try_enable_profiler,
+)
 from ...processing import (
     ALGORITHM_BACKEND_LEGACY,
     RECOGNITION_MODE_CONDUCTORS,
@@ -79,8 +84,6 @@ class _ViaCandidate:
 
 _VIA_DETECTION_CACHE: dict[tuple[str, str, str], Any] = {}
 _VIA_DETECTION_CACHE_MAX_ITEMS = 8
-PROFILE_PROCESSING = True
-_PROFILE_TOP_LINES = 25
 
 
 def _make_image_signature(gray: np.ndarray) -> str:
@@ -1672,9 +1675,9 @@ def process_image_path(
     include_images_in_result: bool = True,
     passthrough_polygons: list[PolygonData] | None = None,
 ) -> BatchImageResult:
-    if PROFILE_PROCESSING:
+    if processing_profiling_enabled():
         profiler = cProfile.Profile()
-        profiler.enable()
+        profiler_enabled = try_enable_profiler(profiler)
         try:
             return _process_image_path_impl(
                 image_path=image_path,
@@ -1692,12 +1695,16 @@ def process_image_path(
                 passthrough_polygons=passthrough_polygons,
             )
         finally:
-            profiler.disable()
-            stream = io.StringIO()
-            stats = pstats.Stats(profiler, stream=stream).sort_stats("cumtime")
-            stats.print_stats(_PROFILE_TOP_LINES)
-            print(f"[contour profiling] image={image_path} top={_PROFILE_TOP_LINES}")
-            print(stream.getvalue())
+            if not profiler_enabled:
+                print(f"[contour profiling] image={image_path} skipped=yes reason=cprofile_already_active")
+            else:
+                try_disable_profiler(profiler)
+                top_lines = processing_top_lines()
+                stream = io.StringIO()
+                stats = pstats.Stats(profiler, stream=stream).sort_stats("cumtime")
+                stats.print_stats(top_lines)
+                print(f"[contour profiling] image={image_path} top={top_lines}")
+                print(stream.getvalue())
 
     return _process_image_path_impl(
         image_path=image_path,

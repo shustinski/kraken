@@ -121,6 +121,47 @@ QTabBar::tab:hover:!selected {
     background: #e4edf7;
 }
 
+QTabBar::scroller {
+    width: 44px;
+}
+
+QTabBar QToolButton {
+    background-color: #6f89a3;
+    border: 1px solid #5f7992;
+    border-radius: 6px;
+    min-width: 18px;
+    max-width: 18px;
+    min-height: 24px;
+    max-height: 24px;
+    padding: 0px;
+    margin: 0px 1px;
+}
+
+QTabBar QToolButton:hover {
+    background-color: #5d7894;
+}
+
+QTabBar QToolButton:pressed {
+    background-color: #4f6881;
+}
+
+QTabBar QToolButton:disabled {
+    background-color: #edf2f7;
+    border-color: #d5dde6;
+}
+
+QTabBar QToolButton::left-arrow {
+    image: url(icons/chevron_left_light.svg);
+    width: 10px;
+    height: 10px;
+}
+
+QTabBar QToolButton::right-arrow {
+    image: url(icons/chevron_right_light.svg);
+    width: 10px;
+    height: 10px;
+}
+
 ClickableLabel,
 QLineEdit,
 QPlainTextEdit,

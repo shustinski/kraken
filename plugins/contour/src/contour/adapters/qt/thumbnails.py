@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QRunnable, pyqtSignal
+from PyQt6.QtGui import QImage
 
 from ...utils import load_image_color_thumbnail
+from .image_conversion import cv_to_qimage
 
 
 class ThumbnailLoadSignals(QObject):
@@ -20,15 +22,21 @@ class ThumbnailLoadRunnable(QRunnable):
         self.signals = ThumbnailLoadSignals()
 
     def run(self) -> None:
-        image = None
+        qimage: QImage | None = None
         try:
             image = load_image_color_thumbnail(self.path, self.width, self.height)
+            qimage = cv_to_qimage(image)
+            if not qimage.isNull():
+                qimage = qimage.scaled(
+                    self.width,
+                    self.height,
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.FastTransformation,
+                )
         except Exception:
-            image = None
-        # Widget shutdown can race with background thumbnail workers:
-        # in that case underlying QObject wrappers may already be deleted.
+            qimage = None
         try:
-            self.signals.result.emit(self.generation, self.path, image)
+            self.signals.result.emit(self.generation, self.path, qimage)
         except RuntimeError:
             return
         try:

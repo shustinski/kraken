@@ -7,13 +7,18 @@ import unittest
 from pathlib import Path
 
 from contour.application.frame_asset_sync import (
-    VectorSideListStatus,
     ImageSideListPaintStatus,
-    build_image_cif_matching_report,
-    background_hex_vector_status,
+    VectorSideListStatus,
     background_hex_image_paint_status,
+    background_hex_image_paint_status_for_theme,
+    background_hex_vector_status,
+    background_hex_vector_status_for_theme,
+    build_frame_asset_sets,
+    build_image_cif_matching_report,
     classify_image_side_paint_status,
     classify_vector_side_status,
+    foreground_hex_image_paint_status_for_theme,
+    foreground_hex_vector_status_for_theme,
     index_cif_file_paths,
 )
 
@@ -26,6 +31,16 @@ class FrameAssetSyncTests(unittest.TestCase):
         )
         self.assertEqual(report.stems_with_image_but_no_cif, frozenset({"b"}))
         self.assertEqual(report.stems_with_cif_but_no_image, frozenset({"lonely"}))
+
+    def test_frame_asset_sets_split_intersection_and_differences(self) -> None:
+        sets = build_frame_asset_sets(
+            ["D:/proj/a.PNG", Path("b.jpg"), Path("c.tif")],
+            {"a": "D:/vectors/a.cif", "lonely": "/x/y/lonely.cv"},
+        )
+
+        self.assertEqual(sets.image_and_vector_stems, frozenset({"a"}))
+        self.assertEqual(sets.image_only_stems, frozenset({"b", "c"}))
+        self.assertEqual(sets.vector_only_stems, frozenset({"lonely"}))
 
     def test_index_selected_cif_file_paths_requires_existing_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,5 +169,31 @@ class FrameAssetSyncTests(unittest.TestCase):
         self.assertEqual(
             background_hex_vector_status(VectorSideListStatus.NO_MATCHING_IMAGE),
             background_hex_vector_status(VectorSideListStatus.LOAD_ERROR),
+        )
+
+    def test_light_theme_status_marks_use_white_background_with_colored_text(self) -> None:
+        self.assertEqual(
+            background_hex_image_paint_status_for_theme(ImageSideListPaintStatus.NO_MATCHING_VECTOR, theme="light"),
+            "#FFFFFF",
+        )
+        self.assertEqual(
+            foreground_hex_image_paint_status_for_theme(
+                ImageSideListPaintStatus.NO_MATCHING_VECTOR,
+                has_matching_cif=False,
+                theme="light",
+            ),
+            "#B91C1C",
+        )
+        self.assertEqual(
+            background_hex_vector_status_for_theme(VectorSideListStatus.SAVED, theme="light"),
+            "#FFFFFF",
+        )
+        self.assertEqual(
+            foreground_hex_vector_status_for_theme(VectorSideListStatus.SAVED, theme="light"),
+            "#047857",
+        )
+        self.assertEqual(
+            foreground_hex_vector_status_for_theme(VectorSideListStatus.VIEWED, theme="light"),
+            "#475569",
         )
 

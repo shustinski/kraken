@@ -8,7 +8,15 @@ from time import perf_counter
 
 from typing import cast
 
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import (
+    QEvent,
+    QPoint,
+    QPointF,
+    QRectF,
+    Qt,
+    QTimer,
+    pyqtSignal,
+)
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -56,8 +64,17 @@ from .geometry import (
 from .tool_mode_logic import effective_polygon_create_mode, normalize_editor_tool
 from .tools import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode
 from .viewport_navigation import (
+    DEFAULT_ZOOM_STEP_FACTOR,
+    clamp_zoom_factor,
     viewport_scroll_correction_after_scale_reanchor,
+    zoom_factor_for_wheel_delta,
 )
+
+_WHEEL_ZOOM_COALESCE_MS = 3
+_ZOOM_ANIMATION_FRAME_MS = 16
+_ZOOM_EASING_FRACTION = 0.55
+_ZOOM_SETTLE_RATIO = 0.001
+
 
 class PolygonEditorView(QGraphicsView):
     polygonsEdited = pyqtSignal()
@@ -80,8 +97,13 @@ class PolygonEditorView(QGraphicsView):
     def __init__(self, parent=None) -> None:
         self._editor_scene = PolygonEditorScene()
         super().__init__(self._editor_scene, parent)
-        self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
+        self._steady_render_hints = QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform
+        self._zooming_render_hints = QPainter.RenderHint(0)
+        self.setRenderHints(self._steady_render_hints)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setCacheMode(QGraphicsView.CacheModeFlag.CacheBackground)
+        self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontSavePainterState, True)
+        self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, False)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -122,6 +144,17 @@ class PolygonEditorView(QGraphicsView):
         self._vector_geometry_settings = VectorGeometrySettings()
         self._drag_polygons_snapshot: list[PolygonData] | None = None
         self._brush_pan_guard = False
+        self._pending_wheel_zoom_factor = 1.0
+        self._pending_wheel_zoom_viewport_pixel: QPoint | None = None
+        self._wheel_zoom_timer = QTimer(self)
+        self._wheel_zoom_timer.setSingleShot(True)
+        self._wheel_zoom_timer.setInterval(_WHEEL_ZOOM_COALESCE_MS)
+        self._wheel_zoom_timer.timeout.connect(self._flush_queued_wheel_zoom)
+        self._zoom_animation_timer = QTimer(self)
+        self._zoom_animation_timer.setInterval(_ZOOM_ANIMATION_FRAME_MS)
+        self._zoom_animation_timer.timeout.connect(self._advance_zoom_animation)
+        self._zoom_animation_viewport_pixel: QPoint | None = None
+        self._zoom_animation_target_zoom = 1.0
 
         self._editor_scene.polygonsChanged.connect(self.polygonsEdited.emit)
         self._editor_scene.activePolygonChanged.connect(self.activePolygonChanged.emit)
@@ -344,7 +377,9 @@ class PolygonEditorView(QGraphicsView):
     def fit_to_view(self) -> None:
         rect = self._editor_scene.main_image_rect()
         if rect.width() > 0 and rect.height() > 0:
+            self._stop_zoom_animation()
             self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+            self._clamp_current_zoom_at_viewport_pixel(self._require_viewport().rect().center())
             self._update_navigation_scene_rect()
             self.zoomChanged.emit(self.zoom_factor())
 
@@ -355,14 +390,10 @@ class PolygonEditorView(QGraphicsView):
             self._update_navigation_scene_rect()
 
     def zoom_in(self) -> None:
-        self._apply_zoom_at_viewport_pixel(self._zoom_focus_viewport_pixel(), 1.15)
-        self._update_tool_cursors()
-        self.zoomChanged.emit(self.zoom_factor())
+        self._start_zoom_animation(self._zoom_focus_viewport_pixel(), DEFAULT_ZOOM_STEP_FACTOR)
 
     def zoom_out(self) -> None:
-        self._apply_zoom_at_viewport_pixel(self._zoom_focus_viewport_pixel(), 1.0 / 1.15)
-        self._update_tool_cursors()
-        self.zoomChanged.emit(self.zoom_factor())
+        self._start_zoom_animation(self._zoom_focus_viewport_pixel(), 1.0 / DEFAULT_ZOOM_STEP_FACTOR)
 
     def undo(self) -> None:
         self.undo_stack.undo()
@@ -446,10 +477,7 @@ class PolygonEditorView(QGraphicsView):
             if delta.y() == 0:
                 event.accept()
                 return
-            factor = 1.15 ** (delta.y() / 120.0)
-            self._apply_zoom_at_viewport_pixel(viewport_point, factor)
-            self._update_tool_cursors()
-            self.zoomChanged.emit(self.zoom_factor())
+            self._queue_wheel_zoom(viewport_point, zoom_factor_for_wheel_delta(delta.y()))
             event.accept()
             return
         if modifiers & Qt.KeyboardModifier.ShiftModifier:
@@ -1182,7 +1210,93 @@ class PolygonEditorView(QGraphicsView):
             return clamped
         return self._require_viewport().rect().center()
 
-    def _apply_zoom_at_viewport_pixel(self, viewport_pixel: QPoint, factor: float) -> None:
+    def _queue_wheel_zoom(self, viewport_pixel: QPoint, factor: float) -> None:
+        if factor == 1.0 or factor <= 0:
+            return
+        self._pending_wheel_zoom_factor *= factor
+        self._pending_wheel_zoom_viewport_pixel = QPoint(viewport_pixel)
+        if self._wheel_zoom_timer.isActive():
+            return
+        self._wheel_zoom_timer.start()
+
+    def _flush_queued_wheel_zoom(self) -> None:
+        factor = self._pending_wheel_zoom_factor
+        viewport_pixel = self._pending_wheel_zoom_viewport_pixel
+        self._pending_wheel_zoom_factor = 1.0
+        self._pending_wheel_zoom_viewport_pixel = None
+        if viewport_pixel is None or factor == 1.0 or factor <= 0:
+            return
+        self._start_zoom_animation(viewport_pixel, factor)
+
+    def _start_zoom_animation(self, viewport_pixel: QPoint, factor: float) -> None:
+        if factor == 1.0 or factor <= 0:
+            return
+        current_zoom = self.zoom_factor()
+        base_zoom = self._zoom_animation_target_zoom if self._zoom_animation_timer.isActive() else current_zoom
+        target_zoom = clamp_zoom_factor(base_zoom * float(factor))
+        if abs(target_zoom - current_zoom) <= 1e-9:
+            return
+        self._zoom_animation_viewport_pixel = QPoint(viewport_pixel)
+        self._zoom_animation_target_zoom = target_zoom
+        self._update_navigation_scene_rect(target_zoom)
+        self._enter_zoom_render_mode()
+        if not self._zoom_animation_timer.isActive():
+            self._zoom_animation_timer.start()
+
+    def _stop_zoom_animation(self) -> None:
+        self._zoom_animation_timer.stop()
+        self._zoom_animation_viewport_pixel = None
+        self._leave_zoom_render_mode()
+
+    def _advance_zoom_animation(self) -> None:
+        viewport_pixel = self._zoom_animation_viewport_pixel
+        if viewport_pixel is None:
+            self._finish_zoom_animation()
+            return
+        current_zoom = self.zoom_factor()
+        target_zoom = self._zoom_animation_target_zoom
+        remaining = target_zoom - current_zoom
+        if abs(remaining) <= max(_ZOOM_SETTLE_RATIO, abs(target_zoom) * _ZOOM_SETTLE_RATIO):
+            next_zoom = target_zoom
+            finish = True
+        else:
+            next_zoom = current_zoom + remaining * _ZOOM_EASING_FRACTION
+            finish = False
+        factor = next_zoom / current_zoom if current_zoom > 0 else 1.0
+        self._apply_zoom_at_viewport_pixel(viewport_pixel, factor, update_navigation=False)
+        self.zoomChanged.emit(self.zoom_factor())
+        if finish:
+            self._finish_zoom_animation()
+
+    def _finish_zoom_animation(self) -> None:
+        self._zoom_animation_timer.stop()
+        self._zoom_animation_viewport_pixel = None
+        self._leave_zoom_render_mode()
+        self._update_navigation_scene_rect()
+        self._update_tool_cursors()
+
+    def _enter_zoom_render_mode(self) -> None:
+        self.setRenderHints(self._zooming_render_hints)
+        self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
+
+    def _leave_zoom_render_mode(self) -> None:
+        self.setRenderHints(self._steady_render_hints)
+        self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, False)
+
+    def _clamp_current_zoom_at_viewport_pixel(self, viewport_pixel: QPoint) -> None:
+        current_zoom = self.zoom_factor()
+        target_zoom = clamp_zoom_factor(current_zoom)
+        if abs(target_zoom - current_zoom) <= 1e-9:
+            return
+        self._apply_zoom_at_viewport_pixel(viewport_pixel, target_zoom / current_zoom)
+
+    def _apply_zoom_at_viewport_pixel(
+        self,
+        viewport_pixel: QPoint,
+        factor: float,
+        *,
+        update_navigation: bool = True,
+    ) -> None:
         if factor == 1.0 or factor <= 0:
             return
         view_point = self._viewport_to_view_point(viewport_pixel)
@@ -1205,7 +1319,8 @@ class PolygonEditorView(QGraphicsView):
             h_scroll.setValue(h_scroll.value() + dh)
         if v_scroll is not None:
             v_scroll.setValue(v_scroll.value() + dv)
-        self._update_navigation_scene_rect()
+        if update_navigation:
+            self._update_navigation_scene_rect()
 
     def resizeEvent(self, event: QResizeEvent | None) -> None:
         if event is None:
@@ -1227,12 +1342,12 @@ class PolygonEditorView(QGraphicsView):
         end = self.mapToScene(QPoint(px, 0))
         return max(1.0, abs(end.x() - start.x()))
 
-    def _update_navigation_scene_rect(self) -> None:
+    def _update_navigation_scene_rect(self, zoom: float | None = None) -> None:
         base_rect = QRectF(self._editor_scene.navigation_base_rect())
         if base_rect.width() <= 0.0 or base_rect.height() <= 0.0:
             self.setSceneRect(base_rect)
             return
-        zoom = self.zoom_factor()
+        zoom = self.zoom_factor() if zoom is None else max(1e-6, float(zoom))
         viewport_rect = self._require_viewport().rect()
         margin_x = float(viewport_rect.width()) / max(zoom, 1e-6) + 2.0
         margin_y = float(viewport_rect.height()) / max(zoom, 1e-6) + 2.0

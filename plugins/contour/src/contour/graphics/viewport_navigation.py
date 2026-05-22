@@ -8,6 +8,34 @@ when the view already has a non-identity transform; scrollbar correction derived
 from __future__ import annotations
 
 
+DEFAULT_ZOOM_STEP_FACTOR = 1.15
+WHEEL_ZOOM_STEP_FACTOR = 1.28
+MIN_ZOOM_FACTOR = 0.08
+MAX_ZOOM_FACTOR = 32.0
+
+
+def clamp_zoom_factor(zoom: float) -> float:
+    return min(MAX_ZOOM_FACTOR, max(MIN_ZOOM_FACTOR, float(zoom)))
+
+
+def zoom_factor_for_wheel_delta(
+    delta_y: float,
+    *,
+    units_per_step: float = 120.0,
+    step_factor: float = WHEEL_ZOOM_STEP_FACTOR,
+) -> float:
+    """Return a smooth multiplicative zoom factor for wheel delta units.
+
+    Qt reports a traditional wheel notch as 120 angle-delta units. Smaller
+    deltas from high-resolution wheels and touchpads produce fractional steps.
+    """
+    if delta_y == 0:
+        return 1.0
+    units_per_step = max(1e-9, float(units_per_step))
+    step_factor = max(1e-9, float(step_factor))
+    return step_factor ** (float(delta_y) / units_per_step)
+
+
 def viewport_scroll_correction_after_scale_reanchor(
     viewport_pixel_xy: tuple[int, int],
     scene_anchor_viewport_xy_after_scale: tuple[int, int],

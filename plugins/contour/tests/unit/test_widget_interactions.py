@@ -1045,6 +1045,8 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         for _ in range(5):
             self._app.sendEvent(self.view.viewport(), event)
             self._app.processEvents()
+        QTest.qWait(120)
+        self._app.processEvents()
         scene_after = self.view.mapToScene(view_pos)
         self.assertAlmostEqual(scene_after.x(), scene_before.x(), delta=0.5)
         self.assertAlmostEqual(scene_after.y(), scene_before.y(), delta=0.5)

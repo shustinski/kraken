@@ -27,6 +27,7 @@ from PyQt6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QGuiApplication,
     QResizeEvent,
     QShortcut,
     QTabletEvent,
@@ -74,6 +75,8 @@ _WHEEL_ZOOM_COALESCE_MS = 3
 _ZOOM_ANIMATION_FRAME_MS = 16
 _ZOOM_EASING_FRACTION = 0.55
 _ZOOM_SETTLE_RATIO = 0.001
+_OPENGL_VIEWPORT_ENABLED = True
+_OPENGL_DISABLED_PLATFORMS = {"offscreen", "minimal"}
 
 
 class PolygonEditorView(QGraphicsView):
@@ -97,6 +100,7 @@ class PolygonEditorView(QGraphicsView):
     def __init__(self, parent=None) -> None:
         self._editor_scene = PolygonEditorScene()
         super().__init__(self._editor_scene, parent)
+        self._opengl_viewport_enabled = self._configure_opengl_viewport()
         self._steady_render_hints = QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform
         self._zooming_render_hints = QPainter.RenderHint(0)
         self.setRenderHints(self._steady_render_hints)
@@ -177,6 +181,25 @@ class PolygonEditorView(QGraphicsView):
             shortcut = QShortcut(sequence, self)
             shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
             shortcut.activated.connect(lambda t=tool: self.set_tool(t))
+
+    def _configure_opengl_viewport(self) -> bool:
+        if not _OPENGL_VIEWPORT_ENABLED:
+            return False
+        app = QGuiApplication.instance()
+        platform = str(app.platformName()).lower() if app is not None else ""
+        if platform in _OPENGL_DISABLED_PLATFORMS:
+            return False
+        try:
+            from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+        except Exception:
+            return False
+        try:
+            viewport = QOpenGLWidget(self)
+            viewport.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.PartialUpdate)
+            self.setViewport(viewport)
+        except Exception:
+            return False
+        return True
 
     def _require_viewport(self) -> QWidget:
         viewport = self.viewport()

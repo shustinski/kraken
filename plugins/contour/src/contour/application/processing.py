@@ -943,8 +943,41 @@ class BatchImageResult:
 
 
 @dataclass(slots=True)
+class BatchFrameTiming:
+    image_loading_ms: float = 0.0
+    morphology_ms: float = 0.0
+    threshold_ms: float = 0.0
+    contour_extraction_ms: float = 0.0
+    postprocessing_ms: float = 0.0
+    saving_ms: float = 0.0
+    total_frame_ms: float = 0.0
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "image_loading_ms": float(self.image_loading_ms),
+            "morphology_ms": float(self.morphology_ms),
+            "threshold_ms": float(self.threshold_ms),
+            "contour_extraction_ms": float(self.contour_extraction_ms),
+            "postprocessing_ms": float(self.postprocessing_ms),
+            "saving_ms": float(self.saving_ms),
+            "total_frame_ms": float(self.total_frame_ms),
+        }
+
+
+@dataclass(slots=True)
+class BatchImageMetadata:
+    image_path: str
+    polygon_count: int = 0
+    saved_files: dict[str, str] = field(default_factory=dict)
+    timing: BatchFrameTiming = field(default_factory=BatchFrameTiming)
+    worker_pid: int | None = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
 class BatchProcessingOptions:
     max_workers: int = 4
+    chunk_size: int = 16
     output_directory: str | None = None
     save_options: SaveOptions = field(default_factory=SaveOptions)
 

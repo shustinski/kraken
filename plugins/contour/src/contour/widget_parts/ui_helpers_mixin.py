@@ -236,6 +236,9 @@ class WidgetUiHelpersMixin:
             (self.fit_button, self._tr("fit_button", "Подогнать" if self._ui_language == "ru" else "Fit")),
         ]:
             button.setAccessibleName(label)
+        if hasattr(self, "antialias_opened_cif_button"):
+            antialias_all_label = self._tr("antialias_opened_cif_button")
+            self.antialias_opened_cif_button.setAccessibleName(antialias_all_label)
         shortcuts_map = {
             self.undo_button: undo_key,
             self.redo_button: redo_key,
@@ -255,6 +258,10 @@ class WidgetUiHelpersMixin:
             full_tip = append_shortcut_to_tooltip(tooltip, shortcut) if shortcut else tooltip
             button.setToolTip(full_tip)
             button.setStatusTip(full_tip)
+        if hasattr(self, "antialias_opened_cif_button"):
+            antialias_all_tip = self._tr("antialias_opened_cif_button")
+            self.antialias_opened_cif_button.setToolTip(antialias_all_tip)
+            self.antialias_opened_cif_button.setStatusTip(antialias_all_tip)
 
     def _on_editor_tool_changed(self, tool) -> None:
         is_ruler = tool == EditorTool.RULER

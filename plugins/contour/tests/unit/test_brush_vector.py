@@ -21,7 +21,7 @@ from contour.graphics.brush_vector import (
 )
 
 
-def test_capsule_between_two_centers_positive_area() -> None:
+def test_octagonal_cap_stroke_between_two_centers_positive_area() -> None:
     g = brush_stroke_geometry([(0.0, 0.0), (40.0, 0.0)], 16.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
     assert getattr(g, "area", 0) > 1.0
 
@@ -45,10 +45,10 @@ def test_freehand_stroke_not_collapsed_to_start_end_line() -> None:
     assert float(freehand.area) > float(straight.area) * 1.10
 
 
-def test_sparse_points_stroke_fills_gap_with_capsule_geometry() -> None:
+def test_sparse_points_stroke_fills_gap_with_swept_geometry() -> None:
     sparse = brush_stroke_geometry([(0.0, 0.0), (300.0, 0.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
 
-    # Midpoint must be inside the swept capsule footprint.
+    # Midpoint must be inside the swept stroke footprint.
     assert sparse.buffer(1e-7).contains(Point(150.0, 0.0))
 
 
@@ -64,6 +64,35 @@ def test_straight_brush_stroke_does_not_emit_collinear_side_vertices() -> None:
     assert len(bottom_side) == 2
 
 
+def test_straight_brush_stroke_uses_half_octagon_end_caps() -> None:
+    stroke = brush_stroke_geometry([(0.0, 0.0), (40.0, 0.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    polys = shapely_to_polygon_data_list(stroke)
+    assert len(polys) == 1
+
+    points = {(round(x_coord), round(y_coord)) for x_coord, y_coord in polys[0].points}
+
+    assert (-10, 0) in points
+    assert (-7, -7) in points
+    assert (-7, 7) in points
+    assert (50, 0) in points
+    assert (47, -7) in points
+    assert (47, 7) in points
+    assert not any(abs(y_coord) not in {0, 7, 10} for _, y_coord in points)
+
+
+def test_bent_trace_join_does_not_extend_past_previous_segment_end() -> None:
+    stroke = brush_stroke_geometry([(0.0, 0.0), (40.0, 0.0), (40.0, 40.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    polys = shapely_to_polygon_data_list(stroke)
+    assert len(polys) == 1
+
+    points = {(round(x_coord), round(y_coord)) for x_coord, y_coord in polys[0].points}
+
+    assert (40, -10) in points
+    assert (50, 0) in points
+    assert (50, -10) not in points
+    assert not any(point[0] > 40 and point[1] < 0 for point in points)
+
+
 def test_densify_chain_keeps_initial_point_for_short_first_move() -> None:
     chain = [(40.0, 40.0)]
     out = densify_chain_with_new_vertex(chain, (40.05, 40.0), max_segment_length=6.0)
@@ -73,16 +102,19 @@ def test_densify_chain_keeps_initial_point_for_short_first_move() -> None:
     assert out[-1] == (40.05, 40.0)
 
 
-def test_add_circle_one_point_equals_disk() -> None:
+def test_add_one_point_equals_octagon() -> None:
     blob = brush_stroke_geometry([(50.0, 50.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
 
-    circle_two = brush_stroke_geometry([(50.0, 50.0), (50.0, 50.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
-    symmetric = unary_union(blob.symmetric_difference(circle_two)).area
+    octagon_two = brush_stroke_geometry([(50.0, 50.0), (50.0, 50.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    symmetric = unary_union(blob.symmetric_difference(octagon_two)).area
+    polys = shapely_to_polygon_data_list(blob)
 
     assert symmetric <= 1e-6
+    assert len(polys) == 1
+    assert len(polys[0].points) == 8
 
 
-def test_erase_circle_difference_smaller_than_frame() -> None:
+def test_erase_octagon_difference_smaller_than_frame() -> None:
     sq = [(0.0, 0.0), (200.0, 0.0), (200.0, 200.0), (0.0, 200.0)]
     outline = filled_polygon_geometry(sq)
     hole_tool = brush_stroke_geometry([(100.0, 100.0)], 36.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)

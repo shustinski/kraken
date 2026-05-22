@@ -414,8 +414,18 @@ class WidgetProcessingMixin:
         self.polygon_editor.set_polygons(polygons)
         self._editor_polygons_signature = signature
 
+    def _neighbor_frames_enabled(self: Any) -> bool:
+        return bool(
+            hasattr(self, "show_neighbor_frames_checkbox")
+            and self.show_neighbor_frames_checkbox.isChecked()
+        )
+
     def _request_neighbor_frame_sync(self: Any, *, delay_ms: int = 0) -> None:
-        if not hasattr(self, "show_neighbor_frames_checkbox") or not self.show_neighbor_frames_checkbox.isChecked():
+        if not self._neighbor_frames_enabled():
+            timer = getattr(self, "_neighbor_sync_timer", None)
+            if timer is not None:
+                timer.stop()
+            self._sync_neighbor_frames()
             return
         timer = getattr(self, "_neighbor_sync_timer", None)
         if timer is None:
@@ -667,6 +677,12 @@ class WidgetProcessingMixin:
         return self._neighbor_frame_image(str(image_path))
 
     def _apply_cached_neighbor_frames(self: Any) -> None:
+        if not self._neighbor_frames_enabled():
+            self._neighbor_sync_image_path = None
+            self._neighbor_frame_specs = []
+            self._neighbor_queued_paths.clear()
+            self.polygon_editor.set_neighbor_frames([], 0.0, 0, False)
+            return
         if not self._neighbor_sync_is_current():
             return
         frames: list[tuple[int, int, object, str]] = []
@@ -719,7 +735,7 @@ class WidgetProcessingMixin:
         )
         if session is not None:
             session.mark_pending("neighbor_sync")
-        if not hasattr(self, "show_neighbor_frames_checkbox") or not self.show_neighbor_frames_checkbox.isChecked():
+        if not self._neighbor_frames_enabled():
             self._neighbor_sync_image_path = None
             self._neighbor_frame_specs = []
             self._neighbor_queued_paths.clear()
@@ -1162,12 +1178,15 @@ class WidgetProcessingMixin:
         )
 
     def _on_batch_result(self: Any, result) -> None:
-        self.imageProcessed.emit(result.image_path, result.polygons)
+        polygons = list(getattr(result, "polygons", []) or [])
+        # Multiprocessing batch workers return metadata only to keep IPC and the
+        # GUI event queue bounded during multi-thousand-image runs.
+        self.imageProcessed.emit(result.image_path, polygons)
         self._append_log(
             self._tr(
                 "batch_result_log",
                 image_name=Path(result.image_path).name,
-                count=len(result.polygons),
+                count=int(getattr(result, "polygon_count", len(polygons))),
             )
         )
 
@@ -2399,6 +2418,7 @@ class WidgetProcessingMixin:
                 save_options=save_options,
                 output_directory=output_directory,
                 max_workers=mp.cpu_count(),
+                chunk_size=max(1, int(getattr(self, "batch_chunk_size", 16))),
                 )
             )
         if not started:

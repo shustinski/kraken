@@ -565,7 +565,11 @@ class PolygonEditorView(QGraphicsView):
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.RightButton,
         ):
-            self._start_trace_drag(scene_pos, erase=event.button() == Qt.MouseButton.RightButton)
+            self._append_trace_point(
+                scene_pos,
+                erase=event.button() == Qt.MouseButton.RightButton,
+                snap=bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier),
+            )
             event.accept()
             return
 
@@ -780,18 +784,14 @@ class PolygonEditorView(QGraphicsView):
                 self._append_brush_point(scene_pos)
             event.accept()
             return
-        if self._drag_kind == "trace" and self._drag_start_scene_pos is not None:
+        if self._tool == EditorTool.TRACE_PEN and self._editor_scene.has_pending_polygon():
+            last_point = self._editor_scene.pending_last_point()
             target = (
-                _snap_to_45(self._drag_start_scene_pos, scene_pos)
-                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                _snap_to_45(last_point, scene_pos)
+                if last_point is not None and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
                 else scene_pos
             )
-            self._editor_scene.replace_pending_points(
-                [
-                    (self._drag_start_scene_pos.x(), self._drag_start_scene_pos.y()),
-                    (target.x(), target.y()),
-                ]
-            )
+            self._editor_scene.update_pending_cursor(target)
             event.accept()
             return
         if self._drag_kind == "vertex" and self._drag_polygon_id is not None and self._drag_vertex_index is not None:
@@ -838,16 +838,6 @@ class PolygonEditorView(QGraphicsView):
             if self._drag_kind == "brush":
                 release_pos = self.mapToScene(event.position().toPoint())
                 self._commit_brush_drag(release_pos)
-
-            elif self._drag_kind == "trace":
-                release_pos = self.mapToScene(event.position().toPoint())
-                target_pos = (
-                    _snap_to_45(self._drag_start_scene_pos, release_pos)
-                    if self._drag_start_scene_pos is not None
-                    and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
-                    else release_pos
-                )
-                self._commit_trace_drag(target_pos)
 
             elif self._drag_kind == "rect_polygon" and self._drag_start_scene_pos is not None:
                 self._editor_scene.add_rectangle_polygon(
@@ -1065,11 +1055,14 @@ class PolygonEditorView(QGraphicsView):
                 event.accept()
                 return
         if (
-            self._tool == EditorTool.ADD_POLYGON
+            self._tool in (EditorTool.ADD_POLYGON, EditorTool.TRACE_PEN)
             and self._editor_scene.has_pending_polygon()
             and event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton)
         ):
-            self._finish_pending_polygon()
+            if self._tool == EditorTool.TRACE_PEN:
+                self._finish_pending_trace()
+            else:
+                self._finish_pending_polygon()
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
@@ -1093,10 +1086,13 @@ class PolygonEditorView(QGraphicsView):
             return
         if (
             event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return)
-            and self._tool == EditorTool.ADD_POLYGON
+            and self._tool in (EditorTool.ADD_POLYGON, EditorTool.TRACE_PEN)
             and self._editor_scene.has_pending_polygon()
         ):
-            self._finish_pending_polygon()
+            if self._tool == EditorTool.TRACE_PEN:
+                self._finish_pending_trace()
+            else:
+                self._finish_pending_polygon()
             event.accept()
             return
         if event.key() == Qt.Key.Key_Escape:
@@ -1288,14 +1284,6 @@ class PolygonEditorView(QGraphicsView):
         self._editor_scene.set_pending_path_width(self._brush_thickness, cosmetic=False)
         self._append_brush_point(scene_pos)
 
-    def _start_trace_drag(self, scene_pos: QPointF, *, erase: bool) -> None:
-        self._drag_erases = bool(erase)
-        self._drag_kind = "trace"
-        self._drag_start_scene_pos = scene_pos
-        self._editor_scene.start_pending_polygon(for_brush=True)
-        self._editor_scene.set_pending_path_width(self._trace_width, cosmetic=False)
-        self._editor_scene.replace_pending_points([(scene_pos.x(), scene_pos.y()), (scene_pos.x(), scene_pos.y())])
-
     def _commit_brush_drag(self, release_pos: QPointF) -> None:
         if self._brush_mode == BrushMode.ANGLED and self._drag_start_scene_pos is not None:
             end_point = _snap_to_45(self._drag_start_scene_pos, release_pos)
@@ -1310,15 +1298,30 @@ class PolygonEditorView(QGraphicsView):
         self._brush_pan_guard = False
         self._editor_scene.add_brush_stroke(brush_points, self._brush_thickness, erase=self._drag_erases)
 
-    def _commit_trace_drag(self, release_pos: QPointF) -> None:
-        if self._drag_start_scene_pos is None:
-            self._editor_scene.cancel_pending_polygon()
+    def _append_trace_point(self, scene_pos: QPointF, *, erase: bool, snap: bool = False) -> None:
+        if self._editor_scene.has_pending_polygon():
+            if self._pending_polygon_erases is None:
+                self._pending_polygon_erases = bool(erase)
+            elif bool(erase) != self._pending_polygon_erases:
+                self._finish_pending_trace()
+                return
+        else:
+            self._pending_polygon_erases = bool(erase)
+            self._editor_scene.start_pending_polygon(for_brush=True)
+            self._editor_scene.set_pending_path_width(self._trace_width, cosmetic=False)
+
+        target = scene_pos
+        last_point = self._editor_scene.pending_last_point()
+        if snap and last_point is not None:
+            target = _snap_to_45(last_point, scene_pos)
+        if last_point is not None and hypot(target.x() - last_point.x(), target.y() - last_point.y()) < 1.0:
             return
-        trace_points = [
-            (self._drag_start_scene_pos.x(), self._drag_start_scene_pos.y()),
-            (release_pos.x(), release_pos.y()),
-        ]
-        self._editor_scene.add_trace_stroke(trace_points, self._trace_width, erase=self._drag_erases)
+        self._editor_scene.append_pending_point(target)
+
+    def _finish_pending_trace(self) -> None:
+        points = self._editor_scene.pending_points_snapshot()
+        self._editor_scene.add_trace_stroke(points, self._trace_width, erase=bool(self._pending_polygon_erases))
+        self._pending_polygon_erases = None
 
     def _update_tool_cursors(self) -> None:
         self._editor_scene.set_brush_cursor(

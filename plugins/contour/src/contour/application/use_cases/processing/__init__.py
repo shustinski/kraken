@@ -23,4 +23,5 @@ from ._core import (  # noqa: F401
     build_via_vectorization_mask,
     prepare_image_for_preview,
     process_image_path,
+    process_image_path_timed,
 )

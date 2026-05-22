@@ -663,6 +663,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.polygon_mode_label.setText("Полигон" if self._ui_language == "ru" else "Polygon")
     self.brush_mode_label.setText("Кисть" if self._ui_language == "ru" else "Brush")
     self.brush_size_label.setText("Толщина" if self._ui_language == "ru" else "Width")
+    if hasattr(self, "trace_width_label"):
+        self.trace_width_label.setText(self._tr("trace_width_label"))
     self.delete_vertex_mode_label.setText("Удаление" if self._ui_language == "ru" else "Delete")
     self.via_width_label.setText("Via W")
     self.via_height_label.setText("Via H")

@@ -866,6 +866,36 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertFalse(self.widget.polygon_editor._editor_scene._main_frame_item.isVisible())
 
+    def test_neighbor_request_clears_existing_neighbors_when_disabled(self) -> None:
+        self.widget.polygon_editor.set_image(np.zeros((24, 24), dtype=np.uint8))
+        self.widget.polygon_editor.set_neighbor_frames(
+            [(1, 0, np.zeros((24, 24), dtype=np.uint8), "right.png")],
+            0.5,
+            show_main_frame=True,
+        )
+        self.assertEqual(len(self.widget.polygon_editor._editor_scene._neighbor_frame_items), 1)
+
+        self.widget.show_neighbor_frames_checkbox.setChecked(False)
+        self.widget._request_neighbor_frame_sync()
+
+        self.assertEqual(len(self.widget.polygon_editor._editor_scene._neighbor_frame_items), 0)
+        self.assertFalse(self.widget.polygon_editor._editor_scene._main_frame_item.isVisible())
+
+    def test_stale_neighbor_apply_does_not_redraw_when_disabled(self) -> None:
+        paths = [f"frame_{index:02d}.png" for index in range(9)]
+        self.widget._workspace._image_paths = paths
+        self.widget._workspace._current_image_path = paths[4]
+        self.widget.polygon_editor.set_image(np.zeros((24, 24), dtype=np.uint8))
+        self.widget._neighbor_frame_specs = [(1, 0, paths[5])]
+        self.widget._neighbor_sync_image_path = paths[4]
+        self.widget._neighbor_image_cache[str(Path(paths[5]))] = np.zeros((24, 24), dtype=np.uint8)
+        self.widget.show_neighbor_frames_checkbox.setChecked(False)
+
+        self.widget._apply_cached_neighbor_frames()
+
+        self.assertEqual(len(self.widget.polygon_editor._editor_scene._neighbor_frame_items), 0)
+        self.assertFalse(self.widget.polygon_editor._editor_scene._main_frame_item.isVisible())
+
     def test_neighbor_frame_overlap_moves_tiles_closer(self) -> None:
         self.widget.polygon_editor.set_image(np.zeros((12, 12), dtype=np.uint8))
         frames = [
@@ -964,6 +994,37 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.assertTrue(self.view._editor_scene.polygon_overlays_visible())
         after_release = [(p.points[0], p.points[2]) for p in self.view.get_polygons()]
         self.assertEqual(after_release, before)
+
+    def test_trace_pen_commits_polygonal_chain_on_enter(self) -> None:
+        self.view.set_tool(EditorTool.TRACE_PEN)
+        recorded: list[tuple[list[tuple[float, float]], float, bool]] = []
+
+        def _record_trace(points: list[tuple[float, float]], width: float, erase: bool = False) -> bool:
+            recorded.append((points, width, erase))
+            self.view._editor_scene.cancel_pending_polygon()
+            return True
+
+        self.view._editor_scene.add_trace_stroke = _record_trace  # type: ignore[method-assign]
+
+        for point in (QPointF(10.0, 10.0), QPointF(80.0, 10.0), QPointF(80.0, 70.0)):
+            QTest.mouseClick(
+                self.view.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                self.view.mapFromScene(point),
+            )
+        self._app.processEvents()
+
+        self.assertEqual(len(self.view._editor_scene.pending_points_snapshot()), 3)
+
+        QTest.keyClick(self.view, Qt.Key.Key_Return)
+        self._app.processEvents()
+
+        self.assertEqual(len(recorded), 1)
+        points, width, erase = recorded[0]
+        self.assertEqual(points, [(10.0, 10.0), (80.0, 10.0), (80.0, 70.0)])
+        self.assertEqual(width, self.view._trace_width)
+        self.assertFalse(erase)
 
     def test_ctrl_wheel_keeps_scene_point_under_cursor_stable(self) -> None:
         self.view.fit_to_view()

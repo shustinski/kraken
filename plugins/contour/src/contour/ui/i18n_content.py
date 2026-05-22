@@ -112,7 +112,7 @@ EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
         "Minimum via roundness in percent: 100 is close to a circle, 0 disables the filter.",
     ),
     "via_size_mode": (
-        "РџРµСЂРµРєР»СЋС‡Р°РµС‚ РѕС‚Р±РѕСЂ via РјРµР¶РґСѓ РґРёР°РїР°Р·РѕРЅРѕРј Рё С‚РѕС‡РЅС‹РјРё Р·РЅР°С‡РµРЅРёСЏРјРё.",
+        "Переключает отбор via между диапазоном и точными значениями.",
         "Switches via filtering between a size range and exact size values.",
     ),
     "min_via_width": (
@@ -132,11 +132,11 @@ EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
         "Maximum via height in the via profile.",
     ),
     "fixed_via_widths": (
-        "РЎРїРёСЃРѕРє С€РёСЂРёРЅ via. РљР°Р¶РґР°СЏ С€РёСЂРёРЅР° СЃРІСЏР·Р°РЅР° СЃ РІС‹СЃРѕС‚РѕР№ РІ С‚РѕР№ Р¶Рµ РїРѕР·РёС†РёРё.",
+        "Список ширин via. Каждая ширина связана с высотой в той же позиции.",
         "Via widths list. Each width is paired with the height at the same position.",
     ),
     "fixed_via_heights": (
-        "РЎРїРёСЃРѕРє РІС‹СЃРѕС‚ via. РљР°Р¶РґР°СЏ РІС‹СЃРѕС‚Р° СЃРІСЏР·Р°РЅР° СЃ С€РёСЂРёРЅРѕР№ РІ С‚РѕР№ Р¶Рµ РїРѕР·РёС†РёРё.",
+        "Список высот via. Каждая высота связана с шириной в той же позиции.",
         "Via heights list. Each height is paired with the width at the same position.",
     ),
     "min_hierarchy_depth": (
@@ -814,8 +814,8 @@ EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
         "Draw or erase an area with the brush. The circle under the cursor shows the current brush width.",
     ),
     EditorTool.TRACE_PEN: (
-        "Trace pen: drag from a trace centerline start to its end. Shift snaps to 45 degrees; right drag erases.",
-        "Trace pen: drag from a trace centerline start to its end. Shift snaps to 45 degrees; right drag erases.",
+        "Перо дорожки: кликайте по вершинам центральной линии, затем дважды кликните или нажмите Enter. Shift привязывает сегменты к 45 градусам; цепочки правой кнопкой стирают.",
+        "Trace pen: click trace centerline vertices, then double-click or press Enter to commit. Shift snaps segments to 45 degrees; right-click chains erase.",
     ),
     EditorTool.ADD_VIA: (
         "Поставить переходное отверстие заданной ширины и высоты в месте клика.",

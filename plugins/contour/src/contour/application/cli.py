@@ -5,6 +5,8 @@ import multiprocessing as mp
 import sys
 from collections.abc import Sequence
 
+from ..batch_processor import configure_batch_runtime
+
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = list(argv) if argv is not None else sys.argv[1:]
@@ -33,4 +35,5 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":
     mp.freeze_support()
+    configure_batch_runtime()
     main()

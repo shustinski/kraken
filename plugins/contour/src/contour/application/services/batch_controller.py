@@ -27,6 +27,7 @@ class BatchStartRequest:
     save_options: SaveOptions
     output_directory: str | None
     max_workers: int
+    chunk_size: int = 16
 
 
 class BatchController:
@@ -71,6 +72,7 @@ class BatchController:
             save_options=request.save_options,
             display_settings=request.display_settings,
             max_workers=request.max_workers,
+            chunk_size=request.chunk_size,
         )
         return True
 

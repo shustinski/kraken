@@ -1936,7 +1936,7 @@ def build_editor_toolbar(self) -> QWidget:
     _trace_blk = QHBoxLayout(self._trace_toolbar_block)
     _trace_blk.setContentsMargins(0, 0, 0, 0)
     _trace_blk.setSpacing(6)
-    self.trace_width_label = QLabel("РЁРёСЂРёРЅР°" if self._ui_language == "ru" else "Width")
+    self.trace_width_label = QLabel("Ширина" if self._ui_language == "ru" else "Width")
     self.trace_width_spin = QSpinBox()
     self.trace_width_spin.setRange(1, 256)
     self.trace_width_spin.setValue(12)
@@ -2036,7 +2036,7 @@ def build_editor_toolbar(self) -> QWidget:
     self._configure_toolbar_button(
         self.antialias_opened_cif_button,
         self._create_editor_action_icon("antialias_all"),
-        "Antialias all opened CIF files",
+        self._tr("antialias_opened_cif_button", "Antialias all opened CIF files"),
     )
     self.antialias_opened_cif_button.clicked.connect(self._antialias_opened_cif_files)
 

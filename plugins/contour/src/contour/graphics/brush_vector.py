@@ -1,11 +1,11 @@
-"""Vector geometry for brush strokes: capsule strokes, booleans, and polygon conversion."""
+"""Vector geometry for brush strokes: octagonal caps, booleans, and polygon conversion."""
 
 from __future__ import annotations
 
-from math import hypot
+from math import cos, hypot, radians, sin
 
 from shapely import BufferCapStyle, BufferJoinStyle, make_valid, unary_union
-from shapely.geometry import LinearRing, LineString, Point, Polygon
+from shapely.geometry import LinearRing, LineString, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from ..domain import PolygonData, compute_polygon_metrics, integer_points
@@ -44,12 +44,55 @@ def densify_chain_with_new_vertex(
 
 
 def capsule_shape_between_two_points(ax: float, ay: float, bx: float, by: float, diameter: float) -> BaseGeometry:
-    """Rounded stroke between two centres (capsule = buffered segment)."""
+    """Octagonal-capped stroke between two centres."""
 
     return brush_stroke_geometry([(ax, ay), (bx, by)], diameter, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
 
 
+def _octagon_points(center: tuple[float, float], radius: float) -> list[tuple[float, float]]:
+    cx, cy = center
+    return [
+        (cx + cos(radians(angle)) * radius, cy + sin(radians(angle)) * radius)
+        for angle in (0, 45, 90, 135, 180, 225, 270, 315)
+    ]
+
+
+def _half_octagon_cap(
+    center: tuple[float, float], direction: tuple[float, float], radius: float
+) -> list[tuple[float, float]]:
+    cx, cy = center
+    dx, dy = direction
+    length = hypot(dx, dy)
+    if length <= 1e-12:
+        return _octagon_points(center, radius)
+    ux, uy = dx / length, dy / length
+    nx, ny = -uy, ux
+    return [
+        (cx + nx * radius, cy + ny * radius),
+        (cx + (ux + nx) * radius * 0.7071067811865476, cy + (uy + ny) * radius * 0.7071067811865476),
+        (cx + ux * radius, cy + uy * radius),
+        (cx + (ux - nx) * radius * 0.7071067811865476, cy + (uy - ny) * radius * 0.7071067811865476),
+        (cx - nx * radius, cy - ny * radius),
+    ]
+
+
+def _stroke_endpoint_caps(cleaned: list[tuple[float, float]], radius: float) -> list[Polygon]:
+    if len(cleaned) < 2 or cleaned[0] == cleaned[-1]:
+        return []
+    start = cleaned[0]
+    next_point = cleaned[1]
+    prev_point = cleaned[-2]
+    end = cleaned[-1]
+    start_dir = (start[0] - next_point[0], start[1] - next_point[1])
+    end_dir = (end[0] - prev_point[0], end[1] - prev_point[1])
+    return [
+        Polygon(_half_octagon_cap(start, start_dir, radius)),
+        Polygon(_half_octagon_cap(end, end_dir, radius)),
+    ]
+
+
 def brush_stroke_geometry(points: list[tuple[float, float]], diameter: float, *, quad_segs: int) -> BaseGeometry:
+    del quad_segs
     radius = max(float(diameter) / 2.0, 0.5)
 
     cleaned: list[tuple[float, float]] = []
@@ -62,21 +105,16 @@ def brush_stroke_geometry(points: list[tuple[float, float]], diameter: float, *,
         return Polygon()
 
     if len(cleaned) == 1:
-        gp = Point(cleaned[0]).buffer(
-            radius,
-            quad_segs=quad_segs,
-            cap_style=BufferCapStyle.round,
-            join_style=BufferJoinStyle.round,
-        )
+        gp = Polygon(_octagon_points(cleaned[0], radius))
         return unary_union(make_valid(gp))
 
     gp = LineString(cleaned).buffer(
         radius,
-        quad_segs=quad_segs,
-        cap_style=BufferCapStyle.round,
-        join_style=BufferJoinStyle.round,
+        quad_segs=1,
+        cap_style=BufferCapStyle.flat,
+        join_style=BufferJoinStyle.bevel,
     )
-    return unary_union(make_valid(gp))
+    return unary_union([make_valid(part) for part in (gp, *_stroke_endpoint_caps(cleaned, radius))])
 
 
 def filled_polygon_geometry(points: list[tuple[float, float]]) -> BaseGeometry:

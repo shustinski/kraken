@@ -5,6 +5,7 @@ import json
 import hashlib
 import io
 import pstats
+from time import perf_counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
@@ -41,6 +42,7 @@ from ...processing import (
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
     BatchImageResult,
+    BatchFrameTiming,
     ContourDebugCandidate,
     ContourExtractionSettings,
     DisplaySettings,
@@ -1723,6 +1725,31 @@ def process_image_path(
     )
 
 
+def process_image_path_timed(
+    image_path: str,
+    pipeline_config: dict[str, Any],
+    contour_settings: ContourExtractionSettings,
+    output_directory: str | None = None,
+    save_options: SaveOptions | None = None,
+    display_settings: DisplaySettings | None = None,
+    *,
+    pipeline: PreprocessingPipeline | None = None,
+) -> tuple[BatchImageResult, BatchFrameTiming]:
+    timing = BatchFrameTiming()
+    result = _process_image_path_impl(
+        image_path=image_path,
+        pipeline_config=pipeline_config,
+        contour_settings=contour_settings,
+        output_directory=output_directory,
+        save_options=save_options,
+        display_settings=display_settings,
+        pipeline=pipeline,
+        include_images_in_result=False,
+        timing=timing,
+    )
+    return result, timing
+
+
 def _process_image_path_impl(
     *,
     image_path: str,
@@ -1738,21 +1765,33 @@ def _process_image_path_impl(
     save_bundle: Callable[..., dict[str, str]] = save_result_bundle,
     include_images_in_result: bool = True,
     passthrough_polygons: list[PolygonData] | None = None,
+    timing: BatchFrameTiming | None = None,
 ) -> BatchImageResult:
+    frame_started = perf_counter()
     raise_if_preview_cancelled()
+    phase_started = perf_counter()
     source = source_image if source_image is not None else image_loader(image_path)
+    if timing is not None and source_image is None:
+        timing.image_loading_ms += (perf_counter() - phase_started) * 1000.0
     raise_if_preview_cancelled()
     if preprocessed_image is not None:
         preprocessed = preprocessed_image
     else:
         active_pipeline = pipeline or PreprocessingPipeline.from_dict(pipeline_config)
-        preprocessed = active_pipeline.apply(source)
+        if timing is None:
+            preprocessed = active_pipeline.apply(source)
+        else:
+            preprocessed, pipeline_timings = active_pipeline.apply_with_timing(source)
+            timing.threshold_ms += float(pipeline_timings.get("threshold_ms", 0.0))
+            timing.morphology_ms += float(pipeline_timings.get("morphology_ms", 0.0))
+            timing.postprocessing_ms += float(pipeline_timings.get("postprocessing_ms", 0.0))
     raise_if_preview_cancelled()
 
     rec = normalize_recognition_mode(getattr(contour_settings, "recognition_mode", "via"))
     if rec == RECOGNITION_MODE_DISABLED:
         saved_files: dict[str, str] = {}
         if output_directory:
+            phase_started = perf_counter()
             saved_files = save_bundle(
                 output_directory=output_directory,
                 image_path=image_path,
@@ -1765,7 +1804,11 @@ def _process_image_path_impl(
                     "pipeline": pipeline_config,
                 },
             )
+            if timing is not None:
+                timing.saving_ms += (perf_counter() - phase_started) * 1000.0
         polys = list(passthrough_polygons) if passthrough_polygons else []
+        if timing is not None:
+            timing.total_frame_ms = (perf_counter() - frame_started) * 1000.0
         return BatchImageResult(
             image_path=image_path,
             source_image=source if include_images_in_result else None,
@@ -1789,35 +1832,55 @@ def _process_image_path_impl(
             preprocessed=preprocessed,
             save_bundle=save_bundle,
             include_images_in_result=include_images_in_result,
+            timing=timing,
+            frame_started=frame_started,
         )
 
     metal_overlays: dict[str, list[PolygonData]] = {}
     metal_debug_extra: dict[str, np.ndarray] = {}
     if contour_settings.object_type == "via" or contour_settings.output_mode == "box":
+        phase_started = perf_counter()
         mask, debug_candidates = build_via_vectorization_mask(preprocessed, contour_settings)
+        if timing is not None:
+            timing.postprocessing_ms += (perf_counter() - phase_started) * 1000.0
         raise_if_preview_cancelled()
+        phase_started = perf_counter()
         polygons = extract_polygons(mask, contour_settings)
+        if timing is not None:
+            timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         raise_if_preview_cancelled()
     elif _use_structural_metal_recovery(contour_settings):
         raise_if_preview_cancelled()
+        phase_started = perf_counter()
         polygons, mask, metal_debug_extra, metal_overlays = _run_structural_metal_recovery(
             preprocessed, contour_settings
         )
+        if timing is not None:
+            timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         raise_if_preview_cancelled()
         debug_candidates = []
     else:
+        phase_started = perf_counter()
         mask = build_conductor_vectorization_mask(source, preprocessed, contour_settings)
+        if timing is not None:
+            timing.postprocessing_ms += (perf_counter() - phase_started) * 1000.0
         raise_if_preview_cancelled()
         debug_candidates = []
+        phase_started = perf_counter()
         polygons = extract_polygons(mask, contour_settings)
+        if timing is not None:
+            timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         if _should_run_sem_dual_branch(contour_settings):
             raise_if_preview_cancelled()
+            phase_started = perf_counter()
             via_settings = _build_via_settings_for_dual_branch(contour_settings)
             via_mask, via_debug_candidates = build_via_vectorization_mask(preprocessed, via_settings)
             via_polygons = extract_polygons(via_mask, via_settings)
             via_polygons = _filter_vias_by_conductor_linearity(via_polygons, mask)
             polygons = _merge_dual_branch_polygons(polygons, via_polygons)
             debug_candidates.extend(via_debug_candidates)
+            if timing is not None:
+                timing.postprocessing_ms += (perf_counter() - phase_started) * 1000.0
     if not contour_settings.debug_enabled:
         debug_candidates = []
     base_metal_maps: dict[str, np.ndarray] = (
@@ -1837,6 +1900,7 @@ def _process_image_path_impl(
         debug_gradient_maps["mask"] = ensure_binary_mask(mask)
     saved_files: dict[str, str] = {}
     if output_directory:
+        phase_started = perf_counter()
         saved_files = save_bundle(
             output_directory=output_directory,
             image_path=image_path,
@@ -1849,9 +1913,13 @@ def _process_image_path_impl(
                 "pipeline": pipeline_config,
             },
         )
+        if timing is not None:
+            timing.saving_ms += (perf_counter() - phase_started) * 1000.0
     result_source = source if include_images_in_result else None
     result_preprocessed = preprocessed if include_images_in_result else None
     result_mask = mask if include_images_in_result else None
+    if timing is not None:
+        timing.total_frame_ms = (perf_counter() - frame_started) * 1000.0
     return BatchImageResult(
         image_path=image_path,
         source_image=result_source,
@@ -1878,6 +1946,8 @@ def _process_image_path_sem_backend(
     preprocessed: Any,
     save_bundle: Callable[..., dict[str, str]],
     include_images_in_result: bool,
+    timing: BatchFrameTiming | None = None,
+    frame_started: float | None = None,
 ) -> BatchImageResult:
     from ....vision.integration import (
         contour_output_to_polygons,
@@ -1894,6 +1964,7 @@ def _process_image_path_sem_backend(
 
     raise_if_preview_cancelled()
     if contour_settings.object_type == "via":
+        phase_started = perf_counter()
         via_output = run_via_detection(
             source,
             image_path=image_path,
@@ -1902,6 +1973,8 @@ def _process_image_path_sem_backend(
         )
         polygons = via_output_to_polygons(via_output)
         mask = _render_polygon_mask_from_polygons(source, polygons)
+        if timing is not None:
+            timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         vision_json = via_output.to_json_dict()
         if contour_settings.debug_enabled:
             debug_candidates = _debug_candidates_from_via_hits(via_output.hits)
@@ -1910,6 +1983,7 @@ def _process_image_path_sem_backend(
             debug_gradient_maps = dict(getattr(via_output, "debug", {}) or {})
     else:
         raise_if_preview_cancelled()
+        phase_started = perf_counter()
         contour_output = run_contour_filled_mask(
             source,
             image_path=image_path,
@@ -1919,6 +1993,8 @@ def _process_image_path_sem_backend(
         )
         polygons = contour_output_to_polygons(contour_output)
         mask = contour_output.filled_mask
+        if timing is not None:
+            timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         vision_json = contour_output.to_json_dict()
         preprocessed = contour_output.debug.get("preprocessed", preprocessed)
         if contour_settings.debug_gradient_map_enabled:
@@ -1930,6 +2006,7 @@ def _process_image_path_sem_backend(
 
     saved_files: dict[str, str] = {}
     if output_directory:
+        phase_started = perf_counter()
         saved_files = save_bundle(
             output_directory=output_directory,
             image_path=image_path,
@@ -1943,7 +2020,11 @@ def _process_image_path_sem_backend(
                 "vision_backend": vision_json,
             },
         )
+        if timing is not None:
+            timing.saving_ms += (perf_counter() - phase_started) * 1000.0
 
+    if timing is not None and frame_started is not None:
+        timing.total_frame_ms = (perf_counter() - frame_started) * 1000.0
     return BatchImageResult(
         image_path=image_path,
         source_image=source if include_images_in_result else None,

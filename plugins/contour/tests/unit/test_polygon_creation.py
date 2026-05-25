@@ -32,6 +32,25 @@ def _triangle() -> list[tuple[float, float]]:
     return [(0.0, 0.0), (100.0, 0.0), (50.0, 80.0)]
 
 
+def _polygon(
+    polygon_id: int,
+    points: list[tuple[float, float]],
+    *,
+    is_hole: bool = False,
+    parent_id: int | None = None,
+) -> PolygonData:
+    area, perimeter, bbox = compute_polygon_metrics(points)
+    return PolygonData(
+        id=polygon_id,
+        points=points,
+        is_hole=is_hole,
+        parent_id=parent_id,
+        area=area,
+        perimeter=perimeter,
+        bbox=bbox,
+    )
+
+
 class PolygonCommitAcceptabilityTests(unittest.TestCase):
     def test_too_few_vertices(self) -> None:
         ok, reason = polygon_commit_acceptability([(0.0, 0.0), (1.0, 0.0)])
@@ -130,6 +149,28 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(self.scene.get_polygons()[0].points, [(5, 6), (35, 6), (35, 28), (5, 28)])
+
+    def test_delete_parent_polygon_removes_internal_contours(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (40.0, 20.0), (40.0, 40.0), (20.0, 40.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        unrelated = _polygon(3, [(100.0, 0.0), (130.0, 0.0), (130.0, 30.0), (100.0, 30.0)])
+        self._reset([outer, hole, unrelated])
+
+        self.assertTrue(self.scene.delete_polygon(1))
+
+        remaining_ids = {polygon.id for polygon in self.scene.get_polygons()}
+        self.assertEqual(remaining_ids, {3})
+
+        self.scene.undo_stack.undo()
+        restored = {polygon.id: polygon for polygon in self.scene.get_polygons()}
+        self.assertEqual(set(restored), {1, 2, 3})
+        self.assertTrue(restored[2].is_hole)
+        self.assertEqual(restored[2].parent_id, 1)
 
     def test_invalid_polygon_not_committed_keeps_pending(self) -> None:
         self._reset([])

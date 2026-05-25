@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -55,10 +56,15 @@ def ensure_uint8(image: np.ndarray) -> np.ndarray:
 
 
 def _imread_unicode_safe(path: str | Path, flags: int) -> np.ndarray | None:
-    normalized_path = Path(path)
-    if not normalized_path.exists():
-        raise FileNotFoundError(tr("unable_to_load_image", path=normalized_path))
-    normalized_text = str(normalized_path)
+    if isinstance(path, str):
+        normalized_text = path
+        if not os.path.isfile(path):
+            raise FileNotFoundError(tr("unable_to_load_image", path=path))
+    else:
+        normalized_path = Path(path)
+        if not normalized_path.exists():
+            raise FileNotFoundError(tr("unable_to_load_image", path=normalized_path))
+        normalized_text = str(normalized_path)
     if normalized_text.isascii():
         image = cv2.imread(normalized_text, flags)
         if image is not None:
@@ -66,9 +72,9 @@ def _imread_unicode_safe(path: str | Path, flags: int) -> np.ndarray | None:
     try:
         raw_bytes = np.fromfile(normalized_text, dtype=np.uint8)
     except OSError as exc:
-        raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_path)) from exc
+        raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_text)) from exc
     if raw_bytes.size == 0:
-        raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_path))
+        raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_text))
     return cv2.imdecode(raw_bytes, flags)
 
 
@@ -94,12 +100,19 @@ def load_image_grayscale(path: str | Path) -> np.ndarray:
     return ensure_uint8(image)
 
 
-def load_image_color_thumbnail(path: str | Path, max_width: int, max_height: int) -> np.ndarray:
+def load_image_color_thumbnail(path: str | Path, max_width: int, max_height: int, *, cover: bool = False) -> np.ndarray:
     """Load a color image scaled down for thumbnail grids (avoids full-resolution decode)."""
 
     target_w = max(1, int(max_width))
     target_h = max(1, int(max_height))
-    image = _imread_unicode_safe(path, cv2.IMREAD_REDUCED_COLOR_4)
+    target_max = max(target_w, target_h)
+    if target_max <= 128:
+        flags = cv2.IMREAD_REDUCED_COLOR_8
+    elif target_max <= 512:
+        flags = cv2.IMREAD_REDUCED_COLOR_4
+    else:
+        flags = cv2.IMREAD_REDUCED_COLOR_2
+    image = _imread_unicode_safe(path, flags)
     if image is None:
         raise FileNotFoundError(tr("unable_to_load_image", path=path))
     if image.ndim == 2:
@@ -110,7 +123,10 @@ def load_image_color_thumbnail(path: str | Path, max_width: int, max_height: int
         image = ensure_uint8(image)
     h, w = image.shape[:2]
     if w > 0 and h > 0:
-        scale = min(target_w / float(w), target_h / float(h), 1.0)
+        if cover:
+            scale = max(target_w / float(w), target_h / float(h))
+        else:
+            scale = min(target_w / float(w), target_h / float(h), 1.0)
         resized_w = max(1, round(w * scale))
         resized_h = max(1, round(h * scale))
         if resized_w != w or resized_h != h:

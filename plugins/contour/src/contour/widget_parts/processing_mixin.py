@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import cProfile
 import hashlib
+import shutil
 from time import perf_counter, time_ns
 
 from typing import Any
 
-from PyQt6.QtGui import QImage
+from PyQt6.QtGui import QImage, QImageReader
 
 from ..infrastructure.frame_switch_profiler import (
     MAX_IDLE_POLLS,
@@ -57,7 +58,11 @@ class WidgetProcessingMixin:
             foreground_hex_image_paint_status_for_theme,
         )
 
-        normalized = str(Path(image_path))
+        normalized = (
+            image_path
+            if image_path in self._image_path_to_index
+            else str(Path(image_path))
+        )
         cif_paths = getattr(self._workspace, "_cif_paths_by_stem", {})
         stem_lower = getattr(self, "_image_path_stem_lower", {}).get(normalized)
         if stem_lower is None:
@@ -96,9 +101,61 @@ class WidgetProcessingMixin:
 
     def _set_image_list_paths(self: Any, normalized_paths: list[str]) -> None:
         paths = [str(Path(path)) for path in normalized_paths]
+        if hasattr(self.image_list, "clear_manual_items"):
+            self.image_list.clear_manual_items()
         self._image_path_to_index = {path: index for index, path in enumerate(paths)}
         self._image_path_stem_lower = {path: Path(path).stem.lower() for path in paths}
         self._image_list_model.set_paths(paths)
+
+    def _thumbnail_disk_cache_marker_path(self: Any) -> Path:
+        return Path(getattr(self, "_thumbnail_disk_cache_dir", Path())) / "cache.key"
+
+    def _thumbnail_disk_cache_key_for_base_paths(self: Any, paths: list[str]) -> str:
+        if not paths:
+            return ""
+        return str(Path(paths[0]).parent)
+
+    def _clear_thumbnail_disk_cache(self: Any) -> None:
+        if hasattr(self, "_cancel_thumbnail_loading"):
+            self._cancel_thumbnail_loading()
+        cache_dir = Path(getattr(self, "_thumbnail_disk_cache_dir", Path()))
+        if not cache_dir:
+            return
+        try:
+            shutil.rmtree(cache_dir)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            return
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        self._thumbnail_loaded_generation.clear()
+        self._thumbnail_loaded_sizes.clear()
+        self._thumbnail_queued_paths.clear()
+        self._thumbnail_queued_sizes.clear()
+        getattr(self, "_thumbnail_icon_cache", {}).clear()
+        getattr(self, "_thumbnail_pending_apply", {}).clear()
+
+    def _reset_thumbnail_disk_cache_for_base_paths(self: Any, paths: list[str], *, force: bool = False) -> None:
+        cache_dir = Path(getattr(self, "_thumbnail_disk_cache_dir", Path()))
+        if not cache_dir:
+            return
+        key = self._thumbnail_disk_cache_key_for_base_paths(paths)
+        marker_path = self._thumbnail_disk_cache_marker_path()
+        previous_key = ""
+        try:
+            previous_key = marker_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            previous_key = ""
+        except Exception:
+            previous_key = ""
+        if force or (previous_key and previous_key != key):
+            self._clear_thumbnail_disk_cache()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            marker_path.write_text(key, encoding="utf-8")
+        except Exception:
+            pass
+        self._thumbnail_disk_cache_key = key
 
     def _image_list_source_index(self: Any, proxy_index: QModelIndex) -> QModelIndex:
         if not proxy_index.isValid():
@@ -164,20 +221,22 @@ class WidgetProcessingMixin:
         if not image_path or not self._frame_matrix_enabled() or not hasattr(self, "thumbnail_grid"):
             return
         normalized = str(Path(image_path))
-        for index in range(self.thumbnail_grid.count()):
-            item = self.thumbnail_grid.item(index)
-            if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == normalized:
-                self._paint_image_row_item(item, normalized, show_text=False)
-                break
+        row = self._thumbnail_row_for_path(normalized) if hasattr(self, "_thumbnail_row_for_path") else None
+        if row is None:
+            return
+        item = self.thumbnail_grid.item(row)
+        if item is None:
+            return
+        self._paint_image_row_item(item, normalized, show_text=False)
 
-    def _update_vector_edit_status_label(self: Any) -> None:
+    def _update_vector_edit_status_label(self: Any, *, sync_editor: bool = True) -> None:
         if not hasattr(self, "vector_edit_status_label"):
             return
         if self._workspace.current_image_path is None:
             self.vector_edit_status_label.clear()
             return
-        if not self._updating_views:
-            self._workspace.update_current_polygons(self.get_polygons())
+        if sync_editor and not self._updating_views:
+            self._sync_editor_polygons_to_current_workspace()
         dirty = self._workspace.current_image_has_changes()
         if self._ui_language == "ru":
             self.vector_edit_status_label.setText("Изменено" if dirty else "Сохранено")
@@ -191,8 +250,11 @@ class WidgetProcessingMixin:
         current_image_path = self._workspace.current_image_path
         if current_state is None or current_image_path is None:
             return True
-        current_polygons = self.get_polygons()
-        self._workspace.update_current_polygons(current_polygons)
+        if self._editor_polygons_are_current_frame():
+            current_polygons = self.get_polygons()
+            self._workspace.update_current_polygons(current_polygons)
+        else:
+            current_polygons = [polygon.clone() for polygon in current_state.polygons]
         if not self._workspace.current_image_has_changes():
             self._update_frame_item_status(current_image_path)
             self._update_vector_edit_status_label()
@@ -362,10 +424,10 @@ class WidgetProcessingMixin:
     def _try_leave_current_frame(self: Any) -> bool:
         if self._is_extraction_mode_enabled():
             return True
-        self._workspace.update_current_polygons(self.get_polygons())
+        self._sync_editor_polygons_to_current_workspace()
         dirty = self._workspace.current_image_has_changes()
         if not dirty:
-            self._update_vector_edit_status_label()
+            self._update_vector_edit_status_label(sync_editor=False)
             return True
 
         autosave_on = bool(
@@ -403,21 +465,62 @@ class WidgetProcessingMixin:
             return (str(Path(image_path)), "preprocessed")
         return (str(Path(image_path)), "source")
 
-    def _polygons_editor_signature(self: Any, image_path: str, polygons: list) -> tuple[str, int, int]:
-        point_count = sum(len(getattr(polygon, "points", ())) for polygon in polygons)
-        return (str(Path(image_path)), len(polygons), point_count)
+    def _polygons_editor_signature(self: Any, image_path: str, polygons: list) -> tuple[object, ...]:
+        geometry = []
+        for polygon in polygons:
+            points = getattr(polygon, "points", ())
+            first_point = points[0] if points else None
+            last_point = points[-1] if points else None
+            geometry.append(
+                (
+                    getattr(polygon, "id", None),
+                    len(points),
+                    getattr(polygon, "bbox", None),
+                    first_point,
+                    last_point,
+                    getattr(polygon, "category", None),
+                    getattr(polygon, "shape_hint", None),
+                    bool(getattr(polygon, "is_hole", False)),
+                    getattr(polygon, "parent_id", None),
+                )
+            )
+        return (str(Path(image_path)), tuple(geometry))
 
     def _sync_polygons_to_editor(self: Any, image_path: str, polygons: list) -> None:
         signature = self._polygons_editor_signature(image_path, polygons)
         if getattr(self, "_editor_polygons_signature", None) == signature:
-            return
-        self.polygon_editor.set_polygons(polygons)
+            if len(self.polygon_editor.get_polygons()) == len(polygons):
+                return
+        self.polygon_editor.set_polygons(polygons, emit_signal=False)
         self._editor_polygons_signature = signature
+
+    def _editor_polygons_are_current_frame(self: Any) -> bool:
+        current_path = self._workspace.current_image_path
+        if not current_path:
+            return False
+        if getattr(self, "_pending_editor_frame_apply", None) is not None:
+            return False
+        signature = getattr(self, "_editor_polygons_signature", None)
+        if not isinstance(signature, tuple) or not signature:
+            return False
+        return str(Path(signature[0])) == str(Path(current_path))
+
+    def _sync_editor_polygons_to_current_workspace(self: Any) -> bool:
+        if not self._editor_polygons_are_current_frame():
+            return False
+        return self._workspace.update_current_polygons(self.get_polygons())
 
     def _neighbor_frames_enabled(self: Any) -> bool:
         return bool(
             hasattr(self, "show_neighbor_frames_checkbox")
             and self.show_neighbor_frames_checkbox.isChecked()
+        )
+
+    def _neighbor_vectors_enabled(self: Any) -> bool:
+        return bool(
+            self._neighbor_frames_enabled()
+            and hasattr(self, "show_neighbor_vectors_checkbox")
+            and self.show_neighbor_vectors_checkbox.isChecked()
         )
 
     def _request_neighbor_frame_sync(self: Any, *, delay_ms: int = 0) -> None:
@@ -436,6 +539,21 @@ class WidgetProcessingMixin:
 
     def _schedule_neighbor_frames_after_main_image_ready(self: Any) -> None:
         self._request_neighbor_frame_sync(delay_ms=0)
+
+    def _clear_neighbor_frame_display_for_frame_change(self: Any) -> None:
+        self._neighbor_sync_image_path = None
+        self._neighbor_frame_specs = []
+        self._neighbor_queued_paths.clear()
+        timer = getattr(self, "_neighbor_apply_timer", None)
+        if timer is not None:
+            timer.stop()
+        if not hasattr(self, "polygon_editor"):
+            return
+        scene = getattr(self.polygon_editor, "_editor_scene", None)
+        if scene is None:
+            return
+        scene._pending_neighbor_frames = None
+        scene.clear_neighbor_frames()
 
     def _neighbor_sync_is_current(self: Any) -> bool:
         sync_path = getattr(self, "_neighbor_sync_image_path", None)
@@ -568,10 +686,11 @@ class WidgetProcessingMixin:
     def _apply_frame_to_editor(self: Any, *, defer_neighbors: bool = True, defer_heavy_overlays: bool = False) -> None:
         current_state = self._workspace.current_state
         image_path = self._workspace.current_image_path
+        self._clear_neighbor_frame_display_for_frame_change()
         if current_state is None or not image_path:
             self._pending_editor_frame_apply = None
             self.polygon_editor.set_image_pixmap(QPixmap())
-            self.polygon_editor.set_polygons([])
+            self.polygon_editor.set_polygons([], emit_signal=False)
             self._editor_polygons_signature = None
             return
         display_image = self._display_image_for_current_state()
@@ -642,7 +761,13 @@ class WidgetProcessingMixin:
             max_dim = self._neighbor_preview_max_dimension()
             runnable = ThumbnailLoadRunnable(0, normalized, max_dim, max_dim)
             runnable.signals.result.connect(
-                self._on_neighbor_frame_loaded,
+                lambda generation, image_path, width, height, qimage: self._on_neighbor_frame_loaded(
+                    generation,
+                    image_path,
+                    width,
+                    height,
+                    qimage,
+                ),
                 Qt.ConnectionType.QueuedConnection,
             )
             runnable.signals.finished.connect(
@@ -653,7 +778,14 @@ class WidgetProcessingMixin:
         except RuntimeError:
             self._neighbor_queued_paths.discard(normalized)
 
-    def _on_neighbor_frame_loaded(self: Any, _generation: int, image_path: str, qimage: object) -> None:
+    def _on_neighbor_frame_loaded(
+        self: Any,
+        _generation: int,
+        image_path: str,
+        _width: int,
+        _height: int,
+        qimage: object,
+    ) -> None:
         normalized = str(Path(image_path))
         self._neighbor_queued_paths.discard(normalized)
         if not self._neighbor_sync_is_current():
@@ -667,14 +799,72 @@ class WidgetProcessingMixin:
 
     def _on_neighbor_frame_load_finished(self: Any, _generation: int, image_path: str) -> None:
         self._neighbor_queued_paths.discard(str(Path(image_path)))
+        if self._neighbor_sync_is_current() and not getattr(self, "_neighbor_queued_paths", set()):
+            self._schedule_neighbor_frame_apply(delay_ms=0)
 
     def _schedule_neighbor_frame_apply(self: Any, *, delay_ms: int = 0) -> None:
         if not self._neighbor_sync_is_current():
             return
-        QTimer.singleShot(max(0, int(delay_ms)), self._apply_cached_neighbor_frames)
+        timer = getattr(self, "_neighbor_apply_timer", None)
+        if timer is None:
+            QTimer.singleShot(max(0, int(delay_ms)), self._apply_cached_neighbor_frames)
+            return
+        timer.stop()
+        timer.start(max(0, int(delay_ms)))
 
     def _try_load_neighbor_preview_image(self: Any, image_path: str):
         return self._neighbor_frame_image(str(image_path))
+
+    def _neighbor_source_size(self: Any, image_path: str, image: object) -> tuple[int, int]:
+        normalized = str(Path(image_path))
+        cached = getattr(self, "_neighbor_image_dimensions", {}).get(normalized)
+        if cached is not None:
+            return max(1, int(cached[0])), max(1, int(cached[1]))
+        state = getattr(self._workspace, "_state_cache", {}).get(normalized)
+        source = getattr(state, "source_image", None) if state is not None else None
+        if source is not None:
+            height, width = source.shape[:2]
+            size = (max(1, int(width)), max(1, int(height)))
+            self._neighbor_image_dimensions[normalized] = size
+            return size
+        reader_size = QImageReader(normalized).size()
+        if reader_size.isValid():
+            size = (max(1, int(reader_size.width())), max(1, int(reader_size.height())))
+            self._neighbor_image_dimensions[normalized] = size
+            return size
+        if isinstance(image, QImage) and not image.isNull():
+            return max(1, image.width()), max(1, image.height())
+        width = int(getattr(image, "shape", (1, 1))[1]) if hasattr(image, "shape") else 1
+        height = int(getattr(image, "shape", (1, 1))[0]) if hasattr(image, "shape") else 1
+        return max(1, width), max(1, height)
+
+    def _neighbor_frame_vectors(self: Any, image_path: str) -> tuple[list[PolygonData], tuple[int, int] | None]:
+        if not self._neighbor_vectors_enabled():
+            return [], None
+        normalized = str(Path(image_path))
+        cache = getattr(self, "_neighbor_vector_cache", {})
+        cached = cache.get(normalized)
+        if cached is not None:
+            return cached
+        cif_path = self._find_matching_cif_path(normalized)
+        if not cif_path:
+            cache[normalized] = ([], None)
+            self._neighbor_vector_cache = cache
+            return [], None
+        try:
+            _referenced_image, image_size, polygons = load_polygons_vector(cif_path)
+        except Exception:
+            polygons = []
+            image_size = None
+        source_size = None
+        if image_size is not None:
+            source_size = (max(1, int(image_size[0])), max(1, int(image_size[1])))
+        cached = ([polygon.clone() for polygon in polygons], source_size)
+        cache[normalized] = cached
+        if len(cache) > 256:
+            cache.pop(next(iter(cache)))
+        self._neighbor_vector_cache = cache
+        return cached
 
     def _apply_cached_neighbor_frames(self: Any) -> None:
         if not self._neighbor_frames_enabled():
@@ -685,12 +875,19 @@ class WidgetProcessingMixin:
             return
         if not self._neighbor_sync_is_current():
             return
-        frames: list[tuple[int, int, object, str]] = []
+        frames: list[tuple[int, int, object, str, list[PolygonData], tuple[int, int]]] = []
+        include_vectors = self._neighbor_vectors_enabled()
         for column_offset, row_offset, image_path in getattr(self, "_neighbor_frame_specs", []):
             image = self._try_load_neighbor_preview_image(image_path)
             if image is None:
                 continue
-            frames.append((column_offset, row_offset, image, image_path))
+            source_size = self._neighbor_source_size(image_path, image)
+            polygons: list[PolygonData] = []
+            if include_vectors:
+                polygons, vector_source_size = self._neighbor_frame_vectors(image_path)
+                if vector_source_size is not None:
+                    source_size = vector_source_size
+            frames.append((column_offset, row_offset, image, image_path, polygons, source_size))
         if not frames and getattr(self, "_neighbor_queued_paths", set()):
             return
         self.polygon_editor.set_neighbor_frames(
@@ -739,6 +936,9 @@ class WidgetProcessingMixin:
             self._neighbor_sync_image_path = None
             self._neighbor_frame_specs = []
             self._neighbor_queued_paths.clear()
+            timer = getattr(self, "_neighbor_apply_timer", None)
+            if timer is not None:
+                timer.stop()
             self.polygon_editor.set_neighbor_frames([], 0.0, 0, False)
             if session is not None:
                 session.complete_pending("neighbor_sync", suffix="_disabled")
@@ -750,6 +950,9 @@ class WidgetProcessingMixin:
             self._neighbor_sync_image_path = None
             self._neighbor_frame_specs = []
             self._neighbor_queued_paths.clear()
+            timer = getattr(self, "_neighbor_apply_timer", None)
+            if timer is not None:
+                timer.stop()
             self.polygon_editor.set_neighbor_frames([], 0.0, 0, False)
             if session is not None:
                 session.complete_pending("neighbor_sync", suffix="_no_current")
@@ -760,7 +963,13 @@ class WidgetProcessingMixin:
         current_row = current_index // columns
         current_column = current_index % columns
         radius = self._neighbor_grid_size() // 2
+        previous_sync_path = getattr(self, "_neighbor_sync_image_path", None)
         self._neighbor_sync_image_path = normalized_current_path
+        if str(previous_sync_path or "") != normalized_current_path:
+            self._neighbor_queued_paths.clear()
+            timer = getattr(self, "_neighbor_apply_timer", None)
+            if timer is not None:
+                timer.stop()
         scene = self.polygon_editor._editor_scene
         scene._pending_neighbor_frames = None
         scene.clear_neighbor_frames()
@@ -779,6 +988,8 @@ class WidgetProcessingMixin:
                 image_path = image_paths[index]
                 specs.append((column_offset, row_offset, image_path))
         self._neighbor_frame_specs = specs
+        spec_paths = {str(Path(path)) for _column_offset, _row_offset, path in specs}
+        self._neighbor_queued_paths.intersection_update(spec_paths)
         self._apply_cached_neighbor_frames()
         for _column_offset, _row_offset, image_path in specs:
             if self._neighbor_frame_image(image_path) is None:
@@ -789,6 +1000,7 @@ class WidgetProcessingMixin:
             session.complete_pending("neighbor_sync", suffix="_cached_only")
         if self._uses_large_frame_list() and len(self._neighbor_image_cache) > 48:
             self._neighbor_image_cache.clear()
+            self._neighbor_image_dimensions.clear()
 
     def _on_neighbor_frame_activated(self: Any, image_path: str) -> None:
         if image_path in self._workspace.image_paths:
@@ -1084,7 +1296,7 @@ class WidgetProcessingMixin:
     def _on_polygons_edited(self: Any) -> None:
         if self._updating_views:
             return
-        if self._workspace.update_current_polygons(self.get_polygons()):
+        if self._sync_editor_polygons_to_current_workspace():
             current_path = self._workspace.current_image_path
             if current_path:
                 self._persisted_highlight_paths.discard(str(Path(current_path)))
@@ -1320,9 +1532,12 @@ class WidgetProcessingMixin:
         self._base_frame_number_by_path = build_base_frame_number_map(frame_records)
         self._base_frame_numbers = set(self._base_frame_number_by_path.values())
         normalized_paths = self._workspace.replace_image_selection(ordered_paths, is_supported_image=is_image_path)
+        self._reset_thumbnail_disk_cache_for_base_paths(normalized_paths)
         if not normalized_paths:
             self._save_persisted_current_image_path(None)
         self._neighbor_image_cache.clear()
+        self._neighbor_image_dimensions.clear()
+        self._neighbor_vector_cache.clear()
         self._prune_tagged_sets_for_images(normalized_paths)
         self._abort_in_flight_interactive_processing(preview=True, prepared=True)
         if clear_extra_layers:
@@ -1385,9 +1600,12 @@ class WidgetProcessingMixin:
         self._stop_work_simulation()
         self._abort_in_flight_interactive_processing(preview=True, prepared=True)
         self._workspace.clear_project()
+        self._reset_thumbnail_disk_cache_for_base_paths([], force=True)
         self._base_frame_number_by_path = {}
         self._base_frame_numbers = set()
         self._neighbor_image_cache.clear()
+        self._neighbor_image_dimensions.clear()
+        self._neighbor_vector_cache.clear()
         self._persisted_highlight_paths.clear()
         self._viewed_image_paths.clear()
         self._cif_load_failure_stems.clear()
@@ -1466,9 +1684,10 @@ class WidgetProcessingMixin:
             session.complete_pending("deferred_chrome", suffix="_apply")
         self._image_list_model.invalidate_path(image_path)
         self._update_thumbnail_grid_selection()
-        self._schedule_thumbnail_sparse_recenter()
-        if self._frame_matrix_thumbnails_enabled() and hasattr(self, "_resume_thumbnail_radial_fill"):
-            self._resume_thumbnail_radial_fill()
+        if not self._thumbnail_loading_blocked():
+            self._schedule_visible_thumbnail_loads()
+            if self._frame_matrix_thumbnails_enabled() and hasattr(self, "_resume_thumbnail_radial_fill"):
+                self._resume_thumbnail_radial_fill()
 
     def _schedule_thumbnail_grid_rebuild(self: Any, *, force: bool = False) -> None:
         if not self._frame_matrix_enabled():
@@ -1625,6 +1844,8 @@ class WidgetProcessingMixin:
             )
 
             def _on_result(req_id: int, payload_obj: object) -> None:
+                if bool(getattr(self, "_closing", False)):
+                    return
                 if req_id != self._frame_load_request_serial:
                     return
                 payload = payload_obj
@@ -1658,6 +1879,8 @@ class WidgetProcessingMixin:
                 self._drain_pending_frame_load()
 
             def _on_error(req_id: int, image_path: str, message: str) -> None:
+                if bool(getattr(self, "_closing", False)):
+                    return
                 if req_id != self._frame_load_request_serial:
                     return
                 self._frame_load_running_path = None
@@ -1736,6 +1959,8 @@ class WidgetProcessingMixin:
         )
 
         def _on_vectors(req_id: int, payload_obj: object) -> None:
+            if bool(getattr(self, "_closing", False)):
+                return
             if req_id != self._frame_load_request_serial:
                 return
             payload = payload_obj
@@ -1771,6 +1996,8 @@ class WidgetProcessingMixin:
             self._drain_pending_frame_load()
 
         def _on_vectors_error(req_id: int, image_path: str, message: str) -> None:
+            if bool(getattr(self, "_closing", False)):
+                return
             if req_id != self._frame_load_request_serial:
                 return
             self._frame_load_running_path = None

@@ -3,7 +3,27 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
+def _collect_src_python_modules(src_root: Path, package: str) -> list[str]:
+    """Discover module names under ``src_root/package`` without importing them.
+
+    ``collect_submodules`` only sees importable packages; if optional deps are
+    missing at build time, nested modules (e.g. ``contour.graphics.*``) can be
+    omitted even though the app imports them at runtime.
+    """
+    package_dir = src_root / package
+    if not package_dir.is_dir():
+        return []
+    modules: list[str] = []
+    for py_file in sorted(package_dir.rglob("*.py")):
+        rel = py_file.relative_to(src_root)
+        if rel.name == "__init__.py":
+            continue
+        modules.append(".".join(rel.with_suffix("").parts))
+    return modules
+
+
 PROJECT_ROOT = Path(SPECPATH).resolve().parent
+SRC_ROOT = PROJECT_ROOT / "src"
 APP_NAME = "Contour"
 APP_ICON = PROJECT_ROOT / "resources" / "icons" / "contour.ico"
 
@@ -27,7 +47,12 @@ datas += [
     (str(PROJECT_ROOT / "resources" / "icons" / "contour.ico"), "plugins/contour/resources/icons"),
     (str(PROJECT_ROOT / "resources" / "icons" / "contour.png"), "plugins/contour/resources/icons"),
 ]
-hiddenimports = collect_submodules("contour")
+hiddenimports = list(
+    dict.fromkeys(
+        collect_submodules("contour")
+        + _collect_src_python_modules(SRC_ROOT, "contour")
+    )
+)
 
 
 a = Analysis(

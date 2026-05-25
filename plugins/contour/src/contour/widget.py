@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -221,6 +222,7 @@ class PolygonExtractionWidget(
 ):
     _ui_theme: str
     show_frame_matrix_checkbox: QCheckBox
+    show_neighbor_vectors_checkbox: QCheckBox
     image_list: QListView
 
     imageProcessed = pyqtSignal(str, list)
@@ -300,6 +302,8 @@ class PolygonExtractionWidget(
         self._auto_tune_request_serial = 0
         self._auto_tune_running_request_id: int | None = None
         self._neighbor_image_cache: dict[str, object] = {}
+        self._neighbor_image_dimensions: dict[str, tuple[int, int]] = {}
+        self._neighbor_vector_cache: dict[str, tuple[list[PolygonData], tuple[int, int] | None]] = {}
         self._neighbor_thread_pool = QThreadPool(self)
         self._neighbor_thread_pool.setMaxThreadCount(2)
         self._neighbor_thread_pool.setExpiryTimeout(30000)
@@ -309,8 +313,11 @@ class PolygonExtractionWidget(
         self._neighbor_sync_timer = QTimer(self)
         self._neighbor_sync_timer.setSingleShot(True)
         self._neighbor_sync_timer.timeout.connect(self._sync_neighbor_frames)
+        self._neighbor_apply_timer = QTimer(self)
+        self._neighbor_apply_timer.setSingleShot(True)
+        self._neighbor_apply_timer.timeout.connect(self._apply_cached_neighbor_frames)
         self._thumbnail_thread_pool = QThreadPool(self)
-        self._thumbnail_thread_pool.setMaxThreadCount(1)
+        self._thumbnail_thread_pool.setMaxThreadCount(3)
         self._thumbnail_thread_pool.setExpiryTimeout(30000)
         self._frame_load_thread_pool = QThreadPool(self)
         self._frame_load_thread_pool.setMaxThreadCount(2)
@@ -330,22 +337,32 @@ class PolygonExtractionWidget(
         self._frame_switch_profile = None
         self._frame_switch_profile_generation = 0
         self._thumbnail_path_to_row: dict[str, int] = {}
-        self._thumbnail_sparse_recenter_timer: QTimer | None = None
         self._pending_frame_chrome_path: str | None = None
         self._thumbnail_generation = 0
         self._thumbnail_icon_size = QSize(64, 48)
         self._thumbnail_placeholder_icon = QIcon()
         self._thumbnail_loaded_generation: dict[str, int] = {}
+        self._thumbnail_loaded_sizes: dict[str, tuple[int, int]] = {}
         self._thumbnail_queued_paths: set[str] = set()
+        self._thumbnail_queued_sizes: dict[str, tuple[int, int]] = {}
         self._thumbnail_rebuild_in_progress = False
         self._thumbnail_selected_path: str | None = None
         self._thumbnail_build_chunk_size = 50
         self._thumbnail_build_interval_ms = 25
         self._thumbnail_pending_apply: dict[str, object] = {}
-        self._thumbnail_icon_cache: dict[str, QIcon] = {}
+        self._thumbnail_icon_cache: dict[object, QIcon] = {}
+        self._thumbnail_disk_cache_dir = Path(tempfile.gettempdir()) / "contour-frame-thumbnails"
+        self._thumbnail_disk_cache_key: str | None = None
+        self._thumbnail_disk_cache_dir.mkdir(parents=True, exist_ok=True)
         self._thumbnail_apply_timer = QTimer(self)
         self._thumbnail_apply_timer.setSingleShot(True)
         self._thumbnail_apply_timer.timeout.connect(self._flush_thumbnail_icon_batch)
+        self._thumbnail_visible_load_timer = QTimer(self)
+        self._thumbnail_visible_load_timer.setSingleShot(True)
+        self._thumbnail_visible_load_timer.timeout.connect(self._schedule_visible_thumbnail_loads)
+        self._thumbnail_scroll_settle_timer = QTimer(self)
+        self._thumbnail_scroll_settle_timer.setSingleShot(True)
+        self._thumbnail_scroll_settle_timer.timeout.connect(self._on_thumbnail_scroll_settled)
         self._thumbnail_radial_paths: list[str] = []
         self._thumbnail_radial_cursor = 0
         self._thumbnail_radial_center_path: str | None = None
@@ -356,6 +373,7 @@ class PolygonExtractionWidget(
 
         self._persisted_highlight_paths: set[str] = set()
         self._cif_load_failure_stems: set[str] = set()
+        self._closing = False
         self._loading_image_path: str | None = None
         self._pending_restore_current_image_path = self._session_settings_store.load_current_image_path()
         self._directory_scan_append_mode = False
@@ -380,7 +398,6 @@ class PolygonExtractionWidget(
         self._indexed_cif_directory: str | None = None
         self._asset_filter_match_only = False
         self._image_path_to_index: dict[str, int] = {}
-        self._thumbnail_sparse_window_start = 0
         self._work_simulation_interval_ms = 200
         self._work_simulation_timer = QTimer(self)
         self._work_simulation_timer.setSingleShot(False)
@@ -424,5 +441,12 @@ class PolygonExtractionWidget(
         self._update_extra_layers_enabled_state()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._closing = True
+        self._frame_load_request_serial = int(getattr(self, "_frame_load_request_serial", 0)) + 1
+        self._frame_load_pending = None
+        self._frame_load_running_path = None
+        self._loading_image_path = None
+        if hasattr(self, "_cancel_thumbnail_loading"):
+            self._cancel_thumbnail_loading()
         self._persist_session_state()
         super().closeEvent(event)

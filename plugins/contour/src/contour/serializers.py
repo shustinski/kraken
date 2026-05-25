@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -14,6 +15,49 @@ from .application.processing import DisplaySettings, SaveOptions
 from .domain import PolygonData, compute_polygon_metrics
 from .i18n import tr
 from .utils import draw_polygon_overlay, ensure_directory, imwrite_unicode_safe
+
+_CIF_PARSE_CACHE: dict[tuple[str, int, int], tuple[str | None, tuple[int, int] | None, list[PolygonData]]] = {}
+_CIF_PARSE_CACHE_MAX_ENTRIES = 64
+
+
+def _path_cache_identity(path: str | Path) -> str:
+    return os.path.normcase(os.path.abspath(os.path.normpath(os.fspath(path))))
+
+
+def clear_cif_parse_cache() -> None:
+    _CIF_PARSE_CACHE.clear()
+
+
+def invalidate_cif_parse_cache(paths: Iterable[str | Path]) -> None:
+    identities = {_path_cache_identity(path) for path in paths}
+    if not identities:
+        return
+    for key in list(_CIF_PARSE_CACHE.keys()):
+        if key[0] in identities:
+            _CIF_PARSE_CACHE.pop(key, None)
+
+
+def _cif_parse_cache_key(path: Path) -> tuple[str, int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (_path_cache_identity(path), stat.st_mtime_ns, stat.st_size)
+
+
+def _cache_cif_parse_result(
+    cache_key: tuple[str, int, int],
+    image_name: str | None,
+    image_size: tuple[int, int] | None,
+    polygons: list[PolygonData],
+) -> None:
+    if len(_CIF_PARSE_CACHE) >= _CIF_PARSE_CACHE_MAX_ENTRIES:
+        _CIF_PARSE_CACHE.pop(next(iter(_CIF_PARSE_CACHE)))
+    _CIF_PARSE_CACHE[cache_key] = (
+        image_name,
+        image_size,
+        [polygon.clone() for polygon in polygons],
+    )
 
 
 def save_polygons_json(
@@ -415,6 +459,13 @@ def _read_cif_text(path: str | Path) -> str:
 
 def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | None, list[PolygonData]]:
     cif_path = Path(path)
+    cache_key = _cif_parse_cache_key(cif_path)
+    if cache_key is not None:
+        cached = _CIF_PARSE_CACHE.get(cache_key)
+        if cached is not None:
+            image_name, image_size, polygons = cached
+            return image_name, image_size, [polygon.clone() for polygon in polygons]
+
     lines = _read_cif_text(cif_path).splitlines()
 
     image_name: str | None = None
@@ -468,6 +519,7 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
                     area=area,
                     perimeter=perimeter,
                     bbox=bbox,
+                    _points_normalized=True,
                 )
             )
             continue
@@ -503,10 +555,13 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
                 area=area,
                 perimeter=perimeter,
                 bbox=bbox,
+                _points_normalized=True,
             )
         )
 
     polygons = _recover_cut_hole_topology(polygons, image_size)
+    if cache_key is not None:
+        _cache_cif_parse_result(cache_key, image_name, image_size, polygons)
     return image_name, image_size, polygons
 
 
@@ -544,10 +599,27 @@ def _to_local_int_points(points: list[tuple[float, float]], left: int, top: int)
 
 
 def _dedupe_closed_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    cleaned = [(float(x_coord), float(y_coord)) for x_coord, y_coord in points]
+    if not points:
+        return []
+    first_x, first_y = points[0]
+    if isinstance(first_x, int) and isinstance(first_y, int):
+        cleaned: list[tuple[float, float]] = [(int(x_coord), int(y_coord)) for x_coord, y_coord in points]
+    else:
+        cleaned = [(float(x_coord), float(y_coord)) for x_coord, y_coord in points]
     while len(cleaned) >= 2 and cleaned[0] == cleaned[-1]:
         cleaned = cleaned[:-1]
     return cleaned
+
+
+def _has_duplicate_points(points: list[tuple[float, float]]) -> bool:
+    if len(points) < 2:
+        return False
+    seen: set[tuple[float, float]] = set()
+    for point in points:
+        if point in seen:
+            return True
+        seen.add(point)
+    return False
 
 
 def _rightmost_point_index(points: list[tuple[float, float]]) -> int:
@@ -640,9 +712,9 @@ def _split_linked_polygon_rings(
     points: list[tuple[float, float]],
 ) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]:
     open_points = _dedupe_closed_points(points)
-    point_count = len(open_points)
-    if len(set(open_points)) == point_count:
+    if not _has_duplicate_points(open_points):
         return open_points, []
+    point_count = len(open_points)
     bridge_return_indices: dict[tuple[tuple[float, float], tuple[float, float]], list[int]] = {}
     for return_index in range(1, point_count - 1):
         bridge_return_indices.setdefault(
@@ -685,6 +757,11 @@ def _recover_cut_hole_topology(polygons: list[PolygonData], image_size: tuple[in
     recover_legacy_cut_holes = _legacy_cut_hole_recovery_enabled()
     for polygon in polygons:
         if polygon.shape_hint == "box" or polygon.category == "via" or len(polygon.points) < 3:
+            recovered.append(_clone_polygon_with_id(polygon, next_id))
+            next_id += 1
+            continue
+        open_points = _dedupe_closed_points(polygon.points)
+        if not _has_duplicate_points(open_points):
             recovered.append(_clone_polygon_with_id(polygon, next_id))
             next_id += 1
             continue
@@ -856,6 +933,7 @@ def save_polygons_cif(
             lines.append(line)
     lines.extend(["DF;", "E"])
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    invalidate_cif_parse_cache([output])
     return output
 
 

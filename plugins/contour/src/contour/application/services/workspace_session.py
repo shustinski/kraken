@@ -30,10 +30,13 @@ _POINT_SIGNATURE_SCALE = 1_000_000
 
 def _normalize_polygon_points(points: list[tuple[float, float]]) -> tuple[tuple[int, int], ...]:
     scale = _POINT_SIGNATURE_SCALE
-    return tuple(
-        (int(round(float(x_coord) * scale)), int(round(float(y_coord) * scale)))
-        for x_coord, y_coord in points
-    )
+    normalized: list[tuple[int, int]] = []
+    for x_coord, y_coord in points:
+        if isinstance(x_coord, int) and isinstance(y_coord, int):
+            normalized.append((x_coord * scale, y_coord * scale))
+            continue
+        normalized.append((int(round(float(x_coord) * scale)), int(round(float(y_coord) * scale))))
+    return tuple(normalized)
 
 
 def _sortable_optional_int(value: int | None) -> tuple[int, int]:
@@ -52,11 +55,25 @@ def _polygon_signature(polygon: PolygonData) -> tuple[object, ...]:
     )
 
 
+def _polygon_matches(first: PolygonData, second: PolygonData) -> bool:
+    return (
+        bool(first.is_hole) == bool(second.is_hole)
+        and first.parent_id == second.parent_id
+        and str(first.category) == str(second.category)
+        and str(first.shape_hint) == str(second.shape_hint)
+        and first.points == second.points
+    )
+
+
 def _polygons_equal(first: list[PolygonData], second: list[PolygonData]) -> bool:
     if len(first) != len(second):
         return False
-    first_signatures = sorted(_polygon_signature(polygon) for polygon in first)
-    second_signatures = sorted(_polygon_signature(polygon) for polygon in second)
+    if all(_polygon_matches(left, right) for left, right in zip(first, second, strict=True)):
+        return True
+    first_signatures = [_polygon_signature(polygon) for polygon in first]
+    second_signatures = [_polygon_signature(polygon) for polygon in second]
+    first_signatures.sort()
+    second_signatures.sort()
     return first_signatures == second_signatures
 
 

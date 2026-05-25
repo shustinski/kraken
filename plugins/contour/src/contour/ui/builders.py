@@ -24,7 +24,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListView,
     QListWidget,
     QProgressBar,
     QPushButton,
@@ -51,6 +50,8 @@ from ..application.processing import (
 from ..contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
 from ..gamification.ui import GamificationPanel
 from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
+from .frame_path_list_model import FramePathListView
+from .frame_matrix_view import FrameMatrixGraphicsView
 from .pipeline_list import PipelineListWidget
 from .status_list_delegate import attach_status_row_delegate
 
@@ -322,7 +323,7 @@ def build_files_tab(self) -> QWidget:
     self.files_scan_progress_bar.setTextVisible(True)
     self.files_scan_progress_bar.setVisible(False)
 
-    self.image_list = QListView()
+    self.image_list = FramePathListView()
     attach_status_row_delegate(self.image_list)
     self.image_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     self.image_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -349,7 +350,7 @@ def build_files_tab(self) -> QWidget:
 
     self.thumbnail_grid_label = QLabel("")
     self.thumbnail_grid_label.setVisible(False)
-    self.thumbnail_grid = QListWidget()
+    self.thumbnail_grid = FrameMatrixGraphicsView()
     self.thumbnail_grid.setViewMode(QListWidget.ViewMode.IconMode)
     self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Fixed)
     self.thumbnail_grid.setMovement(QListWidget.Movement.Static)
@@ -366,21 +367,20 @@ def build_files_tab(self) -> QWidget:
     )
     self.thumbnail_grid.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    attach_status_row_delegate(self.thumbnail_grid)
     self.thumbnail_grid.itemClicked.connect(self._on_thumbnail_item_clicked)
-    self.thumbnail_grid_scroll_area = QScrollArea()
+    self.thumbnail_grid_scroll_area = self.thumbnail_grid
     self.thumbnail_grid_scroll_area.setWidgetResizable(False)
     self.thumbnail_grid_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
     self.thumbnail_grid_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     self.thumbnail_grid_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     self.thumbnail_grid_scroll_area.setMinimumHeight(96)
-    self.thumbnail_grid_scroll_area.setWidget(self.thumbnail_grid)
     thumbnail_h_scroll = self.thumbnail_grid_scroll_area.horizontalScrollBar()
     thumbnail_v_scroll = self.thumbnail_grid_scroll_area.verticalScrollBar()
     if thumbnail_h_scroll is not None:
         thumbnail_h_scroll.valueChanged.connect(self._on_thumbnail_viewport_changed)
     if thumbnail_v_scroll is not None:
         thumbnail_v_scroll.valueChanged.connect(self._on_thumbnail_viewport_changed)
+    self.thumbnail_grid.thumbnailLodChanged.connect(self._on_thumbnail_lod_changed)
     self.thumbnail_matrix_panel = QWidget()
     thumbnail_matrix_layout = QVBoxLayout(self.thumbnail_matrix_panel)
     thumbnail_matrix_layout.setContentsMargins(0, 0, 0, 0)
@@ -1734,6 +1734,7 @@ def build_display_tab(self) -> QWidget:
     self.show_frame_matrix_thumbnails_checkbox = QCheckBox("Load frame matrix thumbnails")
     self.show_frame_matrix_thumbnails_checkbox.setChecked(True)
     self.show_neighbor_frames_checkbox = QCheckBox("Show neighboring frames")
+    self.show_neighbor_vectors_checkbox = QCheckBox("Show vectors on neighboring frames")
     self.neighbor_columns_spin = QSpinBox()
     self.neighbor_columns_spin.setRange(1, 1000)
     self.neighbor_columns_spin.setValue(3)
@@ -1762,6 +1763,7 @@ def build_display_tab(self) -> QWidget:
         else:
             widget.valueChanged.connect(self._apply_display_settings)
     self.show_neighbor_frames_checkbox.stateChanged.connect(self._on_neighbor_display_settings_changed)
+    self.show_neighbor_vectors_checkbox.stateChanged.connect(self._on_neighbor_display_settings_changed)
     self.show_frame_matrix_checkbox.stateChanged.connect(self._on_frame_matrix_display_settings_changed)
     self.show_frame_matrix_thumbnails_checkbox.stateChanged.connect(self._on_frame_matrix_thumbnail_settings_changed)
     self.neighbor_columns_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
@@ -1794,6 +1796,7 @@ def build_display_tab(self) -> QWidget:
     self.display_form.addRow(self.show_frame_matrix_checkbox)
     self.display_form.addRow(self.show_frame_matrix_thumbnails_checkbox)
     self.display_form.addRow(self.show_neighbor_frames_checkbox)
+    self.display_form.addRow(self.show_neighbor_vectors_checkbox)
     self.display_form.addRow("Frames per row", self.neighbor_columns_spin)
     self.neighbor_columns_label_widget = self.display_form.labelForField(self.neighbor_columns_spin)
     self.display_form.addRow("Neighbor grid size", self.neighbor_max_grid_spin)

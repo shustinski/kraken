@@ -348,6 +348,7 @@
     "show_frame_matrix_checkbox": "Show frame matrix",
     "show_frame_matrix_thumbnails_checkbox": "Load frame matrix thumbnails",
     "show_neighbor_frames_checkbox": "Show neighboring frames",
+    "show_neighbor_vectors_checkbox": "Show vectors on neighboring frames",
     "tool_add_via": "Via",
     "tool_antialias": "Antialias",
     "tool_brush": "Brush",

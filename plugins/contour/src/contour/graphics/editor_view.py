@@ -322,8 +322,8 @@ class PolygonEditorView(QGraphicsView):
             self.fit_to_view()
         self._update_navigation_scene_rect()
 
-    def set_polygons(self, polygons: list[PolygonData]) -> None:
-        self._editor_scene.set_polygons(polygons)
+    def set_polygons(self, polygons: list[PolygonData], *, emit_signal: bool = True) -> None:
+        self._editor_scene.set_polygons(polygons, emit_signal=emit_signal)
 
     def get_polygons(self) -> list[PolygonData]:
         return self._editor_scene.get_polygons()
@@ -336,7 +336,7 @@ class PolygonEditorView(QGraphicsView):
 
     def set_neighbor_frames(
         self,
-        frames: list[tuple[int, int, object, str]],
+        frames: list[tuple],
         opacity: float,
         overlap_pixels: int = 0,
         show_main_frame: bool = True,

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt
+from PyQt6.QtWidgets import QListView, QListWidgetItem
 
 from .item_status_painting import FRAME_STATUS_ROLE
 
@@ -31,8 +32,11 @@ class FramePathListModel(QAbstractListModel):
         return tuple(self._paths)
 
     def index_for_path(self, path: str | Path) -> int | None:
-        normalized = str(Path(path))
-        return self._path_to_row.get(normalized)
+        if isinstance(path, str):
+            row = self._path_to_row.get(path)
+            if row is not None:
+                return row
+        return self._path_to_row.get(str(Path(path)))
 
     def path_at(self, row: int) -> str | None:
         if row < 0 or row >= len(self._paths):
@@ -129,3 +133,67 @@ class FramePathFilterProxyModel(QSortFilterProxyModel):
         if not path:
             return False
         return bool(widget._image_path_has_matching_vector(path))
+
+
+class FramePathListView(QListView):
+    """QListView with the legacy QListWidget methods Contour still calls in tests and shims."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._manual_items: list[QListWidgetItem] = []
+
+    def clear_manual_items(self) -> None:
+        self._manual_items.clear()
+
+    def count(self) -> int:
+        if self._manual_items:
+            return len(self._manual_items)
+        model = self.model()
+        return 0 if model is None else int(model.rowCount())
+
+    def item(self, row: int) -> QListWidgetItem | None:
+        row = int(row)
+        if self._manual_items:
+            return self._manual_items[row] if 0 <= row < len(self._manual_items) else None
+        model = self.model()
+        if model is None or row < 0 or row >= model.rowCount():
+            return None
+        index = model.index(row, 0)
+        item = QListWidgetItem(str(model.data(index, Qt.ItemDataRole.DisplayRole) or ""))
+        for role in (
+            Qt.ItemDataRole.ToolTipRole,
+            Qt.ItemDataRole.UserRole,
+            Qt.ItemDataRole.BackgroundRole,
+            Qt.ItemDataRole.ForegroundRole,
+        ):
+            value = model.data(index, role)
+            if value is not None:
+                item.setData(role, value)
+        return item
+
+    def clear(self) -> None:
+        self._manual_items.clear()
+        model = self.model()
+        source = model.sourceModel() if isinstance(model, QSortFilterProxyModel) else model
+        if isinstance(source, FramePathListModel):
+            source.set_paths([])
+
+    def addItem(self, item: QListWidgetItem) -> None:
+        self._manual_items.append(item)
+        paths = [str(existing.data(Qt.ItemDataRole.UserRole) or existing.text()) for existing in self._manual_items]
+        model = self.model()
+        source = model.sourceModel() if isinstance(model, QSortFilterProxyModel) else model
+        if isinstance(source, FramePathListModel):
+            source.set_paths(paths)
+
+    def currentRow(self) -> int:
+        index = self.currentIndex()
+        return int(index.row()) if index.isValid() else -1
+
+    def setCurrentRow(self, row: int) -> None:
+        model = self.model()
+        if model is None or row < 0 or row >= model.rowCount():
+            self.clearSelection()
+            self.setCurrentIndex(QModelIndex())
+            return
+        self.setCurrentIndex(model.index(int(row), 0))

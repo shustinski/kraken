@@ -81,6 +81,7 @@ class WidgetDisplaySettingsStore:
             "show_frame_matrix": settings.value("display/show_frame_matrix", True, type=bool),
             "show_frame_matrix_thumbnails": settings.value("display/show_frame_matrix_thumbnails", True, type=bool),
             "show_neighbor_frames": settings.value("display/show_neighbor_frames", False, type=bool),
+            "show_neighbor_vectors": settings.value("display/show_neighbor_vectors", False, type=bool),
             "neighbor_columns": settings.value("display/neighbor_columns", 3, type=int),
             "neighbor_max_grid": settings.value("display/neighbor_max_grid", 7, type=int),
             "neighbor_opacity": settings.value("display/neighbor_opacity", 0.35, type=float),

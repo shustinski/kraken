@@ -15,6 +15,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QGraphicsEllipseItem,
+    QGraphicsItem,
     QGraphicsPathItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
@@ -86,6 +87,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._display_settings = DisplaySettings()
         self._polygons: dict[int, PolygonData] = {}
         self._polygon_items: dict[int, EditablePolygonItem] = {}
+        self._hole_children_by_parent: dict[int, list[PolygonData]] = {}
         self._selected_polygon_id: int | None = None
         self._selected_polygon_ids: set[int] = set()
         self._next_polygon_id = 1
@@ -96,10 +98,10 @@ class PolygonEditorScene(QGraphicsScene):
         self._image_item.setZValue(0)
         self.addItem(self._image_item)
         self._image_rect = QRectF(0, 0, 1, 1)
-        self._neighbor_frame_items: list[QGraphicsPixmapItem] = []
-        self._neighbor_frame_paths: dict[QGraphicsPixmapItem, str] = {}
+        self._neighbor_frame_items: list[QGraphicsItem] = []
+        self._neighbor_frame_paths: dict[QGraphicsItem, str] = {}
         self._neighbor_grid_bounds: QRectF | None = None
-        self._pending_neighbor_frames: list[tuple[int, int, object, str]] | None = None
+        self._pending_neighbor_frames: list[tuple] | None = None
         self._pending_neighbor_opacity: float = 0.0
         self._pending_neighbor_overlap_pixels: int = 0
         self._pending_neighbor_show_main_frame: bool = True
@@ -255,7 +257,7 @@ class PolygonEditorScene(QGraphicsScene):
 
     def set_neighbor_frames(
         self,
-        frames: list[tuple[int, int, object, str]],
+        frames: list[tuple],
         opacity: float,
         overlap_pixels: int = 0,
         show_main_frame: bool = True,
@@ -282,7 +284,11 @@ class PolygonEditorScene(QGraphicsScene):
         step_x = max(1.0, main_width - overlap)
         step_y = max(1.0, main_height - overlap)
         bounds = QRectF(self._image_rect)
-        for column_offset, row_offset, image, image_path in frames:
+        clamped_opacity = max(0.05, min(1.0, float(opacity)))
+        for frame in frames:
+            column_offset, row_offset, image, image_path = frame[:4]
+            polygons = frame[4] if len(frame) > 4 else []
+            source_size = frame[5] if len(frame) > 5 else None
             if column_offset == 0 and row_offset == 0:
                 continue
             pixmap = QPixmap.fromImage(image if isinstance(image, QImage) else cv_to_qimage(image))
@@ -290,7 +296,7 @@ class PolygonEditorScene(QGraphicsScene):
                 continue
             item = QGraphicsPixmapItem(pixmap)
             item.setZValue(-20)
-            item.setOpacity(max(0.05, min(1.0, float(opacity))))
+            item.setOpacity(clamped_opacity)
             item.setToolTip(str(image_path))
             scale_x = main_width / max(1, pixmap.width())
             scale_y = main_height / max(1, pixmap.height())
@@ -300,15 +306,46 @@ class PolygonEditorScene(QGraphicsScene):
             self._neighbor_frame_items.append(item)
             self._neighbor_frame_paths[item] = str(image_path)
             bounds = bounds.united(QRectF(item.pos().x(), item.pos().y(), main_width, main_height))
+            if polygons:
+                source_width, source_height = source_size or (pixmap.width(), pixmap.height())
+                vector_transform = QTransform.fromScale(
+                    main_width / max(1, int(source_width)),
+                    main_height / max(1, int(source_height)),
+                )
+                for polygon in polygons:
+                    path_item = self._neighbor_vector_item(polygon, str(image_path), clamped_opacity)
+                    path_item.setTransform(vector_transform)
+                    path_item.setPos(item.pos())
+                    self.addItem(path_item)
+                    self._neighbor_frame_items.append(path_item)
+                    self._neighbor_frame_paths[path_item] = str(image_path)
         self._neighbor_grid_bounds = bounds if self._neighbor_frame_items else None
         self._update_scene_rect()
         self.update(self.sceneRect())
 
     def neighbor_frame_path_at(self, scene_pos: QPointF) -> str | None:
         for item in self.items(scene_pos):
-            if isinstance(item, QGraphicsPixmapItem) and item in self._neighbor_frame_paths:
+            if item in self._neighbor_frame_paths:
                 return self._neighbor_frame_paths[item]
         return None
+
+    def _neighbor_vector_item(self, polygon: PolygonData, image_path: str, opacity: float) -> QGraphicsPathItem:
+        path_item = QGraphicsPathItem(_display_path_for_polygon(polygon))
+        path_item.setZValue(-19)
+        path_item.setOpacity(opacity)
+        color_name = self._display_settings.hole_color if polygon.is_hole else self._display_settings.external_color
+        outline = QColor(color_name)
+        fill = QColor(color_name)
+        if polygon.is_hole:
+            fill.setAlpha(0)
+        else:
+            fill.setAlphaF(max(0.0, min(1.0, self._display_settings.fill_opacity)))
+        pen = QPen(outline, max(1.0, self._display_settings.line_width))
+        pen.setCosmetic(True)
+        path_item.setPen(pen)
+        path_item.setBrush(QBrush(fill))
+        path_item.setToolTip(image_path)
+        return path_item
 
     def set_debug_candidates(self, candidates: list[object]) -> None:
         for item in self._debug_candidate_items:
@@ -496,6 +533,7 @@ class PolygonEditorScene(QGraphicsScene):
             self.removeItem(item)
         self._polygon_items.clear()
         self._polygons.clear()
+        self._hole_children_by_parent.clear()
         self._hover_conductor_polygon_id = None
         self._vertex_preview_polygon_id = None
         self._selected_polygon_id = None
@@ -520,12 +558,13 @@ class PolygonEditorScene(QGraphicsScene):
             self.polygonsChanged.emit()
             self.activePolygonChanged.emit(self._selected_polygon_id)
 
-    def set_polygons(self, polygons: list[PolygonData]) -> None:
+    def set_polygons(self, polygons: list[PolygonData], *, emit_signal: bool = True) -> None:
         self.undo_stack.clear()
         for item in list(self._polygon_items.values()):
             self.removeItem(item)
         self._polygon_items.clear()
         self._polygons.clear()
+        self._hole_children_by_parent.clear()
         self._hover_conductor_polygon_id = None
         self._vertex_preview_polygon_id = None
         self._selected_polygon_id = None
@@ -536,8 +575,9 @@ class PolygonEditorScene(QGraphicsScene):
         if polygons:
             self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
         self._refresh_all_items()
-        self.polygonsChanged.emit()
-        self.activePolygonChanged.emit(self._selected_polygon_id)
+        if emit_signal:
+            self.polygonsChanged.emit()
+            self.activePolygonChanged.emit(self._selected_polygon_id)
 
     def sync_conductor_hover_highlight(self, scene_pos: QPointF) -> None:
         if not self._polygon_overlays_visible:
@@ -564,16 +604,18 @@ class PolygonEditorScene(QGraphicsScene):
             conductor_id = None
         if conductor_id == self._hover_conductor_polygon_id:
             return
+        previous_id = self._hover_conductor_polygon_id
         self._hover_conductor_polygon_id = conductor_id
-        self._refresh_all_items()
+        self._refresh_polygon_items_by_id(previous_id, conductor_id)
 
     def _set_vertex_preview_polygon_id(self, polygon_id: int | None) -> None:
         if polygon_id is not None and polygon_id not in self._polygons:
             polygon_id = None
         if polygon_id == self._vertex_preview_polygon_id:
             return
+        previous_id = self._vertex_preview_polygon_id
         self._vertex_preview_polygon_id = polygon_id
-        self._refresh_all_items()
+        self._refresh_polygon_items_by_id(previous_id, polygon_id)
 
     def selected_polygon_id(self) -> int | None:
         return self._selected_polygon_id
@@ -704,7 +746,8 @@ class PolygonEditorScene(QGraphicsScene):
         target_ids = [polygon_id] if polygon_id is not None else sorted(self._selected_polygon_ids)
         if not target_ids and self._selected_polygon_id is not None:
             target_ids = [self._selected_polygon_id]
-        target_polygons = [self._polygons[target_id].clone() for target_id in target_ids if target_id in self._polygons]
+        delete_ids = self._delete_polygon_ids_with_descendants(target_ids)
+        target_polygons = [self._polygons[target_id].clone() for target_id in delete_ids if target_id in self._polygons]
         if not target_polygons:
             return False
         self.undo_stack.beginMacro("Delete polygons")
@@ -714,6 +757,21 @@ class PolygonEditorScene(QGraphicsScene):
         finally:
             self.undo_stack.endMacro()
         return True
+
+    def _delete_polygon_ids_with_descendants(self, target_ids: list[int | None]) -> list[int]:
+        delete_ids: set[int] = set()
+        pending = [target_id for target_id in target_ids if target_id in self._polygons]
+        while pending:
+            current_id = pending.pop()
+            if current_id is None or current_id in delete_ids or current_id not in self._polygons:
+                continue
+            delete_ids.add(current_id)
+            pending.extend(
+                child_id
+                for child_id, polygon in self._polygons.items()
+                if polygon.parent_id == current_id and child_id not in delete_ids
+            )
+        return sorted(delete_ids)
 
     def selected_polygons(self) -> list[PolygonData]:
         return [
@@ -1527,24 +1585,39 @@ class PolygonEditorScene(QGraphicsScene):
 
     def _refresh_all_items(self) -> None:
         for polygon_id, item in self._polygon_items.items():
-            conductor_hover_highlight = (
-                self._hover_conductor_polygon_id is not None
-                and polygon_id == self._hover_conductor_polygon_id
-                and polygon_id not in self._selected_polygon_ids
-            ) or (polygon_id in self._delete_area_highlight_ids and polygon_id not in self._selected_polygon_ids)
-            item.update_from_polygon(
-                self._polygons[polygon_id],
-                self._display_settings,
-                selected=polygon_id in self._selected_polygon_ids,
-                cutout_polygons=self._cutout_polygons_for(polygon_id),
-                custom_color=self._object_color_for(polygon_id),
-                conductor_hover_highlight=conductor_hover_highlight,
-                preview_vertices=polygon_id == self._vertex_preview_polygon_id,
-            )
-            poly = self._polygons[polygon_id]
-            cat = str(getattr(poly, "category", "") or "")
-            vis = self._polygon_category_visible.get(cat, True)
-            item.setVisible(bool(vis) and self._polygon_overlays_visible)
+            self._refresh_polygon_item(polygon_id, item)
+
+    def _refresh_polygon_items_by_id(self, *polygon_ids: int | None) -> None:
+        for polygon_id in {polygon_id for polygon_id in polygon_ids if polygon_id is not None}:
+            item = self._polygon_items.get(polygon_id)
+            if item is not None:
+                self._refresh_polygon_item(polygon_id, item)
+
+    def _refresh_polygon_item(self, polygon_id: int, item: EditablePolygonItem | None = None) -> None:
+        polygon = self._polygons.get(polygon_id)
+        if polygon is None:
+            return
+        if item is None:
+            item = self._polygon_items.get(polygon_id)
+        if item is None:
+            return
+        conductor_hover_highlight = (
+            self._hover_conductor_polygon_id is not None
+            and polygon_id == self._hover_conductor_polygon_id
+            and polygon_id not in self._selected_polygon_ids
+        ) or (polygon_id in self._delete_area_highlight_ids and polygon_id not in self._selected_polygon_ids)
+        item.update_from_polygon(
+            polygon,
+            self._display_settings,
+            selected=polygon_id in self._selected_polygon_ids,
+            cutout_polygons=self._cutout_polygons_for(polygon_id),
+            custom_color=self._object_color_for(polygon_id),
+            conductor_hover_highlight=conductor_hover_highlight,
+            preview_vertices=polygon_id == self._vertex_preview_polygon_id,
+        )
+        cat = str(getattr(polygon, "category", "") or "")
+        vis = self._polygon_category_visible.get(cat, True)
+        item.setVisible(bool(vis) and self._polygon_overlays_visible)
 
     def set_polygon_category_visible(self, category: str, visible: bool) -> None:
         self._polygon_category_visible[str(category)] = bool(visible)
@@ -1566,7 +1639,26 @@ class PolygonEditorScene(QGraphicsScene):
         polygon = self._polygons.get(polygon_id)
         if polygon is None or polygon.is_hole:
             return []
-        return [child.clone() for child in self._polygons.values() if child.parent_id == polygon_id and child.is_hole]
+        return self._hole_children_by_parent.get(polygon_id, [])
+
+    def _rebuild_polygon_relationship_cache(self) -> None:
+        self._hole_children_by_parent.clear()
+        for polygon in self._polygons.values():
+            self._index_polygon_relationship(polygon)
+
+    def _index_polygon_relationship(self, polygon: PolygonData) -> None:
+        if polygon.is_hole and polygon.parent_id is not None:
+            self._hole_children_by_parent.setdefault(polygon.parent_id, []).append(polygon)
+
+    def _unindex_polygon_relationship(self, polygon: PolygonData | None) -> None:
+        if polygon is None or not polygon.is_hole or polygon.parent_id is None:
+            return
+        children = self._hole_children_by_parent.get(polygon.parent_id)
+        if not children:
+            return
+        self._hole_children_by_parent[polygon.parent_id] = [child for child in children if child.id != polygon.id]
+        if not self._hole_children_by_parent[polygon.parent_id]:
+            self._hole_children_by_parent.pop(polygon.parent_id, None)
 
     def _render_polygon_ids(self, overlapping_ids: list[int]) -> list[int]:
         render_ids: list[int] = []
@@ -1718,6 +1810,7 @@ class PolygonEditorScene(QGraphicsScene):
         if polygon.id in self._polygon_items:
             self._remove_polygon_internal(polygon.id, emit_signal=False, refresh=False)
         self._polygons[polygon.id] = polygon.clone()
+        self._index_polygon_relationship(self._polygons[polygon.id])
         self._next_polygon_id = max(self._next_polygon_id, polygon.id + 1)
         item = EditablePolygonItem(self._polygons[polygon.id], self._display_settings)
         item.setVisible(self._polygon_overlays_visible)
@@ -1730,7 +1823,7 @@ class PolygonEditorScene(QGraphicsScene):
 
     def _remove_polygon_internal(self, polygon_id: int, emit_signal: bool = True, refresh: bool = True) -> None:
         item = self._polygon_items.pop(polygon_id, None)
-        self._polygons.pop(polygon_id, None)
+        self._unindex_polygon_relationship(self._polygons.pop(polygon_id, None))
         if self._hover_conductor_polygon_id == polygon_id:
             self._hover_conductor_polygon_id = None
         if self._vertex_preview_polygon_id == polygon_id:
@@ -1751,7 +1844,9 @@ class PolygonEditorScene(QGraphicsScene):
     ) -> None:
         if polygon_id not in self._polygons:
             return
+        self._unindex_polygon_relationship(self._polygons.get(polygon_id))
         self._polygons[polygon_id] = self._create_polygon_snapshot(polygon_id, points)
+        self._index_polygon_relationship(self._polygons[polygon_id])
         self._refresh_all_items()
         if emit_signal:
             self.polygonsChanged.emit()

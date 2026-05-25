@@ -73,6 +73,7 @@ class WidgetSettingsMixin:
             QSignalBlocker(self.show_frame_matrix_checkbox),
             QSignalBlocker(self.show_frame_matrix_thumbnails_checkbox),
             QSignalBlocker(self.show_neighbor_frames_checkbox),
+            QSignalBlocker(self.show_neighbor_vectors_checkbox),
             QSignalBlocker(self.neighbor_columns_spin),
             QSignalBlocker(self.neighbor_max_grid_spin),
             QSignalBlocker(self.neighbor_opacity_spin),
@@ -110,6 +111,7 @@ class WidgetSettingsMixin:
                 bool(payload.get("show_frame_matrix_thumbnails", True))
             )
             self.show_neighbor_frames_checkbox.setChecked(bool(payload.get("show_neighbor_frames", False)))
+            self.show_neighbor_vectors_checkbox.setChecked(bool(payload.get("show_neighbor_vectors", False)))
             self.neighbor_columns_spin.setValue(max(1, int(payload.get("neighbor_columns", 3))))
             self.neighbor_max_grid_spin.setValue(self._odd_neighbor_grid_size(int(payload.get("neighbor_max_grid", 7))))
             self.neighbor_opacity_spin.setValue(float(payload.get("neighbor_opacity", 0.35)))
@@ -143,6 +145,7 @@ class WidgetSettingsMixin:
             "show_frame_matrix": bool(self.show_frame_matrix_checkbox.isChecked()),
             "show_frame_matrix_thumbnails": bool(self.show_frame_matrix_thumbnails_checkbox.isChecked()),
             "show_neighbor_frames": bool(self.show_neighbor_frames_checkbox.isChecked()),
+            "show_neighbor_vectors": bool(self.show_neighbor_vectors_checkbox.isChecked()),
             "neighbor_columns": int(self.neighbor_columns_spin.value()),
             "neighbor_max_grid": int(self.neighbor_max_grid_spin.value()),
             "neighbor_opacity": float(self.neighbor_opacity_spin.value()),

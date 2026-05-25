@@ -546,6 +546,15 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             "Показывать соседние кадры" if self._ui_language == "ru" else "Show neighboring frames",
         )
     )
+    if hasattr(self, "show_neighbor_vectors_checkbox"):
+        self.show_neighbor_vectors_checkbox.setText(
+            self._tr(
+                "show_neighbor_vectors_checkbox",
+                "Показывать векторы на соседних кадрах"
+                if self._ui_language == "ru"
+                else "Show vectors on neighboring frames",
+            )
+        )
     if self.neighbor_columns_label_widget is not None:
         self.neighbor_columns_label_widget.setText(
             self._tr("neighbor_columns_label", "Кадров в строке" if self._ui_language == "ru" else "Frames per row")
@@ -606,6 +615,12 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             "Показывает соседние изображения вокруг текущего кадра на фоне. Текущий кадр остается в центре и отмечается желтой рамкой."
             if self._ui_language == "ru"
             else "Shows neighboring images around the current frame in the background. The current frame stays centered and has a yellow border.",
+        ),
+        (
+            self.show_neighbor_vectors_checkbox,
+            "Показывает CIF-векторы поверх соседних кадров."
+            if self._ui_language == "ru"
+            else "Shows matching CIF vectors over neighboring frames.",
         ),
         (
             self.neighbor_columns_spin,

@@ -34,6 +34,7 @@ class WidgetDisplaySettingsStoreTests(unittest.TestCase):
                     "show_frame_matrix": False,
                     "show_frame_matrix_thumbnails": False,
                     "show_neighbor_frames": True,
+                    "show_neighbor_vectors": True,
                     "neighbor_columns": 6,
                     "neighbor_max_grid": 5,
                     "neighbor_opacity": 0.45,
@@ -52,6 +53,7 @@ class WidgetDisplaySettingsStoreTests(unittest.TestCase):
             self.assertFalse(payload["show_frame_matrix"])
             self.assertFalse(payload["show_frame_matrix_thumbnails"])
             self.assertTrue(payload["show_neighbor_frames"])
+            self.assertTrue(payload["show_neighbor_vectors"])
             self.assertEqual(payload["neighbor_columns"], 6)
             self.assertEqual(payload["neighbor_max_grid"], 5)
             self.assertEqual(payload["neighbor_opacity"], 0.45)

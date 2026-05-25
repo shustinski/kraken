@@ -50,7 +50,7 @@ class EditablePolygonItem(QGraphicsPathItem):
         conductor_hover_highlight: bool = False,
         preview_vertices: bool = False,
     ) -> None:
-        self._polygon = polygon.clone()
+        self._polygon = polygon
         path = QPainterPath()
         path.addPath(_display_path_for_polygon(self._polygon))
         for cutout in cutout_polygons or []:

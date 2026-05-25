@@ -14,12 +14,14 @@ import os
 PROFILE_ENV_TRUE = {"1", "true", "yes", "on"}
 PROFILE_ENV_FALSE = {"0", "false", "no", "off"}
 
-DEFAULT_FRAME_SWITCH_ENABLED = True
-DEFAULT_PROCESSING_ENABLED = True
+DEFAULT_FRAME_SWITCH_ENABLED = False
+DEFAULT_PROCESSING_ENABLED = False
+DEFAULT_THUMBNAIL_ENABLED = False
 DEFAULT_VERTEX_MOVE_ENABLED = False
 
 DEFAULT_FRAME_SWITCH_TOP_LINES = 80
 DEFAULT_PROCESSING_TOP_LINES = 25
+DEFAULT_THUMBNAIL_TOP_LINES = 25
 DEFAULT_VERTEX_MOVE_TOP_LINES = 40
 DEFAULT_FRAME_SWITCH_IDLE_POLLS = 300
 
@@ -107,6 +109,14 @@ def processing_profiling_enabled() -> bool:
     return profiling_enabled("processing", default=DEFAULT_PROCESSING_ENABLED)
 
 
+def thumbnail_profiling_enabled() -> bool:
+    return profiling_enabled("thumbnail", default=DEFAULT_THUMBNAIL_ENABLED)
+
+
+def thumbnail_full_function_usage_enabled() -> bool:
+    return bool(_env_flag("CONTOUR_PROFILE_THUMBNAIL_FULL"))
+
+
 def vertex_move_profiling_enabled() -> bool:
     return profiling_enabled("vertex_move", default=DEFAULT_VERTEX_MOVE_ENABLED)
 
@@ -117,6 +127,10 @@ def frame_switch_top_lines() -> int:
 
 def processing_top_lines() -> int:
     return profiling_top_lines("processing", DEFAULT_PROCESSING_TOP_LINES)
+
+
+def thumbnail_top_lines() -> int:
+    return profiling_top_lines("thumbnail", DEFAULT_THUMBNAIL_TOP_LINES)
 
 
 def vertex_move_top_lines() -> int:

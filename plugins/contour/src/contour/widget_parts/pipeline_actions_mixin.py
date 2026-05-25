@@ -215,6 +215,31 @@ class WidgetPipelineActionsMixin:
                 QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
         self._update_thumbnail_grid_selection()
 
+    def _on_image_item_changed(self, current, previous) -> None:
+        image_path = None
+        if current is not None:
+            value = current.data(Qt.ItemDataRole.UserRole) if hasattr(current, "data") else None
+            image_path = str(value) if value else None
+        if previous is not None and not self._try_leave_current_frame():
+            return
+        if not image_path:
+            self._update_thumbnail_grid_selection()
+            return
+        if not self._is_extraction_mode_enabled():
+            self._viewed_image_paths.add(str(Path(image_path)))
+        try:
+            self.load_image(str(image_path))
+        except Exception as exc:
+            self._append_log(self._tr("failed_to_load_image_log", image_path=image_path, error=exc))
+            QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
+        for item in (previous, current):
+            if item is None:
+                continue
+            value = item.data(Qt.ItemDataRole.UserRole) if hasattr(item, "data") else None
+            if value:
+                self._paint_image_row_item(item, str(value))
+        self._update_thumbnail_grid_selection()
+
     def _prune_tagged_sets_for_images(self, retained_paths: list[str]) -> None:
         retained = {str(Path(p)) for p in retained_paths}
         stems = {Path(p).stem.lower() for p in retained_paths}

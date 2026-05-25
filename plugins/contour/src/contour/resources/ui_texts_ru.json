@@ -348,6 +348,7 @@
     "show_frame_matrix_checkbox": "Показывать матрицу кадров",
     "show_frame_matrix_thumbnails_checkbox": "Загружать миниатюры матрицы кадров",
     "show_neighbor_frames_checkbox": "Показывать соседние кадры",
+    "show_neighbor_vectors_checkbox": "Показывать векторы на соседних кадрах",
     "tool_add_via": "Via",
     "tool_antialias": "Антиалиасинг",
     "tool_brush": "Кисть",

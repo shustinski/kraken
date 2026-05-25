@@ -3,12 +3,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-Push-Location (Split-Path -Parent $PSScriptRoot)
+$PluginRoot = Split-Path -Parent $PSScriptRoot
+$RepoRoot = (Resolve-Path (Join-Path $PluginRoot "..\..")).Path
+$Python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $Python)) {
+    $Python = "python"
+}
+
+Push-Location $PluginRoot
 try {
     if (-not $SkipTests) {
-        python -m pytest
+        & $Python -m pytest
     }
-    pyinstaller .\packaging\Contour.spec
+    & $Python -m PyInstaller .\packaging\Contour.spec
     if (Get-Command iscc -ErrorAction SilentlyContinue) {
         iscc .\packaging\Contour.iss
     }

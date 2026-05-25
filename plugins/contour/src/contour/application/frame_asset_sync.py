@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+import os
 from pathlib import Path
 
 from kraken_core.theme import normalize_theme
@@ -59,13 +60,13 @@ def build_frame_asset_sets(
 
 
 def index_cif_file_paths(paths: Iterable[str | Path]) -> dict[str, str]:
-    """Map lowercase stem to absolute resolved path for existing vector files."""
+    """Map lowercase stem to absolute path for existing vector files."""
 
     indexed: dict[str, str] = {}
     for raw in paths:
         candidate = Path(raw)
         if candidate.is_file() and candidate.suffix.lower() in VECTOR_FILE_SUFFIXES:
-            indexed[candidate.stem.lower()] = str(candidate.resolve())
+            indexed[candidate.stem.lower()] = os.path.abspath(os.path.normpath(os.fspath(candidate)))
     return indexed
 
 

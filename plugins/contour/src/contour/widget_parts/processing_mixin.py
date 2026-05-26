@@ -524,6 +524,10 @@ class WidgetProcessingMixin:
         )
 
     def _request_neighbor_frame_sync(self: Any, *, delay_ms: int = 0) -> None:
+        store = getattr(self, "_pyramid_frame_store", None)
+        if self._neighbor_frames_enabled() and store is not None and store.has_zarr():
+            self._sync_neighbor_frames()
+            return
         if not self._neighbor_frames_enabled():
             timer = getattr(self, "_neighbor_sync_timer", None)
             if timer is not None:
@@ -696,19 +700,17 @@ class WidgetProcessingMixin:
         display_image = self._display_image_for_current_state()
         polygons = list(current_state.polygons)
         image_ready = self._apply_display_image_to_editor(image_path, display_image, state=current_state)
-        if image_ready:
-            self._pending_editor_frame_apply = None
-            self._apply_editor_vectors_for_frame(
-                image_path,
-                current_state,
-                polygons,
-                defer_heavy_overlays=defer_heavy_overlays,
-            )
-        else:
-            self._pending_editor_frame_apply = (str(Path(image_path)), polygons, defer_heavy_overlays)
+        self._pending_editor_frame_apply = None
+        self._apply_editor_vectors_for_frame(
+            image_path,
+            current_state,
+            polygons,
+            defer_heavy_overlays=defer_heavy_overlays,
+        )
+        if not image_ready:
             session = self._frame_switch_profile_for_path(image_path)
             if session is not None:
-                session.mark_pending("editor_vectors")
+                session.complete_pending("editor_vectors", suffix="_applied_before_pixmap")
         neighbor_delay_ms = 200 if self._uses_large_frame_list() else 0
         if defer_neighbors:
             self._request_neighbor_frame_sync(delay_ms=neighbor_delay_ms)
@@ -912,6 +914,10 @@ class WidgetProcessingMixin:
     def _center_editor_on_current_main_image(self: Any) -> None:
         if not hasattr(self, "polygon_editor") or not self._workspace.current_image_path:
             return
+        if self.polygon_editor.pyramid_mode_enabled():
+            frame_id = self._image_path_index(self._workspace.current_image_path)
+            self.polygon_editor.set_current_frame_id(frame_id, center=True, emit_signal=False)
+            return
         self.polygon_editor.center_main_image()
 
     def _odd_neighbor_grid_size(self: Any, value: int) -> int:
@@ -924,6 +930,14 @@ class WidgetProcessingMixin:
     def _sync_neighbor_frames(self: Any) -> None:
         if not hasattr(self, "polygon_editor"):
             return
+        if (
+            self._neighbor_frames_enabled()
+            and hasattr(self, "_ensure_neighbor_pyramid_or_prompt")
+            and not bool(getattr(self, "_restoring_display_settings", False))
+            and bool(self.isVisible())
+        ):
+            if not self._ensure_neighbor_pyramid_or_prompt():
+                return
         current_path = self._workspace.current_image_path
         session = (
             self._frame_switch_profile_for_path(str(current_path))
@@ -939,10 +953,47 @@ class WidgetProcessingMixin:
             timer = getattr(self, "_neighbor_apply_timer", None)
             if timer is not None:
                 timer.stop()
+            store = getattr(self, "_pyramid_frame_store", None)
+            image_paths = [str(Path(path)) for path in self._workspace.image_paths]
+            frame_id = self._image_path_index(current_path) if current_path else None
+            self.polygon_editor.set_pyramid_frame_store(
+                store,
+                frame_count=len(image_paths),
+                columns=max(1, int(getattr(self, "neighbor_columns_spin").value()))
+                if hasattr(self, "neighbor_columns_spin")
+                else 1,
+                current_frame_id=frame_id,
+                enabled=False,
+            )
             self.polygon_editor.set_neighbor_frames([], 0.0, 0, False)
             if session is not None:
                 session.complete_pending("neighbor_sync", suffix="_disabled")
             QTimer.singleShot(0, self._center_editor_on_current_main_image)
+            return
+        store = getattr(self, "_pyramid_frame_store", None)
+        if store is not None and store.has_zarr():
+            image_paths = [str(Path(path)) for path in self._workspace.image_paths]
+            frame_id = self._image_path_index(current_path) if current_path else None
+            self._neighbor_sync_image_path = str(Path(current_path)) if current_path else None
+            self._neighbor_frame_specs = []
+            self._neighbor_queued_paths.clear()
+            timer = getattr(self, "_neighbor_apply_timer", None)
+            if timer is not None:
+                timer.stop()
+            scene = self.polygon_editor._editor_scene
+            scene._pending_neighbor_frames = None
+            scene.clear_neighbor_frames()
+            self.polygon_editor.set_pyramid_frame_store(
+                store,
+                frame_count=len(image_paths),
+                columns=max(1, int(self.neighbor_columns_spin.value())),
+                current_frame_id=frame_id,
+                enabled=True,
+            )
+            if frame_id is not None:
+                self.polygon_editor.set_current_frame_id(frame_id, center=True, emit_signal=False)
+            if session is not None:
+                session.complete_pending("neighbor_sync", suffix="_zarr_pyramid")
             return
         image_paths = [str(Path(path)) for path in self._workspace.image_paths]
         normalized_current_path = str(Path(current_path)) if current_path else ""
@@ -1532,6 +1583,7 @@ class WidgetProcessingMixin:
         self._base_frame_number_by_path = build_base_frame_number_map(frame_records)
         self._base_frame_numbers = set(self._base_frame_number_by_path.values())
         normalized_paths = self._workspace.replace_image_selection(ordered_paths, is_supported_image=is_image_path)
+        self._configure_pyramid_frame_store(normalized_paths)
         self._reset_thumbnail_disk_cache_for_base_paths(normalized_paths)
         if not normalized_paths:
             self._save_persisted_current_image_path(None)
@@ -1612,6 +1664,7 @@ class WidgetProcessingMixin:
         self._editor_pixmap_cache.clear()
         self._editor_polygons_signature = None
         self._thumbnail_path_to_row.clear()
+        self._configure_pyramid_frame_store([])
         if hasattr(self, "_cancel_thumbnail_loading"):
             self._cancel_thumbnail_loading()
         getattr(self, "_thumbnail_icon_cache", {}).clear()
@@ -1740,6 +1793,11 @@ class WidgetProcessingMixin:
         normalized_load_path = str(Path(path))
         if load_vectors is None:
             load_vectors = not self._should_defer_vector_load()
+        if self._image_path_in_image_list(normalized_load_path):
+            cached_selected_state = getattr(self._workspace, "_state_cache", {}).get(normalized_load_path)
+            self._workspace._current_image_path = normalized_load_path
+            if cached_selected_state is not None:
+                self._workspace._current_state = cached_selected_state
         active_load_path = getattr(self, "_loading_image_path", None)
         if active_load_path is not None:
             if active_load_path == normalized_load_path:
@@ -2070,7 +2128,7 @@ class WidgetProcessingMixin:
             if profile_enabled:
                 profile_timings["defer_frame_chrome"] = (perf_counter() - step_start) * 1000.0
             step_start = perf_counter()
-            self.polygon_editor.center_main_image()
+            self._center_editor_on_current_main_image()
             if profile_enabled:
                 profile_timings["center_main_image"] = (perf_counter() - step_start) * 1000.0
             if getattr(self, "_loading_image_path", None) == image_result.image_path:

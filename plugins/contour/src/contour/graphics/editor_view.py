@@ -3,7 +3,8 @@ from __future__ import annotations
 import cProfile
 import io
 import pstats
-from math import hypot
+from collections import OrderedDict
+from math import hypot, log2
 from time import perf_counter
 
 from typing import cast
@@ -14,6 +15,7 @@ from PyQt6.QtCore import (
     QPointF,
     QRectF,
     Qt,
+    QThreadPool,
     QTimer,
     pyqtSignal,
 )
@@ -34,8 +36,10 @@ from PyQt6.QtGui import (
     QUndoStack,
     QWheelEvent,
 )
-from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsView, QWidget
+from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsView, QWidget
 
+from ..adapters.qt.pyramid import PyramidFrameLoadRunnable
+from ..application.frame_lod import FixedGridFrameLayout, PyramidFrameStore
 from ..application.processing import DisplaySettings
 from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
@@ -77,6 +81,8 @@ _ZOOM_EASING_FRACTION = 0.55
 _ZOOM_SETTLE_RATIO = 0.001
 _OPENGL_VIEWPORT_ENABLED = True
 _OPENGL_DISABLED_PLATFORMS = {"offscreen", "minimal"}
+_PYRAMID_VISIBLE_UPDATE_MS = 24
+_PYRAMID_CACHE_LIMIT = 192
 
 
 class PolygonEditorView(QGraphicsView):
@@ -96,6 +102,9 @@ class PolygonEditorView(QGraphicsView):
     viaDebugRequested = pyqtSignal(object)
     metalOverlayDetailRequested = pyqtSignal(str, str)
     middlePreviewHoldChanged = pyqtSignal(bool)
+    frameNavigationRequested = pyqtSignal(object)
+    currentFrameChanged = pyqtSignal(object)
+    editorViewportChanged = pyqtSignal(object)
 
     def __init__(self, parent=None) -> None:
         self._editor_scene = PolygonEditorScene()
@@ -114,6 +123,8 @@ class PolygonEditorView(QGraphicsView):
         self.setBackgroundBrush(QBrush(QColor("#171B22")))
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.horizontalScrollBar().valueChanged.connect(self._schedule_pyramid_visible_update)
+        self.verticalScrollBar().valueChanged.connect(self._schedule_pyramid_visible_update)
 
         self._tool = EditorTool.SELECT
         self._polygon_create_mode = PolygonCreateMode.POINTS
@@ -159,6 +170,30 @@ class PolygonEditorView(QGraphicsView):
         self._zoom_animation_timer.timeout.connect(self._advance_zoom_animation)
         self._zoom_animation_viewport_pixel: QPoint | None = None
         self._zoom_animation_target_zoom = 1.0
+        self._pyramid_store: PyramidFrameStore | None = None
+        self._pyramid_layout: FixedGridFrameLayout | None = None
+        self._pyramid_enabled = False
+        self._pyramid_current_frame_id: int | None = None
+        self._pyramid_current_lod = 0
+        self._pyramid_visible_items: dict[int, QGraphicsPixmapItem] = {}
+        self._pyramid_pixmap_cache: OrderedDict[tuple[int, int], QPixmap] = OrderedDict()
+        self._pyramid_pending_loads: set[tuple[int, int]] = set()
+        self._pyramid_generation = 0
+        self._pyramid_thread_pool = QThreadPool(self)
+        self._pyramid_thread_pool.setMaxThreadCount(2)
+        self._pyramid_thread_pool.setExpiryTimeout(30000)
+        self._pyramid_visible_timer = QTimer(self)
+        self._pyramid_visible_timer.setSingleShot(True)
+        self._pyramid_visible_timer.setInterval(_PYRAMID_VISIBLE_UPDATE_MS)
+        self._pyramid_visible_timer.timeout.connect(self._refresh_pyramid_visible_frames)
+        self._pyramid_selection_item = QGraphicsRectItem()
+        selection_pen = QPen(QColor("#22D3EE"), 2.0)
+        selection_pen.setCosmetic(True)
+        self._pyramid_selection_item.setPen(selection_pen)
+        self._pyramid_selection_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self._pyramid_selection_item.setZValue(-17)
+        self._editor_scene.addItem(self._pyramid_selection_item)
+        self._pyramid_selection_item.hide()
 
         self._editor_scene.polygonsChanged.connect(self.polygonsEdited.emit)
         self._editor_scene.activePolygonChanged.connect(self.activePolygonChanged.emit)
@@ -364,6 +399,262 @@ class PolygonEditorView(QGraphicsView):
 
     def zoom_factor(self) -> float:
         return max(1e-6, float(self.transform().m11()))
+
+    def set_pyramid_frame_store(
+        self,
+        store: PyramidFrameStore | None,
+        *,
+        frame_count: int | None = None,
+        columns: int | None = None,
+        current_frame_id: int | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        """Enable a virtualized multi-frame pyramid display when a store is available."""
+
+        self._clear_pyramid_items()
+        self._pyramid_generation += 1
+        self._pyramid_store = store
+        self._pyramid_layout = None
+        self._pyramid_pixmap_cache.clear()
+        self._pyramid_pending_loads.clear()
+        if store is None:
+            self._pyramid_enabled = False
+            self._pyramid_current_frame_id = None
+            self._pyramid_selection_item.hide()
+            self._update_navigation_scene_rect()
+            return
+        count = max(0, int(frame_count if frame_count is not None else store.frame_count()))
+        should_enable = bool(store.has_zarr()) if enabled is None else bool(enabled and store.has_zarr())
+        if count <= 0 or not should_enable:
+            self._pyramid_enabled = False
+            self._pyramid_current_frame_id = current_frame_id
+            self._pyramid_selection_item.hide()
+            self._update_navigation_scene_rect()
+            return
+        if columns is None:
+            columns = max(1, int(round(count ** 0.5)))
+        self._pyramid_layout = FixedGridFrameLayout(
+            frame_count=count,
+            columns=max(1, int(columns)),
+            frame_store=store,
+            gap=16,
+        )
+        self._pyramid_enabled = True
+        self._pyramid_current_lod = self.choose_lod(self.zoom_factor(), store.max_lod())
+        self.set_current_frame_id(0 if current_frame_id is None else current_frame_id, center=False, emit_signal=False)
+        self._update_navigation_scene_rect()
+        self._schedule_pyramid_visible_update()
+
+    def set_pyramid_frames(
+        self,
+        store: PyramidFrameStore | None,
+        *,
+        frame_count: int | None = None,
+        columns: int | None = None,
+        current_frame_id: int | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        self.set_pyramid_frame_store(
+            store,
+            frame_count=frame_count,
+            columns=columns,
+            current_frame_id=current_frame_id,
+            enabled=enabled,
+        )
+
+    def pyramid_mode_enabled(self) -> bool:
+        return bool(self._pyramid_enabled and self._pyramid_store is not None and self._pyramid_layout is not None)
+
+    def choose_lod(self, zoom: float, max_lod: int) -> int:
+        max_lod = max(0, int(max_lod))
+        zoom = max(1e-6, float(zoom))
+        target = max(0, min(max_lod, int(round(log2(1.0 / zoom)))))
+        current = max(0, min(max_lod, int(getattr(self, "_pyramid_current_lod", 0))))
+        if target == current:
+            return current
+        # Hysteresis keeps the pyramid from swapping LODs repeatedly near 2x boundaries.
+        if target > current:
+            switch_zoom = (2.0 ** (-(current + 0.65)))
+            return target if zoom < switch_zoom else current
+        switch_zoom = (2.0 ** (-(current - 0.35)))
+        return target if zoom > switch_zoom else current
+
+    def current_frame_id(self) -> int | None:
+        return self._pyramid_current_frame_id
+
+    def set_current_frame_id(self, frame_id: int | None, *, center: bool = True, emit_signal: bool = True) -> None:
+        layout = self._pyramid_layout
+        if frame_id is None:
+            self._pyramid_current_frame_id = None
+            self._pyramid_selection_item.hide()
+            return
+        frame_id = int(frame_id)
+        if layout is not None:
+            frame_id = max(0, min(layout.frame_count - 1, frame_id))
+        changed = frame_id != self._pyramid_current_frame_id
+        self._pyramid_current_frame_id = frame_id
+        self._update_pyramid_selection_rect()
+        if center:
+            self.center_on_frame(frame_id)
+        if changed and emit_signal:
+            self.currentFrameChanged.emit(frame_id)
+
+    def center_on_frame(self, frame_id: int | None) -> None:
+        if frame_id is None:
+            return
+        layout = self._pyramid_layout
+        if layout is None:
+            self.center_main_image()
+            return
+        rect = layout.frame_id_to_scene_rect(int(frame_id), self._pyramid_current_lod)
+        if rect.width() > 0 and rect.height() > 0:
+            self.centerOn(rect.center())
+            self._update_navigation_scene_rect()
+            self._schedule_pyramid_visible_update()
+
+    def _clear_pyramid_items(self) -> None:
+        self._pyramid_visible_timer.stop()
+        for item in self._pyramid_visible_items.values():
+            item.setPixmap(QPixmap())
+            if item.scene() is not None:
+                self._editor_scene.removeItem(item)
+        self._pyramid_visible_items.clear()
+        self._pyramid_pixmap_cache.clear()
+
+    def _pyramid_viewport_scene_rect(self) -> QRectF:
+        viewport = self._require_viewport().rect()
+        polygon = self.mapToScene(viewport)
+        return polygon.boundingRect()
+
+    def _schedule_pyramid_visible_update(self) -> None:
+        if not self.pyramid_mode_enabled():
+            return
+        self._pyramid_visible_timer.stop()
+        self._pyramid_visible_timer.start()
+
+    def _refresh_pyramid_visible_frames(self) -> None:
+        store = self._pyramid_store
+        layout = self._pyramid_layout
+        if store is None or layout is None or not self._pyramid_enabled:
+            return
+        new_lod = self.choose_lod(self.zoom_factor(), store.max_lod())
+        if new_lod != self._pyramid_current_lod:
+            self._pyramid_current_lod = new_lod
+            self._clear_pyramid_items()
+            self._update_navigation_scene_rect()
+            self._update_pyramid_selection_rect()
+        viewport_rect = self._pyramid_viewport_scene_rect()
+        if store.max_lod() <= 0 and self._pyramid_current_lod == 0:
+            visible = set()
+        else:
+            visible = set(layout.frame_ids_intersecting(viewport_rect, self._pyramid_current_lod, buffer_cells=0))
+        if self._pyramid_current_frame_id is not None:
+            visible.add(int(self._pyramid_current_frame_id))
+        for frame_id in list(self._pyramid_visible_items):
+            if frame_id in visible:
+                continue
+            item = self._pyramid_visible_items.pop(frame_id)
+            item.setPixmap(QPixmap())
+            if item.scene() is not None:
+                self._editor_scene.removeItem(item)
+            for cache_key in list(self._pyramid_pixmap_cache):
+                if cache_key[0] == frame_id:
+                    self._pyramid_pixmap_cache.pop(cache_key, None)
+        self._prune_pyramid_pixmap_cache(visible)
+        for frame_id in sorted(visible):
+            self._ensure_pyramid_frame_item(frame_id)
+        self._update_pyramid_selection_rect()
+        self.editorViewportChanged.emit(viewport_rect)
+
+    def _ensure_pyramid_frame_item(self, frame_id: int) -> None:
+        layout = self._pyramid_layout
+        if layout is None:
+            return
+        key = (int(frame_id), int(self._pyramid_current_lod))
+        item = self._pyramid_visible_items.get(frame_id)
+        if item is None:
+            item = QGraphicsPixmapItem()
+            item.setZValue(-30)
+            item.setTransformationMode(Qt.TransformationMode.FastTransformation)
+            self._editor_scene.addItem(item)
+            self._pyramid_visible_items[frame_id] = item
+        rect = layout.frame_id_to_scene_rect(frame_id, self._pyramid_current_lod)
+        item.setPos(rect.topLeft())
+        pixmap = self._pyramid_cached_pixmap(key)
+        if pixmap is not None and not pixmap.isNull():
+            item.setPixmap(pixmap)
+            item.setScale(rect.width() / max(1, pixmap.width()))
+            item.show()
+            return
+        item.hide()
+        self._queue_pyramid_frame_load(frame_id, self._pyramid_current_lod)
+
+    def _pyramid_cached_pixmap(self, key: tuple[int, int]) -> QPixmap | None:
+        pixmap = self._pyramid_pixmap_cache.get(key)
+        if pixmap is not None:
+            self._pyramid_pixmap_cache.move_to_end(key)
+        return pixmap
+
+    def _cache_pyramid_pixmap(self, key: tuple[int, int], pixmap: QPixmap) -> None:
+        if key[0] not in self._pyramid_visible_items:
+            return
+        self._pyramid_pixmap_cache[key] = pixmap
+        self._pyramid_pixmap_cache.move_to_end(key)
+        self._prune_pyramid_pixmap_cache(set(self._pyramid_visible_items))
+
+    def _prune_pyramid_pixmap_cache(self, visible_frame_ids: set[int]) -> None:
+        visible_keys = {(int(frame_id), int(self._pyramid_current_lod)) for frame_id in visible_frame_ids}
+        for key in list(self._pyramid_pixmap_cache):
+            if key not in visible_keys:
+                self._pyramid_pixmap_cache.pop(key, None)
+
+    def _queue_pyramid_frame_load(self, frame_id: int, lod: int) -> None:
+        store = self._pyramid_store
+        if store is None:
+            return
+        key = (int(frame_id), int(lod))
+        if key in self._pyramid_pending_loads:
+            return
+        self._pyramid_pending_loads.add(key)
+        generation = self._pyramid_generation
+        runnable = PyramidFrameLoadRunnable(generation, frame_id, lod, store)
+        runnable.signals.result.connect(self._on_pyramid_frame_loaded)
+        runnable.signals.error.connect(self._on_pyramid_frame_error)
+        self._pyramid_thread_pool.start(runnable)
+
+    def _on_pyramid_frame_loaded(self, generation: int, frame_id: int, lod: int, qimage: object) -> None:
+        key = (int(frame_id), int(lod))
+        self._pyramid_pending_loads.discard(key)
+        if int(generation) != int(self._pyramid_generation):
+            return
+        pixmap = QPixmap.fromImage(qimage) if hasattr(qimage, "isNull") and not qimage.isNull() else QPixmap()
+        if pixmap.isNull():
+            return
+        self._cache_pyramid_pixmap(key, pixmap)
+        if lod == self._pyramid_current_lod and frame_id in self._pyramid_visible_items:
+            self._ensure_pyramid_frame_item(int(frame_id))
+
+    def _on_pyramid_frame_error(self, generation: int, frame_id: int, lod: int, message: str) -> None:
+        self._pyramid_pending_loads.discard((int(frame_id), int(lod)))
+        if int(generation) == int(self._pyramid_generation):
+            self.logRequested.emit(f"[contour pyramid] frame={frame_id} lod={lod} load failed: {message}")
+
+    def _update_pyramid_selection_rect(self) -> None:
+        layout = self._pyramid_layout
+        frame_id = self._pyramid_current_frame_id
+        if not self._pyramid_enabled or layout is None or frame_id is None:
+            self._pyramid_selection_item.hide()
+            return
+        rect = layout.frame_id_to_scene_rect(int(frame_id), self._pyramid_current_lod)
+        self._pyramid_selection_item.setRect(rect.adjusted(-2.0, -2.0, 2.0, 2.0))
+        self._pyramid_selection_item.show()
+
+    def _pyramid_frame_at_viewport_pos(self, viewport_pos: QPoint) -> int | None:
+        layout = self._pyramid_layout
+        if not self.pyramid_mode_enabled() or layout is None:
+            return None
+        scene_pos = self.mapToScene(self._viewport_to_view_point(viewport_pos))
+        return layout.scene_pos_to_frame_id(scene_pos.x(), scene_pos.y(), self._pyramid_current_lod)
 
     def set_display_settings(self, settings: DisplaySettings) -> None:
         self._editor_scene.set_display_settings(settings)
@@ -659,6 +950,12 @@ class PolygonEditorView(QGraphicsView):
             polygon_id = self._editor_scene.polygon_at(scene_pos)
             additive_selection = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
             if polygon_id is None:
+                target_frame_id = self._pyramid_frame_at_viewport_pos(viewport_pixel)
+                if target_frame_id is not None and target_frame_id != self._pyramid_current_frame_id:
+                    self.set_current_frame_id(target_frame_id, center=True, emit_signal=True)
+                    self.frameNavigationRequested.emit(target_frame_id)
+                    event.accept()
+                    return
                 self._drag_kind = "select_area"
                 self._drag_start_scene_pos = scene_pos
                 self._select_press_polygon_id = None
@@ -1296,6 +1593,7 @@ class PolygonEditorView(QGraphicsView):
         self._zoom_animation_viewport_pixel = None
         self._leave_zoom_render_mode()
         self._update_navigation_scene_rect()
+        self._schedule_pyramid_visible_update()
         self._update_tool_cursors()
 
     def _enter_zoom_render_mode(self) -> None:
@@ -1350,6 +1648,7 @@ class PolygonEditorView(QGraphicsView):
             return
         super().resizeEvent(event)
         self._update_navigation_scene_rect()
+        self._schedule_pyramid_visible_update()
 
     def leaveEvent(self, event: QEvent | None) -> None:
         if event is None:
@@ -1366,7 +1665,11 @@ class PolygonEditorView(QGraphicsView):
         return max(1.0, abs(end.x() - start.x()))
 
     def _update_navigation_scene_rect(self, zoom: float | None = None) -> None:
-        base_rect = QRectF(self._editor_scene.navigation_base_rect())
+        if self.pyramid_mode_enabled() and self._pyramid_layout is not None:
+            base_rect = QRectF(self._pyramid_layout.scene_rect(self._pyramid_current_lod))
+            base_rect = base_rect.united(QRectF(self._editor_scene.navigation_base_rect()))
+        else:
+            base_rect = QRectF(self._editor_scene.navigation_base_rect())
         if base_rect.width() <= 0.0 or base_rect.height() <= 0.0:
             self.setSceneRect(base_rect)
             return

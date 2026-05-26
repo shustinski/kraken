@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -54,6 +55,7 @@ from PyQt6.QtWidgets import (
 from ..adapters.qt.image_conversion import cv_to_qimage
 from ..adapters.qt.editor_display import EditorDisplayRunnable
 from ..adapters.qt.frame_load import FrameLoadPayload, FrameLoadRunnable
+from ..adapters.qt.pyramid import ZarrPyramidBuildRunnable
 from ..adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
 from ..adapters.qt.thumbnails import ThumbnailLoadRunnable
 from ..application.dto import PersistedPaths
@@ -69,6 +71,7 @@ from ..application.frame_layers import (
     build_base_frame_number_map,
     build_base_frame_records,
 )
+from ..application.frame_lod import ZarrFrameStore
 from ..application.polygon_antialiasing import antialias_polygons
 from ..application.processing import (
     VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,

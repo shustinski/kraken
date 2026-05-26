@@ -208,11 +208,47 @@ class WidgetPipelineActionsMixin:
             self._update_thumbnail_grid_selection()
             return
         if image_path:
-            try:
-                self.load_image(str(image_path))
-            except Exception as exc:
-                self._append_log(self._tr("failed_to_load_image_log", image_path=image_path, error=exc))
-                QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
+            normalized_image_path = str(Path(image_path))
+            self._workspace._current_image_path = normalized_image_path
+            store = getattr(self, "_pyramid_frame_store", None)
+            if store is not None and store.has_zarr() and self._neighbor_frames_enabled():
+                frame_id = self._image_path_index(normalized_image_path)
+                if frame_id is not None and frame_id >= 0:
+                    if hasattr(self, "polygon_editor"):
+                        self.polygon_editor.set_current_frame_id(frame_id, center=True, emit_signal=False)
+                    if hasattr(self, "thumbnail_grid") and hasattr(self.thumbnail_grid, "setCurrentFrameId"):
+                        self.thumbnail_grid.setCurrentFrameId(frame_id)
+                self._update_thumbnail_grid_selection()
+                return
+
+            def _load_selected_image(path: str = normalized_image_path) -> None:
+                if bool(getattr(self, "_closing", False)):
+                    return
+                if str(Path(getattr(self._workspace, "current_image_path", "") or "")) != path:
+                    return
+                try:
+                    self.load_image(path)
+                except Exception as exc:
+                    self._append_log(self._tr("failed_to_load_image_log", image_path=path, error=exc))
+                    QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
+
+            if not hasattr(self, "_deferred_image_load_timers"):
+                self._deferred_image_load_timers = []
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+
+            def _run_deferred_load() -> None:
+                try:
+                    _load_selected_image()
+                finally:
+                    if hasattr(self, "_deferred_image_load_timers"):
+                        self._deferred_image_load_timers = [
+                            candidate for candidate in self._deferred_image_load_timers if candidate is not timer
+                        ]
+
+            timer.timeout.connect(_run_deferred_load)
+            self._deferred_image_load_timers.append(timer)
+            timer.start(250)
         self._update_thumbnail_grid_selection()
 
     def _on_image_item_changed(self, current, previous) -> None:

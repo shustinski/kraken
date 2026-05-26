@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from PyQt6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QGuiApplication, QPainter, QPen, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..adapters.qt.pyramid import PyramidThumbnailLoadRunnable
+from ..application.frame_lod import PyramidFrameStore
 from ..graphics.viewport_navigation import (
     DEFAULT_ZOOM_STEP_FACTOR,
     MAX_ZOOM_FACTOR,
@@ -42,9 +44,10 @@ _LOD_LABEL_MIN_ZOOM = 0.75
 _LOD_STATUS_MIN_ZOOM = 0.22
 _THUMBNAIL_LOD_LEVELS = (0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0)
 _THUMBNAIL_PIXMAP_ROLE = int(Qt.ItemDataRole.UserRole) + 1001
+_FRAME_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 1002
 _RENDER_REGION_BUFFER_CELLS = 2
 # Keep full rows around the current frame visible (matches thumbnail load window).
-_FOCUS_NEIGHBOR_ROW_BUFFER = 2
+_FOCUS_NEIGHBOR_ROW_BUFFER = 0
 _STATUS_MARKER_COLORS = {
     "viewed": QColor("#475569"),
     "modified": QColor("#B45309"),
@@ -58,6 +61,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
 
     itemClicked = pyqtSignal(QListWidgetItem)
     thumbnailLodChanged = pyqtSignal(int, int)
+    frameNavigationRequested = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._scene = QGraphicsScene()
@@ -85,7 +89,14 @@ class FrameMatrixGraphicsView(QGraphicsView):
         self._overlap_pixels_x = 0
         self._overlap_pixels_y = 0
         self._emitted_thumbnail_source_size = QSize()
-        self._pixmap_lod_cache: dict[tuple[int, int, int], QPixmap] = {}
+        self._pixmap_lod_cache: dict[tuple, QPixmap] = {}
+        self._pyramid_thumbnail_generation = 0
+        self._pyramid_thumbnail_pending: set[tuple[int, int, int, int]] = set()
+        self._pyramid_thumbnail_thread_pool = QThreadPool(self)
+        self._pyramid_thumbnail_thread_pool.setMaxThreadCount(2)
+        self._pyramid_thumbnail_thread_pool.setExpiryTimeout(30000)
+        self._pyramid_store: PyramidFrameStore | None = None
+        self._navigator_lods: tuple[int, ...] = ()
         self._visible_index_range: tuple[int, int] = (0, -1)
         self._render_region_sync_allowed = True
         self._suppress_matrix_refresh = False
@@ -153,10 +164,17 @@ class FrameMatrixGraphicsView(QGraphicsView):
         return
 
     def setIconSize(self, size: QSize) -> None:
+        if QSize(size) != self._icon_size:
+            self._pyramid_thumbnail_generation += 1
+            self._pyramid_thumbnail_pending.clear()
         self._icon_size = QSize(size)
         self._mark_layout_dirty()
 
     def setGridSize(self, size: QSize) -> None:
+        if QSize(size) != self._grid_size:
+            self._pyramid_thumbnail_generation += 1
+            self._pyramid_thumbnail_pending.clear()
+            self._pixmap_lod_cache.clear()
         self._grid_size = QSize(size)
         self._mark_layout_dirty()
 
@@ -182,12 +200,17 @@ class FrameMatrixGraphicsView(QGraphicsView):
 
     def addItem(self, item: QListWidgetItem) -> None:
         self._items.append(item)
-        self._attach_graphics_group_for_item(item, len(self._items) - 1)
         self._mark_layout_dirty()
 
     def clear(self) -> None:
         self._render_region_timer.stop()
         self._render_region_sync_allowed = False
+        self._pyramid_thumbnail_generation += 1
+        self._pyramid_thumbnail_pending.clear()
+        try:
+            self._pyramid_thumbnail_thread_pool.clear()
+        except RuntimeError:
+            pass
         self._items.clear()
         self._item_groups.clear()
         self._current_row = -1
@@ -196,6 +219,15 @@ class FrameMatrixGraphicsView(QGraphicsView):
         self._layout_dirty = False
         self._pixmap_lod_cache.clear()
         self._visible_index_range = (0, -1)
+
+    def shutdownPyramidLoading(self) -> None:
+        self._pyramid_thumbnail_generation += 1
+        self._pyramid_thumbnail_pending.clear()
+        try:
+            self._pyramid_thumbnail_thread_pool.clear()
+            self._pyramid_thumbnail_thread_pool.waitForDone(3000)
+        except RuntimeError:
+            pass
 
     @staticmethod
     def _graphics_item_is_valid(graphics_item: object) -> bool:
@@ -236,14 +268,17 @@ class FrameMatrixGraphicsView(QGraphicsView):
 
     def _item_group_for(self, item: QListWidgetItem) -> tuple | None:
         group = self._item_groups.get(id(item))
-        if group is not None:
+        if group is not None and self._group_is_valid(group):
             return group
+        if group is not None:
+            self._item_groups.pop(id(item), None)
         try:
             index = self._items.index(item)
         except ValueError:
             return None
         self._attach_graphics_group_for_item(item, index)
-        return self._item_groups.get(id(item))
+        group = self._item_groups.get(id(item))
+        return group if group is not None and self._group_is_valid(group) else None
 
     def currentRow(self) -> int:
         return self._current_row
@@ -317,6 +352,31 @@ class FrameMatrixGraphicsView(QGraphicsView):
         """Repaint matrix cells for rows that received new thumbnail icons."""
         self.updateThumbnailPixmaps(indexes)
 
+    def setPyramidFrameStore(self, store: PyramidFrameStore | None) -> None:
+        self._pyramid_thumbnail_generation += 1
+        self._pyramid_thumbnail_pending.clear()
+        try:
+            self._pyramid_thumbnail_thread_pool.clear()
+        except RuntimeError:
+            pass
+        self._pyramid_store = store if store is not None and store.has_zarr() else None
+        if self._pyramid_store is None:
+            self._navigator_lods = ()
+        else:
+            lods = tuple(sorted(int(lod) for lod in self._pyramid_store.available_lods()))
+            self._navigator_lods = lods[-3:]
+        self._pixmap_lod_cache.clear()
+        self.refreshVisibleRegion()
+
+    def navigatorLods(self) -> tuple[int, ...]:
+        return tuple(self._navigator_lods)
+
+    def setCurrentFrameId(self, frame_id: int | None) -> None:
+        if frame_id is None:
+            self.clearSelection()
+            return
+        self.setCurrentRow(int(frame_id))
+
     def updateThumbnailPixmaps(self, indexes: list[int]) -> None:
         """Lightweight pixmap refresh for visible cells (avoids full cell relayout)."""
         if not self._items or not indexes:
@@ -331,7 +391,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
             item = self._items[index]
             if item.isHidden():
                 continue
-            group = self._item_groups.get(id(item))
+            group = self._item_group_for(item)
             if group is None:
                 continue
             _background_item, _status_item, _selection_item, pixmap_item, _text_item = group
@@ -395,6 +455,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
                 pass
             if not self._signals_blocked:
                 self.itemClicked.emit(item)
+                self.frameNavigationRequested.emit(self._frame_id_for_item(item))
             event.accept()
             return
         super().mousePressEvent(event)
@@ -537,8 +598,6 @@ class FrameMatrixGraphicsView(QGraphicsView):
         return first_index, last_index
 
     def _index_in_render_region(self, index: int, region: tuple[int, int]) -> bool:
-        if index == self._current_row:
-            return True
         first_index, last_index = region
         return last_index >= first_index and first_index <= index <= last_index
 
@@ -556,6 +615,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
         for graphics_item in group:
             graphics_item.setVisible(not hidden and in_region)
         if hidden or not in_region:
+            pixmap_item.setPixmap(QPixmap())
             return
         columns = max(1, self._columns)
         cell_w = max(1, self._grid_size.width())
@@ -597,18 +657,26 @@ class FrameMatrixGraphicsView(QGraphicsView):
         if not self._items:
             return
         region = self._effective_render_index_range()
-        for index, item in enumerate(self._items):
-            group = self._item_groups.get(id(item))
-            if group is None:
+        for group in list(self._item_groups.values()):
+            if not self._group_is_valid(group):
                 continue
-            if not self._index_in_render_region(index, region):
-                for graphics_item in group:
-                    graphics_item.setVisible(False)
-                continue
-            self._layout_item_geometry(index, item, group, region=region)
+            for graphics_item in group:
+                graphics_item.setVisible(False)
+            group[3].setPixmap(QPixmap())
+        first_index, last_index = region
+        if last_index >= first_index:
+            for index in range(max(0, first_index), min(len(self._items) - 1, last_index) + 1):
+                item = self._items[index]
+                group = self._item_group_for(item)
+                if group is None:
+                    continue
+                if not self._index_in_render_region(index, region):
+                    continue
+                self._layout_item_geometry(index, item, group, region=region)
         self._layout_dirty = False
         self._visible_index_range = region
         self._render_region_sync_allowed = bool(self._items)
+        self._prune_pixmap_lod_cache(region)
 
     def _sync_render_region(self) -> None:
         if not self._items or self._layout_dirty or not self._render_region_sync_allowed:
@@ -635,6 +703,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
             if group is None:
                 continue
             self._layout_item_geometry(index, item, group, region=region)
+        self._prune_pixmap_lod_cache(region)
 
     def _apply_lod(self, *, region: tuple[int, int] | None = None) -> None:
         self._emit_thumbnail_lod_if_needed()
@@ -643,8 +712,10 @@ class FrameMatrixGraphicsView(QGraphicsView):
             self._visible_index_range = region
         first_index, last_index = region
         if last_index < first_index:
+            self._prune_pixmap_lod_cache(region)
             return
         self._apply_lod_for_indexes(range(first_index, last_index + 1), region=region)
+        self._prune_pixmap_lod_cache(region)
 
     def _apply_lod_for_indexes(self, indexes, *, region: tuple[int, int]) -> None:
         show_labels = self._matrix_zoom >= _LOD_LABEL_MIN_ZOOM
@@ -653,7 +724,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
             if index < 0 or index >= len(self._items):
                 continue
             item = self._items[index]
-            group = self._item_groups.get(id(item))
+            group = self._item_group_for(item)
             if group is None:
                 continue
             _background_item, status_item, _selection_item, pixmap_item, text_item = group
@@ -662,6 +733,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
             if not in_region:
                 for graphics_item in group:
                     graphics_item.setVisible(False)
+                pixmap_item.setPixmap(QPixmap())
                 continue
             if not hidden:
                 new_pixmap = self._pixmap_for_item_lod(item)
@@ -678,34 +750,142 @@ class FrameMatrixGraphicsView(QGraphicsView):
             pixmap_item.setVisible((not hidden) and not pixmap_item.pixmap().isNull())
             text_item.setVisible((not hidden) and show_labels and bool(text_item.text()))
             status_item.setVisible((not hidden) and show_status and bool(status_item.data(1)))
+        self._prune_pixmap_lod_cache(region)
+
+    def _prune_pixmap_lod_cache(self, region: tuple[int, int]) -> None:
+        first_index, last_index = region
+        if last_index < first_index:
+            self._pixmap_lod_cache.clear()
+            return
+        visible_item_ids: set[int] = set()
+        for index in range(max(0, first_index), min(len(self._items) - 1, last_index) + 1):
+            if self._index_in_render_region(index, region):
+                visible_item_ids.add(id(self._items[index]))
+        for key in list(self._pixmap_lod_cache):
+            if not key or key[0] not in visible_item_ids:
+                self._pixmap_lod_cache.pop(key, None)
 
     def _pixmap_for_item_lod(self, item: QListWidgetItem) -> QPixmap:
-        stored_pixmap = item.data(_THUMBNAIL_PIXMAP_ROLE)
-        icon = item.icon()
-        if isinstance(stored_pixmap, QPixmap) and not stored_pixmap.isNull():
-            source_pixmap = stored_pixmap
-            cache_key = int(stored_pixmap.cacheKey())
-        elif not icon.isNull():
-            lod = self._thumbnail_lod()
-            source_size = QSize(
-                max(1, int(round(self._icon_size.width() * lod))),
-                max(1, int(round(self._icon_size.height() * lod))),
-            )
-            source_pixmap = icon.pixmap(source_size)
-            cache_key = int(icon.cacheKey())
-        else:
-            return QPixmap()
-        lod = self._thumbnail_lod()
-        key = (id(item), cache_key, int(lod * 100), self._grid_size.width(), self._grid_size.height())
+        zarr_pixmap = self._zarr_pixmap_for_item_lod(item)
+        if zarr_pixmap is not None:
+            return zarr_pixmap
+        return QPixmap()
+
+    def _zarr_pixmap_for_item_lod(self, item: QListWidgetItem) -> QPixmap | None:
+        store = self._pyramid_store
+        if store is None or not self._navigator_lods:
+            return None
+        frame_id = self._frame_id_for_item(item)
+        if frame_id < 0:
+            return None
+        lod = self._navigator_lod()
+        key = (id(item), int(frame_id), int(lod), self._grid_size.width(), self._grid_size.height())
         cached = self._pixmap_lod_cache.get(key)
         if cached is not None:
             return cached
-        pixmap = source_pixmap
+        self._queue_pyramid_thumbnail_load(int(frame_id), int(lod))
+        return None
+
+    def _queue_pyramid_thumbnail_load(self, frame_id: int, lod: int) -> None:
+        store = self._pyramid_store
+        if store is None:
+            return
+        target_width = max(1, int(self._grid_size.width()))
+        target_height = max(1, int(self._grid_size.height()))
+        pending_key = (int(frame_id), int(lod), target_width, target_height)
+        if pending_key in self._pyramid_thumbnail_pending:
+            return
+        self._pyramid_thumbnail_pending.add(pending_key)
+        generation = int(self._pyramid_thumbnail_generation)
+        runnable = PyramidThumbnailLoadRunnable(
+            generation,
+            int(frame_id),
+            int(lod),
+            store,
+            target_width,
+            target_height,
+        )
+        runnable.signals.result.connect(self._on_pyramid_thumbnail_loaded)
+        runnable.signals.error.connect(self._on_pyramid_thumbnail_error)
+        self._pyramid_thumbnail_thread_pool.start(runnable)
+
+    def _on_pyramid_thumbnail_loaded(
+        self,
+        generation: int,
+        frame_id: int,
+        lod: int,
+        target_width: int,
+        target_height: int,
+        qimage: object,
+    ) -> None:
+        pending_key = (int(frame_id), int(lod), int(target_width), int(target_height))
+        self._pyramid_thumbnail_pending.discard(pending_key)
+        if int(generation) != int(self._pyramid_thumbnail_generation):
+            return
+        item = self.item(int(frame_id))
+        if item is None:
+            return
+        try:
+            pixmap = QPixmap.fromImage(qimage)
+        except Exception:
+            return
+        if pixmap.isNull():
+            return
         pixmap = self._cover_crop_pixmap_to_cell_aspect(pixmap)
+        key = (id(item), int(frame_id), int(lod), int(target_width), int(target_height))
         self._pixmap_lod_cache[key] = pixmap
-        if len(self._pixmap_lod_cache) > max(512, len(self._items) * 3):
-            self._pixmap_lod_cache.clear()
-        return pixmap
+        region = self._effective_render_index_range()
+        self._prune_pixmap_lod_cache(region)
+        if int(lod) != int(self._navigator_lod()):
+            return
+        if not self._index_in_render_region(int(frame_id), region):
+            return
+        group = self._item_group_for(item)
+        if group is None or item.isHidden():
+            return
+        _background_item, _status_item, _selection_item, pixmap_item, _text_item = group
+        pixmap_item.setPixmap(pixmap)
+        col = int(frame_id) % max(1, self._columns)
+        row = int(frame_id) // max(1, self._columns)
+        self._position_pixmap_item(pixmap_item, pixmap, col * self._cell_step_x(), row * self._cell_step_y())
+        pixmap_item.setVisible(True)
+
+    def _on_pyramid_thumbnail_error(
+        self,
+        generation: int,
+        frame_id: int,
+        lod: int,
+        target_width: int,
+        target_height: int,
+        _message: str,
+    ) -> None:
+        self._pyramid_thumbnail_pending.discard(
+            (int(frame_id), int(lod), int(target_width), int(target_height))
+        )
+
+    def _frame_id_for_item(self, item: QListWidgetItem) -> int:
+        value = item.data(_FRAME_ID_ROLE)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                pass
+        try:
+            return self._items.index(item)
+        except ValueError:
+            return -1
+
+    def _navigator_lod(self) -> int:
+        if not self._navigator_lods:
+            return 0
+        if len(self._navigator_lods) == 1:
+            return self._navigator_lods[0]
+        zoom = max(MIN_ZOOM_FACTOR, min(MAX_ZOOM_FACTOR, float(self._matrix_zoom)))
+        if zoom >= 1.0:
+            return self._navigator_lods[0]
+        if zoom >= 0.35 or len(self._navigator_lods) == 2:
+            return self._navigator_lods[min(1, len(self._navigator_lods) - 1)]
+        return self._navigator_lods[-1]
 
     def _thumbnail_lod(self) -> float:
         effective = max(MIN_ZOOM_FACTOR, min(MAX_ZOOM_FACTOR, self._matrix_zoom))

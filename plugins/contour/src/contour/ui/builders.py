@@ -368,6 +368,7 @@ def build_files_tab(self) -> QWidget:
     self.thumbnail_grid.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.itemClicked.connect(self._on_thumbnail_item_clicked)
+    self.thumbnail_grid.frameNavigationRequested.connect(self._on_frame_navigation_requested)
     self.thumbnail_grid_scroll_area = self.thumbnail_grid
     self.thumbnail_grid_scroll_area.setWidgetResizable(False)
     self.thumbnail_grid_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
@@ -1836,6 +1837,8 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.rulerMeasurementChanged.connect(self._update_ruler_status)
     self.polygon_editor.toolChanged.connect(self._on_editor_tool_changed)
     self.polygon_editor.neighborFrameActivated.connect(self._on_neighbor_frame_activated)
+    self.polygon_editor.frameNavigationRequested.connect(self._on_frame_navigation_requested)
+    self.polygon_editor.currentFrameChanged.connect(self._on_editor_current_frame_changed)
     self.polygon_editor.viaDebugRequested.connect(self._on_via_debug_requested)
     self.polygon_editor.metalOverlayDetailRequested.connect(self._on_metal_overlay_detail_requested)
     self.polygon_editor.middlePreviewHoldChanged.connect(self._on_middle_preview_hold_changed)

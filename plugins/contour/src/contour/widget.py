@@ -331,6 +331,13 @@ class PolygonExtractionWidget(
         self._editor_display_thread_pool = QThreadPool(self)
         self._editor_display_thread_pool.setMaxThreadCount(1)
         self._editor_display_request_serial = 0
+        self._zarr_build_thread_pool = QThreadPool(self)
+        self._zarr_build_thread_pool.setMaxThreadCount(1)
+        self._zarr_build_thread_pool.setExpiryTimeout(30000)
+        self._zarr_build_generation = 0
+        self._zarr_build_running_path: str | None = None
+        self._zarr_build_scheduled_path: str | None = None
+        self._deferred_zarr_build_timers: list[QTimer] = []
         self._editor_pixmap_cache: dict[tuple[str, str], QPixmap] = {}
         self._editor_polygons_signature: tuple[str, int, int] | None = None
         self._pending_editor_frame_apply: tuple[str, list, bool] | None = None
@@ -366,6 +373,7 @@ class PolygonExtractionWidget(
         self._thumbnail_radial_paths: list[str] = []
         self._thumbnail_radial_cursor = 0
         self._thumbnail_radial_center_path: str | None = None
+        self._pyramid_frame_store = None
         self._thumbnail_radial_pump_timer = QTimer(self)
         self._thumbnail_radial_pump_timer.setSingleShot(True)
         self._thumbnail_radial_pump_timer.timeout.connect(self._pump_thumbnail_radial_loads)
@@ -442,11 +450,47 @@ class PolygonExtractionWidget(
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._closing = True
+        for timer in list(getattr(self, "_deferred_image_load_timers", [])):
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
+        self._deferred_image_load_timers = []
+        for timer in list(getattr(self, "_deferred_thumbnail_load_timers", [])):
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
+        self._deferred_thumbnail_load_timers = []
+        for timer in list(getattr(self, "_deferred_zarr_build_timers", [])):
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
+        self._deferred_zarr_build_timers = []
+        self._zarr_build_scheduled_path = None
         self._frame_load_request_serial = int(getattr(self, "_frame_load_request_serial", 0)) + 1
         self._frame_load_pending = None
         self._frame_load_running_path = None
         self._loading_image_path = None
         if hasattr(self, "_cancel_thumbnail_loading"):
             self._cancel_thumbnail_loading()
+        if hasattr(self, "thumbnail_grid") and hasattr(self.thumbnail_grid, "shutdownPyramidLoading"):
+            self.thumbnail_grid.shutdownPyramidLoading()
+        for pool_name in (
+            "_frame_load_thread_pool",
+            "_thumbnail_thread_pool",
+            "_neighbor_thread_pool",
+            "_editor_display_thread_pool",
+            "_zarr_build_thread_pool",
+        ):
+            pool = getattr(self, pool_name, None)
+            if pool is None:
+                continue
+            try:
+                pool.clear()
+                pool.waitForDone(3000)
+            except RuntimeError:
+                pass
         self._persist_session_state()
         super().closeEvent(event)

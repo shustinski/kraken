@@ -185,7 +185,7 @@ OPTIMIZER_PRESETS = (
     ('AdamW', 'adamw', 5e-4, 1e-2),
     ('AdamW + Muon', 'adamw_muon', 3e-4, 2e-2),
 )
-VISIBLE_OPTIMIZER_PRESET_NAMES = frozenset({'adam', 'adamw'})
+VISIBLE_OPTIMIZER_PRESET_NAMES = frozenset({'adam', 'adamw', 'adamw_muon'})
 LOSS_PRESET_WEIGHTS = {
     'conductors': {'bce': 0.5, 'dice': 0.5},
     'contacts': {'bce': 0.5, 'focal_tversky': 0.5},
@@ -703,6 +703,7 @@ class SettingsPanel(QDockWidget):
             button = QPushButton('')
             button.setCheckable(True)
             button.setProperty("selectionRole", "mode")
+            button.setProperty("presetRole", "quickPreset")
             button.clicked.connect(lambda _checked=False, name=preset_name: self._apply_loss_preset(name))
             self.loss_presets_layout.addWidget(button)
             self.loss_preset_buttons[preset_name] = button
@@ -1154,6 +1155,7 @@ class SettingsPanel(QDockWidget):
             btn = QPushButton(title)
             btn.setCheckable(True)
             btn.setProperty("selectionRole", "mode")
+            btn.setProperty("presetRole", "quickPreset")
             btn.clicked.connect(
                 lambda _checked=False, n=optimizer_name, lr=learning_rate, wd=weight_decay: self._apply_optimizer_preset(
                     n, lr, wd

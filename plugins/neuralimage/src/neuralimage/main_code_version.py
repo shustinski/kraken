@@ -66,7 +66,7 @@ def _to_work_mode(value: str) -> WorkMode:
         return mode
     raise ValueError(
         f"Unknown work_mode: {value!r}. "
-        "Use one of: train_only, train_and_recognition, recognition_only, further_training."
+        "Use one of: train_only, continue_training, train_and_recognition, recognition_only, further_training."
     )
 
 

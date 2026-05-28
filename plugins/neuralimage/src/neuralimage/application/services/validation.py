@@ -20,6 +20,7 @@ def get_processing_start_blockers(
     work_mode = normalize_work_mode(state.work_mode)
     training_mode = work_mode in {
         WorkMode.train_only.value,
+        WorkMode.continue_training.value,
         WorkMode.train_and_recognition.value,
         WorkMode.further_training.value,
     }
@@ -103,7 +104,7 @@ def get_processing_start_blockers(
                 '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044e\u0449\u0438\u0439 '
                 '\u0444\u0430\u0439\u043b \u043c\u043e\u0434\u0435\u043b\u0438.'
             )
-    elif work_mode == WorkMode.train_only.value:
+    elif work_mode in (WorkMode.train_only.value, WorkMode.continue_training.value):
         if not sample_ok:
             blockers.append(
                 '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044e\u0449\u0443\u044e '
@@ -115,6 +116,11 @@ def get_processing_start_blockers(
                 '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044e\u0449\u0443\u044e '
                 '\u043f\u0430\u043f\u043a\u0443 \u0441 \u043e\u0431\u0443\u0447\u0430\u044e\u0449\u0438\u043c\u0438 \u043c\u0435\u0442'
                 '\u043a\u0430\u043c\u0438.'
+            )
+        if work_mode == WorkMode.continue_training.value and not model_ok:
+            blockers.append(
+                '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044e\u0449\u0438\u0439 '
+                '\u0444\u0430\u0439\u043b \u043c\u043e\u0434\u0435\u043b\u0438.'
             )
     else:
         blockers.append(

@@ -36,6 +36,7 @@ def resolve_work_mode_applicability(work_mode: str | None) -> WorkModeApplicabil
     mode = str(work_mode or '')
     training_modes = {
         WorkMode.train_only.value,
+        WorkMode.continue_training.value,
         WorkMode.train_and_recognition.value,
         WorkMode.further_training.value,
     }

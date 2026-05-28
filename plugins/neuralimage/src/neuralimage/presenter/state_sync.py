@@ -145,6 +145,7 @@ def restore_work_mode_ui(presenter) -> None:
     mode_to_button = {
         WorkMode.train_and_recognition.value: view.rb_train_and_recognition,
         WorkMode.train_only.value: view.rb_train_only,
+        WorkMode.continue_training.value: view.rb_continue_training,
         WorkMode.further_training.value: view.rb_further_train_model,
         WorkMode.recognition_only.value: view.rb_recognition,
     }
@@ -373,6 +374,8 @@ def update_work_mode(presenter) -> str:
         return WorkMode.train_and_recognition.value
     if view.rb_train_only.isChecked():
         return WorkMode.train_only.value
+    if view.rb_continue_training.isChecked():
+        return WorkMode.continue_training.value
     if view.rb_further_train_model.isChecked():
         return WorkMode.further_training.value
     if view.rb_recognition.isChecked():

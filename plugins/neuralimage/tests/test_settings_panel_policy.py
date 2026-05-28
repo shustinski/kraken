@@ -13,6 +13,7 @@ from neuralimage.view.settings_panel_policy import (
     ('mode', 'expected'),
     [
         (WorkMode.train_only.value, (True, False, True)),
+        (WorkMode.continue_training.value, (True, False, False)),
         (WorkMode.train_and_recognition.value, (True, True, True)),
         (WorkMode.recognition_only.value, (False, True, False)),
         (WorkMode.further_training.value, (True, True, False)),

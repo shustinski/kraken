@@ -88,6 +88,56 @@ FOCAL_TVERSKY_BETA = 0.7
 BOUNDARY_LOSS_KERNEL_SIZE = 3
 CLDICE_SKELETON_ITERATIONS = 16
 VALIDATION_THRESHOLD_CANDIDATES: tuple[float, ...] = tuple(value / 100.0 for value in range(10, 95, 5))
+
+
+class _CombinedOptimizer(optim.Optimizer):
+    def __init__(self, optimizers: list[optim.Optimizer]):
+        if not optimizers:
+            raise ValueError('Combined optimizer requires at least one optimizer.')
+
+        params = [
+            param
+            for optimizer in optimizers
+            for group in optimizer.param_groups
+            for param in group.get('params', [])
+        ]
+        super().__init__(params, {})
+        self._optimizers = optimizers
+        self.param_groups = [
+            group
+            for optimizer in optimizers
+            for group in optimizer.param_groups
+        ]
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        for optimizer in self._optimizers:
+            optimizer.zero_grad(set_to_none=set_to_none)
+
+    def step(self, closure: Callable[[], float] | None = None):
+        loss = None
+        for index, optimizer in enumerate(self._optimizers):
+            if index == 0 and closure is not None:
+                loss = optimizer.step(closure)
+            else:
+                optimizer.step()
+        return loss
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            'optimizer_state_dicts': [optimizer.state_dict() for optimizer in self._optimizers],
+        }
+
+    def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
+        optimizer_state_dicts = state_dict.get('optimizer_state_dicts')
+        if not isinstance(optimizer_state_dicts, list):
+            raise ValueError('Combined optimizer checkpoint is missing inner optimizer states.')
+        for optimizer, optimizer_state_dict in zip(self._optimizers, optimizer_state_dicts, strict=False):
+            optimizer.load_state_dict(optimizer_state_dict)
+        self.param_groups = [
+            group
+            for optimizer in self._optimizers
+            for group in optimizer.param_groups
+        ]
 DEEP_SUPERVISION_DECAY = 0.5
 CONFIDENCE_LOSS_WEIGHT = 0.2
 RECOGNITION_AUX_WORKERS_PER_GPU = 4
@@ -578,12 +628,28 @@ def _collect_memory_metrics() -> dict[str, float] | None:
     try:
         import psutil  # type: ignore
 
-        ram_mb = float(psutil.Process(os.getpid()).memory_info().rss) / (1024.0 * 1024.0)
+        process = psutil.Process(os.getpid())
+        root_process = _resolve_memory_root_process(process)
+        processes = [root_process, *root_process.children(recursive=True)]
+        seen_pids: set[int] = set()
+        rss_bytes = 0
+        for candidate in processes:
+            try:
+                pid = int(candidate.pid)
+                if pid in seen_pids:
+                    continue
+                seen_pids.add(pid)
+                rss_bytes += int(candidate.memory_info().rss)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        ram_mb = float(rss_bytes) / (1024.0 * 1024.0)
     except Exception:
         ram_mb = None
 
     vram_alloc_mb: float | None = None
     vram_reserved_mb: float | None = None
+    vram_used_mb: float | None = None
+    vram_total_mb: float | None = None
     if torch.cuda.is_available():
         try:
             vram_alloc_mb = float(torch.cuda.memory_allocated()) / (1024.0 * 1024.0)
@@ -591,8 +657,21 @@ def _collect_memory_metrics() -> dict[str, float] | None:
         except Exception:
             vram_alloc_mb = None
             vram_reserved_mb = None
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(torch.cuda.current_device())
+            vram_total_mb = float(total_bytes) / (1024.0 * 1024.0)
+            vram_used_mb = float(total_bytes - free_bytes) / (1024.0 * 1024.0)
+        except Exception:
+            vram_used_mb = None
+            vram_total_mb = None
 
-    if ram_mb is None and vram_alloc_mb is None and vram_reserved_mb is None:
+    if (
+        ram_mb is None
+        and vram_alloc_mb is None
+        and vram_reserved_mb is None
+        and vram_used_mb is None
+        and vram_total_mb is None
+    ):
         return None
 
     payload: dict[str, float] = {}
@@ -602,7 +681,32 @@ def _collect_memory_metrics() -> dict[str, float] | None:
         payload['vram_allocated_mb'] = vram_alloc_mb
     if vram_reserved_mb is not None:
         payload['vram_reserved_mb'] = vram_reserved_mb
+    if vram_used_mb is not None:
+        payload['vram_used_mb'] = vram_used_mb
+    if vram_total_mb is not None:
+        payload['vram_total_mb'] = vram_total_mb
     return payload
+
+
+def _resolve_memory_root_process(process):
+    parent = process.parent()
+    if parent is None:
+        return process
+    try:
+        current_cmdline = ' '.join(str(part) for part in process.cmdline()).lower()
+    except Exception:
+        current_cmdline = ''
+    try:
+        parent_cmdline = ' '.join(str(part) for part in parent.cmdline()).lower()
+    except Exception:
+        parent_cmdline = ''
+    try:
+        same_executable = Path(parent.exe()).resolve() == Path(process.exe()).resolve()
+    except Exception:
+        same_executable = False
+    if same_executable and ('neuralimage' in current_cmdline or 'neuralimage' in parent_cmdline):
+        return parent
+    return process
 
 
 def _is_module_available(module_name: str) -> bool:
@@ -2973,6 +3077,13 @@ class TrainerProcess(mp.Process):
         return MixedPrecisionMode.off, None, False
 
     def _build_adamw_param_groups(self, params: OptimizerParameters) -> list[dict[str, Any]]:
+        return self._build_adamw_param_groups_for(params, self._model.parameters())
+
+    def _build_adamw_param_groups_for(
+        self,
+        params: OptimizerParameters,
+        model_params: Iterator[torch.nn.Parameter] | list[torch.nn.Parameter],
+    ) -> list[dict[str, Any]]:
         norm_param_ids: set[int] = set()
         batch_norm_base = getattr(nn.modules.batchnorm, '_BatchNorm', ())
         norm_types = (nn.GroupNorm, batch_norm_base) if batch_norm_base else (nn.GroupNorm,)
@@ -2985,7 +3096,7 @@ class TrainerProcess(mp.Process):
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
-        for param in self._model.parameters():
+        for param in model_params:
             if not param.requires_grad:
                 continue
             if id(param) in norm_param_ids:
@@ -3059,17 +3170,61 @@ class TrainerProcess(mp.Process):
             return self._create_adamw_optimizer(params)
 
         try:
-            return muon_cls(
-                self._model.parameters(),
-                lr=params.learning_rate,
-                weight_decay=params.weight_decay,
-            )
+            return self._create_split_muon_adamw_optimizer(params, muon_cls)
         except Exception as error:
             self._bus.put([
                 'logging',
                 f'Muon optimizer initialization failed ({error}). Using AdamW.',
             ])
             return self._create_adamw_optimizer(params)
+
+    def _create_split_muon_adamw_optimizer(
+        self,
+        params: OptimizerParameters,
+        muon_cls: type[optim.Optimizer],
+    ) -> optim.Optimizer:
+        muon_params: list[torch.nn.Parameter] = []
+        adamw_params: list[torch.nn.Parameter] = []
+        for param in self._model.parameters():
+            if not param.requires_grad:
+                continue
+            if param.ndim == 2:
+                muon_params.append(param)
+            else:
+                adamw_params.append(param)
+
+        optimizers: list[optim.Optimizer] = []
+        if muon_params:
+            optimizers.append(
+                muon_cls(
+                    muon_params,
+                    lr=params.learning_rate,
+                    weight_decay=params.weight_decay,
+                )
+            )
+        if adamw_params:
+            adamw_groups = self._build_adamw_param_groups_for(params, adamw_params)
+            adamw_kwargs: dict[str, Any] = {'lr': params.learning_rate}
+            if self._can_use_fused_optim():
+                adamw_kwargs['fused'] = True
+            try:
+                optimizers.append(optim.AdamW(adamw_groups, **adamw_kwargs))
+            except TypeError:
+                adamw_kwargs.pop('fused', None)
+                optimizers.append(optim.AdamW(adamw_groups, **adamw_kwargs))
+
+        if not optimizers:
+            raise ValueError('No trainable parameters found for AdamW + Muon optimizer.')
+        if len(optimizers) == 1:
+            return optimizers[0]
+        self._bus.put([
+            'logging',
+            (
+                'AdamW + Muon: 2D parameters assigned to Muon, '
+                f'other trainable parameters assigned to AdamW (Muon: {len(muon_params)}, AdamW: {len(adamw_params)}).'
+            ),
+        ])
+        return _CombinedOptimizer(optimizers)
 
     @staticmethod
     def _tensor_to_preview_array(tensor: torch.Tensor) -> np.ndarray:

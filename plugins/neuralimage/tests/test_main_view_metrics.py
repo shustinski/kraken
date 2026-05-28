@@ -4,6 +4,7 @@ import numpy as np
 
 pytest.importorskip('PyQt6')
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QSizePolicy, QScrollArea, QWidget
 
 from neuralimage.UI.clickable_label import ClickableLabel
@@ -46,6 +47,8 @@ def test_main_view_metrics_are_collected_without_capping(qapp):
             'ram_mb': 256.0,
             'vram_allocated_mb': 128.0,
             'vram_reserved_mb': 192.0,
+            'vram_used_mb': 4096.0,
+            'vram_total_mb': 8192.0,
         }
     )
     view.metrics_message.emit(
@@ -70,11 +73,13 @@ def test_main_view_metrics_are_collected_without_capping(qapp):
     assert view.epoch_progress_bar.value() == 20
     assert view.batch_progress_bar.value() == 25
     assert view.recognition_progress_bar.value() == 25
+    assert view.training_progress_widget.isHidden()
+    assert not view.recognition_progress_widget.isHidden()
     assert "IoU: 80.00%" in view.validation_quality_label.text()
     assert "total: 30.0" in view.performance_label.text()
     assert "RAM: 256 МБ" in view.memory_usage_label.text()
-    assert "VRAM: 128/192 МБ" in view.memory_usage_label.text()
-    assert "33.33 batch/s" in view.memory_usage_label.text()
+    assert "VRAM: 4096/8192 МБ" in view.memory_usage_label.text()
+    assert "33.33 batch/s" in view.batch_progress_bar.text()
     assert view.preview_image_label.pixmap() is not None
     assert view.preview_label_label.pixmap() is not None
     assert "frame_001.png" in view.preview_frame_name_label.text()
@@ -208,10 +213,36 @@ def test_main_view_recognition_speed_label_updates_and_resets(qapp, monkeypatch)
 
     view.metrics_message.emit({'type': 'recognition_progress', 'current': 6, 'total': 12})
     assert "3.00" in view.recognition_speed_label.text()
+    assert "3.00" in view.recognition_progress_bar.text()
     assert "изобр./с" in view.recognition_speed_label.text()
 
     view._switch_start_stop(True)
     assert "—" in view.recognition_speed_label.text()
+
+def test_main_view_training_progress_uses_one_horizontal_row(qapp):
+    view = MainView(QWidget())
+    view.connect_internal_signals()
+
+    view.metrics_message.emit({'type': 'train_epoch_progress', 'current': 1, 'total': 4})
+    view.metrics_message.emit({'type': 'train_batch_progress', 'current': 2, 'total': 8})
+
+    assert not view.training_progress_widget.isHidden()
+    assert view.recognition_progress_widget.isHidden()
+    assert view.training_progress_widget.layout().indexOf(view.epoch_progress_bar) >= 0
+    assert view.training_progress_widget.layout().indexOf(view.batch_progress_bar) >= 0
+
+
+def test_main_view_preview_columns_align_titles_and_pixmaps(qapp):
+    view = MainView(QWidget())
+
+    for title, preview, column in (
+        (view.preview_image_title_label, view.preview_image_label, view.preview_image_column_widget),
+        (view.preview_label_title_label, view.preview_label_label, view.preview_label_column_widget),
+        (view.preview_output_title_label, view.preview_output_label, view.preview_output_column_widget),
+    ):
+        assert column.width() == preview.width()
+        assert title.alignment() & Qt.AlignmentFlag.AlignHCenter
+        assert preview.alignment() & Qt.AlignmentFlag.AlignCenter
 
 
 def test_metrics_panel_can_be_restored_from_view_menu(qapp):
@@ -266,7 +297,7 @@ def test_main_view_queue_widget_and_start_stop_visibility(qapp):
 
     view._switch_start_stop(True)
     assert view.btn_start.isHidden() is False
-    assert view.btn_stop.isHidden() is False
+    assert view.btn_stop.isHidden() is True
 
 
 def test_main_view_queue_context_menu_emits_properties_signal(qapp, monkeypatch):

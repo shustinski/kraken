@@ -20,6 +20,7 @@ from neuralimage.lib.data_interfaces import (
 
 def test_work_mode_values():
     assert WorkMode.train_only.value == 'train_only'
+    assert WorkMode.continue_training.value == 'continue_training'
     assert WorkMode.recognition_only.value == 'recognition_only'
     assert WorkMode.further_training.value == 'further_training'
 

@@ -47,6 +47,26 @@ def test_can_start_processing_train_only_does_not_require_source_or_result():
     assert can_start_processing(state) is True
 
 
+def test_can_start_processing_continue_training_requires_model_but_not_source_or_result():
+    tmp_path = make_test_dir("presenter_validation_continue_training")
+    model = tmp_path / 'resume.pth'
+    model.write_text('x', encoding='utf-8')
+    state = MainWindowState(
+        work_mode='continue_training',
+        source_folder='',
+        result_folder='',
+        sample_folder=str(tmp_path),
+        label_folder=str(tmp_path),
+        model_path=str(model),
+        epochs=1,
+    )
+
+    assert can_start_processing(state) is True
+
+    state.model_path = ''
+    assert can_start_processing(state) is False
+
+
 def test_can_start_processing_external_validation_requires_validation_paths():
     tmp_path = make_test_dir("presenter_validation_external")
     train_images = tmp_path / 'train_images'

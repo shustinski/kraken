@@ -20,9 +20,9 @@ def test_queue_snapshot_reflects_running_paused_and_queued_tasks():
 
     assert decision.task is first
     assert [(item.task_id, item.status, item.owner_username, item.owner_display_name) for item in session.queue_snapshot()] == [
-        (first.task_id, 'running', 'alice', 'Alice'),
+        (first.task_id, 'in_progress', 'alice', 'Alice'),
         (second.task_id, 'paused', 'bob', 'Bob'),
-        (third.task_id, 'queued', '', ''),
+        (third.task_id, 'waiting', '', ''),
     ]
 
 
@@ -34,7 +34,7 @@ def test_next_task_to_start_reports_busy_worker_without_mutating_session():
 
     assert decision.worker_busy is True
     assert decision.task is None
-    assert [item.status for item in session.queue_snapshot()] == ['queued']
+    assert [item.status for item in session.queue_snapshot()] == ['waiting']
 
 
 def test_request_stop_marks_completion_as_stopped():
@@ -75,6 +75,7 @@ def test_drop_active_task_resets_stop_state_for_next_task():
     assert next_task is second
     assert result.task is second
     assert result.stop_requested is False
+    assert result.task.status == 'finished_success'
 
 
 def test_remove_and_pause_still_reject_active_task_mutation():
@@ -87,3 +88,34 @@ def test_remove_and_pause_still_reject_active_task_mutation():
 
     with pytest.raises(ActiveTaskMutationError):
         session.toggle_pause_by_index(0)
+
+
+def test_error_completion_keeps_failed_task_and_next_task_runs():
+    session = ProcessingSession()
+    first = session.enqueue_task(*_make_states('train_only'))
+    second = session.enqueue_task(*_make_states('recognition_only'))
+    session.next_task_to_start(worker_running=False)
+
+    session.set_active_error('broken')
+    result = session.complete_active_task()
+    next_task = session.next_task_to_start(worker_running=False).task
+
+    assert result.task is first
+    assert first.status == 'finished_error'
+    assert first.error_message == 'broken'
+    assert next_task is second
+
+
+def test_pause_active_marks_task_paused_without_starting_next():
+    session = ProcessingSession()
+    first = session.enqueue_task(*_make_states('train_only'))
+    session.enqueue_task(*_make_states('recognition_only'))
+    session.next_task_to_start(worker_running=False)
+
+    session.request_pause_active()
+    result = session.complete_active_task()
+
+    assert result.task is first
+    assert result.paused is True
+    assert first.status == 'paused'
+    assert session.active_task is None

@@ -1330,6 +1330,12 @@ def sew_from_queue(
     )
 
 
+def _confidence_output_root(save_dir: Path | str) -> Path:
+    result_dir = Path(save_dir)
+    result_name = result_dir.name or 'result'
+    return result_dir.parent / f'confidence_{result_name}'
+
+
 def sew(
     save_dir: Path | str,
     item: dict[str, Any],
@@ -1359,7 +1365,7 @@ def sew(
     confidence_predictions = item.get('confidence_image')
     if confidence_predictions is None:
         return output_path
-    confidence_path = Path(save_dir) / 'confidence' / output_name
+    confidence_path = _confidence_output_root(save_dir) / output_name
     confidence_path.parent.mkdir(parents=True, exist_ok=True)
     confidence_image = cast(
         Image.Image,

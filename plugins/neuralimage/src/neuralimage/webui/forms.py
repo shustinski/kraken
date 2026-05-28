@@ -57,9 +57,10 @@ def _read_text(mapping: dict, key: str, default: str = '') -> str:
 class MainWindowForm(forms.Form):
     WORK_MODE_CHOICES = (
         (WorkMode.train_and_recognition.value, 'Train and recognition'),
-        (WorkMode.further_training.value, 'Further training and recognition'),
         (WorkMode.recognition_only.value, 'Recognition only'),
         (WorkMode.train_only.value, 'Training only'),
+        (WorkMode.continue_training.value, 'Continue training'),
+        (WorkMode.further_training.value, 'Further training and recognition'),
     )
 
     work_mode = forms.ChoiceField(label='Work mode', choices=WORK_MODE_CHOICES)
@@ -117,16 +118,20 @@ class MainWindowForm(forms.Form):
                 _read_text(work_modes, WorkMode.train_and_recognition.value, 'Train and recognition'),
             ),
             (
-                WorkMode.further_training.value,
-                _read_text(work_modes, WorkMode.further_training.value, 'Further training and recognition'),
-            ),
-            (
                 WorkMode.recognition_only.value,
                 _read_text(work_modes, WorkMode.recognition_only.value, 'Recognition only'),
             ),
             (
                 WorkMode.train_only.value,
                 _read_text(work_modes, WorkMode.train_only.value, 'Training only'),
+            ),
+            (
+                WorkMode.continue_training.value,
+                _read_text(work_modes, WorkMode.continue_training.value, 'Continue training'),
+            ),
+            (
+                WorkMode.further_training.value,
+                _read_text(work_modes, WorkMode.further_training.value, 'Further training and recognition'),
             ),
         )
 
@@ -192,7 +197,12 @@ class MainWindowForm(forms.Form):
                     )
                 )
 
-        if work_mode in (WorkMode.train_and_recognition.value, WorkMode.further_training.value):
+        if work_mode in (
+            WorkMode.train_and_recognition.value,
+            WorkMode.further_training.value,
+            WorkMode.train_only.value,
+            WorkMode.continue_training.value,
+        ):
             if not sample_folder or not Path(sample_folder).is_dir():
                 raise ValidationError(
                     _read_text(
@@ -210,7 +220,11 @@ class MainWindowForm(forms.Form):
                     )
                 )
 
-        if work_mode in (WorkMode.recognition_only.value, WorkMode.further_training.value):
+        if work_mode in (
+            WorkMode.recognition_only.value,
+            WorkMode.further_training.value,
+            WorkMode.continue_training.value,
+        ):
             if not model_path or not Path(model_path).is_file():
                 raise ValidationError(
                     _read_text(

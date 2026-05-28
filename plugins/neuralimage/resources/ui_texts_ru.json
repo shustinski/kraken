@@ -6,6 +6,7 @@
     "mode_ft_and_rec": "Дообучение и распознавание",
     "mode_rec": "Распознавание",
     "mode_train": "Обучение",
+    "mode_continue_training": "Дообучение",
     "source": "Исходные файлы",
     "recursive_file_search": "Искать в дочерних каталогах",
     "recursive_file_search_tip": "Искать исходные файлы рекурсивно внутри выбранной папки.",
@@ -23,6 +24,18 @@
     "queue_remove": "Удалить из очереди",
     "queue_pause": "Пауза / Продолжить",
     "queue_properties": "Свойства",
+    "queue_report": "Отчет",
+    "queue_retry": "Повторить",
+    "queue_drag_tip": "Перетащите, чтобы изменить порядок",
+    "queue_pause_task": "Пауза",
+    "queue_continue_task": "Продолжить",
+    "queue_move_up": "Переместить вверх",
+    "queue_move_down": "Переместить вниз",
+    "queue_status_waiting": "ожидание",
+    "queue_status_paused": "на паузе",
+    "queue_status_in_progress": "выполняется",
+    "queue_status_finished_success": "завершено успешно",
+    "queue_status_finished_error": "завершено с ошибкой",
     "menu_file": "Файл",
     "menu_open_config": "Открыть...",
     "menu_settings": "Настройки",
@@ -133,7 +146,11 @@
     "status_values": {
       "queued": "В очереди",
       "paused": "На паузе",
-      "running": "Выполняется"
+      "running": "Выполняется",
+      "waiting": "Ожидание",
+      "in_progress": "Выполняется",
+      "finished_success": "Завершено успешно",
+      "finished_error": "Завершено с ошибкой"
     }
   },
   "settings_panel": {
@@ -761,7 +778,8 @@
         "train_and_recognition": "Сначала обучить, затем распознать",
         "further_training": "Дообучить существующую модель и распознать",
         "recognition_only": "Только распознавание готовой моделью",
-        "train_only": "Только обучение"
+        "train_only": "Только обучение",
+        "continue_training": "Дообучение"
       },
       "errors": {
         "source_folder_missing": "Поле «Папка с исходными файлами» должно указывать на существующую папку.",

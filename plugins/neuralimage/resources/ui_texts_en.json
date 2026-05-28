@@ -6,6 +6,7 @@
     "mode_ft_and_rec": "Continue training and recognize",
     "mode_rec": "Recognition only",
     "mode_train": "Training only",
+    "mode_continue_training": "Continue training",
     "source": "Source files folder",
     "recursive_file_search": "Search in subfolders",
     "recursive_file_search_tip": "Find source files recursively under the selected folder.",
@@ -23,6 +24,18 @@
     "queue_remove": "Remove from queue",
     "queue_pause": "Pause / Resume",
     "queue_properties": "Properties",
+    "queue_report": "Report",
+    "queue_retry": "Retry",
+    "queue_drag_tip": "Drag to reorder",
+    "queue_pause_task": "Pause",
+    "queue_continue_task": "Continue",
+    "queue_move_up": "Move up",
+    "queue_move_down": "Move down",
+    "queue_status_waiting": "waiting",
+    "queue_status_paused": "paused",
+    "queue_status_in_progress": "in progress",
+    "queue_status_finished_success": "finished successfully",
+    "queue_status_finished_error": "finished with error",
     "menu_file": "File",
     "menu_open_config": "Open...",
     "menu_settings": "Settings",
@@ -133,7 +146,11 @@
     "status_values": {
       "queued": "Queued",
       "paused": "Paused",
-      "running": "Running"
+      "running": "Running",
+      "waiting": "Waiting",
+      "in_progress": "In progress",
+      "finished_success": "Finished successfully",
+      "finished_error": "Finished with error"
     }
   },
   "settings_panel": {
@@ -745,7 +762,8 @@
         "train_and_recognition": "Train first, then run recognition",
         "further_training": "Continue training an existing model and recognize",
         "recognition_only": "Recognition with an existing model only",
-        "train_only": "Training only"
+        "train_only": "Training only",
+        "continue_training": "Continue training"
       },
       "errors": {
         "source_folder_missing": "The “Source files folder” field must point to an existing directory.",

@@ -4,10 +4,11 @@ import math
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSettings
+from PyQt6.QtCore import QSize, Qt, pyqtSignal, QSettings
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QDockWidget,
     QFormLayout,
     QGridLayout,
@@ -15,7 +16,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QCheckBox,
     QLabel,
+    QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -23,6 +26,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -85,6 +89,189 @@ def _load_menu_icon() -> QIcon:
     return QIcon(str(resolve_internal_path('settings_icon.png')))
 
 
+class TaskQueueListWidget(QListWidget):
+    rows_reordered: pyqtSignal = pyqtSignal(int, int)
+
+    def dropEvent(self, event) -> None:
+        current_item = self.currentItem()
+        source_row = self.row(current_item) if current_item is not None else -1
+        super().dropEvent(event)
+        if current_item is None:
+            return
+        target_row = self.row(current_item)
+        if source_row >= 0 and target_row >= 0 and source_row != target_row:
+            self.rows_reordered.emit(source_row, target_row)
+
+
+class TaskQueueRowWidget(QWidget):
+    name_changed: pyqtSignal = pyqtSignal(int, str)
+    pause_continue_requested: pyqtSignal = pyqtSignal(int)
+    move_up_requested: pyqtSignal = pyqtSignal(int)
+    move_down_requested: pyqtSignal = pyqtSignal(int)
+    remove_requested: pyqtSignal = pyqtSignal(int)
+    retry_requested: pyqtSignal = pyqtSignal(int)
+
+    def __init__(self, row: int, item: dict, texts: dict[str, str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._row = int(row)
+        self._texts = texts
+        self._setup_ui()
+        self.update_item(row, item, texts)
+
+    def _setup_ui(self) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+        self.setMinimumHeight(46)
+
+        self.drag_handle = QLabel('...', self)
+        self.drag_handle.setFixedWidth(18)
+        self.drag_handle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drag_handle.setToolTip(str(self._texts.get('queue_drag_tip', 'Drag to reorder')))
+        layout.addWidget(self.drag_handle)
+
+        self.mode_label = QLabel(self)
+        self.mode_label.setFixedWidth(170)
+        self.mode_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.mode_label.setStyleSheet('padding-right: 10px;')
+        layout.addWidget(self.mode_label)
+
+        self.name_edit = QLineEdit(self)
+        self.name_edit.setMinimumWidth(160)
+        self.name_edit.setMinimumHeight(30)
+        self.name_edit.setStyleSheet('padding-left: 8px; padding-right: 8px;')
+        self.name_edit.editingFinished.connect(self._emit_name_changed)
+        layout.addWidget(self.name_edit, 1)
+
+        self.status_label = QLabel(self)
+        self.status_label.setMinimumWidth(105)
+        layout.addWidget(self.status_label)
+
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setFixedWidth(135)
+        self.progress_bar.setFixedHeight(28)
+        layout.addWidget(self.progress_bar)
+
+        self.completion_label = QLabel(self)
+        self.completion_label.setFixedWidth(24)
+        self.completion_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.completion_label)
+
+        self.pause_continue_button = self._make_button('>', self.pause_continue_requested)
+        self.up_button = self._make_button('^', self.move_up_requested)
+        self.down_button = self._make_button('v', self.move_down_requested)
+        self.remove_button = self._make_button('X', self.remove_requested)
+        self.retry_button = self._make_button('R', self.retry_requested)
+        self.pause_continue_button.setText('>')
+        self.up_button.setText('▲')
+        self.down_button.setText('▼')
+        self.remove_button.setText('×')
+        self.retry_button.setText('↻')
+        self._style_action_button(self.pause_continue_button)
+        self._style_action_button(self.up_button)
+        self._style_action_button(self.down_button)
+        self._style_action_button(self.retry_button)
+        self._style_action_button(self.remove_button, foreground='#ffb4b4', border='#7f2a2a')
+        for button in (
+            self.pause_continue_button,
+            self.up_button,
+            self.down_button,
+            self.remove_button,
+            self.retry_button,
+        ):
+            layout.addWidget(button)
+
+    def _make_button(self, text: str, signal: pyqtSignal) -> QToolButton:
+        button = QToolButton(self)
+        button.setText(text)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        button.setFixedSize(30, 30)
+        button.clicked.connect(lambda _checked=False, sig=signal: sig.emit(self._row))
+        return button
+
+    @staticmethod
+    def _style_action_button(
+        button: QToolButton,
+        *,
+        foreground: str = '#edf3fb',
+        border: str = '#30445a',
+    ) -> None:
+        button.setStyleSheet(
+            (
+                'QToolButton {'
+                'background-color: #1d2733; '
+                f'border: 1px solid {border}; '
+                'border-radius: 4px; '
+                f'color: {foreground}; '
+                'font-weight: 700; '
+                'font-size: 17px; '
+                'padding: 0px;'
+                '}'
+                'QToolButton:hover { background-color: #283342; border-color: #46627f; }'
+                'QToolButton:disabled { background-color: #151c25; color: #6f7c89; border-color: #243142; }'
+            )
+        )
+
+    def _emit_name_changed(self) -> None:
+        self.name_changed.emit(self._row, self.name_edit.text())
+
+    def update_item(self, row: int, item: dict, texts: dict[str, str]) -> None:
+        self._row = int(row)
+        self._texts = texts
+        status = str(item.get('status', 'waiting'))
+        self.mode_label.setText(str(item.get('work_mode_label', item.get('work_mode', ''))))
+        self.name_edit.blockSignals(True)
+        self.name_edit.setText(str(item.get('display_name', '')))
+        self.name_edit.blockSignals(False)
+        self.status_label.setText(str(item.get('status_label', status)))
+
+        current = int(item.get('progress_current', 0) or 0)
+        total = int(item.get('progress_total', 0) or 0)
+        if total > 0:
+            value = max(0, min(100, int((current / total) * 100)))
+            self.progress_bar.setValue(value)
+            self.progress_bar.setFormat(f'{value}% ({current}/{total})')
+        else:
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat('0%')
+        self.progress_bar.setVisible(status == 'in_progress')
+
+        self.completion_label.setText('')
+        self.completion_label.setStyleSheet('')
+        if status == 'finished_success':
+            self.completion_label.setText('OK')
+            self.completion_label.setStyleSheet('color: #2e7d32; font-weight: 700;')
+        elif status == 'finished_error':
+            self.completion_label.setText('X')
+            self.completion_label.setStyleSheet('color: #d32f2f; font-weight: 700;')
+
+        is_running = status == 'in_progress'
+        is_paused = status == 'paused'
+        is_finished_error = status == 'finished_error'
+        is_finished = status in {'finished_success', 'finished_error'}
+        self.drag_handle.setEnabled(not is_running and not is_finished)
+        self.drag_handle.setVisible(not is_running and not is_finished)
+        self.pause_continue_button.setVisible(is_running or is_paused)
+        self.pause_continue_button.setText('▮▮' if is_running else '▶')
+        self.pause_continue_button.setToolTip(
+            str(texts.get('queue_pause_task', 'Pause')) if is_running else str(texts.get('queue_continue_task', 'Continue'))
+        )
+        self.up_button.setVisible(True)
+        self.down_button.setVisible(True)
+        self.remove_button.setVisible(True)
+        self.up_button.setEnabled(not is_running and not is_finished)
+        self.down_button.setEnabled(not is_running and not is_finished)
+        self.remove_button.setEnabled(True)
+        self.retry_button.setVisible(is_finished_error)
+        self.up_button.setToolTip(str(texts.get('queue_move_up', 'Move up')))
+        self.down_button.setToolTip(str(texts.get('queue_move_down', 'Move down')))
+        self.remove_button.setToolTip(
+            str(texts.get('stop', 'Stop')) if is_running else str(texts.get('queue_remove', 'Remove from queue'))
+        )
+        self.retry_button.setToolTip(str(texts.get('queue_retry', 'Retry')))
+
+
 class MainView(QMainWindow):
     sample_type_changed: pyqtSignal = pyqtSignal(str)
 
@@ -99,10 +286,15 @@ class MainView(QMainWindow):
 
     start_requested: pyqtSignal = pyqtSignal()
     stop_requested: pyqtSignal = pyqtSignal()
-    queue_remove_requested: pyqtSignal = pyqtSignal()
-    queue_pause_toggle_requested: pyqtSignal = pyqtSignal()
     queue_context_remove_requested: pyqtSignal = pyqtSignal(int)
     queue_properties_requested: pyqtSignal = pyqtSignal(int)
+    queue_report_requested: pyqtSignal = pyqtSignal(int)
+    queue_retry_requested: pyqtSignal = pyqtSignal(int)
+    queue_pause_continue_requested: pyqtSignal = pyqtSignal(int)
+    queue_move_up_requested: pyqtSignal = pyqtSignal(int)
+    queue_move_down_requested: pyqtSignal = pyqtSignal(int)
+    queue_rows_reordered: pyqtSignal = pyqtSignal(int, int)
+    queue_task_name_changed: pyqtSignal = pyqtSignal(int, str)
 
     epochs_changed: pyqtSignal = pyqtSignal()
     recursive_file_search_changed: pyqtSignal = pyqtSignal()
@@ -143,6 +335,8 @@ class MainView(QMainWindow):
         self._ram_mb: float | None = None
         self._vram_alloc_mb: float | None = None
         self._vram_reserved_mb: float | None = None
+        self._vram_used_mb: float | None = None
+        self._vram_total_mb: float | None = None
         self._train_speed_batches_per_sec: float | None = None
         self._recognition_speed_images_per_sec: float | None = None
         self._sample_count_value = 0
@@ -153,6 +347,10 @@ class MainView(QMainWindow):
         self._recognition_started_at: float | None = None
         self._recognition_last_current = 0
         self._recognition_last_total = 0
+        self._last_epoch_progress: tuple[int, int] = (0, 0)
+        self._last_batch_progress: tuple[int, int] = (0, 0)
+        self._last_recognition_progress: tuple[int, int] = (0, 0)
+        self._active_progress_mode = "idle"
         self._last_validation_metrics: tuple[float, float, float] | None = None
         self._last_performance_metrics: dict[str, float] | None = None
         self._ui_language = get_ui_language()
@@ -190,6 +388,7 @@ class MainView(QMainWindow):
         self._ui_mode = _load_persisted_ui_mode()
         self._current_work_mode = ''
         self._selected_simple_workflow: str | None = None
+        self._queue_items: list[dict] = []
 
         self._setup_ui()
 
@@ -213,11 +412,13 @@ class MainView(QMainWindow):
         self.rb_further_train_model = QRadioButton(t["mode_ft_and_rec"])
         self.rb_recognition = QRadioButton(t["mode_rec"])
         self.rb_train_only = QRadioButton(t["mode_train"])
+        self.rb_continue_training = QRadioButton(t.get("mode_continue_training", "Continue training"))
 
         sample_type_layout.addWidget(self.rb_train_and_recognition)
-        sample_type_layout.addWidget(self.rb_further_train_model)
         sample_type_layout.addWidget(self.rb_recognition)
         sample_type_layout.addWidget(self.rb_train_only)
+        sample_type_layout.addWidget(self.rb_continue_training)
+        sample_type_layout.addWidget(self.rb_further_train_model)
         self.main_grid.addWidget(self.work_mode_group, row, 0, 1, 2)
 
         row += 1
@@ -281,7 +482,6 @@ class MainView(QMainWindow):
         self.btn_stop = QPushButton(t["stop"])
         self.btn_stop.setVisible(False)
         buttons_layout.addWidget(self.btn_start)
-        buttons_layout.addWidget(self.btn_stop)
         self.main_grid.addWidget(self.buttons_row, row, 0, 1, 2)
 
         row += 1
@@ -317,20 +517,24 @@ class MainView(QMainWindow):
         row += 1
         self.queue_group = QGroupBox(t["queue"])
         queue_layout = QVBoxLayout(self.queue_group)
-        self.queue_list = QListWidget()
+        self.queue_list = TaskQueueListWidget()
         self.queue_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.queue_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.queue_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.queue_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.queue_list.setStyleSheet('QListWidget::item:selected { background: transparent; }')
         queue_layout.addWidget(self.queue_list)
-        queue_buttons_layout = QHBoxLayout()
-        self.btn_queue_remove = QPushButton(t["queue_remove"])
-        self.btn_queue_pause_toggle = QPushButton(t["queue_pause"])
-        queue_buttons_layout.addWidget(self.btn_queue_remove)
-        queue_buttons_layout.addWidget(self.btn_queue_pause_toggle)
-        queue_layout.addLayout(queue_buttons_layout)
         self.main_grid.addWidget(self.queue_group, row, 0, 1, 2)
 
         row += 1
         self.progress_group = QGroupBox(t["progress_group"])
-        progress_layout = QFormLayout(self.progress_group)
+        progress_layout = QVBoxLayout(self.progress_group)
+        progress_layout.setContentsMargins(8, 8, 8, 8)
+        progress_layout.setSpacing(6)
+        self.training_progress_widget = QWidget(self.progress_group)
+        training_progress_layout = QHBoxLayout(self.training_progress_widget)
+        training_progress_layout.setContentsMargins(0, 0, 0, 0)
+        training_progress_layout.setSpacing(10)
         self.epoch_progress_bar = QProgressBar()
         self.batch_progress_bar = QProgressBar()
         self.recognition_progress_bar = QProgressBar()
@@ -338,23 +542,38 @@ class MainView(QMainWindow):
             progress_bar.setRange(0, 100)
             progress_bar.setValue(0)
             progress_bar.setFormat("%p%")
-        progress_layout.addRow(t["progress_epochs"], self.epoch_progress_bar)
-        self.progress_epochs_title_label = progress_layout.labelForField(self.epoch_progress_bar)
-        progress_layout.addRow(t["progress_batches"], self.batch_progress_bar)
-        self.progress_batches_title_label = progress_layout.labelForField(self.batch_progress_bar)
+            progress_bar.setMinimumHeight(24)
+        self.progress_epochs_title_label = QLabel(t["progress_epochs"])
+        self.progress_batches_title_label = QLabel(t["progress_batches"])
+        for title in (self.progress_epochs_title_label, self.progress_batches_title_label):
+            title.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        training_progress_layout.addWidget(self.progress_epochs_title_label)
+        training_progress_layout.addWidget(self.epoch_progress_bar, 1)
+        training_progress_layout.addWidget(self.progress_batches_title_label)
+        training_progress_layout.addWidget(self.batch_progress_bar, 1)
+        progress_layout.addWidget(self.training_progress_widget)
+
+        self.recognition_progress_widget = QWidget(self.progress_group)
+        recognition_progress_layout = QHBoxLayout(self.recognition_progress_widget)
+        recognition_progress_layout.setContentsMargins(0, 0, 0, 0)
+        recognition_progress_layout.setSpacing(10)
+        self.progress_recognition_title_label = QLabel(t["progress_recognition"])
+        self.progress_recognition_title_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        recognition_progress_layout.addWidget(self.progress_recognition_title_label)
+        recognition_progress_layout.addWidget(self.recognition_progress_bar, 1)
+        progress_layout.addWidget(self.recognition_progress_widget)
         recognition_speed_default = (
             "Recognition speed: —" if self._ui_language == "en" else "Скорость распознавания: —"
         )
         self.recognition_speed_label = QLabel(t.get("recognition_speed_default", recognition_speed_default))
-        progress_layout.addRow(self.recognition_speed_label)
-        progress_layout.addRow(t["progress_recognition"], self.recognition_progress_bar)
-        self.progress_recognition_title_label = progress_layout.labelForField(self.recognition_progress_bar)
+        self.recognition_speed_label.hide()
         self.memory_usage_label = QLabel(t["memory_label_default"])
-        progress_layout.addRow(self.memory_usage_label)
+        progress_layout.addWidget(self.memory_usage_label)
         self.validation_quality_label = QLabel(t["validation_quality_default"])
-        progress_layout.addRow(self.validation_quality_label)
+        progress_layout.addWidget(self.validation_quality_label)
         self.performance_label = QLabel(t["performance_label_default"])
-        progress_layout.addRow(self.performance_label)
+        progress_layout.addWidget(self.performance_label)
+        self._show_progress_mode("idle")
         self.main_grid.addWidget(self.progress_group, row, 0, 1, 2)
 
         row += 1
@@ -386,13 +605,15 @@ class MainView(QMainWindow):
             ("preview_output", self.preview_output_title_label, self.preview_output_label),
         ):
             column_widget = QWidget()
+            column_widget.setFixedWidth(220)
             column_layout = QVBoxLayout(column_widget)
             column_layout.setContentsMargins(0, 0, 0, 0)
             column_layout.setSpacing(4)
-            column_layout.addWidget(title)
-            column_layout.addWidget(preview)
+            column_layout.addWidget(title, 0, Qt.AlignmentFlag.AlignHCenter)
+            column_layout.addWidget(preview, 0, Qt.AlignmentFlag.AlignHCenter)
             setattr(self, f"{attr_prefix}_column_widget", column_widget)
-            preview_row.addWidget(column_widget)
+            preview_row.addWidget(column_widget, 0, Qt.AlignmentFlag.AlignTop)
+        preview_row.addStretch(1)
         preview_layout.addLayout(preview_row)
         self.main_grid.addWidget(self.preview_group, row, 0, 1, 2)
 
@@ -612,14 +833,16 @@ class MainView(QMainWindow):
     def apply_work_mode(self, mode: str) -> None:
         self._current_work_mode = str(mode or '').strip()
         resolved_mode = self._current_work_mode
-        training_only = resolved_mode == WorkMode.train_only.value
+        training_only = resolved_mode in {WorkMode.train_only.value, WorkMode.continue_training.value}
         recognition_only = resolved_mode == WorkMode.recognition_only.value
         uses_model = resolved_mode in {
             WorkMode.recognition_only.value,
             WorkMode.further_training.value,
+            WorkMode.continue_training.value,
         }
         uses_epochs = resolved_mode in {
             WorkMode.train_only.value,
+            WorkMode.continue_training.value,
             WorkMode.train_and_recognition.value,
             WorkMode.further_training.value,
         }
@@ -655,6 +878,9 @@ class MainView(QMainWindow):
             lambda _: self.sample_type_changed.emit(WorkMode.further_training.value)
         )
         self.rb_train_only.clicked.connect(lambda _: self.sample_type_changed.emit(WorkMode.train_only.value))
+        self.rb_continue_training.clicked.connect(
+            lambda _: self.sample_type_changed.emit(WorkMode.continue_training.value)
+        )
 
         self.lbl_source.clicked.connect(lambda: self.source_path_requested.emit())
         self.recursive_file_search_check_box.toggled.connect(lambda _: self.recursive_file_search_changed.emit())
@@ -681,9 +907,9 @@ class MainView(QMainWindow):
 
         self.btn_start.clicked.connect(lambda: self.start_requested.emit())
         self.btn_stop.clicked.connect(lambda: self.stop_requested.emit())
-        self.btn_queue_remove.clicked.connect(lambda: self.queue_remove_requested.emit())
-        self.btn_queue_pause_toggle.clicked.connect(lambda: self.queue_pause_toggle_requested.emit())
         self.queue_list.customContextMenuRequested.connect(self._show_queue_context_menu)
+        if isinstance(self.queue_list, TaskQueueListWidget):
+            self.queue_list.rows_reordered.connect(self.queue_rows_reordered.emit)
         if hasattr(self, "batch_preview_action"):
             self.batch_preview_action.toggled.connect(self.batch_preview_visibility_changed.emit)
             self.batch_preview_action.toggled.connect(self.set_batch_preview_enabled)
@@ -732,15 +958,25 @@ class MainView(QMainWindow):
 
         self.queue_list.setCurrentRow(row)
         texts = self._main_texts()
+        status = ''
+        if 0 <= row < len(self._queue_items):
+            status = str(self._queue_items[row].get('status', ''))
         menu = QMenu(self.queue_list)
-        remove_action = menu.addAction(str(texts.get("queue_remove", "Удалить из очереди")))
+        report_action = None
+        remove_action = None
+        if status != 'in_progress':
+            remove_action = menu.addAction(str(texts.get("queue_remove", "Удалить из очереди")))
         properties_action = menu.addAction(str(texts.get("queue_properties", "Свойства")))
+        if status == 'finished_error':
+            report_action = menu.addAction(str(texts.get("queue_report", "Report")))
         selected_action = menu.exec(self.queue_list.viewport().mapToGlobal(position))
 
-        if selected_action is remove_action:
+        if remove_action is not None and selected_action is remove_action:
             self.queue_context_remove_requested.emit(row)
         elif selected_action is properties_action:
             self.queue_properties_requested.emit(row)
+        elif report_action is not None and selected_action is report_action:
+            self.queue_report_requested.emit(row)
 
     def _show_settings_page(self, page_key: str) -> None:
         self.show_settings_dock()
@@ -925,18 +1161,28 @@ class MainView(QMainWindow):
             return
 
         if metric_type == "train_epoch_progress":
-            self._set_progress_bar(self.epoch_progress_bar, int(data.get("current", 0)), int(data.get("total", 0)))
+            current = int(data.get("current", 0))
+            total = int(data.get("total", 0))
+            self._last_epoch_progress = (current, total)
+            self._show_progress_mode("train")
+            self._set_progress_bar(self.epoch_progress_bar, current, total)
             return
 
         if metric_type == "train_batch_progress":
-            self._set_progress_bar(self.batch_progress_bar, int(data.get("current", 0)), int(data.get("total", 0)))
+            current = int(data.get("current", 0))
+            total = int(data.get("total", 0))
+            self._last_batch_progress = (current, total)
+            self._show_progress_mode("train")
+            self._set_training_batch_progress_bar()
             return
 
         if metric_type == "recognition_progress":
             current = int(data.get("current", 0))
             total = int(data.get("total", 0))
-            self._set_progress_bar(self.recognition_progress_bar, current, total)
+            self._last_recognition_progress = (current, total)
+            self._show_progress_mode("recognition")
             self._update_recognition_speed(current, total)
+            self._set_recognition_progress_bar()
             return
 
         if metric_type == "train_batch_preview":
@@ -966,9 +1212,13 @@ class MainView(QMainWindow):
             ram_mb = data.get("ram_mb")
             vram_alloc_mb = data.get("vram_allocated_mb")
             vram_reserved_mb = data.get("vram_reserved_mb")
+            vram_used_mb = data.get("vram_used_mb")
+            vram_total_mb = data.get("vram_total_mb")
             self._ram_mb = float(ram_mb) if ram_mb is not None else None
             self._vram_alloc_mb = float(vram_alloc_mb) if vram_alloc_mb is not None else None
             self._vram_reserved_mb = float(vram_reserved_mb) if vram_reserved_mb is not None else None
+            self._vram_used_mb = float(vram_used_mb) if vram_used_mb is not None else None
+            self._vram_total_mb = float(vram_total_mb) if vram_total_mb is not None else None
             self._update_memory_runtime_label()
             return
 
@@ -1001,6 +1251,7 @@ class MainView(QMainWindow):
                 self._train_speed_batches_per_sec = 1000.0 / total_ms
             else:
                 self._train_speed_batches_per_sec = None
+            self._set_training_batch_progress_bar()
             self._update_memory_runtime_label()
             return
 
@@ -1010,6 +1261,8 @@ class MainView(QMainWindow):
             self._ram_mb is None
             and self._vram_alloc_mb is None
             and self._vram_reserved_mb is None
+            and self._vram_used_mb is None
+            and self._vram_total_mb is None
             and self._train_speed_batches_per_sec is None
         )
         if no_runtime_data:
@@ -1023,7 +1276,10 @@ class MainView(QMainWindow):
         speed_label = str(t.get("runtime_speed_label", "Скорость"))
 
         ram_text = f"{ram_label}: {self._ram_mb:.0f} {memory_unit}" if self._ram_mb is not None else f"{ram_label}: —"
-        if self._vram_alloc_mb is None:
+        if self._vram_used_mb is not None:
+            total_text = f"/{self._vram_total_mb:.0f}" if self._vram_total_mb is not None else ""
+            vram_text = f"{vram_label}: {self._vram_used_mb:.0f}{total_text} {memory_unit}"
+        elif self._vram_alloc_mb is None:
             vram_text = f"{vram_label}: —"
         else:
             reserved_text = f"/{self._vram_reserved_mb:.0f}" if self._vram_reserved_mb is not None else ""
@@ -1077,6 +1333,32 @@ class MainView(QMainWindow):
             f"{label}: {self._recognition_speed_images_per_sec:.2f} {unit}"
         )
 
+    def _show_progress_mode(self, mode: str) -> None:
+        resolved_mode = str(mode or "idle").strip().lower()
+        if resolved_mode not in {"train", "recognition"}:
+            resolved_mode = "idle"
+        self._active_progress_mode = resolved_mode
+        self.training_progress_widget.setVisible(resolved_mode == "train")
+        self.recognition_progress_widget.setVisible(resolved_mode == "recognition")
+        self.validation_quality_label.setVisible(resolved_mode != "recognition")
+        self.performance_label.setVisible(resolved_mode != "recognition")
+
+    def _set_training_batch_progress_bar(self) -> None:
+        current, total = self._last_batch_progress
+        suffix = ""
+        if self._train_speed_batches_per_sec is not None:
+            speed_unit = str(self._main_texts().get("speed_unit", "batch/s"))
+            suffix = f" | {self._train_speed_batches_per_sec:.2f} {speed_unit}"
+        self._set_progress_bar(self.batch_progress_bar, current, total, suffix=suffix)
+
+    def _set_recognition_progress_bar(self) -> None:
+        current, total = self._last_recognition_progress
+        suffix = ""
+        if self._recognition_speed_images_per_sec is not None:
+            unit = str(self._main_texts().get("recognition_speed_unit", "img/s"))
+            suffix = f" | {self._recognition_speed_images_per_sec:.2f} {unit}"
+        self._set_progress_bar(self.recognition_progress_bar, current, total, suffix=suffix)
+
     def _set_preview_frame_name(self, sample_name: str) -> None:
         self._current_preview_sample_name = str(sample_name).strip()
         if self._current_preview_sample_name:
@@ -1101,6 +1383,8 @@ class MainView(QMainWindow):
         self._ram_mb = None
         self._vram_alloc_mb = None
         self._vram_reserved_mb = None
+        self._vram_used_mb = None
+        self._vram_total_mb = None
         self._train_speed_batches_per_sec = None
         self._recognition_speed_images_per_sec = None
         self._recognition_started_at = None
@@ -1116,14 +1400,14 @@ class MainView(QMainWindow):
         return points
 
     @staticmethod
-    def _set_progress_bar(progress_bar: QProgressBar, current: int, total: int):
+    def _set_progress_bar(progress_bar: QProgressBar, current: int, total: int, *, suffix: str = ""):
         if total <= 0:
             progress_bar.setValue(0)
             progress_bar.setFormat("0%")
             return
         value = max(0, min(100, int((current / total) * 100)))
         progress_bar.setValue(value)
-        progress_bar.setFormat(f"{value}% ({current}/{total})")
+        progress_bar.setFormat(f"{value}% ({current}/{total}){suffix}")
 
     @staticmethod
     def _set_preview_image(widget: QLabel, image_data):
@@ -1158,11 +1442,15 @@ class MainView(QMainWindow):
 
     def _switch_start_stop(self, show_stop: bool):
         self.btn_start.setVisible(True)
-        self.btn_stop.setVisible(show_stop)
+        self.btn_stop.setVisible(False)
         if show_stop:
             self._reset_runtime_metrics()
             self.metrics_panel.clear()
             self._batch_points_by_epoch.clear()
+            self._last_epoch_progress = (0, 0)
+            self._last_batch_progress = (0, 0)
+            self._last_recognition_progress = (0, 0)
+            self._show_progress_mode("idle")
             self._set_progress_bar(self.epoch_progress_bar, 0, 0)
             self._set_progress_bar(self.batch_progress_bar, 0, 0)
             self._set_progress_bar(self.recognition_progress_bar, 0, 0)
@@ -1186,11 +1474,61 @@ class MainView(QMainWindow):
     def get_selected_queue_row(self) -> int:
         return self.queue_list.currentRow()
 
-    def set_task_queue_items(self, items: list[str], selected_row: int = -1):
+    def set_task_queue_items(self, items: list, selected_row: int = -1):
+        previous_scroll_value = self.queue_list.verticalScrollBar().value()
+        previous_selected_row = self.queue_list.currentRow()
+        texts = self._main_texts()
+        normalized_items: list[dict] = []
+        for item in items:
+            if isinstance(item, dict):
+                normalized_items.append(dict(item))
+            else:
+                normalized_items.append(
+                    {
+                        'work_mode': str(item),
+                        'work_mode_label': str(item),
+                        'display_name': '',
+                        'status': 'waiting',
+                        'status_label': '',
+                    }
+                )
+        self._queue_items = normalized_items
         self.queue_list.clear()
-        self.queue_list.addItems(items)
-        if 0 <= selected_row < len(items):
-            self.queue_list.setCurrentRow(selected_row)
+        for row, item in enumerate(normalized_items):
+            list_item = QListWidgetItem()
+            list_item.setSizeHint(QSize(860, 48))
+            status = str(item.get('status', 'waiting'))
+            flags = list_item.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+            if status not in {'in_progress', 'finished_success', 'finished_error'}:
+                flags |= Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled
+            list_item.setFlags(flags)
+            widget = TaskQueueRowWidget(row, item, texts, self.queue_list)
+            widget.name_changed.connect(self.queue_task_name_changed.emit)
+            widget.pause_continue_requested.connect(self.queue_pause_continue_requested.emit)
+            widget.move_up_requested.connect(self.queue_move_up_requested.emit)
+            widget.move_down_requested.connect(self.queue_move_down_requested.emit)
+            widget.remove_requested.connect(self.queue_context_remove_requested.emit)
+            widget.retry_requested.connect(self.queue_retry_requested.emit)
+            self.queue_list.addItem(list_item)
+            self.queue_list.setItemWidget(list_item, widget)
+        resolved_selected_row = selected_row if selected_row >= 0 else previous_selected_row
+        if 0 <= resolved_selected_row < len(normalized_items):
+            self.queue_list.setCurrentRow(resolved_selected_row)
+        self.queue_list.verticalScrollBar().setValue(
+            max(0, min(previous_scroll_value, self.queue_list.verticalScrollBar().maximum()))
+        )
+
+    def update_task_queue_item_progress(self, task_id: int, current: int, total: int) -> None:
+        for row, item in enumerate(self._queue_items):
+            if int(item.get('task_id', -1)) != int(task_id):
+                continue
+            item['progress_current'] = int(current)
+            item['progress_total'] = int(total)
+            list_item = self.queue_list.item(row)
+            widget = self.queue_list.itemWidget(list_item) if list_item is not None else None
+            if isinstance(widget, TaskQueueRowWidget):
+                widget.update_item(row, item, self._main_texts())
+            return
 
     def set_stylesheet(self, style):
         self.setStyleSheet(style)
@@ -1302,6 +1640,7 @@ class MainView(QMainWindow):
         self.rb_further_train_model.setText(t["mode_ft_and_rec"])
         self.rb_recognition.setText(t["mode_rec"])
         self.rb_train_only.setText(t["mode_train"])
+        self.rb_continue_training.setText(t.get("mode_continue_training", "Continue training"))
         self.source_title_label.setText(t["source"])
         self.recursive_file_search_check_box.setText(str(t.get("recursive_file_search", "Search in subfolders")))
         self.recursive_file_search_check_box.setToolTip(
@@ -1320,8 +1659,6 @@ class MainView(QMainWindow):
         self.btn_start.setText(t["start"])
         self.btn_stop.setText(t["stop"])
         self.queue_group.setTitle(t["queue"])
-        self.btn_queue_remove.setText(t["queue_remove"])
-        self.btn_queue_pause_toggle.setText(t["queue_pause"])
         self.simple_workflows_group.setTitle(t.get("simple_workflows_group", "Simple workflows"))
         self.btn_simple_conductors.setText(t.get("simple_workflow_conductors", "Conductor recognition"))
         self.btn_simple_contacts.setText(t.get("simple_workflow_contacts", "Contact recognition"))

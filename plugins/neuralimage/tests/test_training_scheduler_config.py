@@ -191,9 +191,26 @@ def test_create_adamw_muon_optimizer_prefers_native_torch_muon():
     assert isinstance(optimizer, torch.optim.Muon)
 
 
-def test_create_adamw_muon_optimizer_falls_back_for_non_2d_model_params():
+def test_create_adamw_muon_optimizer_splits_non_2d_model_params(monkeypatch):
+    class _FakeMuon(torch.optim.Optimizer):
+        def __init__(self, params, lr=0.001, weight_decay=0.0):
+            defaults = {'lr': lr, 'weight_decay': weight_decay}
+            super().__init__(params, defaults)
+            for group in self.param_groups:
+                for param in group['params']:
+                    if param.ndim != 2:
+                        raise ValueError(f'Muon only supports 2D parameters whereas we found {param.shape}')
+
+        def step(self, closure=None):
+            return closure() if closure is not None else None
+
+    monkeypatch.setattr(target.optim, 'Muon', _FakeMuon, raising=False)
     trainer = _build_trainer(
-        model=torch.nn.Conv2d(3, 8, 3),
+        model=torch.nn.Sequential(
+            torch.nn.Conv2d(3, 8, 3),
+            torch.nn.Flatten(),
+            torch.nn.Linear(8, 2),
+        ),
         optimizer_params=OptimizerParameters(
             name=OptimizerName.adamw_muon,
             learning_rate=3e-4,
@@ -203,5 +220,17 @@ def test_create_adamw_muon_optimizer_falls_back_for_non_2d_model_params():
 
     optimizer = trainer._create_optimizer()
 
-    assert isinstance(optimizer, torch.optim.AdamW)
-    assert any('Muon optimizer initialization failed (Muon only supports 2D parameters' in str(message[1]) for message in trainer._bus.messages)
+    assert isinstance(optimizer, target._CombinedOptimizer)
+    assert isinstance(optimizer._optimizers[0], _FakeMuon)
+    assert isinstance(optimizer._optimizers[1], torch.optim.AdamW)
+    muon_params = optimizer._optimizers[0].param_groups[0]['params']
+    adamw_params = [
+        param
+        for group in optimizer._optimizers[1].param_groups
+        for param in group['params']
+    ]
+    assert muon_params
+    assert adamw_params
+    assert all(param.ndim == 2 for param in muon_params)
+    assert all(param.ndim != 2 for param in adamw_params)
+    assert any('AdamW + Muon: 2D parameters assigned to Muon' in str(message[1]) for message in trainer._bus.messages)

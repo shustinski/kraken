@@ -1,7 +1,6 @@
 ﻿"""Define small reusable Qt widgets used by the validation widget user interface."""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLineEdit, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from .ui_constants import FOLDER_BUTTON_SIZE
@@ -19,12 +18,14 @@ class FolderRowWidget(QWidget):
         checked: bool,
         confidence_display_text: str,
         confidence_path_text: str,
+        confidence_expanded: bool,
         can_move_up: bool,
         can_move_down: bool,
         on_checked_changed,
         on_label_changed,
         on_confidence_folder,
         on_clear_confidence_folder,
+        on_confidence_toggle,
         on_remove,
         on_move_up,
         on_move_down,
@@ -33,6 +34,8 @@ class FolderRowWidget(QWidget):
         confidence_tooltip: str,
         confidence_select_tooltip: str,
         confidence_clear_tooltip: str,
+        confidence_expand_tooltip: str,
+        confidence_collapse_tooltip: str,
         remove_tooltip: str,
         move_up_tooltip: str,
         move_down_tooltip: str,
@@ -40,13 +43,13 @@ class FolderRowWidget(QWidget):
         """Initialize FolderRowWidget."""
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 3, 6, 3)
-        layout.setSpacing(4)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
 
         main_row = QWidget(self)
         main_layout = QHBoxLayout(main_row)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(6)
+        main_layout.setSpacing(4)
 
         self.checkbox = QCheckBox(self)
         self.checkbox.setChecked(checked)
@@ -61,14 +64,16 @@ class FolderRowWidget(QWidget):
         self.name_edit.editingFinished.connect(lambda: on_label_changed(self.name_edit.text().strip()))
         main_layout.addWidget(self.name_edit, stretch=1)
 
-        self.btn_remove = QToolButton(self)
-        self.btn_remove.setAutoRaise(False)
-        self.btn_remove.setProperty('folderAction', True)
-        self.btn_remove.setText('x')
-        self.btn_remove.setToolTip(remove_tooltip)
-        self.btn_remove.setFixedSize(FOLDER_BUTTON_SIZE, FOLDER_BUTTON_SIZE)
-        self.btn_remove.clicked.connect(on_remove)
-        main_layout.addWidget(self.btn_remove)
+        self.btn_confidence_toggle = QToolButton(self)
+        self.btn_confidence_toggle.setAutoRaise(False)
+        self.btn_confidence_toggle.setProperty('folderAction', True)
+        self.btn_confidence_toggle.setCheckable(True)
+        self.btn_confidence_toggle.setChecked(bool(confidence_expanded))
+        self.btn_confidence_toggle.setText('-' if confidence_expanded else '+')
+        self.btn_confidence_toggle.setToolTip(confidence_collapse_tooltip if confidence_expanded else confidence_expand_tooltip)
+        self.btn_confidence_toggle.setFixedSize(FOLDER_BUTTON_SIZE, FOLDER_BUTTON_SIZE)
+        self.btn_confidence_toggle.toggled.connect(lambda expanded: on_confidence_toggle(bool(expanded)))
+        main_layout.addWidget(self.btn_confidence_toggle)
 
         self.btn_up = QToolButton(self)
         self.btn_up.setAutoRaise(False)
@@ -90,15 +95,24 @@ class FolderRowWidget(QWidget):
         self.btn_down.clicked.connect(on_move_down)
         main_layout.addWidget(self.btn_down)
 
+        self.btn_remove = QToolButton(self)
+        self.btn_remove.setAutoRaise(False)
+        self.btn_remove.setProperty('folderAction', True)
+        self.btn_remove.setText('x')
+        self.btn_remove.setToolTip(remove_tooltip)
+        self.btn_remove.setFixedSize(FOLDER_BUTTON_SIZE, FOLDER_BUTTON_SIZE)
+        self.btn_remove.clicked.connect(on_remove)
+        main_layout.addWidget(self.btn_remove)
+
         confidence_row = QWidget(self)
         confidence_layout = QHBoxLayout(confidence_row)
         confidence_layout.setContentsMargins(0, 0, 0, 0)
-        confidence_layout.setSpacing(6)
+        confidence_layout.setSpacing(4)
 
         self.confidence_edit = QLineEdit(confidence_display_text, self)
         self.confidence_edit.setReadOnly(True)
         self.confidence_edit.setMinimumWidth(0)
-        self.confidence_edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.confidence_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.confidence_edit.setPlaceholderText(confidence_placeholder)
         self.confidence_edit.setToolTip(confidence_tooltip if confidence_path_text else confidence_placeholder)
         confidence_layout.addWidget(self.confidence_edit, stretch=1)
@@ -124,5 +138,7 @@ class FolderRowWidget(QWidget):
 
         layout.addWidget(main_row)
         layout.addWidget(confidence_row)
+        confidence_row.setVisible(bool(confidence_expanded))
+        self.confidence_row = confidence_row
 
 

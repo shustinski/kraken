@@ -45,8 +45,6 @@ from ..core.domain import ComparisonMode
 from ..core.subpixel_grid import (
     SubpixelGrid,
     SubpixelGridSpec,
-    SubpixelSelection,
-    aggregate_subpixel_values,
     build_subpixel_grid_from_array,
     build_subpixel_grid_from_pair,
 )
@@ -447,6 +445,7 @@ class _MatrixCellItem(QGraphicsRectItem):
         self.subpixel_metric_key: str | None = None
         self.selected_subpixel_selection: MatrixTileSelection | None = None
         self.hovered_subpixel_selection: MatrixTileSelection | None = None
+        self._excluded = False
         self._attention_marker_kind: str | None = None
         self._attention_marker_color: QColor | None = None
         self._tile_rect_cache_key: tuple[float, float, float, float, int, int, str, int, int, int] | None = None
@@ -475,6 +474,13 @@ class _MatrixCellItem(QGraphicsRectItem):
         self._attention_marker_color = QColor(color) if color is not None else None
         self.update()
 
+    def set_excluded(self, excluded: bool) -> None:
+        normalized = bool(excluded)
+        if self._excluded == normalized:
+            return
+        self._excluded = normalized
+        self.update()
+
     def paint(self, painter: QPainter, option, widget=None) -> None:
         spec = self.subpixel_grid.spec if self.subpixel_grid is not None else self.subpixel_spec
         if not self.subpixel_overlay_enabled or spec is None:
@@ -497,7 +503,6 @@ class _MatrixCellItem(QGraphicsRectItem):
         tile_screen_extent = _tile_screen_extent_for_rect(rect, spec, zoom_level)
         grid = self.subpixel_grid
         values = np.asarray(grid.values, dtype=np.float32) if grid is not None else None
-        confidences = np.asarray(grid.confidences, dtype=np.float32) if grid is not None and grid.confidences is not None else None
         spec = grid.spec if grid is not None else spec
         if spec is None:
             super().paint(painter, option, widget)
@@ -522,6 +527,12 @@ class _MatrixCellItem(QGraphicsRectItem):
         painter.fillRect(rect, parent_fill)
         painter.setPen(self.pen())
         painter.drawRect(rect)
+        if self._excluded:
+            painter.setPen(QPen(QColor(212, 212, 212, 200), 1.0))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "N/A")
+            self._paint_attention_marker(painter)
+            painter.restore()
+            return
         border_alpha = min(220, max(110, int(max(0.0, tile_screen_extent - MIN_VISIBLE_TILE_SCREEN_SIZE + 1.0) * 36.0)))
         grid_pen = QPen(QColor(92, 196, 255, border_alpha), 0.0)
         selected_pen = QPen(QColor(255, 228, 122, 235), 0.0)
@@ -1218,6 +1229,7 @@ class MatrixListWidget(QGraphicsView):
         self._selection_drag_current_scene: QPointF | None = None
         self._selection_drag_active = False
         self._selection_rubber_band_item: QGraphicsRectItem | None = None
+        self._range_selection_overlay_item: QGraphicsRectItem | None = None
         self._selected_subpixel_selection: MatrixTileSelection | None = None
         self._hovered_subpixel_selection: MatrixTileSelection | None = None
         self._processing_keys: set[str] = set()
@@ -1248,6 +1260,7 @@ class MatrixListWidget(QGraphicsView):
         self._record_index_by_key: dict[str, int] = {}
         self._management_payload_by_key: dict[str, dict[str, str]] = {}
         self._management_recommended_keys: set[str] = set()
+        self._excluded_record_keys: set[str] = set()
         self._management_assignee_colors: dict[str, str] = {}
         self._management_recommended_priority_min: float | None = None
         self._management_recommended_priority_max: float | None = None
@@ -1581,6 +1594,13 @@ class MatrixListWidget(QGraphicsView):
             self._management_recommended_priority_max = None
         self.refresh_scene()
 
+    def set_excluded_record_keys(self, excluded_keys: set[str] | None) -> None:
+        normalized = {str(key) for key in (excluded_keys or set()) if str(key)}
+        if normalized == self._excluded_record_keys:
+            return
+        self._excluded_record_keys = normalized
+        self.refresh_scene()
+
     def set_management_visual_mode(self, enabled: bool) -> None:
         """Enable management-specific cluster fill and recommendation border rendering."""
 
@@ -1603,6 +1623,9 @@ class MatrixListWidget(QGraphicsView):
         self._management_assignee_colors = normalized
         if self._management_visual_mode:
             self.refresh_scene()
+
+    def _is_record_excluded(self, record: FrameRecord) -> bool:
+        return str(record.key) in self._excluded_record_keys
 
     def refresh_scene(self) -> None:
         if not self._records:
@@ -2288,6 +2311,7 @@ class MatrixListWidget(QGraphicsView):
         self._selection_drag_current_scene = None
         self._selection_drag_active = False
         self._selection_rubber_band_item = None
+        self._range_selection_overlay_item = None
         self._selected_subpixel_selection = None
         self._hovered_subpixel_selection = None
         self._item_by_key.clear()
@@ -2312,9 +2336,16 @@ class MatrixListWidget(QGraphicsView):
         self._scene.setSceneRect(0, 0, matrix_width + self._scene_padding * 2, matrix_height + self._scene_padding * 2)
         self._matrix_frame_item = self._scene.addRect(matrix_rect, QPen(SUBDUED_TEXT_COLOR, 1.0))
         self._matrix_frame_item.setZValue(-5.0)
-        self._selection_rubber_band_item = self._scene.addRect(QRectF(), QPen(QColor(92, 180, 255, 220), 0.0, Qt.PenStyle.DashLine), QBrush(QColor(92, 180, 255, 32)))
+        rubber_band_pen = QPen(QColor(245, 232, 140, 245), 2.0, Qt.PenStyle.DashLine)
+        rubber_band_pen.setCosmetic(True)
+        self._selection_rubber_band_item = self._scene.addRect(QRectF(), rubber_band_pen, QBrush(QColor(92, 180, 255, 28)))
         self._selection_rubber_band_item.setZValue(20.0)
         self._selection_rubber_band_item.setVisible(False)
+        selection_pen = QPen(QColor(255, 235, 120, 245), 2.5, Qt.PenStyle.SolidLine)
+        selection_pen.setCosmetic(True)
+        self._range_selection_overlay_item = self._scene.addRect(QRectF(), selection_pen, QBrush(QColor(255, 235, 120, 28)))
+        self._range_selection_overlay_item.setZValue(19.0)
+        self._range_selection_overlay_item.setVisible(False)
         complete_materialization = (
             self._complete_filtered_view_active
             and len(placements) <= MATRIX_FILTERED_MATERIALIZE_RECORD_LIMIT
@@ -2341,6 +2372,7 @@ class MatrixListWidget(QGraphicsView):
             item = self._item_by_key.get(key)
             if item is not None:
                 self._apply_item_style(item, sync_tile_state=False)
+        self._update_range_selection_overlay()
         if not self._virtualized_items_enabled:
             self._sync_tile_state_for_keys(self._item_by_key.keys())
         self._overview_image = self._build_overview_image(placements)
@@ -2481,6 +2513,39 @@ class MatrixListWidget(QGraphicsView):
         item.setRect(rect)
         item.setVisible(not rect.isNull())
 
+    def _selection_range_scene_rect(self) -> QRectF:
+        if not self._range_selected_keys or self._rows <= 0 or self._columns <= 0:
+            return QRectF()
+        rows: list[int] = []
+        columns: list[int] = []
+        for key in self._range_selected_keys:
+            position = self._record_positions.get(str(key))
+            if position is None:
+                continue
+            row, column = position
+            rows.append(int(row))
+            columns.append(int(column))
+        if not rows or not columns:
+            return QRectF()
+        min_row = min(rows)
+        max_row = max(rows)
+        min_column = min(columns)
+        max_column = max(columns)
+        span = float(self._cell_size + self._gap)
+        left = float(self._scene_padding) + float(min_column) * span
+        top = float(self._scene_padding) + float(min_row) * span
+        right = float(self._scene_padding) + float(max_column) * span + float(self._cell_size)
+        bottom = float(self._scene_padding) + float(max_row) * span + float(self._cell_size)
+        return QRectF(left - 1.5, top - 1.5, (right - left) + 3.0, (bottom - top) + 3.0)
+
+    def _update_range_selection_overlay(self) -> None:
+        item = self._range_selection_overlay_item
+        if item is None:
+            return
+        rect = self._selection_range_scene_rect()
+        item.setRect(rect)
+        item.setVisible(not rect.isNull())
+
     def _finish_selection_drag(self) -> None:
         self._selection_drag_origin_scene = None
         self._selection_drag_current_scene = None
@@ -2528,12 +2593,14 @@ class MatrixListWidget(QGraphicsView):
         self._range_selected_keys = {str(record.key) for record in records}
         changed_keys = previous_keys | self._range_selected_keys
         if not changed_keys:
+            self._update_range_selection_overlay()
             return
         for key in changed_keys:
             item = self._item_by_key.get(str(key))
             if item is not None:
                 self._apply_item_style(item, sync_tile_state=False)
         self._sync_low_zoom_visibility_for_keys(changed_keys)
+        self._update_range_selection_overlay()
         self.viewport().update()
 
     def _emit_overview_state(self) -> None:
@@ -2678,11 +2745,11 @@ class MatrixListWidget(QGraphicsView):
         )
 
     def _apply_item_style(self, item: _MatrixCellItem, *, sync_tile_state: bool = True) -> None:
+        excluded = self._is_record_excluded(item.record)
         management_payload = self._management_payload_for_record(item.record) if self._management_visual_mode else None
         is_recommended = str(item.record.key) in self._management_recommended_keys
         assigned_for_work = self._management_has_active_assignment(management_payload) if management_payload is not None else False
         assignee_color = self._management_assignee_color_for_payload(management_payload) if management_payload is not None else None
-        cluster_color = self._management_cluster_color_for_payload(management_payload) if management_payload is not None else None
         marker_kind: str | None = None
         marker_color: QColor | None = None
         if item is self._hovered_item:
@@ -2715,6 +2782,10 @@ class MatrixListWidget(QGraphicsView):
         else:
             pen = QPen(DEFAULT_BORDER, MATRIX_DEFAULT_PEN_WIDTH)
         brush_color = self._background_color_for_record(item.record)
+        item.set_excluded(excluded)
+        if excluded:
+            marker_kind = None
+            marker_color = None
         if str(item.record.key) in self._range_selected_keys:
             brush_color = blend_colors(brush_color, QColor(92, 180, 255, 210), 0.28)
         if item is self._selected_item and self._selection_blink_on:
@@ -2742,6 +2813,8 @@ class MatrixListWidget(QGraphicsView):
 
     def _tile_selection_for_cell(self, item: _MatrixCellItem, view_pos, *, allow_build: bool = False) -> MatrixTileSelection | None:
         spec = self._subpixel_spec
+        if self._is_record_excluded(item.record):
+            return None
         if spec is None or not self._tile_overlay_active():
             return None
         rect = item.rect()
@@ -2801,6 +2874,8 @@ class MatrixListWidget(QGraphicsView):
         self._emit_overview_state()
 
     def _display_score(self, record: FrameRecord) -> float | None:
+        if self._is_record_excluded(record):
+            return None
         if not bool(getattr(record, "score_ready", False)):
             return None
         if self._score_view_mode == "absolute":
@@ -2874,6 +2949,8 @@ class MatrixListWidget(QGraphicsView):
         return QColor(140, 47, 57, 235)
 
     def _background_color_for_record(self, record: FrameRecord) -> QColor:
+        if self._is_record_excluded(record):
+            return QColor(144, 148, 153, 225)
         score = self._display_score(record)
         base_color = QColor(MATRIX_BACKGROUND_ALT) if score is None else self._background_color(score)
         if self._management_visual_mode:
@@ -2910,6 +2987,12 @@ class MatrixListWidget(QGraphicsView):
         return blend_colors(base_color, overlay, 0.28)
 
     def _tooltip_for_record(self, record: FrameRecord) -> str:
+        if self._is_record_excluded(record):
+            base_text = f"{record.display_name}\n{self._t('matrix.validation_na_excluded')}"
+            management_lines = self._management_tooltip_lines(record)
+            if management_lines:
+                return "\n".join([base_text, "", *management_lines])
+            return base_text
         if not bool(getattr(record, "score_ready", False)):
             suffix = f"\n{self._t('matrix.reference_frame')}" if self._reference_key == record.key else ""
             base_text = f"{record.display_name}\n{self._t('matrix.mismatch_not_computed')}{suffix}"
@@ -2930,6 +3013,19 @@ class MatrixListWidget(QGraphicsView):
         return "\n".join(lines)
 
     def _hover_text(self, record: FrameRecord) -> str:
+        if self._is_record_excluded(record):
+            parts = [record.display_name, self._t('matrix.validation_na_excluded').lower()]
+            management = self._management_payload_for_record(record)
+            if management:
+                parts.append(self._t("management.short.task", value=management.get("status", "")))
+                assignee = str(management.get("assignee", "")).strip()
+                if assignee:
+                    parts.append(self._t("management.short.owner", value=assignee))
+                recommended = str(management.get("recommended", "")).strip().lower() in {"1", "true", "yes"}
+                if recommended:
+                    risk = str(management.get("risk_score", "")).strip()
+                    parts.append(self._t("management.short.suggested_with_risk", value=risk) if risk else self._t("management.short.suggested"))
+            return " | ".join(parts)
         if not bool(getattr(record, "score_ready", False)):
             parts = [record.display_name, self._t('matrix.mismatch_not_computed').lower()]
             management = self._management_payload_for_record(record)

@@ -40,7 +40,7 @@ from ..core.analysis_modes import (
 from ..core.backend_constants import (
     BCE_SCORE_CAP,
 )
-from ..core.domain import BuildOptions, BuildResult, FolderSpec, FrameIdentity, FrameRecord, GeometryMode, ModelSpec
+from ..core.domain import BuildOptions, BuildResult, FolderSpec, FrameIdentity, FrameRecord, ModelSpec
 from ..core.pipeline import recommend_corrective_candidates
 from ..manager.primary_labeling_selector import (
     PrimaryLabelingConfig,
@@ -73,7 +73,6 @@ from ..ui.ui_constants import (
     DEFAULT_MATRIX_LAYOUT_MODE,
     DEFAULT_MATRIX_SCORE_VIEW_MODE,
     DEFAULT_MATRIX_METRIC_KEY,
-    DEFAULT_METRIC_SCOPE,
     DEFAULT_MASK_THRESHOLD,
     DEFAULT_MATRIX_ROWS,
     DEFAULT_SUBPIXEL_AGGREGATION,
@@ -92,6 +91,7 @@ from ..ui.ui_constants import (
     DEFAULT_TOTAL_FRAMES,
     FOLDER_CHECKED_ROLE,
     FOLDER_CONFIDENCE_ROLE,
+    FOLDER_CONFIDENCE_EXPANDED_ROLE,
     FOLDER_LABEL_ROLE,
     FOLDER_ROW_MIN_HEIGHT,
     MATRIX_METRIC_OPTIONS,
@@ -122,6 +122,7 @@ class KarakalPresenter(QObject):
         self._original_folder: FolderSpec | None = None
         self._gt_folder: FolderSpec | None = None
         self._export_folder: Path | None = None
+        self._saved_validation_mask_payload: dict[str, object] = self._settings_service.load_validation_mask_payload() or {}
         self._folder_check_guard = False
         self._tab_states: dict[object, ExtendMatrixTabState] = {}
         self._pending_build_snapshot: dict[str, object] | None = None
@@ -199,18 +200,45 @@ class KarakalPresenter(QObject):
             confidence_model_id=confidence_model_id,
         )
 
+    def _excluded_record_keys_for_state(self, state: ExtendMatrixTabState | None) -> set[str]:
+        if state is None:
+            return set()
+        return {str(key) for key in getattr(state, "excluded_record_keys", set()) if str(key)}
+
+    def _record_is_excluded(self, state: ExtendMatrixTabState | None, record: FrameRecord | None) -> bool:
+        if state is None or record is None:
+            return False
+        return str(record.key) in self._excluded_record_keys_for_state(state)
+
+    def _available_metric_keys_for_state(self, state: ExtendMatrixTabState | None, build_result: BuildResult | None = None) -> set[str]:
+        source = build_result if build_result is not None else (state.build_result if state is not None else None)
+        available = getattr(source, "available_metric_keys", None) if source is not None else None
+        if available is None:
+            return set()
+        return {str(key) for key in available if str(key)}
+
     def _display_metric_keys_for_state(self, state: ExtendMatrixTabState | None, build_result: BuildResult | None = None) -> tuple[str, ...]:
         context = self._analysis_context_for_state(state, build_result)
-        return tuple(key for key in display_metric_keys(context) if build_result is None or key in set(build_result.available_metric_keys))
+        available = self._available_metric_keys_for_state(state, build_result)
+        if build_result is None:
+            return tuple(display_metric_keys(context))
+        if not available:
+            return ()
+        return tuple(key for key in display_metric_keys(context) if key in available)
 
     def _percentile_basis_keys_for_state(self, state: ExtendMatrixTabState | None, build_result: BuildResult | None = None) -> tuple[str, ...]:
         context = self._analysis_context_for_state(state, build_result)
-        return tuple(key for key in percentile_basis_keys(context) if build_result is None or key in set(build_result.available_metric_keys))
+        available = self._available_metric_keys_for_state(state, build_result)
+        if build_result is None:
+            return tuple(percentile_basis_keys(context))
+        if not available:
+            return ()
+        return tuple(key for key in percentile_basis_keys(context) if key in available)
 
     def _default_metric_key_for_state(self, state: ExtendMatrixTabState | None, build_result: BuildResult | None = None) -> str:
         context = self._analysis_context_for_state(state, build_result)
         key = default_metric_key(context)
-        available = set((build_result or (state.build_result if state is not None else None)).available_metric_keys) if (build_result or state) is not None and getattr((build_result or (state.build_result if state is not None else None)), "available_metric_keys", None) is not None else set()
+        available = self._available_metric_keys_for_state(state, build_result)
         if not available or key in available:
             return key
         for candidate in self._percentile_basis_keys_for_state(state, build_result):
@@ -239,6 +267,8 @@ class KarakalPresenter(QObject):
 
     def _sync_mode_controls(self, state: ExtendMatrixTabState | None = None, build_result: BuildResult | None = None) -> None:
         context = self._analysis_context_for_state(state, build_result)
+        is_confidence_mode = context.analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}
+        has_scope_choices = bool(getattr(build_result, "model_specs", ()) if build_result is not None else ())
         is_confidence = self._confidence_context_available(context, build_result)
         is_point = context.object_type == POINT_OBJECT_TYPE
         tile_mode_enabled = self._selected_subpixel_view_mode() == "tile"
@@ -249,8 +279,9 @@ class KarakalPresenter(QObject):
         self._set_row_visible(getattr(self, "_matrix_columns_row", None), False)
         self._set_row_enabled(getattr(self, "_matrix_frames_per_row_row", None), True)
         self._set_row_visible(getattr(self, "_matrix_frames_per_row_row", None), True)
-        self._set_row_visible(getattr(self, "_metric_scope_row", None), is_confidence)
-        self._set_row_visible(getattr(self, "_metric_select_row", None), not is_confidence)
+        self._set_row_visible(getattr(self, "_metric_scope_row", None), True)
+        self._set_row_enabled(getattr(self, "_metric_scope_row", None), has_scope_choices)
+        self._set_row_visible(getattr(self, "_metric_select_row", None), not is_confidence_mode)
         self._set_row_visible(getattr(self, "_matrix_confidence_delta_row", None), is_confidence)
         self._set_row_visible(getattr(self, "_matrix_polygon_confidence_summary_row", None), is_confidence and not is_point)
         self._set_row_visible(getattr(self, "_matrix_polygon_compare_profile_row", None), not is_confidence and not is_point)
@@ -286,6 +317,134 @@ class KarakalPresenter(QObject):
                 threshold=threshold,
             ))
         return tuple(specs)
+
+    def _model_spec_for_folder_item(self, item: QListWidgetItem, build_result: BuildResult | None = None) -> ModelSpec | None:
+        path_text = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        label_text = str(item.data(FOLDER_LABEL_ROLE) or "").strip()
+        item_path = Path(path_text) if path_text else None
+        if build_result is not None:
+            if item_path is not None:
+                for spec in build_result.model_specs:
+                    if str(getattr(spec, "mask_folder", "") or "") == path_text:
+                        return spec
+            for spec in build_result.model_specs:
+                if label_text and str(getattr(spec, "display_name", "") or "") == label_text:
+                    return spec
+            if item_path is not None:
+                item_name = item_path.name
+                for spec in build_result.model_specs:
+                    spec_name = Path(str(getattr(spec, "mask_folder", "") or "")).name
+                    if item_name and spec_name == item_name:
+                        return spec
+        return None
+
+    def _model_id_for_folder_item(self, item: QListWidgetItem, build_result: BuildResult | None = None) -> str | None:
+        spec = self._model_spec_for_folder_item(item, build_result)
+        if spec is not None:
+            return str(spec.model_id)
+        path_text = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        label_value = item.data(FOLDER_LABEL_ROLE)
+        label_text = str(label_value or (Path(path_text).name if path_text else "")).strip()
+        if not label_text and path_text:
+            label_text = Path(path_text).name
+        model_id = re.sub(r"[^a-zA-Z0-9_]+", "_", label_text.strip().lower()).strip("_")
+        return model_id or None
+
+    def _folder_item_has_output_confidence(self, item: QListWidgetItem, build_result: BuildResult | None = None, model_id: str | None = None) -> bool:
+        confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "").strip()
+        if confidence_path_text:
+            return True
+        if build_result is None or not model_id:
+            return False
+        spec = self._model_spec_for_folder_item(item, build_result)
+        if spec is None:
+            spec = next((candidate for candidate in build_result.model_specs if str(candidate.model_id) == str(model_id)), None)
+        if spec is None or spec.prob_folder is None:
+            return False
+        return any(bool((record.model_prob_paths or {}).get(str(model_id))) for record in build_result.records)
+
+    def _folder_item_has_model_confidence(self, item: QListWidgetItem, build_result: BuildResult | None = None, model_id: str | None = None) -> bool:
+        if build_result is None or not model_id:
+            return False
+        spec = self._model_spec_for_folder_item(item, build_result)
+        if spec is None:
+            spec = next((candidate for candidate in build_result.model_specs if str(candidate.model_id) == str(model_id)), None)
+        if spec is None:
+            return False
+        return True
+
+    def _preferred_model_metric_key_for_folder_item(self, state: ExtendMatrixTabState, item: QListWidgetItem, model_id: str) -> str:
+        current_metric = str(state.metric_key or state.build_result.selected_metric_key or DEFAULT_MATRIX_METRIC_KEY)
+        parsed = confidence_metric_family(current_metric)
+        has_output_confidence = self._folder_item_has_output_confidence(item, state.build_result, model_id)
+        has_model_confidence = self._folder_item_has_model_confidence(item, state.build_result, model_id)
+        if parsed is not None:
+            family, _current_model_id = parsed
+            if family == "model_output_confidence":
+                return f"model_output_confidence::{model_id}" if has_output_confidence else f"model_confidence::{model_id}"
+            return f"{family}::{model_id}"
+        if has_output_confidence:
+            return f"model_output_confidence::{model_id}"
+        if has_model_confidence:
+            return f"model_confidence::{model_id}"
+        return current_metric
+
+    def _analysis_mode_for_folder_item(self, state: ExtendMatrixTabState, item: QListWidgetItem, model_id: str) -> str:
+        current_mode = str(state.analysis_mode or INTER_MODEL_ANALYSIS_MODE)
+        has_output_confidence = self._folder_item_has_output_confidence(item, state.build_result, model_id)
+        has_model_confidence = self._folder_item_has_model_confidence(item, state.build_result, model_id)
+        if current_mode == MODEL_OUTPUT_CONFIDENCE_MODE:
+            return MODEL_OUTPUT_CONFIDENCE_MODE if has_output_confidence else INTRA_MODEL_CONFIDENCE_MODE
+        if current_mode == INTRA_MODEL_CONFIDENCE_MODE:
+            return INTRA_MODEL_CONFIDENCE_MODE
+        if has_output_confidence:
+            return MODEL_OUTPUT_CONFIDENCE_MODE
+        if has_model_confidence:
+            return INTRA_MODEL_CONFIDENCE_MODE
+        return current_mode
+
+    def _on_folder_item_clicked(self, item: QListWidgetItem) -> None:
+        state = self._current_tab_state()
+        if state is None or self._worker_thread is not None:
+            return
+        build_result = state.build_result
+        model_id = self._model_id_for_folder_item(item, build_result)
+        if not model_id:
+            return
+        if item is not self.folder_list.currentItem():
+            self.folder_list.setCurrentItem(item)
+        preferred_mode = self._analysis_mode_for_folder_item(state, item, model_id)
+        preferred_metric_key = self._preferred_model_metric_key_for_folder_item(state, item, model_id)
+
+        state.analysis_mode = preferred_mode
+        state.confidence_model_id = model_id
+        state.metric_scope = model_id
+
+        blockers = [
+            QSignalBlocker(self.analysis_mode_combo),
+            QSignalBlocker(self.metric_scope_combo),
+        ]
+        _ = blockers
+        analysis_index = self.analysis_mode_combo.findData(preferred_mode)
+        if analysis_index >= 0:
+            self.analysis_mode_combo.setCurrentIndex(analysis_index)
+        scope_index = self.metric_scope_combo.findData(model_id)
+        if scope_index >= 0:
+            self.metric_scope_combo.setCurrentIndex(scope_index)
+        del blockers
+
+        self._sync_metric_controls(
+            build_result,
+            preferred_metric_key=preferred_metric_key,
+            preferred_scope_key=model_id,
+            context_state=state,
+        )
+        metric_key = str(self.metric_combo.currentData() or preferred_metric_key or self._default_metric_key_for_state(state, build_result))
+        state.metric_key = metric_key
+        self.metric_combo.setToolTip(self._metric_hint_fallback(metric_key, build_result))
+        self._apply_metric_to_state(state, metric_key)
+        self._sync_action_buttons()
+        self._set_details_preferred_model_id(state.metric_scope or state.confidence_model_id or model_id)
 
     def _effective_model_specs_for_build(self) -> tuple[ModelSpec, ...]:
         specs = self._checked_model_specs()
@@ -528,6 +687,7 @@ class KarakalPresenter(QObject):
         item.setData(FOLDER_CHECKED_ROLE, bool(checked))
         item.setData(FOLDER_LABEL_ROLE, folder_path.name)
         item.setData(FOLDER_CONFIDENCE_ROLE, "")
+        item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, False)
         item.setToolTip(folder_path_text)
         self.folder_list.addItem(item)
         return item
@@ -554,6 +714,7 @@ class KarakalPresenter(QObject):
                 path_text = str(item.data(Qt.ItemDataRole.UserRole))
                 display_text = str(item.data(FOLDER_LABEL_ROLE) or (Path(path_text).name or path_text))
                 confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "")
+                confidence_expanded = bool(item.data(FOLDER_CONFIDENCE_EXPANDED_ROLE))
                 confidence_display_text = self._compact_path_text(confidence_path_text)
                 row_widget = FolderRowWidget(
                     self.folder_list,
@@ -562,12 +723,14 @@ class KarakalPresenter(QObject):
                     checked=bool(item.data(FOLDER_CHECKED_ROLE)),
                     confidence_display_text=confidence_display_text,
                     confidence_path_text=confidence_path_text,
+                    confidence_expanded=confidence_expanded,
                     can_move_up=row > 0,
                     can_move_down=row < item_count - 1,
                     on_checked_changed=lambda checked, item=item: self._set_folder_item_checked(item, checked),
                     on_label_changed=lambda text, item=item: self._set_folder_item_label(item, text),
                     on_confidence_folder=lambda _checked=False, item=item: self._set_folder_item_confidence_folder(item),
                     on_clear_confidence_folder=lambda _checked=False, item=item: self._clear_folder_item_confidence_folder(item),
+                    on_confidence_toggle=lambda expanded, item=item: self._set_folder_item_confidence_expanded(item, expanded),
                     on_remove=lambda _checked=False, item=item: self._remove_folder_item(item),
                     on_move_up=lambda _checked=False, item=item: self._move_folder_item(item, -1),
                     on_move_down=lambda _checked=False, item=item: self._move_folder_item(item, 1),
@@ -576,6 +739,8 @@ class KarakalPresenter(QObject):
                     confidence_tooltip=confidence_path_text,
                     confidence_select_tooltip=self._t("folders.select_confidence"),
                     confidence_clear_tooltip=self._t("folders.clear_confidence"),
+                    confidence_expand_tooltip=self._t("folders.show_confidence"),
+                    confidence_collapse_tooltip=self._t("folders.hide_confidence"),
                     remove_tooltip="Remove model folder",
                     move_up_tooltip="Move up",
                     move_down_tooltip="Move down",
@@ -620,6 +785,10 @@ class KarakalPresenter(QObject):
         item.setData(FOLDER_CONFIDENCE_ROLE, "")
         self._refresh_folder_rows()
         self._sync_action_buttons()
+
+    def _set_folder_item_confidence_expanded(self, item: QListWidgetItem, expanded: bool) -> None:
+        item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, bool(expanded))
+        self._refresh_folder_rows()
 
     def _remove_folder_item(self, item: QListWidgetItem) -> None:
         row = self.folder_list.row(item)
@@ -699,6 +868,7 @@ class KarakalPresenter(QObject):
     def _capture_view_snapshot(self) -> dict[str, object]:
         confidence_model_id = self._selected_confidence_model_id(None)
         mask_threshold, boundary_radius = self._selected_polygon_compare_values()
+        current_state = self._current_tab_state()
         return {
             "cell_size": int(DEFAULT_CELL_SIZE),
             "layout_config": self._build_layout_config(),
@@ -728,6 +898,7 @@ class KarakalPresenter(QObject):
             "metric_scope": str(confidence_model_id or ""),
             "confidence_model_id": confidence_model_id,
             "frame_type_filter": str(self.frame_type_filter_combo.currentData() or 'all'),
+            "excluded_record_keys": tuple(sorted(self._excluded_record_keys_for_state(current_state))),
         }
 
     def _set_ui_context_from_state(self, state: ExtendMatrixTabState) -> None:
@@ -825,6 +996,7 @@ class KarakalPresenter(QObject):
             str(state.object_type),
             str(metric_key or state.metric_key or DEFAULT_MATRIX_METRIC_KEY),
             str(state.confidence_model_id or ""),
+            tuple(sorted(self._excluded_record_keys_for_state(state))),
             state.build_result.options,
         )
 
@@ -2545,7 +2717,7 @@ class KarakalPresenter(QObject):
         self._worker_kind = "analytics"
         self._active_compute_state = state
         self._worker_thread = QThread(self._view)
-        self._worker = AnalyticsWorker(state.build_result, metric_key)
+        self._worker = AnalyticsWorker(state.build_result, metric_key, self._excluded_record_keys_for_state(state))
         generation = self._begin_worker_request(state=state)
         self._worker.moveToThread(self._worker_thread)
         self._worker_thread.started.connect(self._worker.run)
@@ -2580,11 +2752,13 @@ class KarakalPresenter(QObject):
         self._sync_current_analysis_context(state, auto_recompute=False)
         self._apply_pending_display_controls(state)
         metric_key = str(self.metric_combo.currentData() or state.metric_key or DEFAULT_MATRIX_METRIC_KEY)
+        request_signature = self._analytics_request_signature(state, metric_key)
         options_changed = state.build_result.options != previous_options
         needs_analytics = (
             not bool(getattr(state.build_result, "scores_computed", False))
             or options_changed
             or self._metric_value_missing_for_build_result(state.build_result, metric_key)
+            or getattr(state, "last_analytics_request_signature", None) != request_signature
         )
         if not needs_analytics:
             self._apply_metric_to_state(state, metric_key)
@@ -2682,6 +2856,7 @@ class KarakalPresenter(QObject):
         state.matrix_view.set_processing_keys(set())
         state.processing_state_by_key.clear()
         state.build_result = result
+        state.last_analytics_request_signature = request_signature or self._analytics_request_signature(state, state.metric_key)
         self._invalidate_state_runtime_caches(state, clear_metric_results=True)
         self._sync_metric_controls(
             result,
@@ -2785,7 +2960,6 @@ class KarakalPresenter(QObject):
         self._on_subpixel_view_mode_changed()
 
     def _on_tile_overlap_mode_changed(self, *_args) -> None:  # pragma: no cover - compatibility shim
-        state = self._current_tab_state()
         self._sync_action_buttons()
 
     def _on_tile_grid_parameter_changed(self, *_args) -> None:
@@ -2899,6 +3073,8 @@ class KarakalPresenter(QObject):
 
     def _open_record_details(self, record: FrameRecord, state: ExtendMatrixTabState, tile_selection: object | None = None) -> None:
         session_view_state = dict(self._details_view_payload)
+        preferred_model_id = str(state.metric_scope or state.confidence_model_id or session_view_state.get("preferred_model_id") or "") or None
+        session_view_state["preferred_model_id"] = preferred_model_id
         if tile_selection is not None:
             parent_row = int(getattr(tile_selection, "matrix_row", getattr(tile_selection, "row", 0)))
             parent_column = int(getattr(tile_selection, "matrix_column", getattr(tile_selection, "column", 0)))
@@ -2931,6 +3107,7 @@ class KarakalPresenter(QObject):
             preferred_metric_key=state.metric_key,
             session_view_state=session_view_state,
             on_view_state_changed=self._store_details_view_payload,
+            export_folder=self._export_folder,
             parent=None,
         )
         dialog.setModal(False)
@@ -2950,23 +3127,122 @@ class KarakalPresenter(QObject):
             except Exception:
                 selected_records = tuple()
         menu = QMenu(self._view)
-        open_action = menu.addAction(self._t("context.open_details"))
-        open_action.setEnabled(record is not None)
-        export_action = menu.addAction(self._t("context.export_frame_assets"))
+        single_selected_record = selected_records[0] if len(selected_records) == 1 else None
+        open_action = None
+        if single_selected_record is not None:
+            open_action = menu.addAction(self._t("context.open_details"))
+        exclude_source = tuple(selected_records) if selected_records else ((record,) if record is not None else tuple())
+        saved_validation_mask = self._saved_validation_mask_record_keys()
+        export_menu = menu.addMenu(self._t("context.export_menu"))
+        export_action = export_menu.addAction(self._t("context.export_frame_assets"))
         export_action.setEnabled(record is not None)
-        export_selected_action = menu.addAction(self._t("context.export_selected_frame_assets", count=len(selected_records)))
+        export_selected_action = export_menu.addAction(self._t("context.export_selected_frame_assets", count=len(selected_records)))
         export_selected_action.setEnabled(bool(selected_records))
+        validation_menu = menu.addMenu(self._t("context.validation_menu"))
+        exclude_action = validation_menu.addAction(self._t("context.exclude_selected_from_validation", count=len(exclude_source)))
+        exclude_action.setEnabled(bool(exclude_source))
+        restore_action = validation_menu.addAction(self._t("context.restore_selected_validation", count=len(exclude_source)))
+        restore_action.setEnabled(bool(exclude_source))
+        validation_menu.addSeparator()
+        save_mask_action = validation_menu.addAction(self._t("context.save_validation_mask"))
+        save_mask_action.setEnabled(bool(state.excluded_record_keys))
+        apply_mask_action = validation_menu.addAction(self._t("context.apply_validation_mask"))
+        apply_mask_action.setEnabled(bool(saved_validation_mask))
+        clear_all_exclusions_action = validation_menu.addAction(self._t("context.clear_all_validation_exclusions"))
+        clear_all_exclusions_action.setEnabled(bool(state.excluded_record_keys))
         selected_action = menu.exec(global_pos)
         if selected_action is None:
             return
-        if selected_action is open_action and record is not None:
-            self._open_record_details(record, state)
+        if open_action is not None and selected_action is open_action and single_selected_record is not None:
+            self._open_record_details(single_selected_record, state)
             return
         if selected_action is export_action and record is not None:
             self._export_record_assets(state, record)
             return
         if selected_action is export_selected_action and selected_records:
             self._export_records_assets(state, selected_records)
+            return
+        if selected_action is exclude_action and exclude_source:
+            self._set_validation_exclusions(state, exclude_source, exclude=True)
+            return
+        if selected_action is restore_action and exclude_source:
+            self._set_validation_exclusions(state, exclude_source, exclude=False)
+            return
+        if selected_action is save_mask_action:
+            self._save_validation_mask(state)
+            return
+        if selected_action is apply_mask_action:
+            self._apply_validation_mask(state)
+            return
+        if selected_action is clear_all_exclusions_action:
+            self._set_validation_exclusions(state, tuple(), clear_all=True)
+
+    def _set_validation_exclusions(
+        self,
+        state: ExtendMatrixTabState,
+        records: tuple[FrameRecord, ...],
+        *,
+        exclude: bool = False,
+        clear_all: bool = False,
+        replace_current: bool = False,
+    ) -> None:
+        previous = set(self._excluded_record_keys_for_state(state))
+        current = set(previous)
+        if clear_all or replace_current:
+            current.clear()
+        else:
+            keys = {str(record.key) for record in records if record is not None}
+            if exclude:
+                current.update(keys)
+            else:
+                current.difference_update(keys)
+        state.excluded_record_keys = current
+        try:
+            state.matrix_view.set_excluded_record_keys(set(current))
+        except Exception:
+            pass
+        if current != previous:
+            self._invalidate_state_runtime_caches(state, clear_metric_results=True)
+            state.last_analytics_request_signature = None
+            state.build_result = replace(state.build_result, scores_computed=False)
+        self._update_matrix_preview(state, state.matrix_view.current_record())
+        self._sync_action_buttons()
+
+    def _saved_validation_mask_record_keys(self) -> set[str]:
+        payload = self._saved_validation_mask_payload if isinstance(self._saved_validation_mask_payload, dict) else {}
+        keys = payload.get("excluded_record_keys") if isinstance(payload, dict) else None
+        return {str(key) for key in (keys or ()) if str(key)}
+
+    def _save_validation_mask(self, state: ExtendMatrixTabState) -> None:
+        keys = {str(key) for key in self._excluded_record_keys_for_state(state) if str(key)}
+        if not keys:
+            return
+        self._saved_validation_mask_payload = {
+            "excluded_record_keys": tuple(sorted(keys)),
+            "saved_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "source_build": str(getattr(state.build_result, "name", "") or ""),
+        }
+        self._settings_service.save_validation_mask_payload(self._saved_validation_mask_payload)
+        self._settings_service.sync()
+        QMessageBox.information(
+            self._view,
+            self._t("dialog.info_title"),
+            self._t("message.validation_mask_saved", count=len(keys)),
+        )
+
+    def _apply_validation_mask(self, state: ExtendMatrixTabState) -> None:
+        saved_keys = self._saved_validation_mask_record_keys()
+        if not saved_keys:
+            return
+        current_keys = {str(record.key) for record in getattr(state.build_result, "records", ()) if str(record.key)}
+        keys = saved_keys & current_keys if current_keys else saved_keys
+        records = tuple(record for record in getattr(state.build_result, "records", ()) if str(record.key) in keys)
+        self._set_validation_exclusions(state, records, exclude=True, replace_current=True)
+        QMessageBox.information(
+            self._view,
+            self._t("dialog.info_title"),
+            self._t("message.validation_mask_applied", count=len(keys)),
+        )
 
     def _ensure_export_folder(self) -> Path | None:
         if self._export_folder is None:
@@ -3026,6 +3302,18 @@ class KarakalPresenter(QObject):
         self._details_view_payload = dict(payload or {})
         self._settings_service.save_details_view_payload(self._details_view_payload)
 
+    def _set_details_preferred_model_id(self, model_id: str | None) -> None:
+        normalized = str(model_id or "") or None
+        self._details_view_payload["preferred_model_id"] = normalized
+        self._settings_service.save_details_view_payload(self._details_view_payload)
+        for dialog in list(self._details_dialogs):
+            setter = getattr(dialog, "set_preferred_model_id", None)
+            if callable(setter):
+                try:
+                    setter(normalized)
+                except Exception:
+                    continue
+
     def _management_payload_for_record(self, state: ExtendMatrixTabState, record: FrameRecord | None) -> dict[str, str] | None:
         if record is None or not state.management_payload_by_key:
             return None
@@ -3062,6 +3350,26 @@ class KarakalPresenter(QObject):
             return
         if selected is None:
             preview.frame_value.setText("-")
+            if preview.subpixel_group is not None:
+                preview.subpixel_group.hide()
+            if preview.subpixel_value is not None:
+                preview.subpixel_value.setText("-")
+            if getattr(preview, "subpixel_score_card", None) is not None:
+                preview.subpixel_score_card.hide()
+            for card in preview.score_cards.values():
+                card.set_payload("-", self._metric_score_style(None, state.metric_key), "", visible=False, percentile_text="", percentile_style=self._percentile_style(None))
+            if preview.overall_group is not None:
+                preview.overall_group.hide()
+            if preview.component_group is not None:
+                preview.component_group.hide()
+            return
+        if self._record_is_excluded(state, selected):
+            management_payload = self._management_payload_for_record(state, selected)
+            management_text = self._management_summary_text(management_payload)
+            excluded_text = self._t("matrix.validation_na_excluded")
+            preview.frame_value.setText(selected.display_name if not management_text else f"{selected.display_name}\n{management_text}")
+            if excluded_text:
+                preview.frame_value.setText(f"{preview.frame_value.text()}\n{excluded_text}")
             if preview.subpixel_group is not None:
                 preview.subpixel_group.hide()
             if preview.subpixel_value is not None:
@@ -3184,8 +3492,6 @@ class KarakalPresenter(QObject):
         required_model_count = self._required_model_count_for_active_mode()
         can_build_from_base_only = active_model_count <= 0 and self._original_folder is not None and Path(self._original_folder.path).exists()
         is_busy = self._worker_thread is not None
-        is_base_only_current = self._is_base_only_build_result(None if current_state is None else current_state.build_result)
-        is_management_mode = self._current_app_mode() == "management"
         self.btn_clear_folders.setEnabled(self.folder_list.count() > 0 and not is_busy)
         self.btn_set_original.setEnabled(not is_busy)
         self.btn_clear_original.setEnabled(self._original_folder is not None and not is_busy)
@@ -3195,7 +3501,7 @@ class KarakalPresenter(QObject):
         self.btn_clear_export.setEnabled(self._export_folder is not None and not is_busy)
         can_start_build = active_model_count >= required_model_count or can_build_from_base_only
         self.btn_build.setEnabled((current_state is not None or can_start_build) and not is_busy)
-        self.btn_compute.setEnabled(current_state is not None and not is_busy and (is_management_mode or not is_base_only_current))
+        self.btn_compute.setEnabled(current_state is not None and not is_busy)
         self.btn_cancel.setEnabled(is_busy)
         if hasattr(self._view, "set_workflow_summary"):
             original_state = self._t("workflow.state.ready") if self._original_folder is not None else self._t("workflow.state.pending")
@@ -3241,6 +3547,7 @@ class KarakalPresenter(QObject):
                     "checked": bool(self.folder_list.item(row).data(FOLDER_CHECKED_ROLE)),
                     "label": str(self.folder_list.item(row).data(FOLDER_LABEL_ROLE) or ""),
                     "confidence_path": str(self.folder_list.item(row).data(FOLDER_CONFIDENCE_ROLE) or ""),
+                    "confidence_expanded": bool(self.folder_list.item(row).data(FOLDER_CONFIDENCE_EXPANDED_ROLE)),
                 }
                 for row in range(self.folder_list.count())
             ],
@@ -3274,6 +3581,7 @@ class KarakalPresenter(QObject):
                 confidence_path = folder_entry.get("confidence_path")
                 if confidence_path and Path(confidence_path).exists():
                     item.setData(FOLDER_CONFIDENCE_ROLE, str(confidence_path))
+                item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, bool(folder_entry.get("confidence_expanded", False)))
             original_folder = payload.get("original_folder")
             gt_folder = payload.get("gt_folder")
             export_folder = payload.get("export_folder")
@@ -3323,6 +3631,7 @@ class KarakalPresenter(QObject):
             "metric_scope": str(self.metric_scope_combo.currentData() or ""),
             "confidence_model_id": str(self.metric_scope_combo.currentData() or ""),
             "frame_type_filter": str(self.frame_type_filter_combo.currentData() or 'all'),
+            "analysis_panel_expanded": bool(self.analysis_settings_group.isChecked()) if hasattr(self, "analysis_settings_group") else True,
         }
 
     def _restore_build_settings(self) -> None:
@@ -3423,6 +3732,13 @@ class KarakalPresenter(QObject):
         self._sync_metric_controls(None, preferred_metric_key=metric_key, preferred_scope_key=metric_scope)
         index = self.frame_type_filter_combo.findData(frame_type_filter)
         self.frame_type_filter_combo.setCurrentIndex(index if index >= 0 else 0)
+        analysis_panel_expanded = bool(payload.get("analysis_panel_expanded", True))
+        if hasattr(self, "analysis_settings_group"):
+            blocker = QSignalBlocker(self.analysis_settings_group)
+            self.analysis_settings_group.setChecked(analysis_panel_expanded)
+            del blocker
+        if hasattr(self, "analysis_settings_body"):
+            self.analysis_settings_body.setVisible(analysis_panel_expanded)
         self._sync_tile_overlap_bounds()
         self._sync_mode_controls(None, None)
 

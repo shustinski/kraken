@@ -11,6 +11,7 @@ from ..ui.ui_constants import (
     SETTINGS_FOLDERS_KEY,
     SETTINGS_LANGUAGE_KEY,
     SETTINGS_MANAGEMENT_KEY,
+    SETTINGS_VALIDATION_MASK_KEY,
 )
 
 
@@ -44,6 +45,12 @@ class KarakalSettingsService:
     def save_management_payload(self, payload: dict) -> None:
         self._save_payload(SETTINGS_MANAGEMENT_KEY, payload)
 
+    def load_validation_mask_payload(self) -> dict:
+        return self._load_payload(SETTINGS_VALIDATION_MASK_KEY)
+
+    def save_validation_mask_payload(self, payload: dict) -> None:
+        self._save_payload(SETTINGS_VALIDATION_MASK_KEY, payload)
+
     def load_language(self) -> str | None:
         value = self._settings.value(SETTINGS_LANGUAGE_KEY, "", str)
         return str(value) if value else None
@@ -60,7 +67,7 @@ class KarakalSettingsService:
             return {}
         try:
             payload = json.loads(raw)
-        except Exception:
+        except (TypeError, ValueError):
             return {}
         return payload if isinstance(payload, dict) else {}
 

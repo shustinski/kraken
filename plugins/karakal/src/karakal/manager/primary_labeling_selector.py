@@ -1432,7 +1432,6 @@ def _cache_key_for_selection(
             signature ^= int(stat.st_mtime_ns) ^ int(stat.st_size)
         except Exception:
             continue
-    pred_count = int(len(prediction_path_by_key or {}))
     cfg = config or PrimaryLabelingConfig()
     return (
         source_text,

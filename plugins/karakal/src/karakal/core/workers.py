@@ -95,10 +95,11 @@ class FrameIndexWorker(WorkerBase):
 class AnalyticsWorker(WorkerBase):
     """Compute frame-level analytics for an indexed build result."""
 
-    def __init__(self, build_result: BuildResult, metric_key: str) -> None:
+    def __init__(self, build_result: BuildResult, metric_key: str, excluded_record_keys: set[str] | None = None) -> None:
         super().__init__()
         self._build_result = build_result
         self._metric_key = metric_key
+        self._excluded_record_keys = {str(key) for key in (excluded_record_keys or set()) if str(key)}
 
     def run(self) -> None:
         try:
@@ -106,6 +107,7 @@ class AnalyticsWorker(WorkerBase):
             result = compute_build_result_analytics(
                 self._build_result,
                 metric_key=self._metric_key,
+                excluded_record_keys=self._excluded_record_keys,
                 progress_callback=self._emit_progress,
                 state_callback=self._emit_frame_state,
                 cancel_check=self._is_cancelled,

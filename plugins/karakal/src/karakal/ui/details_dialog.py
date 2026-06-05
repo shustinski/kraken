@@ -1,7 +1,9 @@
 """Details dialog for the extended validation gradient widget."""
 from __future__ import annotations
 
+import hashlib
 import numpy as np
+from pathlib import Path
 from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
@@ -12,10 +14,12 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGraphicsScene,
+    QGraphicsRectItem,
     QGraphicsView,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QFileDialog,
     QPushButton,
     QProgressBar,
     QScrollArea,
@@ -39,14 +43,13 @@ from ..core.subpixel_grid import (
 )
 from ..core.repository import (
     _boundary_mask,
+    _distance_transform,
     _confidence_map_from_probability,
     _confidence_display_map_from_probability,
     _frame_uncertainty_components_from_probability,
     metric_higher_is_better,
-    _paint_disk,
     _point_map_from_view,
     _support_weights_from_probability,
-    _uncertainty_map_from_probability,
     compute_comparison,
     compute_comparison_score,
 )
@@ -66,11 +69,11 @@ DETAIL_PIXEL_VIEW_THRESHOLD = 32.0
 
 
 class _OverlayGraphicsView(QGraphicsView):
-    """Provide zoom and middle-button preview toggling for the overlay preview."""
+    """Provide zoom, middle-button preview toggling, and panning for the overlay preview."""
 
     middlePressed = pyqtSignal()
     middleReleased = pyqtSignal()
-    leftClicked = pyqtSignal(QPointF)
+    leftClicked = pyqtSignal(QPointF, object)
     viewTransformChanged = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
@@ -84,6 +87,8 @@ class _OverlayGraphicsView(QGraphicsView):
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         self.setMinimumSize(320, 320)
+        self._middle_pan_active = False
+        self._middle_pan_last_pos: QPointF | None = None
 
     def wheelEvent(self, event) -> None:
         factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
@@ -96,18 +101,32 @@ class _OverlayGraphicsView(QGraphicsView):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
+            self._middle_pan_active = True
+            self._middle_pan_last_pos = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
             self.middlePressed.emit()
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
-            self.leftClicked.emit(self.mapToScene(event.position().toPoint()))
+            self.leftClicked.emit(self.mapToScene(event.position().toPoint()), event.modifiers())
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._middle_pan_active and (event.buttons() & Qt.MouseButton.MiddleButton) and self._middle_pan_last_pos is not None:
+            delta = event.position() - self._middle_pan_last_pos
+            self._middle_pan_last_pos = event.position()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(delta.x()))
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(delta.y()))
+            self.viewTransformChanged.emit()
+            event.accept()
+            return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
+            self._middle_pan_active = False
+            self._middle_pan_last_pos = None
+            self.unsetCursor()
             self.middleReleased.emit()
             event.accept()
             return
@@ -189,6 +208,7 @@ class ExtendFrameDetailsDialog(QDialog):
         *,
         session_view_state: dict[str, object] | None = None,
         on_view_state_changed=None,
+        export_folder: Path | str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -205,6 +225,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self._derived_cache: dict[tuple[object, ...], object] = {}
         self._comparison_score: float | None = None
         self._preferred_metric_key = str(preferred_metric_key or build_result.selected_metric_key or "overall_frame_score")
+        self._preferred_model_id = str((session_view_state or {}).get("preferred_model_id") or "") or None
         self._pending_initial_fit = True
         self._detail_thread: QThread | None = None
         self._detail_worker: DetailPayloadWorker | None = None
@@ -220,6 +241,8 @@ class ExtendFrameDetailsDialog(QDialog):
         self._hold_preview_pixmap = QPixmap()
         self._session_view_state = session_view_state if session_view_state is not None else {}
         self._on_view_state_changed = on_view_state_changed
+        self._export_folder = None if export_folder is None else Path(export_folder)
+        self._model_tile_selections: dict[str, list[tuple[int, int]]] = {}
         tile_selection_payload = self._session_view_state.get("tile_selection")
         self._tile_selection = None
         self._subpixel_selection: SubpixelSelection | None = None
@@ -261,12 +284,35 @@ class ExtendFrameDetailsDialog(QDialog):
                 )
             except Exception:
                 self._subpixel_selection = None
+        model_tile_selections_payload = self._session_view_state.get("model_tile_selections")
+        if isinstance(model_tile_selections_payload, dict):
+            for key, value in model_tile_selections_payload.items():
+                try:
+                    selections: list[tuple[int, int]] = []
+                    if isinstance(value, dict):
+                        value = value.get("selections") or value.get("tiles") or value.get("items") or value.get("selection")
+                    if isinstance(value, (tuple, list)):
+                        if len(value) >= 2 and all(isinstance(entry, (int, float, str)) for entry in value[:2]):
+                            selections.append((int(value[0]), int(value[1])))
+                        else:
+                            for entry in value:
+                                if isinstance(entry, dict):
+                                    row = entry.get("row")
+                                    column = entry.get("column")
+                                    if row is not None and column is not None:
+                                        selections.append((int(row), int(column)))
+                                elif isinstance(entry, (tuple, list)) and len(entry) >= 2:
+                                    selections.append((int(entry[0]), int(entry[1])))
+                    if selections:
+                        self._model_tile_selections[str(key)] = self._dedupe_tile_selections(selections)
+                except Exception:
+                    continue
         self._restored_result_kind: str | None = None
         self._sticky_result_kind: str | None = None
         self._tile_plan: TileGridPlan | None = None
         self.frame_id_value = QLabel("-", self)
         self.frame_id_value.hide()
-        self.resize(1440, 940)
+        self.resize(1560, 1000)
         self.setWindowTitle(self._t("details.window_title", name=record.display_name))
         self._build_ui()
         scene = self.overlay_view.scene()
@@ -279,6 +325,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.tile_preview_item = scene.addPixmap(QPixmap())
         self.tile_grid_item = scene.addPixmap(QPixmap())
         self.tile_selection_item = scene.addRect(0.0, 0.0, 0.0, 0.0)
+        self._selection_overlay_items: list[QGraphicsRectItem] = []
         # Legacy lite aliases retained for backward compatibility.
         self.base_item = self.original_item
         self.first_item = self.first_source_item
@@ -355,11 +402,13 @@ class ExtendFrameDetailsDialog(QDialog):
 
         controls_scroll = QScrollArea(splitter)
         controls_scroll.setWidgetResizable(True)
-        controls_scroll.setMinimumWidth(420)
+        controls_scroll.setMinimumWidth(360)
+        controls_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         controls_host = QWidget(controls_scroll)
+        controls_host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
         controls_layout = QVBoxLayout(controls_host)
         controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(10)
+        controls_layout.setSpacing(8)
         controls_scroll.setWidget(controls_host)
 
         frame_summary_group = QGroupBox(self._t("details.frame_info"), controls_host)
@@ -379,16 +428,6 @@ class ExtendFrameDetailsDialog(QDialog):
         config_group = QGroupBox(self._t("details.display"), controls_host)
         config_form = QFormLayout(config_group)
         config_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        self.model_a_combo = QComboBox(config_group)
-        self.model_a_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.model_b_combo = QComboBox(config_group)
-        self.model_b_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.primary_model_title = QLabel(self._t("details.selected_source"), config_group)
-        self.secondary_model_title = QLabel(self._t("details.comparison_source"), config_group)
-        self.model_a_combo.hide()
-        self.model_b_combo.hide()
-        self.primary_model_title.hide()
-        self.secondary_model_title.hide()
         self.comparison_preset_combo = QComboBox(config_group)
         self.comparison_preset_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.comparison_preset_combo.hide()
@@ -397,6 +436,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.comparison_group_combo.hide()
         self.result_kind_combo = QComboBox(config_group)
         self.result_kind_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.export_selected_regions_button = QPushButton(self._t("details.export_selected_regions"), config_group)
         self.layer_view_combo = QComboBox(config_group)
         self.layer_view_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.layer_view_combo.addItem(self._t("details.layer_view.binary"), "binary")
@@ -412,6 +452,7 @@ class ExtendFrameDetailsDialog(QDialog):
         config_form.addRow(self._t("details.layer_view"), self.layer_view_combo)
         config_form.addRow(self._t("details.result_overlay"), self.result_kind_combo)
         config_form.addRow(self.operation_label, self.grayscale_diff_checkbox)
+        config_form.addRow(self._t("details.export_selected_regions"), self.export_selected_regions_button)
         controls_layout.addWidget(config_group)
 
         layers_group = QGroupBox(self._t("details.layers"), controls_host)
@@ -456,7 +497,7 @@ class ExtendFrameDetailsDialog(QDialog):
         splitter.addWidget(controls_scroll)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
-        splitter.setSizes([980, 420])
+        splitter.setSizes([1080, 500])
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -542,8 +583,10 @@ class ExtendFrameDetailsDialog(QDialog):
         self._record = records[next_index]
         self._tile_selection = None
         self._subpixel_selection = None
+        self._model_tile_selections.clear()
         self._session_view_state.pop("tile_selection", None)
         self._session_view_state.pop("subpixel_selection", None)
+        self._session_view_state.pop("model_tile_selections", None)
         self.setWindowTitle(self._t("details.window_title", name=self._record.display_name))
         self._legacy_update_frame_id_value()
         self._load_current_payload(reset_view=False, preserve_selection=True)
@@ -585,11 +628,10 @@ class ExtendFrameDetailsDialog(QDialog):
             shortcut.activated.connect(lambda delta=delta: self._legacy_step_record(delta))
 
     def _connect_signals(self) -> None:
-        self.model_a_combo.currentIndexChanged.connect(self._on_model_a_changed)
-        self.model_b_combo.currentIndexChanged.connect(self._on_model_pair_changed)
         self.result_kind_combo.currentIndexChanged.connect(self._refresh_scene_from_controls)
         self.layer_view_combo.currentIndexChanged.connect(self._refresh_scene_from_controls)
         self.grayscale_diff_checkbox.toggled.connect(self._refresh_scene_from_controls)
+        self.export_selected_regions_button.clicked.connect(self._export_selected_regions)
         self.overlay_view.middlePressed.connect(self._activate_context_hold)
         self.overlay_view.middleReleased.connect(self._deactivate_base_hold)
         for widget in (
@@ -628,30 +670,12 @@ class ExtendFrameDetailsDialog(QDialog):
         self.result_mask_color_button.clicked.connect(self._choose_active_result_color)
 
     def _populate_model_combos(self) -> None:
-        current_a = self.model_a_combo.currentData()
-        current_b = self.model_b_combo.currentData()
-        for combo in (self.model_a_combo, self.model_b_combo):
-            combo.blockSignals(True)
-            combo.clear()
-            for spec in self._build_result.model_specs:
-                combo.addItem(spec.display_name, spec.model_id)
-            combo.blockSignals(False)
-        if self.model_a_combo.count() <= 0:
-            return
-        index_a = self.model_a_combo.findData(current_a)
-        self.model_a_combo.setCurrentIndex(index_a if index_a >= 0 else 0)
-        preferred_b = current_b
-        if preferred_b is None or preferred_b == self.model_a_combo.currentData():
-            preferred_b = None
-            for index in range(self.model_b_combo.count()):
-                candidate = self.model_b_combo.itemData(index)
-                if candidate != self.model_a_combo.currentData():
-                    preferred_b = candidate
-                    break
-            if preferred_b is None:
-                preferred_b = self.model_a_combo.currentData()
-        index_b = self.model_b_combo.findData(preferred_b)
-        self.model_b_combo.setCurrentIndex(index_b if index_b >= 0 else 0)
+        """Keep the comparison model order implicit.
+
+        The manager folder order already determines the comparison direction, so
+        the dialog no longer exposes manual selectors here.
+        """
+        return
 
     def _schedule_reset_view(self) -> None:
         QTimer.singleShot(0, self.overlay_view.reset_view)
@@ -842,6 +866,8 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("hint.point_confidence")
         if (not self._is_point_geometry()) and result_kind == "boundary":
             return self._t("hint.boundary_difference")
+        if (not self._is_point_geometry()) and result_kind == "input_output":
+            return self._t("hint.input_output_heatmap")
         if (not self._is_point_geometry()) and result_kind == "confidence":
             return self._t("hint.polygon_confidence")
         if result_kind == "confidence_bad_areas":
@@ -913,13 +939,6 @@ class ExtendFrameDetailsDialog(QDialog):
         return self._selected_result_kind() in {"confidence", "confidence_bad_areas", "confidence_mix"}
 
     def _auto_model_model_tuple(self) -> tuple[str, str, str]:
-        pairwise = self._payload.get("pairwise_model_comparisons") or ()
-        if pairwise:
-            top = pairwise[0]
-            model_a = str(top.get("model_a", ""))
-            model_b = str(top.get("model_b", ""))
-            if model_a and model_b:
-                return f"model_vs_model::{model_a}::{model_b}", f"model:{model_a}", f"model:{model_b}"
         model_ids = [spec.model_id for spec in self._build_result.model_specs]
         if len(model_ids) >= 2:
             return f"model_vs_model::{model_ids[0]}::{model_ids[1]}", f"model:{model_ids[0]}", f"model:{model_ids[1]}"
@@ -931,10 +950,6 @@ class ExtendFrameDetailsDialog(QDialog):
         return "none", "gt", "gt"
 
     def _auto_model_labeled_tuple(self) -> tuple[str, str, str]:
-        model_metrics = self._payload.get("model_metrics") or {}
-        if model_metrics:
-            best_model_id = max(model_metrics.items(), key=lambda item: float(getattr(item[1], 'quality_score', 0.0)))[0]
-            return f"gt_vs_model::{best_model_id}", "gt", f"model:{best_model_id}"
         model_ids = [spec.model_id for spec in self._build_result.model_specs]
         if model_ids:
             return f"gt_vs_model::{model_ids[0]}", "gt", f"model:{model_ids[0]}"
@@ -994,8 +1009,6 @@ class ExtendFrameDetailsDialog(QDialog):
         group_key = self._current_comparison_group()
         if group_key == "model_labeled" and self._has_ground_truth():
             return self._auto_model_labeled_tuple()
-        if group_key == "model_model":
-            return self._auto_model_model_tuple()
         return self._auto_model_model_tuple()
 
     def _start_loading_payload(self, *, reset_view: bool, preserve_selection: bool) -> None:
@@ -1331,8 +1344,109 @@ class ExtendFrameDetailsDialog(QDialog):
         self._payload["selected_model_id"] = selected_model_id
         self._payload["selected_prob"] = np.asarray(selected_prob, dtype=np.float32)
         self._payload["selected_mask"] = np.asarray(selected_mask, dtype=bool)
+        selections = list(self._model_tile_selections.get(str(selected_model_id or ""), []))
+        self._tile_selection = selections[0] if selections else None
+
+    def _dedupe_tile_selections(self, selections: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        unique: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for row, column in selections:
+            tile = (int(row), int(column))
+            if tile in seen:
+                continue
+            seen.add(tile)
+            unique.append(tile)
+        return unique
+
+    def _active_result_model_id(self) -> str | None:
+        model_id = self._selected_model_for_current_comparison()
+        if model_id is not None:
+            return model_id
+        payload_model_id = str(self._payload.get("selected_model_id") or "")
+        if payload_model_id:
+            return payload_model_id
+        return self._build_result.model_specs[0].model_id if self._build_result.model_specs else None
+
+    def _tile_selections_for_model(self, model_id: str | None) -> list[tuple[int, int]]:
+        if model_id is None:
+            return []
+        return list(self._model_tile_selections.get(str(model_id), []))
+
+    def _set_model_tile_selections(self, model_id: str | None, selections: list[tuple[int, int]], *, active_tile: tuple[int, int] | None = None) -> None:
+        if model_id is None:
+            return
+        normalized = self._dedupe_tile_selections(selections)
+        key = str(model_id)
+        if normalized:
+            self._model_tile_selections[key] = normalized
+        else:
+            self._model_tile_selections.pop(key, None)
+        if active_tile is not None and active_tile in normalized:
+            self._tile_selection = active_tile
+        elif normalized:
+            self._tile_selection = normalized[0]
+        else:
+            self._tile_selection = None
+        self._overlay_cache.clear()
+        self._store_view_settings()
+
+    def _clear_selection_overlay_items(self) -> None:
+        scene = self.overlay_view.scene()
+        if scene is None:
+            self._selection_overlay_items.clear()
+            return
+        for item in self._selection_overlay_items:
+            try:
+                scene.removeItem(item)
+            except Exception:
+                pass
+        self._selection_overlay_items.clear()
+
+    def _selection_color_for_model(self, model_id: str | None, *, active: bool = False) -> QColor:
+        if model_id is None:
+            return QColor(255, 196, 0, 180 if active else 90)
+        digest = hashlib.sha1(str(model_id).encode("utf-8")).digest()
+        hue = int(digest[0]) % 360
+        saturation = 170 + int(digest[1]) % 60
+        lightness = 125 + int(digest[2]) % 40
+        color = QColor.fromHsl(hue, min(255, saturation), min(255, lightness), 255)
+        color.setAlpha(220 if active else 120)
+        return color
+
+    def _sync_selection_overlay_items(self, plan: TileGridPlan | None = None) -> None:
+        self._clear_selection_overlay_items()
+        resolved_plan = plan or self._tile_plan_for_view()
+        if resolved_plan is None:
+            return
+        active_model_id = self._active_result_model_id()
+        active_tile = self._tile_selection
+        scene = self.overlay_view.scene()
+        if scene is None:
+            return
+        for model_id, selections in self._model_tile_selections.items():
+            if not selections:
+                continue
+            is_active_model = model_id == active_model_id
+            color = self._selection_color_for_model(model_id, active=is_active_model)
+            pen = QPen(color, 2.0 if is_active_model else 1.6)
+            pen.setCosmetic(True)
+            brush = QBrush(QColor(color.red(), color.green(), color.blue(), 48 if is_active_model else 28))
+            for row, column in selections:
+                if is_active_model and active_tile is not None and (int(row), int(column)) == (int(active_tile[0]), int(active_tile[1])):
+                    continue
+                rect = self._tile_rect_for_index(int(row), int(column), resolved_plan)
+                item = scene.addRect(rect, pen, brush)
+                item.setZValue(4.7 if is_active_model else 4.55)
+                item.setOpacity(1.0 if is_active_model else 0.75)
+                self._selection_overlay_items.append(item)
 
     def _selected_model_for_current_comparison(self) -> str | None:
+        preferred_model_id = str(self._preferred_model_id or "")
+        if preferred_model_id and (self._model_has_output(preferred_model_id) or self._model_confidence_output_available(preferred_model_id)):
+            return preferred_model_id
+        model_ids = [spec.model_id for spec in self._build_result.model_specs]
+        if model_ids:
+            return model_ids[0]
         _preset_key, first_key, second_key = self._current_comparison_tuple()
         for source_key in (first_key, second_key):
             _source_kind, model_id = self._decode_model_source_key(source_key)
@@ -2062,6 +2176,172 @@ class ExtendFrameDetailsDialog(QDialog):
                 return self._crop_ndarray(value, self._selection_crop_rect()) if value is not None else None
         return self._source_float_map(source_key)
 
+    def _input_output_heatmap_available(self) -> bool:
+        if self._is_point_geometry():
+            return False
+        if self._payload.get("original_gray") is None:
+            return False
+        return self._input_output_model_id() is not None
+
+    def _input_output_model_id(self) -> str | None:
+        preferred_model_id = str(self._preferred_model_id or "")
+        if preferred_model_id and (self._model_has_output(preferred_model_id) or self._model_confidence_output_available(preferred_model_id)):
+            return preferred_model_id
+        preferred_model_id = self._selected_model_for_current_comparison()
+        if self._model_has_output(preferred_model_id) or self._model_confidence_output_available(preferred_model_id):
+            return preferred_model_id
+        payload_model_id = str(self._payload.get("selected_model_id") or "")
+        if payload_model_id and (self._model_has_output(payload_model_id) or self._model_confidence_output_available(payload_model_id)):
+            return payload_model_id
+        probabilities = self._payload.get("model_probabilities") or {}
+        masks = self._payload.get("model_masks") or {}
+        for spec in self._build_result.model_specs:
+            model_id = spec.model_id
+            if model_id in probabilities and probabilities.get(model_id) is not None:
+                return model_id
+            if model_id in masks and masks.get(model_id) is not None:
+                return model_id
+        return preferred_model_id if self._model_has_output(preferred_model_id) else None
+
+    def _model_has_output(self, model_id: str | None) -> bool:
+        if model_id is None:
+            return False
+        probabilities = self._payload.get("model_probabilities") or {}
+        masks = self._payload.get("model_masks") or {}
+        return (model_id in probabilities and probabilities.get(model_id) is not None) or (
+            model_id in masks and masks.get(model_id) is not None
+        )
+
+    def _binary_dilate(self, mask: np.ndarray, radius: int = 1) -> np.ndarray:
+        mask_bool = np.asarray(mask, dtype=bool)
+        if mask_bool.ndim != 2 or mask_bool.size == 0:
+            return np.zeros_like(mask_bool, dtype=bool)
+        if int(radius) <= 0 or not np.any(mask_bool):
+            return mask_bool
+        return np.asarray(_distance_transform(~mask_bool) <= float(radius), dtype=bool)
+
+    def _input_edge_support(self) -> np.ndarray:
+        cache_key = ("input_edge_support", self._selection_cache_key())
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
+        original = self._payload.get("original_gray")
+        if original is None:
+            support = np.zeros_like(self._base_array(), dtype=bool)
+            self._derived_cache[cache_key] = support
+            return support
+        values = np.asarray(original, dtype=np.float32)
+        tile_rect = self._selection_crop_rect()
+        if tile_rect is not None:
+            values = np.asarray(self._crop_ndarray(values, tile_rect), dtype=np.float32)
+        if values.ndim != 2 or values.size == 0:
+            support = np.zeros_like(self._base_array(), dtype=bool)
+            self._derived_cache[cache_key] = support
+            return support
+        finite = np.asarray(values[np.isfinite(values)], dtype=np.float32)
+        if finite.size == 0:
+            support = np.zeros_like(values, dtype=bool)
+            self._derived_cache[cache_key] = support
+            return support
+        low = float(np.percentile(finite, 5.0))
+        high = float(np.percentile(finite, 95.0))
+        if not np.isfinite(low) or not np.isfinite(high) or high <= low + 1e-6:
+            normalized = np.zeros_like(values, dtype=np.float32)
+        else:
+            normalized = np.clip((values - low) / (high - low), 0.0, 1.0)
+        grad_x = np.zeros_like(normalized, dtype=np.float32)
+        grad_y = np.zeros_like(normalized, dtype=np.float32)
+        grad_x[:, :-1] = np.abs(normalized[:, 1:] - normalized[:, :-1])
+        grad_y[:-1, :] = np.abs(normalized[1:, :] - normalized[:-1, :])
+        gradient = np.hypot(grad_x, grad_y)
+        positive = gradient[gradient > 0.0]
+        if positive.size > 0:
+            threshold = float(np.percentile(positive, 85.0))
+            threshold = max(threshold, float(np.mean(positive) + 0.5 * np.std(positive)), 0.04)
+        else:
+            threshold = 1.0
+        support = np.asarray(gradient >= threshold, dtype=bool)
+        if not np.any(support):
+            support = np.asarray(gradient > 0.0, dtype=bool)
+        support = self._binary_dilate(support, 1)
+        self._derived_cache[cache_key] = support
+        return support
+
+    def _output_mask_for_model(self, model_id: str | None) -> np.ndarray | None:
+        if model_id is None:
+            return None
+        cache_key = ("output_mask_for_model", model_id, self._selection_cache_key())
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
+        masks = self._payload.get("model_masks") or {}
+        model_mask = masks.get(model_id)
+        if model_mask is not None:
+            mask = np.asarray(model_mask, dtype=bool)
+        else:
+            probabilities = self._payload.get("model_probabilities") or {}
+            model_probability = probabilities.get(model_id)
+            if model_probability is None:
+                return None
+            probability = np.clip(np.asarray(model_probability, dtype=np.float32), 0.0, 1.0)
+            if probability.ndim != 2 or probability.size == 0:
+                return None
+            mask = np.asarray(probability >= self._model_threshold(model_id), dtype=bool)
+        if mask.ndim != 2 or mask.size == 0:
+            return None
+        tile_rect = self._selection_crop_rect()
+        if tile_rect is not None:
+            mask = np.asarray(self._crop_ndarray(mask, tile_rect), dtype=bool)
+        self._derived_cache[cache_key] = mask
+        return mask
+
+    def _input_output_heatmap_intensity(self, model_id: str | None) -> np.ndarray:
+        cache_key = ("input_output_heatmap_intensity", model_id, self._selection_cache_key())
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
+        base = self._base_array()
+        output_mask = self._output_mask_for_model(model_id)
+        if self._payload.get("original_gray") is None or output_mask is None:
+            intensity = np.zeros_like(base, dtype=np.float32)
+            self._derived_cache[cache_key] = intensity
+            return intensity
+        input_edges = self._input_edge_support()
+        output_boundary = np.asarray(_boundary_mask(output_mask), dtype=bool)
+        if input_edges.shape != output_boundary.shape:
+            intensity = np.zeros_like(base, dtype=np.float32)
+            self._derived_cache[cache_key] = intensity
+            return intensity
+        if not np.any(input_edges) and not np.any(output_boundary):
+            intensity = np.zeros_like(base, dtype=np.float32)
+            self._derived_cache[cache_key] = intensity
+            return intensity
+        tolerance = max(2.0, float(self._payload.get("boundary_radius") or 1.0) + 1.5)
+        input_band = self._binary_dilate(input_edges, 1)
+        output_band = self._binary_dilate(output_boundary, 1)
+        dist_to_input = np.asarray(_distance_transform(~input_band), dtype=np.float32)
+        dist_to_output = np.asarray(_distance_transform(~output_band), dtype=np.float32)
+        output_mismatch = np.clip(dist_to_input / float(tolerance), 0.0, 1.0) * np.asarray(output_boundary, dtype=np.float32)
+        input_miss = np.clip(dist_to_output / float(tolerance), 0.0, 1.0) * np.asarray(input_edges, dtype=np.float32)
+        intensity = np.clip(np.maximum(output_mismatch, input_miss), 0.0, 1.0)
+        self._derived_cache[cache_key] = intensity
+        return intensity
+
+    def _input_output_heatmap_pixmap(self, model_id: str | None) -> QPixmap:
+        cache_key = (
+            "input_output_heatmap_pixmap",
+            model_id,
+            self._selection_cache_key(),
+            self._named_color("input_output_mask").name(QColor.NameFormat.HexArgb),
+        )
+        cached = self._overlay_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        intensity = self._input_output_heatmap_intensity(model_id)
+        pixmap = self._bad_area_intensity_pixmap(intensity, self._named_color("input_output_mask"), alpha_scale=250.0)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
     def _refresh_result_kind_options(self, preferred_kind: str | None = None) -> None:
         current_kind = str(
             preferred_kind
@@ -2080,11 +2360,15 @@ class ExtendFrameDetailsDialog(QDialog):
         confidence_output_available = self._model_confidence_output_available(confidence_model_id)
         if not confidence_output_available and current_kind in {"confidence_bad_areas", "confidence_mix"}:
             current_kind = "point_matches" if self._is_point_geometry() else "diff"
+        if not self._input_output_heatmap_available() and current_kind == "input_output":
+            current_kind = "point_matches" if self._is_point_geometry() else "diff"
         items: list[tuple[str, str]] = [(self._t("details.comparison_difference"), "diff")]
         if self._is_point_geometry():
             items.append((self._t("details.point_matches"), "point_matches"))
         else:
             items.append((self._t("details.boundary_difference"), "boundary"))
+            if self._input_output_heatmap_available():
+                items.append((self._t("details.input_output_heatmap"), "input_output"))
         items.append((self._t("details.model_confidence_map"), "confidence"))
         if confidence_output_available:
             items.append((self._t("details.confidence_bad_areas"), "confidence_bad_areas"))
@@ -2250,15 +2534,91 @@ class ExtendFrameDetailsDialog(QDialog):
         show_mask_colors = self._selected_layer_view() == "binary"
         self.first_mask_color_button.setVisible(show_mask_colors)
         self.second_mask_color_button.setVisible(show_mask_colors)
-        show_result_color = show_mask_colors and self._selected_result_kind() in {"diff", "boundary"}
+        show_result_color = show_mask_colors and self._selected_result_kind() in {"diff", "boundary", "input_output"}
         self.result_mask_color_button.setVisible(show_result_color)
         self.result_mask_color_button.setEnabled(show_result_color)
+        self.export_selected_regions_button.setEnabled(any(self._model_tile_selections.values()))
         self._update_color_button_styles()
+
+    def _result_pixmap_for_model(self, model_id: str | None) -> QPixmap:
+        kind = self._selected_result_kind()
+        if kind == "confidence":
+            return self._confidence_overlay_pixmap(model_id)
+        if kind == "confidence_bad_areas":
+            return self._confidence_bad_areas_pixmap(model_id)
+        if kind == "confidence_mix":
+            return self._confidence_mix_pixmap(model_id)
+        if kind == "input_output":
+            return self._input_output_heatmap_pixmap(model_id)
+        if kind in {"boundary", "point_matches", "diff"}:
+            pixmap = self.result_item.pixmap()
+            return QPixmap(pixmap)
+        pixmap = self.result_item.pixmap()
+        return QPixmap(pixmap)
+
+    def _sanitize_export_component(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return "item"
+        sanitized = [ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in text]
+        collapsed = "".join(sanitized).strip("._")
+        return collapsed or "item"
+
+    def _export_selected_regions(self) -> None:
+        if not self._model_tile_selections:
+            return
+        export_folder = self._export_folder
+        if export_folder is None:
+            folder = QFileDialog.getExistingDirectory(self, self._t("dialog.select_export_folder"))
+            if not folder:
+                return
+            export_folder = Path(folder)
+            self._export_folder = export_folder
+        export_folder.mkdir(parents=True, exist_ok=True)
+        plan = self._tile_plan_for_view()
+        if plan is None:
+            plan = self._tile_plan
+        if plan is None:
+            return
+        result_pixmaps: dict[str, QPixmap] = {}
+        exported = 0
+        record_prefix = self._sanitize_export_component(str(getattr(self._record, "display_name", self._record.key)))
+        kind_prefix = self._sanitize_export_component(self._selected_result_kind())
+        for model_id, selections in self._model_tile_selections.items():
+            if not selections:
+                continue
+            pixmap = result_pixmaps.get(str(model_id))
+            if pixmap is None:
+                pixmap = self._result_pixmap_for_model(model_id)
+                result_pixmaps[str(model_id)] = pixmap
+            if pixmap.isNull():
+                continue
+            for index, (row, column) in enumerate(selections, start=1):
+                rect = self._tile_rect_for_index(int(row), int(column), plan).toAlignedRect()
+                rect = rect.intersected(pixmap.rect())
+                if rect.isNull() or rect.width() <= 0 or rect.height() <= 0:
+                    continue
+                crop = pixmap.copy(rect)
+                if crop.isNull():
+                    continue
+                file_name = (
+                    f"{record_prefix}__{kind_prefix}__"
+                    f"{self._sanitize_export_component(str(model_id))}__r{int(row) + 1}_c{int(column) + 1}__{index}.png"
+                )
+                crop.save(str(export_folder / file_name), "PNG")
+                exported += 1
+        if exported <= 0:
+            return
+        callback = self._on_view_state_changed
+        if callable(callback):
+            self._store_view_settings()
 
     def _result_overlay_title(self) -> str:
         kind = self._selected_result_kind()
         if kind == "boundary":
             return self._t("details.boundary_difference")
+        if kind == "input_output":
+            return self._t("details.input_output_heatmap")
         if kind == "point_matches":
             return self._t("details.point_matches")
         if kind == "confidence":
@@ -2405,6 +2765,7 @@ class ExtendFrameDetailsDialog(QDialog):
         if self._payload_loading and not self._payload:
             self._tile_plan = None
             self._tile_selection = None
+            self._clear_selection_overlay_items()
             self.original_item.setPixmap(QPixmap())
             self.first_source_item.setPixmap(QPixmap())
             self.second_source_item.setPixmap(QPixmap())
@@ -2460,6 +2821,7 @@ class ExtendFrameDetailsDialog(QDialog):
         if self._payload_loading and not self._payload:
             self._comparison_score = None
             self.result_item.setPixmap(QPixmap())
+            self._clear_selection_overlay_items()
             self._update_layer_states()
             return
         _preset_key, first_key, second_key = self._current_comparison_tuple()
@@ -2479,6 +2841,9 @@ class ExtendFrameDetailsDialog(QDialog):
             pixmap, score = self._boundary_overlay_result(first_key, second_key, self._named_color("boundary_mask"))
             self._comparison_score = float(score)
             self.result_item.setPixmap(pixmap)
+        elif kind == "input_output":
+            self._comparison_score = None
+            self.result_item.setPixmap(self._input_output_heatmap_pixmap(self._input_output_model_id()))
         elif kind == "point_matches":
             self._comparison_score = None
             self.result_item.setPixmap(self._point_matches_pixmap(first_key, second_key))
@@ -2486,6 +2851,7 @@ class ExtendFrameDetailsDialog(QDialog):
             pixmap, score = self._comparison_overlay_result(first_key, second_key, mode, self._named_color("difference_mask"))
             self._comparison_score = float(score)
             self.result_item.setPixmap(pixmap)
+        self._sync_selection_overlay_items()
         self._update_layer_states()
 
     def _tile_plan_for_view(self) -> TileGridPlan | None:
@@ -2648,9 +3014,9 @@ class ExtendFrameDetailsDialog(QDialog):
             self.tile_selection_item.setVisible(False)
         self._update_tile_hint()
 
-    def _on_view_clicked(self, scene_pos: QPointF) -> None:
+    def _on_view_clicked(self, scene_pos: QPointF, modifiers=None) -> None:
         plan = self._tile_plan
-        if plan is None or not self.original_item.isVisible() or self._tile_selection is not None:
+        if plan is None or not self.original_item.isVisible():
             return
         scale = max(0.01, float(self.overlay_view.transform().m11()))
         if min(int(plan.tile_width), int(plan.tile_height)) * scale < DETAIL_PIXEL_VIEW_THRESHOLD:
@@ -2671,7 +3037,23 @@ class ExtendFrameDetailsDialog(QDialog):
         if not candidates:
             return
         _distance, row, column = min(candidates, key=lambda item: (item[0], item[1], item[2]))
-        self._tile_selection = (int(row), int(column))
+        active_model_id = self._active_result_model_id()
+        if active_model_id is None:
+            return
+        tile = (int(row), int(column))
+        selections = self._tile_selections_for_model(active_model_id)
+        modifier_flags = int(modifiers or 0)
+        ctrl_pressed = bool(modifier_flags & int(Qt.KeyboardModifier.ControlModifier))
+        shift_pressed = bool(modifier_flags & int(Qt.KeyboardModifier.ShiftModifier))
+        if ctrl_pressed or shift_pressed:
+            if tile in selections:
+                selections = [entry for entry in selections if entry != tile]
+            else:
+                selections = selections + [tile]
+        else:
+            selections = [tile]
+        self._set_model_tile_selections(active_model_id, selections, active_tile=tile if tile in selections else (selections[0] if selections else None))
+        self._sync_selection_overlay_items(plan)
         self._update_tile_lod()
 
     def _refresh_tile_overlays(self, base_array: np.ndarray) -> None:
@@ -2948,6 +3330,7 @@ class ExtendFrameDetailsDialog(QDialog):
             "second_mask": QColor(255, 0, 140, 255),
             "difference_mask": QColor(255, 196, 0, 255),
             "boundary_mask": QColor(255, 210, 0, 235),
+            "input_output_mask": QColor(255, 88, 40, 255),
         }
         value = (self._session_view_state.get("colors") or {}).get(key)
         if isinstance(value, str):
@@ -2979,6 +3362,8 @@ class ExtendFrameDetailsDialog(QDialog):
         kind = self._selected_result_kind()
         if kind == "boundary":
             return "boundary_mask"
+        if kind == "input_output":
+            return "input_output_mask"
         if kind == "diff":
             return "difference_mask"
         return None
@@ -3001,10 +3386,20 @@ class ExtendFrameDetailsDialog(QDialog):
             )
 
     def _build_view_settings_payload(self) -> dict[str, object]:
+        model_tile_selections: dict[str, list[dict[str, int]]] = {}
+        for model_id, selections in self._model_tile_selections.items():
+            if not selections:
+                continue
+            model_tile_selections[str(model_id)] = [
+                {"row": int(row), "column": int(column)}
+                for row, column in selections
+            ]
         payload = {
             "layer_view": self._selected_layer_view(),
             "result_kind": self._selected_result_kind(),
             "grayscale_diff": bool(self.grayscale_diff_checkbox.isChecked()),
+            "preferred_model_id": self._preferred_model_id,
+            "export_folder": str(self._export_folder) if self._export_folder is not None else None,
             "original_visible": bool(self.original_visible.isChecked()),
             "first_visible": bool(self.first_source_visible.isChecked()),
             "second_visible": bool(self.second_source_visible.isChecked()),
@@ -3014,6 +3409,7 @@ class ExtendFrameDetailsDialog(QDialog):
             "second_opacity": int(self.second_source_opacity.value()),
             "result_opacity": int(self.result_opacity.value()),
             "colors": dict(self._session_view_state.get("colors") or {}),
+            "model_tile_selections": model_tile_selections,
         }
         if self._tile_selection is not None:
             payload["tile_selection"] = {
@@ -3042,11 +3438,17 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _restore_view_settings(self) -> None:
         payload = dict(self._session_view_state or {})
+        preferred_model_id = payload.get("preferred_model_id")
+        if isinstance(preferred_model_id, str) and preferred_model_id:
+            self._preferred_model_id = preferred_model_id
         layer_view = payload.get("layer_view")
         if layer_view in {"binary", "source"}:
             index = self.layer_view_combo.findData(layer_view)
             if index >= 0:
                 self.layer_view_combo.setCurrentIndex(index)
+        export_folder = payload.get("export_folder")
+        if isinstance(export_folder, str) and export_folder:
+            self._export_folder = Path(export_folder)
         self._restored_result_kind = str(payload.get("result_kind") or "") or None
         self._sticky_result_kind = self._restored_result_kind
         self.grayscale_diff_checkbox.setChecked(bool(payload.get("grayscale_diff", False)))
@@ -3058,6 +3460,41 @@ class ExtendFrameDetailsDialog(QDialog):
         self.first_source_opacity.setValue(int(payload.get("first_opacity", self.first_source_opacity.value())))
         self.second_source_opacity.setValue(int(payload.get("second_opacity", self.second_source_opacity.value())))
         self.result_opacity.setValue(int(payload.get("result_opacity", self.result_opacity.value())))
+        model_tile_selections_payload = payload.get("model_tile_selections")
+        if isinstance(model_tile_selections_payload, dict):
+            self._model_tile_selections.clear()
+            for key, value in model_tile_selections_payload.items():
+                selections: list[tuple[int, int]] = []
+                if isinstance(value, dict):
+                    value = value.get("selections") or value.get("tiles") or value.get("items") or value.get("selection")
+                if isinstance(value, (tuple, list)):
+                    if len(value) >= 2 and all(isinstance(entry, (int, float, str)) for entry in value[:2]):
+                        selections.append((int(value[0]), int(value[1])))
+                    else:
+                        for entry in value:
+                            if isinstance(entry, dict):
+                                row = entry.get("row")
+                                column = entry.get("column")
+                                if row is not None and column is not None:
+                                    selections.append((int(row), int(column)))
+                            elif isinstance(entry, (tuple, list)) and len(entry) >= 2:
+                                selections.append((int(entry[0]), int(entry[1])))
+                if selections:
+                    self._model_tile_selections[str(key)] = self._dedupe_tile_selections(selections)
+
+    def set_preferred_model_id(self, model_id: str | None) -> None:
+        normalized = str(model_id or "") or None
+        if normalized == self._preferred_model_id:
+            return
+        self._preferred_model_id = normalized
+        self._session_view_state["preferred_model_id"] = self._preferred_model_id
+        self._overlay_cache.clear()
+        self._derived_cache.clear()
+        self._apply_selected_model(self._selected_model_for_current_comparison())
+        self._refresh_result_kind_options(self._selected_result_kind())
+        self._refresh_scene(reset_view=False)
+        self._refresh_info()
+        self._store_view_settings()
         self._update_color_button_styles()
 
     def _store_view_settings(self, *_args) -> None:
@@ -3070,16 +3507,8 @@ class ExtendFrameDetailsDialog(QDialog):
             callback(dict(self._session_view_state))
 
     def _activate_context_hold(self) -> None:
-        if self._result_kind_requires_confidence():
-            model_id = self._confidence_model_id()
-            source_key = f"model_prob:{model_id}" if model_id else None
-            pixmap = self._source_pixmap(source_key, self._named_color("first_mask"), prefer_grayscale=True) if source_key else QPixmap()
-            if not pixmap.isNull():
-                self._legacy_base_hold_active = True
-                self._hold_preview_mode = "confidence_source"
-                self._hold_preview_pixmap = pixmap
-                self._update_layer_states()
-                return
+        if self._payload.get("original_gray") is None:
+            return
         self._hold_preview_mode = "base"
         self._activate_base_hold()
 

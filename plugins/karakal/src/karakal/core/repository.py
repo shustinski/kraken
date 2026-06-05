@@ -46,7 +46,6 @@ from .backend_constants import (
     MASK_AGREEMENT_SCORE_WEIGHTS,
     MASK_SUPERVISED_SCORE_WEIGHTS,
     MODEL_CONFIDENCE_UNCERTAIN_DELTA,
-    MODEL_RISK_LOW_CONFIDENCE_THRESHOLD,
     MODEL_RISK_TOP_UNCERTAIN_FRACTION,
     MODEL_RISK_UNCERTAINTY_THRESHOLD,
     MODEL_RISK_WEIGHT_CLUSTER,
@@ -112,7 +111,6 @@ from .backend_constants import (
     POLYGON_CONFIDENCE_PROPOSAL_MEAN_FLOOR,
     POLYGON_CONFIDENCE_PROPOSAL_MIN_AREA,
     POLYGON_CONFIDENCE_PROPOSAL_PEAK_FLOOR,
-    POLYGON_CONFIDENCE_PROPOSAL_PEAK_RATIO,
     POLYGON_CONFIDENCE_SUMMARY_CORE,
     POLYGON_CONFIDENCE_SUMMARY_WEIGHTED,
     POLYGON_CONFIDENCE_WATERSHED_SEED_MIN_AREA,
@@ -153,7 +151,6 @@ from .domain import (
     FrameRecord,
     GeometryMode,
     LabeledModelMetrics,
-    MaskAgreementMetrics,
     ModelAggregateScore,
     ModelDiagnosticMetrics,
     ModelOutputConfidenceMetrics,
@@ -3984,7 +3981,6 @@ def _polygon_confidence_pipeline(
         start_candidate_id=next_debug_id,
     )
     debug_rows.extend(large_polygon_debug)
-    dominant_candidates = list(large_polygon_candidates)
     dominant_mask = np.asarray(large_polygon_mask, dtype=bool)
     dominant_lock_mask = (
         _binary_dilate(dominant_mask, max(0, int(cfg.dominant_lock_radius)))
@@ -6985,7 +6981,15 @@ def export_record_assets(
     }
 
 
-def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str | None = None, progress_callback=None, state_callback=None, cancel_check=None) -> BuildResult:
+def compute_build_result_analytics(
+    build_result: BuildResult,
+    *,
+    metric_key: str | None = None,
+    excluded_record_keys: set[str] | None = None,
+    progress_callback=None,
+    state_callback=None,
+    cancel_check=None,
+) -> BuildResult:
     _clear_runtime_image_caches()
     records = list(build_result.records)
     if not records:
@@ -7025,11 +7029,26 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
     if not has_ground_truth:
         include_model_metrics = False
 
+    excluded_keys = {str(key) for key in (excluded_record_keys or set()) if str(key)}
+    records_to_analyze = [record for record in records if str(record.key) not in excluded_keys]
     records_by_key = {str(record.key): record for record in records}
     updated_records_by_key: dict[str, FrameRecord] = {}
+    for record in records:
+        record_key = str(record.key)
+        if record_key not in excluded_keys:
+            continue
+        updated_records_by_key[record_key] = replace(
+            record,
+            score=0.0,
+            absolute_score=None,
+            relative_score=None,
+            score_percentile=None,
+            score_ready=False,
+            summary=None,
+        )
     try:
         payload_iter = _iter_record_payloads(
-            records,
+            records_to_analyze,
             build_result.model_specs,
             build_result.options.analysis_max_side,
             build_result.options.max_workers,
@@ -7054,7 +7073,6 @@ def compute_build_result_analytics(build_result: BuildResult, *, metric_key: str
             record = records_by_key.get(str(record_key))
             if record is None:
                 continue
-            vector = dict(payload.get('vector') or {})
             disagreement = float(payload.get('disagreement', 0.0))
             model_model_score = float(payload.get('model_model_score', 0.0))
             model_labeled_score = payload.get('model_labeled_score')
@@ -7617,7 +7635,6 @@ def load_frame_detail_model_confidence(
 
     probabilities = payload.get("model_probabilities") or {}
     masks = payload.get("model_masks") or {}
-    boundary_radius = int(payload.get("boundary_radius") or int(getattr(build_result.options, 'boundary_radius', 1) or 1))
     confidence_uncertainty_delta = float(payload.get("confidence_uncertainty_delta") or float(getattr(build_result.options, 'confidence_uncertainty_delta', MODEL_CONFIDENCE_UNCERTAIN_DELTA)))
     point_confidence_radius = int(payload.get("point_confidence_radius") or int(getattr(build_result.options, 'point_confidence_radius', POINT_CONFIDENCE_NEIGHBOR_RADIUS) or POINT_CONFIDENCE_NEIGHBOR_RADIUS))
     polygon_confidence_summary = str(payload.get("polygon_confidence_summary") or str(getattr(build_result.options, 'polygon_confidence_summary', POLYGON_CONFIDENCE_SUMMARY_WEIGHTED) or POLYGON_CONFIDENCE_SUMMARY_WEIGHTED))

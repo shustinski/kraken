@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
-PROJECT_ROOT = Path(SPECPATH).resolve().parent.parent
+PROJECT_ROOT = Path(SPECPATH).resolve().parent
 APP_NAME = "Contour"
 APP_ICON = PROJECT_ROOT / "resources" / "icons" / "contour.ico"
 
@@ -24,6 +24,7 @@ datas += [
     (str(PROJECT_ROOT / "resources" / "icons" / "contour.ico"), "plugins/contour/resources/icons"),
     (str(PROJECT_ROOT / "resources" / "icons" / "contour.png"), "plugins/contour/resources/icons"),
 ]
+hiddenimports = collect_submodules("contour")
 
 
 a = Analysis(
@@ -31,7 +32,7 @@ a = Analysis(
     pathex=[str(PROJECT_ROOT / "src")],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

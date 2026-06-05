@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import configparser
 import json
 import os
@@ -9,9 +11,6 @@ from typing import Any
 
 from PyQt6.QtCore import QSettings
 
-from neuralimage.application.dto import MainWindowState, SettingsState, normalize_main_window_mode_state
-from neuralimage.application.ports import StateStore
-from neuralimage.application.services.workflow_mapper import build_workflow_parameters
 from neuralimage.lib.data_interfaces import (
     WorkMode,
     normalize_confidence_save_mode,
@@ -41,11 +40,18 @@ WORKFLOW_SNAPSHOT_FILENAME = 'neuralimage_workflow.json'
 WORKFLOW_SNAPSHOT_FORMAT_VERSION = 1
 
 
+def _dto_types():
+    from neuralimage.application.dto import MainWindowState, SettingsState, normalize_main_window_mode_state
+
+    return MainWindowState, SettingsState, normalize_main_window_mode_state
+
+
 def _build_main_window_state(
     *,
     read_str,
     read_int,
 ) -> MainWindowState:
+    MainWindowState, _SettingsState, normalize_main_window_mode_state = _dto_types()
     defaults = MainWindowState()
     mode_state = _coerce_json_object(read_str('mode_state_json', ''), default={})
     return MainWindowState(
@@ -62,6 +68,7 @@ def _build_main_window_state(
 
 
 def _main_window_state_to_storage_dict(state: MainWindowState) -> dict[str, str | int]:
+    _MainWindowState, _SettingsState, normalize_main_window_mode_state = _dto_types()
     return {
         'work_mode': normalize_work_mode(state.work_mode),
         'source_path': state.source_folder,
@@ -93,6 +100,7 @@ def _build_settings_state(
     read_float,
     read_str,
 ) -> SettingsState:
+    _MainWindowState, SettingsState, _normalize_main_window_mode_state = _dto_types()
     defaults = SettingsState()
     legacy_additional_processing = read_bool('additional_processing', False)
     legacy_use_multi_gpu = read_bool('use_multi_gpu', defaults.use_multi_gpu)
@@ -735,6 +743,8 @@ def create_workflow_snapshot_payload(
     settings_state: SettingsState,
     workflow_snapshot: tuple[WorkMode | None, Any, Any] | None = None,
 ) -> dict[str, Any]:
+    from neuralimage.application.services.workflow_mapper import build_workflow_parameters
+
     work_mode, training, recognition = workflow_snapshot or build_workflow_parameters(main_state, settings_state)
     serialized_training, serialized_recognition = _sanitize_workflow_snapshot_payload(training, recognition)
     return {

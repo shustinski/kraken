@@ -330,7 +330,7 @@ class GeneralNeuralHandler:
             return
         self._start_training(model, model_save_path)
 
-        if self._need_stop or self._training_failed or self.work_mode == WorkMode.train_only:
+        if self._need_stop or self._training_failed or self.work_mode in (WorkMode.train_only, WorkMode.continue_training):
             return
 
         if isinstance(self.recognition_parameters.model, str):
@@ -481,7 +481,7 @@ class GeneralNeuralHandler:
         else:
             model = load_model_artifact(self.recognition_parameters.model, map_location='cpu')
             self._validate_loaded_model_input_channels(model)
-            if self.work_mode == WorkMode.further_training and hasattr(model, 'deep_supervision'):
+            if self.work_mode in (WorkMode.further_training, WorkMode.continue_training) and hasattr(model, 'deep_supervision'):
                 deep_supervision_enabled = bool(getattr(self.tranining_parameters, 'deep_supervision', True))
                 setattr(model, 'deep_supervision', deep_supervision_enabled)
                 model_kwargs = getattr(model, '_neuralimage_model_kwargs', {})
@@ -527,7 +527,7 @@ class GeneralNeuralHandler:
             resolved = Path(artifact_dir)
             resolved.mkdir(parents=True, exist_ok=True)
             return resolved
-        if self.work_mode == WorkMode.further_training and str(getattr(self.recognition_parameters, 'model', '')).strip():
+        if self.work_mode in (WorkMode.further_training, WorkMode.continue_training) and str(getattr(self.recognition_parameters, 'model', '')).strip():
             return Path(self.recognition_parameters.model).parent
         return self.tranining_parameters.image_path.parent
 
@@ -918,7 +918,7 @@ class GeneralNeuralHandler:
         return model_name
 
     def _start_training(self, model, model_save_path: Path):
-        resume_from_checkpoint = self.work_mode == WorkMode.further_training
+        resume_from_checkpoint = self.work_mode in (WorkMode.further_training, WorkMode.continue_training)
         multi_gpu_mode = normalize_multi_gpu_mode(
             getattr(self.tranining_parameters, 'multi_gpu_mode', ''),
             use_multi_gpu_fallback=bool(getattr(self.tranining_parameters, 'use_multi_gpu', False)),

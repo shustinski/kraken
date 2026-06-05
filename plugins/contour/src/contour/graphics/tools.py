@@ -27,6 +27,8 @@ class PolygonCreateMode(StrEnum):
 class BrushMode(StrEnum):
     FREEFORM = "freeform"
     ANGLED = "angled"
+    STAMP_ADD = "stamp_add"
+    STAMP_ERASE = "stamp_erase"
 
 
 class DeleteVertexMode(StrEnum):

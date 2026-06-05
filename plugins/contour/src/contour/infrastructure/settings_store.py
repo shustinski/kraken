@@ -68,6 +68,13 @@ class WidgetDisplaySettingsStore:
             "neighbor_max_grid": settings.value("display/neighbor_max_grid", 7, type=int),
             "neighbor_opacity": settings.value("display/neighbor_opacity", 0.35, type=float),
             "neighbor_overlap_pixels": settings.value("display/neighbor_overlap_pixels", 0, type=int),
+            "autosave_on_frame_transition": settings.value("display/autosave_on_frame_transition", False, type=bool),
+            "vector_geom_clip_on_sync": settings.value("display/vector_geom_clip_on_sync", True, type=bool),
+            "vector_geom_min_outer_area": settings.value("display/vector_geom_min_outer_area", 9.0, type=float),
+            "vector_geom_min_hole_area": settings.value("display/vector_geom_min_hole_area", 0.0, type=float),
+            "vector_geom_merge_on_edit": settings.value("display/vector_geom_merge_on_edit", True, type=bool),
+            "vector_geom_spike_angle_deg": settings.value("display/vector_geom_spike_angle_deg", 30.0, type=float),
+            "vector_geom_drop_triangles": settings.value("display/vector_geom_drop_triangles", True, type=bool),
             "main_splitter_sizes": settings.value("display/main_splitter_sizes", []),
         }
         settings.sync()

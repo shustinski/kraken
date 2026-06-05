@@ -101,9 +101,18 @@ class AppController:
             from neuralimage.bootstrap.composition_root import create_main_presenter
 
             self.main_window_presenter = create_main_presenter()
+        self.app.aboutToQuit.connect(self.shutdown)
 
     def exec(self):
-        return self.app.exec()
+        try:
+            return self.app.exec()
+        finally:
+            self.shutdown()
+
+    def shutdown(self) -> None:
+        presenter = self.main_window_presenter
+        if presenter is not None and hasattr(presenter, 'shutdown'):
+            presenter.shutdown()
 
     def _build_ui_only_window(self):
         from neuralimage.view import MainView, SettingsPanel

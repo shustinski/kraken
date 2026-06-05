@@ -140,6 +140,9 @@ def _should_schedule_startup_update_check() -> bool:
 
 
 class MainPresenter(QObject):
+    _queue_metrics_received = QtCore.pyqtSignal(object)
+    _queue_error_received = QtCore.pyqtSignal(str)
+
     SIMPLE_WORKFLOW_PRESETS = {
         'conductors': resolve_resource_path('conductors_workflow.json'),
         'contacts': resolve_resource_path('contacts_workflow.json'),
@@ -187,8 +190,11 @@ class MainPresenter(QObject):
         self._validation_gradient_plugin = None
         self._validation_gradient_window: _ValidationGradientPluginWindow | None = None
         self._developer_tools_dialog: DeveloperToolsDialog | None = None
+        self._shutdown_requested = False
+        self._shutdown_complete = False
         self._update_check_manual = False
         self._sample_count_worker_thread: threading.Thread | None = None
+        self._sample_count_cancel_event = threading.Event()
         self._sample_count_request_serial = 0
         self._latest_sample_count_request_id = 0
         self._debounced_sample_count_request: tuple[int, str, CutSettings, object] | None = None
@@ -198,6 +204,8 @@ class MainPresenter(QObject):
         self._sample_count_signals = SampleCountSignals()
         self._sample_count_signals.calculated.connect(self._on_sample_count_calculated)
         self._sample_count_signals.failed.connect(self._on_sample_count_failed)
+        self._queue_metrics_received.connect(self._on_queue_metrics_received)
+        self._queue_error_received.connect(self._on_queue_error_received)
         self._sample_count_debounce_timer = QtCore.QTimer(self)
         self._sample_count_debounce_timer.setSingleShot(True)
         self._sample_count_debounce_timer.setInterval(150)
@@ -246,10 +254,15 @@ class MainPresenter(QObject):
 
         v.start_requested.connect(self._on_start_requested)
         v.stop_requested.connect(self._on_stop_requested)
-        v.queue_remove_requested.connect(self._on_queue_remove_requested)
-        v.queue_pause_toggle_requested.connect(self._on_queue_pause_toggle_requested)
         v.queue_context_remove_requested.connect(self._on_queue_context_remove_requested)
         v.queue_properties_requested.connect(self._on_queue_properties_requested)
+        v.queue_report_requested.connect(self._on_queue_report_requested)
+        v.queue_retry_requested.connect(self._on_queue_retry_requested)
+        v.queue_pause_continue_requested.connect(self._on_queue_pause_continue_requested)
+        v.queue_move_up_requested.connect(self._on_queue_move_up_requested)
+        v.queue_move_down_requested.connect(self._on_queue_move_down_requested)
+        v.queue_rows_reordered.connect(self._on_queue_rows_reordered)
+        v.queue_task_name_changed.connect(self._on_queue_task_name_changed)
         v.batch_preview_visibility_changed.connect(self._on_batch_preview_visibility_changed)
         v.release_memory_requested.connect(self._on_release_memory_requested)
         v.open_validation_gradient_requested.connect(self._on_open_validation_gradient_requested)
@@ -1028,12 +1041,20 @@ class MainPresenter(QObject):
         self.view.log_message_with_delete_last.emit(data)
 
     def _metrics_message_emit(self, data):
+        self._queue_metrics_received.emit(data)
         self.view.metrics_message.emit(data)
 
     def _error_message_emit(self, data):
         message = str(data) if data is not None else 'Произошла ошибка выполнения.'
+        self._queue_error_received.emit(message)
         self.view.show_warning.emit(message)
         self.view.log_message.emit(f'Ошибка: {message}')
+
+    def _on_queue_metrics_received(self, data) -> None:
+        task_flow.on_metrics_message(self, data)
+
+    def _on_queue_error_received(self, message: str) -> None:
+        task_flow.on_error_message(self, message)
 
     def _update_cut_mode(self) -> str:
         return state_sync.update_cut_mode(self)
@@ -1153,6 +1174,7 @@ class MainPresenter(QObject):
 
     def _on_ui_language_selected(self, language: str):
         self.settings_panel.set_ui_language(language)
+        QtCore.QTimer.singleShot(0, lambda: self._refresh_queue_view(selected_row=self.view.get_selected_queue_row()))
 
     def _on_theme_selected(self, theme: str):
         self.view.apply_theme(theme)
@@ -1213,10 +1235,6 @@ class MainPresenter(QObject):
     def _on_update_check_requested(self) -> None:
         self._start_update_check(manual=True)
 
-    def _on_queue_remove_requested(self):
-        row = self.view.get_selected_queue_row()
-        self._remove_queue_row(row)
-
     def _on_queue_context_remove_requested(self, row: int):
         self._remove_queue_row(row)
 
@@ -1225,6 +1243,27 @@ class MainPresenter(QObject):
 
     def _on_queue_properties_requested(self, row: int):
         task_flow.on_queue_properties_requested(self, row, dialog_cls=TaskPropertiesDialog)
+
+    def _on_queue_report_requested(self, row: int):
+        task_flow.on_queue_report_requested(self, row)
+
+    def _on_queue_retry_requested(self, row: int):
+        task_flow.on_queue_retry_requested(self, row)
+
+    def _on_queue_pause_continue_requested(self, row: int):
+        task_flow.on_queue_pause_continue_requested(self, row)
+
+    def _on_queue_move_up_requested(self, row: int):
+        task_flow.on_queue_move_requested(self, row, -1)
+
+    def _on_queue_move_down_requested(self, row: int):
+        task_flow.on_queue_move_requested(self, row, 1)
+
+    def _on_queue_rows_reordered(self, source_row: int, target_row: int):
+        task_flow.on_queue_rows_reordered(self, source_row, target_row)
+
+    def _on_queue_task_name_changed(self, row: int, display_name: str):
+        task_flow.on_queue_task_name_changed(self, row, display_name)
 
     def _on_task_restore_requested(self, main_state: MainWindowState, settings_state: SettingsState):
         task_flow.on_task_restore_requested(self, main_state, settings_state)
@@ -1254,6 +1293,8 @@ class MainPresenter(QObject):
         )
 
     def _start_next_task_if_possible(self):
+        if self._shutdown_requested:
+            return
         task_flow.start_next_task_if_possible(self)
 
     def _start_task(self, task: QueuedTask):
@@ -1290,7 +1331,88 @@ class MainPresenter(QObject):
 
     def _shutdown_developer_tools(self) -> None:
         if self._developer_tools_dialog is not None:
-            self._developer_tools_dialog.shutdown()
+            try:
+                self._developer_tools_dialog.shutdown()
+            finally:
+                self._developer_tools_dialog = None
+
+    def shutdown(self, *, wait_ms: int = 15000) -> None:
+        if self._shutdown_complete:
+            return
+        self._shutdown_requested = True
+        self._shutdown_complete = True
+
+        self._sample_count_debounce_timer.stop()
+        self._sample_count_cancel_event.set()
+        self._debounced_sample_count_request = None
+        self._pending_sample_count_request = None
+        self._latest_sample_count_request_id = self._sample_count_request_serial + 1
+
+        handler = self.neuaral_handler
+        if handler is not None:
+            self._processing_session.request_stop()
+            self._stop_worker_object(handler, 'active neural task')
+            self._wait_for_qthread(handler, wait_ms, 'active neural task')
+            if not self._is_qthread_running(handler):
+                self.neuaral_handler = None
+
+        self._stop_owned_qthread('_rare_patch_editor_prepare_thread', wait_ms, 'rare patch preparation')
+        self._stop_owned_qthread('_update_check_thread', min(wait_ms, 3000), 'update check')
+        self._stop_owned_qthread('_update_download_thread', min(wait_ms, 3000), 'update download')
+
+        sample_thread = self._sample_count_worker_thread
+        if sample_thread is not None and sample_thread.is_alive():
+            sample_thread.join(timeout=1.0)
+        if sample_thread is None or not sample_thread.is_alive():
+            self._sample_count_worker_thread = None
+
+        self._shutdown_validation_gradient_plugin()
+        self._shutdown_developer_tools()
+
+    def _stop_owned_qthread(self, attr_name: str, wait_ms: int, operation_name: str) -> None:
+        thread = getattr(self, attr_name, None)
+        if thread is None:
+            return
+        self._stop_worker_object(thread, operation_name)
+        self._wait_for_qthread(thread, wait_ms, operation_name)
+        if not self._is_qthread_running(thread):
+            setattr(self, attr_name, None)
+
+    def _stop_worker_object(self, worker: object, operation_name: str = 'worker') -> None:
+        stop = getattr(worker, 'stop', None)
+        try:
+            if callable(stop):
+                stop()
+                return
+            request_interruption = getattr(worker, 'requestInterruption', None)
+            if callable(request_interruption):
+                request_interruption()
+            quit_thread = getattr(worker, 'quit', None)
+            if callable(quit_thread):
+                quit_thread()
+        except Exception as exc:
+            self.message_bus.publish('error', f'Failed to request {operation_name} stop during shutdown: {exc}')
+
+    def _wait_for_qthread(self, thread: object, wait_ms: int, operation_name: str) -> None:
+        wait = getattr(thread, 'wait', None)
+        if not callable(wait) or not self._is_qthread_running(thread):
+            return
+        try:
+            stopped = bool(wait(max(0, int(wait_ms))))
+        except Exception as exc:
+            self.message_bus.publish('error', f'Failed while waiting for {operation_name} during shutdown: {exc}')
+            return
+        if stopped or not self._is_qthread_running(thread):
+            return
+        self.message_bus.publish(
+            'error',
+            f'Failed to stop {operation_name} within {max(0, int(wait_ms))} ms during shutdown.',
+        )
+
+    @staticmethod
+    def _is_qthread_running(thread: object) -> bool:
+        is_running = getattr(thread, 'isRunning', None)
+        return bool(is_running()) if callable(is_running) else False
 
     def _on_close_requested(self):
         ui_texts = get_ui_section('main_window')
@@ -1303,8 +1425,7 @@ class MainPresenter(QObject):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._save_windows_to_qsettings()
-            self._shutdown_validation_gradient_plugin()
-            self._shutdown_developer_tools()
+            self.shutdown()
             self.view.allow_close()
 
     # ------------------------------------------------------------------ #

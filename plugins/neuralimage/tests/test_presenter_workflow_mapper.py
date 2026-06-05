@@ -9,6 +9,12 @@ def test_resolve_work_mode_known_value():
     assert mode.value == 'train_only'
 
 
+def test_resolve_work_mode_continue_training_value():
+    mode = resolve_work_mode('continue_training')
+    assert mode is not None
+    assert mode.value == 'continue_training'
+
+
 def test_resolve_work_mode_unknown_value():
     assert resolve_work_mode('unknown') is None
 
@@ -320,6 +326,31 @@ def test_build_workflow_parameters_defers_recognition_source_indexing():
 
     assert recognition.source_folder == source
     assert recognition.source_files == []
+
+
+def test_build_workflow_parameters_continue_training_uses_model_path():
+    root = make_test_dir("workflow_continue_training")
+    sample = root / "sample"
+    label = root / "label"
+    sample.mkdir()
+    label.mkdir()
+    model_path = root / "resume.pth"
+    model_path.write_text("x", encoding="utf-8")
+    main = MainWindowState(
+        work_mode='continue_training',
+        sample_folder=str(sample),
+        label_folder=str(label),
+        model_path=str(model_path),
+        epochs=3,
+    )
+
+    mode, training, recognition = build_workflow_parameters(main, SettingsState())
+
+    assert mode is not None
+    assert mode.value == 'continue_training'
+    assert training.image_path == sample
+    assert training.label_path == label
+    assert recognition.model == model_path
 
 
 def test_build_workflow_parameters_maps_dataloader_num_workers():

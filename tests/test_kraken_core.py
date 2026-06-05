@@ -4,7 +4,7 @@ import json
 
 import kraken_hub.app as hub_app
 from kraken_core.ipc import ActionRegistry, ActionRequest
-from kraken_core.plugins import PluginMetadata, load_plugin_catalog
+from kraken_core.plugins import PluginMetadata, load_plugin_catalog, scan_plugin_directory
 from kraken_core.qt import resolve_icon_path
 from kraken_core.styles import plugin_icon_path, shared_icon_path
 from kraken_core.updater import compare_versions, parse_update_payload, select_platform_release
@@ -80,3 +80,58 @@ def test_hub_prefers_root_plugin_launcher(tmp_path, monkeypatch):
     command = hub_app.build_launch_command(PluginMetadata(id="contour", display_name="Contour"), root=tmp_path)
 
     assert command == ["uv", "run", "python", "__main__.py"]
+
+
+def test_plugin_directory_scan_reads_manifest_and_changelog(tmp_path):
+    plugin_root = tmp_path / "plugins" / "sample"
+    resources = plugin_root / "resources"
+    resources.mkdir(parents=True)
+    (resources / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "sample",
+                "display_name": "Sample",
+                "description": "Sample plugin.",
+                "version": "1.2.3",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (resources / "changelog.md").write_text(
+        "# Changelog\n\n## 1.2.3\n\n- Added inventory support.\n\n## 1.0.0\n\n- Initial release.\n",
+        encoding="utf-8",
+    )
+
+    plugins = scan_plugin_directory(tmp_path / "plugins")
+
+    assert plugins[0].id == "sample"
+    assert plugins[0].description == "Sample plugin."
+    assert plugins[0].source_dir == str(plugin_root.resolve())
+    assert plugins[0].version_history[0].version == "1.2.3"
+    assert "inventory" in plugins[0].version_history[0].notes
+
+
+def test_plugin_directory_scan_falls_back_to_pyproject(tmp_path):
+    plugin_root = tmp_path / "plugins" / "sample"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "0.2.0"\ndescription = "From pyproject."\n',
+        encoding="utf-8",
+    )
+
+    plugins = scan_plugin_directory(tmp_path / "plugins")
+
+    assert plugins[0].id == "sample"
+    assert plugins[0].version == "0.2.0"
+    assert plugins[0].description == "From pyproject."
+
+
+def test_hub_builds_editable_install_command(tmp_path):
+    plugin_root = tmp_path / "plugins" / "sample"
+    plugin_root.mkdir(parents=True)
+    plugin = PluginMetadata(id="sample", display_name="Sample", source_dir=str(plugin_root))
+
+    command = hub_app.build_install_command(plugin)
+
+    assert command[:3] == [hub_app.sys.executable, "-m", "pip"]
+    assert command[-2:] == ["-e", str(plugin_root)]

@@ -56,7 +56,7 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         max_perimeter = float(max_p)
 
     return MetalRecoveryConfig(
-        segmentation_method=str(getattr(settings, "metal_segmentation_method", "none") or "none"),
+        segmentation_method=str(getattr(settings, "metal_segmentation_method", "otsu") or "otsu"),
         sensitivity_0_100=max(0, min(100, sens_100)),
         sensitivity_token=sens_tok,
         morph_close_radius=max(1, int(getattr(settings, "metal_morph_close_radius", 1) or 1)),
@@ -78,7 +78,8 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         min_straightness=max(0.05, min(1.0, float(getattr(settings, "metal_min_straightness", 0.2) or 0.2))),
         allow_t_junction=bool(getattr(settings, "metal_allow_t_junction", True)),
         border_mode=_normalize_border_mode(getattr(settings, "metal_border_handling", "mark")),
-        check_contour_validity=bool(getattr(settings, "metal_check_contour_validity", True)),
+        check_contour_validity=bool(getattr(settings, "metal_check_contour_validity", False)),
+        min_inner_hole_area=max(0.0, float(getattr(settings, "min_inner_hole_area", 100.0) or 100.0)),
         preset_name=str(getattr(settings, "metal_preset", "standard") or "standard"),
         use_wide_conductor_gradient=bool(getattr(settings, "metal_use_wide_conductor_gradient", False)),
         wide_gradient_profile_radius_px=max(1, int(getattr(settings, "metal_wide_gradient_profile_radius_px", 8) or 8)),

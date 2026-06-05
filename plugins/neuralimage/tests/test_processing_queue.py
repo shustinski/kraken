@@ -27,6 +27,22 @@ def test_enqueue_assigns_incrementing_task_ids():
     assert second.owner_display_name == 'Alice'
 
 
+def test_enqueue_defaults_display_name_to_source_folder_name():
+    queue = ProcessingTaskQueue[MainWindowState, SettingsState]()
+
+    task = queue.enqueue(MainWindowState(work_mode='recognition_only', source_folder='d/test/recognition/test2'), SettingsState())
+
+    assert task.display_name == 'test2'
+
+
+def test_enqueue_defaults_training_display_name_to_training_folder_parent_name():
+    queue = ProcessingTaskQueue[MainWindowState, SettingsState]()
+
+    task = queue.enqueue(MainWindowState(work_mode='train_only', sample_folder='d/test/training/images'), SettingsState())
+
+    assert task.display_name == 'training'
+
+
 def test_remove_by_index_is_noop_for_invalid_row():
     queue = ProcessingTaskQueue[MainWindowState, SettingsState]()
 
@@ -104,7 +120,7 @@ def test_activate_next_ready_skips_paused_tasks():
     assert queue.active_task is second
 
 
-def test_complete_active_removes_task_and_clears_active_selection():
+def test_complete_active_marks_task_finished_and_clears_active_selection():
     queue = ProcessingTaskQueue[MainWindowState, SettingsState]()
 
     first = queue.enqueue(*_make_states('train_only'))
@@ -115,7 +131,8 @@ def test_complete_active_removes_task_and_clears_active_selection():
 
     assert completed is first
     assert queue.active_task is None
-    assert queue.tasks == (second,)
+    assert queue.tasks == (first, second)
+    assert first.status == 'finished_success'
 
 
 def test_remove_task_clears_active_when_active_task_removed():
@@ -129,3 +146,34 @@ def test_remove_task_clears_active_when_active_task_removed():
 
     assert removed is first
     assert queue.active_task is None
+
+
+def test_finished_error_is_skipped_and_can_be_retried():
+    queue = ProcessingTaskQueue[MainWindowState, SettingsState]()
+
+    first = queue.enqueue(*_make_states('train_only'))
+    second = queue.enqueue(*_make_states('recognition_only'))
+    queue.activate_next_ready()
+    queue.complete_active(success=False, error_message='failed')
+
+    active = queue.activate_next_ready()
+    retry = queue.retry_task_by_index(0)
+
+    assert active is second
+    assert first.status == 'finished_error'
+    assert first.error_message == 'failed'
+    assert retry is not None
+    assert retry.task_id != first.task_id
+    assert retry.status == 'waiting'
+
+
+def test_move_waiting_task_changes_order():
+    queue = ProcessingTaskQueue[MainWindowState, SettingsState]()
+
+    first = queue.enqueue(*_make_states('train_only'))
+    second = queue.enqueue(*_make_states('recognition_only'))
+
+    moved = queue.move_down_by_index(0)
+
+    assert moved is first
+    assert queue.tasks == (second, first)

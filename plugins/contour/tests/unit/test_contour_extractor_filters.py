@@ -174,6 +174,31 @@ class ContourExtractorFilterTests(unittest.TestCase):
         self.assertEqual(len(without_large_hole), 1)
         self.assertFalse(without_large_hole[0].is_hole)
 
+    def test_filters_small_inner_contours_by_min_inner_hole_area(self) -> None:
+        mask = np.zeros((96, 96), dtype=np.uint8)
+        cv2.rectangle(mask, (8, 8), (88, 88), 255, thickness=-1)
+        cv2.rectangle(mask, (20, 20), (22, 22), 0, thickness=-1)
+
+        with_small_hole = extract_polygons(
+            mask,
+            ContourExtractionSettings(
+                retrieval_mode="RETR_TREE",
+                min_inner_hole_area=0.0,
+            ),
+        )
+        filtered_small_hole = extract_polygons(
+            mask,
+            ContourExtractionSettings(
+                retrieval_mode="RETR_TREE",
+                min_inner_hole_area=100.0,
+            ),
+        )
+
+        self.assertEqual(len(with_small_hole), 2)
+        self.assertTrue(any(polygon.is_hole for polygon in with_small_hole))
+        self.assertEqual(len(filtered_small_hole), 1)
+        self.assertFalse(filtered_small_hole[0].is_hole)
+
     def test_preserve_corners_keeps_notch_while_removing_jitter_vertices(self) -> None:
         mask = np.zeros((128, 128), dtype=np.uint8)
         points = np.array(

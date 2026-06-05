@@ -10,6 +10,10 @@ from ..processing import BatchImageResult, ImageProcessingState
 from ..use_cases.workspace import find_matching_cif_path, normalize_image_selection
 
 
+def _norm_path_key(path: str | Path) -> str:
+    return str(Path(path))
+
+
 @dataclass(frozen=True, slots=True)
 class WorkspaceLoadResult:
     image_path: str
@@ -67,6 +71,10 @@ class WorkspaceSession:
     def current_state(self) -> ImageProcessingState | None:
         return self._current_state
 
+    @property
+    def cif_paths_by_stem(self) -> dict[str, str]:
+        return dict(self._cif_paths_by_stem)
+
     def replace_image_selection(
         self,
         paths: Iterable[str | Path],
@@ -86,11 +94,35 @@ class WorkspaceSession:
         self._cif_paths_by_stem = dict(indexed_paths)
         self._state_cache.clear()
 
+    def merge_cif_paths(self, indexed_paths: Mapping[str, str]) -> None:
+        """Update stem → CIF mapping; clears cache like :meth:`set_cif_index`."""
+
+        merged = dict(self._cif_paths_by_stem)
+        merged.update(dict(indexed_paths))
+        self.set_cif_index(merged)
+
     def clear_cif_index(self) -> None:
         self.set_cif_index({})
 
     def resolve_cif_path(self, image_path: str | Path) -> str | None:
         return find_matching_cif_path(image_path, self._cif_paths_by_stem)
+
+    def invalidate_image_states(self, image_paths: Iterable[str | Path]) -> None:
+        keys = {_norm_path_key(p) for p in image_paths}
+        for key in keys:
+            self._state_cache.pop(key, None)
+        if self._current_image_path in keys:
+            self._current_state = None
+
+    def sync_polygon_reference_to_current(self, image_path: str | Path) -> bool:
+        """Set reference polygons to match current polygons after a successful save."""
+
+        key = _norm_path_key(image_path)
+        state = self._state_cache.get(key)
+        if state is None:
+            return False
+        state.reference_polygons = [polygon.clone() for polygon in state.polygons]
+        return True
 
     def load_image(
         self,

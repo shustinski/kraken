@@ -424,6 +424,8 @@ def _debug_candidates_for_mask(
                         reason = "min_solidity"
                     elif extent < config.min_extent:
                         reason = "min_extent"
+                    elif is_hole and area < float(getattr(config, "min_inner_hole_area", 100.0) or 0.0):
+                        reason = "min_inner_hole_area"
                     elif config.max_hole_area_ratio is not None and is_hole and parent_index != -1:
                         parent_area = contour_areas.get(parent_index, 0.0)
                         if parent_area > 0.0 and (area / parent_area) > config.max_hole_area_ratio:
@@ -737,6 +739,8 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
             continue
 
         is_hole = bool(depth % 2)
+        if is_hole and area < float(getattr(config, "min_inner_hole_area", 100.0) or 0.0):
+            continue
         if config.max_hole_area_ratio is not None and is_hole and parent_index != -1:
             parent_area = contour_areas.get(parent_index, 0.0)
             if parent_area > 0.0 and (area / parent_area) > config.max_hole_area_ratio:

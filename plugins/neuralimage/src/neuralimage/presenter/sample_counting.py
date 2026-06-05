@@ -76,6 +76,9 @@ def invalidate_sample_count_requests(presenter) -> None:
     presenter._latest_sample_count_request_id = presenter._sample_count_request_serial
     presenter._debounced_sample_count_request = None
     presenter._pending_sample_count_request = None
+    cancel_event = _presenter_sample_count_cancel_event(presenter)
+    if cancel_event is not None:
+        cancel_event.set()
     presenter._sample_count_debounce_timer.stop()
 
 
@@ -118,6 +121,9 @@ def start_sample_count_request(
                 f'Пересчет количества кадров запущен в отдельном потоке: {sample_folder}'
             )
 
+    cancel_event = _presenter_sample_count_cancel_event(presenter)
+    if cancel_event is not None:
+        cancel_event.clear()
     worker_thread = threading_module.Thread(
         target=run_sample_count_request,
         args=(
@@ -129,6 +135,7 @@ def start_sample_count_request(
             cached_path,
             cached_sizes,
             sample_worker_cls,
+            cancel_event,
         ),
         daemon=True,
         name=f'sample-count-{request_id}',
@@ -146,6 +153,7 @@ def run_sample_count_request(
     cached_path: str | None,
     cached_sizes: list[tuple[int, int]] | None,
     sample_worker_cls,
+    cancel_event=None,
 ) -> None:
     try:
         sample_path = Path(sample_folder)
@@ -153,6 +161,9 @@ def run_sample_count_request(
             sample_path,
             recursive=bool(getattr(calculator_settings, 'recursive_file_search', False)),
         )
+        if _sample_count_cancelled(cancel_event):
+            presenter._sample_count_signals.calculated.emit(request_id, normalized_path, [], 0)
+            return
         if not sample_path.is_dir():
             presenter._sample_count_signals.calculated.emit(request_id, normalized_path, [], 0)
             return
@@ -168,8 +179,22 @@ def run_sample_count_request(
                 image_paths = sample_worker_cls.collect_image_paths(sample_path, recursive=recursive)
             except TypeError:
                 image_paths = sample_worker_cls.collect_image_paths(sample_path)
-            image_sizes = sample_worker_cls.collect_image_sizes(image_paths)
+            if _sample_count_cancelled(cancel_event):
+                presenter._sample_count_signals.calculated.emit(request_id, normalized_path, [], 0)
+                return
+            if cancel_event is None:
+                image_sizes = sample_worker_cls.collect_image_sizes(image_paths)
+            else:
+                image_sizes = []
+                for image_path in image_paths:
+                    if _sample_count_cancelled(cancel_event):
+                        presenter._sample_count_signals.calculated.emit(request_id, normalized_path, [], 0)
+                        return
+                    image_sizes.extend(sample_worker_cls.collect_image_sizes([image_path]))
 
+        if _sample_count_cancelled(cancel_event):
+            presenter._sample_count_signals.calculated.emit(request_id, normalized_path, [], 0)
+            return
         total_samples = sample_worker_cls.calculate_total_samples(image_sizes, calculator_settings)
         synthetic_generator = build_synthetic_defect_generator_parameters(synthetic_config)
         if synthetic_generator.enabled and float(synthetic_generator.epoch_size_factor) > 0.0 and image_sizes:
@@ -196,6 +221,17 @@ def run_sample_count_request(
         )
     except Exception as exc:
         presenter._sample_count_signals.failed.emit(request_id, str(exc))
+
+
+def _sample_count_cancelled(cancel_event) -> bool:
+    return bool(cancel_event is not None and cancel_event.is_set())
+
+
+def _presenter_sample_count_cancel_event(presenter):
+    try:
+        return object.__getattribute__(presenter, '_sample_count_cancel_event')
+    except (AttributeError, RuntimeError):
+        return None
 
 
 def normalize_sample_count_path(path: Path | str) -> str:

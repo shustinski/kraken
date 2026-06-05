@@ -456,9 +456,11 @@ input[type="radio"] {
     border-color: #456181;
 }
 
-.preset-btn.is-active {
-    border-color: #2f7df1;
-    background: rgba(31, 111, 235, 0.2);
+.preset-btn.is-active,
+.loss-preset-btn.is-active {
+    border-color: #27c26a;
+    background: rgba(23, 143, 82, 0.24);
+    color: #ffffff;
 }
 
 button {

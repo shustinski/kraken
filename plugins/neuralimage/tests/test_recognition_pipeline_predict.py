@@ -167,7 +167,7 @@ def test_sew_preserves_relative_output_directories(tmp_path, monkeypatch):
     assert output_path.exists()
 
 
-def test_sew_writes_confidence_map_to_confidence_directory(tmp_path, monkeypatch):
+def test_sew_writes_confidence_map_to_named_confidence_result_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(
         recognition_pipeline_module,
         'sew_image',
@@ -185,7 +185,8 @@ def test_sew_writes_confidence_map_to_confidence_directory(tmp_path, monkeypatch
 
     assert output_path == tmp_path / 'nested' / 'frame.jpg'
     assert output_path.exists()
-    assert (tmp_path / 'confidence' / 'nested' / 'frame.jpg').exists()
+    assert (tmp_path.parent / f'confidence_{tmp_path.name}' / 'nested' / 'frame.jpg').exists()
+    assert not (tmp_path / 'confidence' / 'nested' / 'frame.jpg').exists()
     assert not (tmp_path / 'nested' / 'frame_confidence.jpg').exists()
 
 

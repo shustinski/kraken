@@ -7,6 +7,7 @@ from typing import Any
 
 class WorkMode(enum.Enum):
     train_only = 'train_only'
+    continue_training = 'continue_training'
     train_and_recognition = 'train_and_recognition'
     recognition_only = 'recognition_only'
     further_training = 'further_training'

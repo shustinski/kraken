@@ -75,12 +75,15 @@ def _run_sem_via_detection(
     """SEM backend: exactly one selected via detector, template or heuristic."""
 
     from ..application.processing import (
+        VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
         VIA_SEARCH_MODE_HEURISTIC,
         VIA_SEARCH_MODE_TEMPLATE,
         normalize_via_search_mode,
     )
+    from .via.bright_tophat_dog import BrightViaDetectorConfig, detect_bright_vias
     from .via.orchestrator import _detection_to_hit, _result_debug
     from .via_detection.heuristic_detector import detect_vias_heuristic
+    from .via_detection.result import DetectionResult, ViaDetection
     from .via_detection.settings_bridge import heuristic_config_from_settings, template_config_from_settings
     from .via_detection.template_detector import detect_vias_template
 
@@ -101,6 +104,45 @@ def _run_sem_via_detection(
             selected_strategy="template",
             attempt_log=[f"template: n_templates={len(tcfg.templates)} min_corr={tcfg.min_correlation:.3f}"],
             debug=dbg,
+        )
+
+    if mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
+        cfg = BrightViaDetectorConfig.from_legacy_settings(legacy_settings)
+        bright = detect_bright_vias(gray, cfg)
+        accepted = [
+            ViaDetection(
+                x=float(det.center[0]),
+                y=float(det.center[1]),
+                bbox=det.bbox,
+                score=float(det.final_score),
+                diameter_estimate=float((det.bbox[2] + det.bbox[3]) * 0.5),
+                contrast=float(det.brightness_score),
+                prominence=float(det.tophat_response + det.dog_response) * 0.5,
+                compactness=float(det.circularity),
+                aspect=float(det.aspect),
+                polarity_hypothesis="bright",
+                reject_reason=det.hard_reason or None,
+            )
+            for det in bright.detections
+        ]
+        result = DetectionResult(
+            method=VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
+            accepted=accepted,
+            rejected=[],
+            debug_images=dict(bright.debug_images),
+            parameters_snapshot={"config": repr(cfg)},
+        )
+        hits = [_detection_to_hit(d, VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG) for d in result.accepted]
+        return ViaDetectionOutput(
+            image=image_ref,
+            mode=AppMode.VIA,
+            output_kind=output_kind,
+            hits=hits,
+            selected_strategy=VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
+            attempt_log=[
+                f"bright_tophat_dog: diameter={cfg.diameter_min}-{cfg.diameter_max} min_score={cfg.min_final_score:.1f}"
+            ],
+            debug=_result_debug(result, VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG),
         )
 
     if mode != VIA_SEARCH_MODE_HEURISTIC:

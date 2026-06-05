@@ -185,6 +185,17 @@ QToolButton:checked {
     border-color: #2e6fce;
 }
 
+QPushButton[presetRole="quickPreset"]:checked {
+    background-color: #178f52;
+    border-color: #27c26a;
+    color: #ffffff;
+}
+
+QPushButton[presetRole="quickPreset"]:checked:hover {
+    background-color: #1ca75f;
+    border-color: #35d47a;
+}
+
 QPushButton:disabled,
 QToolButton:disabled {
     background-color: #1a2330;

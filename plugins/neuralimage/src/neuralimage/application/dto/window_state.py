@@ -151,6 +151,7 @@ _MODE_STATE_SUPPORTED_MODES = {
     WorkMode.further_training.value,
     WorkMode.recognition_only.value,
     WorkMode.train_only.value,
+    WorkMode.continue_training.value,
 }
 _MODE_STATE_PATH_KEYS = (
     'source_folder',

@@ -77,6 +77,24 @@ class _FakeHandlerThread:
         self.started = True
 
 
+class _FakeRunningHandlerThread:
+    def __init__(self) -> None:
+        self.stop_called = False
+        self.wait_calls: list[int] = []
+        self._running = True
+
+    def stop(self) -> None:
+        self.stop_called = True
+
+    def isRunning(self) -> bool:
+        return self._running
+
+    def wait(self, timeout_ms: int) -> bool:
+        self.wait_calls.append(timeout_ms)
+        self._running = False
+        return True
+
+
 @pytest.fixture(scope='module')
 def qapp():
     app = QApplication.instance()
@@ -300,6 +318,40 @@ def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, 
         assert calls[0][2][0].value == work_mode
     assert isinstance(presenter.neuaral_handler, _FakeHandlerThread)
     assert presenter.neuaral_handler.started is True
+
+    presenter.view.allow_close()
+    presenter.view.close()
+
+
+def test_main_presenter_shutdown_stops_active_worker_and_owned_threads(qapp, monkeypatch):
+    module = _import_main_presenter_with_stubs(monkeypatch)
+    presenter = module.MainPresenter(_FakeStateStore())
+    active_handler = _FakeRunningHandlerThread()
+    update_thread = _FakeRunningHandlerThread()
+    download_thread = _FakeRunningHandlerThread()
+    rare_patch_thread = _FakeRunningHandlerThread()
+    presenter.neuaral_handler = active_handler
+    presenter._update_check_thread = update_thread
+    presenter._update_download_thread = download_thread
+    presenter._rare_patch_editor_prepare_thread = rare_patch_thread
+
+    presenter.shutdown(wait_ms=25)
+    presenter.shutdown(wait_ms=25)
+    qapp.processEvents()
+
+    assert active_handler.stop_called is True
+    assert active_handler.wait_calls == [25]
+    assert update_thread.stop_called is True
+    assert update_thread.wait_calls == [25]
+    assert download_thread.stop_called is True
+    assert download_thread.wait_calls == [25]
+    assert rare_patch_thread.stop_called is True
+    assert rare_patch_thread.wait_calls == [25]
+    assert presenter.neuaral_handler is None
+    assert presenter._update_check_thread is None
+    assert presenter._update_download_thread is None
+    assert presenter._rare_patch_editor_prepare_thread is None
+    assert presenter._shutdown_requested is True
 
     presenter.view.allow_close()
     presenter.view.close()

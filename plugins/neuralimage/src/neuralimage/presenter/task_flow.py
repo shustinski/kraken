@@ -41,7 +41,34 @@ def on_stop_requested(presenter) -> None:
         presenter.message_bus.publish('logging', f'Остановлена активная задача #{active_task.task_id}.')
 
 
+def on_queue_pause_continue_requested(presenter, row: int) -> None:
+    task = presenter._processing_session.get_task_by_index(row)
+    if task is None:
+        return
+    if presenter._processing_session.active_task is task:
+        presenter._processing_session.request_pause_active()
+        if presenter.neuaral_handler is not None:
+            presenter.neuaral_handler.stop()
+        presenter.message_bus.publish('logging', f'Задача #{task.task_id} поставлена на паузу.')
+        presenter._refresh_queue_view(selected_task_id=task.task_id)
+        return
+    resumed = presenter._processing_session.resume_task_by_index(row)
+    if resumed is None:
+        return
+    presenter.message_bus.publish('logging', f'Задача #{resumed.task_id} снята с паузы.')
+    presenter._refresh_queue_view(selected_task_id=resumed.task_id)
+    presenter._start_next_task_if_possible()
+
+
 def remove_queue_row(presenter, row: int) -> None:
+    task = presenter._processing_session.get_task_by_index(row)
+    if task is not None and presenter._processing_session.active_task is task:
+        presenter._processing_session.request_stop()
+        if presenter.neuaral_handler is not None:
+            presenter.neuaral_handler.stop()
+        presenter.message_bus.publish('logging', f'Остановлена активная задача #{task.task_id}.')
+        presenter._refresh_queue_view(selected_row=row)
+        return
     try:
         task = presenter._processing_session.remove_task_by_index(row)
     except ActiveTaskMutationError as error:
@@ -91,17 +118,118 @@ def on_queue_pause_toggle_requested(presenter) -> None:
     presenter._start_next_task_if_possible()
 
 
+def on_queue_task_name_changed(presenter, row: int, display_name: str) -> None:
+    presenter._processing_session.rename_task_by_index(row, display_name)
+    presenter._refresh_queue_view(selected_row=row)
+
+
+def on_queue_retry_requested(presenter, row: int) -> None:
+    task = presenter._processing_session.retry_task_by_index(row)
+    if task is None:
+        return
+    presenter.message_bus.publish('logging', f'Задача #{task.task_id} добавлена повторно.')
+    presenter._refresh_queue_view(selected_task_id=task.task_id)
+    presenter._start_next_task_if_possible()
+
+
+def on_queue_move_requested(presenter, row: int, direction: int) -> None:
+    try:
+        task = (
+            presenter._processing_session.move_task_up_by_index(row)
+            if direction < 0
+            else presenter._processing_session.move_task_down_by_index(row)
+        )
+    except ActiveTaskMutationError as error:
+        presenter.message_bus.publish('logging', f'Нельзя переместить активную задачу #{error.task_id}.')
+        return
+    if task is None:
+        presenter._refresh_queue_view()
+        return
+    presenter._refresh_queue_view(selected_task_id=task.task_id)
+
+
+def on_queue_rows_reordered(presenter, source_row: int, target_row: int) -> None:
+    try:
+        task = presenter._processing_session.move_task_by_index(source_row, target_row)
+    except ActiveTaskMutationError as error:
+        presenter.message_bus.publish('logging', f'Нельзя переместить активную задачу #{error.task_id}.')
+        presenter._refresh_queue_view()
+        return
+    presenter._refresh_queue_view(selected_task_id=None if task is None else task.task_id)
+
+
+def on_queue_report_requested(presenter, row: int) -> None:
+    task = presenter._processing_session.get_task_by_index(row)
+    snapshot = presenter._processing_session.queue_snapshot()
+    if task is None or row < 0 or row >= len(snapshot):
+        return
+    message = snapshot[row].error_message or 'Причина ошибки не сохранена.'
+    presenter.view.show_warning.emit(message)
+
+
+def on_metrics_message(presenter, data) -> None:
+    if not isinstance(data, dict):
+        return
+    metric_type = data.get('type')
+    if metric_type not in {'train_epoch_progress', 'train_batch_progress', 'recognition_progress'}:
+        return
+    current = int(data.get('current', 0) or 0)
+    total = int(data.get('total', 0) or 0)
+    presenter._processing_session.update_active_progress(
+        current,
+        total,
+    )
+    active_task = presenter._processing_session.active_task
+    if active_task is not None:
+        presenter.view.update_task_queue_item_progress(active_task.task_id, current, total)
+
+
+def on_error_message(presenter, data) -> None:
+    active_task = presenter._processing_session.active_task
+    if active_task is None:
+        return
+    presenter._processing_session.set_active_error(str(data) if data is not None else '')
+    presenter._refresh_queue_view(selected_task_id=active_task.task_id)
+
+
+def _format_work_mode_label(presenter, work_mode: str) -> str:
+    texts = presenter.view._main_texts()
+    mapping = {
+        WorkMode.train_and_recognition.value: texts.get('mode_train_and_rec', 'Train and recognize'),
+        WorkMode.recognition_only.value: texts.get('mode_rec', 'Recognition only'),
+        WorkMode.train_only.value: texts.get('mode_train', 'Training only'),
+        WorkMode.continue_training.value: texts.get('mode_continue_training', 'Continue training'),
+        WorkMode.further_training.value: texts.get('mode_ft_and_rec', 'Continue training and recognize'),
+    }
+    return str(mapping.get(work_mode, work_mode))
+
+
 def refresh_queue_view(presenter, *, selected_row: int = -1, selected_task_id: int | None = None) -> None:
-    items: list[str] = []
+    items: list[dict] = []
     resolved_selected_row = selected_row
+    texts = presenter.view._main_texts()
     status_map = {
-        'queued': 'в очереди',
-        'paused': 'на паузе',
-        'running': 'выполняется',
+        'waiting': texts.get('queue_status_waiting', 'waiting'),
+        'paused': texts.get('queue_status_paused', 'paused'),
+        'in_progress': texts.get('queue_status_in_progress', 'in progress'),
+        'finished_success': texts.get('queue_status_finished_success', 'finished successfully'),
+        'finished_error': texts.get('queue_status_finished_error', 'finished with error'),
     }
     for index, task in enumerate(presenter._processing_session.queue_snapshot()):
         status = status_map.get(task.status, task.status)
-        items.append(f'#{task.task_id} | {task.work_mode} | {status}')
+        items.append(
+            {
+                'task_id': task.task_id,
+                'work_mode': task.work_mode,
+                'work_mode_label': _format_work_mode_label(presenter, task.work_mode),
+                'display_name': task.display_name,
+                'status': task.status,
+                'status_label': status,
+                'error_message': task.error_message,
+                'progress_current': task.progress_current,
+                'progress_total': task.progress_total,
+            }
+        )
         if selected_task_id is not None and task.task_id == selected_task_id:
             resolved_selected_row = index
     presenter.view.set_task_queue_items(items, resolved_selected_row)
@@ -157,6 +285,7 @@ def start_task(
 
     if work_mode in (
         WorkMode.train_only,
+        WorkMode.continue_training,
         WorkMode.train_and_recognition,
         WorkMode.further_training,
     ):
@@ -194,10 +323,15 @@ def start_task(
 def on_task_finished(presenter) -> None:
     result = presenter._processing_session.complete_active_task()
     if result.task is not None:
-        if result.stop_requested:
+        if result.paused:
+            presenter.message_bus.publish('logging', f'Задача #{result.task.task_id} поставлена на паузу.')
+        elif result.stop_requested:
             presenter.message_bus.publish('logging', f'Задача #{result.task.task_id} остановлена.')
+        elif result.task.error_message:
+            presenter.message_bus.publish('logging', f'Задача #{result.task.task_id} завершена с ошибкой.')
         else:
             presenter.message_bus.publish('logging', f'Задача #{result.task.task_id} завершена.')
     presenter.neuaral_handler = None
     presenter._refresh_queue_view()
-    presenter._start_next_task_if_possible()
+    if not result.paused:
+        presenter._start_next_task_if_possible()

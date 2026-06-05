@@ -26,7 +26,7 @@ def build_training_artifact_dir(
     current_time = timestamp or datetime.now()
     timestamp_text = current_time.strftime('%Y%m%d_%H%M%S')
 
-    if work_mode == WorkMode.further_training and str(main_state.model_path).strip():
+    if work_mode in (WorkMode.further_training, WorkMode.continue_training) and str(main_state.model_path).strip():
         model_path = Path(main_state.model_path)
         root_dir = model_path.parent if str(model_path.parent) else Path.cwd()
         base_name = _sanitize_name(model_path.stem, fallback='model')

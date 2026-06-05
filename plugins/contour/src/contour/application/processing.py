@@ -27,8 +27,12 @@ def normalize_via_size_mode(value: Any) -> str:
 
 def normalize_via_search_mode(value: Any) -> str:
     text = str(value or "").strip().lower()
+    if text == VIA_SEARCH_MODE_HEURISTIC:
+        return VIA_SEARCH_MODE_HEURISTIC
     if text == VIA_SEARCH_MODE_TEMPLATE:
         return VIA_SEARCH_MODE_TEMPLATE
+    if text == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
+        return VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
     return VIA_SEARCH_MODE_HEURISTIC
 
 
@@ -122,7 +126,7 @@ def normalize_metal_segmentation_method(value: Any) -> str:
         "no-segmentation",
     }:
         return "none"
-    if text in {"hybrid", "гибрид", "both", "комбинированный"}:
+    if text in {"hybrid", "гибрид", "гибридная", "both", "комбинированный"}:
         return "hybrid"
     if text in {"adaptive", "адаптив", "адаптивная"}:
         return "adaptive"
@@ -345,6 +349,7 @@ class ContourExtractionSettings:
     debug_gradient_map_enabled: bool = False
     min_hierarchy_depth: int = 0
     max_hierarchy_depth: int | None = None
+    min_inner_hole_area: float = 100.0
     max_hole_area_ratio: float | None = None
     conductor_gradient_enabled: bool = False
     conductor_gradient_min_strength: float = 18.0
@@ -358,7 +363,7 @@ class ContourExtractionSettings:
     via_display_show_candidates: bool = True
     metal_structural_pipeline: bool = False
     metal_preset: str = "standard"
-    metal_segmentation_method: str = "none"
+    metal_segmentation_method: str = "otsu"
     metal_sensitivity: str = "medium"
     metal_sensitivity_0_100: int = 50
     metal_min_object_area: float = 30.0
@@ -370,7 +375,7 @@ class ContourExtractionSettings:
     metal_min_straightness: float = 0.2
     metal_allow_t_junction: bool = True
     metal_border_handling: str = "mark"
-    metal_check_contour_validity: bool = True
+    metal_check_contour_validity: bool = False
     metal_hierarchy_mode: str = "full"
     metal_min_area: float = 60.0
     metal_max_area: float | None = None
@@ -504,6 +509,7 @@ class ContourExtractionSettings:
             "debug_gradient_map_enabled": self.debug_gradient_map_enabled,
             "min_hierarchy_depth": self.min_hierarchy_depth,
             "max_hierarchy_depth": self.max_hierarchy_depth,
+            "min_inner_hole_area": self.min_inner_hole_area,
             "max_hole_area_ratio": self.max_hole_area_ratio,
             "conductor_gradient_enabled": self.conductor_gradient_enabled,
             "conductor_gradient_min_strength": self.conductor_gradient_min_strength,
@@ -569,6 +575,7 @@ class ContourExtractionSettings:
         max_via_width = payload.get("max_via_width")
         max_via_height = payload.get("max_via_height")
         max_hierarchy_depth = payload.get("max_hierarchy_depth")
+        min_inner_hole_area = payload.get("min_inner_hole_area")
         max_hole_area_ratio = payload.get("max_hole_area_ratio")
         metal_max_trace_width = payload.get("metal_max_trace_width_px")
         metal_max_area = payload.get("metal_max_area")
@@ -713,6 +720,10 @@ class ContourExtractionSettings:
             debug_gradient_map_enabled=bool(payload.get("debug_gradient_map_enabled", False)),
             min_hierarchy_depth=max(0, int(payload.get("min_hierarchy_depth", 0))),
             max_hierarchy_depth=None if max_hierarchy_depth in (None, "", 0, 0.0) else max(0, int(max_hierarchy_depth)),
+            min_inner_hole_area=max(
+                0.0,
+                float(100.0 if min_inner_hole_area in (None, "") else min_inner_hole_area),
+            ),
             max_hole_area_ratio=None
             if max_hole_area_ratio in (None, "", 0, 0.0)
             else max(0.0, float(max_hole_area_ratio)),
@@ -735,7 +746,7 @@ class ContourExtractionSettings:
             metal_structural_pipeline=bool(payload.get("metal_structural_pipeline", False)),
             metal_preset=str(payload.get("metal_preset", "standard") or "standard"),
             metal_segmentation_method=normalize_metal_segmentation_method(
-                payload.get("metal_segmentation_method", "none")
+                payload.get("metal_segmentation_method", "otsu")
             ),
             metal_sensitivity=normalize_metal_sensitivity(payload.get("metal_sensitivity", "medium")),
             metal_sensitivity_0_100=max(0, min(100, int(payload.get("metal_sensitivity_0_100", 50)))),
@@ -752,7 +763,7 @@ class ContourExtractionSettings:
             ),
             metal_allow_t_junction=bool(payload.get("metal_allow_t_junction", True)),
             metal_border_handling=str(payload.get("metal_border_handling", "mark") or "mark"),
-            metal_check_contour_validity=bool(payload.get("metal_check_contour_validity", True)),
+            metal_check_contour_validity=bool(payload.get("metal_check_contour_validity", False)),
             metal_hierarchy_mode=str(payload.get("metal_hierarchy_mode", "full") or "full"),
             metal_min_area=max(
                 0.0,

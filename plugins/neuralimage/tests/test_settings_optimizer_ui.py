@@ -127,22 +127,35 @@ def test_settings_panel_optimizer_presets_apply_values_and_highlight_active(qapp
     panel = SettingsPanel()
     panel.connect_internal_signals()
 
-    adam_btn, adamw_btn = panel.optimizer_preset_buttons
-    assert len(panel.optimizer_preset_buttons) == 2
+    adam_btn, adamw_btn, adamw_muon_btn = panel.optimizer_preset_buttons
+    assert len(panel.optimizer_preset_buttons) == 3
     assert panel.optimizer_advanced_content_widget.isHidden() is True
     assert panel.loss_advanced_content_widget.isHidden() is True
+
+    adamw_muon_btn.click()
+    assert panel.optimizer_type.currentText() == 'adamw_muon'
+    assert panel.learning_rate_spinbox.value() == pytest.approx(0.0003)
+    assert panel.weight_decay_spinbox.value() == pytest.approx(0.02)
+    assert adamw_muon_btn.property('selectionRole') == 'mode'
+    assert adamw_muon_btn.property('presetRole') == 'quickPreset'
+    assert adamw_muon_btn.isChecked() is True
+    assert adam_btn.isChecked() is False
+    assert adamw_btn.isChecked() is False
 
     adamw_btn.click()
     assert panel.optimizer_type.currentText() == 'adamw'
     assert panel.learning_rate_spinbox.value() == pytest.approx(0.0005)
     assert panel.weight_decay_spinbox.value() == pytest.approx(0.01)
     assert adamw_btn.property('selectionRole') == 'mode'
+    assert adamw_btn.property('presetRole') == 'quickPreset'
     assert adamw_btn.isChecked() is True
     assert adam_btn.isChecked() is False
+    assert adamw_muon_btn.isChecked() is False
 
     panel.learning_rate_spinbox.setValue(0.00031)
     assert adam_btn.isChecked() is False
     assert adamw_btn.isChecked() is False
+    assert adamw_muon_btn.isChecked() is False
 
 
 def test_settings_panel_toggles_validation_spinbox(qapp):
@@ -386,6 +399,7 @@ def test_settings_panel_applies_loss_presets_for_conductors_and_contacts(qapp):
 
     panel.loss_preset_buttons['conductors'].click()
     assert panel.get_loss_term_weights() == {'bce': 0.5, 'dice': 0.5}
+    assert panel.loss_preset_buttons['conductors'].property('presetRole') == 'quickPreset'
     assert panel.loss_preset_buttons['conductors'].isChecked() is True
     assert panel.loss_preset_buttons['contacts'].isChecked() is False
 

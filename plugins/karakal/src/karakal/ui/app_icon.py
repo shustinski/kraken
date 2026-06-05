@@ -1,6 +1,7 @@
 """Helpers for loading the Karakal application icon."""
 from __future__ import annotations
 
+from functools import lru_cache
 import sys
 from pathlib import Path
 
@@ -8,10 +9,10 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QWidget
 
 _ICON_CANDIDATES = (
-    "resources/icons/karakal_light.ico",
     "resources/icons/karakal_light.png",
-    "resources/icons/karakal.ico",
+    "resources/icons/karakal_light.ico",
     "resources/icons/karakal.png",
+    "resources/icons/karakal.ico",
 )
 
 
@@ -20,20 +21,17 @@ def _resource_roots() -> tuple[Path, ...]:
         base = Path(getattr(sys, "_MEIPASS"))
         return (base / "karakal", base)
     module_path = Path(__file__).resolve()
-    return (module_path.parents[1], module_path.parents[2])
+    return (module_path.parents[1],)
 
 
 def _icon_path_candidates(root: Path, relative_path: str) -> tuple[Path, ...]:
     direct = root / relative_path
     if direct.is_file():
         return (direct,)
-    filename = Path(relative_path).name
-    if not root.exists():
-        return ()
-    matches = tuple(path for path in root.rglob(filename) if path.is_file())
-    return matches
+    return ()
 
 
+@lru_cache(maxsize=1)
 def karakal_icon() -> QIcon:
     """Return the bundled Karakal icon, or an empty icon if unavailable."""
 

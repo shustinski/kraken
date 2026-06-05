@@ -19,6 +19,9 @@ class ComparisonMode(str, Enum):
     SECOND_MINUS_FIRST = "second_minus_first"
     DISAGREEMENT = "disagreement"
     GRAYSCALE_DIFF = "grayscale_diff"
+    IOU = "iou"
+    DICE = "dice"
+    BCE = "bce"
 
     @property
     def label(self) -> str:
@@ -29,6 +32,9 @@ class ComparisonMode(str, Enum):
             self.SECOND_MINUS_FIRST: "Second - first",
             self.DISAGREEMENT: "Disagreement",
             self.GRAYSCALE_DIFF: "Grayscale difference",
+            self.IOU: "IoU",
+            self.DICE: "Dice",
+            self.BCE: "BCE",
         }
         return labels[self]
 

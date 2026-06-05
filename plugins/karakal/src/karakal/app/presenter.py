@@ -3073,8 +3073,12 @@ class KarakalPresenter(QObject):
 
     def _open_record_details(self, record: FrameRecord, state: ExtendMatrixTabState, tile_selection: object | None = None) -> None:
         session_view_state = dict(self._details_view_payload)
-        preferred_model_id = str(state.metric_scope or state.confidence_model_id or session_view_state.get("preferred_model_id") or "") or None
+        preferred_model_id = self._preferred_details_model_id_for_state(state, session_view_state=session_view_state)
         session_view_state["preferred_model_id"] = preferred_model_id
+        session_view_state["result_kind"] = self._default_details_result_kind_for_state(state)
+        session_view_state["layer_view"] = self._default_details_layer_view_for_state(state)
+        session_view_state["comparison_mode"] = self._default_details_comparison_mode_for_state(state)
+        session_view_state["grayscale_diff"] = self._default_details_grayscale_diff_for_state(state)
         if tile_selection is not None:
             parent_row = int(getattr(tile_selection, "matrix_row", getattr(tile_selection, "row", 0)))
             parent_column = int(getattr(tile_selection, "matrix_column", getattr(tile_selection, "column", 0)))
@@ -3313,6 +3317,51 @@ class KarakalPresenter(QObject):
                     setter(normalized)
                 except Exception:
                     continue
+
+    def _preferred_details_model_id_for_state(self, state: ExtendMatrixTabState, *, session_view_state: dict[str, object] | None = None) -> str | None:
+        current_item = self.folder_list.currentItem() if hasattr(self, "folder_list") else None
+        if current_item is not None:
+            current_item_model_id = self._model_id_for_folder_item(current_item, state.build_result)
+            if current_item_model_id:
+                return current_item_model_id
+        if state.metric_scope:
+            return str(state.metric_scope)
+        if state.confidence_model_id:
+            return str(state.confidence_model_id)
+        if session_view_state is not None:
+            preferred_model_id = session_view_state.get("preferred_model_id")
+            if isinstance(preferred_model_id, str) and preferred_model_id:
+                return preferred_model_id
+        return None
+
+    def _default_details_result_kind_for_state(self, state: ExtendMatrixTabState) -> str:
+        metric_key = str(
+            getattr(state, "metric_key", "")
+            or getattr(state.build_result, "selected_metric_key", "")
+            or ""
+        )
+        if confidence_metric_family(metric_key) is not None:
+            return "confidence"
+        analysis_mode = str(getattr(state, "analysis_mode", "") or INTER_MODEL_ANALYSIS_MODE)
+        if analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}:
+            return "confidence"
+        if str(getattr(state, "object_type", "") or POLYGON_OBJECT_TYPE) == POINT_OBJECT_TYPE:
+            return "point_matches"
+        return "diff"
+
+    @staticmethod
+    def _default_details_layer_view_for_state(_state: ExtendMatrixTabState) -> str:
+        return "source"
+
+    def _default_details_comparison_mode_for_state(self, state: ExtendMatrixTabState) -> str:
+        comparison_mode = getattr(state.build_result.options, "comparison_mode", "")
+        return str(getattr(comparison_mode, "value", comparison_mode) or "disagreement")
+
+    def _default_details_grayscale_diff_for_state(self, state: ExtendMatrixTabState) -> bool:
+        if self._default_details_result_kind_for_state(state) != "diff":
+            return False
+        comparison_mode = getattr(state.build_result.options, "comparison_mode", "")
+        return str(getattr(comparison_mode, "value", comparison_mode) or "") == "grayscale_diff"
 
     def _management_payload_for_record(self, state: ExtendMatrixTabState, record: FrameRecord | None) -> dict[str, str] | None:
         if record is None or not state.management_payload_by_key:

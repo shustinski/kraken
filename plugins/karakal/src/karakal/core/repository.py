@@ -7210,6 +7210,27 @@ def compute_comparison_score(first: np.ndarray, second: np.ndarray, mode: Compar
         return float(np.mean(np.not_equal(first_bool, second_bool), dtype=np.float64))
     if mode == ComparisonMode.FIRST_MINUS_SECOND:
         return float(np.mean(np.logical_and(first_bool, np.logical_not(second_bool)), dtype=np.float64))
+    if mode == ComparisonMode.IOU:
+        intersection = float(np.count_nonzero(np.logical_and(first_bool, second_bool)))
+        union = float(np.count_nonzero(np.logical_or(first_bool, second_bool)))
+        return 1.0 if union <= EPS else float(intersection / union)
+    if mode == ComparisonMode.DICE:
+        intersection = float(np.count_nonzero(np.logical_and(first_bool, second_bool)))
+        total = float(np.count_nonzero(first_bool) + np.count_nonzero(second_bool))
+        return 1.0 if total <= EPS else float((2.0 * intersection) / total)
+    if mode == ComparisonMode.BCE:
+        eps = 1e-6
+        first_float = np.asarray(first, dtype=np.float32)
+        second_float = np.asarray(second, dtype=np.float32)
+        if first_float.size > 0 and float(np.nanmax(first_float)) > 1.0:
+            first_float = first_float / 255.0
+        if second_float.size > 0 and float(np.nanmax(second_float)) > 1.0:
+            second_float = second_float / 255.0
+        first_float = np.clip(first_float, eps, 1.0 - eps)
+        second_float = np.clip(second_float, eps, 1.0 - eps)
+        forward = -(first_float * np.log(second_float) + (1.0 - first_float) * np.log(1.0 - second_float))
+        backward = -(second_float * np.log(first_float) + (1.0 - second_float) * np.log(1.0 - first_float))
+        return float(np.mean((forward + backward) * 0.5, dtype=np.float64)) if forward.size else 0.0
     return float(np.mean(np.logical_and(np.logical_not(first_bool), second_bool), dtype=np.float64))
 
 
@@ -7800,6 +7821,31 @@ def compute_comparison(first: np.ndarray, second: np.ndarray, mode: ComparisonMo
         return heatmap.astype(np.float32, copy=False), float(np.mean(heatmap, dtype=np.float64))
     first_bool = np.asarray(first, dtype=bool)
     second_bool = np.asarray(second, dtype=bool)
+    if mode == ComparisonMode.IOU:
+        intersection = np.logical_and(first_bool, second_bool)
+        union = np.logical_or(first_bool, second_bool)
+        heatmap = np.where(union, np.where(intersection, 1.0, 0.6), 0.0).astype(np.float32)
+        return heatmap, compute_comparison_score(first_bool, second_bool, mode)
+    if mode == ComparisonMode.DICE:
+        intersection = np.logical_and(first_bool, second_bool)
+        union = np.logical_or(first_bool, second_bool)
+        heatmap = np.where(union, np.where(intersection, 1.0, 0.35), 0.0).astype(np.float32)
+        return heatmap, compute_comparison_score(first_bool, second_bool, mode)
+    if mode == ComparisonMode.BCE:
+        eps = 1e-6
+        first_float = np.asarray(first, dtype=np.float32)
+        second_float = np.asarray(second, dtype=np.float32)
+        if first_float.size > 0 and float(np.nanmax(first_float)) > 1.0:
+            first_float = first_float / 255.0
+        if second_float.size > 0 and float(np.nanmax(second_float)) > 1.0:
+            second_float = second_float / 255.0
+        first_float = np.clip(first_float, eps, 1.0 - eps)
+        second_float = np.clip(second_float, eps, 1.0 - eps)
+        forward = -(first_float * np.log(second_float) + (1.0 - first_float) * np.log(1.0 - second_float))
+        backward = -(second_float * np.log(first_float) + (1.0 - second_float) * np.log(1.0 - first_float))
+        heatmap = np.asarray((forward + backward) * 0.5, dtype=np.float32)
+        display = np.clip(1.0 - np.exp(-heatmap), 0.0, 1.0)
+        return display.astype(np.float32, copy=False), float(np.mean(heatmap, dtype=np.float64)) if heatmap.size else 0.0
     if mode == ComparisonMode.OVERLAY_ONLY:
         return np.zeros_like(first_bool, dtype=np.float32), 0.0
     elif mode in {ComparisonMode.XOR, ComparisonMode.DISAGREEMENT}:

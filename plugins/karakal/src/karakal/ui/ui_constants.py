@@ -240,6 +240,8 @@ EXTEND_WIDGET_STYLESHEET = """
 #KarakalRoot QListWidget::item { border-radius: 8px; margin: 1px 0px; padding: 1px; }
 #KarakalRoot QListWidget::item:selected { background-color: #275fbb; color: #ffffff; }
 #KarakalRoot QLineEdit, #KarakalRoot QComboBox, #KarakalRoot QSpinBox, #KarakalRoot QDoubleSpinBox { background-color: #10151c; border: 1px solid #30445a; border-radius: 8px; padding: 6px 10px; min-height: 26px; }
+#KarakalRoot QComboBox QAbstractItemView { background-color: #11161d; selection-background-color: #275fbb; selection-color: #ffffff; }
+#KarakalRoot QComboBox QAbstractItemView::item:disabled { color: #6f7a86; background-color: #11161d; }
 #KarakalRoot QToolButton[toolbarButton="true"] { background-color: #1e2630; border: 1px solid #314355; border-radius: 8px; padding: 4px; min-width: 28px; min-height: 28px; max-width: 28px; max-height: 28px; }
 #KarakalRoot QToolButton[toolbarButton="true"]:hover { background-color: #283342; border-color: #46627f; }
 #KarakalRoot QToolButton#extendLanguageToggleButton { background-color: #275fbb; border: 1px solid #3f7ee1; border-radius: 10px; padding: 6px 14px; min-width: 40px; font-weight: 700; }

@@ -7,20 +7,29 @@ from dataclasses import replace
 from datetime import datetime
 from math import isfinite
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, Qt
-from PyQt6.QtGui import QColor, QImageReader
+from PyQt6.QtGui import QBrush, QColor, QImageReader
 from PyQt6.QtWidgets import (
+    QApplication,
     QColorDialog,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QInputDialog,
+    QLabel,
+    QListWidget,
     QListWidgetItem,
     QMenu,
     QMessageBox,
+    QProgressDialog,
+    QVBoxLayout,
 )
 
 from ..core.analysis_modes import (
+    CONFIDENCE_COMPARISON_MODE,
     INTRA_MODEL_CONFIDENCE_MODE,
     INTER_MODEL_ANALYSIS_MODE,
     MODEL_OUTPUT_CONFIDENCE_MODE,
@@ -48,8 +57,11 @@ from ..manager.primary_labeling_selector import (
 )
 from ..core.repository import (
     _parse_model_metric_key,
+    available_result_layer_exports,
     compute_metric_percentiles,
     export_record_assets,
+    export_result_layer_jpgs,
+    export_result_layers_jpgs,
     load_grayscale_image,
     metric_higher_is_better,
     metric_value_for_record,
@@ -173,7 +185,10 @@ class KarakalPresenter(QObject):
 
     def _required_model_count_for_active_mode(self, analysis_mode: str | None = None) -> int:
         mode = str(analysis_mode or self._selected_analysis_mode() or INTER_MODEL_ANALYSIS_MODE)
-        return 2 if mode == INTER_MODEL_ANALYSIS_MODE else 1
+        return 2 if mode in {INTER_MODEL_ANALYSIS_MODE, CONFIDENCE_COMPARISON_MODE} else 1
+
+    def _required_model_count_for_build(self) -> int:
+        return 1
 
     def _selected_object_type(self) -> str:
         return object_type_from_geometry_mode(self.geometry_mode_combo.currentData())
@@ -265,9 +280,75 @@ class KarakalPresenter(QObject):
     def _confidence_context_available(self, context, build_result: BuildResult | None) -> bool:
         return context.analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE} and context.confidence_model_id is not None
 
+    def _has_model_output_confidence_maps(self, build_result: BuildResult | None = None) -> bool:
+        if build_result is not None:
+            for spec in getattr(build_result, "model_specs", ()) or ():
+                if spec.prob_folder is None:
+                    continue
+                model_id = str(spec.model_id)
+                if any(bool((record.model_prob_paths or {}).get(model_id)) for record in build_result.records):
+                    return True
+            if getattr(build_result, "model_specs", None):
+                return False
+        for spec in self._checked_model_specs():
+            if spec.prob_folder is not None:
+                return True
+        return False
+
+    def _has_model_output_confidence_pair(self, build_result: BuildResult | None = None) -> bool:
+        if build_result is not None:
+            model_ids: set[str] = set()
+            for spec in getattr(build_result, "model_specs", ()) or ():
+                if spec.prob_folder is None:
+                    continue
+                model_id = str(spec.model_id)
+                if any(bool((record.model_prob_paths or {}).get(model_id)) for record in build_result.records):
+                    model_ids.add(model_id)
+            return len(model_ids) >= 2
+        return sum(1 for spec in self._checked_model_specs() if spec.prob_folder is not None) >= 2
+
+    def _set_analysis_mode_option_enabled(self, mode_key: str, enabled: bool, tooltip: str = "") -> None:
+        index = self.analysis_mode_combo.findData(str(mode_key))
+        if index < 0:
+            return
+        item = self.analysis_mode_combo.model().item(index)
+        if item is not None:
+            if str(mode_key) == MODEL_OUTPUT_CONFIDENCE_MODE:
+                base_text = self._t("analysis.mode.model_output_confidence")
+                item.setText(base_text)
+            elif str(mode_key) == CONFIDENCE_COMPARISON_MODE:
+                base_text = self._t("analysis.mode.confidence_comparison")
+                item.setText(base_text)
+            item.setEnabled(bool(enabled))
+            item.setToolTip(str(tooltip or ""))
+            item.setForeground(QBrush(QColor("#edf3fb" if enabled else "#6f7a86")))
+            font = item.font()
+            font.setItalic(not bool(enabled))
+            item.setFont(font)
+
+    def _sync_confidence_map_function_state(self, build_result: BuildResult | None = None, *, allow_fallback: bool = True) -> bool:
+        available = self._has_model_output_confidence_maps(build_result)
+        pair_available = self._has_model_output_confidence_pair(build_result)
+        tooltip = "" if available else self._t("hint.model_output_confidence_unavailable")
+        self._set_analysis_mode_option_enabled(MODEL_OUTPUT_CONFIDENCE_MODE, available, tooltip)
+        pair_tooltip = "" if pair_available else self._t("hint.confidence_comparison_unavailable")
+        self._set_analysis_mode_option_enabled(CONFIDENCE_COMPARISON_MODE, pair_available, pair_tooltip)
+        if allow_fallback and (
+            (not available and self._selected_analysis_mode() == MODEL_OUTPUT_CONFIDENCE_MODE)
+            or (not pair_available and self._selected_analysis_mode() == CONFIDENCE_COMPARISON_MODE)
+        ):
+            blocker = QSignalBlocker(self.analysis_mode_combo)
+            fallback_index = self.analysis_mode_combo.findData(INTER_MODEL_ANALYSIS_MODE)
+            self.analysis_mode_combo.setCurrentIndex(fallback_index if fallback_index >= 0 else 0)
+            del blocker
+            self._apply_global_analysis_context_to_all_states()
+        return available
+
     def _sync_mode_controls(self, state: ExtendMatrixTabState | None = None, build_result: BuildResult | None = None) -> None:
+        self._sync_confidence_map_function_state(build_result)
         context = self._analysis_context_for_state(state, build_result)
         is_confidence_mode = context.analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}
+        is_confidence_comparison = context.analysis_mode == CONFIDENCE_COMPARISON_MODE
         has_scope_choices = bool(getattr(build_result, "model_specs", ()) if build_result is not None else ())
         is_confidence = self._confidence_context_available(context, build_result)
         is_point = context.object_type == POINT_OBJECT_TYPE
@@ -279,13 +360,13 @@ class KarakalPresenter(QObject):
         self._set_row_visible(getattr(self, "_matrix_columns_row", None), False)
         self._set_row_enabled(getattr(self, "_matrix_frames_per_row_row", None), True)
         self._set_row_visible(getattr(self, "_matrix_frames_per_row_row", None), True)
-        self._set_row_visible(getattr(self, "_metric_scope_row", None), True)
-        self._set_row_enabled(getattr(self, "_metric_scope_row", None), has_scope_choices)
+        self._set_row_visible(getattr(self, "_metric_scope_row", None), not is_confidence_comparison)
+        self._set_row_enabled(getattr(self, "_metric_scope_row", None), has_scope_choices and not is_confidence_comparison)
         self._set_row_visible(getattr(self, "_metric_select_row", None), not is_confidence_mode)
         self._set_row_visible(getattr(self, "_matrix_confidence_delta_row", None), is_confidence)
         self._set_row_visible(getattr(self, "_matrix_polygon_confidence_summary_row", None), is_confidence and not is_point)
-        self._set_row_visible(getattr(self, "_matrix_polygon_compare_profile_row", None), not is_confidence and not is_point)
-        self._set_row_visible(getattr(self, "_matrix_point_radius_row", None), not is_confidence and is_point)
+        self._set_row_visible(getattr(self, "_matrix_polygon_compare_profile_row", None), not is_confidence and not is_confidence_comparison and not is_point)
+        self._set_row_visible(getattr(self, "_matrix_point_radius_row", None), not is_confidence and not is_confidence_comparison and is_point)
         self._set_row_visible(getattr(self, "_matrix_point_confidence_radius_row", None), is_confidence and is_point)
         self._set_row_visible(getattr(self, "_matrix_point_mode_row", None), is_point)
         self._set_row_visible(getattr(self, "_matrix_frame_type_filter_row", None), False)
@@ -403,6 +484,17 @@ class KarakalPresenter(QObject):
             return INTRA_MODEL_CONFIDENCE_MODE
         return current_mode
 
+    def _preferred_metric_key_for_folder_item_in_current_mode(self, state: ExtendMatrixTabState, item: QListWidgetItem, model_id: str) -> str:
+        current_mode = self._selected_analysis_mode()
+        current_metric = str(state.metric_key or state.build_result.selected_metric_key or DEFAULT_MATRIX_METRIC_KEY)
+        if current_mode == MODEL_OUTPUT_CONFIDENCE_MODE:
+            if self._folder_item_has_output_confidence(item, state.build_result, model_id):
+                return f"model_output_confidence::{model_id}"
+            return current_metric
+        if current_mode == INTRA_MODEL_CONFIDENCE_MODE:
+            return f"model_confidence::{model_id}"
+        return current_metric
+
     def _on_folder_item_clicked(self, item: QListWidgetItem) -> None:
         state = self._current_tab_state()
         if state is None or self._worker_thread is not None:
@@ -413,25 +505,18 @@ class KarakalPresenter(QObject):
             return
         if item is not self.folder_list.currentItem():
             self.folder_list.setCurrentItem(item)
-        preferred_mode = self._analysis_mode_for_folder_item(state, item, model_id)
-        preferred_metric_key = self._preferred_model_metric_key_for_folder_item(state, item, model_id)
+        self._apply_global_analysis_context_to_state(state)
+        preferred_metric_key = self._preferred_metric_key_for_folder_item_in_current_mode(state, item, model_id)
 
-        state.analysis_mode = preferred_mode
-        state.confidence_model_id = model_id
-        state.metric_scope = model_id
+        if self._selected_analysis_mode() in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}:
+            state.confidence_model_id = model_id
+            state.metric_scope = model_id
 
-        blockers = [
-            QSignalBlocker(self.analysis_mode_combo),
-            QSignalBlocker(self.metric_scope_combo),
-        ]
-        _ = blockers
-        analysis_index = self.analysis_mode_combo.findData(preferred_mode)
-        if analysis_index >= 0:
-            self.analysis_mode_combo.setCurrentIndex(analysis_index)
+        scope_blocker = QSignalBlocker(self.metric_scope_combo)
         scope_index = self.metric_scope_combo.findData(model_id)
         if scope_index >= 0:
             self.metric_scope_combo.setCurrentIndex(scope_index)
-        del blockers
+        del scope_blocker
 
         self._sync_metric_controls(
             build_result,
@@ -439,6 +524,8 @@ class KarakalPresenter(QObject):
             preferred_scope_key=model_id,
             context_state=state,
         )
+        state.confidence_model_id = self._selected_confidence_model_id(build_result)
+        state.metric_scope = str(state.confidence_model_id or "")
         metric_key = str(self.metric_combo.currentData() or preferred_metric_key or self._default_metric_key_for_state(state, build_result))
         state.metric_key = metric_key
         self.metric_combo.setToolTip(self._metric_hint_fallback(metric_key, build_result))
@@ -902,17 +989,6 @@ class KarakalPresenter(QObject):
         }
 
     def _set_ui_context_from_state(self, state: ExtendMatrixTabState) -> None:
-        analysis_blocker = QSignalBlocker(self.analysis_mode_combo)
-        analysis_index = self.analysis_mode_combo.findData(str(state.analysis_mode))
-        self.analysis_mode_combo.setCurrentIndex(analysis_index if analysis_index >= 0 else 0)
-        del analysis_blocker
-
-        geometry_value = geometry_mode_for_object_type(state.object_type).value
-        geometry_blocker = QSignalBlocker(self.geometry_mode_combo)
-        geometry_index = self.geometry_mode_combo.findData(str(geometry_value))
-        self.geometry_mode_combo.setCurrentIndex(geometry_index if geometry_index >= 0 else 0)
-        del geometry_blocker
-
         score_view_blocker = QSignalBlocker(self.matrix_score_view_combo)
         score_view_index = self.matrix_score_view_combo.findData(str(state.matrix_score_view_mode or DEFAULT_MATRIX_SCORE_VIEW_MODE))
         self.matrix_score_view_combo.setCurrentIndex(score_view_index if score_view_index >= 0 else 0)
@@ -943,6 +1019,42 @@ class KarakalPresenter(QObject):
         frame_type_filter_index = self.frame_type_filter_combo.findData(str(state.frame_type_filter or 'all'))
         self.frame_type_filter_combo.setCurrentIndex(frame_type_filter_index if frame_type_filter_index >= 0 else 0)
         del frame_type_filter_blocker
+
+    def _apply_global_analysis_context_to_state(self, state: ExtendMatrixTabState, *, update_frame_filter: bool = False) -> bool:
+        selected_analysis_mode = self._selected_analysis_mode()
+        selected_object_type = self._selected_object_type()
+        updated_options = self._analysis_options_from_controls(state, object_type=selected_object_type)
+        context_changed = (
+            str(state.analysis_mode or "") != str(selected_analysis_mode)
+            or str(state.object_type or "") != str(selected_object_type)
+        )
+        options_changed = updated_options != state.build_result.options
+        if context_changed or options_changed:
+            state.build_result = replace(state.build_result, options=updated_options)
+            self._invalidate_state_runtime_caches(state, clear_metric_results=True)
+            state.last_analytics_request_signature = None
+        else:
+            state.build_result = replace(state.build_result, options=updated_options)
+
+        state.analysis_mode = selected_analysis_mode
+        state.object_type = selected_object_type
+        if update_frame_filter:
+            state.frame_type_filter = str(self.frame_type_filter_combo.currentData() or state.frame_type_filter or 'all')
+
+        preferred_scope = str(self.metric_scope_combo.currentData() or state.confidence_model_id or state.metric_scope or "")
+        context = resolve_analysis_context(
+            state.build_result,
+            selected_analysis_mode,
+            selected_object_type,
+            confidence_model_id=preferred_scope,
+        )
+        state.confidence_model_id = str(context.confidence_model_id or "") or None
+        state.metric_scope = str(state.confidence_model_id or "")
+        return bool(context_changed or options_changed)
+
+    def _apply_global_analysis_context_to_all_states(self) -> None:
+        for state in tuple(self._tab_states.values()):
+            self._apply_global_analysis_context_to_state(state)
 
     def _analysis_options_from_controls(self, state: ExtendMatrixTabState, *, object_type: str) -> BuildOptions:
         return replace(
@@ -1037,21 +1149,7 @@ class KarakalPresenter(QObject):
             self.build_progress.setFormat(self._progress_format_text(self._active_progress_current, self._active_progress_total, self._active_progress_key))
 
     def _sync_current_analysis_context(self, state: ExtendMatrixTabState, *, auto_recompute: bool) -> None:
-        selected_analysis_mode = self._selected_analysis_mode()
-        selected_object_type = self._selected_object_type()
-        updated_options = self._analysis_options_from_controls(state, object_type=selected_object_type)
-        options_changed = updated_options != state.build_result.options
-        if options_changed:
-            state.build_result = replace(state.build_result, options=updated_options)
-            self._invalidate_state_runtime_caches(state, clear_metric_results=True)
-
-        state.analysis_mode = selected_analysis_mode
-        state.object_type = selected_object_type
-        state.frame_type_filter = str(self.frame_type_filter_combo.currentData() or state.frame_type_filter or 'all')
-        state.build_result = replace(state.build_result, options=updated_options)
-        selected_confidence_model_id = self._selected_confidence_model_id(state.build_result)
-        state.confidence_model_id = str(selected_confidence_model_id or "") or None
-        state.metric_scope = str(state.confidence_model_id or "")
+        options_changed = self._apply_global_analysis_context_to_state(state, update_frame_filter=True)
 
         self._sync_metric_controls(
             state.build_result,
@@ -1412,6 +1510,19 @@ class KarakalPresenter(QObject):
     def _metric_value_missing_for_build_result(self, build_result: BuildResult | None, metric_key: str) -> bool:
         if build_result is None:
             return False
+        if str(metric_key or "") in {
+            "confidence_model_score",
+            "confidence_difference_score",
+            "confidence_bce_score",
+            "confidence_threshold_crossing_score",
+        }:
+            for record in build_result.records:
+                summary = record.summary
+                if summary is None:
+                    continue
+                if metric_key in getattr(summary, 'metric_values', {}):
+                    return False
+            return True
         parsed = _parse_model_metric_key(metric_key)
         if parsed is None:
             return False
@@ -1505,7 +1616,21 @@ class KarakalPresenter(QObject):
         level = self._t(level_key)
         if "::" in str(metric_key):
             return f"{level} {float(value) * 100.0:.1f}%"
-        if str(metric_key) in {"overall_polygon_score", "iou_score", "dice_score", "polygon_bce_score", "overall_point_score", "precision_score", "recall_score", "f1_score", "localization_score"}:
+        if str(metric_key) in {
+            "overall_polygon_score",
+            "iou_score",
+            "dice_score",
+            "polygon_bce_score",
+            "overall_point_score",
+            "precision_score",
+            "recall_score",
+            "f1_score",
+            "localization_score",
+            "confidence_model_score",
+            "confidence_difference_score",
+            "confidence_bce_score",
+            "confidence_threshold_crossing_score",
+        }:
             return f"{level} {float(value):.1f}"
         return f"{level} {float(value):.4f}"
 
@@ -1551,6 +1676,8 @@ class KarakalPresenter(QObject):
             return self._t('hint.inter_model_polygon')
         if metric_key_text in {'overall_point_score', 'precision_score', 'recall_score', 'f1_score', 'localization_score', 'precision', 'recall', 'f1', 'mean_localization_distance'}:
             return self._t('hint.inter_model_point')
+        if metric_key_text in {'confidence_model_score', 'confidence_difference_score', 'confidence_bce_score', 'confidence_threshold_crossing_score'}:
+            return self._t('hint.confidence_comparison')
         if metric_key_text == 'model_model_score':
             return self._t('hint.model_model_point') if summary.frame_type == 'point' else self._t('hint.model_model_polygon')
         if metric_key_text in {'model_labeled_score', 'labeled_best_quality', 'labeled_mean_quality'}:
@@ -1596,6 +1723,10 @@ class KarakalPresenter(QObject):
             'recall': self._t('hint.inter_model_point'),
             'f1': self._t('hint.inter_model_point'),
             'mean_localization_distance': self._t('hint.inter_model_point'),
+            'confidence_model_score': self._t('hint.confidence_comparison'),
+            'confidence_difference_score': self._t('hint.confidence_comparison'),
+            'confidence_bce_score': self._t('hint.confidence_comparison'),
+            'confidence_threshold_crossing_score': self._t('hint.confidence_comparison'),
         }
         return defaults.get(family, self._metric_label(metric_key_text, build_result))
 
@@ -1607,6 +1738,8 @@ class KarakalPresenter(QObject):
             return self._t('metric.model_labeled_score') if summary.is_labeled else self._t('metric.disagreement_score')
         if family in {'overall_polygon_score', 'iou_score', 'dice_score', 'polygon_bce_score', 'iou', 'dice', 'bce'}:
             return 'iou + dice + bce score'
+        if family in {'confidence_model_score', 'confidence_difference_score', 'confidence_bce_score', 'confidence_threshold_crossing_score'}:
+            return 'confidence difference + confidence BCE + threshold crossing'
         if family in {'overall_point_score', 'precision_score', 'recall_score', 'f1_score', 'localization_score', 'precision', 'recall', 'f1', 'mean_localization_distance'}:
             return 'precision + recall + f1 + localization + tp/fp/fn'
         if family == 'model_model_score':
@@ -2412,7 +2545,9 @@ class KarakalPresenter(QObject):
 
     def _on_build_requested(self) -> None:
         state = self._current_tab_state()
-        if state is None:
+        active_model_count = len(self._checked_model_specs())
+        can_build_from_base_only = active_model_count <= 0 and self._original_folder is not None and Path(self._original_folder.path).exists()
+        if state is None or active_model_count >= self._required_model_count_for_build() or can_build_from_base_only:
             self._start_build()
             return
         self._apply_pending_display_controls(state)
@@ -2536,6 +2671,8 @@ class KarakalPresenter(QObject):
             self._view._set_app_mode(mode)
         if mode == "management":
             self._refresh_management_mode_view()
+        if mode == "grid_inspection":
+            self._refresh_grid_inspection_mode_view()
         self._sync_action_buttons()
 
     def _refresh_management_mode_view(self) -> None:
@@ -2553,6 +2690,19 @@ class KarakalPresenter(QObject):
         self.management_matrix_view.set_management_assignee_colors(self._management_assignee_colors)
         self.management_matrix_view.set_management_payload(payload_by_key)
         self.management_matrix_view.set_records(list(state.build_result.records), sort_mode="name", reset_view=True)
+
+    def _refresh_grid_inspection_mode_view(self) -> None:
+        if not hasattr(self, "grid_inspection_matrix_view"):
+            return
+        state = self._current_tab_state()
+        if state is None or not getattr(state.build_result, "records", None):
+            self.grid_inspection_matrix_view.set_records([], sort_mode="name", reset_view=True)
+            return
+        self.grid_inspection_matrix_view.set_layout_config(state.layout_config)
+        self.grid_inspection_matrix_view.set_excluded_record_keys(set(state.excluded_record_keys))
+        self.grid_inspection_matrix_view.set_grid_inspection_visual_mode(True)
+        self.grid_inspection_matrix_view.set_cell_size(128)
+        self.grid_inspection_matrix_view.set_records(list(state.build_result.records), sort_mode="name", reset_view=True)
 
     def _management_group_row_values(self, tasks: list, batch, is_batch_group: bool) -> list[str]:
         if not tasks:
@@ -2609,10 +2759,23 @@ class KarakalPresenter(QObject):
     def _on_management_matrix_record_selected(self, record: FrameRecord | None) -> None:
         return
 
+    def _on_grid_inspection_record_selected(self, record: FrameRecord | None) -> None:
+        state = self._current_tab_state()
+        if state is not None:
+            self._update_matrix_preview(state, record)
+
     def _on_management_matrix_tile_selected(self, selection: object | None) -> None:
         return
 
     def _on_management_matrix_record_activated(self, record: FrameRecord | None) -> None:
+        if record is None:
+            return
+        state = self._current_tab_state()
+        if state is None:
+            return
+        self._open_record_details(record, state)
+
+    def _on_grid_inspection_record_activated(self, record: FrameRecord | None) -> None:
         if record is None:
             return
         state = self._current_tab_state()
@@ -2646,7 +2809,7 @@ class KarakalPresenter(QObject):
     def _start_build(self) -> None:
         explicit_model_specs = self._checked_model_specs()
         model_specs = self._effective_model_specs_for_build()
-        required_model_count = self._required_model_count_for_active_mode()
+        required_model_count = self._required_model_count_for_build()
         building_from_base_only = (
             len(explicit_model_specs) <= 0
             and len(model_specs) == 1
@@ -2748,22 +2911,8 @@ class KarakalPresenter(QObject):
             )
             self._sync_action_buttons()
             return
-        previous_options = state.build_result.options
         self._sync_current_analysis_context(state, auto_recompute=False)
         self._apply_pending_display_controls(state)
-        metric_key = str(self.metric_combo.currentData() or state.metric_key or DEFAULT_MATRIX_METRIC_KEY)
-        request_signature = self._analytics_request_signature(state, metric_key)
-        options_changed = state.build_result.options != previous_options
-        needs_analytics = (
-            not bool(getattr(state.build_result, "scores_computed", False))
-            or options_changed
-            or self._metric_value_missing_for_build_result(state.build_result, metric_key)
-            or getattr(state, "last_analytics_request_signature", None) != request_signature
-        )
-        if not needs_analytics:
-            self._apply_metric_to_state(state, metric_key)
-            self._sync_action_buttons()
-            return
         self._start_compute_analytics(state=state, sync_context=False, apply_pending_controls=False)
 
     def _request_cancel_build(self) -> None:
@@ -2840,6 +2989,8 @@ class KarakalPresenter(QObject):
         if result.records:
             state.matrix_view.select_record_by_key(result.records[0].key, ensure_visible=False)
             self._update_matrix_preview(state, result.records[0])
+        if self._current_app_mode() == "grid_inspection":
+            self._refresh_grid_inspection_mode_view()
         self._schedule_metric_histogram_update(state)
         self._sync_action_buttons()
 
@@ -2868,6 +3019,8 @@ class KarakalPresenter(QObject):
         state.metric_scope = str(state.confidence_model_id or "")
         state.metric_key = str(self.metric_combo.currentData() or result.selected_metric_key or self._default_metric_key_for_state(state, result))
         self._apply_metric_to_state(state, state.metric_key)
+        if self._current_app_mode() == "grid_inspection":
+            self._refresh_grid_inspection_mode_view()
         self._sync_action_buttons()
 
     def _on_worker_failed(self, message: str, *, generation: int | None = None) -> None:
@@ -2932,12 +3085,28 @@ class KarakalPresenter(QObject):
 
     def _on_analysis_mode_changed(self, *_args) -> None:
         state = self._current_tab_state()
+        self._apply_global_analysis_context_to_all_states()
         self._sync_mode_controls(state, None if state is None else state.build_result)
+        if state is not None:
+            self._sync_metric_controls(
+                state.build_result,
+                preferred_metric_key=state.metric_key,
+                preferred_scope_key=state.confidence_model_id or state.metric_scope,
+                context_state=state,
+            )
         self._sync_action_buttons()
 
     def _on_object_type_changed(self, *_args) -> None:
         state = self._current_tab_state()
+        self._apply_global_analysis_context_to_all_states()
         self._sync_mode_controls(state, None if state is None else state.build_result)
+        if state is not None:
+            self._sync_metric_controls(
+                state.build_result,
+                preferred_metric_key=state.metric_key,
+                preferred_scope_key=state.confidence_model_id or state.metric_scope,
+                context_state=state,
+            )
         self._sync_action_buttons()
 
     def _on_polygon_compare_profile_changed(self, *_args) -> None:
@@ -2996,6 +3165,8 @@ class KarakalPresenter(QObject):
             self._sync_action_buttons()
             if self._current_app_mode() == "management":
                 self._refresh_management_mode_view()
+            if self._current_app_mode() == "grid_inspection":
+                self._refresh_grid_inspection_mode_view()
             return
         self._last_active_tab_state = state
         if hasattr(self, "management_scenario_combo"):
@@ -3005,6 +3176,7 @@ class KarakalPresenter(QObject):
             self.management_scenario_combo.setCurrentIndex(scenario_index if scenario_index >= 0 else 0)
             del blocker
         self._set_ui_context_from_state(state)
+        self._apply_global_analysis_context_to_state(state)
         scope_blocker = QSignalBlocker(self.metric_scope_combo)
         self._populate_metric_scope_combo(state.build_result, state.confidence_model_id or state.metric_scope)
         scope_index = self.metric_scope_combo.findData(str(state.confidence_model_id or state.metric_scope or ""))
@@ -3033,6 +3205,8 @@ class KarakalPresenter(QObject):
         self._update_matrix_preview(state)
         if self._current_app_mode() == "management":
             self._refresh_management_mode_view()
+        if self._current_app_mode() == "grid_inspection":
+            self._refresh_grid_inspection_mode_view()
         self._sync_action_buttons()
 
     def _close_matrix_tab(self, index: int) -> None:
@@ -3073,9 +3247,11 @@ class KarakalPresenter(QObject):
 
     def _open_record_details(self, record: FrameRecord, state: ExtendMatrixTabState, tile_selection: object | None = None) -> None:
         session_view_state = dict(self._details_view_payload)
+        is_grid_inspection_details = self._current_app_mode() == "grid_inspection"
         preferred_model_id = self._preferred_details_model_id_for_state(state, session_view_state=session_view_state)
         session_view_state["preferred_model_id"] = preferred_model_id
-        session_view_state["result_kind"] = self._default_details_result_kind_for_state(state)
+        session_view_state["analysis_mode"] = str(state.analysis_mode or INTER_MODEL_ANALYSIS_MODE)
+        session_view_state["result_kind"] = "grid_cell_defects" if is_grid_inspection_details else self._default_details_result_kind_for_state(state)
         session_view_state["layer_view"] = self._default_details_layer_view_for_state(state)
         session_view_state["comparison_mode"] = self._default_details_comparison_mode_for_state(state)
         session_view_state["grayscale_diff"] = self._default_details_grayscale_diff_for_state(state)
@@ -3112,6 +3288,7 @@ class KarakalPresenter(QObject):
             session_view_state=session_view_state,
             on_view_state_changed=self._store_details_view_payload,
             export_folder=self._export_folder,
+            allowed_result_kinds=("grid_cell_defects",) if is_grid_inspection_details else None,
             parent=None,
         )
         dialog.setModal(False)
@@ -3142,6 +3319,8 @@ class KarakalPresenter(QObject):
         export_action.setEnabled(record is not None)
         export_selected_action = export_menu.addAction(self._t("context.export_selected_frame_assets", count=len(selected_records)))
         export_selected_action.setEnabled(bool(selected_records))
+        export_layer_action = export_menu.addAction(self._t("context.export_result_layer_jpgs"))
+        export_layer_action.setEnabled(bool(getattr(state.build_result, "records", ())))
         validation_menu = menu.addMenu(self._t("context.validation_menu"))
         exclude_action = validation_menu.addAction(self._t("context.exclude_selected_from_validation", count=len(exclude_source)))
         exclude_action.setEnabled(bool(exclude_source))
@@ -3165,6 +3344,9 @@ class KarakalPresenter(QObject):
             return
         if selected_action is export_selected_action and selected_records:
             self._export_records_assets(state, selected_records)
+            return
+        if selected_action is export_layer_action:
+            self._export_result_layer_jpgs(state)
             return
         if selected_action is exclude_action and exclude_source:
             self._set_validation_exclusions(state, exclude_source, exclude=True)
@@ -3302,6 +3484,158 @@ class KarakalPresenter(QObject):
             self._t("message.export_frames_done", frame_count=exported_records, file_count=exported_files, folder=str(export_folder)),
         )
 
+    def _select_result_layer_exports(self, choices: tuple[dict[str, str], ...]) -> tuple[dict[str, str], ...]:
+        dialog = QDialog(self._view)
+        dialog.setWindowTitle(self._t("dialog.select_result_layers"))
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(self._t("dialog.result_layers_prompt"), dialog))
+        layer_list = QListWidget(dialog)
+        layer_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        for choice in choices:
+            title_key = str(choice.get("title_key") or "")
+            title = self._t(title_key) if title_key else str(choice.get("title") or choice.get("key") or "")
+            group = str(choice.get("group") or "")
+            label = title if group == "detail" else (f"{title} [{group}]" if group else title)
+            item = QListWidgetItem(label, layer_list)
+            item.setData(Qt.ItemDataRole.UserRole, dict(choice))
+        if layer_list.count() > 0:
+            layer_list.item(0).setSelected(True)
+        layout.addWidget(layer_list)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != int(QDialog.DialogCode.Accepted):
+            return tuple()
+        selected: list[dict[str, str]] = []
+        for item in layer_list.selectedItems():
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(data, dict):
+                selected.append(dict(data))
+        return tuple(selected)
+
+    def _export_result_layer_jpgs(self, state: ExtendMatrixTabState) -> None:
+        export_folder = self._ensure_export_folder()
+        if export_folder is None:
+            return
+        try:
+            choices = available_result_layer_exports(state.build_result)
+        except Exception as error:
+            QMessageBox.warning(self._view, self._t("dialog.warning_title"), str(error))
+            return
+        if not choices:
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                self._t("message.no_result_layers"),
+            )
+            return
+        selected_choices = self._select_result_layer_exports(tuple(choices))
+        if not selected_choices:
+            return
+        color_presets: list[tuple[str, tuple[int, int, int] | None]] = [
+            (self._t("layer_color_preset.red"), (255, 64, 64)),
+            (self._t("layer_color_preset.cyan"), (0, 229, 255)),
+            (self._t("layer_color_preset.white"), (255, 255, 255)),
+            (self._t("layer_color_preset.custom"), None),
+        ]
+        preset_labels = [label for label, _rgb in color_presets]
+        preset_label, preset_accepted = QInputDialog.getItem(
+            self._view,
+            self._t("dialog.select_layer_color_preset"),
+            self._t("dialog.layer_color_preset_prompt"),
+            preset_labels,
+            0,
+            False,
+        )
+        if not preset_accepted or not preset_label:
+            return
+        selected_rgb = next((rgb for label, rgb in color_presets if label == preset_label), None)
+        if selected_rgb is None:
+            color = QColorDialog.getColor(
+                QColor(255, 64, 64),
+                self._view,
+                self._t("dialog.select_layer_color"),
+            )
+            if not color.isValid():
+                return
+            selected_rgb = (int(color.red()), int(color.green()), int(color.blue()))
+        records_count = len(tuple(getattr(state.build_result, "records", ()) or ()))
+        total_units = max(1, records_count * len(selected_choices))
+        progress = QProgressDialog(
+            self._t("message.export_result_layer_progress", current=0, total=total_units, frame=""),
+            self._t("common.cancel"),
+            0,
+            total_units,
+            self._view,
+        )
+        progress.setWindowTitle(self._t("context.export_result_layer_jpgs"))
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        last_progress_update = 0.0
+
+        def on_progress(current: int, total: int, frame_name: str) -> None:
+            nonlocal last_progress_update
+            now = perf_counter()
+            if int(current) < int(total) and now - last_progress_update < 0.15:
+                return
+            last_progress_update = now
+            progress.setMaximum(max(1, int(total)))
+            progress.setValue(max(0, min(int(current), max(1, int(total)))))
+            progress.setLabelText(
+                self._t(
+                    "message.export_result_layer_progress",
+                    current=int(current),
+                    total=int(total),
+                    frame=str(frame_name or ""),
+                )
+            )
+            QApplication.processEvents()
+
+        try:
+            result = export_result_layer_jpgs(
+                state.build_result,
+                export_folder,
+                layer_key=str(selected_choices[0].get("key") or ""),
+                map_color=selected_rgb,
+                max_workers=int(getattr(state.build_result.options, "max_workers", 0) or 0) or None,
+                progress_callback=on_progress,
+                cancel_check=progress.wasCanceled,
+            ) if len(selected_choices) == 1 else export_result_layers_jpgs(
+                state.build_result,
+                export_folder,
+                layer_keys=tuple(str(choice.get("key") or "") for choice in selected_choices),
+                map_color=selected_rgb,
+                max_workers=int(getattr(state.build_result.options, "max_workers", 0) or 0) or None,
+                progress_callback=on_progress,
+                cancel_check=progress.wasCanceled,
+            )
+        except Exception as error:
+            progress.close()
+            QMessageBox.warning(self._view, self._t("dialog.warning_title"), str(error))
+            return
+        progress.close()
+        count = int(result.get("exported_count", 0))
+        skipped = int(result.get("skipped_count", 0))
+        destination = str(result.get("destination") or export_folder)
+        if count <= 0:
+            errors = tuple(result.get("errors", ()) or ())
+            message = "\n".join(str(item) for item in errors[:10]) if errors else self._t("message.no_result_layers")
+            QMessageBox.warning(self._view, self._t("dialog.warning_title"), message)
+            return
+        QMessageBox.information(
+            self._view,
+            self._t("dialog.info_title"),
+            self._t(
+                "message.export_result_layer_done",
+                count=count,
+                skipped=skipped,
+                layer=str(result.get("layer_title") or self._t("message.export_result_layers_count", count=len(selected_choices))),
+                folder=destination,
+            ),
+        )
+
     def _store_details_view_payload(self, payload: dict[str, object]) -> None:
         self._details_view_payload = dict(payload or {})
         self._settings_service.save_details_view_payload(self._details_view_payload)
@@ -3343,6 +3677,8 @@ class KarakalPresenter(QObject):
         if confidence_metric_family(metric_key) is not None:
             return "confidence"
         analysis_mode = str(getattr(state, "analysis_mode", "") or INTER_MODEL_ANALYSIS_MODE)
+        if analysis_mode == CONFIDENCE_COMPARISON_MODE:
+            return "diff"
         if analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}:
             return "confidence"
         if str(getattr(state, "object_type", "") or POLYGON_OBJECT_TYPE) == POINT_OBJECT_TYPE:
@@ -3360,6 +3696,8 @@ class KarakalPresenter(QObject):
     def _default_details_grayscale_diff_for_state(self, state: ExtendMatrixTabState) -> bool:
         if self._default_details_result_kind_for_state(state) != "diff":
             return False
+        if str(getattr(state, "analysis_mode", "") or INTER_MODEL_ANALYSIS_MODE) == CONFIDENCE_COMPARISON_MODE:
+            return True
         comparison_mode = getattr(state.build_result.options, "comparison_mode", "")
         return str(getattr(comparison_mode, "value", comparison_mode) or "") == "grayscale_diff"
 
@@ -3538,9 +3876,13 @@ class KarakalPresenter(QObject):
     def _sync_action_buttons(self) -> None:
         current_state = self._current_tab_state()
         active_model_count = len(self._checked_model_specs())
-        required_model_count = self._required_model_count_for_active_mode()
         can_build_from_base_only = active_model_count <= 0 and self._original_folder is not None and Path(self._original_folder.path).exists()
         is_busy = self._worker_thread is not None
+        self._sync_confidence_map_function_state(
+            None if current_state is None else current_state.build_result,
+            allow_fallback=not is_busy,
+        )
+        required_model_count = self._required_model_count_for_build()
         self.btn_clear_folders.setEnabled(self.folder_list.count() > 0 and not is_busy)
         self.btn_set_original.setEnabled(not is_busy)
         self.btn_clear_original.setEnabled(self._original_folder is not None and not is_busy)

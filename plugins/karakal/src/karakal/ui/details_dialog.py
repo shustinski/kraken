@@ -30,9 +30,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..core.analysis_modes import metric_level_key, metric_visual_ratio
+from ..core.analysis_modes import CONFIDENCE_COMPARISON_MODE, metric_level_key, metric_visual_ratio
 from ..core.backend_constants import BCE_SCORE_CAP, MODEL_CONFIDENCE_UNCERTAIN_DELTA, POINT_SUPPORT_THRESHOLD, POLYGON_SUPPORT_THRESHOLD
 from ..core.domain import BuildResult, ComparisonMode, FrameRecord
+from ..core.grid_anomaly import detect_grid_cell_anomalies
 from ..core.subpixel_grid import (
     SubpixelGrid,
     SubpixelGridSpec,
@@ -209,6 +210,7 @@ class ExtendFrameDetailsDialog(QDialog):
         session_view_state: dict[str, object] | None = None,
         on_view_state_changed=None,
         export_folder: Path | str | None = None,
+        allowed_result_kinds: tuple[str, ...] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -242,6 +244,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self._session_view_state = session_view_state if session_view_state is not None else {}
         self._on_view_state_changed = on_view_state_changed
         self._export_folder = None if export_folder is None else Path(export_folder)
+        self._allowed_result_kinds = tuple(str(kind) for kind in (allowed_result_kinds or ()) if str(kind))
         self._model_tile_selections: dict[str, list[tuple[int, int]]] = {}
         tile_selection_payload = self._session_view_state.get("tile_selection")
         self._tile_selection = None
@@ -494,6 +497,18 @@ class ExtendFrameDetailsDialog(QDialog):
         self.subpixel_score_card.hide()
         comparison_score_layout.addWidget(self.subpixel_score_card)
         controls_layout.addWidget(comparison_score_group)
+
+        comparison_result_group = QGroupBox("Inter-model comparison", controls_host)
+        comparison_result_layout = QVBoxLayout(comparison_result_group)
+        self.comparison_metrics_label = QLabel("-", comparison_result_group)
+        self.comparison_metrics_label.setWordWrap(True)
+        self.comparison_metrics_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.comparison_events_label = QLabel("-", comparison_result_group)
+        self.comparison_events_label.setWordWrap(True)
+        self.comparison_events_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        comparison_result_layout.addWidget(self.comparison_metrics_label)
+        comparison_result_layout.addWidget(self.comparison_events_label)
+        controls_layout.addWidget(comparison_result_group)
         controls_layout.addStretch(1)
 
         splitter.addWidget(viewer_widget)
@@ -871,6 +886,8 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("hint.boundary_difference")
         if (not self._is_point_geometry()) and result_kind == "input_output":
             return self._t("hint.input_output_heatmap")
+        if (not self._is_point_geometry()) and result_kind == "grid_cell_defects":
+            return self._t("hint.grid_cell_defects")
         if (not self._is_point_geometry()) and result_kind == "confidence":
             return self._t("hint.polygon_confidence")
         if result_kind == "iou":
@@ -883,6 +900,14 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("hint.confidence_bad_areas")
         if result_kind == "confidence_mix":
             return self._t("hint.confidence_mix")
+        if result_kind == "result_confidence_bad_inside":
+            return self._t("hint.result_confidence_bad_inside")
+        if result_kind == "result_confidence_boundary_uncertainty":
+            return self._t("hint.result_confidence_boundary_uncertainty")
+        if result_kind == "result_confidence_conflict":
+            return self._t("hint.result_confidence_conflict")
+        if result_kind == "result_confidence_transition_uncertainty":
+            return self._t("hint.result_confidence_transition_uncertainty")
         if result_kind == 'confidence_low_mask':
             return self._t('hint.confidence_low_mask')
         if result_kind == 'confidence_high_mask':
@@ -914,6 +939,8 @@ class ExtendFrameDetailsDialog(QDialog):
         if preferred_confidence_model is not None:
             return self._t('hint.intra_model_point') if self._is_point_geometry() else self._t('hint.confidence_polygon')
         group_key = self._current_comparison_group()
+        if group_key == 'confidence_model_model':
+            return self._t('hint.confidence_comparison')
         if group_key == 'model_model':
             return self._t('hint.model_model_point') if self._is_point_geometry() else self._t('hint.model_model_polygon')
         if group_key == 'model_labeled':
@@ -922,6 +949,8 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _preferred_group_from_metric(self) -> str:
         metric_key = str(self._preferred_metric_key or "")
+        if self._is_confidence_comparison_context():
+            return "confidence_model_model"
         if metric_key in {"model_labeled_score", "labeled_best_quality", "labeled_mean_quality"} and self._has_ground_truth():
             return "model_labeled"
         if len(self._build_result.model_specs) >= 2:
@@ -945,10 +974,29 @@ class ExtendFrameDetailsDialog(QDialog):
             return True
         if metric_key.startswith("model_point_contrast::"):
             return True
-        return self._selected_result_kind() in {"confidence", "confidence_bad_areas", "confidence_mix"}
+        result_kind = self._selected_result_kind()
+        return result_kind in {"confidence", "confidence_bad_areas", "confidence_mix"} or result_kind.startswith("result_confidence_")
+
+    def _is_confidence_comparison_context(self) -> bool:
+        if str(self._session_view_state.get("analysis_mode") or "") == CONFIDENCE_COMPARISON_MODE:
+            return True
+        return str(self._preferred_metric_key or "") in {
+            "confidence_model_score",
+            "confidence_difference_score",
+            "confidence_bce_score",
+            "confidence_threshold_crossing_score",
+        }
 
     def _auto_model_model_tuple(self) -> tuple[str, str, str]:
         model_ids = self._ordered_model_ids_for_current_comparison()
+        if self._is_confidence_comparison_context():
+            confidence_model_ids = [model_id for model_id in model_ids if self._model_confidence_output_available(model_id)]
+            if len(confidence_model_ids) >= 2:
+                return (
+                    f"confidence_vs_confidence::{confidence_model_ids[0]}::{confidence_model_ids[1]}",
+                    f"model_prob:{confidence_model_ids[0]}",
+                    f"model_prob:{confidence_model_ids[1]}",
+                )
         if len(model_ids) >= 2:
             return f"model_vs_model::{model_ids[0]}::{model_ids[1]}", f"model:{model_ids[0]}", f"model:{model_ids[1]}"
         if model_ids:
@@ -964,16 +1012,6 @@ class ExtendFrameDetailsDialog(QDialog):
             return f"gt_vs_model::{model_ids[0]}", "gt", f"model:{model_ids[0]}"
         return "none", "gt", "gt"
 
-    def _available_comparison_groups(self) -> list[tuple[str, str]]:
-        groups: list[tuple[str, str]] = []
-        if len(self._build_result.model_specs) >= 2:
-            groups.append((self._t("metric.group.model_model"), "model_model"))
-        if self._has_ground_truth():
-            groups.append((self._t("metric.group.model_labeled"), "model_labeled"))
-        if not groups:
-            groups.append((self._t("details.comparisons"), "fallback"))
-        return groups
-
     def _current_comparison_group(self) -> str:
         return self._preferred_group_from_metric()
 
@@ -983,43 +1021,6 @@ class ExtendFrameDetailsDialog(QDialog):
         if preferred_model_id and preferred_model_id in model_ids:
             return [preferred_model_id, *[model_id for model_id in model_ids if model_id != preferred_model_id]]
         return model_ids
-
-    def _comparison_presets(self, group_key: str | None = None) -> list[tuple[str, str, str, str]]:
-        presets: list[tuple[str, str, str, str]] = []
-        model_ids = [spec.model_id for spec in self._build_result.model_specs]
-        selected_group = group_key or self._current_comparison_group()
-        if selected_group == "model_model":
-            for first_model_id in model_ids:
-                for second_model_id in model_ids:
-                    if first_model_id == second_model_id:
-                        continue
-                    presets.append((
-                        f"model_vs_model::{first_model_id}::{second_model_id}",
-                        f"{self._model_display_name(first_model_id)} vs {self._model_display_name(second_model_id)}",
-                        f"model:{first_model_id}",
-                        f"model:{second_model_id}",
-                    ))
-            return presets
-        if selected_group == "model_labeled" and self._has_ground_truth():
-            for model_id in model_ids:
-                presets.append((
-                    f"gt_vs_model::{model_id}",
-                    f"{self._t("details.ground_truth")} vs {self._model_display_name(model_id)}",
-                    "gt",
-                    f"model:{model_id}",
-                ))
-            return presets
-        for first_model_id in model_ids:
-            for second_model_id in model_ids:
-                if first_model_id == second_model_id:
-                    continue
-                presets.append((
-                    f"model_vs_model::{first_model_id}::{second_model_id}",
-                    f"{self._model_display_name(first_model_id)} vs {self._model_display_name(second_model_id)}",
-                    f"model:{first_model_id}",
-                    f"model:{second_model_id}",
-                ))
-        return presets
 
     def _current_comparison_tuple(self) -> tuple[str, str, str]:
         group_key = self._current_comparison_group()
@@ -1611,6 +1612,13 @@ class ExtendFrameDetailsDialog(QDialog):
             return cached
         uncertainty = self._model_output_uncertainty_map(model_id)
         intensity = confidence_bad_area_intensity(uncertainty, threshold=threshold)
+        if not self._is_point_geometry():
+            output_mask = self._output_mask_for_model(model_id)
+            if output_mask is not None and output_mask.shape == intensity.shape:
+                intensity = np.asarray(intensity, dtype=np.float32) * np.asarray(
+                    self._result_confidence_interior_weight(output_mask),
+                    dtype=np.float32,
+                )
         pixmap = self._bad_area_intensity_pixmap(intensity, QColor(255, 48, 80, 255), alpha_scale=250.0)
         self._overlay_cache[cache_key] = pixmap
         return pixmap
@@ -1674,6 +1682,80 @@ class ExtendFrameDetailsDialog(QDialog):
         rgba[..., 3] = np.clip(np.round(alpha * 255.0), 0.0, 255.0).astype(np.uint8)
         image = QImage(rgba.data, width, height, int(rgba.strides[0]), QImage.Format.Format_RGBA8888).copy()
         pixmap = QPixmap.fromImage(image)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
+    def _result_confidence_interior_weight(self, mask: np.ndarray) -> np.ndarray:
+        mask_bool = np.asarray(mask, dtype=bool)
+        if mask_bool.ndim != 2 or mask_bool.size == 0 or not np.any(mask_bool):
+            return np.zeros_like(mask_bool, dtype=np.float32)
+        distance_inside = np.asarray(_distance_transform(mask_bool), dtype=np.float32)
+        weight = np.clip((distance_inside - 1.0) / 2.5, 0.0, 1.0)
+        return np.asarray(weight * np.asarray(mask_bool, dtype=np.float32), dtype=np.float32)
+
+    def _result_confidence_focus_intensity(self, raw: np.ndarray, support: np.ndarray) -> np.ndarray:
+        values = np.clip(np.asarray(raw, dtype=np.float32) * np.asarray(support, dtype=np.float32), 0.0, 1.0)
+        return np.clip((values - 0.06) / 0.94, 0.0, 1.0)
+
+    def _result_confidence_diagnostic_intensity(self, model_id: str | None, kind: str) -> np.ndarray:
+        cache_key = ("result_confidence_diagnostic", model_id, kind, self._selection_cache_key())
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
+        base = self._base_array()
+        output_mask = self._output_mask_for_model(model_id)
+        probabilities = self._payload.get("model_output_probabilities") or {}
+        confidence_map = probabilities.get(model_id) if model_id is not None else None
+        if output_mask is None or confidence_map is None:
+            intensity = np.zeros_like(base, dtype=np.float32)
+            self._derived_cache[cache_key] = intensity
+            return intensity
+        confidence = np.clip(np.asarray(confidence_map, dtype=np.float32), 0.0, 1.0)
+        tile_rect = self._selection_crop_rect()
+        if tile_rect is not None:
+            confidence = np.asarray(self._crop_ndarray(confidence, tile_rect), dtype=np.float32)
+        if confidence.shape != output_mask.shape:
+            intensity = np.zeros_like(output_mask, dtype=np.float32)
+            self._derived_cache[cache_key] = intensity
+            return intensity
+        uncertainty = build_model_uncertainty(confidence)
+        low_confidence = 1.0 - confidence
+        interior = self._result_confidence_interior_weight(output_mask)
+        if kind == "result_confidence_bad_inside":
+            intensity = self._result_confidence_focus_intensity(np.maximum(uncertainty, low_confidence), interior)
+        elif kind == "result_confidence_conflict":
+            intensity = self._result_confidence_focus_intensity(low_confidence, interior)
+        else:
+            boundary = np.asarray(_boundary_mask(output_mask), dtype=bool)
+            radius = 5 if kind == "result_confidence_transition_uncertainty" else 2
+            band = self._binary_dilate(boundary, radius)
+            intensity = np.asarray(band, dtype=np.float32) * uncertainty
+        intensity = np.clip(np.asarray(intensity, dtype=np.float32), 0.0, 1.0)
+        self._derived_cache[cache_key] = intensity
+        return intensity
+
+    def _result_confidence_diagnostic_pixmap(self, model_id: str | None, kind: str) -> QPixmap:
+        color_by_kind = {
+            "result_confidence_bad_inside": QColor(255, 48, 80, 255),
+            "result_confidence_boundary_uncertainty": QColor(255, 216, 32, 255),
+            "result_confidence_conflict": QColor(255, 0, 160, 255),
+            "result_confidence_transition_uncertainty": QColor(0, 210, 255, 255),
+        }
+        cache_key = (
+            "result_confidence_diagnostic_pixmap",
+            model_id,
+            kind,
+            self._selection_cache_key(),
+        )
+        cached = self._overlay_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        intensity = self._result_confidence_diagnostic_intensity(model_id, kind)
+        pixmap = self._bad_area_intensity_pixmap(
+            intensity,
+            color_by_kind.get(kind, QColor(255, 48, 80, 255)),
+            alpha_scale=250.0,
+        )
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
@@ -2378,7 +2460,86 @@ class ExtendFrameDetailsDialog(QDialog):
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
+    def _grid_cell_defect_source(self, model_id: str | None) -> np.ndarray:
+        if model_id is None:
+            return self._base_array()
+        source_grays = self._payload.get("model_source_grays") or {}
+        source = source_grays.get(model_id)
+        if source is None:
+            probabilities = self._payload.get("model_output_probabilities") or {}
+            source = probabilities.get(model_id)
+        if source is None:
+            probabilities = self._payload.get("model_probabilities") or {}
+            source = probabilities.get(model_id)
+        if source is None:
+            masks = self._payload.get("model_masks") or {}
+            source = masks.get(model_id)
+        if source is None:
+            return self._base_array()
+        values = np.asarray(source)
+        if values.ndim != 2 or values.size == 0:
+            return self._base_array()
+        if values.size > 0 and float(np.nanmax(values)) <= 1.0:
+            values = values.astype(np.float32) * 255.0
+        values = np.clip(np.nan_to_num(values, nan=0.0, posinf=255.0, neginf=0.0), 0.0, 255.0).astype(np.uint8)
+        tile_rect = self._selection_crop_rect()
+        if tile_rect is not None:
+            values = np.asarray(self._crop_ndarray(values, tile_rect), dtype=np.uint8)
+        return values
+
+    def _grid_cell_defects_pixmap(self, model_id: str | None) -> QPixmap:
+        cache_key = ("grid_cell_defects", model_id, self._selection_cache_key())
+        result_cache_key = ("grid_cell_defect_result", model_id, self._selection_cache_key())
+        result = self._derived_cache.get(result_cache_key)
+        if result is None:
+            result = detect_grid_cell_anomalies(self._grid_cell_defect_source(model_id))
+            self._derived_cache[result_cache_key] = result
+        self._comparison_score = float(getattr(result, "score", 0.0))
+        cached = self._overlay_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        height, width = result.intensity.shape
+        pixmap = QPixmap(width, height)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        for cell in result.cells:
+            alpha = int(np.clip(round(70.0 + 135.0 * float(cell.score)), 70.0, 220.0))
+            painter.fillRect(int(cell.left), int(cell.top), int(cell.width), int(cell.height), QColor(255, 36, 64, alpha))
+            painter.setPen(QPen(QColor(255, 230, 64, 245), 3))
+            painter.drawRect(int(cell.left), int(cell.top), max(1, int(cell.width) - 1), max(1, int(cell.height) - 1))
+        painter.end()
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
     def _refresh_result_kind_options(self, preferred_kind: str | None = None) -> None:
+        if self._allowed_result_kinds:
+            allowed = set(self._allowed_result_kinds)
+            current_kind = str(
+                preferred_kind
+                or self._sticky_result_kind
+                or self.result_kind_combo.currentData()
+                or self._allowed_result_kinds[0]
+            )
+            if current_kind not in allowed:
+                current_kind = self._allowed_result_kinds[0]
+            labels_by_kind = {
+                "grid_cell_defects": self._t("details.grid_cell_defects"),
+            }
+            self.result_kind_combo.blockSignals(True)
+            self.result_kind_combo.clear()
+            for kind in self._allowed_result_kinds:
+                self.result_kind_combo.addItem(labels_by_kind.get(kind, kind), kind)
+                combo_index = self.result_kind_combo.count() - 1
+                self.result_kind_combo.setItemData(combo_index, self._result_kind_hint(kind) or "", Qt.ItemDataRole.ToolTipRole)
+            index = self.result_kind_combo.findData(current_kind)
+            self.result_kind_combo.setCurrentIndex(index if index >= 0 else 0)
+            self.result_kind_combo.setEnabled(self.result_kind_combo.count() > 1)
+            self.result_kind_combo.blockSignals(False)
+            self._sticky_result_kind = self._selected_result_kind()
+            self.result_kind_combo.setToolTip(self._result_kind_hint(self._selected_result_kind()) or "")
+            return
+
         current_kind = str(
             preferred_kind
             or self._sticky_result_kind
@@ -2394,40 +2555,152 @@ class ExtendFrameDetailsDialog(QDialog):
                 current_kind = "diff"
         confidence_model_id = self._confidence_model_id()
         confidence_output_available = self._model_confidence_output_available(confidence_model_id)
-        if not confidence_output_available and current_kind in {"confidence_bad_areas", "confidence_mix"}:
+        result_confidence_kinds = {
+            "result_confidence_bad_inside",
+            "result_confidence_boundary_uncertainty",
+            "result_confidence_conflict",
+            "result_confidence_transition_uncertainty",
+        }
+        if not confidence_output_available and current_kind in {"confidence_bad_areas", "confidence_mix", *result_confidence_kinds}:
             current_kind = "point_matches" if self._is_point_geometry() else "diff"
         if not self._input_output_heatmap_available() and current_kind == "input_output":
             current_kind = "point_matches" if self._is_point_geometry() else "diff"
-        items: list[tuple[str, str]] = [(self._t("details.comparison_difference"), "diff")]
+        items: list[tuple[str, str | None]] = []
+
+        def append_header(label: str) -> None:
+            items.append((label, None))
+
+        def append_item(label: str, key: str) -> None:
+            items.append((f"  {label}", key))
+
+        append_header(self._t("details.result_group_mask_comparison"))
+        append_item(self._t("details.comparison_difference"), "diff")
         if self._is_point_geometry():
-            items.append((self._t("details.point_matches"), "point_matches"))
+            append_item(self._t("details.point_matches"), "point_matches")
         else:
-            items.append((self._t("details.iou_overlap"), "iou"))
-            items.append((self._t("details.dice_overlap"), "dice"))
-            items.append((self._t("details.bce_heatmap"), "bce"))
-            items.append((self._t("details.boundary_difference"), "boundary"))
+            append_item(self._t("details.iou_overlap"), "iou")
+            append_item(self._t("details.dice_overlap"), "dice")
+            append_header(self._t("details.result_group_error_heatmaps"))
+            append_item(self._t("details.bce_heatmap"), "bce")
             if self._input_output_heatmap_available():
-                items.append((self._t("details.input_output_heatmap"), "input_output"))
-        items.append((self._t("details.model_confidence_map"), "confidence"))
+                append_item(self._t("details.input_output_heatmap"), "input_output")
+            append_header(self._t("details.result_group_geometry"))
+            append_item(self._t("details.boundary_difference"), "boundary")
+            append_item(self._t("details.grid_cell_defects"), "grid_cell_defects")
+        append_header(self._t("details.result_group_confidence_maps"))
+        append_item(self._t("details.model_confidence_map"), "confidence")
         if confidence_output_available:
-            items.append((self._t("details.confidence_bad_areas"), "confidence_bad_areas"))
-            items.append((self._t("details.confidence_mix"), "confidence_mix"))
+            append_item(self._t("details.confidence_bad_areas"), "confidence_bad_areas")
+            append_item(self._t("details.confidence_mix"), "confidence_mix")
+            append_header(self._t("details.result_group_result_confidence"))
+            append_item(self._t("details.result_confidence_bad_inside"), "result_confidence_bad_inside")
+            append_item(self._t("details.result_confidence_conflict"), "result_confidence_conflict")
+
+        grouped_layers: dict[str, list[tuple[str, str]]] = {}
+        for layer in tuple(self._payload.get("comparison_raster_layers") or ()):
+            layer_id = str(getattr(layer, "layer_id", "") or "")
+            title = str(getattr(layer, "title", layer_id) or layer_id)
+            if layer_id:
+                group_key = self._comparison_layer_result_group(layer)
+                grouped_layers.setdefault(group_key, []).append((title, f"comparison_layer::{layer_id}"))
+        for group_key in ("pixel", "geometry", "skeleton", "topology", "soft_confidence", "ensemble", "other"):
+            group_items = grouped_layers.get(group_key) or []
+            if not group_items:
+                continue
+            append_header(self._comparison_layer_result_group_title(group_key))
+            for title, key in group_items:
+                append_item(title, key)
         self.result_kind_combo.blockSignals(True)
         self.result_kind_combo.clear()
         for label, key in items:
             self.result_kind_combo.addItem(label, key)
             combo_index = self.result_kind_combo.count() - 1
-            self.result_kind_combo.setItemData(combo_index, self._result_kind_hint(str(key)) or "", Qt.ItemDataRole.ToolTipRole)
+            if key is None:
+                model_item = self.result_kind_combo.model().item(combo_index)
+                if model_item is not None:
+                    model_item.setEnabled(False)
+                    font = model_item.font()
+                    font.setBold(True)
+                    model_item.setFont(font)
+                    model_item.setForeground(QBrush(QColor("#9fb6cf")))
+                self.result_kind_combo.setItemData(combo_index, label, Qt.ItemDataRole.ToolTipRole)
+            else:
+                self.result_kind_combo.setItemData(combo_index, self._result_kind_hint(str(key)) or "", Qt.ItemDataRole.ToolTipRole)
         index = self.result_kind_combo.findData(current_kind)
         if index < 0 and self._sticky_result_kind is not None:
             index = self.result_kind_combo.findData(self._sticky_result_kind)
+        if index < 0:
+            for item_index in range(self.result_kind_combo.count()):
+                if self.result_kind_combo.itemData(item_index) is not None:
+                    index = item_index
+                    break
         self.result_kind_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.result_kind_combo.setEnabled(True)
         self.result_kind_combo.blockSignals(False)
         self._sticky_result_kind = self._selected_result_kind()
         self.result_kind_combo.setToolTip(self._result_kind_hint(self._selected_result_kind()) or '')
 
     def _selected_result_kind(self) -> str:
         return str(self.result_kind_combo.currentData() or "diff")
+
+    def _comparison_layer_result_group(self, layer: object) -> str:
+        raw_group = str(getattr(layer, "layer_group", "") or "").strip().lower()
+        layer_id = str(getattr(layer, "layer_id", "") or "").strip().lower()
+        if raw_group in {"pixel", "geometry", "skeleton", "soft_confidence", "ensemble"}:
+            return raw_group
+        if raw_group == "topology":
+            return "topology"
+        if "topology" in layer_id or "euler" in layer_id or "beta" in layer_id:
+            return "topology"
+        if "skeleton" in layer_id:
+            return "skeleton"
+        if "boundary" in layer_id or "geometry" in layer_id:
+            return "geometry"
+        if "confidence" in layer_id or "probability" in layer_id or "soft" in layer_id or "threshold" in layer_id:
+            return "soft_confidence"
+        if "vote" in layer_id or "consensus" in layer_id or "ensemble" in layer_id or "uncertainty" in layer_id:
+            return "ensemble"
+        if "mask" in layer_id or "xor" in layer_id:
+            return "pixel"
+        return "other"
+
+    def _comparison_layer_result_group_title(self, group_key: str) -> str:
+        return {
+            "pixel": self._t("details.result_group_model_differences"),
+            "geometry": self._t("details.result_group_boundaries"),
+            "skeleton": self._t("details.result_group_skeleton"),
+            "topology": self._t("details.result_group_topology"),
+            "soft_confidence": self._t("details.result_group_soft_heatmaps"),
+            "ensemble": self._t("details.result_group_ensemble"),
+        }.get(str(group_key), self._t("details.result_group_other"))
+
+    def _comparison_raster_layer(self, layer_id: str | None):
+        target = str(layer_id or "")
+        for layer in tuple(self._payload.get("comparison_raster_layers") or ()):
+            if str(getattr(layer, "layer_id", "") or "") == target:
+                return layer
+        return None
+
+    def _comparison_raster_layer_pixmap(self, layer_id: str | None) -> QPixmap:
+        cache_key = (
+            "comparison_raster_layer",
+            str(layer_id or ""),
+            self._selection_cache_key(),
+            self._named_color("difference_mask").name(QColor.NameFormat.HexArgb),
+        )
+        cached = self._overlay_cache.get(cache_key)
+        if isinstance(cached, QPixmap):
+            return cached
+        layer = self._comparison_raster_layer(layer_id)
+        if layer is None:
+            return QPixmap()
+        image = np.asarray(getattr(layer, "image", np.zeros_like(self._base_array(), dtype=np.float32)), dtype=np.float32)
+        tile_rect = self._selection_crop_rect()
+        if tile_rect is not None:
+            image = np.asarray(self._crop_ndarray(image, tile_rect), dtype=np.float32)
+        pixmap = self._bad_area_intensity_pixmap(np.clip(image, 0.0, 1.0), self._named_color("difference_mask"), alpha_scale=250.0)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
 
     def _is_point_geometry(self) -> bool:
         return str(self._payload.get("geometry_mode") or "mask") == "point"
@@ -2578,7 +2851,12 @@ class ExtendFrameDetailsDialog(QDialog):
         show_mask_colors = self._selected_layer_view() == "binary"
         self.first_mask_color_button.setVisible(show_mask_colors)
         self.second_mask_color_button.setVisible(show_mask_colors)
-        show_result_color = show_mask_colors and self._selected_result_kind() in {"diff", "boundary", "input_output", "iou", "dice", "bce"}
+        selected_kind = self._selected_result_kind()
+        show_result_color = show_mask_colors and (
+            selected_kind in {"diff", "boundary", "input_output", "iou", "dice", "bce"}
+            or selected_kind.startswith("result_confidence_")
+            or selected_kind.startswith("comparison_layer::")
+        )
         self.result_mask_color_button.setVisible(show_result_color)
         self.result_mask_color_button.setEnabled(show_result_color)
         self.export_selected_regions_button.setEnabled(any(self._model_tile_selections.values()))
@@ -2586,12 +2864,16 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _result_pixmap_for_model(self, model_id: str | None) -> QPixmap:
         kind = self._selected_result_kind()
+        if kind.startswith("comparison_layer::"):
+            return self._comparison_raster_layer_pixmap(kind.split("::", 1)[1])
         if kind == "confidence":
             return self._confidence_overlay_pixmap(model_id)
         if kind == "confidence_bad_areas":
             return self._confidence_bad_areas_pixmap(model_id)
         if kind == "confidence_mix":
             return self._confidence_mix_pixmap(model_id)
+        if kind.startswith("result_confidence_"):
+            return self._result_confidence_diagnostic_pixmap(model_id, kind)
         if kind == "input_output":
             return self._input_output_heatmap_pixmap(model_id)
         if kind in {"boundary", "point_matches", "diff", "iou", "dice", "bce"}:
@@ -2659,6 +2941,9 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _result_overlay_title(self) -> str:
         kind = self._selected_result_kind()
+        if kind.startswith("comparison_layer::"):
+            layer = self._comparison_raster_layer(kind.split("::", 1)[1])
+            return str(getattr(layer, "title", "") or kind.split("::", 1)[1])
         if kind == "boundary":
             return self._t("details.boundary_difference")
         if kind == "iou":
@@ -2669,6 +2954,8 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("details.bce_heatmap")
         if kind == "input_output":
             return self._t("details.input_output_heatmap")
+        if kind == "grid_cell_defects":
+            return self._t("details.grid_cell_defects")
         if kind == "point_matches":
             return self._t("details.point_matches")
         if kind == "confidence":
@@ -2677,6 +2964,14 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("details.confidence_bad_areas")
         if kind == "confidence_mix":
             return self._t("details.confidence_mix")
+        if kind == "result_confidence_bad_inside":
+            return self._t("details.result_confidence_bad_inside")
+        if kind == "result_confidence_boundary_uncertainty":
+            return self._t("details.result_confidence_boundary_uncertainty")
+        if kind == "result_confidence_conflict":
+            return self._t("details.result_confidence_conflict")
+        if kind == "result_confidence_transition_uncertainty":
+            return self._t("details.result_confidence_transition_uncertainty")
         return self._t("details.difference_heatmap")
 
     def _refresh_dynamic_labels(self) -> None:
@@ -2980,7 +3275,10 @@ class ExtendFrameDetailsDialog(QDialog):
         mode = self._current_operation_mode()
         kind = self._selected_result_kind()
         confidence_model_id = self._confidence_model_id()
-        if kind == "confidence":
+        if kind.startswith("comparison_layer::"):
+            self._comparison_score = None
+            self.result_item.setPixmap(self._comparison_raster_layer_pixmap(kind.split("::", 1)[1]))
+        elif kind == "confidence":
             self._comparison_score = None
             self.result_item.setPixmap(self._confidence_overlay_pixmap(confidence_model_id))
         elif kind == "confidence_bad_areas":
@@ -2989,6 +3287,9 @@ class ExtendFrameDetailsDialog(QDialog):
         elif kind == "confidence_mix":
             self._comparison_score = None
             self.result_item.setPixmap(self._confidence_mix_pixmap(confidence_model_id))
+        elif kind.startswith("result_confidence_"):
+            self._comparison_score = None
+            self.result_item.setPixmap(self._result_confidence_diagnostic_pixmap(confidence_model_id, kind))
         elif kind == "boundary":
             pixmap, score = self._boundary_overlay_result(first_key, second_key, self._named_color("boundary_mask"))
             self._comparison_score = float(score)
@@ -2996,6 +3297,8 @@ class ExtendFrameDetailsDialog(QDialog):
         elif kind == "input_output":
             self._comparison_score = None
             self.result_item.setPixmap(self._input_output_heatmap_pixmap(self._input_output_model_id()))
+        elif kind == "grid_cell_defects":
+            self.result_item.setPixmap(self._grid_cell_defects_pixmap(self._selected_model_for_current_comparison()))
         elif kind == "point_matches":
             self._comparison_score = None
             self.result_item.setPixmap(self._point_matches_pixmap(first_key, second_key))
@@ -3362,6 +3665,51 @@ class ExtendFrameDetailsDialog(QDialog):
             return f"{level} {float(value) * 100.0:.1f}%"
         return f"{level} {float(value):.4f}"
 
+    def _refresh_comparison_panel(self) -> None:
+        result = self._payload.get("comparison_result")
+        metrics_label = getattr(self, "comparison_metrics_label", None)
+        events_label = getattr(self, "comparison_events_label", None)
+        if metrics_label is None or events_label is None:
+            return
+        if result is None:
+            metrics_label.setText("Metrics: -")
+            events_label.setText("Events: -")
+            return
+        risk = dict(getattr(result, "risk", {}) or {})
+        risk_lines = [
+            f"risk.{key}: {float(value):.3f}"
+            for key, value in sorted(risk.items())
+            if value is not None
+        ]
+        metrics = [
+            metric
+            for metric in tuple(getattr(result, "metrics", ()) or ())
+            if bool(getattr(metric, "valid", False)) and getattr(metric, "value", None) is not None
+        ]
+        metric_lines = []
+        for metric in metrics[:14]:
+            value = getattr(metric, "value", None)
+            if isinstance(value, float):
+                value_text = f"{value:.4f}"
+            else:
+                value_text = str(value)
+            unit = str(getattr(metric, "unit", "") or "")
+            metric_lines.append(f"{getattr(metric, 'group', '-')}.{getattr(metric, 'name', '-')}: {value_text}{(' ' + unit) if unit else ''}")
+        layer_ids = [str(getattr(layer, "layer_id", "") or "") for layer in tuple(getattr(result, "raster_layers", ()) or ()) if str(getattr(layer, "layer_id", "") or "")]
+        metrics_label.setText("\n".join([*risk_lines, *metric_lines, f"layers: {', '.join(layer_ids[:12]) or '-'}"]))
+
+        events = tuple(getattr(result, "events", ()) or ())
+        if not events:
+            events_label.setText("Events: -")
+            return
+        event_lines = []
+        for event in sorted(events, key=lambda item: float(getattr(item, "risk", 0.0)), reverse=True)[:8]:
+            bbox = tuple(getattr(event, "bbox", (0, 0, 0, 0)) or (0, 0, 0, 0))
+            event_lines.append(
+                f"{getattr(event, 'event_type', '-')}: risk {float(getattr(event, 'risk', 0.0)):.2f}, "
+                f"bbox {bbox}, layers {', '.join(getattr(event, 'recommended_layers', []) or [])}"
+            )
+        events_label.setText("\n".join(event_lines))
 
     def _refresh_info(self) -> None:
         if self._payload_loading and not self._payload:
@@ -3372,6 +3720,7 @@ class ExtendFrameDetailsDialog(QDialog):
                 "Loading frame details...",
             )
             return
+        self._refresh_comparison_panel()
         if self._subpixel_selection is not None:
             selection = self._subpixel_selection
             self.comparison_score_card.hide()
@@ -3533,6 +3882,8 @@ class ExtendFrameDetailsDialog(QDialog):
         if kind == "input_output":
             return "input_output_mask"
         if kind in {"iou", "dice"}:
+            return "difference_mask"
+        if kind.startswith("comparison_layer::"):
             return "difference_mask"
         if kind == "bce":
             return "input_output_mask"

@@ -692,6 +692,8 @@ class KarakalWidget(QWidget):
 
         self.management_page = self._build_management_mode_panel(self.main_mode_stack)
         self.main_mode_stack.addWidget(self.management_page)
+        self.grid_inspection_page = self._build_grid_inspection_mode_panel(self.main_mode_stack)
+        self.main_mode_stack.addWidget(self.grid_inspection_page)
         self.main_mode_stack.setCurrentIndex(0)
 
         splitter.setStretchFactor(0, 0)
@@ -819,19 +821,75 @@ class KarakalWidget(QWidget):
         self.management_main_splitter.setSizes([1700, 300])
         return host
 
+    def _build_grid_inspection_mode_panel(self, parent: QWidget) -> QWidget:
+        host = QWidget(parent)
+        root_layout = QVBoxLayout(host)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(6)
+
+        header = QWidget(host)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(2)
+        self.grid_inspection_title = QLabel(self._t("grid_inspection.matrix.title"), header)
+        self.grid_inspection_legend = QLabel(self._t("grid_inspection.matrix.legend"), header)
+        self.grid_inspection_legend.setWordWrap(True)
+        header_layout.addWidget(self.grid_inspection_title)
+        header_layout.addWidget(self.grid_inspection_legend)
+        root_layout.addWidget(header)
+
+        row = QWidget(host)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        self.grid_inspection_matrix_view = MatrixListWidget(row)
+        self.grid_inspection_matrix_view.set_grid_inspection_visual_mode(True)
+        self.grid_inspection_matrix_view.set_cell_size(128)
+        row_layout.addWidget(self.grid_inspection_matrix_view, stretch=1)
+
+        overview = QWidget(row)
+        overview_layout = QVBoxLayout(overview)
+        overview_layout.setContentsMargins(0, 0, 0, 0)
+        overview_layout.setSpacing(6)
+        self.grid_inspection_matrix_minimap = MatrixMiniMapWidget(overview)
+        self.grid_inspection_matrix_minimap.setMinimumHeight(150)
+        self.grid_inspection_matrix_minimap.setMaximumHeight(220)
+        overview_layout.addWidget(self.grid_inspection_matrix_minimap)
+        overview.setMinimumWidth(240)
+        overview.setMaximumWidth(240)
+        overview.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        row_layout.addWidget(overview)
+        root_layout.addWidget(row, stretch=1)
+
+        self.grid_inspection_matrix_view.overviewChanged.connect(
+            lambda image, visible_rect, selected_position, selected_blink_on, processing_positions, reference_position: self.grid_inspection_matrix_minimap.set_overview(
+                image,
+                visible_rect,
+                selected_position,
+                selected_blink_on,
+                processing_positions,
+                reference_position,
+            )
+        )
+        return host
+
     def _set_app_mode(self, mode: str) -> None:
         normalized = str(mode or "validation").strip().lower()
         is_management = normalized == "management"
+        is_grid_inspection = normalized == "grid_inspection"
         if normalized == "management":
             self.main_mode_stack.setCurrentIndex(1)
             self.left_mode_stack.setCurrentIndex(1)
+        elif normalized == "grid_inspection":
+            self.main_mode_stack.setCurrentIndex(2)
+            self.left_mode_stack.setCurrentIndex(0)
         else:
             self.main_mode_stack.setCurrentIndex(0)
             self.left_mode_stack.setCurrentIndex(0)
         if hasattr(self, "_analysis_task_group"):
-            self._analysis_task_group.setVisible(not is_management)
+            self._analysis_task_group.setVisible(not is_management and not is_grid_inspection)
         if hasattr(self, "_tile_grid_group"):
-            self._tile_grid_group.setVisible(not is_management)
+            self._tile_grid_group.setVisible(not is_management and not is_grid_inspection)
 
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()
@@ -841,6 +899,7 @@ class KarakalWidget(QWidget):
         self._mode_menu.clear()
         for label_key, mode_key in (
             ("management.mode.validation", "validation"),
+            ("grid_inspection.mode", "grid_inspection"),
             ("management.mode.management", "management"),
         ):
             action = self._mode_menu.addAction(self._t(label_key))
@@ -856,7 +915,11 @@ class KarakalWidget(QWidget):
 
     def _update_mode_toggle_button(self) -> None:
         current_mode = str(self.app_mode_combo.currentData() or "validation")
-        current_label = self._t("management.mode.validation") if current_mode == "validation" else self._t("management.mode.management")
+        current_label = {
+            "validation": self._t("management.mode.validation"),
+            "grid_inspection": self._t("grid_inspection.mode"),
+            "management": self._t("management.mode.management"),
+        }.get(current_mode, self._t("management.mode.validation"))
         self.mode_toggle_button.setToolTip(f"{self._t('management.mode_group')}: {current_label}")
         for action in self._mode_menu.actions():
             action.setChecked(str(action.data() or "") == current_mode)
@@ -866,6 +929,7 @@ class KarakalWidget(QWidget):
         self.app_mode_combo.blockSignals(True)
         self.app_mode_combo.clear()
         self.app_mode_combo.addItem(self._t("management.mode.validation"), "validation")
+        self.app_mode_combo.addItem(self._t("grid_inspection.mode"), "grid_inspection")
         self.app_mode_combo.addItem(self._t("management.mode.management"), "management")
         index = self.app_mode_combo.findData(current)
         self.app_mode_combo.setCurrentIndex(index if index >= 0 else 0)
@@ -1131,7 +1195,6 @@ class KarakalWidget(QWidget):
             self._matrix_point_mode_row,
         ):
             analysis_layout.addWidget(row)
-        layout.addWidget(self._analysis_task_group)
 
         self._matrix_view_group = QGroupBox(self._t("ui.matrix_view"), widget)
         matrix_layout = QVBoxLayout(self._matrix_view_group)
@@ -1144,7 +1207,6 @@ class KarakalWidget(QWidget):
         ):
             if row is not None:
                 matrix_layout.addWidget(row)
-        layout.addWidget(self._matrix_view_group)
         self._tile_grid_group = QGroupBox(self._t("matrix.subpixel_grid.group"), widget)
         tile_layout = QVBoxLayout(self._tile_grid_group)
         tile_layout.setContentsMargins(8, 8, 8, 8)
@@ -1167,7 +1229,9 @@ class KarakalWidget(QWidget):
             self._subpixel_aggregation_row,
         ):
             tile_layout.addWidget(row)
+        layout.addWidget(self._matrix_view_group)
         layout.addWidget(self._tile_grid_group)
+        layout.addWidget(self._analysis_task_group)
         self._matrix_pixel_size_row.setVisible(False)
         self._matrix_frames_per_row_row.setVisible(True)
         self._subpixel_aggregation_row.setVisible(str(self.subpixel_view_mode_combo.currentData() or DEFAULT_SUBPIXEL_VIEW_MODE) == "tile")
@@ -1246,6 +1310,10 @@ class KarakalWidget(QWidget):
             self.management_matrix_title.setText(self._t("management.matrix.title"))
         if hasattr(self, "management_matrix_legend"):
             self.management_matrix_legend.setText(self._t("management.matrix.legend"))
+        if hasattr(self, "grid_inspection_title"):
+            self.grid_inspection_title.setText(self._t("grid_inspection.matrix.title"))
+        if hasattr(self, "grid_inspection_legend"):
+            self.grid_inspection_legend.setText(self._t("grid_inspection.matrix.legend"))
         if hasattr(self, "_presenter"):
             self._presenter._update_source_labels()
         current_layout = str(self.layout_mode_combo.currentData() or DEFAULT_MATRIX_LAYOUT_MODE)
@@ -1521,6 +1589,8 @@ class KarakalWidget(QWidget):
             self.management_matrix_view.tileSelected.connect(self._presenter._on_management_matrix_tile_selected)
         if hasattr(self.management_matrix_view, "tileActivated"):
             self.management_matrix_view.tileActivated.connect(self._presenter._on_management_matrix_tile_activated)
+        self.grid_inspection_matrix_view.recordSelected.connect(self._presenter._on_grid_inspection_record_selected)
+        self.grid_inspection_matrix_view.recordActivated.connect(self._presenter._on_grid_inspection_record_activated)
         self.btn_add_folder.clicked.connect(self._presenter._add_folder)
         self.btn_clear_folders.clicked.connect(self._presenter._clear_folders)
         self.btn_set_original.clicked.connect(self._presenter._set_original_folder)

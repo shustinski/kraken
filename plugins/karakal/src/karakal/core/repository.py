@@ -24,10 +24,21 @@ try:
 except Exception:
     ndi = None
 
-try:
-    from scipy.spatial import cKDTree
-except Exception:
-    cKDTree = None
+_CKDTREE_UNSET = object()
+_cached_ckdtree: object = _CKDTREE_UNSET
+
+
+def _get_ckdtree():
+    """Import scipy.spatial only when a spatial metric actually needs it."""
+
+    global _cached_ckdtree
+    if _cached_ckdtree is _CKDTREE_UNSET:
+        try:
+            from scipy.spatial import cKDTree
+        except Exception:
+            cKDTree = None
+        _cached_ckdtree = cKDTree
+    return _cached_ckdtree
 
 try:
     import cv2
@@ -140,7 +151,7 @@ from .backend_constants import (
     EXPORT_SELECTION_MODE_PERCENTILE,
     INVALID_FILENAME_PATTERN,
 )
-from .confidence_maps import build_model_uncertainty, normalize_algorithmic_confidence
+from .confidence_maps import build_model_uncertainty, confidence_bad_area_intensity, normalize_algorithmic_confidence
 from .domain import (
     BuildOptions,
     BuildResult,
@@ -166,6 +177,15 @@ from .domain import (
     PolygonConfidencePipelineConfig,
     PolygonObjectConfidence,
 )
+from .grid_anomaly import detect_grid_cell_anomalies
+from ..comparison import (
+    EnsembleComparisonRequest,
+    FrameComparisonResult,
+    ModelFrameResult,
+    PairwiseComparisonRequest,
+    compare_ensemble,
+    compare_pairwise,
+)
 
 EPS = 1e-8
 ANALYTICS_MAX_BATCH_SIZE = 16
@@ -177,6 +197,8 @@ WINDOWS_THREAD_ANALYTICS_MAX_WORKERS = 64
 WINDOWS_THREAD_CONFIDENCE_MAX_WORKERS = 32
 WINDOWS_PROCESS_ANALYTICS_MAX_WORKERS = 4
 ANALYTICS_WORKER_ENV = "VALIDATION_MATRIX_ANALYTICS_WORKERS"
+EXPORT_WORKER_ENV = "KARAKAL_EXPORT_WORKERS"
+EXPORT_MAX_WORKERS = 32
 ANALYTICS_MEMORY_FRACTION = 0.45
 ANALYSIS_CACHE_MAX_FILES = 100000
 DETAIL_CACHE_MAX_FILES = 20000
@@ -610,6 +632,17 @@ def _grayscale_array_to_qimage(array: np.ndarray) -> QImage:
     return image.copy()
 
 
+def _rgb_array_to_qimage(array: np.ndarray) -> QImage:
+    """Convert contiguous RGB ndarray to Qt image."""
+
+    contiguous = np.ascontiguousarray(np.asarray(array, dtype=np.uint8))
+    if contiguous.ndim != 3 or contiguous.shape[2] != 3:
+        return QImage()
+    height, width, _channels = contiguous.shape
+    image = QImage(contiguous.data, width, height, int(contiguous.strides[0]), QImage.Format.Format_RGB888)
+    return image.copy()
+
+
 def _load_grayscale_image_raw(path: Path) -> np.ndarray:
     image = QImage(str(path))
     if image.isNull():
@@ -621,6 +654,48 @@ def load_grayscale_image(path: Path) -> np.ndarray:
     """Load one image as grayscale ndarray."""
 
     return _load_grayscale_image_raw(Path(path))
+
+
+def _load_export_grayscale_image(path: Path | str, target_shape: tuple[int, int] | None = None) -> np.ndarray:
+    """Load grayscale image for bulk export without populating analytics caches."""
+
+    source_path = Path(path)
+    image = None
+    if cv2 is not None:
+        try:
+            encoded = np.fromfile(str(source_path), dtype=np.uint8)
+            if encoded.size > 0:
+                image = cv2.imdecode(encoded, cv2.IMREAD_GRAYSCALE)
+        except Exception:
+            image = None
+    if image is None:
+        image = load_grayscale_image(source_path)
+    result = np.asarray(image, dtype=np.uint8)
+    if target_shape is not None and tuple(int(v) for v in result.shape) != tuple(int(v) for v in target_shape):
+        target_height, target_width = int(target_shape[0]), int(target_shape[1])
+        if cv2 is not None:
+            result = cv2.resize(result, (target_width, target_height), interpolation=cv2.INTER_NEAREST)
+        else:
+            result = resize_grayscale_image(result, (target_height, target_width))
+    return np.asarray(result, dtype=np.uint8)
+
+
+def _save_export_rgb_jpg(path: Path | str, rgb: np.ndarray, quality: int) -> bool:
+    """Save RGB image as JPG using OpenCV when available."""
+
+    target_path = Path(path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    rgb_uint8 = np.ascontiguousarray(np.asarray(rgb, dtype=np.uint8))
+    if cv2 is not None:
+        try:
+            bgr = cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR)
+            ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+            if ok:
+                encoded.tofile(str(target_path))
+                return True
+        except Exception:
+            pass
+    return bool(_rgb_array_to_qimage(rgb_uint8).save(str(target_path), "JPG", int(quality)))
 
 
 def resize_grayscale_image(array: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
@@ -4681,7 +4756,7 @@ def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
     mask_bool = np.asarray(mask, dtype=bool)
     if mask_bool.size == 0 or not np.any(mask_bool):
         return np.zeros_like(mask_bool, dtype=np.int32), 0
-    if ndi is not None:
+    if ndi is not None and hasattr(ndi, "label"):
         labels, count = ndi.label(mask_bool, structure=np.ones((3, 3), dtype=np.uint8))
         return np.asarray(labels, dtype=np.int32), int(count)
     if cv2 is not None:
@@ -4708,11 +4783,19 @@ def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
     return labels, next_label - 1
 
 
+def _has_fast_component_label_backend() -> bool:
+    return bool((ndi is not None and hasattr(ndi, "label")) or cv2 is not None)
+
+
+def _has_distance_transform_backend() -> bool:
+    return bool((ndi is not None and hasattr(ndi, "distance_transform_edt")) or cv2 is not None)
+
+
 def _binary_erode(mask: np.ndarray, radius: int = 1) -> np.ndarray:
     mask_bool = np.asarray(mask, dtype=bool)
     if radius <= 0:
         return mask_bool.copy()
-    if ndi is not None:
+    if ndi is not None and hasattr(ndi, "binary_erosion"):
         structure = np.ones((2 * radius + 1, 2 * radius + 1), dtype=bool)
         return np.asarray(ndi.binary_erosion(mask_bool, structure=structure), dtype=bool)
     padded = np.pad(mask_bool, radius, mode="constant", constant_values=False)
@@ -4727,7 +4810,7 @@ def _binary_dilate(mask: np.ndarray, radius: int = 1) -> np.ndarray:
     mask_bool = np.asarray(mask, dtype=bool)
     if radius <= 0:
         return mask_bool.copy()
-    if ndi is not None:
+    if ndi is not None and hasattr(ndi, "binary_dilation"):
         structure = np.ones((2 * radius + 1, 2 * radius + 1), dtype=bool)
         return np.asarray(ndi.binary_dilation(mask_bool, structure=structure), dtype=bool)
     padded = np.pad(mask_bool, radius, mode="constant", constant_values=False)
@@ -4744,7 +4827,7 @@ def _binary_dilate_rect(mask: np.ndarray, radius_y: int = 1, radius_x: int = 1) 
     rx = max(0, int(radius_x))
     if ry <= 0 and rx <= 0:
         return mask_bool.copy()
-    if ndi is not None:
+    if ndi is not None and hasattr(ndi, "binary_dilation"):
         structure = np.ones((2 * ry + 1, 2 * rx + 1), dtype=bool)
         return np.asarray(ndi.binary_dilation(mask_bool, structure=structure), dtype=bool)
     padded = np.pad(mask_bool, ((ry, ry), (rx, rx)), mode="constant", constant_values=False)
@@ -4786,7 +4869,7 @@ def _boundary_mask(mask: np.ndarray) -> np.ndarray:
 
 def _distance_transform(mask: np.ndarray) -> np.ndarray:
     mask_bool = np.asarray(mask, dtype=bool)
-    if ndi is not None:
+    if ndi is not None and hasattr(ndi, "distance_transform_edt"):
         return np.asarray(ndi.distance_transform_edt(mask_bool), dtype=np.float32)
     if cv2 is not None:
         distances = cv2.distanceTransform(np.asarray(mask_bool, dtype=np.uint8), cv2.DIST_L2, 5)
@@ -4891,11 +4974,16 @@ def _mask_structure(
     *,
     include_skeleton: bool = True,
     include_boundary_distance: bool = False,
+    include_component_labels: bool = True,
 ) -> dict[str, object]:
     mask_bool = np.asarray(mask, dtype=bool)
-    labels, count = _label_components(mask_bool)
+    if include_component_labels:
+        labels, count = _label_components(mask_bool)
+    else:
+        labels = np.zeros(mask_bool.shape, dtype=np.int32)
+        count = 0
     boundary = _boundary_mask(mask_bool)
-    boundary_dist = _distance_transform(~boundary) if include_boundary_distance and np.any(boundary) and (ndi is not None or cv2 is not None) else None
+    boundary_dist = _distance_transform(~boundary) if include_boundary_distance and np.any(boundary) and _has_distance_transform_backend() else None
     if include_skeleton:
         skeleton = skeletonize(mask_bool)
         if np.any(skeleton):
@@ -5123,6 +5211,7 @@ def _nearest_distances_between_coordinate_sets(coords_a: np.ndarray, coords_b: n
             nearest[start:stop] = np.sqrt(np.min(squared, axis=1, initial=np.inf))
         return nearest
 
+    cKDTree = _get_ckdtree()
     if cKDTree is not None:
         tree_a = cKDTree(coords_a)
         tree_b = cKDTree(coords_b)
@@ -5147,7 +5236,7 @@ def _hausdorff_distance(
         return 0.0
     if not np.any(first_boundary) or not np.any(second_boundary):
         return diagonal
-    if ndi is not None or cv2 is not None:
+    if _has_distance_transform_backend():
         dist_to_second = np.asarray((second_structure or {}).get("boundary_dist"), dtype=np.float32) if (second_structure or {}).get("boundary_dist") is not None else _distance_transform(~second_boundary)
         dist_to_first = np.asarray((first_structure or {}).get("boundary_dist"), dtype=np.float32) if (first_structure or {}).get("boundary_dist") is not None else _distance_transform(~first_boundary)
         directed_first = float(np.max(dist_to_second[first_boundary])) if np.any(first_boundary) else 0.0
@@ -5297,6 +5386,7 @@ def _point_match_threshold(point_a: object, point_b: object, base_radius: float)
 
 def _match_point_sets(points_a: tuple[object, ...], points_b: tuple[object, ...], base_radius: float) -> tuple[list[float], set[int], set[int]]:
     candidate_pairs: list[tuple[float, int, int]] = []
+    cKDTree = _get_ckdtree()
     if cKDTree is not None and points_a and points_b:
         coords_a = _point_coordinates(points_a)
         coords_b = _point_coordinates(points_b)
@@ -5367,6 +5457,18 @@ def _symmetric_binary_cross_entropy(first_prob: np.ndarray, second_prob: np.ndar
     forward = -(first * np.log(second) + (1.0 - first) * np.log(1.0 - second))
     backward = -(second * np.log(first) + (1.0 - second) * np.log(1.0 - first))
     return float(np.mean((forward + backward) * 0.5, dtype=np.float64)) if forward.size else 0.0
+
+
+def _binary_like_bce_from_mismatch(mismatch_count: int, pixel_count: float) -> float:
+    count = max(1.0, float(pixel_count))
+    clip_eps = float(max(EPS, float(np.finfo(np.float32).eps)))
+    mismatch_fraction = float(max(0, int(mismatch_count)) / count)
+    match_fraction = float(max(0.0, 1.0 - mismatch_fraction))
+    return float(mismatch_fraction * (-math.log(clip_eps)) + match_fraction * (-math.log1p(-clip_eps)))
+
+
+def _dot_sum_float64(first: np.ndarray, second: np.ndarray) -> float:
+    return float(np.einsum("i,i->", np.ravel(first), np.ravel(second), dtype=np.float64))
 
 
 def _polygon_bce_score(bce_value: float) -> float:
@@ -5607,10 +5709,22 @@ def _prepare_mask_pairwise_descriptors(
     descriptors: dict[str, dict[str, object]] = {}
     for model_id, probability in probabilities_by_model.items():
         prob = np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0)
-        clip_eps = np.float32(max(EPS, float(np.finfo(np.float32).eps)))
-        prob_clipped = np.clip(prob, clip_eps, np.float32(1.0) - clip_eps)
+        binary_like = _is_binary_like_probability(prob)
+        prob_binary_mask = np.asarray(prob >= 0.5, dtype=bool) if binary_like else None
+        prob_clipped = None
+        log_prob = None
+        log_inv_prob = None
+        log_prob_sum = 0.0
+        log_inv_prob_sum = 0.0
+        if not binary_like:
+            clip_eps = np.float32(max(EPS, float(np.finfo(np.float32).eps)))
+            prob_clipped = np.clip(prob, clip_eps, np.float32(1.0) - clip_eps)
+            log_prob = np.log(prob_clipped)
+            log_inv_prob = np.log1p(-prob_clipped)
+            log_prob_sum = float(np.sum(log_prob, dtype=np.float64))
+            log_inv_prob_sum = float(np.sum(log_inv_prob, dtype=np.float64))
         prob_sum = float(np.sum(prob, dtype=np.float64))
-        prob_sq_sum = float(np.sum(np.square(prob, dtype=np.float32), dtype=np.float64))
+        prob_sq_sum = prob_sum if binary_like else float(np.sum(np.square(prob, dtype=np.float32), dtype=np.float64))
         pixel_count = max(1.0, float(prob.size))
         mask = np.asarray(masks_by_model.get(model_id), dtype=bool)
         current_structure = (model_structures or {}).get(str(model_id)) or _mask_structure(mask, include_boundary_distance=True)
@@ -5618,7 +5732,7 @@ def _prepare_mask_pairwise_descriptors(
         dist_to_boundary = current_structure.get('boundary_dist')
         if dist_to_boundary is not None:
             dist_to_boundary = np.asarray(dist_to_boundary, dtype=np.float32)
-        elif np.any(boundary) and (ndi is not None or cv2 is not None):
+        elif np.any(boundary) and _has_distance_transform_backend():
             dist_to_boundary = _distance_transform(~boundary)
         descriptors[str(model_id)] = {
             'prob': prob,
@@ -5626,8 +5740,12 @@ def _prepare_mask_pairwise_descriptors(
             'prob_sq_sum': prob_sq_sum,
             'prob_mean': float(prob_sum / pixel_count),
             'prob_var': float(max(0.0, (prob_sq_sum / pixel_count) - (prob_sum / pixel_count) ** 2)),
-            'log_prob': np.log(prob_clipped),
-            'log_inv_prob': np.log1p(-prob_clipped),
+            'prob_binary_like': bool(binary_like),
+            'prob_binary_mask': prob_binary_mask,
+            'log_prob': log_prob,
+            'log_inv_prob': log_inv_prob,
+            'log_prob_sum': log_prob_sum,
+            'log_inv_prob_sum': log_inv_prob_sum,
             'mask': mask,
             'mask_area': int(np.count_nonzero(mask)),
             'boundary': boundary,
@@ -5656,7 +5774,21 @@ def _pairwise_mask_metrics(
     area_second = int(second['mask_area'])
     union_mask = int(area_first + area_second - intersection_mask)
 
-    prob_intersection = float(np.sum(first_prob * second_prob, dtype=np.float64))
+    first_binary_like = bool(first.get('prob_binary_like', False))
+    second_binary_like = bool(second.get('prob_binary_like', False))
+    both_binary_like = first_binary_like and second_binary_like
+    prob_binary_intersection = None
+    prob_binary_area_first = None
+    prob_binary_area_second = None
+    if both_binary_like:
+        first_prob_mask = np.asarray(first.get('prob_binary_mask'), dtype=bool)
+        second_prob_mask = np.asarray(second.get('prob_binary_mask'), dtype=bool)
+        prob_binary_intersection = int(np.count_nonzero(first_prob_mask & second_prob_mask))
+        prob_binary_area_first = int(np.count_nonzero(first_prob_mask))
+        prob_binary_area_second = int(np.count_nonzero(second_prob_mask))
+        prob_intersection = float(prob_binary_intersection)
+    else:
+        prob_intersection = _dot_sum_float64(first_prob, second_prob)
     prob_sum_first = float(first['prob_sum'])
     prob_sum_second = float(second['prob_sum'])
     prob_union = float(prob_sum_first + prob_sum_second - prob_intersection)
@@ -5703,16 +5835,31 @@ def _pairwise_mask_metrics(
         hausdorff_distance = _hausdorff_distance(first_mask, second_mask)
     hausdorff_similarity = _distance_similarity(hausdorff_distance, shape)
 
-    diff = first_prob - second_prob
-    mae = float(np.mean(np.abs(diff), dtype=np.float64)) if diff.size else 0.0
-    rmse = float(np.sqrt(np.mean(np.square(diff, dtype=np.float32), dtype=np.float64))) if diff.size else 0.0
-    first_log = np.asarray(first.get('log_prob'), dtype=np.float32)
-    first_log_inv = np.asarray(first.get('log_inv_prob'), dtype=np.float32)
-    second_log = np.asarray(second.get('log_prob'), dtype=np.float32)
-    second_log_inv = np.asarray(second.get('log_inv_prob'), dtype=np.float32)
-    forward = -(first_prob * second_log + (1.0 - first_prob) * second_log_inv)
-    backward = -(second_prob * first_log + (1.0 - second_prob) * first_log_inv)
-    bce = float(np.mean((forward + backward) * 0.5, dtype=np.float64)) if forward.size else 0.0
+    if both_binary_like:
+        mismatch_count = int((prob_binary_area_first or 0) + (prob_binary_area_second or 0) - 2 * (prob_binary_intersection or 0))
+        mismatch_fraction = float(max(0, mismatch_count) / pixel_count)
+        mae = mismatch_fraction
+        rmse = float(math.sqrt(mismatch_fraction))
+        bce = _binary_like_bce_from_mismatch(mismatch_count, pixel_count)
+    else:
+        diff = first_prob - second_prob
+        mae = float(np.mean(np.abs(diff), dtype=np.float64)) if diff.size else 0.0
+        rmse = float(np.sqrt(np.mean(np.square(diff, dtype=np.float32), dtype=np.float64))) if diff.size else 0.0
+        first_log = np.asarray(first.get('log_prob'), dtype=np.float32)
+        first_log_inv = np.asarray(first.get('log_inv_prob'), dtype=np.float32)
+        second_log = np.asarray(second.get('log_prob'), dtype=np.float32)
+        second_log_inv = np.asarray(second.get('log_inv_prob'), dtype=np.float32)
+        forward_sum = (
+            _dot_sum_float64(first_prob, second_log)
+            + float(second.get('log_inv_prob_sum', 0.0))
+            - _dot_sum_float64(first_prob, second_log_inv)
+        )
+        backward_sum = (
+            _dot_sum_float64(second_prob, first_log)
+            + float(first.get('log_inv_prob_sum', 0.0))
+            - _dot_sum_float64(second_prob, first_log_inv)
+        )
+        bce = float(-0.5 * (forward_sum + backward_sum) / pixel_count) if first_prob.size else 0.0
 
     count_agreement = _mask_count_agreement(
         int(np.asarray(first['structure']['component_count']).item() if hasattr(first['structure']['component_count'], 'item') else first['structure']['component_count']),
@@ -5918,6 +6065,8 @@ def _build_model_payloads(
     include_model_metrics: bool = True,
     include_model_diagnostics: bool = True,
     include_structure_details: bool = True,
+    include_model_output_probabilities: bool = True,
+    include_source_grays: bool = True,
 ) -> tuple[
     dict[str, np.ndarray],
     dict[str, np.ndarray],
@@ -5938,6 +6087,8 @@ def _build_model_payloads(
     include_model_metrics = bool(include_model_metrics)
     include_model_diagnostics = bool(include_model_diagnostics)
     include_model_confidence = bool(include_model_confidence)
+    include_model_output_probabilities = bool(include_model_output_probabilities)
+    include_source_grays = bool(include_source_grays)
     include_mask_structures = include_pairwise_metrics or include_model_metrics or include_model_diagnostics
     include_boundary_distance = include_pairwise_metrics or include_model_metrics
 
@@ -5983,7 +6134,7 @@ def _build_model_payloads(
                 include_skeleton=include_structure_details,
                 include_boundary_distance=include_boundary_distance,
             ) if gt_mask is not None else None
-        prob_gray = _load_optional_gray(record.model_prob_paths.get(spec.model_id), target_shape=target_shape, max_side=analysis_max_side)
+        prob_gray = _load_optional_gray(record.model_prob_paths.get(spec.model_id), target_shape=target_shape, max_side=analysis_max_side) if include_model_output_probabilities else None
         uses_binary_probability_proxy = prob_gray is None
         model_confidence_output_available[spec.model_id] = not uses_binary_probability_proxy
         if prob_gray is None:
@@ -6002,11 +6153,13 @@ def _build_model_payloads(
 
     for spec, mask_gray, prob_gray, uses_binary_probability_proxy in loaded_rows:
         prob_map = _prob_from_gray(mask_gray)
-        output_prob_map = _prob_from_gray(prob_gray)
         mask = _mask_from_gray(mask_gray, threshold=spec.threshold)
-        source_grays[spec.model_id] = (np.asarray(mask_gray, dtype=np.float32) / 255.0).astype(np.float32, copy=False)
+        if include_source_grays:
+            source_grays[spec.model_id] = (np.asarray(mask_gray, dtype=np.float32) / 255.0).astype(np.float32, copy=False)
         probabilities[spec.model_id] = prob_map.astype(np.float32)
-        output_probabilities[spec.model_id] = output_prob_map.astype(np.float32)
+        if include_model_output_probabilities:
+            output_prob_map = _prob_from_gray(prob_gray)
+            output_probabilities[spec.model_id] = output_prob_map.astype(np.float32)
         masks[spec.model_id] = mask.astype(bool)
 
         if resolved_geometry_mode == GeometryMode.POINT:
@@ -6041,6 +6194,7 @@ def _build_model_payloads(
                 mask,
                 include_skeleton=include_structure_details,
                 include_boundary_distance=include_boundary_distance,
+                include_component_labels=bool(include_model_metrics or include_model_diagnostics or _has_fast_component_label_backend()),
             )
             model_structures[spec.model_id] = mask_structure
         if include_model_diagnostics and mask_structure is not None:
@@ -6104,7 +6258,137 @@ def _metric_requires_model_confidence(metric_key: str | None) -> bool:
     return family in {'model_confidence', 'model_uncertain_fraction', 'model_point_contrast'}
 
 
+def _build_frame_comparison_result(
+    *,
+    frame_id: str,
+    model_specs: tuple[ModelSpec, ...],
+    probabilities_by_model: dict[str, np.ndarray],
+    masks_by_model: dict[str, np.ndarray],
+    geometry_mode: GeometryMode,
+    threshold: float,
+    consensus_threshold: float,
+    connectivity: int,
+    pruning_min_length_px: int = 5,
+    compute_level: str = "standard",
+) -> FrameComparisonResult | None:
+    model_frames: list[ModelFrameResult] = []
+    profile = "point" if geometry_mode == GeometryMode.POINT else "polygon"
+    for spec in model_specs:
+        mask = masks_by_model.get(spec.model_id)
+        if mask is None:
+            continue
+        model_frames.append(
+            ModelFrameResult(
+                model_id=str(spec.model_id),
+                frame_id=str(frame_id),
+                probability_map=probabilities_by_model.get(spec.model_id),
+                binary_mask=np.asarray(mask, dtype=bool),
+                metadata={
+                    "geometry_mode": profile,
+                    "threshold": float(getattr(spec, "threshold", threshold) or threshold),
+                },
+            )
+        )
+    if len(model_frames) < 2:
+        return None
+    if len(model_frames) == 2:
+        return compare_pairwise(
+            PairwiseComparisonRequest(
+                frame_id=str(frame_id),
+                model_a=model_frames[0],
+                model_b=model_frames[1],
+                profile=profile,
+                threshold=float(threshold),
+                connectivity=int(connectivity),
+                pruning_min_length_px=int(pruning_min_length_px),
+                evidence_provider_version="karakal-detail",
+                compute_level=str(compute_level or "standard"),
+            )
+        ).frame
+    return compare_ensemble(
+        EnsembleComparisonRequest(
+            frame_id=str(frame_id),
+            models=tuple(model_frames),
+            profile="mixed" if geometry_mode != GeometryMode.POINT else "point",
+            threshold=float(threshold),
+            consensus_threshold=float(consensus_threshold),
+            connectivity=int(connectivity),
+            pruning_min_length_px=int(pruning_min_length_px),
+            evidence_provider_version="karakal-detail",
+            compute_level=str(compute_level or "standard"),
+        )
+    ).frame
+
+
+def _comparison_metric_values(result: FrameComparisonResult | None) -> dict[str, float]:
+    if result is None:
+        return {}
+    values: dict[str, float] = {}
+    for key, value in result.risk.items():
+        if value is not None and math.isfinite(float(value)):
+            values[f"comparison_risk_{key}"] = float(value)
+    for metric in result.metrics:
+        if not metric.valid or metric.value is None:
+            continue
+        try:
+            numeric = float(metric.value)
+        except Exception:
+            continue
+        if math.isfinite(numeric):
+            values[f"comparison::{metric.name}"] = numeric
+    return values
+
+
+CONFIDENCE_COMPARISON_METRIC_KEYS = frozenset({
+    "confidence_model_score",
+    "confidence_difference_score",
+    "confidence_bce_score",
+    "confidence_threshold_crossing_score",
+})
+
+
+def _confidence_pairwise_metric_values(output_probabilities_by_model: dict[str, np.ndarray]) -> dict[str, float]:
+    items = [
+        (str(model_id), np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0))
+        for model_id, probability in (output_probabilities_by_model or {}).items()
+        if probability is not None
+    ]
+    if len(items) < 2:
+        return {}
+    diff_scores: list[float] = []
+    bce_scores: list[float] = []
+    crossing_scores: list[float] = []
+    for first_index in range(len(items)):
+        _first_id, first = items[first_index]
+        for second_index in range(first_index + 1, len(items)):
+            _second_id, second = items[second_index]
+            if first.shape != second.shape or first.size == 0:
+                continue
+            abs_diff = np.abs(first - second)
+            diff_score = 100.0 * (1.0 - float(np.mean(abs_diff, dtype=np.float64)))
+            bce_value = _symmetric_binary_cross_entropy(first, second)
+            bce_score = _polygon_bce_score(bce_value)
+            threshold_crossing = np.asarray(first >= 0.5, dtype=bool) ^ np.asarray(second >= 0.5, dtype=bool)
+            crossing_score = 100.0 * (1.0 - float(np.mean(threshold_crossing, dtype=np.float64)))
+            diff_scores.append(float(_clip01(diff_score / 100.0) * 100.0))
+            bce_scores.append(float(_clip01(bce_score / 100.0) * 100.0))
+            crossing_scores.append(float(_clip01(crossing_score / 100.0) * 100.0))
+    if not diff_scores:
+        return {}
+    diff_mean = float(np.mean(np.asarray(diff_scores, dtype=np.float64), dtype=np.float64))
+    bce_mean = float(np.mean(np.asarray(bce_scores, dtype=np.float64), dtype=np.float64))
+    crossing_mean = float(np.mean(np.asarray(crossing_scores, dtype=np.float64), dtype=np.float64))
+    return {
+        "confidence_difference_score": diff_mean,
+        "confidence_bce_score": bce_mean,
+        "confidence_threshold_crossing_score": crossing_mean,
+        "confidence_model_score": float(np.mean(np.asarray([diff_mean, bce_mean, crossing_mean], dtype=np.float64), dtype=np.float64)),
+    }
+
+
 def _metric_requires_model_output_confidence(metric_key: str | None) -> bool:
+    if str(metric_key or "") in CONFIDENCE_COMPARISON_METRIC_KEYS:
+        return True
     parsed = _parse_model_metric_key(str(metric_key or ''))
     if parsed is None:
         return False
@@ -6217,6 +6501,8 @@ def _analyze_record_payload(
         include_model_metrics=include_model_metrics,
         include_model_diagnostics=include_model_diagnostics,
         include_structure_details=False,
+        include_model_output_probabilities=include_model_output_confidence,
+        include_source_grays=False,
     )
     timings_ms['loading_preprocess'] = 1000.0 * (perf_counter() - load_started)
     probabilities = list(probabilities_by_model.values())
@@ -6252,6 +6538,11 @@ def _analyze_record_payload(
         labeled_mean = None
         model_labeled_score = None
     model_confidence_output: dict[str, ModelOutputConfidenceMetrics] = {}
+    confidence_pairwise_metrics = _confidence_pairwise_metric_values({
+        str(model_id): probability
+        for model_id, probability in output_probabilities_by_model.items()
+        if bool(model_confidence_output_available.get(str(model_id), False))
+    }) if include_model_output_confidence else {}
     if include_model_output_confidence:
         for model_id, probability in output_probabilities_by_model.items():
             if not bool(model_confidence_output_available.get(str(model_id), False)):
@@ -6273,6 +6564,7 @@ def _analyze_record_payload(
         'model_metrics': model_metrics,
         'model_confidence': model_confidence,
         'model_confidence_output': model_confidence_output,
+        'confidence_pairwise_metrics': confidence_pairwise_metrics,
         'model_confidence_output_available': model_confidence_output_available,
         'pairwise_rows': pairwise_rows,
         'timings_ms': timings_ms,
@@ -6660,6 +6952,19 @@ def _available_metric_keys_for_models(model_specs: tuple[ModelSpec, ...], record
             for model_id, path_text in (record.model_prob_paths or {}).items()
             if bool(path_text)
         }
+    if model_ids_with_output is None:
+        confidence_model_count = sum(1 for spec in model_specs if spec.prob_folder is not None)
+    else:
+        confidence_model_count = sum(1 for spec in model_specs if spec.prob_folder is not None and str(spec.model_id) in model_ids_with_output)
+    if confidence_model_count >= 2:
+        keys.extend(
+            [
+                "confidence_model_score",
+                "confidence_difference_score",
+                "confidence_bce_score",
+                "confidence_threshold_crossing_score",
+            ]
+        )
     for spec in model_specs:
         keys.append(_model_metric_key("model_confidence", spec.model_id))
         keys.append(_model_metric_key("model_uncertain_fraction", spec.model_id))
@@ -6902,6 +7207,1176 @@ def _unique_export_folder_name(base_name: str, used_names: set[str]) -> str:
         index += 1
 
 
+def _rgb_tuple(value: tuple[int, int, int] | list[int] | np.ndarray | None, *, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+    if value is None:
+        return fallback
+    try:
+        items = tuple(int(round(float(item))) for item in tuple(value)[:3])
+    except Exception:
+        return fallback
+    if len(items) != 3:
+        return fallback
+    return tuple(max(0, min(255, item)) for item in items)
+
+
+def _normalized_layer_unit(array: np.ndarray) -> np.ndarray:
+    values = np.asarray(array)
+    if values.ndim == 3:
+        values = values[..., 0]
+    values_f = np.asarray(values, dtype=np.float32)
+    if values_f.size <= 0:
+        return np.zeros((1, 1), dtype=np.float32)
+    finite = np.isfinite(values_f)
+    if not np.any(finite):
+        return np.zeros_like(values_f, dtype=np.float32)
+    result = np.nan_to_num(values_f, nan=0.0, posinf=1.0, neginf=0.0)
+    finite_values = values_f[finite]
+    max_value = float(np.max(finite_values))
+    min_value = float(np.min(finite_values))
+    if max_value > 1.0 and min_value >= 0.0 and max_value <= 255.0:
+        result = result / 255.0
+    return np.clip(result, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _colorize_layer_map(
+    array: np.ndarray,
+    *,
+    map_color: tuple[int, int, int] | list[int] | np.ndarray | None = None,
+    background_color: tuple[int, int, int] | list[int] | np.ndarray | None = None,
+) -> np.ndarray:
+    unit = _normalized_layer_unit(array)[..., None]
+    foreground = np.asarray(_rgb_tuple(map_color, fallback=(255, 64, 64)), dtype=np.float32)
+    background = np.asarray(_rgb_tuple(background_color, fallback=(128, 128, 128)), dtype=np.float32)
+    rgb = background * (1.0 - unit) + foreground * unit
+    return np.clip(np.round(rgb), 0.0, 255.0).astype(np.uint8)
+
+
+def _model_display_name_map(build_result: BuildResult) -> dict[str, str]:
+    return {str(spec.model_id): str(spec.display_name or spec.model_id) for spec in tuple(build_result.model_specs or ())}
+
+
+def _comparison_result_for_export(record: FrameRecord, build_result: BuildResult) -> FrameComparisonResult | None:
+    probabilities, output_probabilities, masks, _source_grays, _model_structures, _model_diagnostics, _model_metrics, _model_confidence, _confidence_available, _original_gray, _gt_mask, _gt_structure, detail_geometry_mode, _model_views, _gt_point_view = _build_model_payloads(
+        record,
+        tuple(build_result.model_specs or ()),
+        analysis_max_side=None,
+        geometry_mode=build_result.options.geometry_mode,
+        point_match_radius=float(build_result.options.point_match_radius),
+        boundary_radius=int(getattr(build_result.options, "boundary_radius", 1) or 1),
+        confidence_uncertainty_delta=float(getattr(build_result.options, "confidence_uncertainty_delta", MODEL_CONFIDENCE_UNCERTAIN_DELTA)),
+        point_confidence_radius=int(getattr(build_result.options, "point_confidence_radius", POINT_CONFIDENCE_NEIGHBOR_RADIUS) or POINT_CONFIDENCE_NEIGHBOR_RADIUS),
+        polygon_confidence_summary=str(getattr(build_result.options, "polygon_confidence_summary", POLYGON_CONFIDENCE_SUMMARY_WEIGHTED) or POLYGON_CONFIDENCE_SUMMARY_WEIGHTED),
+        include_confidence_objects=False,
+        include_original_gray=True,
+        include_model_confidence=False,
+        include_pairwise_metrics=False,
+        include_model_metrics=False,
+        include_model_diagnostics=False,
+        include_structure_details=False,
+        include_model_output_probabilities=True,
+        include_source_grays=False,
+    )
+    if len(masks) < 2:
+        return None
+    return _build_frame_comparison_result(
+        frame_id=str(record.key),
+        model_specs=tuple(build_result.model_specs or ()),
+        probabilities_by_model=output_probabilities or probabilities,
+        masks_by_model={str(key): np.asarray(value, dtype=bool) for key, value in masks.items()},
+        geometry_mode=detail_geometry_mode,
+        threshold=float(getattr(build_result.options, "mask_threshold", 0.5) or 0.5),
+        consensus_threshold=0.5,
+        connectivity=8,
+        compute_level="standard",
+    )
+
+
+def _export_pair_model_ids(build_result: BuildResult, maps: dict[str, np.ndarray] | None = None) -> tuple[str, str] | None:
+    ordered = [str(spec.model_id) for spec in tuple(build_result.model_specs or ())]
+    if maps is not None:
+        ordered = [model_id for model_id in ordered if model_id in maps]
+    if len(ordered) < 2:
+        return None
+    return ordered[0], ordered[1]
+
+
+def _load_export_payload(record: FrameRecord, build_result: BuildResult) -> dict[str, object]:
+    probabilities, output_probabilities, masks, _source_grays, _model_structures, _model_diagnostics, _model_metrics, _model_confidence, _confidence_available, original_gray, gt_mask, _gt_structure, detail_geometry_mode, _model_views, _gt_point_view = _build_model_payloads(
+        record,
+        tuple(build_result.model_specs or ()),
+        analysis_max_side=None,
+        geometry_mode=build_result.options.geometry_mode,
+        point_match_radius=float(build_result.options.point_match_radius),
+        boundary_radius=int(getattr(build_result.options, "boundary_radius", 1) or 1),
+        confidence_uncertainty_delta=float(getattr(build_result.options, "confidence_uncertainty_delta", MODEL_CONFIDENCE_UNCERTAIN_DELTA)),
+        point_confidence_radius=int(getattr(build_result.options, "point_confidence_radius", POINT_CONFIDENCE_NEIGHBOR_RADIUS) or POINT_CONFIDENCE_NEIGHBOR_RADIUS),
+        polygon_confidence_summary=str(getattr(build_result.options, "polygon_confidence_summary", POLYGON_CONFIDENCE_SUMMARY_WEIGHTED) or POLYGON_CONFIDENCE_SUMMARY_WEIGHTED),
+        include_confidence_objects=False,
+        include_original_gray=True,
+        include_model_confidence=False,
+        include_pairwise_metrics=False,
+        include_model_metrics=False,
+        include_model_diagnostics=False,
+        include_structure_details=False,
+        include_model_output_probabilities=True,
+        include_source_grays=False,
+    )
+    return {
+        "probabilities": probabilities,
+        "output_probabilities": output_probabilities,
+        "masks": masks,
+        "original_gray": original_gray,
+        "gt_mask": gt_mask,
+        "geometry_mode": detail_geometry_mode,
+    }
+
+
+def _probability_for_export(payload: dict[str, object], model_id: str) -> np.ndarray | None:
+    output_probabilities = payload.get("output_probabilities") or {}
+    probabilities = payload.get("probabilities") or {}
+    if isinstance(output_probabilities, dict) and model_id in output_probabilities:
+        return np.asarray(output_probabilities[model_id], dtype=np.float32)
+    if isinstance(probabilities, dict) and model_id in probabilities:
+        return np.asarray(probabilities[model_id], dtype=np.float32)
+    return None
+
+
+def _input_edge_support_export(original_gray: np.ndarray | None) -> np.ndarray | None:
+    if original_gray is None:
+        return None
+    values = np.asarray(original_gray, dtype=np.float32)
+    if values.ndim != 2 or values.size == 0:
+        return None
+    finite = np.asarray(values[np.isfinite(values)], dtype=np.float32)
+    if finite.size == 0:
+        return np.zeros_like(values, dtype=bool)
+    low = float(np.percentile(finite, 5.0))
+    high = float(np.percentile(finite, 95.0))
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low + 1e-6:
+        normalized = np.zeros_like(values, dtype=np.float32)
+    else:
+        normalized = np.clip((values - low) / (high - low), 0.0, 1.0)
+    grad_x = np.zeros_like(normalized, dtype=np.float32)
+    grad_y = np.zeros_like(normalized, dtype=np.float32)
+    grad_x[:, :-1] = np.abs(normalized[:, 1:] - normalized[:, :-1])
+    grad_y[:-1, :] = np.abs(normalized[1:, :] - normalized[:-1, :])
+    gradient = np.hypot(grad_x, grad_y)
+    positive = gradient[gradient > 0.0]
+    if positive.size > 0:
+        threshold = float(np.percentile(positive, 85.0))
+        threshold = max(threshold, float(np.mean(positive) + 0.5 * np.std(positive)), 0.04)
+    else:
+        threshold = 1.0
+    support = np.asarray(gradient >= threshold, dtype=bool)
+    if not np.any(support):
+        support = np.asarray(gradient > 0.0, dtype=bool)
+    return np.asarray(_distance_transform(~support) <= 1.0, dtype=bool)
+
+
+def _input_output_heatmap_export(payload: dict[str, object], model_id: str, build_result: BuildResult) -> np.ndarray | None:
+    masks = payload.get("masks") or {}
+    original_gray = payload.get("original_gray")
+    if not isinstance(masks, dict) or model_id not in masks or original_gray is None:
+        return None
+    input_edges = _input_edge_support_export(np.asarray(original_gray, dtype=np.uint8))
+    output_boundary = np.asarray(_boundary_mask(np.asarray(masks[model_id], dtype=bool)), dtype=bool)
+    if input_edges is None or input_edges.shape != output_boundary.shape:
+        return None
+    if not np.any(input_edges) and not np.any(output_boundary):
+        return np.zeros_like(output_boundary, dtype=np.float32)
+    tolerance = max(2.0, float(getattr(build_result.options, "boundary_radius", 1) or 1.0) + 1.5)
+    input_band = np.asarray(_distance_transform(~input_edges) <= 1.0, dtype=bool)
+    output_band = np.asarray(_distance_transform(~output_boundary) <= 1.0, dtype=bool)
+    dist_to_input = np.asarray(_distance_transform(~input_band), dtype=np.float32)
+    dist_to_output = np.asarray(_distance_transform(~output_band), dtype=np.float32)
+    output_mismatch = np.clip(dist_to_input / float(tolerance), 0.0, 1.0) * np.asarray(output_boundary, dtype=np.float32)
+    input_miss = np.clip(dist_to_output / float(tolerance), 0.0, 1.0) * np.asarray(input_edges, dtype=np.float32)
+    return np.clip(np.maximum(output_mismatch, input_miss), 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _result_kind_export_array(
+    build_result: BuildResult,
+    payload: dict[str, object],
+    result_kind: str,
+) -> tuple[np.ndarray, str] | None:
+    masks = payload.get("masks") or {}
+    if not isinstance(masks, dict):
+        return None
+    pair = _export_pair_model_ids(build_result, masks)
+    title_by_kind = {
+        "diff": "Comparison difference",
+        "iou": "IoU overlap",
+        "dice": "Dice overlap",
+        "bce": "BCE heatmap",
+        "boundary": "Boundary difference",
+        "input_output": "Input-output heatmap",
+    }
+    if result_kind == "input_output":
+        model_id = pair[0] if pair is not None else next(iter(masks.keys()), None)
+        if model_id is None:
+            return None
+        heatmap = _input_output_heatmap_export(payload, str(model_id), build_result)
+        return None if heatmap is None else (heatmap, title_by_kind[result_kind])
+    if pair is None:
+        return None
+    first_id, second_id = pair
+    first_mask = np.asarray(masks[first_id], dtype=bool)
+    second_mask = np.asarray(masks[second_id], dtype=bool)
+    if result_kind == "diff":
+        heatmap, _score = compute_comparison(first_mask, second_mask, ComparisonMode.DISAGREEMENT)
+        return heatmap, title_by_kind[result_kind]
+    if result_kind in {"iou", "dice"}:
+        return np.logical_and(first_mask, second_mask).astype(np.float32), title_by_kind[result_kind]
+    if result_kind == "boundary":
+        first_boundary = np.asarray(_boundary_mask(first_mask), dtype=bool)
+        second_boundary = np.asarray(_boundary_mask(second_mask), dtype=bool)
+        heatmap, _score = compute_comparison(first_boundary, second_boundary, ComparisonMode.DISAGREEMENT)
+        return heatmap, title_by_kind[result_kind]
+    if result_kind == "bce":
+        first_prob = _probability_for_export(payload, first_id)
+        second_prob = _probability_for_export(payload, second_id)
+        if first_prob is None or second_prob is None:
+            return None
+        heatmap, _score = compute_comparison(first_prob, second_prob, ComparisonMode.BCE)
+        return heatmap, title_by_kind[result_kind]
+    return None
+
+
+def _comparison_layer_export_array(
+    build_result: BuildResult,
+    payload: dict[str, object],
+    layer_id: str,
+) -> tuple[np.ndarray, str] | None:
+    masks = payload.get("masks") or {}
+    if not isinstance(masks, dict):
+        return None
+    title_by_layer = {
+        "mask_common": "A and B",
+        "mask_a_only": "A only",
+        "mask_b_only": "B only",
+        "mask_xor": "A xor B",
+        "mask_union": "A or B",
+        "boundary_a": "Boundary A",
+        "boundary_b": "Boundary B",
+        "soft_abs_difference": "|P_A - P_B|",
+        "soft_signed_difference": "P_A - P_B",
+        "threshold_crossing_map": "Threshold crossing",
+        "vote_map": "Vote map",
+        "consensus_mask": "Consensus mask",
+        "ensemble_uncertainty": "Ensemble uncertainty",
+    }
+    pair = _export_pair_model_ids(build_result, masks)
+    if pair is not None:
+        first_id, second_id = pair
+        first_mask = np.asarray(masks[first_id], dtype=bool)
+        second_mask = np.asarray(masks[second_id], dtype=bool)
+        common = first_mask & second_mask
+        if layer_id == "mask_common":
+            return common.astype(np.float32), title_by_layer[layer_id]
+        if layer_id == "mask_a_only":
+            return (first_mask & ~second_mask).astype(np.float32), title_by_layer[layer_id]
+        if layer_id == "mask_b_only":
+            return (second_mask & ~first_mask).astype(np.float32), title_by_layer[layer_id]
+        if layer_id == "mask_xor":
+            return np.logical_xor(first_mask, second_mask).astype(np.float32), title_by_layer[layer_id]
+        if layer_id == "mask_union":
+            return np.logical_or(first_mask, second_mask).astype(np.float32), title_by_layer[layer_id]
+        if layer_id == "boundary_a":
+            return np.asarray(_boundary_mask(first_mask), dtype=np.float32), title_by_layer[layer_id]
+        if layer_id == "boundary_b":
+            return np.asarray(_boundary_mask(second_mask), dtype=np.float32), title_by_layer[layer_id]
+        if layer_id in {"soft_abs_difference", "soft_signed_difference", "threshold_crossing_map"}:
+            first_prob = _probability_for_export(payload, first_id)
+            second_prob = _probability_for_export(payload, second_id)
+            if first_prob is None or second_prob is None:
+                return None
+            if layer_id == "soft_abs_difference":
+                return np.abs(first_prob - second_prob).astype(np.float32), title_by_layer[layer_id]
+            if layer_id == "soft_signed_difference":
+                return np.asarray((first_prob - second_prob + 1.0) * 0.5, dtype=np.float32), title_by_layer[layer_id]
+            threshold = float(getattr(build_result.options, "mask_threshold", 0.5) or 0.5)
+            return np.logical_xor(first_prob >= threshold, second_prob >= threshold).astype(np.float32), title_by_layer[layer_id]
+    if len(masks) >= 2 and layer_id in {"vote_map", "consensus_mask", "ensemble_uncertainty"}:
+        ordered_ids = [str(spec.model_id) for spec in tuple(build_result.model_specs or ()) if str(spec.model_id) in masks]
+        if not ordered_ids:
+            ordered_ids = [str(key) for key in masks.keys()]
+        stack = np.stack([np.asarray(masks[model_id], dtype=np.float32) for model_id in ordered_ids], axis=0)
+        vote_map = np.mean(stack, axis=0, dtype=np.float32)
+        if layer_id == "vote_map":
+            return vote_map, title_by_layer[layer_id]
+        consensus = vote_map >= 0.5
+        if layer_id == "consensus_mask":
+            return consensus.astype(np.float32), title_by_layer[layer_id]
+        uncertainty = np.asarray(1.0 - np.abs(vote_map - 0.5) * 2.0, dtype=np.float32)
+        return uncertainty, title_by_layer[layer_id]
+    return None
+
+
+def _export_pair_specs(build_result: BuildResult, record: FrameRecord) -> tuple[ModelSpec, ModelSpec] | None:
+    pairs = [
+        spec
+        for spec in tuple(build_result.model_specs or ())
+        if bool((record.model_mask_paths or {}).get(str(spec.model_id)))
+    ]
+    if len(pairs) < 2:
+        return None
+    return pairs[0], pairs[1]
+
+
+def _load_export_mask_for_spec(record: FrameRecord, spec: ModelSpec, target_shape: tuple[int, int] | None = None) -> np.ndarray | None:
+    path_text = str((record.model_mask_paths or {}).get(str(spec.model_id)) or "")
+    if not path_text:
+        return None
+    path = Path(path_text)
+    if not path.is_file():
+        return None
+    gray = _load_export_grayscale_image(path, target_shape=target_shape)
+    return np.asarray(_mask_from_gray(gray, threshold=float(getattr(spec, "threshold", 0.5) or 0.5)), dtype=bool)
+
+
+def _load_export_probability_for_spec(record: FrameRecord, spec: ModelSpec, target_shape: tuple[int, int] | None = None) -> np.ndarray | None:
+    model_id = str(spec.model_id)
+    path_text = str((record.model_prob_paths or {}).get(model_id) or (record.model_mask_paths or {}).get(model_id) or "")
+    if not path_text:
+        return None
+    path = Path(path_text)
+    if not path.is_file():
+        return None
+    gray = _load_export_grayscale_image(path, target_shape=target_shape)
+    return np.asarray(_prob_from_gray(gray), dtype=np.float32)
+
+
+def _load_export_mask_pair(record: FrameRecord, build_result: BuildResult) -> tuple[str, str, np.ndarray, np.ndarray] | None:
+    pair = _export_pair_specs(build_result, record)
+    if pair is None:
+        return None
+    first_spec, second_spec = pair
+    first = _load_export_mask_for_spec(record, first_spec)
+    if first is None:
+        return None
+    second = _load_export_mask_for_spec(record, second_spec, target_shape=tuple(int(v) for v in first.shape))
+    if second is None:
+        return None
+    return str(first_spec.model_id), str(second_spec.model_id), first, second
+
+
+def _load_export_probability_pair(record: FrameRecord, build_result: BuildResult) -> tuple[str, str, np.ndarray, np.ndarray] | None:
+    pair = _export_pair_specs(build_result, record)
+    if pair is None:
+        return None
+    first_spec, second_spec = pair
+    first = _load_export_probability_for_spec(record, first_spec)
+    if first is None:
+        return None
+    second = _load_export_probability_for_spec(record, second_spec, target_shape=tuple(int(v) for v in first.shape))
+    if second is None:
+        return None
+    return str(first_spec.model_id), str(second_spec.model_id), first, second
+
+
+def _export_confidence_pair_specs(build_result: BuildResult, record: FrameRecord) -> tuple[ModelSpec, ModelSpec] | None:
+    pairs = [
+        spec
+        for spec in tuple(build_result.model_specs or ())
+        if bool((record.model_prob_paths or {}).get(str(spec.model_id)))
+    ]
+    if len(pairs) < 2:
+        return None
+    return pairs[0], pairs[1]
+
+
+def _load_export_confidence_for_spec(record: FrameRecord, spec: ModelSpec, target_shape: tuple[int, int] | None = None) -> np.ndarray | None:
+    path_text = str((record.model_prob_paths or {}).get(str(spec.model_id)) or "")
+    if not path_text:
+        return None
+    path = Path(path_text)
+    if not path.is_file():
+        return None
+    gray = _load_export_grayscale_image(path, target_shape=target_shape)
+    return np.asarray(_prob_from_gray(gray), dtype=np.float32)
+
+
+def _load_export_confidence_pair(record: FrameRecord, build_result: BuildResult) -> tuple[str, str, np.ndarray, np.ndarray] | None:
+    pair = _export_confidence_pair_specs(build_result, record)
+    if pair is None:
+        return None
+    first_spec, second_spec = pair
+    first = _load_export_confidence_for_spec(record, first_spec)
+    if first is None:
+        return None
+    second = _load_export_confidence_for_spec(record, second_spec, target_shape=tuple(int(v) for v in first.shape))
+    if second is None:
+        return None
+    return str(first_spec.model_id), str(second_spec.model_id), first, second
+
+
+def _load_export_result_confidence_for_model(record: FrameRecord, build_result: BuildResult, model_id: str) -> tuple[np.ndarray, np.ndarray] | None:
+    spec = next((candidate for candidate in tuple(build_result.model_specs or ()) if str(candidate.model_id) == str(model_id)), None)
+    if spec is None:
+        return None
+    mask = _load_export_mask_for_spec(record, spec)
+    if mask is None:
+        return None
+    confidence = _load_export_confidence_for_spec(record, spec, target_shape=tuple(int(v) for v in mask.shape))
+    if confidence is None:
+        return None
+    return np.asarray(mask, dtype=bool), np.clip(np.asarray(confidence, dtype=np.float32), 0.0, 1.0)
+
+
+def _result_confidence_diagnostic_map(mask: np.ndarray, confidence: np.ndarray, kind: str) -> np.ndarray:
+    mask_bool = np.asarray(mask, dtype=bool)
+    confidence_unit = np.clip(np.asarray(confidence, dtype=np.float32), 0.0, 1.0)
+    if confidence_unit.shape != mask_bool.shape:
+        return np.zeros_like(mask_bool, dtype=np.float32)
+    uncertainty = build_model_uncertainty(confidence_unit)
+    low_confidence = 1.0 - confidence_unit
+    distance_inside = np.asarray(_distance_transform(mask_bool), dtype=np.float32)
+    interior_weight = np.clip((distance_inside - 1.0) / 2.5, 0.0, 1.0)
+    interior_weight *= np.asarray(mask_bool, dtype=np.float32)
+
+    def focused(raw: np.ndarray, support: np.ndarray) -> np.ndarray:
+        values = np.clip(np.asarray(raw, dtype=np.float32) * np.asarray(support, dtype=np.float32), 0.0, 1.0)
+        return np.clip((values - 0.06) / 0.94, 0.0, 1.0)
+
+    if kind == "bad_inside":
+        return focused(np.maximum(uncertainty, low_confidence), interior_weight)
+    if kind == "conflict":
+        return focused(low_confidence, interior_weight)
+    boundary = np.asarray(_boundary_mask(mask_bool), dtype=bool)
+    if kind == "boundary_uncertainty":
+        band = np.asarray(_distance_transform(~boundary) <= 2.0, dtype=bool) if np.any(boundary) else boundary
+        return np.clip(np.asarray(band, dtype=np.float32) * uncertainty, 0.0, 1.0)
+    if kind == "transition_uncertainty":
+        band = np.asarray(_distance_transform(~boundary) <= 5.0, dtype=bool) if np.any(boundary) else boundary
+        return np.clip(np.asarray(band, dtype=np.float32) * uncertainty, 0.0, 1.0)
+    return np.zeros_like(mask_bool, dtype=np.float32)
+
+
+def _fast_result_confidence_export_array(record: FrameRecord, build_result: BuildResult, kind: str, model_id: str) -> tuple[np.ndarray, str] | None:
+    pair = _load_export_result_confidence_for_model(record, build_result, model_id)
+    if pair is None:
+        return None
+    mask, confidence = pair
+    title_by_kind = {
+        "bad_inside": "Suspicious interior by confidence",
+        "boundary_uncertainty": "Uncertain result boundary",
+        "conflict": "Result-confidence conflict",
+        "transition_uncertainty": "Uncertain transition around result",
+    }
+    title = title_by_kind.get(str(kind), str(kind))
+    return _result_confidence_diagnostic_map(mask, confidence, kind), title
+
+
+def _fast_grid_cell_defect_export_array(record: FrameRecord, build_result: BuildResult, model_id: str) -> tuple[np.ndarray, str] | None:
+    spec = next((candidate for candidate in tuple(build_result.model_specs or ()) if str(candidate.model_id) == str(model_id)), None)
+    if spec is None:
+        return None
+    path_text = str((record.model_mask_paths or {}).get(str(model_id)) or "")
+    if not path_text:
+        return None
+    path = Path(path_text)
+    if not path.is_file():
+        return None
+    gray = _load_export_grayscale_image(path)
+    result = detect_grid_cell_anomalies(gray)
+    title = f"{str(getattr(spec, 'display_name', '') or model_id)} grid defects"
+    return np.asarray(result.intensity, dtype=np.float32), title
+
+
+def _fast_result_kind_export_array(record: FrameRecord, build_result: BuildResult, result_kind: str) -> tuple[np.ndarray, str] | None:
+    title_by_kind = {
+        "diff": "Comparison difference",
+        "iou": "IoU overlap",
+        "dice": "Dice overlap",
+        "bce": "BCE heatmap",
+        "boundary": "Boundary difference",
+        "input_output": "Input-output heatmap",
+        "confidence_difference": "Confidence difference",
+        "confidence_bce": "Confidence BCE heatmap",
+        "confidence_threshold_crossing": "Confidence threshold crossing",
+    }
+    if result_kind in {"confidence_difference", "confidence_bce", "confidence_threshold_crossing"}:
+        confidence_pair = _load_export_confidence_pair(record, build_result)
+        if confidence_pair is None:
+            return None
+        _first_id, _second_id, first_confidence, second_confidence = confidence_pair
+        if result_kind == "confidence_difference":
+            return np.abs(first_confidence - second_confidence).astype(np.float32), title_by_kind[result_kind]
+        if result_kind == "confidence_bce":
+            heatmap, _score = compute_comparison(first_confidence, second_confidence, ComparisonMode.BCE)
+            return heatmap, title_by_kind[result_kind]
+        threshold = float(getattr(build_result.options, "mask_threshold", 0.5) or 0.5)
+        return np.logical_xor(first_confidence >= threshold, second_confidence >= threshold).astype(np.float32), title_by_kind[result_kind]
+    if result_kind == "bce":
+        probability_pair = _load_export_probability_pair(record, build_result)
+        if probability_pair is None:
+            return None
+        _first_id, _second_id, first_prob, second_prob = probability_pair
+        heatmap, _score = compute_comparison(first_prob, second_prob, ComparisonMode.BCE)
+        return heatmap, title_by_kind[result_kind]
+    mask_pair = _load_export_mask_pair(record, build_result)
+    if mask_pair is None:
+        return None
+    first_id, _second_id, first_mask, second_mask = mask_pair
+    if result_kind == "diff":
+        return np.logical_xor(first_mask, second_mask).astype(np.float32), title_by_kind[result_kind]
+    if result_kind in {"iou", "dice"}:
+        return np.logical_and(first_mask, second_mask).astype(np.float32), title_by_kind[result_kind]
+    if result_kind == "boundary":
+        return np.logical_xor(_boundary_mask(first_mask), _boundary_mask(second_mask)).astype(np.float32), title_by_kind[result_kind]
+    if result_kind == "input_output":
+        original_path = str(getattr(record, "original_path", "") or getattr(record, "base_path", "") or "")
+        if not original_path or not Path(original_path).is_file():
+            return None
+        original_gray = _load_export_grayscale_image(original_path, target_shape=tuple(int(v) for v in first_mask.shape))
+        payload = {"masks": {first_id: first_mask}, "original_gray": original_gray}
+        heatmap = _input_output_heatmap_export(payload, str(first_id), build_result)
+        return None if heatmap is None else (heatmap, title_by_kind[result_kind])
+    return None
+
+
+def _fast_comparison_layer_export_array(record: FrameRecord, build_result: BuildResult, layer_id: str) -> tuple[np.ndarray, str] | None:
+    title_by_layer = {
+        "mask_common": "A and B",
+        "mask_a_only": "A only",
+        "mask_b_only": "B only",
+        "mask_xor": "A xor B",
+        "mask_union": "A or B",
+        "boundary_a": "Boundary A",
+        "boundary_b": "Boundary B",
+        "soft_abs_difference": "|P_A - P_B|",
+        "soft_signed_difference": "P_A - P_B",
+        "threshold_crossing_map": "Threshold crossing",
+        "vote_map": "Vote map",
+        "consensus_mask": "Consensus mask",
+        "ensemble_uncertainty": "Ensemble uncertainty",
+    }
+    if layer_id in {"soft_abs_difference", "soft_signed_difference", "threshold_crossing_map"}:
+        probability_pair = _load_export_probability_pair(record, build_result)
+        if probability_pair is None:
+            return None
+        _first_id, _second_id, first_prob, second_prob = probability_pair
+        if layer_id == "soft_abs_difference":
+            return np.abs(first_prob - second_prob).astype(np.float32), title_by_layer[layer_id]
+        if layer_id == "soft_signed_difference":
+            return np.asarray((first_prob - second_prob + 1.0) * 0.5, dtype=np.float32), title_by_layer[layer_id]
+        threshold = float(getattr(build_result.options, "mask_threshold", 0.5) or 0.5)
+        return np.logical_xor(first_prob >= threshold, second_prob >= threshold).astype(np.float32), title_by_layer[layer_id]
+
+    if layer_id in {"vote_map", "consensus_mask", "ensemble_uncertainty"}:
+        masks: list[np.ndarray] = []
+        target_shape: tuple[int, int] | None = None
+        for spec in tuple(build_result.model_specs or ()):
+            mask = _load_export_mask_for_spec(record, spec, target_shape=target_shape)
+            if mask is None:
+                continue
+            if target_shape is None:
+                target_shape = tuple(int(v) for v in mask.shape)
+            masks.append(mask.astype(np.float32))
+        if len(masks) < 2:
+            return None
+        vote_map = np.mean(np.stack(masks, axis=0), axis=0, dtype=np.float32)
+        if layer_id == "vote_map":
+            return vote_map, title_by_layer[layer_id]
+        if layer_id == "consensus_mask":
+            return (vote_map >= 0.5).astype(np.float32), title_by_layer[layer_id]
+        return np.asarray(1.0 - np.abs(vote_map - 0.5) * 2.0, dtype=np.float32), title_by_layer[layer_id]
+
+    mask_pair = _load_export_mask_pair(record, build_result)
+    if mask_pair is None:
+        return None
+    _first_id, _second_id, first_mask, second_mask = mask_pair
+    if layer_id == "mask_common":
+        return (first_mask & second_mask).astype(np.float32), title_by_layer[layer_id]
+    if layer_id == "mask_a_only":
+        return (first_mask & ~second_mask).astype(np.float32), title_by_layer[layer_id]
+    if layer_id == "mask_b_only":
+        return (second_mask & ~first_mask).astype(np.float32), title_by_layer[layer_id]
+    if layer_id == "mask_xor":
+        return np.logical_xor(first_mask, second_mask).astype(np.float32), title_by_layer[layer_id]
+    if layer_id == "mask_union":
+        return np.logical_or(first_mask, second_mask).astype(np.float32), title_by_layer[layer_id]
+    if layer_id == "boundary_a":
+        return np.asarray(_boundary_mask(first_mask), dtype=np.float32), title_by_layer[layer_id]
+    if layer_id == "boundary_b":
+        return np.asarray(_boundary_mask(second_mask), dtype=np.float32), title_by_layer[layer_id]
+    return None
+
+
+def available_result_layer_exports(build_result: BuildResult) -> tuple[dict[str, str], ...]:
+    """Return exportable result-layer choices for the current build result."""
+
+    choices: list[dict[str, str]] = []
+    display_names = _model_display_name_map(build_result)
+    records = tuple(build_result.records or ())
+    if len(tuple(build_result.model_specs or ())) >= 2:
+        choices.extend(
+            (
+                {"key": "result_kind::diff", "title": "Comparison difference", "title_key": "details.comparison_difference", "group": "detail"},
+                {"key": "result_kind::iou", "title": "IoU overlap", "title_key": "details.iou_overlap", "group": "detail"},
+                {"key": "result_kind::dice", "title": "Dice overlap", "title_key": "details.dice_overlap", "group": "detail"},
+                {"key": "result_kind::bce", "title": "BCE heatmap", "title_key": "details.bce_heatmap", "group": "detail"},
+                {"key": "result_kind::boundary", "title": "Boundary difference", "title_key": "details.boundary_difference", "group": "detail"},
+            )
+        )
+    if any(bool(getattr(record, "original_path", None)) for record in records):
+        choices.append({"key": "result_kind::input_output", "title": "Input-output heatmap", "title_key": "details.input_output_heatmap", "group": "detail"})
+    confidence_model_ids = [
+        str(spec.model_id)
+        for spec in tuple(build_result.model_specs or ())
+        if any(bool((record.model_prob_paths or {}).get(str(spec.model_id))) for record in records)
+    ]
+    if len(confidence_model_ids) >= 2:
+        choices.extend(
+            (
+                {"key": "result_kind::confidence_difference", "title": "Confidence difference", "title_key": "details.confidence_difference", "group": "confidence"},
+                {"key": "result_kind::confidence_bce", "title": "Confidence BCE heatmap", "title_key": "details.confidence_bce_heatmap", "group": "confidence"},
+                {"key": "result_kind::confidence_threshold_crossing", "title": "Confidence threshold crossing", "title_key": "details.confidence_threshold_crossing", "group": "confidence"},
+            )
+        )
+    for spec in tuple(build_result.model_specs or ()):
+        model_id = str(spec.model_id)
+        title = str(display_names.get(model_id) or model_id)
+        if any(bool((record.model_mask_paths or {}).get(model_id)) for record in records):
+            choices.append({
+                "key": f"model_mask::{model_id}",
+                "title": f"{title} mask",
+                "group": "model",
+            })
+            choices.append({
+                "key": f"grid_cell_defects::{model_id}",
+                "title": f"{title} grid defects",
+                "title_key": "details.grid_cell_defects",
+                "group": "geometry",
+            })
+        if any(bool((record.model_prob_paths or {}).get(model_id)) for record in records):
+            choices.append({
+                "key": f"model_probability::{model_id}",
+                "title": f"{title} confidence",
+                "group": "model_confidence",
+            })
+        if any(
+            bool((record.model_mask_paths or {}).get(model_id)) and bool((record.model_prob_paths or {}).get(model_id))
+            for record in records
+        ):
+            choices.extend(
+                (
+                    {
+                        "key": f"result_confidence::bad_inside::{model_id}",
+                        "title": f"{title} suspicious interior by confidence",
+                        "title_key": "details.result_confidence_bad_inside",
+                        "group": "result_confidence",
+                    },
+                    {
+                        "key": f"result_confidence::conflict::{model_id}",
+                        "title": f"{title} result-confidence conflict",
+                        "title_key": "details.result_confidence_conflict",
+                        "group": "result_confidence",
+                    },
+                )
+            )
+
+    if len(tuple(build_result.model_specs or ())) >= 2:
+        choices.extend(
+            (
+                {"key": "comparison::mask_common", "title": "A and B", "group": "pixel"},
+                {"key": "comparison::mask_a_only", "title": "A only", "group": "pixel"},
+                {"key": "comparison::mask_b_only", "title": "B only", "group": "pixel"},
+                {"key": "comparison::mask_xor", "title": "A xor B", "group": "pixel"},
+                {"key": "comparison::mask_union", "title": "A or B", "group": "pixel"},
+                {"key": "comparison::boundary_a", "title": "Boundary A", "group": "geometry"},
+                {"key": "comparison::boundary_b", "title": "Boundary B", "group": "geometry"},
+                {"key": "comparison::soft_abs_difference", "title": "|P_A - P_B|", "group": "soft_confidence"},
+                {"key": "comparison::soft_signed_difference", "title": "P_A - P_B", "group": "soft_confidence"},
+                {"key": "comparison::threshold_crossing_map", "title": "Threshold crossing", "group": "soft_confidence"},
+            )
+        )
+    if len(tuple(build_result.model_specs or ())) > 2:
+        choices.extend(
+            (
+                {"key": "comparison::vote_map", "title": "Vote map", "group": "ensemble"},
+                {"key": "comparison::consensus_mask", "title": "Consensus mask", "group": "ensemble"},
+                {"key": "comparison::ensemble_uncertainty", "title": "Ensemble uncertainty", "group": "ensemble"},
+            )
+        )
+    return tuple(choices)
+
+
+def _layer_export_array_for_record(
+    build_result: BuildResult,
+    record: FrameRecord,
+    layer_key: str,
+) -> tuple[np.ndarray, str] | None:
+    key = str(layer_key or "")
+    display_names = _model_display_name_map(build_result)
+    if key.startswith("model_mask::"):
+        model_id = key.split("::", 1)[1]
+        path_text = str((record.model_mask_paths or {}).get(model_id) or "")
+        if not path_text:
+            return None
+        path = Path(path_text)
+        if not path.is_file():
+            return None
+        return _load_export_grayscale_image(path), f"{display_names.get(model_id, model_id)} mask"
+    if key.startswith("model_probability::"):
+        model_id = key.split("::", 1)[1]
+        path_text = str((record.model_prob_paths or {}).get(model_id) or "")
+        if not path_text:
+            return None
+        path = Path(path_text)
+        if not path.is_file():
+            return None
+        return _load_export_grayscale_image(path), f"{display_names.get(model_id, model_id)} confidence"
+    if key.startswith("grid_cell_defects::"):
+        model_id = key.split("::", 1)[1]
+        return _fast_grid_cell_defect_export_array(record, build_result, model_id)
+    if key.startswith("result_kind::"):
+        result_kind = key.split("::", 1)[1]
+        fast = _fast_result_kind_export_array(record, build_result, result_kind)
+        if fast is not None:
+            return fast
+        payload = _load_export_payload(record, build_result)
+        return _result_kind_export_array(build_result, payload, result_kind)
+    if key.startswith("result_confidence::"):
+        parts = key.split("::", 2)
+        if len(parts) == 3:
+            return _fast_result_confidence_export_array(record, build_result, parts[1], parts[2])
+    if key.startswith("comparison::"):
+        layer_id = key.split("::", 1)[1]
+        fast = _fast_comparison_layer_export_array(record, build_result, layer_id)
+        if fast is not None:
+            return fast
+        payload = _load_export_payload(record, build_result)
+        direct = _comparison_layer_export_array(build_result, payload, layer_id)
+        if direct is not None:
+            return direct
+    return None
+
+
+def _logical_export_layer_folder_stem(layer_key: str, layer_title: str | None = None) -> str:
+    key = str(layer_key or "")
+    known = {
+        "result_kind::diff": "comparison_difference",
+        "result_kind::iou": "iou_overlap",
+        "result_kind::dice": "dice_overlap",
+        "result_kind::bce": "bce_heatmap",
+        "result_kind::boundary": "boundary_difference",
+        "result_kind::input_output": "input_output_heatmap",
+        "result_kind::confidence_difference": "confidence_difference",
+        "result_kind::confidence_bce": "confidence_bce_heatmap",
+        "result_kind::confidence_threshold_crossing": "confidence_threshold_crossing",
+        "comparison::mask_common": "a_and_b",
+        "comparison::mask_a_only": "a_only",
+        "comparison::mask_b_only": "b_only",
+        "comparison::mask_xor": "a_xor_b",
+        "comparison::mask_union": "a_or_b",
+        "comparison::boundary_a": "boundary_a",
+        "comparison::boundary_b": "boundary_b",
+        "comparison::soft_abs_difference": "soft_abs_difference",
+        "comparison::soft_signed_difference": "soft_signed_difference",
+        "comparison::threshold_crossing_map": "threshold_crossing_map",
+        "comparison::vote_map": "vote_map",
+        "comparison::consensus_mask": "consensus_mask",
+        "comparison::ensemble_uncertainty": "ensemble_uncertainty",
+    }
+    if key in known:
+        return known[key]
+    if key.startswith("model_mask::"):
+        return f"model_mask_{_safe_export_name(key.split('::', 1)[1], fallback='model')}"
+    if key.startswith("model_probability::"):
+        return f"model_confidence_{_safe_export_name(key.split('::', 1)[1], fallback='model')}"
+    if key.startswith("grid_cell_defects::"):
+        return f"grid_cell_defects_{_safe_export_name(key.split('::', 1)[1], fallback='model')}"
+    if key.startswith("result_confidence::"):
+        parts = key.split("::")
+        kind = parts[1] if len(parts) > 1 else "diagnostic"
+        model_id = parts[2] if len(parts) > 2 else "model"
+        return (
+            f"result_confidence_{_safe_export_name(kind, fallback='diagnostic')}_"
+            f"{_safe_export_name(model_id, fallback='model')}"
+        )
+    return _safe_export_name(str(layer_title or key).lower().replace(" ", "_"), fallback="layer")
+
+
+def _export_worker_count(requested: int | None, total_items: int) -> int:
+    if total_items <= 1:
+        return 1
+    env_value = os.environ.get(EXPORT_WORKER_ENV)
+    if env_value:
+        try:
+            requested = int(env_value)
+        except Exception:
+            requested = requested
+    if requested is None:
+        requested = os.cpu_count() or 4
+    return max(1, min(int(total_items), EXPORT_MAX_WORKERS, max(1, int(requested))))
+
+
+def export_result_layer_jpgs(
+    build_result: BuildResult,
+    destination: Path | str,
+    *,
+    layer_key: str,
+    map_color: tuple[int, int, int] | list[int] | np.ndarray | None = None,
+    background_color: tuple[int, int, int] | list[int] | np.ndarray | None = None,
+    quality: int = 95,
+    max_workers: int | None = None,
+    progress_callback=None,
+    cancel_check=None,
+) -> dict[str, object]:
+    """Export one full result layer for every frame as colorized JPG files."""
+
+    destination_path = Path(destination)
+    layer_key_text = str(layer_key or "")
+    if not layer_key_text:
+        raise ValueError("Layer is not selected.")
+    records = tuple(build_result.records or ())
+    if not records:
+        raise ValueError("Nothing to export.")
+    layer_folder = destination_path / f"result_layer_{_logical_export_layer_folder_stem(layer_key_text)}"
+    layer_folder.mkdir(parents=True, exist_ok=True)
+    exported: list[dict[str, str]] = []
+    errors: list[str] = []
+    map_rgb = _rgb_tuple(map_color, fallback=(255, 64, 64))
+    background_rgb = _rgb_tuple(background_color, fallback=(128, 128, 128))
+    jpeg_quality = max(1, min(100, int(quality)))
+    layer_title = layer_key_text
+    used_names: set[str] = set()
+    total = len(records)
+    if progress_callback is not None:
+        progress_callback(0, total, "")
+    work_items: list[tuple[int, FrameRecord, Path]] = []
+    for index, record in enumerate(records, start=1):
+        base_name = _safe_export_name(str(record.key or record.display_name), fallback=f"frame_{index:06d}")
+        if Path(base_name).suffix.lower() in {".jpg", ".jpeg"}:
+            base_name = Path(base_name).stem
+        if base_name in used_names:
+            base_name = _unique_export_folder_name(base_name, used_names)
+        else:
+            used_names.add(base_name)
+        work_items.append((index, record, layer_folder / f"{base_name}.jpg"))
+
+    def export_one(item: tuple[int, FrameRecord, Path]) -> tuple[int, dict[str, str] | None, str | None, str | None, str]:
+        index, record, target_path = item
+        if cancel_check is not None and cancel_check():
+            return index, None, "Export cancelled", None, str(record.display_name or record.key)
+        try:
+            resolved = _layer_export_array_for_record(build_result, record, layer_key_text)
+            if resolved is None:
+                return index, None, "layer is unavailable", None, str(record.display_name or record.key)
+            array, title = resolved
+            rgb = _colorize_layer_map(array, map_color=map_rgb, background_color=background_rgb)
+            if not _save_export_rgb_jpg(target_path, rgb, jpeg_quality):
+                return index, None, "failed to save JPG", str(title or ""), str(record.display_name or record.key)
+            return index, {
+                "record_key": str(record.key),
+                "record_name": str(record.display_name),
+                "destination": str(target_path),
+            }, None, str(title or ""), str(record.display_name or record.key)
+        except Exception as error:
+            return index, None, str(error), None, str(record.display_name or record.key)
+
+    worker_count = _export_worker_count(max_workers, len(work_items))
+    completed = 0
+    results_by_index: dict[int, dict[str, str]] = {}
+    executor = ThreadPoolExecutor(max_workers=worker_count)
+    try:
+        pending = {executor.submit(export_one, item) for item in work_items}
+        while pending:
+            if cancel_check is not None and cancel_check():
+                errors.append("Export cancelled")
+                for future in pending:
+                    future.cancel()
+                break
+            done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+            if not done:
+                continue
+            for future in done:
+                if future.cancelled():
+                    continue
+                index, file_row, error_text, title, frame_name = future.result()
+                completed += 1
+                if title:
+                    layer_title = title
+                if file_row is not None:
+                    results_by_index[index] = file_row
+                elif error_text:
+                    errors.append(f"{frame_name}: {error_text}")
+                if progress_callback is not None:
+                    progress_callback(completed, total, frame_name)
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+    exported.extend(results_by_index[index] for index in sorted(results_by_index))
+
+    manifest = {
+        "layer_key": layer_key_text,
+        "layer_title": layer_title,
+        "map_color": list(map_rgb),
+        "background_color": list(background_rgb),
+        "format": "jpg",
+        "max_workers": int(worker_count),
+        "exported_count": len(exported),
+        "skipped_count": len(errors),
+        "files": exported,
+        "errors": errors,
+    }
+    manifest_path = layer_folder / "export_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {
+        "layer_key": layer_key_text,
+        "layer_title": layer_title,
+        "exported_count": len(exported),
+        "skipped_count": len(errors),
+        "destination": str(layer_folder),
+        "manifest_path": str(manifest_path),
+        "errors": tuple(errors),
+        "files": tuple(exported),
+    }
+
+
+def export_result_layers_jpgs(
+    build_result: BuildResult,
+    destination: Path | str,
+    *,
+    layer_keys: tuple[str, ...] | list[str],
+    map_color: tuple[int, int, int] | list[int] | np.ndarray | None = None,
+    background_color: tuple[int, int, int] | list[int] | np.ndarray | None = None,
+    quality: int = 95,
+    max_workers: int | None = None,
+    progress_callback=None,
+    cancel_check=None,
+) -> dict[str, object]:
+    """Export several full result layers, each into its own logical subfolder."""
+
+    keys = tuple(str(key or "") for key in layer_keys if str(key or ""))
+    if not keys:
+        raise ValueError("Layer is not selected.")
+    records_count = len(tuple(build_result.records or ()))
+    total_units = max(1, records_count * len(keys))
+    layer_results: list[dict[str, object]] = []
+    if progress_callback is not None:
+        progress_callback(0, total_units, "")
+    for layer_index, layer_key in enumerate(keys):
+        if cancel_check is not None and cancel_check():
+            break
+        offset = layer_index * records_count
+
+        def layer_progress(current: int, _total: int, frame_name: str, *, base: int = offset, key: str = layer_key) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(min(total_units, base + int(current)), total_units, f"{_logical_export_layer_folder_stem(key)} {frame_name}".strip())
+
+        result = export_result_layer_jpgs(
+            build_result,
+            destination,
+            layer_key=layer_key,
+            map_color=map_color,
+            background_color=background_color,
+            quality=quality,
+            max_workers=max_workers,
+            progress_callback=layer_progress,
+            cancel_check=cancel_check,
+        )
+        layer_results.append(result)
+    exported_count = sum(int(result.get("exported_count", 0)) for result in layer_results)
+    skipped_count = sum(int(result.get("skipped_count", 0)) for result in layer_results)
+    return {
+        "layer_count": len(layer_results),
+        "requested_layer_count": len(keys),
+        "exported_count": int(exported_count),
+        "skipped_count": int(skipped_count),
+        "destination": str(Path(destination)),
+        "layers": tuple(layer_results),
+    }
+
+
+def _model_output_with_confidence_bad_areas(
+    output_gray: np.ndarray,
+    confidence_gray: np.ndarray,
+    *,
+    alpha_scale: float = 0.78,
+) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
+    output = np.asarray(output_gray, dtype=np.uint8)
+    confidence = np.asarray(confidence_gray, dtype=np.uint8)
+    if confidence.shape != output.shape:
+        confidence = resize_grayscale_image(confidence, tuple(int(v) for v in output.shape))
+    confidence_unit = _prob_from_gray(confidence)
+    uncertainty = build_model_uncertainty(confidence_unit)
+    bad_intensity = confidence_bad_area_intensity(uncertainty)
+    bad_mask = np.clip(np.round(bad_intensity * 255.0), 0.0, 255.0).astype(np.uint8)
+
+    base = np.stack([output, output, output], axis=2).astype(np.float32)
+    red = np.zeros_like(base, dtype=np.float32)
+    red[..., 0] = 255.0
+    red[..., 1] = 32.0
+    red[..., 2] = 56.0
+    alpha = np.clip(bad_intensity[..., None] * float(alpha_scale), 0.0, 1.0)
+    marked = np.clip(base * (1.0 - alpha) + red * alpha, 0.0, 255.0).astype(np.uint8)
+
+    active = bad_intensity > 0.0
+    metadata = {
+        "bad_area_fraction": float(np.mean(active, dtype=np.float64)) if active.size else 0.0,
+        "mean_bad_intensity": float(np.mean(bad_intensity[active], dtype=np.float64)) if np.any(active) else 0.0,
+        "max_uncertainty": float(np.max(uncertainty)) if uncertainty.size else 0.0,
+        "mean_uncertainty": float(np.mean(uncertainty, dtype=np.float64)) if uncertainty.size else 0.0,
+    }
+    return marked, bad_mask, metadata
+
+
+def _model_output_with_internal_bad_areas(
+    output_gray: np.ndarray,
+    *,
+    threshold: float = 0.5,
+    alpha_scale: float = 0.78,
+) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
+    output = np.asarray(output_gray, dtype=np.uint8)
+    probability = _prob_from_gray(output)
+    support_mask = _mask_from_gray(output, threshold=threshold)
+    internal_probability = _internal_confidence_probability_map(
+        probability,
+        support_mask=support_mask,
+        allow_binary_proxy=True,
+    )
+    uncertainty = build_model_uncertainty(internal_probability)
+    bad_intensity = confidence_bad_area_intensity(uncertainty)
+    bad_mask = np.clip(np.round(bad_intensity * 255.0), 0.0, 255.0).astype(np.uint8)
+
+    base = np.stack([output, output, output], axis=2).astype(np.float32)
+    red = np.zeros_like(base, dtype=np.float32)
+    red[..., 0] = 255.0
+    red[..., 1] = 160.0
+    red[..., 2] = 32.0
+    alpha = np.clip(bad_intensity[..., None] * float(alpha_scale), 0.0, 1.0)
+    marked = np.clip(base * (1.0 - alpha) + red * alpha, 0.0, 255.0).astype(np.uint8)
+
+    active = bad_intensity > 0.0
+    metadata = {
+        "bad_area_fraction": float(np.mean(active, dtype=np.float64)) if active.size else 0.0,
+        "mean_bad_intensity": float(np.mean(bad_intensity[active], dtype=np.float64)) if np.any(active) else 0.0,
+        "max_uncertainty": float(np.max(uncertainty)) if uncertainty.size else 0.0,
+        "mean_uncertainty": float(np.mean(uncertainty, dtype=np.float64)) if uncertainty.size else 0.0,
+    }
+    return marked, bad_mask, metadata
+
+
+def _save_bad_area_export_pair(
+    *,
+    marked: np.ndarray,
+    bad_mask: np.ndarray,
+    metadata: dict[str, float],
+    model_id: str,
+    output_path: Path,
+    target_dir: Path,
+    folder_name: str,
+    marked_role: str,
+    mask_role: str,
+    exported: list[dict[str, str]],
+    extra_fields: dict[str, str] | None = None,
+    file_suffix: str,
+) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stem = _safe_export_name(Path(output_path).stem, fallback="record")
+    model_name = _safe_export_name(str(model_id), fallback="model")
+    marked_path = target_dir / f"{stem}__{model_name}__{file_suffix}_marked_output.png"
+    bad_mask_path = target_dir / f"{stem}__{model_name}__{file_suffix}_bad_areas.png"
+    common = {
+        "source": str(output_path),
+        "folder": folder_name,
+        **(extra_fields or {}),
+        **{key: f"{value:.8f}" for key, value in metadata.items()},
+    }
+    if _rgb_array_to_qimage(marked).save(str(marked_path), "PNG"):
+        exported.append({
+            "role": marked_role,
+            "destination": str(marked_path),
+            **common,
+        })
+    if _grayscale_array_to_qimage(bad_mask).save(str(bad_mask_path), "PNG"):
+        exported.append({
+            "role": mask_role,
+            "destination": str(bad_mask_path),
+            **common,
+        })
+
+
+def _export_confidence_bad_area_assets(
+    *,
+    record: FrameRecord,
+    model_id: str,
+    output_path_text: str,
+    confidence_path_text: str,
+    destination_path: Path,
+    folder_name: str,
+    exported: list[dict[str, str]],
+) -> None:
+    if not output_path_text or not confidence_path_text:
+        return
+    output_path = Path(str(output_path_text))
+    confidence_path = Path(str(confidence_path_text))
+    if not output_path.is_file() or not confidence_path.is_file():
+        return
+    try:
+        output_gray = load_grayscale_image(output_path)
+        confidence_gray = load_grayscale_image(confidence_path)
+        marked, bad_mask, metadata = _model_output_with_confidence_bad_areas(output_gray, confidence_gray)
+    except Exception:
+        return
+
+    _save_bad_area_export_pair(
+        marked=marked,
+        bad_mask=bad_mask,
+        metadata=metadata,
+        model_id=str(model_id),
+        output_path=output_path,
+        target_dir=destination_path / folder_name,
+        folder_name=folder_name,
+        marked_role=f"model_output_marked_confidence_bad_areas:{model_id}",
+        mask_role=f"model_confidence_bad_area_mask:{model_id}",
+        exported=exported,
+        extra_fields={"confidence_source": str(confidence_path)},
+        file_suffix="confidence",
+    )
+
+
+def _export_internal_bad_area_assets(
+    *,
+    record: FrameRecord,
+    model_id: str,
+    output_path_text: str,
+    threshold: float,
+    destination_path: Path,
+    folder_name: str,
+    exported: list[dict[str, str]],
+) -> None:
+    if not output_path_text:
+        return
+    output_path = Path(str(output_path_text))
+    if not output_path.is_file():
+        return
+    try:
+        output_gray = load_grayscale_image(output_path)
+        marked, bad_mask, metadata = _model_output_with_internal_bad_areas(
+            output_gray,
+            threshold=float(threshold),
+        )
+    except Exception:
+        return
+    _save_bad_area_export_pair(
+        marked=marked,
+        bad_mask=bad_mask,
+        metadata=metadata,
+        model_id=str(model_id),
+        output_path=output_path,
+        target_dir=destination_path / folder_name,
+        folder_name=folder_name,
+        marked_role=f"model_output_marked_internal_bad_areas:{model_id}",
+        mask_role=f"model_internal_bad_area_mask:{model_id}",
+        exported=exported,
+        extra_fields={"internal_confidence_source": "model_output_probability_proxy"},
+        file_suffix="internal",
+    )
+
+
 def export_record_assets(
     build_result: BuildResult,
     record: FrameRecord,
@@ -6951,6 +8426,20 @@ def export_record_assets(
             f"model_{model_id}",
             f"model_output:{model_id}",
         )
+        if path_text:
+            folder_name = _unique_export_folder_name(
+                f"marked_internal_bad_areas_{spec.display_name if spec is not None else model_id}",
+                used_folder_names,
+            )
+            _export_internal_bad_area_assets(
+                record=record,
+                model_id=str(model_id),
+                output_path_text=str(path_text),
+                threshold=float(spec.threshold if spec is not None else 0.5),
+                destination_path=destination_path,
+                folder_name=folder_name,
+                exported=exported,
+            )
     for model_id, path_text in (record.model_prob_paths or {}).items():
         if not path_text:
             continue
@@ -6961,6 +8450,21 @@ def export_record_assets(
             f"confidence_{model_id}",
             f"model_confidence:{model_id}",
         )
+        output_path_text = str((record.model_mask_paths or {}).get(str(model_id)) or "")
+        if output_path_text:
+            folder_name = _unique_export_folder_name(
+                f"marked_confidence_bad_areas_{spec.display_name if spec is not None else model_id}",
+                used_folder_names,
+            )
+            _export_confidence_bad_area_assets(
+                record=record,
+                model_id=str(model_id),
+                output_path_text=output_path_text,
+                confidence_path_text=str(path_text),
+                destination_path=destination_path,
+                folder_name=folder_name,
+                exported=exported,
+            )
 
     manifest = {
         "record_key": str(record.key),
@@ -7083,6 +8587,8 @@ def compute_build_result_analytics(
             model_metrics = payload.get('model_metrics') or {}
             model_confidence = payload.get('model_confidence') or {}
             model_confidence_output = payload.get('model_confidence_output') or {}
+            confidence_pairwise_metrics = payload.get('confidence_pairwise_metrics') or {}
+            comparison_result = payload.get('comparison_result')
             pairwise_rows = tuple(payload.get('pairwise_rows', ()))
             polygon_scores = _aggregate_inter_model_polygon_scores(pairwise_rows) if frame_type != 'point' else {}
             point_scores = _aggregate_inter_model_point_scores(pairwise_rows, float(build_result.options.point_match_radius)) if frame_type == 'point' else {}
@@ -7102,6 +8608,8 @@ def compute_build_result_analytics(
                 metric_values['labeled_mean_quality'] = labeled_mean
             metric_values.update(polygon_scores)
             metric_values.update(point_scores)
+            metric_values.update({str(key): float(value) for key, value in confidence_pairwise_metrics.items()})
+            metric_values.update(_comparison_metric_values(comparison_result if isinstance(comparison_result, FrameComparisonResult) else None))
             for model_id, confidence_row in model_confidence.items():
                 if hasattr(confidence_row, 'mean_object_confidence'):
                     metric_values[_model_metric_key('model_confidence', str(model_id))] = float(getattr(confidence_row, 'frame_uncertainty_score', 0.0))
@@ -7399,6 +8907,10 @@ def metric_higher_is_better(metric_key: str) -> bool:
         "f1_score",
         "localization_score",
         "overall_point_score",
+        "confidence_model_score",
+        "confidence_difference_score",
+        "confidence_bce_score",
+        "confidence_threshold_crossing_score",
     }:
         return True
     return False
@@ -7488,6 +9000,45 @@ def select_candidate_records(
 
 
 
+def _attach_detail_comparison_payload(
+    payload: dict[str, object],
+    record: FrameRecord,
+    build_result: BuildResult,
+) -> dict[str, object]:
+    if isinstance(payload.get("comparison_result"), FrameComparisonResult):
+        return payload
+    try:
+        masks = payload.get("model_masks") or {}
+        probabilities = payload.get("model_output_probabilities") or payload.get("model_probabilities") or {}
+        if not isinstance(masks, dict) or len(masks) < 2:
+            return payload
+        geometry_value = str(payload.get("geometry_mode") or build_result.options.geometry_mode.value)
+        geometry_mode = GeometryMode.POINT if geometry_value == GeometryMode.POINT.value else GeometryMode.MASK
+        comparison_result = _build_frame_comparison_result(
+            frame_id=str(record.key),
+            model_specs=tuple(build_result.model_specs),
+            probabilities_by_model={str(key): np.asarray(value, dtype=np.float32) for key, value in probabilities.items()},
+            masks_by_model={str(key): np.asarray(value, dtype=bool) for key, value in masks.items()},
+            geometry_mode=geometry_mode,
+            threshold=float(getattr(build_result.options, "mask_threshold", 0.5) or 0.5),
+            consensus_threshold=0.5,
+            connectivity=8,
+            compute_level="fast",
+        )
+    except Exception:
+        return payload
+    if comparison_result is None:
+        return payload
+    payload["comparison_result"] = comparison_result
+    payload["comparison_metrics"] = tuple(comparison_result.metrics)
+    payload["comparison_events"] = tuple(comparison_result.events)
+    payload["comparison_raster_layers"] = tuple(comparison_result.raster_layers)
+    frame_metrics = dict(payload.get("frame_metrics") or {})
+    frame_metrics.update(_comparison_metric_values(comparison_result))
+    payload["frame_metrics"] = frame_metrics
+    return payload
+
+
 def load_frame_detail_base(
     record: FrameRecord,
     build_result: BuildResult,
@@ -7532,6 +9083,7 @@ def load_frame_detail_base(
     cache_key = _detail_base_payload_cache_key(active_record, active_build_result, max_side)
     cached = _load_cached_detail_payload(cache_key)
     if isinstance(cached, dict):
+        cached = _attach_detail_comparison_payload(cached, active_record, active_build_result)
         return _with_selected_detail_payload(cached, target_model_id)
 
     boundary_radius = int(getattr(active_build_result.options, 'boundary_radius', 1) or 1)
@@ -7618,6 +9170,7 @@ def load_frame_detail_base(
         "polygon_confidence_summary": polygon_confidence_summary,
         "original_features": extract_original_frame_features(original_gray),
     }
+    detail_payload = _attach_detail_comparison_payload(detail_payload, active_record, active_build_result)
     _store_cached_detail_payload(cache_key, detail_payload)
     return _with_selected_detail_payload(detail_payload, target_model_id)
 

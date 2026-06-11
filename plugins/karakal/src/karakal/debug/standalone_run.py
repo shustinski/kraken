@@ -6,26 +6,6 @@ import multiprocessing as mp
 import sys
 from pathlib import Path
 
-if __package__ in {None, ""}:
-    package_parent = Path(__file__).resolve().parents[2]
-    package_parent_text = str(package_parent)
-    if package_parent_text not in sys.path:
-        sys.path.insert(0, package_parent_text)
-    from karakal.ui.app_icon import apply_karakal_icon
-else:
-    from ..ui.app_icon import apply_karakal_icon
-
-
-def _set_windows_app_user_model_id(app_id: str = "kraken.karakal") -> None:
-    """Set a stable Windows AppUserModelID so the taskbar uses the right icon."""
-
-    if sys.platform != "win32":
-        return
-    try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(str(app_id))
-    except Exception:
-        pass
-
 
 def ensure_package_parent_on_sys_path(module_file: str | Path, package_name: str = "karakal") -> Path | None:
     """Insert the package parent directory into ``sys.path`` when needed."""
@@ -49,6 +29,24 @@ def ensure_package_parent_on_sys_path(module_file: str | Path, package_name: str
     return None
 
 
+if __package__ in {None, ""}:
+    ensure_package_parent_on_sys_path(__file__)
+    from karakal.ui.app_icon import apply_karakal_icon
+else:
+    from ..ui.app_icon import apply_karakal_icon
+
+
+def _set_windows_app_user_model_id(app_id: str = "kraken.karakal") -> None:
+    """Set a stable Windows AppUserModelID so the taskbar uses the right icon."""
+
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(str(app_id))
+    except Exception:
+        pass
+
+
 def _load_main_window_class():
     if __package__ in {None, ""}:
         ensure_package_parent_on_sys_path(__file__)
@@ -59,6 +57,15 @@ def _load_main_window_class():
 
 
 def main() -> int:
+    if any(arg == "--benchmark-comparison" for arg in sys.argv[1:]):
+        if __package__ in {None, ""}:
+            ensure_package_parent_on_sys_path(__file__)
+            from karakal.comparison.benchmark import main as benchmark_main
+        else:
+            from ..comparison.benchmark import main as benchmark_main
+        benchmark_args = [arg for arg in sys.argv[1:] if arg != "--benchmark-comparison"]
+        return int(benchmark_main(benchmark_args))
+
     from PyQt6.QtWidgets import QApplication
 
     mp.freeze_support()

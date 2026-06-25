@@ -5,7 +5,7 @@ from __future__ import annotations
 from math import cos, hypot, radians, sin
 
 from shapely import BufferCapStyle, BufferJoinStyle, make_valid, unary_union
-from shapely.geometry import LinearRing, LineString, Polygon
+from shapely.geometry import LineString, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from ..domain import PolygonData, compute_polygon_metrics, integer_points
@@ -120,10 +120,7 @@ def brush_stroke_geometry(points: list[tuple[float, float]], diameter: float, *,
 def filled_polygon_geometry(points: list[tuple[float, float]]) -> BaseGeometry:
     if len(points) < 3:
         return Polygon()
-    coords = list(points)
-    if coords[0] != coords[-1]:
-        coords = coords + [coords[0]]
-    return unary_union(make_valid(Polygon(coords)))
+    return unary_union(make_valid(_polygon_from_points(points)))
 
 
 def tool_geometry(points: list[tuple[float, float]], thickness: float | None, *, quad_segs: int) -> BaseGeometry:
@@ -140,18 +137,39 @@ def ring_coords_xyz(points: list[tuple[float, float]]) -> list[tuple[float, floa
     return list(points)
 
 
+def _usable_ring_coords(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    coords = ring_coords_xyz(points)
+    distinct = {(float(x_coord), float(y_coord)) for x_coord, y_coord in coords}
+    if len(distinct) < 3:
+        return []
+    return coords
+
+
+def _polygon_from_points(
+    points: list[tuple[float, float]],
+    holes: list[list[tuple[float, float]]] | None = None,
+) -> Polygon:
+    shell = _usable_ring_coords(points)
+    if not shell:
+        return Polygon()
+
+    usable_holes = [hole for hole in (_usable_ring_coords(hole_points) for hole_points in holes or []) if hole]
+    return Polygon(shell, usable_holes)
+
+
 def _subtree_geometry(
     node_id: int, polygons_by_id: dict[int, PolygonData], subset: frozenset[int], *, quad_segs: int
 ) -> BaseGeometry:
     poly = polygons_by_id[node_id]
     child_ids = sorted(cid for cid in subset if polygons_by_id[cid].parent_id == node_id)
 
-    interior_rings: list[LinearRing] = []
+    interior_rings: list[list[tuple[float, float]]] = []
     extra_parts: list[BaseGeometry] = []
     for cid in child_ids:
         cp = polygons_by_id[cid]
         if cp.is_hole:
-            interior_rings.append(LinearRing(ring_coords_xyz(cp.points)))
+            if _usable_ring_coords(cp.points):
+                interior_rings.append(cp.points)
             for nested_id in sorted(k for k in subset if polygons_by_id[k].parent_id == cid):
                 nested_poly = polygons_by_id[nested_id]
                 if nested_poly.is_hole:
@@ -165,9 +183,9 @@ def _subtree_geometry(
                 extra_parts.append(part)
 
     if poly.is_hole:
-        return unary_union(make_valid(Polygon(ring_coords_xyz(poly.points))))
+        return unary_union(make_valid(_polygon_from_points(poly.points)))
 
-    exterior_ring = Polygon(ring_coords_xyz(poly.points), interior_rings)
+    exterior_ring = _polygon_from_points(poly.points, interior_rings)
     hull = unary_union(make_valid(exterior_ring))
     if not extra_parts:
         return unary_union(make_valid(hull))
@@ -365,7 +383,7 @@ def polygon_equivalent_preserved(poly: PolygonData, preserved_polygons: list[Pol
     """Detect rebuilt polygons that geometrically duplicate an untouched preserved polygon."""
 
     try:
-        g = unary_union(make_valid(Polygon(ring_coords_xyz(poly.points)).buffer(0)))
+        g = unary_union(make_valid(_polygon_from_points(poly.points).buffer(0)))
     except Exception:
         return False
     if g.is_empty:
@@ -373,7 +391,7 @@ def polygon_equivalent_preserved(poly: PolygonData, preserved_polygons: list[Pol
 
     for preserved in preserved_polygons:
         try:
-            h = unary_union(make_valid(Polygon(ring_coords_xyz(preserved.points)).buffer(0)))
+            h = unary_union(make_valid(_polygon_from_points(preserved.points).buffer(0)))
         except Exception:
             continue
 
@@ -412,8 +430,8 @@ def bbox_intersects_geom_bounds(tool_bounds: tuple[float, float, float, float], 
 
 
 def polygon_footprint_geom(polygon_points: list[tuple[float, float]]) -> BaseGeometry:
-    coords = ring_coords_xyz(polygon_points)
-    if len(coords) < 3:
+    poly = _polygon_from_points(polygon_points)
+    if poly.is_empty:
         empty_result: BaseGeometry = Polygon()
         return empty_result
-    return unary_union(make_valid(Polygon(coords).buffer(0)))
+    return unary_union(make_valid(poly.buffer(0)))

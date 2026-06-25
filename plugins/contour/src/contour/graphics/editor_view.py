@@ -658,6 +658,7 @@ class PolygonEditorView(QGraphicsView):
 
     def set_display_settings(self, settings: DisplaySettings) -> None:
         self._editor_scene.set_display_settings(settings)
+        self._update_tool_cursors()
 
     def set_random_object_colors_enabled(self, enabled: bool) -> None:
         self._editor_scene.set_random_object_colors_enabled(enabled)
@@ -915,8 +916,14 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
 
-        if self._tool == EditorTool.ADD_VIA and event.button() == Qt.MouseButton.LeftButton:
-            self._editor_scene.add_via_at(scene_pos, self._via_width, self._via_height)
+        if self._tool == EditorTool.ADD_VIA and event.button() in (
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.RightButton,
+        ):
+            if event.button() == Qt.MouseButton.RightButton:
+                self._editor_scene.delete_via_at(scene_pos)
+            else:
+                self._editor_scene.add_via_at(scene_pos, self._via_width, self._via_height)
             self._update_tool_cursors()
             event.accept()
             return

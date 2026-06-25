@@ -98,6 +98,7 @@
     "external_contour_label": "Внешний контур",
     "hole_contour_label": "Внутренний контур",
     "selected_contour_label": "Выделенный контур",
+    "via_selection_color_label": "Выделенный via",
     "conductor_hover_highlight_label": "Подсветка проводника при наведении",
     "vertex_color_label": "Цвет вершин",
     "line_width_label": "Толщина линии",

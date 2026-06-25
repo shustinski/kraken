@@ -98,6 +98,7 @@
     "external_contour_label": "External contour",
     "hole_contour_label": "Hole contour",
     "selected_contour_label": "Selected contour",
+    "via_selection_color_label": "Selected via",
     "conductor_hover_highlight_label": "Conductor hover highlight",
     "vertex_color_label": "Vertex color",
     "line_width_label": "Line width",

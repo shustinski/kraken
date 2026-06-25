@@ -172,6 +172,45 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         self.assertTrue(restored[2].is_hole)
         self.assertEqual(restored[2].parent_id, 1)
 
+    def test_select_parent_polygon_shows_internal_contour_vertices(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (40.0, 20.0), (40.0, 40.0), (20.0, 40.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        self._reset([outer, hole])
+
+        self.scene.select_polygon(1)
+
+        self.assertEqual(len(self.scene._polygon_items[1]._handles), 4)
+        self.assertEqual(len(self.scene._polygon_items[2]._handles), 4)
+
+    def test_select_internal_contour_shows_parent_vertices(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (40.0, 20.0), (40.0, 40.0), (20.0, 40.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        self._reset([outer, hole])
+
+        self.scene.select_polygon(2)
+
+        self.assertEqual(len(self.scene._polygon_items[1]._handles), 4)
+        self.assertEqual(len(self.scene._polygon_items[2]._handles), 4)
+
+    def test_selected_via_uses_via_selection_color(self) -> None:
+        via = _polygon(7, [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)])
+        via.category = "via"
+        self._reset([via])
+
+        self.scene.select_polygon(7)
+
+        self.assertEqual(self.scene._polygon_items[7].pen().color().name().upper(), "#FACC15")
+
     def test_invalid_polygon_not_committed_keeps_pending(self) -> None:
         self._reset([])
         self.scene.append_pending_point(QPointF(10.0, 10.0))

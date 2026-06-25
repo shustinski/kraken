@@ -276,6 +276,25 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual({p.id for p in processed}, {1, 2})
 
+    def test_vertex_move_preserves_small_inner_hole_target(self) -> None:
+        outer = _rect(0.0, 0.0, 100.0, 100.0, 1)
+        hole = _rect(40.0, 40.0, 42.0, 42.0, 2)
+        hole.is_hole = True
+        hole.parent_id = outer.id
+        moved = apply_vertex_position_to_clone([outer, hole], 2, 1, (43.0, 40.0))
+
+        processed, changed = postprocess_changed_polygon_only(
+            moved,
+            VectorGeometrySettings(min_hole_area_to_remove_px2=11.0, min_spike_interior_angle_deg=0.0),
+            polygon_id=2,
+        )
+
+        self.assertFalse(changed)
+        moved_hole = next((polygon for polygon in processed if polygon.id == 2), None)
+        self.assertIsNotNone(moved_hole)
+        self.assertTrue(moved_hole.is_hole)
+        self.assertEqual(moved_hole.points[1], (43, 40))
+
 
 if __name__ == "__main__":
     unittest.main()

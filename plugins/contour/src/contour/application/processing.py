@@ -19,6 +19,13 @@ VIA_CHANNEL_MODE_GRAYSCALE = "grayscale"
 VIA_CHANNEL_MODE_RED_BLUE = "red_blue"
 ALGORITHM_BACKEND_LEGACY = "legacy"
 ALGORITHM_BACKEND_SEM = "sem"
+VIA_DISPLAY_MODE_RECTANGLE = "rectangle"
+VIA_DISPLAY_MODE_CIRCLE = "circle"
+
+
+def normalize_via_display_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return VIA_DISPLAY_MODE_RECTANGLE if text == VIA_DISPLAY_MODE_RECTANGLE else VIA_DISPLAY_MODE_CIRCLE
 
 
 def normalize_via_size_mode(value: Any) -> str:
@@ -838,6 +845,7 @@ class DisplaySettings:
     external_color: str = "#28C76F"
     hole_color: str = "#FF9F43"
     selected_color: str = "#00CFE8"
+    via_selection_color: str = "#FACC15"
     conductor_hover_highlight_color: str = "#FB923C"
     vertex_color: str = "#FF4D6D"
     line_width: float = 2.0
@@ -845,12 +853,14 @@ class DisplaySettings:
     fill_opacity: float = 0.18
     show_vertices: bool = True
     show_labels: bool = False
+    via_display_mode: str = VIA_DISPLAY_MODE_CIRCLE
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "external_color": self.external_color,
             "hole_color": self.hole_color,
             "selected_color": self.selected_color,
+            "via_selection_color": self.via_selection_color,
             "conductor_hover_highlight_color": self.conductor_hover_highlight_color,
             "vertex_color": self.vertex_color,
             "line_width": self.line_width,
@@ -858,6 +868,7 @@ class DisplaySettings:
             "fill_opacity": self.fill_opacity,
             "show_vertices": self.show_vertices,
             "show_labels": self.show_labels,
+            "via_display_mode": normalize_via_display_mode(self.via_display_mode),
         }
 
     @classmethod
@@ -866,6 +877,7 @@ class DisplaySettings:
             external_color=str(payload.get("external_color", "#28C76F")),
             hole_color=str(payload.get("hole_color", "#FF9F43")),
             selected_color=str(payload.get("selected_color", "#00CFE8")),
+            via_selection_color=str(payload.get("via_selection_color", "#FACC15")),
             conductor_hover_highlight_color=str(payload.get("conductor_hover_highlight_color", "#FB923C")),
             vertex_color=str(payload.get("vertex_color", "#FF4D6D")),
             line_width=float(payload.get("line_width", 2.0)),
@@ -873,6 +885,7 @@ class DisplaySettings:
             fill_opacity=float(payload.get("fill_opacity", 0.18)),
             show_vertices=bool(payload.get("show_vertices", True)),
             show_labels=bool(payload.get("show_labels", False)),
+            via_display_mode=normalize_via_display_mode(payload.get("via_display_mode", VIA_DISPLAY_MODE_CIRCLE)),
         )
 
 

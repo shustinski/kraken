@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from kraken_core.theme import normalize_theme
@@ -15,6 +15,8 @@ from ..i18n import active_language
 VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
 GAMIFICATION_PROFILE_SETTINGS_KEY = "gamification/profile_v1"
 SESSION_CURRENT_IMAGE_PATH_KEY = "session/current_image_path"
+SESSION_IMAGE_PATHS_KEY = "session/image_paths"
+SESSION_VECTOR_PATHS_KEY = "session/vector_paths"
 APPEARANCE_LANGUAGE_SETTINGS_KEY = "appearance/language"
 APPEARANCE_THEME_SETTINGS_KEY = "appearance/theme"
 
@@ -66,6 +68,11 @@ class WidgetDisplaySettingsStore:
             "external_color": settings.value("display/external_color", defaults.external_color, type=str),
             "hole_color": settings.value("display/hole_color", defaults.hole_color, type=str),
             "selected_color": settings.value("display/selected_color", defaults.selected_color, type=str),
+            "via_selection_color": settings.value(
+                "display/via_selection_color",
+                defaults.via_selection_color,
+                type=str,
+            ),
             "conductor_hover_highlight_color": settings.value(
                 "display/conductor_hover_highlight_color",
                 defaults.conductor_hover_highlight_color,
@@ -77,6 +84,7 @@ class WidgetDisplaySettingsStore:
             "fill_opacity": settings.value("display/fill_opacity", defaults.fill_opacity, type=float),
             "show_vertices": settings.value("display/show_vertices", defaults.show_vertices, type=bool),
             "show_labels": settings.value("display/show_labels", defaults.show_labels, type=bool),
+            "via_display_mode": settings.value("display/via_display_mode", defaults.via_display_mode, type=str),
             "random_object_colors": settings.value("display/random_object_colors", False, type=bool),
             "show_frame_matrix": settings.value("display/show_frame_matrix", True, type=bool),
             "show_frame_matrix_thumbnails": settings.value("display/show_frame_matrix_thumbnails", True, type=bool),
@@ -171,6 +179,56 @@ class WidgetSessionSettingsStore:
             settings.setValue(SESSION_CURRENT_IMAGE_PATH_KEY, str(Path(path)))
         else:
             settings.remove(SESSION_CURRENT_IMAGE_PATH_KEY)
+        settings.sync()
+
+    def load_image_paths(self) -> list[str]:
+        return self._load_path_list(SESSION_IMAGE_PATHS_KEY)
+
+    def save_image_paths(self, paths: Iterable[str | Path]) -> None:
+        self._save_path_list(SESSION_IMAGE_PATHS_KEY, paths)
+
+    def load_vector_paths(self) -> list[str]:
+        return self._load_path_list(SESSION_VECTOR_PATHS_KEY)
+
+    def save_vector_paths(self, paths: Iterable[str | Path]) -> None:
+        self._save_path_list(SESSION_VECTOR_PATHS_KEY, paths)
+
+    def _load_path_list(self, key: str) -> list[str]:
+        settings = self._settings_factory()
+        raw_payload = settings.value(key, "[]", type=str)
+        settings.sync()
+        try:
+            payload = json.loads(str(raw_payload or "[]"))
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(payload, list):
+            return []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in payload:
+            if not isinstance(value, str) or not value.strip():
+                continue
+            path = str(Path(value))
+            if path in seen:
+                continue
+            seen.add(path)
+            normalized.append(path)
+        return normalized
+
+    def _save_path_list(self, key: str, paths: Iterable[str | Path]) -> None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_path in paths:
+            path = str(Path(raw_path))
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            normalized.append(path)
+        settings = self._settings_factory()
+        if normalized:
+            settings.setValue(key, json.dumps(normalized, ensure_ascii=False))
+        else:
+            settings.remove(key)
         settings.sync()
 
 

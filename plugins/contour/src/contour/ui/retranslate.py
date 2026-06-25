@@ -508,6 +508,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.hole_color_label_widget.setText(self._tr("hole_contour_label"))
     if self.selected_color_label_widget is not None:
         self.selected_color_label_widget.setText(self._tr("selected_contour_label"))
+    if self.via_selection_color_label_widget is not None:
+        self.via_selection_color_label_widget.setText(self._tr("via_selection_color_label"))
     if self.conductor_hover_highlight_label_widget is not None:
         self.conductor_hover_highlight_label_widget.setText(self._tr("conductor_hover_highlight_label"))
     if self.vertex_color_label_widget is not None:
@@ -589,6 +591,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.hole_color_button, "hole_color"),
         (self.selected_color_label_widget, "selected_color"),
         (self.selected_color_button, "selected_color"),
+        (self.via_selection_color_label_widget, "via_selection_color"),
+        (self.via_selection_color_button, "via_selection_color"),
         (self.conductor_hover_highlight_label_widget, "conductor_hover_highlight"),
         (self.conductor_hover_highlight_color_button, "conductor_hover_highlight"),
         (self.vertex_color_label_widget, "vertex_color"),

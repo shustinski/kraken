@@ -1596,6 +1596,9 @@ class WidgetNavigationMixin:
     def _choose_selected_color(self: Any) -> None:
         self._choose_color("selected_color", self.selected_color_button)
 
+    def _choose_via_selection_color(self: Any) -> None:
+        self._choose_color("via_selection_color", self.via_selection_color_button)
+
     def _choose_conductor_hover_highlight_color(self: Any) -> None:
         self._choose_color("conductor_hover_highlight_color", self.conductor_hover_highlight_color_button)
 
@@ -1619,6 +1622,10 @@ class WidgetNavigationMixin:
             self._display_settings.fill_opacity = float(self.fill_opacity_spin.value())
             self._display_settings.show_vertices = bool(self.show_vertices_checkbox.isChecked())
             self._display_settings.show_labels = bool(self.show_labels_checkbox.isChecked())
+            if hasattr(self, "via_display_mode_combo"):
+                self._display_settings.via_display_mode = normalize_via_display_mode(
+                    self.via_display_mode_combo.currentData()
+                )
             if hasattr(self, "polygon_editor"):
                 self.polygon_editor.set_display_settings(self._display_settings)
                 if hasattr(self, "random_object_colors_checkbox"):

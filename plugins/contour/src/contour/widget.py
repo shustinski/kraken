@@ -384,6 +384,7 @@ class PolygonExtractionWidget(
         self._closing = False
         self._loading_image_path: str | None = None
         self._pending_restore_current_image_path = self._session_settings_store.load_current_image_path()
+        self._pending_restore_vector_paths: list[str] = []
         self._directory_scan_append_mode = False
         self._directory_scanner = DirectoryScanController(self)
         self._directory_scanner.started.connect(self._on_input_directory_scan_started)

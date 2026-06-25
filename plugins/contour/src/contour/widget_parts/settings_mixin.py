@@ -70,6 +70,7 @@ class WidgetSettingsMixin:
             QSignalBlocker(self.show_vertices_checkbox),
             QSignalBlocker(self.show_labels_checkbox),
             QSignalBlocker(self.random_object_colors_checkbox),
+            QSignalBlocker(self.via_display_mode_combo),
             QSignalBlocker(self.show_frame_matrix_checkbox),
             QSignalBlocker(self.show_frame_matrix_thumbnails_checkbox),
             QSignalBlocker(self.show_neighbor_frames_checkbox),
@@ -96,6 +97,7 @@ class WidgetSettingsMixin:
             self._update_color_button(self.external_color_button, self._display_settings.external_color)
             self._update_color_button(self.hole_color_button, self._display_settings.hole_color)
             self._update_color_button(self.selected_color_button, self._display_settings.selected_color)
+            self._update_color_button(self.via_selection_color_button, self._display_settings.via_selection_color)
             self._update_color_button(
                 self.conductor_hover_highlight_color_button, self._display_settings.conductor_hover_highlight_color
             )
@@ -106,6 +108,8 @@ class WidgetSettingsMixin:
             self.show_vertices_checkbox.setChecked(bool(self._display_settings.show_vertices))
             self.show_labels_checkbox.setChecked(bool(self._display_settings.show_labels))
             self.random_object_colors_checkbox.setChecked(bool(payload.get("random_object_colors", False)))
+            via_display_index = self.via_display_mode_combo.findData(self._display_settings.via_display_mode)
+            self.via_display_mode_combo.setCurrentIndex(max(0, via_display_index))
             self.show_frame_matrix_checkbox.setChecked(bool(payload.get("show_frame_matrix", True)))
             self.show_frame_matrix_thumbnails_checkbox.setChecked(
                 bool(payload.get("show_frame_matrix_thumbnails", True))
@@ -175,10 +179,17 @@ class WidgetSettingsMixin:
         if hasattr(self, "_session_settings_store"):
             self._session_settings_store.save_current_image_path(image_path)
 
+    def _save_persisted_session_paths(self: Any) -> None:
+        if not hasattr(self, "_session_settings_store") or not hasattr(self, "_workspace"):
+            return
+        self._session_settings_store.save_image_paths(self._workspace.image_paths)
+        self._session_settings_store.save_vector_paths(self._workspace.cif_paths_by_stem.values())
+
     def _persist_session_state(self: Any) -> None:
         self._save_persisted_display_settings()
         current_path = self._workspace.current_image_path if hasattr(self, "_workspace") else None
         self._save_persisted_current_image_path(current_path)
+        self._save_persisted_session_paths()
 
     def _vector_geometry_settings_from_widgets(self: Any) -> VectorGeometrySettings:
         if not hasattr(self, "vector_geom_clip_checkbox"):

@@ -26,6 +26,7 @@ class WidgetDisplaySettingsStoreTests(unittest.TestCase):
             store.save(
                 {
                     "external_color": "#112233",
+                    "via_selection_color": "#ABCDEF",
                     "conductor_hover_highlight_color": "#445566",
                     "line_width": 3.5,
                     "show_vertices": False,
@@ -45,6 +46,7 @@ class WidgetDisplaySettingsStoreTests(unittest.TestCase):
             payload = store.load()
 
             self.assertEqual(payload["external_color"], "#112233")
+            self.assertEqual(payload["via_selection_color"], "#ABCDEF")
             self.assertEqual(payload["conductor_hover_highlight_color"], "#445566")
             self.assertEqual(payload["line_width"], 3.5)
             self.assertFalse(payload["show_vertices"])
@@ -128,6 +130,33 @@ class WidgetSessionSettingsStoreTests(unittest.TestCase):
 
             store.save_current_image_path(None)
             self.assertIsNone(store.load_current_image_path())
+
+    def test_session_image_and_vector_paths_round_trip_through_qsettings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "settings.ini"
+
+            def _settings_factory() -> QSettings:
+                return QSettings(str(settings_path), QSettings.Format.IniFormat)
+
+            store = WidgetSessionSettingsStore(settings_factory=_settings_factory)
+
+            store.save_image_paths(["frame_001.png", Path("frame_002.jpg"), "frame_001.png"])
+            store.save_vector_paths(["frame_001.cif", Path("frame_002.cv"), "frame_001.cif"])
+
+            self.assertEqual(
+                store.load_image_paths(),
+                [str(Path("frame_001.png")), str(Path("frame_002.jpg"))],
+            )
+            self.assertEqual(
+                store.load_vector_paths(),
+                [str(Path("frame_001.cif")), str(Path("frame_002.cv"))],
+            )
+
+            store.save_image_paths([])
+            store.save_vector_paths([])
+
+            self.assertEqual(store.load_image_paths(), [])
+            self.assertEqual(store.load_vector_paths(), [])
 
 
 if __name__ == "__main__":

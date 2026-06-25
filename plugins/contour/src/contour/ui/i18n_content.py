@@ -999,6 +999,10 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Цвет полигона, который сейчас выбран в редакторе.",
         "Color of the polygon currently selected in the editor.",
     ),
+    "via_selection_color": (
+        "Цвет via, который сейчас выбран в редакторе.",
+        "Color of the via currently selected in the editor.",
+    ),
     "conductor_hover_highlight": (
         "Цвет контура проводника при наведении указателя на проводник, отверстие в нём или переходное отверстие (via).",
         "Outline color used for the trace when the pointer hovers the trace, a hole inside it, or a via.",

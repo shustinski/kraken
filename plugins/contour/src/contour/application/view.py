@@ -364,6 +364,9 @@ class ContourMainView(QMainWindow):
     def load_images(self, paths: list[str]) -> None:
         self._widget.load_images(paths)
 
+    def restore_persisted_session_selection(self) -> None:
+        self._widget._restore_persisted_session_selection()
+
     def show_status_message(self, message: str, timeout_ms: int = 0) -> None:
         _status_bar(self).showMessage(message, timeout_ms)
 

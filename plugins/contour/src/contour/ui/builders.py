@@ -42,6 +42,8 @@ from PyQt6.QtWidgets import (
 )
 
 from ..application.processing import (
+    VIA_DISPLAY_MODE_CIRCLE,
+    VIA_DISPLAY_MODE_RECTANGLE,
     VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
     VIA_SEARCH_MODE_TEMPLATE,
     VIA_SIZE_MODE_FIXED,
@@ -1708,6 +1710,9 @@ def build_display_tab(self) -> QWidget:
     self.selected_color_button = self._build_color_button(
         self._display_settings.selected_color, self._choose_selected_color
     )
+    self.via_selection_color_button = self._build_color_button(
+        self._display_settings.via_selection_color, self._choose_via_selection_color
+    )
     self.conductor_hover_highlight_color_button = self._build_color_button(
         self._display_settings.conductor_hover_highlight_color,
         self._choose_conductor_hover_highlight_color,
@@ -1728,6 +1733,11 @@ def build_display_tab(self) -> QWidget:
     self.show_labels_checkbox = QCheckBox("Show polygon IDs")
     self.show_labels_checkbox.setChecked(self._display_settings.show_labels)
     self.random_object_colors_checkbox = QCheckBox("Random object colors")
+    self.via_display_mode_combo = QComboBox()
+    self.via_display_mode_combo.addItem("Circle", VIA_DISPLAY_MODE_CIRCLE)
+    self.via_display_mode_combo.addItem("Rectangle", VIA_DISPLAY_MODE_RECTANGLE)
+    via_display_index = self.via_display_mode_combo.findData(self._display_settings.via_display_mode)
+    self.via_display_mode_combo.setCurrentIndex(max(0, via_display_index))
     self.autosave_on_frame_transition_checkbox = QCheckBox("Autosave when changing frame")
     self.autosave_on_frame_transition_checkbox.setChecked(False)
     self.show_frame_matrix_checkbox = QCheckBox("Show frame matrix")
@@ -1758,9 +1768,12 @@ def build_display_tab(self) -> QWidget:
         self.show_vertices_checkbox,
         self.show_labels_checkbox,
         self.random_object_colors_checkbox,
+        self.via_display_mode_combo,
     ]:
         if isinstance(widget, QCheckBox):
             widget.stateChanged.connect(self._apply_display_settings)
+        elif isinstance(widget, QComboBox):
+            widget.currentIndexChanged.connect(self._apply_display_settings)
         else:
             widget.valueChanged.connect(self._apply_display_settings)
     self.show_neighbor_frames_checkbox.stateChanged.connect(self._on_neighbor_display_settings_changed)
@@ -1778,6 +1791,8 @@ def build_display_tab(self) -> QWidget:
     self.hole_color_label_widget = self.display_form.labelForField(self.hole_color_button)
     self.display_form.addRow("Selected contour", self.selected_color_button)
     self.selected_color_label_widget = self.display_form.labelForField(self.selected_color_button)
+    self.display_form.addRow("Selected via", self.via_selection_color_button)
+    self.via_selection_color_label_widget = self.display_form.labelForField(self.via_selection_color_button)
     self.display_form.addRow("Conductor hover", self.conductor_hover_highlight_color_button)
     self.conductor_hover_highlight_label_widget = self.display_form.labelForField(
         self.conductor_hover_highlight_color_button
@@ -1793,6 +1808,8 @@ def build_display_tab(self) -> QWidget:
     self.display_form.addRow(self.show_vertices_checkbox)
     self.display_form.addRow(self.show_labels_checkbox)
     self.display_form.addRow(self.random_object_colors_checkbox)
+    self.display_form.addRow("Via display", self.via_display_mode_combo)
+    self.via_display_mode_label_widget = self.display_form.labelForField(self.via_display_mode_combo)
     self.display_form.addRow(self.autosave_on_frame_transition_checkbox)
     self.display_form.addRow(self.show_frame_matrix_checkbox)
     self.display_form.addRow(self.show_frame_matrix_thumbnails_checkbox)

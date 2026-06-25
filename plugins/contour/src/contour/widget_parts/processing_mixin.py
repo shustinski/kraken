@@ -1508,6 +1508,31 @@ class WidgetProcessingMixin:
         self.dataset_dir_edit.setText(path)
         self._save_persisted_paths()
 
+    def _restore_persisted_session_selection(self: Any) -> None:
+        if not hasattr(self, "_session_settings_store"):
+            return
+        image_paths = [
+            str(Path(path))
+            for path in self._session_settings_store.load_image_paths()
+            if Path(path).is_file() and is_image_path(path)
+        ]
+        vector_paths = [
+            str(Path(path))
+            for path in self._session_settings_store.load_vector_paths()
+            if Path(path).is_file()
+        ]
+        if vector_paths:
+            self._pending_restore_vector_paths = list(vector_paths)
+            self._workspace.set_cif_index(index_cif_file_paths(vector_paths))
+            self._rebuild_vector_list()
+        if not image_paths:
+            return
+        preferred = self._session_settings_store.load_current_image_path()
+        if preferred:
+            preferred = str(Path(preferred))
+        self._pending_restore_current_image_path = preferred
+        self.load_images(image_paths, preferred_current_image_path=preferred)
+
     def _rebuild_image_list_items(self: Any, normalized_paths: list[str]) -> None:
         self._rebuild_image_list_items_responsive(normalized_paths)
         return
@@ -1587,6 +1612,7 @@ class WidgetProcessingMixin:
         self._reset_thumbnail_disk_cache_for_base_paths(normalized_paths)
         if not normalized_paths:
             self._save_persisted_current_image_path(None)
+            self._save_persisted_session_paths()
         self._neighbor_image_cache.clear()
         self._neighbor_image_dimensions.clear()
         self._neighbor_vector_cache.clear()
@@ -1672,6 +1698,7 @@ class WidgetProcessingMixin:
         self.cif_dir_edit.setText("")
         self._save_persisted_paths()
         self._save_persisted_current_image_path(None)
+        self._save_persisted_session_paths()
         self._set_image_list_paths([])
         self._rebuild_thumbnail_grid()
         self._clear_extra_layers()

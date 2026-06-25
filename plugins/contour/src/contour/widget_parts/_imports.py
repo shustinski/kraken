@@ -85,6 +85,7 @@ from ..application.processing import (
     _normalize_bright_via_metal_constraint_mode,
     normalize_algorithm_backend,
     normalize_recognition_mode,
+    normalize_via_display_mode,
     normalize_via_search_mode,
     normalize_via_size_mode,
 )

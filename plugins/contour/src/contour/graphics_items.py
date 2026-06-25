@@ -4,7 +4,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen
 from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsSimpleTextItem
 
-from .application.processing import DisplaySettings
+from .application.processing import DisplaySettings, normalize_via_display_mode
 from .domain import PolygonData
 
 
@@ -52,14 +52,16 @@ class EditablePolygonItem(QGraphicsPathItem):
     ) -> None:
         self._polygon = polygon
         path = QPainterPath()
-        path.addPath(_display_path_for_polygon(self._polygon))
+        path.addPath(_display_path_for_polygon(self._polygon, display_settings))
         for cutout in cutout_polygons or []:
-            path.addPath(_display_path_for_polygon(cutout))
+            path.addPath(_display_path_for_polygon(cutout, display_settings))
         path.setFillRule(Qt.FillRule.OddEvenFill)
         self.setPath(path)
 
         cat = str(getattr(polygon, "category", "") or "")
-        if selected:
+        if selected and cat == "via":
+            color_name = display_settings.via_selection_color
+        elif selected:
             color_name = display_settings.selected_color
         elif conductor_hover_highlight:
             color_name = display_settings.conductor_hover_highlight_color
@@ -149,7 +151,9 @@ def _ellipse_path_from_points(points: list[tuple[float, float]]) -> QPainterPath
     return path
 
 
-def _display_path_for_polygon(polygon: PolygonData) -> QPainterPath:
-    if _is_ellipse_display_polygon(polygon):
+def _display_path_for_polygon(polygon: PolygonData, display_settings: DisplaySettings | None = None) -> QPainterPath:
+    if _is_ellipse_display_polygon(polygon) and (
+        display_settings is None or normalize_via_display_mode(display_settings.via_display_mode) == "circle"
+    ):
         return _ellipse_path_from_points(polygon.points)
     return _closed_polygon_path(polygon.points)

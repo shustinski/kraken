@@ -473,6 +473,27 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.assertEqual(self.widget._workspace.current_image_path, str(Path(paths[1])))
             self.assertEqual(self.widget.image_list.currentRow(), 1)
 
+    def test_restore_persisted_session_selection_loads_images_vectors_and_current_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image_paths = []
+            for name in ("frame_001.png", "frame_002.png"):
+                path = os.path.join(directory, name)
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+                image_paths.append(path)
+            vector_path = os.path.join(directory, "frame_999.cif")
+            Path(vector_path).write_text("", encoding="utf-8")
+
+            self.widget._session_settings_store.save_image_paths(image_paths)
+            self.widget._session_settings_store.save_vector_paths([vector_path])
+            self.widget._session_settings_store.save_current_image_path(image_paths[1])
+
+            self.widget._restore_persisted_session_selection()
+            self._app.processEvents()
+
+            self.assertEqual(self.widget._workspace.image_paths, tuple(str(Path(path)) for path in image_paths))
+            self.assertEqual(self.widget._workspace.current_image_path, str(Path(image_paths[1])))
+            self.assertIn("frame_999", self.widget._workspace.cif_paths_by_stem)
+
     def test_reset_project_clears_loaded_state_without_resetting_display_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "frame_001.png")
@@ -493,6 +514,8 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.assertEqual(self.widget.cif_dir_edit.text(), "")
             self.assertEqual(self.widget.line_width_spin.value(), 4.0)
             self.assertIsNone(self.widget._session_settings_store.load_current_image_path())
+            self.assertEqual(self.widget._session_settings_store.load_image_paths(), [])
+            self.assertEqual(self.widget._session_settings_store.load_vector_paths(), [])
 
     def test_image_row_navigation_recenters_editor_view(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1642,6 +1665,98 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         outer_item = next(item for item in self.view._editor_scene._polygon_items.values() if not item.polygon.is_hole)
         self.assertFalse(outer_item.contains(QPointF(50.0, 50.0)))
 
+    def test_closed_brush_contour_fills_center_below_manual_min_hole_area(self) -> None:
+        self.view.set_polygons([])
+        self.view._editor_scene.set_vector_geometry_settings(
+            VectorGeometrySettings(min_hole_area_to_remove_px2=150.0)
+        )
+        points = [
+            (30.0, 30.0),
+            (50.0, 30.0),
+            (50.0, 50.0),
+            (30.0, 50.0),
+            (30.0, 30.0),
+        ]
+
+        changed = self.view._editor_scene.add_brush_stroke(points, thickness=10.0)
+        self._app.processEvents()
+
+        self.assertTrue(changed)
+        polygons = self.view.get_polygons()
+        self.assertFalse(any(polygon.is_hole for polygon in polygons))
+        outer_item = next(item for item in self.view._editor_scene._polygon_items.values() if not item.polygon.is_hole)
+        self.assertTrue(outer_item.contains(QPointF(40.0, 40.0)))
+
+    def test_brush_erase_fills_hole_below_manual_min_hole_area(self) -> None:
+        self.view.set_polygons([_rectangle_polygon(20, 20, 80, 80)])
+        self.view._editor_scene.set_vector_geometry_settings(
+            VectorGeometrySettings(min_outer_area_px2=10.0, min_hole_area_to_remove_px2=11.0)
+        )
+
+        changed = self.view._editor_scene.add_brush_stroke(
+            [(44.0, 44.0), (46.0, 44.0), (46.0, 46.0), (44.0, 46.0), (44.0, 44.0)],
+            thickness=1.0,
+            erase=True,
+        )
+        self._app.processEvents()
+
+        self.assertTrue(changed)
+        self.assertFalse(any(polygon.is_hole for polygon in self.view.get_polygons()))
+        outer_item = next(item for item in self.view._editor_scene._polygon_items.values() if not item.polygon.is_hole)
+        self.assertTrue(outer_item.contains(QPointF(45.0, 45.0)))
+
+    def test_brush_erase_keeps_hole_above_manual_min_hole_area(self) -> None:
+        self.view.set_polygons([_rectangle_polygon(20, 20, 80, 80)])
+        self.view._editor_scene.set_vector_geometry_settings(
+            VectorGeometrySettings(min_outer_area_px2=10.0, min_hole_area_to_remove_px2=11.0)
+        )
+
+        changed = self.view._editor_scene.add_brush_stroke(
+            [(40.0, 40.0), (50.0, 40.0), (50.0, 50.0), (40.0, 50.0), (40.0, 40.0)],
+            thickness=1.0,
+            erase=True,
+        )
+        self._app.processEvents()
+
+        self.assertTrue(changed)
+        self.assertTrue(any(polygon.is_hole for polygon in self.view.get_polygons()))
+        outer_item = next(item for item in self.view._editor_scene._polygon_items.values() if not item.polygon.is_hole)
+        self.assertFalse(outer_item.contains(QPointF(45.0, 45.0)))
+
+    def test_small_rectangle_fully_inside_existing_contour_is_not_drawn(self) -> None:
+        self.view.set_polygons([_rectangle_polygon(20, 20, 80, 80)])
+        self.view._editor_scene.set_vector_geometry_settings(
+            VectorGeometrySettings(min_hole_area_to_remove_px2=11.0)
+        )
+
+        added = self.view._editor_scene.add_rectangle_polygon(QPointF(44.0, 44.0), QPointF(46.0, 46.0))
+        self._app.processEvents()
+
+        self.assertFalse(added)
+        self.assertEqual(len(self.view.get_polygons()), 1)
+
+    def test_small_rectangle_fully_inside_existing_cutout_is_not_drawn(self) -> None:
+        self.view.set_polygons([])
+        self.view._editor_scene.set_vector_geometry_settings(
+            VectorGeometrySettings(min_hole_area_to_remove_px2=11.0)
+        )
+        ring_points = [
+            (30.0, 30.0),
+            (70.0, 30.0),
+            (70.0, 70.0),
+            (30.0, 70.0),
+            (30.0, 30.0),
+        ]
+        self.view._editor_scene.add_brush_stroke(ring_points, thickness=10.0)
+        before = [(polygon.id, polygon.points, polygon.is_hole) for polygon in self.view.get_polygons()]
+
+        added = self.view._editor_scene.add_rectangle_polygon(QPointF(44.0, 44.0), QPointF(46.0, 46.0))
+        self._app.processEvents()
+
+        self.assertFalse(added)
+        after = [(polygon.id, polygon.points, polygon.is_hole) for polygon in self.view.get_polygons()]
+        self.assertEqual(after, before)
+
     def test_can_draw_polygon_inside_existing_cutout(self) -> None:
         self.view.set_polygons([])
         ring_points = [
@@ -2471,6 +2586,52 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
         self.assertEqual(polygons[0].category, "conductor")
         self.assertEqual(polygons[0].shape_hint, "trace_pen")
         self.assertGreater(polygons[0].area, 1400.0)
+
+    def test_via_placement_rejects_overlapping_existing_via(self) -> None:
+        scene = PolygonEditorScene()
+
+        self.assertTrue(scene.add_via_at(QPointF(20.0, 20.0), 10.0, 10.0))
+        self.assertFalse(scene.add_via_at(QPointF(24.0, 20.0), 10.0, 10.0))
+        self.assertTrue(scene.add_via_at(QPointF(40.0, 20.0), 10.0, 10.0))
+
+        self.assertEqual(len(scene.get_polygons()), 2)
+
+    def test_delete_via_at_deletes_only_vias(self) -> None:
+        scene = PolygonEditorScene()
+        conductor = _rectangle_polygon(0, 0, 20, 20)
+        scene.set_polygons([conductor])
+        self.assertTrue(scene.add_via_at(QPointF(40.0, 40.0), 10.0, 10.0))
+
+        self.assertFalse(scene.delete_via_at(QPointF(10.0, 10.0)))
+        self.assertEqual(len(scene.get_polygons()), 2)
+        self.assertTrue(scene.delete_via_at(QPointF(40.0, 40.0)))
+        self.assertEqual(len(scene.get_polygons()), 1)
+
+    def test_via_display_mode_switches_between_circle_and_rectangle_paths(self) -> None:
+        polygon = PolygonData(
+            id=1,
+            points=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            category="via",
+            shape_hint="box",
+        )
+
+        circle_item = EditablePolygonItem(polygon, DisplaySettings(via_display_mode="circle"))
+        rectangle_item = EditablePolygonItem(polygon, DisplaySettings(via_display_mode="rectangle"))
+
+        self.assertFalse(circle_item.path().contains(QPointF(1.0, 1.0)))
+        self.assertTrue(rectangle_item.path().contains(QPointF(1.0, 1.0)))
+
+    def test_via_cursor_turns_red_when_placement_overlaps_existing_via(self) -> None:
+        scene = PolygonEditorScene()
+        scene.add_via_at(QPointF(20.0, 20.0), 10.0, 10.0)
+
+        scene.set_via_cursor(QPointF(24.0, 20.0), 10.0, 10.0, True)
+        blocked_color = scene._via_cursor_item.pen().color().name().lower()
+        scene.set_via_cursor(QPointF(40.0, 20.0), 10.0, 10.0, True)
+        allowed_color = scene._via_cursor_item.pen().color().name().lower()
+
+        self.assertEqual(blocked_color, "#ef4444")
+        self.assertEqual(allowed_color, "#a78bfa")
 
 
 if __name__ == "__main__":

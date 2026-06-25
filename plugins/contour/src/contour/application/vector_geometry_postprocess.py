@@ -96,10 +96,17 @@ def filter_simple_valid_polygons(polygons: list[PolygonData]) -> list[PolygonDat
     return [p for p in polygons if len(p.points) >= 3]
 
 
+def _is_small_inner_area(poly: PolygonData, min_area_px2: float) -> bool:
+    if min_area_px2 <= 0.0:
+        return False
+    area = abs(float(poly.area))
+    return area < float(min_area_px2)
+
+
 def dissolve_small_holes(polygons: list[PolygonData], min_area_px2: float) -> list[PolygonData]:
     if min_area_px2 <= 0.0:
         return polygons
-    return [p.clone() for p in polygons if not (p.is_hole and abs(float(p.area)) < float(min_area_px2))]
+    return [p.clone() for p in polygons if not (p.is_hole and _is_small_inner_area(p, min_area_px2))]
 
 
 def drop_orphan_holes(polygons: list[PolygonData]) -> list[PolygonData]:
@@ -519,15 +526,18 @@ def postprocess_changed_polygon_only(
 
     _refresh_metrics(target)
     scoped = [target.clone()]
-    scoped = dissolve_small_holes(scoped, settings.min_hole_area_to_remove_px2)
-    scoped = apply_spike_removal_all(scoped, settings.min_spike_interior_angle_deg)
-    scoped = filter_simple_valid_polygons(scoped)
-    scoped = drop_small_outer_polygons(scoped, settings.min_outer_area_px2)
-    scoped = drop_triangle_outer_artifacts(
-        scoped,
-        settings.drop_three_vertex_triangle_artifacts,
-        min_outer_area_px2=settings.min_outer_area_px2,
-    )
+    if target.is_hole:
+        scoped = filter_simple_valid_polygons(scoped)
+    else:
+        scoped = dissolve_small_holes(scoped, settings.min_hole_area_to_remove_px2)
+        scoped = apply_spike_removal_all(scoped, settings.min_spike_interior_angle_deg)
+        scoped = filter_simple_valid_polygons(scoped)
+        scoped = drop_small_outer_polygons(scoped, settings.min_outer_area_px2)
+        scoped = drop_triangle_outer_artifacts(
+            scoped,
+            settings.drop_three_vertex_triangle_artifacts,
+            min_outer_area_px2=settings.min_outer_area_px2,
+        )
     if not scoped:
         work = [p for p in work if p.id != polygon_id and p.parent_id != polygon_id]
         work = drop_orphan_holes(work)

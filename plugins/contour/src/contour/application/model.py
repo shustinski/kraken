@@ -42,6 +42,10 @@ class StartupConfiguration:
             return self.directory_paths[0]
         return None
 
+    @property
+    def has_explicit_image_source(self) -> bool:
+        return bool(self.input_dir or self.file_paths or self.directory_paths)
+
 
 @dataclass(slots=True)
 class ContourApplicationModel:

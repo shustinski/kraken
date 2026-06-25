@@ -40,6 +40,8 @@ class ContourPresenter:
             self.view.set_input_directory(input_directory)
         if startup.file_paths:
             self.view.load_images(startup.file_paths)
+        if not startup.has_explicit_image_source:
+            self.view.restore_persisted_session_selection()
 
     def _on_log_message(self, message: str) -> None:
         self.view.show_status_message(message)

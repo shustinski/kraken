@@ -407,6 +407,10 @@ class WidgetPipelineActionsMixin:
         self.cif_dir_edit.setText(directory_state.directory)
         self._save_persisted_paths()
         self._workspace.set_cif_index(directory_state.indexed_paths)
+        pending_vector_paths = list(getattr(self, "_pending_restore_vector_paths", []) or [])
+        if pending_vector_paths:
+            self._workspace.merge_cif_paths(index_cif_file_paths(pending_vector_paths))
+            self._pending_restore_vector_paths = []
         self._indexed_cif_directory = directory_state.directory
         if directory_state.available:
             self._append_log(self._tr("cif_indexed_log", count=len(directory_state.indexed_paths)))

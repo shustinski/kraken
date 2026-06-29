@@ -63,12 +63,13 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
 
     hyps: list[str]
     if polar in ("auto", str(ViaPolarity.AUTO)):
-        hyps = [
-            str(ViaPolarity.BRIGHT),
-            str(ViaPolarity.DARK),
-            str(ViaPolarity.RING_LIGHT_RING),
-            str(ViaPolarity.RING_DARK_RING),
-        ]
+        hyps = []
+        if config.bright_range_enabled:
+            hyps.append(str(ViaPolarity.BRIGHT))
+        if config.dark_range_enabled:
+            hyps.append(str(ViaPolarity.DARK))
+        if not hyps:
+            hyps = [str(ViaPolarity.BRIGHT)]
     elif polar in (str(ViaPolarity.RING_LIGHT_RING), str(ViaPolarity.RING_DARK_RING), ViaPolarity.RING_LIGHT_RING, ViaPolarity.RING_DARK_RING):
         hyps = [polar] if not isinstance(polar, ViaPolarity) else [str(polar)]
     else:
@@ -388,6 +389,18 @@ def _mean_mask(patch: np.ndarray, m: np.ndarray) -> float:
     return float(np.mean(v))
 
 
+def _center_in_brightness_range(center_grey: float, hyp: str, config: HeuristicViaDetectorConfig) -> bool:
+    if hyp in (str(ViaPolarity.BRIGHT), "bright", str(ViaPolarity.RING_DARK_RING), "ring_dark_ring"):
+        if not config.bright_range_enabled:
+            return True
+        return float(config.bright_range_min) <= center_grey <= float(config.bright_range_max)
+    if hyp in (str(ViaPolarity.DARK), "dark", str(ViaPolarity.RING_LIGHT_RING), "ring_light_ring"):
+        if not config.dark_range_enabled:
+            return True
+        return float(config.dark_range_min) <= center_grey <= float(config.dark_range_max)
+    return True
+
+
 def _contrast_for_polarity(
     gray: np.ndarray, cmask: np.ndarray, imask: np.ndarray, omask: np.ndarray, hyp: str
 ) -> float:
@@ -420,6 +433,21 @@ def _score_one(
     ph, pw = h, w
     center_m, inner_m, outer_m = _annulus_masks((ph, pw), pcx, pcy, float(d_est))
     gpatch = patch.astype(np.float32)
+    center_grey = float(gpatch[pcy, pcx])
+    if not _center_in_brightness_range(center_grey, hyp, config):
+        return ViaDetection(
+            float(offset[0] + pcx),
+            float(offset[1] + pcy),
+            (0, 0, 0, 0),
+            0.0,
+            float(d_est),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            hyp,
+            "hard:brightness_range",
+        )
     contrast = _contrast_for_polarity(gpatch, center_m, inner_m, outer_m, hyp)
     if contrast < float(config.min_center_contrast):
         return ViaDetection(

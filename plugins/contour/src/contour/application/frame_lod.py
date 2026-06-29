@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from math import ceil
 from pathlib import Path
-from typing import Any
 
 import cv2
 import numpy as np
@@ -20,7 +19,7 @@ class FixedGridFrameLayout:
         *,
         frame_count: int,
         columns: int,
-        frame_store: "PyramidFrameStore",
+        frame_store: PyramidFrameStore,
         gap: int = 16,
     ) -> None:
         self.frame_count = max(0, int(frame_count))
@@ -68,7 +67,7 @@ class FixedGridFrameLayout:
     def scene_rect(self, lod: int) -> QRectF:
         if self.frame_count <= 0:
             return QRectF(0, 0, 1, 1)
-        rows = int(ceil(self.frame_count / float(self.columns)))
+        rows = ceil(self.frame_count / float(self.columns))
         step_x, step_y = self.step_size(lod)
         return QRectF(0, 0, max(1, self.columns * step_x - self.gap), max(1, rows * step_y - self.gap))
 
@@ -90,261 +89,78 @@ class FixedGridFrameLayout:
 
 
 class PyramidFrameStore:
+    """Image-backed frame pyramid built with OpenCV resize on demand."""
+
     def __init__(self, image_paths: Sequence[str | Path] = ()) -> None:
         self.image_paths = [str(Path(path)) for path in image_paths]
+        self._source_size: tuple[int, int] | None = None
 
-    def has_zarr(self) -> bool:
-        return False
+    @classmethod
+    def from_image_paths(cls, image_paths: Sequence[str | Path]) -> PyramidFrameStore:
+        return cls(image_paths)
+
+    def has_lod(self) -> bool:
+        if not self.image_paths:
+            return False
+        return Path(self.image_paths[0]).is_file()
 
     def available_lods(self) -> tuple[int, ...]:
-        return ()
+        if not self.has_lod():
+            return ()
+        width, height = self.get_frame_size(0, 0)
+        return tuple(range(len(_pyramid_lod_shapes(width, height))))
+
+    def available_lods_hint(self) -> tuple[int, ...]:
+        """Return LOD candidates without decoding image pixels on the UI thread."""
+
+        if not self.has_lod():
+            return ()
+        if self._source_size is None:
+            return tuple(range(8))
+        width, height = self._source_size
+        return tuple(range(len(_pyramid_lod_shapes(width, height))))
 
     def max_lod(self) -> int:
         return max(self.available_lods(), default=0)
 
     def frame_count(self) -> int:
-        return 0
+        return len(self.image_paths)
 
     def get_frame(self, frame_id: int, lod: int = 0) -> np.ndarray:
-        raise RuntimeError("Pyramid frames are available only from Zarr storage.")
+        frame = _load_source_image(Path(self.image_paths[int(frame_id)]))
+        lod = max(0, int(lod))
+        if lod <= 0:
+            return frame
+        width, height = self.get_frame_size(frame_id, lod)
+        if width == frame.shape[1] and height == frame.shape[0]:
+            return frame
+        return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
     def get_frame_size(self, frame_id: int, lod: int = 0) -> tuple[int, int]:
-        frame = self.get_frame(frame_id, lod)
-        return int(frame.shape[1]), int(frame.shape[0])
-
-    def get_thumbnail(self, frame_id: int, lod: int = 0, max_size: int = 256) -> np.ndarray:
-        return self.get_frame(frame_id, lod)
-
-
-class ZarrFrameStore(PyramidFrameStore):
-    """Zarr-backed frame pyramid store."""
-
-    def __init__(self, image_paths: Sequence[str | Path] = (), zarr_path: str | Path | None = None) -> None:
-        super().__init__(image_paths)
-        self.zarr_path = Path(zarr_path) if zarr_path else None
-        self._root: Any | None = None
-        self._source_size: tuple[int, int] | None = None
-        if self.zarr_path is not None:
-            self._open_zarr(self.zarr_path)
-        self._load_source_size_metadata()
-        if self._source_size is None:
-            self._probe_source_size()
-
-    @classmethod
-    def from_image_paths(cls, image_paths: Sequence[str | Path]) -> "ZarrFrameStore":
-        paths = [Path(path) for path in image_paths]
-        candidates: list[Path] = []
-        if paths:
-            parent = paths[0].parent
-            candidates.extend(
-                [
-                    parent / "frames.zarr",
-                    parent / "pyramid.zarr",
-                    parent / "images.zarr",
-                    parent / "zarr",
-                ]
-            )
-            candidates.extend(sorted(parent.glob("*.zarr")))
-        for candidate in candidates:
-            if candidate.exists():
-                return cls(paths, candidate)
-        return cls(paths, paths[0].parent / "frames.zarr" if paths else None)
-
-    def needs_lod_build(self) -> bool:
-        return bool(self.zarr_path is not None and self._source_size is not None and self.max_lod() <= 0)
-
-    def refresh(self) -> None:
-        if self.zarr_path is not None:
-            self._open_zarr(self.zarr_path)
-        self._load_source_size_metadata()
-
-    @classmethod
-    def _build_zarr_pyramid(cls, image_paths: Sequence[Path], zarr_path: Path) -> Path | None:
-        try:
-            import zarr  # type: ignore
-        except Exception:
-            return None
-        if not image_paths:
-            return None
-        try:
-            first = _load_zarr_source_image(image_paths[0])
-        except Exception:
-            return None
-        height, width = first.shape[:2]
-        if height <= 0 or width <= 0:
-            return None
-        try:
-            root = zarr.open_group(str(zarr_path), mode="w")
-            root.attrs["source_count"] = int(len(image_paths))
-            root.attrs["source_paths"] = [str(path) for path in image_paths]
-            root.attrs["lod0_source"] = True
-            root.attrs["source_width"] = int(width)
-            root.attrs["source_height"] = int(height)
-            lod_shapes = _pyramid_lod_shapes(width, height)
-            for lod, (lod_width, lod_height) in enumerate(lod_shapes[1:], start=1):
-                array = root.create_array(
-                    f"lod_{lod}",
-                    shape=(len(image_paths), lod_height, lod_width, 3),
-                    dtype=np.uint8,
-                    chunks=(1, lod_height, lod_width, 3),
-                    overwrite=True,
-                )
-                for frame_id, path in enumerate(image_paths):
-                    image = first if frame_id == 0 else _load_zarr_source_image(path)
-                    if image.shape[1] != width or image.shape[0] != height:
-                        image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
-                    if lod_width != width or lod_height != height:
-                        frame = cv2.resize(image, (lod_width, lod_height), interpolation=cv2.INTER_AREA)
-                    else:
-                        frame = image
-                    array[frame_id] = np.ascontiguousarray(frame, dtype=np.uint8)
-            return zarr_path
-        except Exception:
-            return None
-
-    def _open_zarr(self, path: Path) -> None:
-        try:
-            import zarr  # type: ignore
-        except Exception:
-            self._root = None
-            return
-        try:
-            self._root = zarr.open(str(path), mode="r")
-        except Exception:
-            self._root = None
-
-    def has_zarr(self) -> bool:
-        return self._source_size is not None and bool(self.image_paths)
-
-    def _load_source_size_metadata(self) -> None:
-        if self._root is None:
-            return
-        try:
-            width = int(self._root.attrs.get("source_width", 0))
-            height = int(self._root.attrs.get("source_height", 0))
-        except Exception:
-            return
-        if width > 0 and height > 0:
-            self._source_size = (width, height)
-
-    def _probe_source_size(self) -> None:
-        if not self.image_paths:
-            return
-        try:
-            frame = _load_zarr_source_image(Path(self.image_paths[0]))
-        except Exception:
-            return
-        self._source_size = (int(frame.shape[1]), int(frame.shape[0]))
-
-    def available_lods(self) -> tuple[int, ...]:
-        if self._source_size is None:
-            return ()
-        lods: set[int] = {0} if self.image_paths else set()
-        if self._root is not None:
-            try:
-                keys = list(self._root.keys())
-            except Exception:
-                keys = []
-            for key in keys:
-                text = str(key).lower()
-                if text.startswith("lod_"):
-                    try:
-                        lods.add(int(text.split("_", 1)[1]))
-                    except ValueError:
-                        pass
-                elif text.isdigit():
-                    lods.add(int(text))
-            if not lods and _zarr_node_ndim(self._root) >= 3:
-                lods.add(0)
-        return tuple(sorted(lods))
-
-    def frame_count(self) -> int:
-        if self._source_size is None:
-            return 0
-        if self.image_paths:
-            return len(self.image_paths)
-        try:
-            for lod in self.available_lods():
-                node = self._lod_node(lod)
-                if node is not None and _zarr_node_ndim(node) >= 3:
-                    return int(node.shape[0])
-        except Exception:
-            pass
-        return 0
-
-    def _lod_node(self, lod: int):
-        if int(lod) == 0 and self.image_paths:
-            return None
-        if self._root is None:
-            return None
-        for key in (f"lod_{int(lod)}", str(int(lod)), f"level_{int(lod)}"):
-            try:
-                return self._root[key]
-            except Exception:
-                continue
-        if int(lod) == 0 and _zarr_node_ndim(self._root) >= 3:
-            return self._root
-        return None
-
-    def get_frame(self, frame_id: int, lod: int = 0) -> np.ndarray:
-        if self._source_size is None:
-            raise RuntimeError(f"Zarr LOD {lod} is not available.")
-        if int(lod) == 0:
-            try:
-                return _load_zarr_source_image(Path(self.image_paths[int(frame_id)]))
-            except (IndexError, ValueError) as exc:
-                raise RuntimeError(f"Source frame {frame_id} is not available for LOD 0.") from exc
-        node = self._lod_node(lod)
-        if node is None:
-            raise RuntimeError(f"Zarr LOD {lod} is not available.")
-        frame = np.asarray(node[int(frame_id)])
-        return _normalize_image_array(frame)
-
-    def get_frame_size(self, frame_id: int, lod: int = 0) -> tuple[int, int]:
-        if int(lod) == 0:
-            if self._source_size is not None:
-                return self._source_size
-            if self._root is not None:
-                try:
-                    width = int(self._root.attrs.get("source_width", 0))
-                    height = int(self._root.attrs.get("source_height", 0))
-                    if width > 0 and height > 0:
-                        self._source_size = (width, height)
-                        return self._source_size
-                except Exception:
-                    pass
-            frame = self.get_frame(frame_id, lod)
-            self._source_size = (int(frame.shape[1]), int(frame.shape[0]))
+        if int(frame_id) == 0 and int(lod) == 0 and self._source_size is not None:
             return self._source_size
-        node = self._lod_node(lod)
-        try:
-            if node is not None and _zarr_node_ndim(node) >= 3:
-                shape = tuple(int(value) for value in node.shape)
-                if len(shape) == 3:
-                    return (shape[2], shape[1])
-                return (shape[2], shape[1])
-        except Exception:
-            pass
-        return super().get_frame_size(frame_id, lod)
+        frame = _load_source_image(Path(self.image_paths[int(frame_id)]))
+        source_size = (int(frame.shape[1]), int(frame.shape[0]))
+        if int(frame_id) == 0:
+            self._source_size = source_size
+        lod = max(0, int(lod))
+        if lod <= 0:
+            return source_size
+        shapes = _pyramid_lod_shapes(*source_size)
+        if lod >= len(shapes):
+            return shapes[-1]
+        return shapes[lod]
 
     def get_thumbnail(self, frame_id: int, lod: int = 0, max_size: int = 256) -> np.ndarray:
-        if int(lod) == 0:
-            return self.get_frame(frame_id, lod)
-        node = self._lod_node(lod)
-        if node is None:
-            raise RuntimeError(f"Zarr LOD {lod} is not available.")
-        return _normalize_image_array(np.asarray(node[int(frame_id)]))
-
-
-def _zarr_node_ndim(node: object) -> int:
-    try:
-        return int(getattr(node, "ndim"))
-    except Exception:
-        shape = getattr(node, "shape", ())
-        try:
-            return len(shape)
-        except Exception:
-            return 0
+        frame = self.get_frame(frame_id, lod)
+        height, width = frame.shape[:2]
+        longest = max(width, height)
+        max_size = max(1, int(max_size))
+        if longest <= max_size:
+            return frame
+        scale = max_size / float(longest)
+        target_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+        return cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
 
 
 def _normalize_image_array(array: np.ndarray) -> np.ndarray:
@@ -373,7 +189,7 @@ def _normalize_image_array(array: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(image)
 
 
-def _load_zarr_source_image(path: Path) -> np.ndarray:
+def _load_source_image(path: Path) -> np.ndarray:
     image = load_image_color(path)
     if image.ndim == 2:
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)

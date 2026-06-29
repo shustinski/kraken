@@ -184,6 +184,17 @@ class WidgetSettingsMixin:
             return
         self._session_settings_store.save_image_paths(self._workspace.image_paths)
         self._session_settings_store.save_vector_paths(self._workspace.cif_paths_by_stem.values())
+        if hasattr(self, "_image_list_mode"):
+            self._session_settings_store.save_image_list_mode(self._image_list_mode)
+
+    def _set_image_list_mode(self: Any, mode: str) -> None:
+        from ..infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY, IMAGE_LIST_MODE_EXPLICIT
+
+        self._image_list_mode = (
+            IMAGE_LIST_MODE_EXPLICIT if mode == IMAGE_LIST_MODE_EXPLICIT else IMAGE_LIST_MODE_DIRECTORY
+        )
+        if hasattr(self, "_session_settings_store"):
+            self._session_settings_store.save_image_list_mode(self._image_list_mode)
 
     def _persist_session_state(self: Any) -> None:
         self._save_persisted_display_settings()

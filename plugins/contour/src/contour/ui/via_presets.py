@@ -67,23 +67,66 @@ __all__ = [
 def _standard_via_preset_payload() -> dict[str, object]:
     return {
         "via_search_mode": "heuristic",
-        "bright_via_diameter_min": 6,
-        "bright_via_diameter_max": 12,
+        "via_heuristic_polarity": "bright",
+        "via_size_mode": "fixed",
+        "bright_via_diameter_min": 8,
+        "bright_via_diameter_max": 8,
         "via_search_sensitivity": "medium",
-        "via_heuristic_polarity": "auto",
+        "via_heuristic_polarity": "bright",
         "via_min_roundness": 40.0,
-        "bright_via_min_final_score": 38.0,
+        "bright_via_min_final_score": 42.0,
+        "bright_via_min_isolation_score": 0.38,
+        "bright_via_hard_reject_on_asymmetry": True,
+        "bright_via_max_radial_asymmetry": 32.0,
+        "via_white_range_enabled": True,
+        "via_white_range_min": 140,
+        "via_white_range_max": 255,
+        "bright_via_bright_center_min_score": 140.0,
+    }
+
+
+def _bright_via_preset_payload() -> dict[str, object]:
+    return {
+        **_standard_via_preset_payload(),
+        "via_search_mode": "bright_tophat_dog",
+        "via_heuristic_polarity": "bright",
+        "bright_via_min_final_score": 42.0,
+        "bright_via_nms_distance": 10,
+        "bright_via_threshold_percentile": 99.0,
+        "bright_via_min_isolation_score": 0.38,
+        "bright_via_min_annular_contrast": 6.0,
+        "via_white_range_enabled": True,
+        "via_white_range_min": 140,
+        "via_white_range_max": 255,
+        "bright_via_bright_center_min_score": 140.0,
+        "bright_via_use_metal_mask": False,
     }
 
 
 def built_in_via_presets(language: str) -> dict[str, dict[str, object]]:  # type: ignore[no-redef]
     standard = _standard_via_preset_payload()
-    small = {**standard, "bright_via_diameter_min": 3, "bright_via_diameter_max": 7, "bright_via_nms_distance": 4}
-    large = {**standard, "bright_via_diameter_min": 12, "bright_via_diameter_max": 28, "bright_via_nms_distance": 10}
-    bright = {**standard, "via_search_mode": "bright_tophat_dog", "via_heuristic_polarity": "bright"}
-    dark = {**standard, "via_heuristic_polarity": "dark"}
-    ring = {**standard, "via_heuristic_polarity": "ring_light_ring", "via_min_roundness": 35.0}
-    weak = {**blurred_via_preset_payload(), "via_search_mode": "heuristic", "via_search_sensitivity": "high", "bright_via_min_final_score": 28.0}
+    small = {**standard, "bright_via_diameter_min": 5, "bright_via_diameter_max": 5, "bright_via_nms_distance": 4}
+    large = {**standard, "bright_via_diameter_min": 14, "bright_via_diameter_max": 14, "bright_via_nms_distance": 10}
+    bright = _bright_via_preset_payload()
+    dark = {**standard, "via_search_mode": "heuristic", "via_heuristic_polarity": "dark"}
+    ring = {
+        **bright,
+        "bright_via_diameter_min": 8,
+        "bright_via_diameter_max": 8,
+        "bright_via_min_isolation_score": 0.32,
+        "bright_via_min_annular_contrast": 5.0,
+        "via_min_roundness": 35.0,
+    }
+    weak = {
+        **bright,
+        "via_search_sensitivity": "high",
+        "bright_via_min_final_score": 28.0,
+        "bright_via_min_isolation_score": 0.28,
+        "bright_via_threshold_percentile": 98.0,
+        "bright_via_max_radial_asymmetry": 40.0,
+        "via_white_range_min": 110,
+        "bright_via_bright_center_min_score": 110.0,
+    }
     if language == "ru":
         return {
             "Стандартный": standard,

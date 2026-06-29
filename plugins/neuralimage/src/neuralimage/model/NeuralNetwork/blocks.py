@@ -98,17 +98,29 @@ class DeepSupervisionMixin:
             merged.append(aux_output)
         return tuple(merged)
 
-    def _build_model_outputs(self, primary, auxiliary_outputs=(), confidence=None):
+    def _build_model_outputs(
+        self,
+        primary,
+        auxiliary_outputs=(),
+        confidence=None,
+        supervision_outputs=None,
+    ):
         mask_outputs = self._merge_deep_supervision_outputs(primary, auxiliary_outputs)
-        if confidence is None:
+        if confidence is None and not supervision_outputs:
             return mask_outputs
-        target_size = primary.shape[-2:]
-        if confidence.shape[-2:] != target_size:
-            confidence = F.interpolate(confidence, size=target_size, mode='bilinear', align_corners=False)
-        return {
-            'mask': mask_outputs,
-            'confidence': confidence,
-        }
+        payload = {'mask': mask_outputs}
+        if confidence is not None:
+            target_size = primary.shape[-2:]
+            if confidence.shape[-2:] != target_size:
+                confidence = F.interpolate(confidence, size=target_size, mode='bilinear', align_corners=False)
+            payload['confidence'] = confidence
+        if supervision_outputs:
+            target_size = primary.shape[-2:]
+            for head_name, head_output in supervision_outputs.items():
+                if head_output.shape[-2:] != target_size:
+                    head_output = F.interpolate(head_output, size=target_size, mode='bilinear', align_corners=False)
+                payload[str(head_name)] = head_output
+        return payload
 
 
 class SegmentationHeadBundle(nn.Module):

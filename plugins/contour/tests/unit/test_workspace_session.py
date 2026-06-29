@@ -181,6 +181,36 @@ class WorkspaceSessionTests(unittest.TestCase):
         self.assertNotIn(key_a, session._state_cache)
         self.assertIn(key_b, session._state_cache)
 
+    def test_replace_image_selection_clears_stale_state_and_current(self) -> None:
+        session = WorkspaceSession()
+        session.replace_image_selection(["old/frame.png"], is_supported_image=lambda _p: True)
+        session.load_image(
+            "old/frame.png",
+            load_source_image=lambda path: f"src:{path}",
+            load_cif_overlay=lambda _path: [],
+        )
+
+        session.replace_image_selection(["new/frame.png"], is_supported_image=lambda _p: True)
+
+        self.assertEqual(session.image_paths, (str(Path("new/frame.png")),))
+        self.assertEqual(session.cached_states(), ())
+        self.assertIsNone(session.current_state)
+        self.assertIsNone(session.resolve_cached_load("new/frame.png"))
+
+    def test_resolve_cached_load_rejects_current_state_for_different_path(self) -> None:
+        session = WorkspaceSession()
+        session.replace_image_selection(["a.png", "b.png"], is_supported_image=lambda _p: True, clear_state_cache=False)
+        session.load_image("a.png", load_source_image=lambda path: f"src:{path}", load_cif_overlay=lambda _path: [])
+        session.load_image("b.png", load_source_image=lambda path: f"src:{path}", load_cif_overlay=lambda _path: [])
+        session._current_image_path = str(Path("a.png"))
+        session._current_state = session._state_cache[str(Path("b.png"))]
+
+        resolved = session.resolve_cached_load("a.png")
+
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertEqual(resolved.state.image_path, str(Path("a.png")))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -256,6 +256,23 @@ class WidgetExtractionControlsMixin:
                 "Maximum via diameter in pixels (typ. 8–14).",
             )
         )
+        if hasattr(self, "bright_via_diameter_fixed_spin"):
+            self.bright_via_diameter_fixed_spin.setToolTip(
+                tt(
+                    "Ожидаемый диаметр via в пикселях (фиксированный размер).\n"
+                    "Используйте, когда все via на кадре примерно одного размера.\n"
+                    "Обычно: 6–12 px.",
+                    "Expected via diameter in pixels when size is fixed (typ. 6–12).",
+                )
+            )
+        if hasattr(self, "via_diameter_size_mode_combo"):
+            self.via_diameter_size_mode_combo.setToolTip(
+                tt(
+                    "Фиксированный — один диаметр для всех via.\n"
+                    "Диапазон — поиск via между минимальным и максимальным размером.",
+                    "Fixed: single diameter. Range: search between min and max.",
+                )
+            )
         self.bright_via_clahe_clip_spin.setToolTip(
             tt(
                 "Предел усиления локального контраста (CLAHE).\n"
@@ -374,11 +391,12 @@ class WidgetExtractionControlsMixin:
         )
         self.bright_via_bright_center_score_spin.setToolTip(
             tt(
-                "Центр via должен быть ярче окружающей области (разница средних по диску и кольцу).\n"
-                "Увеличение значения уменьшает ложные срабатывания на слабом шуме,\n"
-                "но может пропускать слабые или размытые via.\n"
+                "Минимальная абсолютная яркость ядра via (среднее по диску, шкала 0-255).\n"
+                "Отсекает тусклые ложные срабатывания на текстуре металла и шуме,\n"
+                "где настоящей via нет. Настоящие via обычно яркие (≈180-250).\n"
+                "Увеличение убирает тусклые ложные пятна, но может пропустить слабые via.\n"
                 "Это жёсткий порог: ниже — кандидат отбрасывается сразу.",
-                "Hard minimum center-vs-ring brightness delta.",
+                "Hard minimum absolute via-core brightness (0-255).",
             )
         )
         self.bright_via_max_radial_asymmetry_spin.setToolTip(
@@ -650,20 +668,56 @@ class WidgetExtractionControlsMixin:
         if getattr(self, "metal_preset_combo", None) is not None:
             self.metal_preset_combo.setToolTip(
                 tt(
-                    "Готовый набор порогов и морфологии под тип слоя.\n"
-                    "«Стандартный» — универсальный баланс; «Плотная металлизация» — чуть агрессивнее к шуму; "
-                    "«Тонкие дорожки» — ниже минимальная ширина; «Шумное SEM» — жёстче отсев; "
-                    "«Консервативный» — меньше ложных, выше пороги длины/прямолинейности.",
-                    "Preset bundle for metal recovery.",
+                    "Сценарный пресет: подготовка, сегментация, топология и геометрические фильтры.\n"
+                    "«Стандартный» — чистые кадры; «Шумное SEM» — сильное подавление зерна; "
+                    "«Тонкие дорожки» — узкие проводники; «Широкие заливки» — толстые полигоны.",
+                    "Scenario preset for the metal recovery pipeline.",
                 )
             )
-        if getattr(self, "metal_sensitivity_slider", None) is not None:
-            self.metal_sensitivity_slider.setToolTip(
+        if getattr(self, "metal_noise_suppression_slider", None) is not None:
+            self.metal_noise_suppression_slider.setToolTip(
                 tt(
-                    "Единый регулятор чувствительности 0–100: увеличение добавляет пиксели в маску и чаще оставляет слабые дорожки, "
-                    "но усиливает ложные срабатывания на зерне и артефактах; уменьшение убирает шум, но может проглотить тусклые реальные проводники.\n"
-                    "Типичный диапазон 35–65; при «Шумном SEM» чаще 30–45, при контрастных кадрах 55–70.",
-                    "Unified sensitivity 0–100 for internal thresholds.",
+                    "Подавление зернистости SEM: выравнивание освещения и шумоподавление перед сегментацией.\n"
+                    "Выше — меньше шума в маске, но возможна потеря тонких деталей.",
+                    "SEM noise suppression before segmentation.",
+                )
+            )
+        if getattr(self, "metal_contrast_bias_spin", None) is not None:
+            self.metal_contrast_bias_spin.setToolTip(
+                tt(
+                    "Смещение порога выделения металла: положительные значения добавляют слабые проводники, "
+                    "отрицательные — убирают ложные срабатывания. Изменение плавное, без скачков.",
+                    "Continuous contrast bias for local segmentation.",
+                )
+            )
+        if getattr(self, "metal_segmentation_strategy_combo", None) is not None:
+            self.metal_segmentation_strategy_combo.setToolTip(
+                tt(
+                    "Стратегия бинаризации: «Авто» выбирает лучший локальный метод по качеству контура.\n"
+                    "Sauvola рекомендуется для шумного SEM.",
+                    "Segmentation strategy for metal mask.",
+                )
+            )
+        if getattr(self, "metal_gap_bridge_spin", None) is not None:
+            self.metal_gap_bridge_spin.setToolTip(
+                tt(
+                    "Сшивка разрывов в маске (morphological close): соединяет обрывы дорожек.\n"
+                    "Слишком большое значение может слить соседние проводники.",
+                    "Gap bridging radius in pixels.",
+                )
+            )
+        if getattr(self, "metal_speckle_removal_spin", None) is not None:
+            self.metal_speckle_removal_spin.setToolTip(
+                tt(
+                    "Удаление мелкого шума (morphological open): убирает одиночные пиксели и короткие отростки.",
+                    "Speckle removal radius in pixels.",
+                )
+            )
+        if getattr(self, "metal_contour_smooth_spin", None) is not None:
+            self.metal_contour_smooth_spin.setToolTip(
+                tt(
+                    "Сглаживание контура перед векторизацией: убирает зубчатость от шума SEM.",
+                    "Contour smoothing before polygon simplification.",
                 )
             )
         if getattr(self, "metal_min_width_spin", None) is not None:
@@ -745,22 +799,6 @@ class WidgetExtractionControlsMixin:
                 tt(
                     "Минимальная доля перекрытия двух границ по длине. Увеличение делает поиск пар строже, уменьшение допускает частично видимые края.",
                     "Minimum overlap ratio of paired edges.",
-                )
-            )
-        if getattr(self, "metal_segmentation_method_combo", None) is not None:
-            self.metal_segmentation_method_combo.setToolTip(
-                tt(
-                    "По умолчанию — без глобальной пороговой сегментации: контуры строятся по границам на grayscale (Canny + локальная морфология), что лучше сохраняет топологию тонких проводников на SEM.\n"
-                    "По умолчанию — Otsu: классическая пороговая сегментация яркости. Адаптивная — для неравномерного освещения, гибрид — объединяет границы и Otsu.",
-                    "Default: Otsu thresholding. Adaptive handles uneven illumination. Hybrid combines edge mask with Otsu.",
-                )
-            )
-        if getattr(self, "metal_sensitivity_combo", None) is not None:
-            self.metal_sensitivity_combo.setToolTip(
-                tt(
-                    "Грубый уровень вместе со слайдером 0–100: «Низкая» — эрозия/порог жёстче, меньше ложных; «Высокая» — больше пикселей в маске.\n"
-                    "Используйте как быстрый сдвиг до тонкой подстройки слайдером.",
-                    "Coarse low/medium/high bias paired with slider.",
                 )
             )
         if getattr(self, "metal_show_conductors_checkbox", None) is not None:
@@ -943,12 +981,29 @@ class WidgetExtractionControlsMixin:
             if label_widget is not None:
                 label_widget.setVisible(fixed_mode)
             field_widget.setVisible(fixed_mode)
+        self._update_bright_via_diameter_controls_state()
         self._update_via_threshold_controls_state()
+
+    def _update_bright_via_diameter_controls_state(self) -> None:
+        if not hasattr(self, "via_diameter_size_mode_combo"):
+            return
+        fixed_mode = (
+            normalize_via_size_mode(self.via_diameter_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
+        )
+        if hasattr(self, "bright_via_diameter_fixed_spin"):
+            self.bright_via_diameter_fixed_spin.setVisible(fixed_mode)
+        if getattr(self, "bright_via_diameter_fixed_label_widget", None) is not None:
+            self.bright_via_diameter_fixed_label_widget.setVisible(fixed_mode)
+        if getattr(self, "bright_via_diameter_range_label_widget", None) is not None:
+            self.bright_via_diameter_range_label_widget.setVisible(not fixed_mode)
+        if hasattr(self, "bright_via_diameter_range_widget"):
+            self.bright_via_diameter_range_widget.setVisible(not fixed_mode)
 
     def _update_via_threshold_controls_state(self) -> None:
         mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
         advanced = self._advanced_extraction_enabled()
-        bright_enabled = mode in {VIA_SEARCH_MODE_HEURISTIC, "bright_tophat_dog"}
+        bright_enabled = mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
+        heuristic_mode = mode == VIA_SEARCH_MODE_HEURISTIC
         blob_enabled = False
         template_enabled = mode == VIA_SEARCH_MODE_TEMPLATE
         for label_widget, field_widget in (
@@ -967,27 +1022,59 @@ class WidgetExtractionControlsMixin:
             self.via_templates_label_widget.setVisible(template_enabled)
         self.via_templates_widget.setVisible(template_enabled)
         if hasattr(self, "via_range_checkboxes_label_widget") and self.via_range_checkboxes_label_widget is not None:
-            self.via_range_checkboxes_label_widget.setVisible(advanced and not bright_enabled)
+            self.via_range_checkboxes_label_widget.setVisible(False)
         if hasattr(self, "via_range_checkboxes_widget"):
-            self.via_range_checkboxes_widget.setVisible(advanced and not bright_enabled)
+            self.via_range_checkboxes_widget.setVisible(False)
 
-        white_enabled = self.via_white_range_checkbox.isChecked()
-        self.via_white_range_min_spin.setEnabled(white_enabled)
-        self.via_white_range_max_spin.setEnabled(white_enabled)
-        if self.via_white_range_label_widget is not None:
-            self.via_white_range_label_widget.setVisible(advanced and white_enabled and not bright_enabled)
-        self.via_white_range_widget.setVisible(advanced and white_enabled and not bright_enabled)
-        black_enabled = self.via_black_range_checkbox.isChecked()
-        self.via_black_range_min_spin.setEnabled(black_enabled)
-        self.via_black_range_max_spin.setEnabled(black_enabled)
-        if self.via_black_range_label_widget is not None:
-            self.via_black_range_label_widget.setVisible(advanced and black_enabled and not bright_enabled)
-        self.via_black_range_widget.setVisible(advanced and black_enabled and not bright_enabled)
+        self._update_via_brightness_range_controls_state()
         if hasattr(self, "bright_via_group") and hasattr(self, "recognition_mode_combo"):
             self.bright_via_group.setVisible(
                 self._active_extraction_profile == "vias"
                 and str(self.recognition_mode_combo.currentData() or "") == "via"
             )
+        sem_mode = mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
+        if hasattr(self, "bright_via_quality_group"):
+            self.bright_via_quality_group.setVisible(sem_mode)
+        if hasattr(self, "bright_via_advanced_outer"):
+            self.bright_via_advanced_outer.setVisible(heuristic_mode and advanced)
+        if sem_mode:
+            self._update_bright_via_diameter_controls_state()
+
+    def _update_via_brightness_range_controls_state(self) -> None:
+        if not hasattr(self, "via_white_range_checkbox"):
+            return
+
+        white_checked = self.via_white_range_checkbox.isChecked()
+        self.via_white_range_min_spin.setEnabled(white_checked)
+        self.via_white_range_max_spin.setEnabled(white_checked)
+        black_checked = self.via_black_range_checkbox.isChecked()
+        self.via_black_range_min_spin.setEnabled(black_checked)
+        self.via_black_range_max_spin.setEnabled(black_checked)
+
+        in_via_recognition = (
+            hasattr(self, "recognition_mode_combo")
+            and str(self.recognition_mode_combo.currentData() or "") == "via"
+        )
+        show_in_basics = in_via_recognition
+        self.via_white_range_checkbox.setVisible(show_in_basics)
+        self.via_white_range_widget.setVisible(show_in_basics)
+        self.via_black_range_checkbox.setVisible(show_in_basics)
+        self.via_black_range_widget.setVisible(show_in_basics)
+        if getattr(self, "bright_via_white_range_label_widget", None) is not None:
+            self.bright_via_white_range_label_widget.setVisible(show_in_basics)
+        if getattr(self, "bright_via_black_range_label_widget", None) is not None:
+            self.bright_via_black_range_label_widget.setVisible(show_in_basics)
+
+        # Legacy via panel duplicates (recognition disabled).
+        legacy_visible = (
+            not in_via_recognition
+            and self._advanced_extraction_enabled()
+            and self._active_extraction_profile == "vias"
+        )
+        if self.via_white_range_label_widget is not None:
+            self.via_white_range_label_widget.setVisible(legacy_visible and white_checked)
+        if self.via_black_range_label_widget is not None:
+            self.via_black_range_label_widget.setVisible(legacy_visible and black_checked)
 
     def _update_extraction_profile_controls_state(self) -> None:
         rec = str(self.recognition_mode_combo.currentData() or "conductors") if hasattr(self, "recognition_mode_combo") else "conductors"
@@ -996,7 +1083,7 @@ class WidgetExtractionControlsMixin:
         show_legacy_via = is_via_profile and rec == "disabled"
         conductors_recognition = rec == "conductors"
         if hasattr(self, "advanced_extraction_checkbox"):
-            self.advanced_extraction_checkbox.setVisible(not conductors_recognition)
+            self.advanced_extraction_checkbox.setVisible(rec not in ("via", "conductors"))
         if conductors_recognition:
             self.basic_filters_group.setVisible(False)
             self.geometry_filters_group.setVisible(False)
@@ -1011,8 +1098,6 @@ class WidgetExtractionControlsMixin:
         self.via_group.setVisible(show_legacy_via)
         advanced_via_widgets = [
             (self.via_range_checkboxes_label_widget, self.via_range_checkboxes_widget),
-            (self.via_white_range_label_widget, self.via_white_range_widget),
-            (self.via_black_range_label_widget, self.via_black_range_widget),
             (self.via_min_score_label_widget, self.via_min_score_spin),
             (self.via_min_contrast_label_widget, self.via_min_contrast_spin),
             (self.via_min_edge_coverage_label_widget, self.via_min_edge_coverage_spin),
@@ -1021,24 +1106,20 @@ class WidgetExtractionControlsMixin:
         ]
         in_via_extraction = rec in ("via", "disabled")
         if hasattr(self, "contour_group"):
-            if rec == "via":
-                self.contour_group.setTitle("")
-                self.contour_group.setFlat(True)
-                self.contour_group.setStyleSheet(
-                    "QGroupBox#contourExtractionGroup { border: 0; margin-top: 0; padding-top: 0; }"
-                )
-            else:
+            self.contour_group.setVisible(rec != "via")
+            if rec != "via":
                 self.contour_group.setTitle(self._tr("contour_extraction_group"))
                 self.contour_group.setFlat(False)
                 self.contour_group.setStyleSheet("")
         for label_widget, field_widget in advanced_via_widgets:
             if label_widget is not None:
-                label_widget.setVisible(advanced and is_via_profile and in_via_extraction)
-            field_widget.setVisible(advanced and is_via_profile and in_via_extraction)
+                label_widget.setVisible(advanced and is_via_profile and in_via_extraction and rec == "disabled")
+            field_widget.setVisible(advanced and is_via_profile and in_via_extraction and rec == "disabled")
         if hasattr(self, "bright_via_group"):
             self.bright_via_group.setVisible(is_via_profile and rec == "via")
         self._sync_recognition_stack_visibility()
         self._update_via_threshold_controls_state()
+        self._update_via_brightness_range_controls_state()
 
     def _sync_recognition_stack_visibility(self) -> None:
         if not hasattr(self, "recognition_mode_combo") or not hasattr(self, "recognition_stack"):

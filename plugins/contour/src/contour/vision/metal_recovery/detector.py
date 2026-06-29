@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from math import atan2, degrees
 from typing import Any
 
@@ -34,23 +34,24 @@ def effective_conductor_width_px(width_from_dt: float, rw: float, rh: float) -> 
     return float(min(blended, span_major))
 
 
+from .segmentation import (
+    MetalSegmentationConfig,
+    build_metal_segmentation_mask,
+    normalize_metal_segmentation_strategy,
+)
+
+
 def _normalize_metal_extraction_mode(value: str) -> str:
-    """User-facing extraction mode: none | otsu | adaptive | hybrid."""
-    t = str(value or "").strip().lower()
-    if t in {"none", "off", "disabled", "без", "без_сегментации", "без сегментации", "grayscale", "edges", "edge", "no_segmentation", "no-segmentation"}:
-        return "none"
-    if t in {"hybrid", "гибрид", "гибридная", "both", "комбинированный"}:
-        return "hybrid"
-    if t in {"adaptive", "адаптив", "адаптивная"}:
-        return "adaptive"
-    if t in {"otsu"}:
-        return "otsu"
-    return "none"
+    """Backward-compatible alias for segmentation strategy normalization."""
+    return normalize_metal_segmentation_strategy(value)
 
 
 def _normalize_metal_segmentation_method(value: str) -> str:
-    """Threshold leg: Otsu vs Adaptive (only used inside `_segment_bright_metal`)."""
-    return "adaptive" if str(value).strip().lower() in {"adaptive", "адаптив", "адаптивная"} else "otsu"
+    """Deprecated: maps old threshold leg names."""
+    strat = normalize_metal_segmentation_strategy(value)
+    if strat in {"local_adaptive", "sauvola", "auto"}:
+        return "adaptive"
+    return "otsu"
 
 
 def _normalize_metal_sensitivity_token(value: str) -> str:
@@ -62,23 +63,15 @@ def _normalize_metal_sensitivity_token(value: str) -> str:
     return "medium"
 
 
-def _sensitivity_offsets(sensitivity_0_100: int, token: str) -> tuple[float, int]:
-    """Return (adaptive_c_offset, otsu_morph_delta) from unified sensitivity."""
-    s = max(0, min(100, int(sensitivity_0_100)))
-    mid = {"low": 35, "medium": 50, "high": 65}[_normalize_metal_sensitivity_token(token)]
-    blend = 0.35 * mid + 0.65 * s
-    # Higher blend -> more aggressive foreground (more detections)
-    adaptive_c = -6.0 + (blend / 100.0) * 12.0
-    morph_delta = int(round((blend - 50.0) / 25.0))  # -2..+2 typical
-    return float(adaptive_c), morph_delta
-
-
 @dataclass(slots=True)
 class MetalRecoveryConfig:
-    segmentation_method: str = "otsu"
-    sensitivity_0_100: int = 50
-    sensitivity_token: str = "medium"
-    morph_close_radius: int = 1
+    noise_suppression: int = 20
+    contrast_bias: float = 0.0
+    segmentation_strategy: str = "auto"
+    gap_bridge_px: int = 2
+    speckle_removal_px: int = 0
+    contour_smooth_px: float = 0.0
+    morph_close_radius: int = 2
     morph_open_radius: int = 0
     min_width_px: float = 8.0
     max_width_px: float | None = None
@@ -97,7 +90,7 @@ class MetalRecoveryConfig:
     min_straightness: float = 0.2
     allow_t_junction: bool = True
     border_mode: str = "mark"
-    check_contour_validity: bool = False
+    check_contour_validity: bool = True
     min_inner_hole_area: float = 100.0
     preset_name: str = "standard"
     use_wide_conductor_gradient: bool = False
@@ -264,198 +257,34 @@ class MetalDetectionResult:
     wide_gradient_overlays: dict[str, list[PolygonData]] = field(default_factory=dict)
 
 
-def _segment_bright_metal(gray: np.ndarray, config: MetalRecoveryConfig) -> np.ndarray:
-    if gray.size == 0:
-        return np.zeros_like(gray, dtype=np.uint8)
-    method = _normalize_metal_segmentation_method(config.segmentation_method)
-    ac_off, morph_delta = _sensitivity_offsets(config.sensitivity_0_100, config.sensitivity_token)
-    close_r = max(1, int(config.morph_close_radius) + morph_delta)
-    open_r = max(0, int(config.morph_open_radius))
-
-    if method == "adaptive":
-        block = max(11, min(99, int(max(gray.shape) // 12) * 2 + 1))
-        mask = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block, int(round(ac_off))
-        )
-    else:
-        _t, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        tok = _normalize_metal_sensitivity_token(config.sensitivity_token)
-        k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        if tok == "low":
-            mask = cv2.erode(mask, k3)
-        elif tok == "high":
-            mask = cv2.dilate(mask, k3)
-        adj = morph_delta
-        if adj > 0:
-            mask = cv2.dilate(mask, k3, iterations=min(2, adj))
-        elif adj < 0:
-            mask = cv2.erode(mask, k3, iterations=min(2, -adj))
-
-    ks = max(3, close_r * 2 + 1)
-    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_close)
-    if open_r > 0:
-        ko = max(3, open_r * 2 + 1)
-        k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ko, ko))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k_open)
-    return ensure_binary_mask(mask)
-
-
-def _count_binary_components(mask_u8: np.ndarray) -> int:
-    if mask_u8 is None or mask_u8.size == 0:
-        return 0
-    m = (np.asarray(mask_u8) > 0).astype(np.uint8)
-    n, _, _, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
-    return max(0, int(n) - 1)
-
-
-def _watershed_split_touching_conductors(
-    ribbon_u8: np.ndarray,
-    guide_bgr: np.ndarray,
-    *,
-    dist_peak_frac: float,
-) -> np.ndarray:
-    """Break weak bridges between separate conductors using DT seeds + watershed."""
-    m = (np.asarray(ribbon_u8) > 0).astype(np.uint8) * 255
-    if int(cv2.countNonZero(m)) < 80:
-        return ribbon_u8
-    before_cc = _count_binary_components(m)
-    dist = cv2.distanceTransform(m, cv2.DIST_L2, 5)
-    dmax = float(np.max(dist))
-    if dmax < 2.2:
-        return ribbon_u8
-    frac = max(0.22, min(0.55, float(dist_peak_frac)))
-    _, sure_fg = cv2.threshold(dist, frac * dmax, 255, cv2.THRESH_BINARY)
-    sure_fg = sure_fg.astype(np.uint8)
-    if int(cv2.countNonZero(sure_fg)) < 16:
-        return ribbon_u8
-    unknown = cv2.subtract(m, sure_fg)
-    n_mark, markers = cv2.connectedComponents(sure_fg)
-    if n_mark < 3:
-        return ribbon_u8
-    markers = markers.astype(np.int32) + 1
-    markers[unknown == 255] = 0
-    markers[m == 0] = 0
-    img = np.asarray(guide_bgr)
-    if img.ndim == 2:
-        img3 = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_GRAY2BGR)
-    elif img.shape[2] == 4:
-        img3 = img[:, :, :3].astype(np.uint8)
-    else:
-        img3 = img.astype(np.uint8)
-    ws = markers.copy()
-    raise_if_preview_cancelled()
-    cv2.watershed(img3, ws)
-    raise_if_preview_cancelled()
-    out = np.zeros_like(m, dtype=np.uint8)
-    for lbl in np.unique(ws):
-        li = int(lbl)
-        if li <= 1 or li == -1:
-            continue
-        out[ws == li] = 255
-    if int(cv2.countNonZero(out)) < int(0.22 * float(cv2.countNonZero(m))):
-        return ribbon_u8
-    after_cc = _count_binary_components(out)
-    if after_cc <= before_cc:
-        return ribbon_u8
-    if after_cc > max(before_cc + 8, before_cc * 3):
-        return ribbon_u8
-    return ensure_binary_mask(out)
-
-
-def _grayscale_edge_conductor_mask(gray: np.ndarray, config: MetalRecoveryConfig) -> tuple[np.ndarray, np.ndarray]:
-    """Closed regions from grayscale edges + local morphology (no global intensity threshold).
-
-    Pipeline: Gaussian blur в†’ white-hat emphasis в†’ Canny(L2) в†’ dilate в†’ morph close/open.
-    Returns ``(filled_region_mask_uint8, canny_edges_uint8)``.
-    """
-    if gray.size == 0:
-        z = np.zeros_like(gray)
-        return z, z
-    gh, gw = int(gray.shape[0]), int(gray.shape[1])
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    ksz = max(5, min(21, int(2.25 * max(2.0, float(config.min_width_px))) | 1))
-    k_th = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
-    tophat = cv2.subtract(blurred, cv2.morphologyEx(blurred, cv2.MORPH_OPEN, k_th))
-    enhanced = cv2.addWeighted(blurred, 0.58, tophat, 0.42, 0)
-    enhanced = np.clip(enhanced, 0, 255).astype(np.uint8)
-
-    med = float(np.median(enhanced))
-    if med < 1.0:
-        med = float(np.mean(enhanced)) + 1.0
-    sigma_use = 0.33
-    lower = float((1.0 - sigma_use) * med)
-    upper = float((1.0 + sigma_use) * med)
-    adj = (float(config.sensitivity_0_100) - 50.0) / 50.0
-    lower *= max(0.35, 1.0 - 0.28 * adj)
-    upper *= max(0.55, 1.0 - 0.18 * adj)
-    tok = _normalize_metal_sensitivity_token(config.sensitivity_token)
-    if tok == "high":
-        lower *= 0.88
-        upper *= 0.92
-    elif tok == "low":
-        lower *= 1.12
-        upper = min(255.0, upper * 1.08)
-
-    lo = int(max(1, min(254, round(lower))))
-    hi = int(max(lo + 4, min(255, round(upper))))
-    edges = cv2.Canny(enhanced, lo, hi, L2gradient=True)
-    raise_if_preview_cancelled()
-
-    d3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    thick = cv2.dilate(edges, d3, iterations=1)
-    _, morph_delta = _sensitivity_offsets(config.sensitivity_0_100, config.sensitivity_token)
-    close_r = max(1, int(config.morph_close_radius) + morph_delta)
-    rk = max(3, min(25, close_r * 2 + 1))
-    rw = max(rk, min(25, int(max(3, round(float(config.min_width_px)))) | 1))
-    # Merge only the inner/outer Canny pair of one trace; cap so we do not close real gaps between neighbours.
-    inner_merge = int(max(5, min(15, 2 * int(max(2, round(0.42 * float(config.min_width_px)))) + 1)))
-    cap = int(getattr(config, "edge_close_cap_px", 9) or 9)
-    cap = max(5, min(21, cap | 1))
-    rw = min(rw, inner_merge, cap)
-    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (rw, rw))
-    ribbon = cv2.morphologyEx(thick, cv2.MORPH_CLOSE, k_close)
-    raise_if_preview_cancelled()
-    open_r = max(0, int(config.morph_open_radius))
-    if open_r > 0:
-        ko = max(3, open_r * 2 + 1)
-        k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ko, ko))
-        ribbon = cv2.morphologyEx(ribbon, cv2.MORPH_OPEN, k_open)
-    if bool(getattr(config, "edge_watershed_split", True)):
-        cap = getattr(config, "edge_watershed_max_pixels", None)
-        run_ws = cap is None or int(cap) <= 0 or gh * gw <= int(cap)
-        if run_ws:
-            guide = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
-            ribbon = _watershed_split_touching_conductors(
-                ribbon,
-                guide,
-                dist_peak_frac=float(getattr(config, "edge_watershed_dist_peak_frac", 0.38) or 0.38),
-            )
-    return ensure_binary_mask(ribbon), edges
+def _segmentation_config_from_recovery(config: MetalRecoveryConfig) -> MetalSegmentationConfig:
+    gap = max(0, int(getattr(config, "gap_bridge_px", config.morph_close_radius) or 0))
+    speckle = max(0, int(getattr(config, "speckle_removal_px", config.morph_open_radius) or 0))
+    return MetalSegmentationConfig(
+        noise_suppression=max(0, min(100, int(config.noise_suppression))),
+        contrast_bias=float(config.contrast_bias),
+        segmentation_strategy=normalize_metal_segmentation_strategy(config.segmentation_strategy),
+        gap_bridge_px=gap,
+        speckle_removal_px=speckle,
+        min_width_px=float(config.min_width_px),
+        edge_close_cap_px=int(config.edge_close_cap_px),
+        edge_watershed_split=bool(config.edge_watershed_split),
+        edge_watershed_dist_peak_frac=float(config.edge_watershed_dist_peak_frac),
+        edge_watershed_max_pixels=config.edge_watershed_max_pixels,
+    )
 
 
 def build_metal_extraction_mask(
     gray: np.ndarray, config: MetalRecoveryConfig
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-    """Build the working binary mask for conductor contour extraction (all segmentation modes)."""
+    """Build the working binary mask for conductor contour extraction."""
     raise_if_preview_cancelled()
-    mode = _normalize_metal_extraction_mode(config.segmentation_method)
-    extra: dict[str, np.ndarray] = {}
-    if mode == "none":
-        mask, e = _grayscale_edge_conductor_mask(gray, config)
-        extra["metal_edge_canny"] = e
-        return mask, extra
-    if mode == "hybrid":
-        cfg_thr = replace(config, segmentation_method="otsu")
-        mask_bin = _segment_bright_metal(gray, cfg_thr)
-        raise_if_preview_cancelled()
-        mask_edge, e = _grayscale_edge_conductor_mask(gray, config)
-        extra["metal_edge_canny"] = e
-        extra["metal_threshold_mask"] = mask_bin
-        mask = cv2.bitwise_or(mask_bin, mask_edge)
-        return ensure_binary_mask(mask), extra
-    mask = _segment_bright_metal(gray, config)
-    return mask, extra
+    seg_cfg = _segmentation_config_from_recovery(config)
+    result = build_metal_segmentation_mask(gray, seg_cfg)
+    extra = dict(result.debug_images)
+    if result.strategy == "legacy_otsu":
+        extra["metal_threshold_mask"] = result.raw_segmentation
+    return ensure_binary_mask(result.mask), extra
 
 
 def _border_touch(
@@ -538,21 +367,75 @@ def _convex_branching_score(contour: np.ndarray) -> int:
     return deep
 
 
+def _vectorize_contour(contour: np.ndarray, config: MetalRecoveryConfig) -> list[tuple[float, float]]:
+    return _contour_to_polygon(
+        contour,
+        epsilon=config.epsilon_simplify,
+        approx_enabled=config.approximation_enabled,
+        min_angle_deg=config.min_polygon_angle_deg,
+        smooth_px=float(getattr(config, "contour_smooth_px", 0.0) or 0.0),
+        allowed_angles=config.allowed_angles,
+        angle_tolerance_deg=config.angle_tolerance_deg,
+    )
+
+
+def _snap_rectilinear(
+    points: list[tuple[float, float]],
+    *,
+    allowed_angles: str,
+    tolerance_deg: float,
+) -> list[tuple[float, float]]:
+    mode = str(allowed_angles or "free").strip().lower()
+    if mode == "free" or len(points) < 3:
+        return points
+    canon = sorted(_CANONICAL_45 if mode == "45_90" else _CANONICAL_90)
+    tol = max(0.5, float(tolerance_deg))
+    snapped = list(points)
+    n = len(snapped)
+    for i in range(n):
+        x0, y0 = snapped[i]
+        x1, y1 = snapped[(i + 1) % n]
+        dx, dy = x1 - x0, y1 - y0
+        length = float(np.hypot(dx, dy))
+        if length < 1e-3:
+            continue
+        ang = degrees(atan2(dy, dx)) % 180.0
+        best = min(canon, key=lambda c: min(abs(ang - c), abs(ang - c - 180.0), abs(ang - c + 180.0)))
+        dev = min(abs(ang - best), abs(ang - best - 180.0), abs(ang - best + 180.0))
+        if dev <= tol:
+            rad = np.deg2rad(best)
+            nx = x0 + length * float(np.cos(rad))
+            ny = y0 + length * float(np.sin(rad))
+            snapped[(i + 1) % n] = (nx, ny)
+    return snapped
+
+
 def _contour_to_polygon(
     contour: np.ndarray,
     *,
     epsilon: float,
     approx_enabled: bool,
     min_angle_deg: float,
+    smooth_px: float = 0.0,
+    allowed_angles: str = "free",
+    angle_tolerance_deg: float = 7.0,
 ) -> list[tuple[float, float]]:
+    work = contour
+    if smooth_px > 0.05 and len(contour) >= 4:
+        peri = float(cv2.arcLength(contour, True))
+        if peri > 1.0:
+            smooth_eps = max(0.1, min(float(smooth_px), 0.02 * peri))
+            work = cv2.approxPolyDP(contour, smooth_eps, True)
     if not approx_enabled or epsilon <= 0:
-        pts = [(float(p[0][0]), float(p[0][1])) for p in contour]
+        pts = [(float(p[0][0]), float(p[0][1])) for p in work]
     else:
         eps = max(0.1, float(epsilon))
-        simplified = cv2.approxPolyDP(contour, eps, True)
+        simplified = cv2.approxPolyDP(work, eps, True)
         pts = [(float(p[0][0]), float(p[0][1])) for p in simplified]
     if len(pts) >= 3 and min_angle_deg > 1e-6:
         pts = _remove_vertices_below_angle(pts, float(min_angle_deg))
+    if len(pts) >= 3 and str(allowed_angles) != "free":
+        pts = _snap_rectilinear(pts, allowed_angles=allowed_angles, tolerance_deg=angle_tolerance_deg)
     return pts
 
 
@@ -610,24 +493,63 @@ def _filled_contour_iou(
     return float(inter / union)
 
 
+def _points_to_contour(points: list[tuple[float, float]]) -> np.ndarray:
+    return np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
+
+
+def _filled_points_iou(
+    left: list[tuple[float, float]],
+    right: list[tuple[float, float]],
+    shape_hw: tuple[int, int],
+) -> float:
+    return _filled_contour_iou(_points_to_contour(left), right, shape_hw)
+
+
+def _repair_polygon_from_raster_fill(
+    points: list[tuple[float, float]],
+    config: MetalRecoveryConfig,
+    shape_hw: tuple[int, int],
+) -> tuple[list[tuple[float, float]], bool, str]:
+    h, w = shape_hw
+    if h <= 0 or w <= 0 or len(points) < 3:
+        return points, False, "мало_вершин"
+    mask = np.zeros((h, w), dtype=np.uint8)
+    arr = np.array(points, dtype=np.int32).reshape(-1, 1, 2)
+    cv2.fillPoly(mask, [arr], 255)
+    contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return points, False, "самопересечение_или_топология"
+    contour = max(contours, key=lambda item: abs(float(cv2.contourArea(item))))
+    candidate = _vectorize_contour(contour, config)
+    valid, reason = _valid_topology(candidate, enabled=True)
+    if not valid:
+        return candidate, False, reason
+    if _filled_points_iou(points, candidate, shape_hw) < _TOPOLOGY_REPAIR_MIN_FILL_IOU:
+        return candidate, False, reason or "самопересечение_или_топология"
+    return candidate, True, ""
+
+
 def _repair_contour_polygon_for_topology(
     contour: np.ndarray,
     points: list[tuple[float, float]],
     config: MetalRecoveryConfig,
     shape_hw: tuple[int, int],
 ) -> tuple[list[tuple[float, float]], bool, str]:
-    valid, reason = _valid_topology(points, enabled=config.check_contour_validity)
-    if valid or not config.check_contour_validity:
-        return points, valid, reason
+    valid, reason = _valid_topology(points, enabled=True)
+    if valid:
+        return points, True, ""
 
     base_epsilon = max(0.1, float(config.epsilon_simplify))
-    multipliers = (0.6, 0.8, 1.0, 1.15, 1.3, 1.5, 1.7, 2.0, 2.4, 2.8, 3.2)
+    multipliers = (0.6, 0.8, 1.0, 1.15, 1.3, 1.5, 1.7, 2.0, 2.4, 2.8, 3.2, 3.8, 4.5, 5.5)
     for multiplier in multipliers:
         candidate = _contour_to_polygon(
             contour,
             epsilon=base_epsilon * multiplier,
             approx_enabled=True,
             min_angle_deg=float(config.min_polygon_angle_deg),
+            smooth_px=float(getattr(config, "contour_smooth_px", 0.0) or 0.0),
+            allowed_angles=config.allowed_angles,
+            angle_tolerance_deg=config.angle_tolerance_deg,
         )
         candidate_valid, candidate_reason = _valid_topology(candidate, enabled=True)
         if not candidate_valid:
@@ -637,7 +559,34 @@ def _repair_contour_polygon_for_topology(
             continue
         return candidate, True, ""
 
-    return points, False, reason
+    raster_pts, raster_ok, raster_reason = _repair_polygon_from_raster_fill(points, config, shape_hw)
+    if raster_ok:
+        return raster_pts, True, ""
+    return points, False, raster_reason or reason
+
+
+def _finalize_accepted_polygon_topology(
+    accepted: list[PolygonData],
+    shape_hw: tuple[int, int],
+    config: MetalRecoveryConfig,
+) -> list[PolygonData]:
+    kept: list[PolygonData] = []
+    for poly in accepted:
+        contour = _points_to_contour(poly.points)
+        repaired, valid, _reason = _repair_contour_polygon_for_topology(
+            contour,
+            poly.points,
+            config,
+            shape_hw,
+        )
+        if not valid or len(repaired) < 3:
+            continue
+        out = poly if repaired == poly.points else poly.clone()
+        if repaired != poly.points:
+            out.points = repaired
+            out.area, out.perimeter, out.bbox = compute_polygon_metrics(repaired)
+        kept.append(out)
+    return kept
 
 
 def _polygon_raster_iou(a: PolygonData, b: PolygonData, shape_hw: tuple[int, int]) -> float:
@@ -770,16 +719,12 @@ def _hierarchy_polygon_from_contour(
     image_shape: tuple[int, int],
 ) -> PolygonData | None:
     raw_pts = [(float(contour[i][0][0]), float(contour[i][0][1])) for i in range(len(contour))]
-    points = _contour_to_polygon(
-        contour,
-        epsilon=config.epsilon_simplify,
-        approx_enabled=config.approximation_enabled,
-        min_angle_deg=config.min_polygon_angle_deg,
-    )
+    points = _vectorize_contour(contour, config)
     topo_pts = points if len(points) >= 3 else raw_pts
-    topo_pts, valid, _reason = _repair_contour_polygon_for_topology(contour, topo_pts, config, image_shape)
-    if valid and len(topo_pts) >= 3:
-        points = topo_pts
+    topo_pts, valid, topo_reason = _repair_contour_polygon_for_topology(contour, topo_pts, config, image_shape)
+    if not valid or len(topo_pts) < 3:
+        return None
+    points = topo_pts
     use_pts = points if len(points) >= 3 else raw_pts
     if len(use_pts) < 3:
         return None
@@ -978,12 +923,7 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
                 reject_case = "width_max"
 
         if not reject_case:
-            points = _contour_to_polygon(
-                contour,
-                epsilon=config.epsilon_simplify,
-                approx_enabled=config.approximation_enabled,
-                min_angle_deg=config.min_polygon_angle_deg,
-            )
+            points = _vectorize_contour(contour, config)
             topo_pts = points if len(points) >= 3 else raw_pts
             topo_pts, valid, topo_reason = _repair_contour_polygon_for_topology(contour, topo_pts, config, (h, w))
             if valid and len(topo_pts) >= 3:
@@ -1002,7 +942,7 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
                 n_vertices = max(0, n_vertices - 1)
 
             if not valid:
-                reject_case = topo_reason or "invalid_topology"
+                reject_case = topo_reason or "самопересечение_или_топология"
             elif n_vertices < max(3, int(config.min_points)):
                 reject_case = "min_vertices"
             elif not config.allow_t_junction:
@@ -1116,7 +1056,9 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
         "metal_binary_mask": mask,
         "metal_filtered_mask": accepted_mask,
     }
-    dbg.update(pre_dbg)
+    for key, value in pre_dbg.items():
+        if isinstance(value, np.ndarray):
+            dbg[key] = value
     raise_if_preview_cancelled()
     vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     cv2.drawContours(vis, raw_contours, -1, (0, 255, 0), 1)
@@ -1140,6 +1082,8 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
         contour_to_polygon_id,
         config,
     )
+
+    accepted = _finalize_accepted_polygon_topology(accepted, (h, w), config)
 
     _renumber_polygons_preserving_parents(accepted)
 

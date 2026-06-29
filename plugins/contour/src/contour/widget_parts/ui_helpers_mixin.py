@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..adapters.qt.object_validity import qt_object_is_valid, safe_viewport
 from ._imports import *  # noqa: F403
 
 
@@ -264,6 +265,10 @@ class WidgetUiHelpersMixin:
             self.antialias_opened_cif_button.setStatusTip(antialias_all_tip)
 
     def _on_editor_tool_changed(self, tool) -> None:
+        if hasattr(self, "_tool_buttons"):
+            button = self._tool_buttons.get(tool)
+            if button is not None and not button.isChecked():
+                button.setChecked(True)
         is_ruler = tool == EditorTool.RULER
         self.ruler_status_label.setVisible(is_ruler)
         if is_ruler and not self.ruler_status_label.text():
@@ -451,6 +456,17 @@ class WidgetUiHelpersMixin:
         if isinstance(watched, QAbstractSpinBox) and event.type() == QEvent.Type.Wheel:
             event.ignore()
             return True
+        if hasattr(self, "_handle_frame_matrix_arrow_key_event") and not getattr(self, "_closing", False):
+            arrow_key_targets: set[object] = set()
+            for attr_name in ("polygon_editor", "thumbnail_grid"):
+                widget = getattr(self, attr_name, None)
+                if qt_object_is_valid(widget):
+                    arrow_key_targets.add(widget)
+                    viewport = safe_viewport(widget)
+                    if viewport is not None:
+                        arrow_key_targets.add(viewport)
+            if watched in arrow_key_targets and self._handle_frame_matrix_arrow_key_event(event):
+                return True
         return super().eventFilter(watched, event)
 
     def _build_color_button(self, color: str, handler) -> QPushButton:

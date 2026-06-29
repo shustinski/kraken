@@ -18,6 +18,8 @@ from PIL import Image
 
 from neuralimage.lib.file_retry import retry_file_read
 from neuralimage.lib.image_processing import cut_image, sew_image
+from neuralimage.preprocessing.config import PreprocessingConfig
+from neuralimage.preprocessing.pipeline import SemPreprocessingPipeline
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact
 from neuralimage.model.NeuralNetwork.context_utils import (
     build_context_batch,
@@ -83,6 +85,7 @@ class RecognitionWorkload:
     context_input_size: tuple[int, int] | None = None
     compression_factor: int = 1
     source_root: Path | None = None
+    preprocessing: PreprocessingConfig | None = None
 
     @property
     def frame_count(self) -> int:
@@ -215,6 +218,7 @@ def _run_cut_worker(
     context_input_size: tuple[int, int] | None = None,
     compression_factor: int = 1,
     source_root: Path | None = None,
+    preprocessing: PreprocessingConfig | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
     try:
@@ -230,6 +234,7 @@ def _run_cut_worker(
             context_input_size,
             compression_factor,
             source_root,
+            preprocessing,
             stop_token,
         )
     except Exception:
@@ -402,6 +407,7 @@ class MultiprocessingRecognitionRunner:
                     self._config.workload.context_input_size,
                     self._config.workload.compression_factor,
                     self._config.workload.source_root,
+                    self._config.workload.preprocessing,
                     self._config.stop_token,
                 ),
             )
@@ -607,6 +613,7 @@ def run_single_thread_recognition(
     context_input_size: tuple[int, int] | None = None,
     compression_factor: int = 1,
     source_root: Path | None = None,
+    preprocessing: PreprocessingConfig | None = None,
 ) -> None:
     model.eval()
     model.to(device)
@@ -631,6 +638,7 @@ def run_single_thread_recognition(
             context_input_size=context_input_size,
             compression_factor=compression_factor,
             source_root=source_root,
+            preprocessing=preprocessing,
         )
         predicted = gpu_predict(
             prepared,
@@ -749,6 +757,7 @@ def cut_image_process(
     context_input_size: tuple[int, int] | None = None,
     compression_factor: int = 1,
     source_root: Path | None = None,
+    preprocessing: PreprocessingConfig | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
     while not stop_event.is_set():
@@ -767,6 +776,7 @@ def cut_image_process(
             context_input_size=context_input_size,
             compression_factor=compression_factor,
             source_root=source_root,
+            preprocessing=preprocessing,
         )
         _store_payload_array_for_multiprocessing(image_payload, 'cutted_image')
         _store_payload_array_for_multiprocessing(image_payload, 'context_image')
@@ -775,6 +785,20 @@ def cut_image_process(
         _store_payload_array_for_multiprocessing(image_payload, 'patch_coords_px')
         _store_payload_array_for_multiprocessing(image_payload, 'source_size_hw')
         cutted_queue.put(image_payload)
+
+
+def _apply_preprocessing_to_channel_first(
+    work_image: np.ndarray,
+    preprocessing: PreprocessingConfig | None,
+) -> np.ndarray:
+    if preprocessing is None or not preprocessing.any_enabled():
+        return work_image
+    pipeline = SemPreprocessingPipeline(preprocessing)
+    if work_image.shape[0] == 1:
+        processed = pipeline.apply(work_image[0])
+        return np.expand_dims(processed, axis=0).astype(np.float32, copy=False)
+    processed_planes = [pipeline.apply(plane) for plane in work_image]
+    return np.stack(processed_planes, axis=0).astype(np.float32, copy=False)
 
 
 def cut_image_prepare(
@@ -788,6 +812,7 @@ def cut_image_prepare(
     context_input_size: tuple[int, int] | None = None,
     compression_factor: int = 1,
     source_root: Path | None = None,
+    preprocessing: PreprocessingConfig | None = None,
 ) -> dict[str, Any]:
     frame_name = _resolve_relative_frame_name(img_path, source_root)
     payload: dict[str, Any] = {
@@ -822,6 +847,9 @@ def cut_image_prepare(
         work_image = np.array(source_image).astype('float32')
 
     work_image = _to_channel_first(work_image, channels=channels)
+    work_image = _apply_preprocessing_to_channel_first(work_image, preprocessing)
+    if work_image.max() <= 1.0:
+        work_image = work_image * 255.0
     payload['cutted_image'] = cut_image(work_image, segment_size, overlap)
     if use_context_branch and context_crop_size is not None and context_input_size is not None:
         base_shape_hw = (int(work_image.shape[1]), int(work_image.shape[2]))

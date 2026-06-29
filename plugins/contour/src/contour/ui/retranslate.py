@@ -317,7 +317,20 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.via_search_mode_label_widget.setText(
             self._tr("via_search_mode_label", "Режим поиска via" if self._ui_language == "ru" else "Via search mode")
         )
-    if self.via_search_mode_combo.count() >= 2:
+    if self.via_search_mode_combo.count() >= 3:
+        self.via_search_mode_combo.setItemText(
+            0,
+            self._tr("via_search_mode_universal", "Универсальный" if self._ui_language == "ru" else "Universal"),
+        )
+        self.via_search_mode_combo.setItemText(
+            1,
+            self._tr("via_search_mode_bright_sem", "Светлые точки (SEM)" if self._ui_language == "ru" else "Bright spots (SEM)"),
+        )
+        self.via_search_mode_combo.setItemText(
+            2,
+            self._tr("via_search_mode_template", "По шаблону" if self._ui_language == "ru" else "Template"),
+        )
+    elif self.via_search_mode_combo.count() >= 2:
         self.via_search_mode_combo.setItemText(
             0,
             self._tr("via_search_mode_template", "По шаблону" if self._ui_language == "ru" else "Template"),
@@ -341,10 +354,10 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             self._tr("via_polarity_label", "Полярность" if self._ui_language == "ru" else "Polarity")
         )
     self.via_white_range_checkbox.setText(
-        self._tr("via_white_range_method", "Диапазон белых" if self._ui_language == "ru" else "White range")
+        self._tr("via_white_range_method", "Распознавать светлые" if self._ui_language == "ru" else "Recognize bright")
     )
     self.via_black_range_checkbox.setText(
-        self._tr("via_black_range_method", "Диапазон черных" if self._ui_language == "ru" else "Black range")
+        self._tr("via_black_range_method", "Распознавать тёмные" if self._ui_language == "ru" else "Recognize dark")
     )
     if getattr(self, "via_min_score_label_widget", None) is not None:
         self.via_min_score_label_widget.setText(

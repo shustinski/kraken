@@ -466,6 +466,15 @@ class GeneralNeuralHandler:
 
         if model_supports_init_kwarg(resolved_name, 'deep_supervision'):
             model_kwargs['deep_supervision'] = bool(getattr(self.tranining_parameters, 'deep_supervision', True))
+
+        supervision_targets = getattr(self.tranining_parameters, 'supervision_targets', None)
+        if (
+            supervision_targets is not None
+            and getattr(supervision_targets, 'any_enabled', lambda: False)()
+            and model_supports_init_kwarg(resolved_name, 'supervision_heads')
+        ):
+            model_kwargs['supervision_heads'] = tuple(supervision_targets.enabled_targets())
+
         return model_kwargs
 
     def _resolve_training_model(self):

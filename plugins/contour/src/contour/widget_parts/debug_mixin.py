@@ -77,7 +77,7 @@ class WidgetDebugMixin:
         if self._show_source_while_middle_held == should_show_source:
             return
         self._show_source_while_middle_held = should_show_source
-        self._sync_current_state_views()
+        self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
 
     def _is_filters_tab_active(self) -> bool:
         if not hasattr(self, "control_tabs") or not hasattr(self, "pipeline_tab"):
@@ -90,7 +90,7 @@ class WidgetDebugMixin:
         if self._is_filters_tab_active():
             return
         self._show_source_while_middle_held = False
-        self._sync_current_state_views()
+        self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
 
     def _show_gradient_debug_window(self) -> None:
         title = self._tr("debug.gradient_title")
@@ -212,7 +212,7 @@ class WidgetDebugMixin:
         current_state = self._workspace.current_state
         if current_state is None or current_state.source_image is None:
             return {}
-        from .application.use_cases.processing import build_detection_debug_maps
+        from ..application.use_cases.processing import build_detection_debug_maps
 
         settings = self._current_contour_settings()
         preprocessed = current_state.preprocessed_image
@@ -260,12 +260,12 @@ class WidgetDebugMixin:
         if not self.gradient_overlay_checkbox.isChecked():
             self.polygon_editor.clear_gradient_overlay()
             return
-        current_state = self._workspace.current_state
-        if current_state is None or current_state.source_image is None:
+        display_image = self._workspace.current_display_image()
+        if display_image is None:
             self.polygon_editor.clear_gradient_overlay()
             return
         try:
-            overlay = self._build_gradient_overlay_image(current_state.source_image)
+            overlay = self._build_gradient_overlay_image(display_image)
         except Exception:  # pragma: no cover - defensive: UI must never crash
             self.polygon_editor.clear_gradient_overlay()
             return
@@ -290,18 +290,29 @@ class WidgetDebugMixin:
         op = float(self.metal_overlay_opacity_spin.value()) if hasattr(self, "metal_overlay_opacity_spin") else 0.45
         try:
             if mode == "overlay":
-                src = current_state.source_image
+                src = self._workspace.current_display_image()
                 if src is None:
                     self.polygon_editor.clear_gradient_overlay()
                     return
                 vis = np.asarray(src)
                 if vis.ndim == 2:
                     vis = cv2.cvtColor(vis, cv2.COLOR_GRAY2BGR)
-                m = maps.get("metal_filtered_mask") or maps.get("metal_binary_mask") or maps.get("metal_mask")
+                m = None
+                for _mask_key in ("metal_filtered_mask", "metal_binary_mask", "metal_mask"):
+                    _candidate = maps.get(_mask_key)
+                    if _candidate is not None:
+                        m = _candidate
+                        break
                 if m is None or np.asarray(m).size == 0:
                     self.polygon_editor.clear_gradient_overlay()
                     return
                 binm = (np.asarray(m) > 0).astype(np.uint8)
+                vector_clip = self._metal_overlay_vector_clip_mask(
+                    binm.shape[:2],
+                    list(getattr(current_state, "polygons", []) or []),
+                )
+                if vector_clip is not None:
+                    binm = binm * vector_clip
                 tint = np.zeros_like(vis)
                 tint[:, :, 1] = binm * 200
                 tint[:, :, 0] = binm * 40
@@ -329,13 +340,35 @@ class WidgetDebugMixin:
         except Exception:  # pragma: no cover
             self.polygon_editor.clear_gradient_overlay()
 
+    def _metal_overlay_vector_clip_mask(self, shape: tuple[int, int], polygons: list[PolygonData]) -> np.ndarray | None:
+        if not polygons:
+            return None
+        height, width = int(shape[0]), int(shape[1])
+        if height <= 0 or width <= 0:
+            return None
+        mask = np.zeros((height, width), dtype=np.uint8)
+        has_fill = False
+        for polygon in polygons:
+            if str(getattr(polygon, "category", "") or "") == "metal_wide_gradient":
+                continue
+            points = getattr(polygon, "points", []) or []
+            if len(points) < 3:
+                continue
+            pts = np.array([(int(round(float(x))), int(round(float(y)))) for x, y in points], dtype=np.int32)
+            pts[:, 0] = np.clip(pts[:, 0], 0, width - 1)
+            pts[:, 1] = np.clip(pts[:, 1], 0, height - 1)
+            cv2.fillPoly(mask, [pts.reshape((-1, 1, 2))], 0 if bool(getattr(polygon, "is_hole", False)) else 1)
+            if not bool(getattr(polygon, "is_hole", False)):
+                has_fill = True
+        return mask if has_fill else None
+
     def _build_gradient_overlay_image(self, source_image: np.ndarray) -> np.ndarray | None:
-        from .application.use_cases.processing import (
+        from ..application.use_cases.processing import (
             _resolve_conductor_edge_method,
             _resolve_via_edge_method,
             _via_grayscale,
         )
-        from .edge_detection import build_gradient_elevation
+        from ..edge_detection import build_gradient_elevation
 
         settings = self._current_contour_settings()
         if settings.object_type == "via" or settings.output_mode == "box":

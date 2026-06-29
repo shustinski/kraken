@@ -137,12 +137,40 @@ def ring_coords_xyz(points: list[tuple[float, float]]) -> list[tuple[float, floa
     return list(points)
 
 
+def _dedupe_consecutive_ring_coords(coords: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    if not coords:
+        return []
+    deduped: list[tuple[float, float]] = [coords[0]]
+    for x_coord, y_coord in coords[1:]:
+        last_x, last_y = deduped[-1]
+        if hypot(float(x_coord) - last_x, float(y_coord) - last_y) < 1e-9:
+            continue
+        deduped.append((float(x_coord), float(y_coord)))
+    return deduped
+
+
+def _ring_signed_area(coords: list[tuple[float, float]]) -> float:
+    if len(coords) < 3:
+        return 0.0
+    area = 0.0
+    for index, (x_coord, y_coord) in enumerate(coords):
+        next_x, next_y = coords[(index + 1) % len(coords)]
+        area += float(x_coord) * float(next_y) - float(next_x) * float(y_coord)
+    return area * 0.5
+
+
 def _usable_ring_coords(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    coords = ring_coords_xyz(points)
+    coords = _dedupe_consecutive_ring_coords(ring_coords_xyz(points))
     distinct = {(float(x_coord), float(y_coord)) for x_coord, y_coord in coords}
     if len(distinct) < 3:
         return []
+    if abs(_ring_signed_area(coords)) <= 1e-6:
+        return []
     return coords
+
+
+def ring_is_valid_for_polygon(points: list[tuple[float, float]]) -> bool:
+    return bool(_usable_ring_coords(points))
 
 
 def _polygon_from_points(
@@ -154,7 +182,10 @@ def _polygon_from_points(
         return Polygon()
 
     usable_holes = [hole for hole in (_usable_ring_coords(hole_points) for hole_points in holes or []) if hole]
-    return Polygon(shell, usable_holes)
+    try:
+        return Polygon(shell, usable_holes)
+    except ValueError:
+        return Polygon()
 
 
 def _subtree_geometry(
@@ -168,8 +199,9 @@ def _subtree_geometry(
     for cid in child_ids:
         cp = polygons_by_id[cid]
         if cp.is_hole:
-            if _usable_ring_coords(cp.points):
-                interior_rings.append(cp.points)
+            usable_hole = _usable_ring_coords(cp.points)
+            if usable_hole:
+                interior_rings.append(usable_hole)
             for nested_id in sorted(k for k in subset if polygons_by_id[k].parent_id == cid):
                 nested_poly = polygons_by_id[nested_id]
                 if nested_poly.is_hole:
@@ -318,7 +350,7 @@ def shapely_to_polygon_data_list(result: BaseGeometry) -> list[PolygonData]:
 
     def push_polygon(poly: Polygon) -> None:
         coords = integer_points([(float(x), float(y)) for x, y in poly.exterior.coords[:-1]])
-        if len(coords) < 3:
+        if not ring_is_valid_for_polygon(coords):
             return
 
         exterior_id = allocate_id()
@@ -338,7 +370,7 @@ def shapely_to_polygon_data_list(result: BaseGeometry) -> list[PolygonData]:
 
         for interior_ring in poly.interiors:
             hcoords = integer_points([(float(x), float(y)) for x, y in interior_ring.coords[:-1]])
-            if len(hcoords) < 3:
+            if not ring_is_valid_for_polygon(hcoords):
                 continue
 
             hid = allocate_id()

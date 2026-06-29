@@ -118,11 +118,37 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertIsNone(result.mask_image)
         self.assertEqual(len(result.polygons), 1)
 
-    def test_conductor_gradient_refines_mask_to_source_edges(self) -> None:
+    def test_conductor_recognition_uses_preprocessed_image_not_source(self) -> None:
         source_image = np.zeros((80, 100), dtype=np.uint8)
         cv2.rectangle(source_image, (25, 20), (74, 59), 220, thickness=-1)
-        loose_mask = np.zeros_like(source_image)
-        cv2.rectangle(loose_mask, (20, 15), (79, 64), 255, thickness=-1)
+        preprocessed = np.zeros_like(source_image)
+        cv2.rectangle(preprocessed, (25, 20), (74, 59), 255, thickness=-1)
+
+        empty_preprocessed = np.zeros_like(source_image)
+        result_from_source = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(min_area=10.0, epsilon=1.0, min_polygon_angle=0.0),
+            source_image=source_image,
+            preprocessed_image=empty_preprocessed,
+        )
+        result_from_pipeline = process_image_path(
+            image_path="sample.png",
+            pipeline_config={"steps": []},
+            contour_settings=ContourExtractionSettings(min_area=10.0, epsilon=1.0, min_polygon_angle=0.0),
+            source_image=np.zeros_like(source_image),
+            preprocessed_image=preprocessed,
+        )
+
+        self.assertEqual(len(result_from_source.polygons), 0)
+        self.assertEqual(len(result_from_pipeline.polygons), 1)
+        self.assertEqual(result_from_pipeline.polygons[0].bbox, (25, 20, 50, 40))
+
+    def test_sem_conductor_recognition_uses_preprocessed_image(self) -> None:
+        source_image = np.zeros((80, 100), dtype=np.uint8)
+        cv2.rectangle(source_image, (5, 5), (30, 30), 220, thickness=-1)
+        preprocessed = np.zeros_like(source_image)
+        cv2.rectangle(preprocessed, (50, 40), (75, 65), 220, thickness=-1)
 
         result = process_image_path(
             image_path="sample.png",
@@ -134,17 +160,13 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 epsilon=1.0,
                 min_polygon_angle=0.0,
                 algorithm_backend="sem",
-                conductor_gradient_enabled=True,
-                conductor_gradient_min_strength=10.0,
-                conductor_gradient_band_radius=8,
             ),
             source_image=source_image,
-            preprocessed_image=loose_mask,
+            preprocessed_image=preprocessed,
         )
 
-        self.assertEqual(len(result.polygons), 1)
-        # Watershed refinement approximates the bright rectangle; exact bbox depends on OpenCV minor version.
-        self.assertEqual(result.polygons[0].bbox, (23, 18, 54, 44))
+        self.assertGreaterEqual(len(result.polygons), 1)
+        self.assertGreaterEqual(result.polygons[0].bbox[0], 45)
 
     def test_via_profile_uses_white_range_parameters(self) -> None:
         source_image = np.zeros((40, 40), dtype=np.uint8)
@@ -534,6 +556,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_search_mode="bright_tophat_dog",
                 via_template_images=[],
                 bright_via_min_final_score=10.0,
+                bright_via_min_isolation_score=0.0,
                 bright_via_use_metal_mask=False,
             ),
             source_image=source_image,

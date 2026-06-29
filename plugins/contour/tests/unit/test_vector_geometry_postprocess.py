@@ -11,6 +11,7 @@ from contour.application.vector_geometry_postprocess import (
     merge_overlapping_root_families,
     postprocess_after_editor_mutation,
     postprocess_after_vertex_move,
+    postprocess_changed_polygon_edit,
     postprocess_changed_polygon_only,
     postprocess_polygons_for_frame_navigation,
     remove_spikes_from_polygon_ring,
@@ -294,6 +295,29 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         self.assertIsNotNone(moved_hole)
         self.assertTrue(moved_hole.is_hole)
         self.assertEqual(moved_hole.points[1], (43, 40))
+
+    def test_postprocess_changed_polygon_edit_rejects_too_small_outer(self) -> None:
+        tiny = _rect(0.0, 0.0, 2.0, 2.0, 1)
+        processed, accepted, changed = postprocess_changed_polygon_edit(
+            [tiny],
+            VectorGeometrySettings(min_outer_area_px2=50.0, min_spike_interior_angle_deg=0.0),
+            polygon_id=1,
+        )
+        self.assertFalse(accepted)
+        self.assertFalse(changed)
+        self.assertEqual(len(processed), 1)
+        self.assertEqual(processed[0].points, tiny.points)
+
+    def test_postprocess_changed_polygon_only_keeps_polygon_when_filters_fail(self) -> None:
+        tiny = _rect(0.0, 0.0, 2.0, 2.0, 1)
+        processed, changed = postprocess_changed_polygon_only(
+            [tiny],
+            VectorGeometrySettings(min_outer_area_px2=50.0, min_spike_interior_angle_deg=0.0),
+            polygon_id=1,
+        )
+        self.assertFalse(changed)
+        self.assertEqual(len(processed), 1)
+        self.assertEqual(processed[0].points, tiny.points)
 
 
 if __name__ == "__main__":

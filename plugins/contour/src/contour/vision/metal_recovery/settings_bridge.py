@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .detector import MetalRecoveryConfig
+from .segmentation import normalize_metal_segmentation_strategy
 
 _ALLOWED_MAP = {
     "90_only": "90_only",
@@ -37,8 +38,6 @@ def _normalize_hierarchy_mode(value: Any) -> bool:
 
 
 def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
-    sens_tok = str(getattr(settings, "metal_sensitivity", "medium") or "medium")
-    sens_100 = int(getattr(settings, "metal_sensitivity_0_100", 50) or 50)
     max_w = getattr(settings, "metal_max_trace_width_px", None)
     if max_w is None or float(max_w) <= 0:
         max_w_px = None
@@ -55,12 +54,22 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
     else:
         max_perimeter = float(max_p)
 
+    gap = int(getattr(settings, "metal_gap_bridge_px", getattr(settings, "metal_morph_close_radius", 2)) or 2)
+    speckle = int(
+        getattr(settings, "metal_speckle_removal_px", getattr(settings, "metal_morph_open_radius", 0)) or 0
+    )
+
     return MetalRecoveryConfig(
-        segmentation_method=str(getattr(settings, "metal_segmentation_method", "otsu") or "otsu"),
-        sensitivity_0_100=max(0, min(100, sens_100)),
-        sensitivity_token=sens_tok,
-        morph_close_radius=max(1, int(getattr(settings, "metal_morph_close_radius", 1) or 1)),
-        morph_open_radius=max(0, int(getattr(settings, "metal_morph_open_radius", 0) or 0)),
+        noise_suppression=max(0, min(100, int(getattr(settings, "metal_noise_suppression", 20) or 20))),
+        contrast_bias=max(-50.0, min(50.0, float(getattr(settings, "metal_contrast_bias", 0.0) or 0.0))),
+        segmentation_strategy=normalize_metal_segmentation_strategy(
+            getattr(settings, "metal_segmentation_strategy", "auto")
+        ),
+        gap_bridge_px=max(0, gap),
+        speckle_removal_px=max(0, speckle),
+        contour_smooth_px=max(0.0, float(getattr(settings, "metal_contour_smooth_px", 0.0) or 0.0)),
+        morph_close_radius=max(0, gap),
+        morph_open_radius=max(0, speckle),
         min_width_px=max(0.5, float(getattr(settings, "metal_min_trace_width_px", 8) or 8)),
         max_width_px=max_w_px,
         min_length_px=max(1.0, float(getattr(settings, "metal_min_trace_length_px", 8) or 8)),
@@ -78,35 +87,40 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         min_straightness=max(0.05, min(1.0, float(getattr(settings, "metal_min_straightness", 0.2) or 0.2))),
         allow_t_junction=bool(getattr(settings, "metal_allow_t_junction", True)),
         border_mode=_normalize_border_mode(getattr(settings, "metal_border_handling", "mark")),
-        check_contour_validity=bool(getattr(settings, "metal_check_contour_validity", False)),
+        check_contour_validity=bool(getattr(settings, "metal_check_contour_validity", True)),
         min_inner_hole_area=max(0.0, float(getattr(settings, "min_inner_hole_area", 100.0) or 100.0)),
         preset_name=str(getattr(settings, "metal_preset", "standard") or "standard"),
         use_wide_conductor_gradient=bool(getattr(settings, "metal_use_wide_conductor_gradient", False)),
-        wide_gradient_profile_radius_px=max(1, int(getattr(settings, "metal_wide_gradient_profile_radius_px", 8) or 8)),
+        wide_gradient_profile_radius_px=max(
+            1, int(getattr(settings, "metal_wide_gradient_profile_radius_px", 8) or 8)
+        ),
         wide_gradient_min_direction_confidence=max(
             0.0,
-            min(1.0, float(getattr(settings, "metal_wide_gradient_min_direction_confidence", 0.15) or 0.15)),
+            min(
+                1.0,
+                float(getattr(settings, "metal_wide_gradient_min_direction_confidence", 0.15) or 0.15),
+            ),
         ),
         wide_gradient_min_pair_length_px=max(
             4.0, float(getattr(settings, "metal_wide_gradient_min_pair_length_px", 24.0) or 24.0)
         ),
         wide_gradient_parallel_tolerance_deg=max(
-            0.5, float(getattr(settings, "metal_wide_gradient_parallel_tolerance_deg", 10.0) or 10.0)
+            0.5,
+            float(getattr(settings, "metal_wide_gradient_parallel_tolerance_deg", 10.0) or 10.0),
         ),
-        wide_gradient_max_edge_gap_px=max(0, int(getattr(settings, "metal_wide_gradient_max_edge_gap_px", 5) or 5)),
+        wide_gradient_max_edge_gap_px=max(
+            0, int(getattr(settings, "metal_wide_gradient_max_edge_gap_px", 5) or 5)
+        ),
         wide_gradient_min_overlap_ratio=max(
             0.05,
             min(1.0, float(getattr(settings, "metal_wide_gradient_min_overlap_ratio", 0.5) or 0.5)),
         ),
-        edge_close_cap_px=max(5, min(21, int(getattr(settings, "metal_edge_close_cap_px", 9) or 9) | 1)),
+        edge_close_cap_px=max(5, int(getattr(settings, "metal_edge_close_cap_px", 9) or 9)),
         edge_watershed_split=bool(getattr(settings, "metal_edge_watershed_split", True)),
         edge_watershed_dist_peak_frac=max(
-            0.22, min(0.55, float(getattr(settings, "metal_edge_watershed_dist_peak_frac", 0.38) or 0.38))
+            0.1,
+            min(0.9, float(getattr(settings, "metal_edge_watershed_dist_peak_frac", 0.38) or 0.38)),
         ),
-        edge_watershed_max_pixels=(
-            None
-            if (_wmp := getattr(settings, "metal_edge_watershed_max_pixels", 3_000_000)) is None
-            or int(_wmp) <= 0
-            else int(_wmp)
-        ),
+        edge_watershed_max_pixels=int(getattr(settings, "metal_edge_watershed_max_pixels", 3_000_000) or 0)
+        or None,
     )

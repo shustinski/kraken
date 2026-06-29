@@ -5,16 +5,12 @@ from PyQt6.QtWidgets import QApplication
 
 from contour.application.processing import (
     ContourExtractionSettings,
-    normalize_metal_segmentation_method,
-    normalize_metal_sensitivity,
+    normalize_metal_segmentation_strategy,
     normalize_via_search_mode,
 )
 from contour.ui.via_presets import built_in_via_presets
-from contour.vision.metal_recovery.detector import (
-    _normalize_metal_extraction_mode,
-    _normalize_metal_segmentation_method,
-    _normalize_metal_sensitivity_token,
-)
+from contour.vision.metal_recovery.detector import _normalize_metal_extraction_mode
+from contour.vision.metal_recovery.segmentation import migrate_legacy_metal_settings
 from contour.widget import PolygonExtractionWidget
 
 
@@ -28,6 +24,7 @@ from contour.widget import PolygonExtractionWidget
         ("blob", "heuristic"),
         ("unknown", "heuristic"),
         (None, "heuristic"),
+        ("", "heuristic"),
     ],
 )
 def test_normalize_via_search_mode(raw: object, expected: str) -> None:
@@ -38,27 +35,29 @@ def test_normalize_via_search_mode(raw: object, expected: str) -> None:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("без", "none"),
-        ("без сегментации", "none"),
-        ("гибрид", "hybrid"),
-        ("гибридная", "hybrid"),
-        ("адаптивная", "adaptive"),
-        ("otsu", "otsu"),
+        ("без", "edges"),
+        ("без сегментации", "edges"),
+        ("гибрид", "auto"),
+        ("гибридная", "auto"),
+        ("адаптивная", "local_adaptive"),
+        ("otsu", "legacy_otsu"),
+        ("auto", "auto"),
+        ("sauvola", "sauvola"),
     ],
 )
 def test_russian_metal_segmentation_values_normalize(raw: str, expected: str) -> None:
-    assert normalize_metal_segmentation_method(raw) == expected
+    assert normalize_metal_segmentation_strategy(raw) == expected
     assert _normalize_metal_extraction_mode(raw) == expected
 
 
-def test_russian_metal_threshold_and_sensitivity_values_normalize() -> None:
-    assert _normalize_metal_segmentation_method("адаптивная") == "adaptive"
-    assert normalize_metal_sensitivity("низкая") == "low"
-    assert normalize_metal_sensitivity("средняя") == "medium"
-    assert normalize_metal_sensitivity("высокая") == "high"
-    assert _normalize_metal_sensitivity_token("низкая") == "low"
-    assert _normalize_metal_sensitivity_token("средняя") == "medium"
-    assert _normalize_metal_sensitivity_token("высокая") == "high"
+def test_legacy_metal_settings_migration() -> None:
+    migrated = migrate_legacy_metal_settings(
+        {"metal_sensitivity_0_100": 77, "metal_sensitivity": "low", "metal_segmentation_method": "otsu"}
+    )
+    assert "metal_contrast_bias" in migrated
+    assert migrated["metal_segmentation_strategy"] == "auto"
+    settings = ContourExtractionSettings.from_dict(migrated)
+    assert settings.metal_segmentation_strategy == "auto"
 
 
 def test_mode_switching_hides_irrelevant_ui_settings() -> None:
@@ -80,8 +79,9 @@ def test_mode_switching_hides_irrelevant_ui_settings() -> None:
         assert not widget.bright_via_group.isHidden()
         assert widget.recognition_stack.isHidden()
         assert [widget.via_search_mode_combo.itemData(i) for i in range(widget.via_search_mode_combo.count())] == [
-            "template",
+            "heuristic",
             "bright_tophat_dog",
+            "template",
         ]
     finally:
         widget.close()
@@ -114,4 +114,6 @@ def test_via_profiles_set_expected_parameters() -> None:
         "Слабый контраст",
     }
     assert presets["Светлые via"]["via_search_mode"] == "bright_tophat_dog"
+    assert presets["Стандартный"]["via_size_mode"] == "fixed"
+    assert presets["Стандартный"]["bright_via_diameter_min"] == presets["Стандартный"]["bright_via_diameter_max"]
     assert presets["Малые via"]["bright_via_diameter_max"] < presets["Крупные via"]["bright_via_diameter_min"]

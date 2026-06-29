@@ -123,6 +123,7 @@ from .infrastructure import (
     WidgetGamificationProfileStore,
     WidgetPathSettingsStore,
     WidgetSessionSettingsStore,
+    WidgetMetalPresetSettingsStore,
     WidgetViaPresetSettingsStore,
 )
 from .pipeline import (
@@ -241,7 +242,9 @@ class PolygonExtractionWidget(
         self._path_settings = PathSettingsController(WidgetPathSettingsStore())
         self._display_settings_store = WidgetDisplaySettingsStore()
         self._session_settings_store = WidgetSessionSettingsStore()
+        self._image_list_mode = self._session_settings_store.load_image_list_mode()
         self._via_preset_settings_store = WidgetViaPresetSettingsStore()
+        self._metal_preset_settings_store = WidgetMetalPresetSettingsStore()
         self._gamification_profile_service = GamificationProfileService(WidgetGamificationProfileStore())
         self._gamification_service = GamificationService(self._gamification_profile_service)
         self._workspace = WorkspaceSession()
@@ -283,6 +286,7 @@ class PolygonExtractionWidget(
         self._via_template_images: list[np.ndarray] = []
         self._viewed_image_paths: set[str] = set()
         self._user_via_presets: dict[str, dict[str, object]] = self._load_user_via_presets()
+        self._user_metal_presets: dict[str, dict[str, object]] = self._load_user_metal_presets()
         self._extra_layers: list[dict[str, object]] = []
         self._next_extra_layer_id = 1
         self._base_frame_numbers: set[int] = set()
@@ -331,14 +335,7 @@ class PolygonExtractionWidget(
         self._editor_display_thread_pool = QThreadPool(self)
         self._editor_display_thread_pool.setMaxThreadCount(1)
         self._editor_display_request_serial = 0
-        self._zarr_build_thread_pool = QThreadPool(self)
-        self._zarr_build_thread_pool.setMaxThreadCount(1)
-        self._zarr_build_thread_pool.setExpiryTimeout(30000)
-        self._zarr_build_generation = 0
-        self._zarr_build_running_path: str | None = None
-        self._zarr_build_scheduled_path: str | None = None
-        self._deferred_zarr_build_timers: list[QTimer] = []
-        self._editor_pixmap_cache: dict[tuple[str, str], QPixmap] = {}
+        self._editor_pixmap_cache: dict[tuple[str, str, str], QPixmap] = {}
         self._editor_polygons_signature: tuple[str, int, int] | None = None
         self._pending_editor_frame_apply: tuple[str, list, bool] | None = None
         self._frame_switch_profile = None
@@ -463,13 +460,6 @@ class PolygonExtractionWidget(
             except RuntimeError:
                 pass
         self._deferred_thumbnail_load_timers = []
-        for timer in list(getattr(self, "_deferred_zarr_build_timers", [])):
-            try:
-                timer.stop()
-            except RuntimeError:
-                pass
-        self._deferred_zarr_build_timers = []
-        self._zarr_build_scheduled_path = None
         self._frame_load_request_serial = int(getattr(self, "_frame_load_request_serial", 0)) + 1
         self._frame_load_pending = None
         self._frame_load_running_path = None
@@ -483,7 +473,6 @@ class PolygonExtractionWidget(
             "_thumbnail_thread_pool",
             "_neighbor_thread_pool",
             "_editor_display_thread_pool",
-            "_zarr_build_thread_pool",
         ):
             pool = getattr(self, pool_name, None)
             if pool is None:

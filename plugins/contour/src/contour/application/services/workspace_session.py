@@ -109,9 +109,20 @@ class WorkspaceSession:
         paths: Iterable[str | Path],
         *,
         is_supported_image: Callable[[str | Path], bool],
+        clear_state_cache: bool = True,
     ) -> list[str]:
         self._image_paths = normalize_image_selection(paths, is_supported_image=is_supported_image)
+        if clear_state_cache:
+            self._state_cache.clear()
+            self._current_state = None
+        else:
+            retained = set(self._image_paths)
+            for key in list(self._state_cache):
+                if key not in retained:
+                    self._state_cache.pop(key, None)
         if not self._image_paths:
+            self.clear_current_selection()
+        elif self._current_image_path not in self._image_paths:
             self.clear_current_selection()
         return list(self._image_paths)
 
@@ -171,6 +182,7 @@ class WorkspaceSession:
         if (
             self._current_image_path == image_path
             and self._current_state is not None
+            and self._current_state.image_path == image_path
             and image_path in self._state_cache
         ):
             return WorkspaceLoadResult(

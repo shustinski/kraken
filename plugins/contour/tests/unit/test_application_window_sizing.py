@@ -8,7 +8,12 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QDockWidget, QTabBar
 
 from contour.application.model import ContourApplicationModel
-from contour.application.view import ContourMainView, _bounded_initial_window_size
+from contour.application.view import (
+    DEFAULT_PANEL_DOCK_MIN_WIDTH,
+    DEFAULT_RIGHT_DOCK_MIN_WIDTH,
+    ContourMainView,
+    _bounded_initial_window_size,
+)
 
 
 def _app() -> QApplication:
@@ -87,6 +92,33 @@ def test_main_view_docks_thumbnail_matrix_and_keeps_file_menu_first() -> None:
         assert dock.widget() is view.widget.thumbnail_matrix_panel
         assert view.widget.thumbnail_grid_scroll_area.widget() is view.widget.thumbnail_grid
         assert not view.widget.thumbnail_grid_label.isVisible()
+    finally:
+        view.close()
+        view.deleteLater()
+
+
+def test_main_view_gives_central_image_area_default_priority() -> None:
+    app = _app()
+    view = ContourMainView()
+    try:
+        view.resize(1400, 900)
+        view.show()
+        app.processEvents()
+        view._apply_default_dock_layout()
+        app.processEvents()
+
+        files_dock = view.findChild(QDockWidget, "filesDock")
+        paths_dock = view.findChild(QDockWidget, "pathsDock")
+        thumbnail_dock = view.findChild(QDockWidget, "thumbnailMatrixDock")
+
+        assert files_dock is not None
+        assert paths_dock is not None
+        assert thumbnail_dock is not None
+        assert files_dock.minimumWidth() >= DEFAULT_RIGHT_DOCK_MIN_WIDTH
+        assert thumbnail_dock.minimumWidth() >= DEFAULT_RIGHT_DOCK_MIN_WIDTH
+        assert paths_dock.minimumWidth() >= DEFAULT_PANEL_DOCK_MIN_WIDTH
+        assert view.widget.width() > files_dock.width()
+        assert view.widget.width() > paths_dock.width()
     finally:
         view.close()
         view.deleteLater()

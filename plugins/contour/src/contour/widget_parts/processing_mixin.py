@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cProfile
 import hashlib
+import json
 import shutil
 from time import perf_counter, time_ns
 
@@ -460,10 +461,15 @@ class WidgetProcessingMixin:
 
         return self._try_leave_current_frame()
 
-    def _editor_display_cache_key(self: Any, image_path: str, state) -> tuple[str, str]:
+    def _editor_display_cache_key(self: Any, image_path: str, state) -> tuple[str, str, str]:
         if state is not None and state.preprocessed_image is not None:
-            return (str(Path(image_path)), "preprocessed")
-        return (str(Path(image_path)), "source")
+            pipeline_key = json.dumps(
+                getattr(state, "pipeline_config", None) or {},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            return (str(Path(image_path)), "preprocessed", pipeline_key)
+        return (str(Path(image_path)), "source", "")
 
     def _polygons_editor_signature(self: Any, image_path: str, polygons: list) -> tuple[object, ...]:
         geometry = []
@@ -524,10 +530,6 @@ class WidgetProcessingMixin:
         )
 
     def _request_neighbor_frame_sync(self: Any, *, delay_ms: int = 0) -> None:
-        store = getattr(self, "_pyramid_frame_store", None)
-        if self._neighbor_frames_enabled() and store is not None and store.has_zarr():
-            self._sync_neighbor_frames()
-            return
         if not self._neighbor_frames_enabled():
             timer = getattr(self, "_neighbor_sync_timer", None)
             if timer is not None:
@@ -566,9 +568,9 @@ class WidgetProcessingMixin:
             return False
         return str(Path(sync_path)) == str(Path(current_path))
 
-    def _queue_editor_display_pixmap(self: Any, image_path: str, display_image: object) -> None:
+    def _queue_editor_display_pixmap(self: Any, image_path: str, display_image: object, *, preserve_view: bool = False) -> None:
         if display_image is None:
-            self.polygon_editor.set_image_pixmap(QPixmap())
+            self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
             return
         session = self._frame_switch_profile_for_path(image_path)
         if session is not None:
@@ -590,7 +592,7 @@ class WidgetProcessingMixin:
                 except Exception:
                     pixmap = QPixmap()
             if pixmap.isNull():
-                self.polygon_editor.set_image_pixmap(QPixmap())
+                self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
                 self._pending_editor_frame_apply = None
                 return
             current_state = self._workspace.current_state
@@ -601,7 +603,7 @@ class WidgetProcessingMixin:
                 while len(cache) > 48:
                     cache.pop(next(iter(cache)))
                 self._editor_pixmap_cache = cache
-            self.polygon_editor.set_image_pixmap(pixmap)
+            self.polygon_editor.set_image_pixmap(pixmap, preserve_view=preserve_view)
             session = self._frame_switch_profile_for_path(path)
             if session is not None:
                 session.complete_pending("editor_display", suffix="_ready")
@@ -610,16 +612,23 @@ class WidgetProcessingMixin:
         runnable.signals.result.connect(_on_display_ready)
         self._editor_display_thread_pool.start(runnable)
 
-    def _apply_display_image_to_editor(self: Any, image_path: str, display_image: object, *, state) -> bool:
+    def _apply_display_image_to_editor(
+        self: Any,
+        image_path: str,
+        display_image: object,
+        *,
+        state,
+        preserve_view: bool = False,
+    ) -> bool:
         if display_image is None:
-            self.polygon_editor.set_image_pixmap(QPixmap())
+            self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
             return True
         cache_key = self._editor_display_cache_key(image_path, state)
         cached = getattr(self, "_editor_pixmap_cache", {}).get(cache_key)
         if cached is not None and not cached.isNull():
-            self.polygon_editor.set_image_pixmap(cached)
+            self.polygon_editor.set_image_pixmap(cached, preserve_view=preserve_view)
             return True
-        self._queue_editor_display_pixmap(image_path, display_image)
+        self._queue_editor_display_pixmap(image_path, display_image, preserve_view=preserve_view)
         return False
 
     def _apply_editor_vectors_for_frame(
@@ -630,6 +639,8 @@ class WidgetProcessingMixin:
         *,
         defer_heavy_overlays: bool,
     ) -> None:
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_polygon_overlays_visible(self._is_extraction_mode_enabled())
         self._sync_polygons_to_editor(image_path, polygons)
         if defer_heavy_overlays:
             return
@@ -687,19 +698,32 @@ class WidgetProcessingMixin:
             session.complete_pending("editor_vectors", suffix="_flushed")
         self._schedule_neighbor_frames_after_main_image_ready()
 
-    def _apply_frame_to_editor(self: Any, *, defer_neighbors: bool = True, defer_heavy_overlays: bool = False) -> None:
+    def _apply_frame_to_editor(
+        self: Any,
+        *,
+        defer_neighbors: bool = True,
+        defer_heavy_overlays: bool = False,
+        preserve_view: bool = False,
+        sync_neighbors: bool = True,
+    ) -> None:
         current_state = self._workspace.current_state
         image_path = self._workspace.current_image_path
-        self._clear_neighbor_frame_display_for_frame_change()
+        if not preserve_view:
+            self._clear_neighbor_frame_display_for_frame_change()
         if current_state is None or not image_path:
             self._pending_editor_frame_apply = None
-            self.polygon_editor.set_image_pixmap(QPixmap())
+            self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
             self.polygon_editor.set_polygons([], emit_signal=False)
             self._editor_polygons_signature = None
             return
         display_image = self._display_image_for_current_state()
         polygons = list(current_state.polygons)
-        image_ready = self._apply_display_image_to_editor(image_path, display_image, state=current_state)
+        image_ready = self._apply_display_image_to_editor(
+            image_path,
+            display_image,
+            state=current_state,
+            preserve_view=preserve_view,
+        )
         self._pending_editor_frame_apply = None
         self._apply_editor_vectors_for_frame(
             image_path,
@@ -711,20 +735,32 @@ class WidgetProcessingMixin:
             session = self._frame_switch_profile_for_path(image_path)
             if session is not None:
                 session.complete_pending("editor_vectors", suffix="_applied_before_pixmap")
-        neighbor_delay_ms = 200 if self._uses_large_frame_list() else 0
-        if defer_neighbors:
-            self._request_neighbor_frame_sync(delay_ms=neighbor_delay_ms)
-        else:
-            self._request_neighbor_frame_sync(delay_ms=0)
+        if sync_neighbors:
+            neighbor_delay_ms = 200 if self._uses_large_frame_list() else 0
+            if defer_neighbors:
+                self._request_neighbor_frame_sync(delay_ms=neighbor_delay_ms)
+            else:
+                self._request_neighbor_frame_sync(delay_ms=0)
         if not defer_heavy_overlays:
             self._sync_extra_layers()
             self._refresh_gradient_overlay()
         self._update_vector_edit_status_label()
 
-    def _sync_current_state_views(self: Any, *, defer_neighbors: bool = True) -> None:
+    def _sync_current_state_views(
+        self: Any,
+        *,
+        defer_neighbors: bool = True,
+        preserve_view: bool = False,
+        sync_neighbors: bool = True,
+    ) -> None:
         self._updating_views = True
         try:
-            self._apply_frame_to_editor(defer_neighbors=defer_neighbors, defer_heavy_overlays=False)
+            self._apply_frame_to_editor(
+                defer_neighbors=defer_neighbors,
+                defer_heavy_overlays=False,
+                preserve_view=preserve_view,
+                sync_neighbors=sync_neighbors,
+            )
         finally:
             self._updating_views = False
 
@@ -733,6 +769,31 @@ class WidgetProcessingMixin:
         if self._show_source_while_middle_held and current_state is not None and current_state.source_image is not None:
             return current_state.source_image
         return self._workspace.current_display_image()
+
+    def _preprocessed_matches_current_pipeline(self: Any, state) -> bool:
+        return (
+            state is not None
+            and state.preprocessed_image is not None
+            and state.pipeline_config == self.get_pipeline()
+        )
+
+    def _clear_stale_preprocessed_image_for_current_pipeline(self: Any, state) -> None:
+        if state is None or state.preprocessed_image is None:
+            return
+        if state.pipeline_config == self.get_pipeline():
+            return
+        state.preprocessed_image = None
+        state.pipeline_config = None
+        state.mask_image = None
+
+    def _prepared_image_update_required(self: Any, image_result: WorkspaceLoadResult) -> bool:
+        state = image_result.state
+        return (
+            state is not None
+            and state.source_image is not None
+            and not image_result.vectors_only
+            and not self._preprocessed_matches_current_pipeline(state)
+        )
 
     def _via_debug_inspection_enabled(self: Any) -> bool:
         return bool(hasattr(self, "debug_candidates_checkbox") and self.debug_candidates_checkbox.isChecked())
@@ -911,8 +972,10 @@ class WidgetProcessingMixin:
                 session.complete_pending("neighbor_sync", suffix="_applied")
             QTimer.singleShot(0, self._center_editor_on_current_main_image)
 
-    def _center_editor_on_current_main_image(self: Any) -> None:
+    def _center_editor_on_current_main_image(self: Any, *, force: bool = False) -> None:
         if not hasattr(self, "polygon_editor") or not self._workspace.current_image_path:
+            return
+        if not self.polygon_editor.should_auto_reposition_view(force=force):
             return
         if self.polygon_editor.pyramid_mode_enabled():
             frame_id = self._image_path_index(self._workspace.current_image_path)
@@ -969,31 +1032,6 @@ class WidgetProcessingMixin:
             if session is not None:
                 session.complete_pending("neighbor_sync", suffix="_disabled")
             QTimer.singleShot(0, self._center_editor_on_current_main_image)
-            return
-        store = getattr(self, "_pyramid_frame_store", None)
-        if store is not None and store.has_zarr():
-            image_paths = [str(Path(path)) for path in self._workspace.image_paths]
-            frame_id = self._image_path_index(current_path) if current_path else None
-            self._neighbor_sync_image_path = str(Path(current_path)) if current_path else None
-            self._neighbor_frame_specs = []
-            self._neighbor_queued_paths.clear()
-            timer = getattr(self, "_neighbor_apply_timer", None)
-            if timer is not None:
-                timer.stop()
-            scene = self.polygon_editor._editor_scene
-            scene._pending_neighbor_frames = None
-            scene.clear_neighbor_frames()
-            self.polygon_editor.set_pyramid_frame_store(
-                store,
-                frame_count=len(image_paths),
-                columns=max(1, int(self.neighbor_columns_spin.value())),
-                current_frame_id=frame_id,
-                enabled=True,
-            )
-            if frame_id is not None:
-                self.polygon_editor.set_current_frame_id(frame_id, center=True, emit_signal=False)
-            if session is not None:
-                session.complete_pending("neighbor_sync", suffix="_zarr_pyramid")
             return
         image_paths = [str(Path(path)) for path in self._workspace.image_paths]
         normalized_current_path = str(Path(current_path)) if current_path else ""
@@ -1057,8 +1095,9 @@ class WidgetProcessingMixin:
         if image_path in self._workspace.image_paths:
             if self._image_path_in_image_list(image_path):
                 self._set_image_list_current_path(image_path, fallback_to_first=False)
-            else:
-                self.load_image(image_path)
+            self._workspace._current_image_path = str(Path(image_path))
+            self._workspace._current_state = None
+            self.load_image(image_path)
 
     def _abort_in_flight_interactive_processing(self: Any, *, preview: bool, prepared: bool) -> None:
         self._preview_update_timer.stop()
@@ -1236,7 +1275,7 @@ class WidgetProcessingMixin:
         if pipeline_config != self.get_pipeline():
             return
         if self._workspace.store_preprocessed_image(image_path, preprocessed_image, pipeline_config):
-            self._sync_current_state_views()
+            self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
             self._try_extract_if_recognition_enabled()
 
     def _on_prepared_image_error(self: Any, request_id: int, message: str) -> None:
@@ -1295,7 +1334,7 @@ class WidgetProcessingMixin:
             return
 
         if self._workspace.apply_processing_result(result):
-            self._sync_current_state_views()
+            self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
         self._update_frame_item_status(result.image_path)
         if hasattr(self, "recognition_mode_combo"):
             if str(self.recognition_mode_combo.currentData() or "") == "disabled":
@@ -1470,13 +1509,29 @@ class WidgetProcessingMixin:
         self._append_log(self._tr("batch_error_log", image_name=Path(image_path).name, message=message))
 
     def refresh_image_list(self: Any) -> None:
+        from ..infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
+
+        if getattr(self, "_image_list_mode", None) == IMAGE_LIST_MODE_EXPLICIT:
+            self._revalidate_explicit_image_paths()
+            return
         directory = self.input_dir_edit.text().strip()
         if not directory:
             self._append_log(self._tr("input_directory_empty_log"))
             return
         self._begin_async_directory_scan(directory)
 
+    def _revalidate_explicit_image_paths(self: Any) -> None:
+        existing_paths = [
+            str(Path(path))
+            for path in self._workspace.image_paths
+            if Path(path).is_file() and is_image_path(path)
+        ]
+        preferred = self._workspace.current_image_path
+        self.load_images(existing_paths, preferred_current_image_path=preferred)
+
     def set_input_directory(self: Any, path: str) -> None:
+        from ..infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY
+
         directory = self._path_settings.validate_input_directory(path)
         if not directory.available:
             self._append_log(
@@ -1488,6 +1543,7 @@ class WidgetProcessingMixin:
             return
         self.input_dir_edit.setText(directory.path)
         self._save_persisted_paths()
+        self._set_image_list_mode(IMAGE_LIST_MODE_DIRECTORY)
         self._begin_async_directory_scan(directory.path)
 
     def set_cif_directory(self: Any, path: str) -> None:
@@ -1527,6 +1583,7 @@ class WidgetProcessingMixin:
             self._rebuild_vector_list()
         if not image_paths:
             return
+        self._image_list_mode = self._session_settings_store.load_image_list_mode()
         preferred = self._session_settings_store.load_current_image_path()
         if preferred:
             preferred = str(Path(preferred))
@@ -1600,6 +1657,7 @@ class WidgetProcessingMixin:
         clear_extra_layers: bool,
         select_path: str | None,
         fallback_to_first: bool,
+        clear_state_cache: bool = True,
     ) -> None:
         frame_records, warnings = build_base_frame_records(paths)
         for message in warnings:
@@ -1607,7 +1665,11 @@ class WidgetProcessingMixin:
         ordered_paths = [record.path for record in frame_records]
         self._base_frame_number_by_path = build_base_frame_number_map(frame_records)
         self._base_frame_numbers = set(self._base_frame_number_by_path.values())
-        normalized_paths = self._workspace.replace_image_selection(ordered_paths, is_supported_image=is_image_path)
+        normalized_paths = self._workspace.replace_image_selection(
+            ordered_paths,
+            is_supported_image=is_image_path,
+            clear_state_cache=clear_state_cache,
+        )
         self._configure_pyramid_frame_store(normalized_paths)
         self._reset_thumbnail_disk_cache_for_base_paths(normalized_paths)
         if not normalized_paths:
@@ -1616,6 +1678,14 @@ class WidgetProcessingMixin:
         self._neighbor_image_cache.clear()
         self._neighbor_image_dimensions.clear()
         self._neighbor_vector_cache.clear()
+        self._editor_pixmap_cache.clear()
+        self._editor_polygons_signature = None
+        getattr(self, "_thumbnail_icon_cache", {}).clear()
+        getattr(self, "_thumbnail_pending_apply", {}).clear()
+        self._thumbnail_loaded_generation.clear()
+        self._thumbnail_loaded_sizes.clear()
+        self._thumbnail_queued_paths.clear()
+        self._thumbnail_queued_sizes.clear()
         self._prune_tagged_sets_for_images(normalized_paths)
         self._abort_in_flight_interactive_processing(preview=True, prepared=True)
         if clear_extra_layers:
@@ -1628,7 +1698,15 @@ class WidgetProcessingMixin:
         self._rebuild_image_list_items(normalized_paths)
         return
 
-    def load_images(self: Any, paths: list[str], *, preferred_current_image_path: str | None = None) -> None:
+    def load_images(
+        self: Any,
+        paths: list[str],
+        *,
+        preferred_current_image_path: str | None = None,
+        image_list_mode: str | None = None,
+    ) -> None:
+        if image_list_mode is not None:
+            self._set_image_list_mode(image_list_mode)
         if self._workspace.current_state is not None and not self._try_leave_current_frame():
             return
         self._directory_scanner.invalidate_pending_results()
@@ -1642,6 +1720,7 @@ class WidgetProcessingMixin:
             clear_extra_layers=True,
             select_path=preferred,
             fallback_to_first=True,
+            clear_state_cache=True,
         )
         return
 
@@ -1660,6 +1739,9 @@ class WidgetProcessingMixin:
             return
         if self._workspace.current_state is not None and not self._try_leave_current_frame():
             return
+        from ..infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
+
+        self._set_image_list_mode(IMAGE_LIST_MODE_EXPLICIT)
         self._directory_scanner.invalidate_pending_results()
         self._stop_work_simulation()
         select_path = additions[0] if select_first_new else self._workspace.current_image_path
@@ -1668,6 +1750,7 @@ class WidgetProcessingMixin:
             clear_extra_layers=False,
             select_path=select_path,
             fallback_to_first=not bool(self._workspace.current_image_path),
+            clear_state_cache=False,
         )
 
     def reset_project(self: Any) -> None:
@@ -1696,6 +1779,9 @@ class WidgetProcessingMixin:
         getattr(self, "_thumbnail_icon_cache", {}).clear()
         self.input_dir_edit.setText("")
         self.cif_dir_edit.setText("")
+        from ..infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY
+
+        self._set_image_list_mode(IMAGE_LIST_MODE_DIRECTORY)
         self._save_persisted_paths()
         self._save_persisted_current_image_path(None)
         self._save_persisted_session_paths()
@@ -1825,6 +1911,8 @@ class WidgetProcessingMixin:
             self._workspace._current_image_path = normalized_load_path
             if cached_selected_state is not None:
                 self._workspace._current_state = cached_selected_state
+            else:
+                self._workspace._current_state = None
         active_load_path = getattr(self, "_loading_image_path", None)
         if active_load_path is not None:
             if active_load_path == normalized_load_path:
@@ -2149,13 +2237,17 @@ class WidgetProcessingMixin:
             image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
             image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
             image_result.state.polygons_dirty = False
+        if image_result.state is not None and not image_result.vectors_only:
+            self._clear_stale_preprocessed_image_for_current_pipeline(image_result.state)
         if image_result.reused_current_state:
             step_start = perf_counter()
             self._defer_frame_chrome_updates(image_result.image_path)
             if profile_enabled:
                 profile_timings["defer_frame_chrome"] = (perf_counter() - step_start) * 1000.0
+            if self._prepared_image_update_required(image_result):
+                self._queue_prepared_image_update(image_result.image_path, image_result.state.source_image)
             step_start = perf_counter()
-            self._center_editor_on_current_main_image()
+            self._center_editor_on_current_main_image(force=False)
             if profile_enabled:
                 profile_timings["center_main_image"] = (perf_counter() - step_start) * 1000.0
             if getattr(self, "_loading_image_path", None) == image_result.image_path:
@@ -2204,6 +2296,10 @@ class WidgetProcessingMixin:
             if profile_enabled:
                 profile_timings["sync_neighbor_frames"] = (perf_counter() - step_start) * 1000.0
             step_start = perf_counter()
+            self._center_editor_on_current_main_image(force=True)
+            if profile_enabled:
+                profile_timings["center_main_image"] = (perf_counter() - step_start) * 1000.0
+            step_start = perf_counter()
             self._defer_frame_chrome_updates(image_result.image_path)
             if profile_enabled:
                 profile_timings["defer_frame_chrome"] = (perf_counter() - step_start) * 1000.0
@@ -2220,6 +2316,10 @@ class WidgetProcessingMixin:
             self._request_neighbor_frame_sync(delay_ms=0)
             if profile_enabled:
                 profile_timings["sync_neighbor_frames"] = (perf_counter() - step_start) * 1000.0
+            step_start = perf_counter()
+            self._center_editor_on_current_main_image(force=True)
+            if profile_enabled:
+                profile_timings["center_main_image"] = (perf_counter() - step_start) * 1000.0
             step_start = perf_counter()
             self._defer_frame_chrome_updates(image_result.image_path)
             if profile_enabled:
@@ -2238,12 +2338,7 @@ class WidgetProcessingMixin:
         if profile_enabled:
             profile_timings["sync_views"] = (perf_counter() - phase_start) * 1000.0
             phase_start = perf_counter()
-        if (
-            image_result.prepared_image_required
-            and image_result.state is not None
-            and image_result.state.source_image is not None
-            and not image_result.vectors_only
-        ):
+        if self._prepared_image_update_required(image_result):
             self._queue_prepared_image_update(image_result.image_path, image_result.state.source_image)
         if profile_enabled:
             profile_timings["queue_prepared"] = (perf_counter() - phase_start) * 1000.0

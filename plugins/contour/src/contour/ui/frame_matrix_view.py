@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QGuiApplication, QPainter, QPen, QPixmap, QWheelEvent
@@ -20,7 +20,6 @@ from PyQt6.QtWidgets import (
 from ..adapters.qt.pyramid import PyramidThumbnailLoadRunnable
 from ..application.frame_lod import PyramidFrameStore
 from ..graphics.viewport_navigation import (
-    DEFAULT_ZOOM_STEP_FACTOR,
     MAX_ZOOM_FACTOR,
     MIN_ZOOM_FACTOR,
     clamp_zoom_factor,
@@ -31,9 +30,9 @@ from .item_status_painting import FRAME_STATUS_ROLE
 from .large_dataset import clamp_thumbnail_source_size
 
 try:
-    from shiboken6 import isValid as _shiboken_is_valid
+    import shiboken6
 except ImportError:
-    _shiboken_is_valid = None
+    shiboken6 = None
 
 _OPENGL_VIEWPORT_ENABLED = True
 _OPENGL_DISABLED_PLATFORMS = {"offscreen", "minimal"}
@@ -139,7 +138,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
             return False
         return True
 
-    def widget(self) -> "FrameMatrixGraphicsView":
+    def widget(self) -> FrameMatrixGraphicsView:
         return self
 
     def setWidgetResizable(self, _enabled: bool) -> None:
@@ -231,13 +230,13 @@ class FrameMatrixGraphicsView(QGraphicsView):
 
     @staticmethod
     def _graphics_item_is_valid(graphics_item: object) -> bool:
-        if _shiboken_is_valid is None:
+        if shiboken6 is None:
             try:
                 graphics_item.scene()
                 return True
             except RuntimeError:
                 return False
-        return bool(_shiboken_is_valid(graphics_item))
+        return bool(shiboken6.isValid(graphics_item))
 
     def _group_is_valid(self, group: tuple) -> bool:
         return all(self._graphics_item_is_valid(graphics_item) for graphics_item in group)
@@ -359,12 +358,20 @@ class FrameMatrixGraphicsView(QGraphicsView):
             self._pyramid_thumbnail_thread_pool.clear()
         except RuntimeError:
             pass
-        self._pyramid_store = store if store is not None and store.has_zarr() else None
-        if self._pyramid_store is None:
-            self._navigator_lods = ()
-        else:
-            lods = tuple(sorted(int(lod) for lod in self._pyramid_store.available_lods()))
-            self._navigator_lods = lods[-3:]
+        self._pyramid_store = store if store is not None and store.has_lod() else None
+        self._navigator_lods = ()
+        if self._pyramid_store is not None:
+            try:
+                lod_source = (
+                    self._pyramid_store.available_lods_hint()
+                    if self._pyramid_store.__class__ is PyramidFrameStore
+                    else self._pyramid_store.available_lods()
+                )
+                lods = tuple(sorted(int(lod) for lod in lod_source))
+            except Exception:
+                self._pyramid_store = None
+            else:
+                self._navigator_lods = lods[-3:]
         self._pixmap_lod_cache.clear()
         self.refreshVisibleRegion()
 
@@ -766,12 +773,15 @@ class FrameMatrixGraphicsView(QGraphicsView):
                 self._pixmap_lod_cache.pop(key, None)
 
     def _pixmap_for_item_lod(self, item: QListWidgetItem) -> QPixmap:
-        zarr_pixmap = self._zarr_pixmap_for_item_lod(item)
-        if zarr_pixmap is not None:
-            return zarr_pixmap
+        pyramid_pixmap = self._pyramid_pixmap_for_item_lod(item)
+        if pyramid_pixmap is not None:
+            return pyramid_pixmap
+        thumbnail_pixmap = item.data(_THUMBNAIL_PIXMAP_ROLE)
+        if isinstance(thumbnail_pixmap, QPixmap) and not thumbnail_pixmap.isNull():
+            return thumbnail_pixmap
         return QPixmap()
 
-    def _zarr_pixmap_for_item_lod(self, item: QListWidgetItem) -> QPixmap | None:
+    def _pyramid_pixmap_for_item_lod(self, item: QListWidgetItem) -> QPixmap | None:
         store = self._pyramid_store
         if store is None or not self._navigator_lods:
             return None
@@ -904,10 +914,10 @@ class FrameMatrixGraphicsView(QGraphicsView):
         if abs(source_aspect - target_aspect) <= 1e-6:
             return pixmap
         if source_aspect > target_aspect:
-            crop_w = max(1, int(round(source_h * target_aspect)))
+            crop_w = max(1, round(source_h * target_aspect))
             crop_x = max(0, (source_w - crop_w) // 2)
             return pixmap.copy(QRect(crop_x, 0, crop_w, source_h))
-        crop_h = max(1, int(round(source_w / target_aspect)))
+        crop_h = max(1, round(source_w / target_aspect))
         crop_y = max(0, (source_h - crop_h) // 2)
         return pixmap.copy(QRect(0, crop_y, source_w, crop_h))
 
@@ -931,8 +941,8 @@ class FrameMatrixGraphicsView(QGraphicsView):
     def thumbnailSourceSize(self) -> QSize:
         lod = self._thumbnail_lod()
         width, height = clamp_thumbnail_source_size(
-            int(round(self._icon_size.width() * lod)),
-            int(round(self._icon_size.height() * lod)),
+            round(self._icon_size.width() * lod),
+            round(self._icon_size.height() * lod),
         )
         return QSize(width, height)
 

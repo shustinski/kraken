@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..adapters.qt.object_validity import qt_object_is_valid
 from ._imports import *  # noqa: F403
 
 
@@ -252,7 +253,16 @@ class WidgetNavigationMixin:
         return self._take_control_tab(self.display_tab)
 
     def _take_recognition_panel(self: Any) -> QWidget:
-        return self._take_control_tab(self.extraction_tab)
+        panel = self._take_control_tab(self.extraction_tab)
+        scroll = QScrollArea()
+        scroll.setObjectName("recognitionPanelScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(panel)
+        self.recognition_panel_scroll = scroll
+        return scroll
 
     def _take_control_tab(self: Any, panel: QWidget) -> QWidget:
         if hasattr(self, "control_tabs"):
@@ -475,72 +485,21 @@ class WidgetNavigationMixin:
         return [str(Path(path)) for path in self._workspace.image_paths]
 
     def _configure_pyramid_frame_store(self: Any, image_paths: list[str]) -> None:
-        store = ZarrFrameStore.from_image_paths(image_paths) if image_paths else None
+        store = PyramidFrameStore.from_image_paths(image_paths) if image_paths else None
         self._pyramid_frame_store = store
         current_path = str(Path(getattr(self._workspace, "current_image_path", "") or ""))
         current_frame_id = self._image_path_index(current_path) if current_path else None
         columns = self._thumbnail_columns()
-        editor_enabled = bool(store is not None and store.has_zarr() and self._neighbor_frames_enabled())
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_pyramid_frame_store(
                 store,
                 frame_count=len(image_paths),
                 columns=columns,
                 current_frame_id=current_frame_id,
-                enabled=editor_enabled,
+                enabled=False,
             )
         if hasattr(self, "thumbnail_grid"):
             self.thumbnail_grid.setPyramidFrameStore(store)
-
-    def _start_zarr_lod_build_if_needed(self: Any, store: ZarrFrameStore | None) -> None:
-        if store is None or not store.needs_lod_build() or store.zarr_path is None:
-            return
-        zarr_path = str(Path(store.zarr_path))
-        if getattr(self, "_zarr_build_running_path", None) == zarr_path:
-            return
-        if getattr(self, "_zarr_build_scheduled_path", None) == zarr_path:
-            return
-        self._zarr_build_scheduled_path = zarr_path
-        if not hasattr(self, "_deferred_zarr_build_timers"):
-            self._deferred_zarr_build_timers = []
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-
-        def _start_deferred_build() -> None:
-            try:
-                if bool(getattr(self, "_closing", False)):
-                    return
-                if getattr(self, "_zarr_build_scheduled_path", None) != zarr_path:
-                    return
-                current_store = getattr(self, "_pyramid_frame_store", None)
-                if current_store is not store or not store.needs_lod_build():
-                    return
-                self._start_zarr_lod_build_now(store)
-            finally:
-                if getattr(self, "_zarr_build_scheduled_path", None) == zarr_path:
-                    self._zarr_build_scheduled_path = None
-                if hasattr(self, "_deferred_zarr_build_timers"):
-                    self._deferred_zarr_build_timers = [
-                        candidate for candidate in self._deferred_zarr_build_timers if candidate is not timer
-                    ]
-
-        timer.timeout.connect(_start_deferred_build)
-        self._deferred_zarr_build_timers.append(timer)
-        timer.start(750)
-
-    def _start_zarr_lod_build_now(self: Any, store: ZarrFrameStore) -> None:
-        if store.zarr_path is None:
-            return
-        zarr_path = str(Path(store.zarr_path))
-        if getattr(self, "_zarr_build_running_path", None) == zarr_path:
-            return
-        self._zarr_build_generation = int(getattr(self, "_zarr_build_generation", 0)) + 1
-        generation = int(self._zarr_build_generation)
-        self._zarr_build_running_path = zarr_path
-        runnable = ZarrPyramidBuildRunnable(generation, store)
-        runnable.signals.finished.connect(self._on_zarr_lod_build_finished)
-        runnable.signals.error.connect(self._on_zarr_lod_build_error)
-        self._zarr_build_thread_pool.start(runnable)
 
     def _ensure_neighbor_pyramid_or_prompt(self: Any) -> bool:
         if not self._neighbor_frames_enabled():
@@ -548,100 +507,9 @@ class WidgetNavigationMixin:
         image_paths = [str(Path(path)) for path in getattr(self._workspace, "image_paths", [])]
         if not image_paths:
             return True
-        if not isinstance(getattr(self, "_pyramid_frame_store", None), ZarrFrameStore):
+        if not isinstance(getattr(self, "_pyramid_frame_store", None), PyramidFrameStore):
             self._configure_pyramid_frame_store(image_paths)
-        store = getattr(self, "_pyramid_frame_store", None)
-        if not isinstance(store, ZarrFrameStore) or not store.needs_lod_build():
-            return True
-        zarr_path = str(Path(store.zarr_path)) if store.zarr_path is not None else ""
-        if zarr_path and (
-            getattr(self, "_zarr_build_running_path", None) == zarr_path
-            or getattr(self, "_zarr_build_scheduled_path", None) == zarr_path
-        ):
-            return True
-        if not self._show_zarr_build_offer_dialog(store):
-            with QSignalBlocker(self.show_neighbor_frames_checkbox):
-                self.show_neighbor_frames_checkbox.setChecked(False)
-            return False
-        self._configure_pyramid_frame_store(image_paths)
-        store = getattr(self, "_pyramid_frame_store", None)
-        self._start_zarr_lod_build_if_needed(store)
         return True
-
-    def _show_zarr_build_offer_dialog(self: Any, store: ZarrFrameStore) -> bool:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Build image pyramid")
-        layout = QVBoxLayout(dialog)
-        frame_count = len(getattr(self._workspace, "image_paths", []))
-        zarr_name = Path(store.zarr_path).name if store.zarr_path is not None else "frames.zarr"
-        layout.addWidget(
-            QLabel(
-                "Neighbor view needs a Zarr pyramid for the current layer.\n"
-                f"Build {zarr_name} in the background for {frame_count} frames?"
-            )
-        )
-        form = QFormLayout()
-        frames_per_row_spin = QSpinBox()
-        frames_per_row_spin.setRange(1, 100_000)
-        frames_per_row_spin.setValue(self._thumbnail_columns())
-        overlap_spin = QSpinBox()
-        overlap_spin.setRange(0, 100_000)
-        overlap_spin.setValue(max(0, int(self.neighbor_overlap_spin.value())) if hasattr(self, "neighbor_overlap_spin") else 0)
-        form.addRow("Frames in row", frames_per_row_spin)
-        form.addRow("Overlap", overlap_spin)
-        layout.addLayout(form)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        if ok_button is not None:
-            ok_button.setText("Build pyramid")
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return False
-        if hasattr(self, "neighbor_columns_spin"):
-            with QSignalBlocker(self.neighbor_columns_spin):
-                self.neighbor_columns_spin.setValue(int(frames_per_row_spin.value()))
-        if hasattr(self, "neighbor_overlap_spin"):
-            with QSignalBlocker(self.neighbor_overlap_spin):
-                self.neighbor_overlap_spin.setValue(int(overlap_spin.value()))
-        self._configure_thumbnail_grid_geometry()
-        return True
-
-    def _on_zarr_lod_build_finished(self: Any, generation: int, store_obj: object) -> None:
-        if int(generation) != int(getattr(self, "_zarr_build_generation", 0)):
-            return
-        self._zarr_build_running_path = None
-        store = store_obj if isinstance(store_obj, ZarrFrameStore) else getattr(self, "_pyramid_frame_store", None)
-        if not isinstance(store, ZarrFrameStore):
-            return
-        store.refresh()
-        if store is not getattr(self, "_pyramid_frame_store", None):
-            return
-        image_paths = [str(Path(path)) for path in getattr(self._workspace, "image_paths", [])]
-        current_path = str(Path(getattr(self._workspace, "current_image_path", "") or ""))
-        current_frame_id = self._image_path_index(current_path) if current_path else None
-        columns = self._thumbnail_columns()
-        if hasattr(self, "thumbnail_grid"):
-            self.thumbnail_grid.setPyramidFrameStore(store)
-            self.thumbnail_grid.refreshVisibleRegion()
-        if hasattr(self, "polygon_editor"):
-            self.polygon_editor.set_pyramid_frame_store(
-                store,
-                frame_count=len(image_paths),
-                columns=columns,
-                current_frame_id=current_frame_id,
-                enabled=bool(self._neighbor_frames_enabled()),
-            )
-            if current_frame_id is not None and self._neighbor_frames_enabled():
-                self.polygon_editor.set_current_frame_id(current_frame_id, center=True, emit_signal=False)
-
-    def _on_zarr_lod_build_error(self: Any, generation: int, message: str) -> None:
-        if int(generation) != int(getattr(self, "_zarr_build_generation", 0)):
-            return
-        self._zarr_build_running_path = None
-        if hasattr(self, "_append_log"):
-            self._append_log(f"[contour zarr] background LOD build failed: {message}")
 
     def _rebuild_thumbnail_grid(self: Any) -> None:
         if not self._frame_matrix_enabled():
@@ -655,6 +523,7 @@ class WidgetNavigationMixin:
         self._thumbnail_rebuild_in_progress = True
         getattr(self, "_thumbnail_icon_cache", {}).clear()
         self._thumbnail_selected_path = None
+        self._thumbnail_path_to_row = {}
         try:
             self._thumbnail_thread_pool.clear()
         except AttributeError:
@@ -667,20 +536,15 @@ class WidgetNavigationMixin:
         finally:
             self.thumbnail_grid.blockSignals(False)
         paths = self._thumbnail_paths_for_matrix()
-        chunk_size = max(1, int(getattr(self, "_thumbnail_build_chunk_size", 50)))
+        configured_chunk_size = max(1, int(getattr(self, "_thumbnail_build_chunk_size", 50)))
+        max_ui_chunk_size = 250 if self._uses_large_frame_list() else 100
+        chunk_size = min(configured_chunk_size, max_ui_chunk_size)
         default_interval = 25
         if self._uses_large_frame_list():
             default_interval = 8
-        chunk_interval_ms = max(1, int(getattr(self, "_thumbnail_build_interval_ms", default_interval)))
-        if len(paths) <= chunk_size:
-            self.thumbnail_grid.blockSignals(True)
-            self.thumbnail_grid.setUpdatesEnabled(False)
-            try:
-                for path in paths:
-                    self.thumbnail_grid.addItem(self._make_thumbnail_grid_item(path))
-            finally:
-                self.thumbnail_grid.blockSignals(False)
-            self._finish_thumbnail_grid_build()
+        chunk_interval_ms = max(0, int(getattr(self, "_thumbnail_build_interval_ms", default_interval)))
+        if not paths:
+            QTimer.singleShot(0, self._finish_thumbnail_grid_build)
             return
 
         def _add_thumbnail_chunk(start: int) -> None:
@@ -690,16 +554,17 @@ class WidgetNavigationMixin:
             self.thumbnail_grid.blockSignals(True)
             try:
                 for path in paths[start:end]:
+                    row = self.thumbnail_grid.count()
                     self.thumbnail_grid.addItem(self._make_thumbnail_grid_item(path))
+                    self._thumbnail_path_to_row[str(path)] = row
             finally:
                 self.thumbnail_grid.blockSignals(False)
-            self._rebuild_thumbnail_path_index()
             if end < len(paths):
                 QTimer.singleShot(chunk_interval_ms, lambda next_start=end: _add_thumbnail_chunk(next_start))
                 return
             self._finish_thumbnail_grid_build()
 
-        QTimer.singleShot(chunk_interval_ms, lambda: _add_thumbnail_chunk(0))
+        QTimer.singleShot(0, lambda: _add_thumbnail_chunk(0))
 
     def _finish_thumbnail_grid_build(self: Any) -> None:
         self._thumbnail_rebuild_in_progress = False
@@ -757,7 +622,7 @@ class WidgetNavigationMixin:
 
     def _thumbnail_loading_blocked(self: Any) -> bool:
         store = getattr(self, "_pyramid_frame_store", None)
-        if store is not None and store.has_zarr():
+        if store is not None and store.has_lod():
             return True
         if not self._frame_matrix_enabled() or not self._frame_matrix_thumbnails_enabled():
             return True
@@ -984,7 +849,19 @@ class WidgetNavigationMixin:
                     icon = placeholder
                     item.setData(int(Qt.ItemDataRole.UserRole) + 1001, None)
                 else:
-                    pixmap = QPixmap.fromImage(qimage)
+                    target_w, target_h = max(1, int(requested_size[0])), max(1, int(requested_size[1]))
+                    pixmap_image = qimage
+                    if hasattr(qimage, "width") and hasattr(qimage, "height"):
+                        if int(qimage.width()) != target_w or int(qimage.height()) != target_h:
+                            scaled = qimage.scaled(
+                                QSize(target_w, target_h),
+                                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                Qt.TransformationMode.SmoothTransformation,
+                            )
+                            crop_x = max(0, (int(scaled.width()) - target_w) // 2)
+                            crop_y = max(0, (int(scaled.height()) - target_h) // 2)
+                            pixmap_image = scaled.copy(crop_x, crop_y, target_w, target_h)
+                    pixmap = QPixmap.fromImage(pixmap_image)
                     icon = QIcon(pixmap) if not pixmap.isNull() else placeholder
                     item.setData(int(Qt.ItemDataRole.UserRole) + 1001, pixmap if not pixmap.isNull() else None)
                 icon_cache[(path, requested_size)] = icon
@@ -1278,15 +1155,61 @@ class WidgetNavigationMixin:
             vertical.setValue(min(vertical.maximum(), rect.bottom() - viewport.height() + margin))
         self._schedule_visible_thumbnail_loads()
 
+    def _handle_frame_matrix_arrow_key_event(self: Any, event: object) -> bool:
+        if not self._frame_matrix_enabled() or not hasattr(self, "thumbnail_grid"):
+            return False
+        if getattr(self, "_closing", False) or not qt_object_is_valid(self.thumbnail_grid):
+            return False
+        if getattr(event, "type", lambda: None)() != QEvent.Type.KeyPress:
+            return False
+        modifiers = event.modifiers()
+        if not (modifiers & Qt.KeyboardModifier.ControlModifier):
+            return False
+        if modifiers & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.AltModifier):
+            return False
+        key = event.key()
+        columns = max(1, self._thumbnail_columns())
+        deltas = {
+            Qt.Key.Key_Left: -1,
+            Qt.Key.Key_Right: 1,
+            Qt.Key.Key_Up: -columns,
+            Qt.Key.Key_Down: columns,
+        }
+        delta = deltas.get(key)
+        if delta is None:
+            return False
+        count = int(self.thumbnail_grid.count())
+        if count <= 0:
+            event.accept()
+            return True
+        current_row = int(self.thumbnail_grid.currentRow())
+        if current_row < 0:
+            current_path = getattr(self._workspace, "current_image_path", None)
+            current_row = self._thumbnail_row_for_path(str(current_path)) if current_path else None
+        if current_row is None or current_row < 0:
+            current_row = 0
+        target_row = max(0, min(count - 1, int(current_row) + delta))
+        step = 1 if delta > 0 else -1
+        while 0 <= target_row < count:
+            item = self.thumbnail_grid.item(target_row)
+            if item is not None and not item.isHidden():
+                break
+            target_row += step
+        if target_row < 0 or target_row >= count:
+            event.accept()
+            return True
+        if target_row != current_row:
+            self.thumbnail_grid.setCurrentRow(target_row)
+            self._scroll_thumbnail_grid_to_row(target_row)
+            self._on_frame_navigation_requested(target_row)
+        event.accept()
+        return True
+
     def _on_thumbnail_item_clicked(self: Any, item: QListWidgetItem) -> None:
         if item is None:
             return
         path = str(item.data(Qt.ItemDataRole.UserRole) or "")
         if not path:
-            return
-        store = getattr(self, "_pyramid_frame_store", None)
-        if store is not None and store.has_zarr() and self._neighbor_frames_enabled():
-            self._on_frame_navigation_requested(item.data(int(Qt.ItemDataRole.UserRole) + 1002))
             return
         self._suppress_thumbnail_grid_scroll_path = str(Path(path))
         self._set_image_list_current_path(path, fallback_to_first=False)
@@ -1309,6 +1232,13 @@ class WidgetNavigationMixin:
             self.polygon_editor.set_current_frame_id(index, center=True, emit_signal=False)
         self._suppress_thumbnail_grid_scroll_path = str(Path(path))
         self._set_image_list_current_path(path, fallback_to_first=False)
+        self._workspace._current_image_path = str(Path(path))
+        self._workspace._current_state = None
+        try:
+            self.load_image(str(Path(path)))
+        except Exception as exc:
+            self._append_log(self._tr("failed_to_load_image_log", image_path=path, error=exc))
+            QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
 
     def _on_editor_current_frame_changed(self: Any, frame_id: object) -> None:
         try:
@@ -1515,9 +1445,7 @@ class WidgetNavigationMixin:
         if not directory.available:
             self._append_log(self._tr("input_directory_missing_log", directory=directory.path))
             return
-        self.input_dir_edit.setText(directory.path)
-        self._save_persisted_paths()
-        self._begin_async_directory_scan(directory.path, append=True)
+        self.set_input_directory(directory.path)
 
     def _select_cif_directory(self: Any) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -1676,10 +1604,11 @@ class WidgetNavigationMixin:
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(3)
         layer_id = int(layer.get("id", 0))
 
         visible_checkbox = QCheckBox("")
+        visible_checkbox.setFixedWidth(22)
         visible_checkbox.setChecked(bool(layer.get("visible", True)))
         visible_checkbox.setToolTip("Показать/скрыть слой")
         visible_checkbox.stateChanged.connect(
@@ -1689,38 +1618,43 @@ class WidgetNavigationMixin:
         dx_spin = QSpinBox()
         dx_spin.setRange(-1_000_000, 1_000_000)
         dx_spin.setValue(int(layer.get("dx", 0) or 0))
-        dx_spin.setMinimumWidth(0)
-        dx_spin.setMaximumWidth(self._compact_spinbox_width(dx_spin, "-1000000"))
+        self._configure_extra_layer_spinbox(dx_spin, width=48)
         dx_spin.setToolTip("Смещение слоя по X")
         dx_spin.valueChanged.connect(lambda value, lid=layer_id: self._set_extra_layer_field(lid, "dx", int(value)))
 
         dy_spin = QSpinBox()
         dy_spin.setRange(-1_000_000, 1_000_000)
         dy_spin.setValue(int(layer.get("dy", 0) or 0))
-        dy_spin.setMinimumWidth(0)
-        dy_spin.setMaximumWidth(self._compact_spinbox_width(dy_spin, "-1000000"))
+        self._configure_extra_layer_spinbox(dy_spin, width=48)
         dy_spin.setToolTip("Смещение слоя по Y")
         dy_spin.valueChanged.connect(lambda value, lid=layer_id: self._set_extra_layer_field(lid, "dy", int(value)))
 
         opacity_spin = QSpinBox()
         opacity_spin.setRange(0, 100)
-        opacity_spin.setValue(int(layer.get("opacity", 100) or 100))
+        try:
+            opacity_value = int(layer.get("opacity", 100))
+        except (TypeError, ValueError):
+            opacity_value = 100
+        opacity_spin.setValue(max(0, min(100, opacity_value)))
         opacity_spin.setSuffix("%")
-        opacity_spin.setMinimumWidth(0)
-        opacity_spin.setMaximumWidth(self._compact_spinbox_width(opacity_spin, "100%"))
+        self._configure_extra_layer_spinbox(opacity_spin, width=46)
         opacity_spin.setToolTip("Прозрачность слоя")
         opacity_spin.valueChanged.connect(
             lambda value, lid=layer_id: self._set_extra_layer_field(lid, "opacity", int(value))
         )
 
-        remove_button = QPushButton("-")
-        remove_button.setFixedWidth(24)
-        remove_button.setStyleSheet("QPushButton { background-color: #DC2626; color: white; font-weight: 700; }")
+        remove_button = QPushButton("X")
+        remove_button.setFixedSize(28, 24)
+        remove_button.setStyleSheet(
+            "QPushButton { background-color: #DC2626; color: white; font-weight: 700; "
+            "border-radius: 4px; padding: 0; }"
+        )
         remove_button.setToolTip("Удалить слой")
         remove_button.clicked.connect(lambda _checked=False, lid=layer_id: self._remove_extra_layer_by_id(lid))
 
         folder_name = str(layer.get("name", "Layer"))
         folder_label = QLabel(folder_name)
+        folder_label.setMinimumWidth(0)
         folder_label.setToolTip(str(layer.get("folder_path", "")))
 
         layout.addWidget(visible_checkbox)
@@ -1730,6 +1664,12 @@ class WidgetNavigationMixin:
         layout.addWidget(opacity_spin)
         layout.addWidget(remove_button)
         return row
+
+    @staticmethod
+    def _configure_extra_layer_spinbox(spinbox: QSpinBox, width: int) -> None:
+        spinbox.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        spinbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        spinbox.setFixedWidth(width)
 
     @staticmethod
     def _compact_spinbox_width(spinbox: QSpinBox, sample_text: str) -> int:
@@ -1875,5 +1815,3 @@ class WidgetNavigationMixin:
         by_id = {int(layer.get("id", -1)): layer for layer in self._extra_layers}
         self._extra_layers = [by_id[layer_id] for layer_id in order if layer_id in by_id]
         self._sync_extra_layers()
-
-

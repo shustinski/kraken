@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import json
 import numpy as np
-import subprocess
-import sys
-import tempfile
 from PyQt6.QtCore import QObject, QRunnable, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QImage
 
-from ...application.frame_lod import PyramidFrameStore, ZarrFrameStore
+from ...application.frame_lod import PyramidFrameStore
 
 
 class PyramidFrameLoadSignals(QObject):
@@ -19,59 +15,6 @@ class PyramidFrameLoadSignals(QObject):
 class PyramidThumbnailLoadSignals(QObject):
     result = pyqtSignal(int, int, int, int, int, object)
     error = pyqtSignal(int, int, int, int, int, str)
-
-
-class ZarrPyramidBuildSignals(QObject):
-    finished = pyqtSignal(int, object)
-    error = pyqtSignal(int, str)
-
-
-class ZarrPyramidBuildRunnable(QRunnable):
-    def __init__(self, generation: int, store: ZarrFrameStore) -> None:
-        super().__init__()
-        self.generation = int(generation)
-        self.store = store
-        self.signals = ZarrPyramidBuildSignals()
-
-    def run(self) -> None:
-        manifest_path = None
-        try:
-            if self.store.zarr_path is None:
-                raise RuntimeError("Zarr output path is not configured.")
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as manifest:
-                manifest_path = manifest.name
-                json.dump(
-                    {
-                        "zarr_path": str(self.store.zarr_path),
-                        "image_paths": [str(path) for path in self.store.image_paths],
-                    },
-                    manifest,
-                )
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "contour.adapters.qt.zarr_build_worker",
-                    manifest_path,
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if completed.returncode != 0:
-                message = (completed.stderr or completed.stdout or "Failed to build Zarr pyramid.").strip()
-                raise RuntimeError(message)
-            self.signals.finished.emit(self.generation, self.store)
-        except Exception as exc:
-            self.signals.error.emit(self.generation, str(exc))
-        finally:
-            if manifest_path:
-                try:
-                    from pathlib import Path
-
-                    Path(manifest_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
 
 
 class PyramidFrameLoadRunnable(QRunnable):

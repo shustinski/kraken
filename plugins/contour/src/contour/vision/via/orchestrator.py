@@ -120,13 +120,16 @@ class CompositeViaDetector:
 
 
 def _detection_to_hit(detection: Any, strategy: str) -> ViaHit:
+    bbox = getattr(detection, "bbox", (0, 0, 0, 0))
+    bw = float(bbox[2]) if isinstance(bbox, (tuple, list)) and len(bbox) >= 4 else 0.0
+    bh = float(bbox[3]) if isinstance(bbox, (tuple, list)) and len(bbox) >= 4 else 0.0
     d_est = float(getattr(detection, "diameter_estimate", 0.0) or 0.0)
-    if d_est > 0.0:
+    if bw > 0.0 and bh > 0.0:
+        w, h = bw, bh
+    elif d_est > 0.0:
         w = h = d_est
     else:
-        _x, _y, w, h = detection.bbox
-        if w <= 0 or h <= 0:
-            w = h = max(1.0, 4.0)
+        w = h = 4.0
     return ViaHit(
         center_x=float(detection.x),
         center_y=float(detection.y),

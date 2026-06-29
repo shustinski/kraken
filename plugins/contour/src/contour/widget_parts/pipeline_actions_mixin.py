@@ -114,15 +114,37 @@ class WidgetPipelineActionsMixin:
         self._auto_apply_pipeline()
 
     def _on_via_search_method_changed(self, *_args) -> None:
-        if hasattr(self, "bright_via_mode_stack"):
-            self.bright_via_mode_stack.setCurrentIndex(
-                1 if self.via_search_mode_combo.currentData() == VIA_SEARCH_MODE_TEMPLATE else 0
-            )
+        if not hasattr(self, "bright_via_mode_stack"):
+            return
+        mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
+        if mode == VIA_SEARCH_MODE_TEMPLATE:
+            index = 2
+        elif mode == VIA_SEARCH_MODE_HEURISTIC:
+            index = 1
+        else:
+            index = 0
+        self.bright_via_mode_stack.setCurrentIndex(index)
+        if hasattr(self, "_update_via_threshold_controls_state"):
+            self._update_via_threshold_controls_state()
 
     def _sync_via_diameter_size_mode(self, *_args) -> None:
         if hasattr(self, "via_size_mode_combo") and hasattr(self, "via_diameter_size_mode_combo"):
             with QSignalBlocker(self.via_size_mode_combo):
                 self.via_size_mode_combo.setCurrentIndex(self.via_diameter_size_mode_combo.currentIndex())
+        if (
+            hasattr(self, "via_diameter_size_mode_combo")
+            and normalize_via_size_mode(self.via_diameter_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
+            and hasattr(self, "bright_via_diameter_fixed_spin")
+            and hasattr(self, "bright_via_diameter_min_spin")
+        ):
+            if int(self.bright_via_diameter_min_spin.value()) == int(self.bright_via_diameter_max_spin.value()):
+                with QSignalBlocker(self.bright_via_diameter_fixed_spin):
+                    self.bright_via_diameter_fixed_spin.setValue(int(self.bright_via_diameter_min_spin.value()))
+            else:
+                with QSignalBlocker(self.bright_via_diameter_fixed_spin):
+                    self.bright_via_diameter_fixed_spin.setValue(
+                        int(round((self.bright_via_diameter_min_spin.value() + self.bright_via_diameter_max_spin.value()) * 0.5))
+                    )
         self._on_via_size_mode_changed()
 
     def _on_via_size_mode_changed(self, *_args) -> None:
@@ -209,22 +231,12 @@ class WidgetPipelineActionsMixin:
             return
         if image_path:
             normalized_image_path = str(Path(image_path))
-            self._workspace._current_image_path = normalized_image_path
-            store = getattr(self, "_pyramid_frame_store", None)
-            if store is not None and store.has_zarr() and self._neighbor_frames_enabled():
-                frame_id = self._image_path_index(normalized_image_path)
-                if frame_id is not None and frame_id >= 0:
-                    if hasattr(self, "polygon_editor"):
-                        self.polygon_editor.set_current_frame_id(frame_id, center=True, emit_signal=False)
-                    if hasattr(self, "thumbnail_grid") and hasattr(self.thumbnail_grid, "setCurrentFrameId"):
-                        self.thumbnail_grid.setCurrentFrameId(frame_id)
-                self._update_thumbnail_grid_selection()
-                return
 
             def _load_selected_image(path: str = normalized_image_path) -> None:
                 if bool(getattr(self, "_closing", False)):
                     return
-                if str(Path(getattr(self._workspace, "current_image_path", "") or "")) != path:
+                selected_path = self._image_list_path_from_proxy_index(self.image_list.currentIndex())
+                if str(Path(selected_path or "")) != path:
                     return
                 try:
                     self.load_image(path)
@@ -339,13 +351,19 @@ class WidgetPipelineActionsMixin:
         self._directory_scanner.start(directory)
 
     def _on_input_directory_scan_finished(self, paths: list[str]) -> None:
+        from ..infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY
+
         if getattr(self, "_directory_scan_append_mode", False):
             self._directory_scan_append_mode = False
             self.append_images(paths)
             return
         preferred = getattr(self, "_pending_restore_current_image_path", None)
         self._pending_restore_current_image_path = None
-        self.load_images(paths, preferred_current_image_path=preferred)
+        self.load_images(
+            paths,
+            preferred_current_image_path=preferred,
+            image_list_mode=IMAGE_LIST_MODE_DIRECTORY,
+        )
 
     def _on_input_directory_scan_failed(self, message: str) -> None:
         self._directory_scan_append_mode = False

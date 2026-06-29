@@ -142,13 +142,16 @@ class WidgetExtractionSettingsMixin:
         ]
         for _mw in (
             "metal_preset_combo",
-            "metal_sensitivity_slider",
+            "metal_noise_suppression_slider",
+            "metal_contrast_bias_spin",
+            "metal_segmentation_strategy_combo",
+            "metal_gap_bridge_spin",
+            "metal_speckle_removal_spin",
+            "metal_contour_smooth_spin",
             "metal_min_width_spin",
             "metal_max_width_spin",
             "metal_min_length_spin",
             "metal_use_wide_gradient_checkbox",
-            "metal_segmentation_method_combo",
-            "metal_sensitivity_combo",
             "metal_show_conductors_checkbox",
             "metal_show_rejected_checkbox",
             "metal_show_suspicious_checkbox",
@@ -333,6 +336,12 @@ class WidgetExtractionSettingsMixin:
             self.via_black_range_checkbox.setChecked(bool(settings.via_black_range_enabled))
             self.via_black_range_min_spin.setValue(int(settings.via_black_range_min))
             self.via_black_range_max_spin.setValue(int(settings.via_black_range_max))
+            if hasattr(self, "bright_via_bright_center_score_spin"):
+                self.bright_via_bright_center_score_spin.setValue(
+                    float(settings.via_white_range_min)
+                    if bool(settings.via_white_range_enabled)
+                    else float(settings.bright_via_bright_center_min_score)
+                )
             self.via_min_score_spin.setValue(float(settings.via_min_score))
             self.via_min_contrast_spin.setValue(float(settings.via_min_contrast))
             self.via_min_edge_coverage_spin.setValue(float(settings.via_min_edge_coverage))
@@ -340,6 +349,13 @@ class WidgetExtractionSettingsMixin:
             self.via_spot_line_suppression_spin.setValue(float(settings.via_spot_line_suppression))
             self.bright_via_diameter_min_spin.setValue(int(settings.bright_via_diameter_min))
             self.bright_via_diameter_max_spin.setValue(int(settings.bright_via_diameter_max))
+            if hasattr(self, "bright_via_diameter_fixed_spin"):
+                if int(settings.bright_via_diameter_min) == int(settings.bright_via_diameter_max):
+                    self.bright_via_diameter_fixed_spin.setValue(int(settings.bright_via_diameter_min))
+                else:
+                    self.bright_via_diameter_fixed_spin.setValue(
+                        int(round((int(settings.bright_via_diameter_min) + int(settings.bright_via_diameter_max)) * 0.5))
+                    )
             self.bright_via_clahe_clip_spin.setValue(float(settings.bright_via_clahe_clip_limit))
             self.bright_via_clahe_tile_spin.setValue(int(settings.bright_via_clahe_tile_grid_size))
             self.bright_via_median_kernel_spin.setValue(int(settings.bright_via_median_blur_kernel))
@@ -371,6 +387,8 @@ class WidgetExtractionSettingsMixin:
             self.bright_via_hard_asym_checkbox.setChecked(bool(settings.bright_via_hard_reject_on_asymmetry))
             self.bright_via_hard_edge_checkbox.setChecked(bool(settings.bright_via_hard_reject_on_edge))
             self.bright_via_hard_line_checkbox.setChecked(bool(settings.bright_via_hard_reject_on_line))
+            if hasattr(self, "bright_via_min_isolation_spin"):
+                self.bright_via_min_isolation_spin.setValue(float(settings.bright_via_min_isolation_score))
             self._via_template_images = self._normalize_via_template_images(settings.via_template_images)
             self._refresh_via_template_list()
             self.debug_candidates_checkbox.setChecked(bool(settings.debug_enabled))
@@ -402,12 +420,49 @@ class WidgetExtractionSettingsMixin:
                 0.0 if settings.max_hole_area_ratio is None else float(settings.max_hole_area_ratio)
             )
             if hasattr(self, "metal_preset_combo"):
-                mp = self.metal_preset_combo.findData(str(getattr(settings, "metal_preset", "standard") or "standard"))
+                if hasattr(self, "_refresh_metal_preset_combo"):
+                    self._refresh_metal_preset_combo()
+                mp_key = str(getattr(settings, "metal_preset", "standard") or "standard")
+                label_map = {
+                    "standard": "Стандартный" if self._ui_language == "ru" else "Standard",
+                    "noisy_sem": "Шумное SEM" if self._ui_language == "ru" else "Noisy SEM",
+                    "thin_traces": "Тонкие дорожки" if self._ui_language == "ru" else "Thin traces",
+                    "wide_fills": "Широкие заливки" if self._ui_language == "ru" else "Wide fills",
+                }
+                mp_label = label_map.get(mp_key, label_map["standard"])
+                mp = self.metal_preset_combo.findText(mp_label)
                 if mp >= 0:
                     self.metal_preset_combo.setCurrentIndex(mp)
-                self.metal_sensitivity_slider.setValue(int(getattr(settings, "metal_sensitivity_0_100", 50)))
-                if hasattr(self, "metal_sensitivity_value_label"):
-                    self.metal_sensitivity_value_label.setText(str(self.metal_sensitivity_slider.value()))
+                if hasattr(self, "metal_noise_suppression_slider"):
+                    self.metal_noise_suppression_slider.setValue(
+                        int(getattr(settings, "metal_noise_suppression", 20))
+                    )
+                if hasattr(self, "metal_noise_suppression_value_label"):
+                    self.metal_noise_suppression_value_label.setText(
+                        str(int(getattr(settings, "metal_noise_suppression", 20)))
+                    )
+                if hasattr(self, "metal_contrast_bias_spin"):
+                    self.metal_contrast_bias_spin.setValue(
+                        int(round(float(getattr(settings, "metal_contrast_bias", 0.0))))
+                    )
+                if hasattr(self, "metal_segmentation_strategy_combo"):
+                    _ssi = self.metal_segmentation_strategy_combo.findData(
+                        str(getattr(settings, "metal_segmentation_strategy", "auto") or "auto")
+                    )
+                    if _ssi >= 0:
+                        self.metal_segmentation_strategy_combo.setCurrentIndex(_ssi)
+                if hasattr(self, "metal_gap_bridge_spin"):
+                    self.metal_gap_bridge_spin.setValue(
+                        int(getattr(settings, "metal_gap_bridge_px", 2) or 2)
+                    )
+                if hasattr(self, "metal_speckle_removal_spin"):
+                    self.metal_speckle_removal_spin.setValue(
+                        int(getattr(settings, "metal_speckle_removal_px", 0) or 0)
+                    )
+                if hasattr(self, "metal_contour_smooth_spin"):
+                    self.metal_contour_smooth_spin.setValue(
+                        float(getattr(settings, "metal_contour_smooth_px", 0.0) or 0.0)
+                    )
                 self.metal_min_width_spin.setValue(float(getattr(settings, "metal_min_trace_width_px", 8.0) or 8.0))
                 mw = getattr(settings, "metal_max_trace_width_px", None)
                 self.metal_max_width_spin.setValue(0.0 if mw is None else float(mw))
@@ -442,15 +497,7 @@ class WidgetExtractionSettingsMixin:
                     self.metal_wide_grad_overlap_spin.setValue(
                         float(getattr(settings, "metal_wide_gradient_min_overlap_ratio", 0.5) or 0.5)
                     )
-                _smi = self.metal_segmentation_method_combo.findData(
-                    str(getattr(settings, "metal_segmentation_method", "otsu") or "otsu")
-                )
-                if _smi >= 0:
-                    self.metal_segmentation_method_combo.setCurrentIndex(_smi)
-                _st = str(getattr(settings, "metal_sensitivity", "medium") or "medium")
-                _sti = self.metal_sensitivity_combo.findData(_st)
-                if _sti >= 0:
-                    self.metal_sensitivity_combo.setCurrentIndex(_sti)
+                _smi = -1
                 self.metal_min_area_spin.setValue(float(getattr(settings, "metal_min_area", 60.0) or 60.0))
                 ma = getattr(settings, "metal_max_area", None)
                 self.metal_max_area_spin.setValue(0.0 if ma is None else float(ma))
@@ -488,10 +535,19 @@ class WidgetExtractionSettingsMixin:
                 if _bhi >= 0:
                     self.metal_border_handling_combo.setCurrentIndex(_bhi)
                 self.metal_validity_checkbox.setChecked(
-                    bool(getattr(settings, "metal_check_contour_validity", False))
+                    bool(getattr(settings, "metal_check_contour_validity", True))
                 )
-                self.metal_morph_close_spin.setValue(int(getattr(settings, "metal_morph_close_radius", 1) or 1))
-                self.metal_morph_open_spin.setValue(int(getattr(settings, "metal_morph_open_radius", 0) or 0))
+                self.metal_morph_close_spin.setValue(
+                    int(getattr(settings, "metal_gap_bridge_px", getattr(settings, "metal_morph_close_radius", 2)) or 2)
+                )
+                self.metal_morph_open_spin.setValue(
+                    int(
+                        getattr(
+                            settings, "metal_speckle_removal_px", getattr(settings, "metal_morph_open_radius", 0)
+                        )
+                        or 0
+                    )
+                )
                 self.metal_show_conductors_checkbox.setChecked(
                     bool(getattr(settings, "metal_display_show_conductors", True))
                 )
@@ -519,6 +575,16 @@ class WidgetExtractionSettingsMixin:
             self._suspend_fixed_via_updates = False
             self._ignore_extraction_profile_change = False
             del blockers
+
+    def _bright_via_diameter_bounds_from_widgets(self) -> tuple[int, int]:
+        if (
+            hasattr(self, "via_diameter_size_mode_combo")
+            and normalize_via_size_mode(self.via_diameter_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
+            and hasattr(self, "bright_via_diameter_fixed_spin")
+        ):
+            diameter = int(self.bright_via_diameter_fixed_spin.value())
+            return diameter, diameter
+        return int(self.bright_via_diameter_min_spin.value()), int(self.bright_via_diameter_max_spin.value())
 
     def _current_contour_settings(self) -> ContourExtractionSettings:
         max_area = self.max_area_spin.value()
@@ -556,6 +622,7 @@ class WidgetExtractionSettingsMixin:
         fixed_via_heights = [height for _width, height in fixed_via_pairs]
         max_hierarchy_depth = self.max_hierarchy_depth_spin.value()
         max_hole_area_ratio = self.max_hole_area_ratio_spin.value()
+        bright_via_diameter_min, bright_via_diameter_max = self._bright_via_diameter_bounds_from_widgets()
         return ContourExtractionSettings(
             algorithm_backend=algorithm_backend,
             sem_noise_level="medium",
@@ -610,8 +677,8 @@ class WidgetExtractionSettingsMixin:
             via_min_edge_coverage=self.via_min_edge_coverage_spin.value(),
             via_template_min_score=self.via_template_min_score_spin.value(),
             via_spot_line_suppression=self.via_spot_line_suppression_spin.value(),
-            bright_via_diameter_min=self.bright_via_diameter_min_spin.value(),
-            bright_via_diameter_max=self.bright_via_diameter_max_spin.value(),
+            bright_via_diameter_min=bright_via_diameter_min,
+            bright_via_diameter_max=bright_via_diameter_max,
             bright_via_clahe_clip_limit=self.bright_via_clahe_clip_spin.value(),
             bright_via_clahe_tile_grid_size=self.bright_via_clahe_tile_spin.value(),
             bright_via_median_blur_kernel=self.bright_via_median_kernel_spin.value(),
@@ -625,7 +692,11 @@ class WidgetExtractionSettingsMixin:
             bright_via_min_circularity=self.bright_via_min_circularity_spin.value(),
             bright_via_min_aspect=self.bright_via_min_aspect_spin.value(),
             bright_via_max_aspect=self.bright_via_max_aspect_spin.value(),
-            bright_via_bright_center_min_score=self.bright_via_bright_center_score_spin.value(),
+            bright_via_bright_center_min_score=(
+                float(self.via_white_range_min_spin.value())
+                if self.via_white_range_checkbox.isChecked()
+                else float(self.bright_via_bright_center_score_spin.value())
+            ),
             bright_via_metal_constraint_mode=_normalize_bright_via_metal_constraint_mode(
                 self.bright_via_metal_constraint_combo.currentData()
             ),
@@ -640,6 +711,9 @@ class WidgetExtractionSettingsMixin:
             bright_via_hard_reject_on_asymmetry=self.bright_via_hard_asym_checkbox.isChecked(),
             bright_via_hard_reject_on_edge=self.bright_via_hard_edge_checkbox.isChecked(),
             bright_via_hard_reject_on_line=self.bright_via_hard_line_checkbox.isChecked(),
+            bright_via_min_isolation_score=self.bright_via_min_isolation_spin.value()
+            if hasattr(self, "bright_via_min_isolation_spin")
+            else 0.38,
             via_template_images=[template.copy() for template in self._via_template_images],
             via_template_nms_distance=self.via_template_nms_distance_spin.value()
             if hasattr(self, "via_template_nms_distance_spin")
@@ -713,18 +787,27 @@ class WidgetExtractionSettingsMixin:
             ),
             via_display_show_candidates=self.debug_candidates_checkbox.isChecked(),
             metal_structural_pipeline=(raw_rec == "conductors"),
-            metal_preset=str(self.metal_preset_combo.currentData() or "standard")
+            metal_preset=self._current_metal_preset_key()
             if hasattr(self, "metal_preset_combo")
             else "standard",
-            metal_segmentation_method=str(self.metal_segmentation_method_combo.currentData() or "none")
-            if hasattr(self, "metal_segmentation_method_combo")
-            else "none",
-            metal_sensitivity=str(self.metal_sensitivity_combo.currentData() or "medium")
-            if hasattr(self, "metal_sensitivity_combo")
-            else "medium",
-            metal_sensitivity_0_100=int(self.metal_sensitivity_slider.value())
-            if hasattr(self, "metal_sensitivity_slider")
-            else 50,
+            metal_noise_suppression=int(self.metal_noise_suppression_slider.value())
+            if hasattr(self, "metal_noise_suppression_slider")
+            else 20,
+            metal_contrast_bias=float(self.metal_contrast_bias_spin.value())
+            if hasattr(self, "metal_contrast_bias_spin")
+            else 0.0,
+            metal_segmentation_strategy=str(self.metal_segmentation_strategy_combo.currentData() or "auto")
+            if hasattr(self, "metal_segmentation_strategy_combo")
+            else "auto",
+            metal_gap_bridge_px=int(self.metal_gap_bridge_spin.value())
+            if hasattr(self, "metal_gap_bridge_spin")
+            else 2,
+            metal_speckle_removal_px=int(self.metal_speckle_removal_spin.value())
+            if hasattr(self, "metal_speckle_removal_spin")
+            else 0,
+            metal_contour_smooth_px=float(self.metal_contour_smooth_spin.value())
+            if hasattr(self, "metal_contour_smooth_spin")
+            else 0.0,
             metal_min_object_area=self.metal_min_area_spin.value()
             if hasattr(self, "metal_min_area_spin")
             else 60.0,
@@ -794,12 +877,16 @@ class WidgetExtractionSettingsMixin:
             metal_approximation_enabled=self.metal_approximation_checkbox.isChecked()
             if hasattr(self, "metal_approximation_checkbox")
             else True,
-            metal_morph_close_radius=self.metal_morph_close_spin.value()
-            if hasattr(self, "metal_morph_close_spin")
-            else 1,
-            metal_morph_open_radius=self.metal_morph_open_spin.value()
-            if hasattr(self, "metal_morph_open_spin")
-            else 0,
+            metal_morph_close_radius=int(self.metal_gap_bridge_spin.value())
+            if hasattr(self, "metal_gap_bridge_spin")
+            else (
+                int(self.metal_morph_close_spin.value()) if hasattr(self, "metal_morph_close_spin") else 2
+            ),
+            metal_morph_open_radius=int(self.metal_speckle_removal_spin.value())
+            if hasattr(self, "metal_speckle_removal_spin")
+            else (
+                int(self.metal_morph_open_spin.value()) if hasattr(self, "metal_morph_open_spin") else 0
+            ),
             metal_display_show_conductors=self.metal_show_conductors_checkbox.isChecked()
             if hasattr(self, "metal_show_conductors_checkbox")
             else True,
@@ -854,6 +941,8 @@ class WidgetExtractionSettingsMixin:
             self._set_extraction_settings(self._contour_settings_profiles["vias"])
         if hasattr(self, "via_group"):
             self.via_group.setVisible(self._active_extraction_profile == "vias" and data == "disabled")
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_polygon_overlays_visible(data != "disabled")
         self.polygon_editor.set_debug_candidates([])
         if hasattr(self, "_update_extraction_profile_controls_state"):
             self._update_extraction_profile_controls_state()
@@ -863,16 +952,25 @@ class WidgetExtractionSettingsMixin:
         self._apply_via_search_sensitivity_profile()
         self._on_extraction_settings_changed()
 
+    def _on_via_brightness_range_changed(self, *_args) -> None:
+        if (
+            hasattr(self, "via_white_range_checkbox")
+            and hasattr(self, "bright_via_bright_center_score_spin")
+            and self.via_white_range_checkbox.isChecked()
+        ):
+            with QSignalBlocker(self.bright_via_bright_center_score_spin):
+                self.bright_via_bright_center_score_spin.setValue(float(self.via_white_range_min_spin.value()))
+        if hasattr(self, "_update_via_brightness_range_controls_state"):
+            self._update_via_brightness_range_controls_state()
+        self._on_extraction_settings_changed()
+
     def _apply_via_search_sensitivity_profile(self) -> None:
         if not hasattr(self, "via_search_sensitivity_combo"):
             return
+        from ..application.via_sensitivity import via_sensitivity_profile
+
         level = str(self.via_search_sensitivity_combo.currentData() or "medium")
-        profiles = {
-            "low": (99.5, 8.0, 55.0, 0.40, True, True, True, True),
-            "medium": (99.0, 6.0, 38.0, 0.30, False, False, False, False),
-            "high": (98.0, 4.0, 32.0, 0.22, False, False, False, False),
-        }
-        pct, bright, final, circ, ha, he, hl, _ = profiles.get(level, profiles["medium"])
+        profile = via_sensitivity_profile(level)
         blockers = [
             QSignalBlocker(self.bright_via_threshold_percentile_spin),
             QSignalBlocker(self.bright_via_bright_center_score_spin),
@@ -881,21 +979,51 @@ class WidgetExtractionSettingsMixin:
             QSignalBlocker(self.bright_via_hard_asym_checkbox),
             QSignalBlocker(self.bright_via_hard_edge_checkbox),
             QSignalBlocker(self.bright_via_hard_line_checkbox),
+            QSignalBlocker(self.via_white_range_checkbox),
+            QSignalBlocker(self.via_white_range_min_spin),
+            QSignalBlocker(self.via_white_range_max_spin),
+            QSignalBlocker(self.bright_via_max_radial_asymmetry_spin),
         ]
+        if hasattr(self, "bright_via_min_isolation_spin"):
+            blockers.append(QSignalBlocker(self.bright_via_min_isolation_spin))
         try:
-            self.bright_via_threshold_percentile_spin.setValue(pct)
-            self.bright_via_bright_center_score_spin.setValue(bright)
-            self.bright_via_min_final_score_spin.setValue(final)
-            self.bright_via_min_circularity_spin.setValue(circ)
-            self.bright_via_hard_asym_checkbox.setChecked(ha)
-            self.bright_via_hard_edge_checkbox.setChecked(he)
-            self.bright_via_hard_line_checkbox.setChecked(hl)
+            self.bright_via_threshold_percentile_spin.setValue(profile.bright_via_threshold_percentile)
+            self.via_white_range_checkbox.setChecked(True)
+            self.via_white_range_min_spin.setValue(int(profile.via_white_range_min))
+            self.via_white_range_max_spin.setValue(255)
+            self.bright_via_bright_center_score_spin.setValue(float(profile.via_white_range_min))
+            self.bright_via_min_final_score_spin.setValue(profile.bright_via_min_final_score)
+            self.bright_via_min_circularity_spin.setValue(profile.bright_via_min_circularity)
+            if hasattr(self, "bright_via_min_isolation_spin"):
+                self.bright_via_min_isolation_spin.setValue(profile.bright_via_min_isolation_score)
+            self.bright_via_hard_asym_checkbox.setChecked(profile.bright_via_hard_reject_on_asymmetry)
+            self.bright_via_hard_edge_checkbox.setChecked(profile.bright_via_hard_reject_on_edge)
+            self.bright_via_hard_line_checkbox.setChecked(profile.bright_via_hard_reject_on_line)
+            self.bright_via_max_radial_asymmetry_spin.setValue(profile.bright_via_max_radial_asymmetry)
         finally:
             del blockers
+        if hasattr(self, "_update_via_brightness_range_controls_state"):
+            self._update_via_brightness_range_controls_state()
 
     def _on_via_display_settings_changed(self, *_args) -> None:
         if hasattr(self, "polygon_editor") and hasattr(self, "via_show_detected_checkbox"):
             self.polygon_editor.set_polygon_category_visible("via", self.via_show_detected_checkbox.isChecked())
+        self._on_extraction_settings_changed()
+
+    def _current_metal_preset_key(self) -> str:
+        if not hasattr(self, "metal_preset_combo"):
+            return "standard"
+        data = self.metal_preset_combo.currentData()
+        if isinstance(data, tuple) and len(data) == 2:
+            preset_type, preset_name = str(data[0]), str(data[1])
+            if preset_type == "builtin":
+                payload = self._built_in_metal_presets().get(preset_name, {})
+                return str(payload.get("metal_preset", "standard") or "standard")
+        return "standard"
+
+    def _on_metal_noise_suppression_changed(self, value: int) -> None:
+        if hasattr(self, "metal_noise_suppression_value_label"):
+            self.metal_noise_suppression_value_label.setText(str(int(value)))
         self._on_extraction_settings_changed()
 
     def _on_metal_overlay_opacity_changed(self, value: float) -> None:
@@ -903,165 +1031,19 @@ class WidgetExtractionSettingsMixin:
             self.polygon_editor.set_gradient_overlay_opacity(float(value))
         self._on_extraction_settings_changed()
 
-    def _on_metal_sensitivity_slider_changed(self, value: int) -> None:
-        if hasattr(self, "metal_sensitivity_value_label"):
-            self.metal_sensitivity_value_label.setText(str(int(value)))
-        self._on_extraction_settings_changed()
-
-    def _metal_preset_table(self) -> dict[str, dict[str, float | int | str]]:
-        return {
-            "standard": {
-                "sens": 50,
-                "close": 1,
-                "open": 0,
-                "min_w": 8.0,
-                "max_w": 0.0,
-                "min_l": 8.0,
-                "min_a": 60.0,
-                "max_a": 0.0,
-                "min_p": 32.0,
-                "max_p": 0.0,
-                "str": 0.2,
-                "tol": 7.0,
-                "tok": "medium",
-                "angles": "free",
-            },
-            "dense": {
-                "sens": 42,
-                "close": 5,
-                "open": 0,
-                "min_w": 6.0,
-                "max_w": 85.0,
-                "min_l": 18.0,
-                "min_a": 45.0,
-                "max_a": 0.0,
-                "min_p": 28.0,
-                "max_p": 0.0,
-                "str": 0.52,
-                "tol": 9.0,
-                "tok": "high",
-            },
-            "thin_traces": {
-                "sens": 58,
-                "close": 2,
-                "open": 1,
-                "min_w": 4.0,
-                "max_w": 24.0,
-                "min_l": 28.0,
-                "min_a": 35.0,
-                "max_a": 0.0,
-                "min_p": 26.0,
-                "max_p": 0.0,
-                "str": 0.64,
-                "tol": 6.0,
-                "tok": "medium",
-            },
-            "wide_traces": {
-                "sens": 44,
-                "close": 4,
-                "open": 0,
-                "min_w": 14.0,
-                "max_w": 0.0,
-                "min_l": 24.0,
-                "min_a": 100.0,
-                "max_a": 0.0,
-                "min_p": 42.0,
-                "max_p": 0.0,
-                "str": 0.5,
-                "tol": 8.0,
-                "tok": "medium",
-            },
-            "weak_contrast": {
-                "sens": 68,
-                "close": 2,
-                "open": 0,
-                "min_w": 6.0,
-                "max_w": 0.0,
-                "min_l": 14.0,
-                "min_a": 40.0,
-                "max_a": 0.0,
-                "min_p": 24.0,
-                "max_p": 0.0,
-                "str": 0.35,
-                "tol": 10.0,
-                "tok": "high",
-            },
-            "noisy_sem": {
-                "sens": 36,
-                "close": 4,
-                "open": 1,
-                "min_w": 10.0,
-                "max_w": 0.0,
-                "min_l": 32.0,
-                "min_a": 85.0,
-                "max_a": 0.0,
-                "min_p": 40.0,
-                "max_p": 0.0,
-                "str": 0.68,
-                "tol": 10.0,
-                "tok": "low",
-            },
-            "conservative": {
-                "sens": 62,
-                "close": 2,
-                "open": 0,
-                "min_w": 10.0,
-                "max_w": 48.0,
-                "min_l": 36.0,
-                "min_a": 100.0,
-                "max_a": 0.0,
-                "min_p": 44.0,
-                "max_p": 0.0,
-                "str": 0.72,
-                "tol": 5.0,
-                "tok": "low",
-            },
-            "angles_45_90": {
-                "sens": 52,
-                "close": 1,
-                "open": 0,
-                "min_w": 8.0,
-                "max_w": 0.0,
-                "min_l": 12.0,
-                "min_a": 60.0,
-                "max_a": 0.0,
-                "min_p": 32.0,
-                "max_p": 0.0,
-                "str": 0.35,
-                "tol": 6.0,
-                "tok": "medium",
-                "angles": "45_90",
-            },
-        }
+    def _metal_preset_table(self) -> dict[str, dict[str, object]]:
+        return metal_preset_table()
 
     def _on_metal_preset_changed(self, *_args) -> None:
         if not hasattr(self, "metal_preset_combo"):
             return
-        key = str(self.metal_preset_combo.currentData() or "standard")
-        pr = self._metal_preset_table().get(key)
-        if not pr:
+        data = self.metal_preset_combo.currentData()
+        if not isinstance(data, tuple) or len(data) != 2 or data[0] != "builtin":
             self._on_extraction_settings_changed()
             return
-        self.metal_sensitivity_slider.setValue(int(pr["sens"]))
-        self.metal_morph_close_spin.setValue(int(pr["close"]))
-        self.metal_morph_open_spin.setValue(int(pr["open"]))
-        self.metal_min_width_spin.setValue(float(pr["min_w"]))
-        self.metal_max_width_spin.setValue(float(pr["max_w"]))
-        self.metal_min_length_spin.setValue(float(pr["min_l"]))
-        self.metal_min_area_spin.setValue(float(pr["min_a"]))
-        self.metal_max_area_spin.setValue(float(pr["max_a"]))
-        self.metal_min_perimeter_spin.setValue(float(pr["min_p"]))
-        self.metal_max_perimeter_spin.setValue(float(pr["max_p"]))
-        self.metal_straightness_spin.setValue(float(pr["str"]))
-        self.metal_angle_tolerance_spin.setValue(float(pr["tol"]))
-        _ti = self.metal_sensitivity_combo.findData(str(pr["tok"]))
-        if _ti >= 0:
-            self.metal_sensitivity_combo.setCurrentIndex(_ti)
-        if hasattr(self, "metal_allowed_angles_combo") and "angles" in pr:
-            _ai = self.metal_allowed_angles_combo.findData(str(pr["angles"]))
-            if _ai >= 0:
-                self.metal_allowed_angles_combo.setCurrentIndex(_ai)
-        self._on_extraction_settings_changed()
+        payload = self._built_in_metal_presets().get(str(data[1]))
+        if payload:
+            self._apply_metal_preset_payload(payload)
 
     def _preview_metal_mask(self, *_args) -> None:
         if hasattr(self, "metal_debug_visual_combo"):
@@ -1075,11 +1057,26 @@ class WidgetExtractionSettingsMixin:
     def _reset_metal_parameters(self, *_args) -> None:
         defaults = ContourExtractionSettings()
         if hasattr(self, "metal_preset_combo"):
-            self.metal_preset_combo.setCurrentIndex(self.metal_preset_combo.findData("standard"))
-        if hasattr(self, "metal_sensitivity_slider"):
-            self.metal_sensitivity_slider.setValue(int(defaults.metal_sensitivity_0_100))
-        if hasattr(self, "metal_sensitivity_value_label"):
-            self.metal_sensitivity_value_label.setText(str(int(defaults.metal_sensitivity_0_100)))
+            label = "Стандартный" if self._ui_language == "ru" else "Standard"
+            ix = self.metal_preset_combo.findText(label)
+            if ix >= 0:
+                self.metal_preset_combo.setCurrentIndex(ix)
+        if hasattr(self, "metal_noise_suppression_slider"):
+            self.metal_noise_suppression_slider.setValue(int(defaults.metal_noise_suppression))
+        if hasattr(self, "metal_noise_suppression_value_label"):
+            self.metal_noise_suppression_value_label.setText(str(int(defaults.metal_noise_suppression)))
+        if hasattr(self, "metal_contrast_bias_spin"):
+            self.metal_contrast_bias_spin.setValue(int(round(defaults.metal_contrast_bias)))
+        if hasattr(self, "metal_segmentation_strategy_combo"):
+            ix = self.metal_segmentation_strategy_combo.findData(defaults.metal_segmentation_strategy)
+            if ix >= 0:
+                self.metal_segmentation_strategy_combo.setCurrentIndex(ix)
+        if hasattr(self, "metal_gap_bridge_spin"):
+            self.metal_gap_bridge_spin.setValue(int(defaults.metal_gap_bridge_px))
+        if hasattr(self, "metal_speckle_removal_spin"):
+            self.metal_speckle_removal_spin.setValue(int(defaults.metal_speckle_removal_px))
+        if hasattr(self, "metal_contour_smooth_spin"):
+            self.metal_contour_smooth_spin.setValue(float(defaults.metal_contour_smooth_px))
         if hasattr(self, "metal_min_width_spin"):
             self.metal_min_width_spin.setValue(float(defaults.metal_min_trace_width_px))
         if hasattr(self, "metal_max_width_spin"):
@@ -1087,14 +1084,6 @@ class WidgetExtractionSettingsMixin:
             self.metal_max_width_spin.setValue(0.0 if mw is None else float(mw))
         if hasattr(self, "metal_min_length_spin"):
             self.metal_min_length_spin.setValue(float(defaults.metal_min_trace_length_px))
-        if hasattr(self, "metal_segmentation_method_combo"):
-            ix = self.metal_segmentation_method_combo.findData(defaults.metal_segmentation_method)
-            if ix >= 0:
-                self.metal_segmentation_method_combo.setCurrentIndex(ix)
-        if hasattr(self, "metal_sensitivity_combo"):
-            ix = self.metal_sensitivity_combo.findData(defaults.metal_sensitivity)
-            if ix >= 0:
-                self.metal_sensitivity_combo.setCurrentIndex(ix)
         if hasattr(self, "metal_min_area_spin"):
             self.metal_min_area_spin.setValue(float(defaults.metal_min_area))
         if hasattr(self, "metal_max_area_spin"):

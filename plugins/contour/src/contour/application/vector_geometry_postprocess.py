@@ -79,10 +79,16 @@ def _refresh_metrics(poly: PolygonData) -> None:
     poly.bbox = bbox
 
 
+def _ring_has_usable_geometry(points: list[tuple[float, float]]) -> bool:
+    from ..graphics.brush_vector import ring_is_valid_for_polygon
+
+    return ring_is_valid_for_polygon(points)
+
+
 def drop_polygons_invalid_points(polygons: list[PolygonData]) -> list[PolygonData]:
     keep: list[PolygonData] = []
     for p in polygons:
-        if len(p.points) < 3:
+        if not _ring_has_usable_geometry(p.points):
             continue
         if any(not _point_finite(pt) for pt in p.points):
             continue
@@ -93,7 +99,7 @@ def drop_polygons_invalid_points(polygons: list[PolygonData]) -> list[PolygonDat
 def filter_simple_valid_polygons(polygons: list[PolygonData]) -> list[PolygonData]:
     # Keep mask-extracted rings even when :func:`is_valid_closed_polygon_ring` rejects them,
     # otherwise hierarchy (outer + holes) silently collapses during editor post-process.
-    return [p for p in polygons if len(p.points) >= 3]
+    return [p for p in polygons if _ring_has_usable_geometry(p.points)]
 
 
 def _is_small_inner_area(poly: PolygonData, min_area_px2: float) -> bool:
@@ -499,6 +505,67 @@ def postprocess_after_editor_mutation(
     return work, changed
 
 
+def _postprocess_scoped_single_polygon(
+    target: PolygonData,
+    settings: VectorGeometrySettings,
+) -> PolygonData | None:
+    if len(target.points) < 3 or any(not _point_finite(pt) for pt in target.points):
+        return None
+
+    _refresh_metrics(target)
+    scoped = [target.clone()]
+    if target.is_hole:
+        scoped = filter_simple_valid_polygons(scoped)
+    else:
+        scoped = dissolve_small_holes(scoped, settings.min_hole_area_to_remove_px2)
+        scoped = apply_spike_removal_all(scoped, settings.min_spike_interior_angle_deg)
+        scoped = filter_simple_valid_polygons(scoped)
+        scoped = drop_small_outer_polygons(scoped, settings.min_outer_area_px2)
+        scoped = drop_triangle_outer_artifacts(
+            scoped,
+            settings.drop_three_vertex_triangle_artifacts,
+            min_outer_area_px2=settings.min_outer_area_px2,
+        )
+    if not scoped:
+        return None
+    return scoped[0]
+
+
+def postprocess_changed_polygon_edit(
+    polygons: list[PolygonData],
+    settings: VectorGeometrySettings,
+    *,
+    polygon_id: int | None,
+) -> tuple[list[PolygonData], bool, bool]:
+    """Apply local postprocess to one edited polygon or reject the edit unchanged.
+
+    Returns ``(polygons, accepted, changed)``.
+    """
+
+    original = [polygon.clone() for polygon in polygons]
+    if polygon_id is None:
+        return original, True, False
+
+    trial = next((polygon for polygon in polygons if polygon.id == polygon_id), None)
+    if trial is None:
+        return original, True, False
+
+    replacement = _postprocess_scoped_single_polygon(trial, settings)
+    if replacement is None or len(replacement.points) < len(trial.points):
+        return original, False, False
+
+    work = [polygon.clone() for polygon in polygons]
+    replacement.id = trial.id
+    replacement.parent_id = trial.parent_id
+    for index, polygon in enumerate(work):
+        if polygon.id == polygon_id:
+            work[index] = replacement
+            break
+    work = drop_orphan_holes(work)
+    changed = _single_polygon_topo_signature(trial) != _single_polygon_topo_signature(replacement)
+    return work, True, changed
+
+
 def postprocess_changed_polygon_only(
     polygons: list[PolygonData],
     settings: VectorGeometrySettings,
@@ -519,31 +586,11 @@ def postprocess_changed_polygon_only(
     target = by_id.get(polygon_id)
     if target is None:
         return work, False
-    if len(target.points) < 3 or any(not _point_finite(pt) for pt in target.points):
-        work = [p for p in work if p.id != polygon_id and p.parent_id != polygon_id]
-        work = drop_orphan_holes(work)
-        return work, len(work) != len(polygons)
 
-    _refresh_metrics(target)
-    scoped = [target.clone()]
-    if target.is_hole:
-        scoped = filter_simple_valid_polygons(scoped)
-    else:
-        scoped = dissolve_small_holes(scoped, settings.min_hole_area_to_remove_px2)
-        scoped = apply_spike_removal_all(scoped, settings.min_spike_interior_angle_deg)
-        scoped = filter_simple_valid_polygons(scoped)
-        scoped = drop_small_outer_polygons(scoped, settings.min_outer_area_px2)
-        scoped = drop_triangle_outer_artifacts(
-            scoped,
-            settings.drop_three_vertex_triangle_artifacts,
-            min_outer_area_px2=settings.min_outer_area_px2,
-        )
-    if not scoped:
-        work = [p for p in work if p.id != polygon_id and p.parent_id != polygon_id]
-        work = drop_orphan_holes(work)
-        return work, len(work) != len(polygons)
+    replacement = _postprocess_scoped_single_polygon(target, settings)
+    if replacement is None:
+        return [p.clone() for p in polygons], False
 
-    replacement = scoped[0]
     replacement.id = target.id
     replacement.parent_id = target.parent_id
     for index, poly in enumerate(work):
@@ -551,7 +598,7 @@ def postprocess_changed_polygon_only(
             work[index] = replacement
             break
     work = drop_orphan_holes(work)
-    changed = len(work) != len(polygons) or before_signature != _single_polygon_topo_signature(replacement)
+    changed = before_signature != _single_polygon_topo_signature(replacement)
     return work, changed
 
 
@@ -563,7 +610,9 @@ def postprocess_after_vertex_move(
 ) -> tuple[list[PolygonData], bool]:
     """Vertex-move postprocess: local cleanup on the edited polygon, then optional family merge."""
 
-    work, changed = postprocess_changed_polygon_only(polygons, settings, polygon_id=polygon_id)
+    work, accepted, changed = postprocess_changed_polygon_edit(polygons, settings, polygon_id=polygon_id)
+    if not accepted:
+        return [p.clone() for p in polygons], False
     if not settings.merge_overlapping_on_edit:
         return work, changed
     before_merge = _polygons_topo_signature(work)

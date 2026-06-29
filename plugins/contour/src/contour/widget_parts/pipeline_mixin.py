@@ -511,6 +511,14 @@ class WidgetPipelineMixin:
             )
             if mode_index >= 0:
                 self.via_search_mode_combo.setCurrentIndex(mode_index)
+            if hasattr(self, "via_diameter_size_mode_combo"):
+                size_mode_index = self.via_diameter_size_mode_combo.findData(
+                    normalize_via_size_mode(
+                        payload.get("via_size_mode", self.via_diameter_size_mode_combo.currentData())
+                    )
+                )
+                if size_mode_index >= 0:
+                    self.via_diameter_size_mode_combo.setCurrentIndex(size_mode_index)
             self.via_white_range_checkbox.setChecked(
                 bool(payload.get("via_white_range_enabled", self.via_white_range_checkbox.isChecked()))
             )
@@ -549,6 +557,10 @@ class WidgetPipelineMixin:
             self.bright_via_diameter_max_spin.setValue(
                 int(payload.get("bright_via_diameter_max", self.bright_via_diameter_max_spin.value()))
             )
+            if hasattr(self, "bright_via_diameter_fixed_spin"):
+                dmin = int(payload.get("bright_via_diameter_min", self.bright_via_diameter_min_spin.value()))
+                dmax = int(payload.get("bright_via_diameter_max", self.bright_via_diameter_max_spin.value()))
+                self.bright_via_diameter_fixed_spin.setValue(dmin if dmin == dmax else int(round((dmin + dmax) * 0.5)))
             self.bright_via_clahe_clip_spin.setValue(
                 float(payload.get("bright_via_clahe_clip_limit", self.bright_via_clahe_clip_spin.value()))
             )
@@ -652,6 +664,7 @@ class WidgetPipelineMixin:
             )
         finally:
             del blockers
+        self._update_bright_via_diameter_controls_state()
         self._update_via_threshold_controls_state()
         self._on_extraction_settings_changed()
 
@@ -691,6 +704,95 @@ class WidgetPipelineMixin:
         self._user_via_presets.pop(str(data[1]), None)
         self._save_user_via_presets()
         self._refresh_via_preset_combo()
+
+    def _built_in_metal_presets(self) -> dict[str, dict[str, object]]:
+        return built_in_metal_presets(self._ui_language)
+
+    def _load_user_metal_presets(self) -> dict[str, dict[str, object]]:
+        return self._metal_preset_settings_store.load()
+
+    def _save_user_metal_presets(self) -> None:
+        self._metal_preset_settings_store.save(self._user_metal_presets)
+
+    def _refresh_metal_preset_combo(self) -> None:
+        if not hasattr(self, "metal_preset_combo"):
+            return
+        current_name = self.metal_preset_combo.currentText()
+        self.metal_preset_combo.clear()
+        for name in self._built_in_metal_presets():
+            self.metal_preset_combo.addItem(name, ("builtin", name))
+        for name in sorted(self._user_metal_presets):
+            self.metal_preset_combo.addItem(name, ("user", name))
+        index = self.metal_preset_combo.findText(current_name)
+        if index >= 0:
+            self.metal_preset_combo.setCurrentIndex(index)
+
+    def _current_metal_preset_payload(self) -> dict[str, object]:
+        payload = self._current_contour_settings().to_dict()
+        keys = (
+            "metal_preset",
+            "metal_noise_suppression",
+            "metal_contrast_bias",
+            "metal_segmentation_strategy",
+            "metal_gap_bridge_px",
+            "metal_speckle_removal_px",
+            "metal_contour_smooth_px",
+            "metal_min_trace_width_px",
+            "metal_max_trace_width_px",
+            "metal_min_trace_length_px",
+            "metal_min_straightness",
+            "metal_min_area",
+            "metal_min_perimeter",
+            "metal_use_wide_conductor_gradient",
+            "metal_allowed_angles",
+            "metal_angle_tolerance_deg",
+            "epsilon",
+        )
+        return {key: payload[key] for key in keys if key in payload}
+
+    def _apply_metal_preset_payload(self, payload: dict[str, object]) -> None:
+        merged = ContourExtractionSettings.from_dict(
+            self._current_contour_settings().to_dict() | dict(payload)
+        )
+        self._set_extraction_settings(merged)
+        self._on_extraction_settings_changed()
+
+    def _apply_selected_metal_preset(self) -> None:
+        data = self.metal_preset_combo.currentData()
+        if not isinstance(data, tuple) or len(data) != 2:
+            return
+        preset_type, preset_name = data
+        payload = (
+            self._built_in_metal_presets().get(str(preset_name))
+            if preset_type == "builtin"
+            else self._user_metal_presets.get(str(preset_name))
+        )
+        if payload:
+            self._apply_metal_preset_payload(payload)
+
+    def _save_current_metal_preset(self) -> None:
+        name, ok = QInputDialog.getText(
+            self,
+            "Сохранить пресет" if self._ui_language == "ru" else "Save preset",
+            "Имя пресета:" if self._ui_language == "ru" else "Preset name:",
+        )
+        name = str(name).strip()
+        if not ok or not name:
+            return
+        self._user_metal_presets[name] = self._current_metal_preset_payload()
+        self._save_user_metal_presets()
+        self._refresh_metal_preset_combo()
+        index = self.metal_preset_combo.findText(name)
+        if index >= 0:
+            self.metal_preset_combo.setCurrentIndex(index)
+
+    def _delete_selected_metal_preset(self) -> None:
+        data = self.metal_preset_combo.currentData()
+        if not isinstance(data, tuple) or len(data) != 2 or data[0] != "user":
+            return
+        self._user_metal_presets.pop(str(data[1]), None)
+        self._save_user_metal_presets()
+        self._refresh_metal_preset_combo()
 
     def _apply_noisy_traces_via_preset(self, *_args) -> None:
         self._apply_via_preset_payload(self._noisy_traces_via_preset_payload())
@@ -767,8 +869,14 @@ class WidgetPipelineMixin:
             QSignalBlocker(self.bright_via_hard_line_checkbox),
         ]
         try:
-            self.bright_via_diameter_min_spin.setValue(6)
+            if hasattr(self, "via_diameter_size_mode_combo"):
+                fixed_index = self.via_diameter_size_mode_combo.findData(VIA_SIZE_MODE_FIXED)
+                if fixed_index >= 0:
+                    self.via_diameter_size_mode_combo.setCurrentIndex(fixed_index)
+            self.bright_via_diameter_min_spin.setValue(8)
             self.bright_via_diameter_max_spin.setValue(8)
+            if hasattr(self, "bright_via_diameter_fixed_spin"):
+                self.bright_via_diameter_fixed_spin.setValue(8)
             self.bright_via_clahe_clip_spin.setValue(2.0)
             self.bright_via_clahe_tile_spin.setValue(8)
             self.bright_via_median_kernel_spin.setValue(3)
@@ -784,18 +892,22 @@ class WidgetPipelineMixin:
             self.bright_via_min_circularity_spin.setValue(0.30)
             self.bright_via_min_aspect_spin.setValue(0.45)
             self.bright_via_max_aspect_spin.setValue(2.2)
-            self.bright_via_bright_center_score_spin.setValue(6.0)
+            self.bright_via_bright_center_score_spin.setValue(140.0)
+            self.via_white_range_checkbox.setChecked(True)
+            self.via_white_range_min_spin.setValue(140)
+            self.via_white_range_max_spin.setValue(255)
+            self.via_black_range_checkbox.setChecked(False)
             metal_index = self.bright_via_metal_constraint_combo.findData("soft")
             if metal_index >= 0:
                 self.bright_via_metal_constraint_combo.setCurrentIndex(metal_index)
             self.bright_via_metal_fraction_spin.setValue(0.3)
-            self.bright_via_max_radial_asymmetry_spin.setValue(18.0)
+            self.bright_via_max_radial_asymmetry_spin.setValue(32.0)
             self.bright_via_max_edge_likeness_spin.setValue(35.0)
             self.bright_via_max_line_likeness_spin.setValue(65.0)
             self.bright_via_nms_distance_spin.setValue(5)
             self.bright_via_min_final_score_spin.setValue(38.0)
             self.bright_via_show_rejected_checkbox.setChecked(True)
-            self.bright_via_hard_asym_checkbox.setChecked(False)
+            self.bright_via_hard_asym_checkbox.setChecked(True)
             self.bright_via_hard_edge_checkbox.setChecked(False)
             self.bright_via_hard_line_checkbox.setChecked(False)
         finally:

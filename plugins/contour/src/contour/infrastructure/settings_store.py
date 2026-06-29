@@ -13,10 +13,14 @@ from ..application.processing import DisplaySettings
 from ..i18n import active_language
 
 VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
+METAL_PRESETS_SETTINGS_KEY = "metal_recovery/user_presets"
 GAMIFICATION_PROFILE_SETTINGS_KEY = "gamification/profile_v1"
 SESSION_CURRENT_IMAGE_PATH_KEY = "session/current_image_path"
 SESSION_IMAGE_PATHS_KEY = "session/image_paths"
 SESSION_VECTOR_PATHS_KEY = "session/vector_paths"
+SESSION_IMAGE_LIST_MODE_KEY = "session/image_list_mode"
+IMAGE_LIST_MODE_EXPLICIT = "explicit_files"
+IMAGE_LIST_MODE_DIRECTORY = "directory_scan"
 APPEARANCE_LANGUAGE_SETTINGS_KEY = "appearance/language"
 APPEARANCE_THEME_SETTINGS_KEY = "appearance/theme"
 
@@ -140,6 +144,28 @@ class WidgetAppearanceSettingsStore:
         settings.sync()
 
 
+class WidgetMetalPresetSettingsStore:
+    def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
+        self._settings_factory = settings_factory or _build_contour_settings
+
+    def load(self) -> dict[str, dict[str, object]]:
+        settings = self._settings_factory()
+        raw_payload = settings.value(METAL_PRESETS_SETTINGS_KEY, "{}", type=str)
+        settings.sync()
+        try:
+            payload = json.loads(str(raw_payload or "{}"))
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {str(name): dict(value) for name, value in payload.items() if isinstance(value, dict)}
+
+    def save(self, presets: dict[str, dict[str, object]]) -> None:
+        settings = self._settings_factory()
+        settings.setValue(METAL_PRESETS_SETTINGS_KEY, json.dumps(presets, ensure_ascii=False, sort_keys=True))
+        settings.sync()
+
+
 class WidgetViaPresetSettingsStore:
     def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
         self._settings_factory = settings_factory or _build_contour_settings
@@ -192,6 +218,21 @@ class WidgetSessionSettingsStore:
 
     def save_vector_paths(self, paths: Iterable[str | Path]) -> None:
         self._save_path_list(SESSION_VECTOR_PATHS_KEY, paths)
+
+    def load_image_list_mode(self) -> str:
+        settings = self._settings_factory()
+        value = settings.value(SESSION_IMAGE_LIST_MODE_KEY, IMAGE_LIST_MODE_DIRECTORY, type=str)
+        settings.sync()
+        text = str(value or "").strip()
+        if text == IMAGE_LIST_MODE_EXPLICIT:
+            return IMAGE_LIST_MODE_EXPLICIT
+        return IMAGE_LIST_MODE_DIRECTORY
+
+    def save_image_list_mode(self, mode: str) -> None:
+        settings = self._settings_factory()
+        normalized = IMAGE_LIST_MODE_EXPLICIT if mode == IMAGE_LIST_MODE_EXPLICIT else IMAGE_LIST_MODE_DIRECTORY
+        settings.setValue(SESSION_IMAGE_LIST_MODE_KEY, normalized)
+        settings.sync()
 
     def _load_path_list(self, key: str) -> list[str]:
         settings = self._settings_factory()

@@ -271,6 +271,38 @@ def test_region_geometry_skips_collapsed_hole_ring() -> None:
     assert float(fused.area) == float(outer_area)
 
 
+def test_region_geometry_skips_two_vertex_hole_ring() -> None:
+    outer_points = [(10.0, 10.0), (90.0, 10.0), (90.0, 90.0), (10.0, 90.0)]
+    outer_area, outer_perimeter, outer_bbox = compute_polygon_metrics(outer_points)
+    hole_points = [(30.0, 30.0), (30.0, 30.0), (70.0, 30.0)]
+    hole_area, hole_perimeter, hole_bbox = compute_polygon_metrics(hole_points)
+    collection = {
+        1: PolygonData(
+            id=1,
+            points=outer_points,
+            area=outer_area,
+            perimeter=outer_perimeter,
+            bbox=outer_bbox,
+            parent_id=None,
+            is_hole=False,
+        ),
+        2: PolygonData(
+            id=2,
+            points=hole_points,
+            area=hole_area,
+            perimeter=hole_perimeter,
+            bbox=hole_bbox,
+            parent_id=1,
+            is_hole=True,
+        ),
+    }
+
+    fused = region_geometry(collection, [1, 2])
+
+    assert not fused.is_empty
+    assert float(fused.area) == float(outer_area)
+
+
 def test_preserved_overlap_flags_symmetric_difference_tiny() -> None:
 
     verts_hole = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]

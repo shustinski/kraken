@@ -7,7 +7,7 @@ from collections import OrderedDict
 from math import hypot, log2
 from time import perf_counter
 
-from typing import cast
+from typing import Callable, cast
 
 from PyQt6.QtCore import (
     QEvent,
@@ -22,6 +22,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import (
     QBrush,
     QColor,
+    QContextMenuEvent,
     QKeyEvent,
     QKeySequence,
     QMouseEvent,
@@ -36,7 +37,7 @@ from PyQt6.QtGui import (
     QUndoStack,
     QWheelEvent,
 )
-from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsView, QWidget
+from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsView, QMenu, QWidget
 
 from ..adapters.qt.pyramid import PyramidFrameLoadRunnable
 from ..application.frame_lod import FixedGridFrameLayout, PyramidFrameStore
@@ -45,7 +46,7 @@ from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
     apply_polygon_points_to_clone,
     apply_vertex_position_to_clone,
-    postprocess_changed_polygon_only,
+    postprocess_changed_polygon_edit,
     resolve_focus_id_after_geometry_pass,
 )
 from ..commands import ReplacePolygonSetCommand
@@ -148,6 +149,7 @@ class PolygonEditorView(QGraphicsView):
         self._middle_pan_active = False
         self._middle_pan_last_viewport: QPointF | None = None
         self._polygon_overlays_visible_before_space_hold: bool | None = None
+        self._gradient_overlay_visible_before_space_hold: bool | None = None
         self._last_pointer_viewport_pos: QPointF | None = None
         self._image_click_mode = False
         self._image_region_selection_mode = False
@@ -159,6 +161,7 @@ class PolygonEditorView(QGraphicsView):
         self._vector_geometry_settings = VectorGeometrySettings()
         self._drag_polygons_snapshot: list[PolygonData] | None = None
         self._brush_pan_guard = False
+        self._frame_navigation_guard: Callable[[], bool] | None = None
         self._pending_wheel_zoom_factor = 1.0
         self._pending_wheel_zoom_viewport_pixel: QPoint | None = None
         self._wheel_zoom_timer = QTimer(self)
@@ -249,6 +252,14 @@ class PolygonEditorView(QGraphicsView):
     @property
     def current_tool(self) -> EditorTool:
         return self._tool
+
+    def set_frame_navigation_guard(self, guard: Callable[[], bool] | None) -> None:
+        self._frame_navigation_guard = guard
+
+    def _confirm_frame_navigation(self) -> bool:
+        if self._frame_navigation_guard is None:
+            return True
+        return bool(self._frame_navigation_guard())
 
     def set_tool(self, tool: EditorTool) -> None:
         tool = normalize_editor_tool(tool)
@@ -341,20 +352,42 @@ class PolygonEditorView(QGraphicsView):
     def _emit_effective_polygon_create_mode_changed(self) -> None:
         self.effectivePolygonCreateModeChanged.emit(self._effective_polygon_create_mode())
 
-    def set_image(self, image) -> None:
+    def set_image(self, image, *, preserve_view: bool = False) -> None:
         previous_rect = QRectF(self._editor_scene.sceneRect())
+        previous_center = self.mapToScene(self._require_viewport().rect().center())
+        previous_size = self._editor_scene.main_image_rect().size().toSize()
+        h_scroll = self.horizontalScrollBar().value()
+        v_scroll = self.verticalScrollBar().value()
         self._editor_scene.set_image(image)
         previous_was_placeholder = previous_rect.width() <= 1.0 and previous_rect.height() <= 1.0
         if previous_was_placeholder:
             self.fit_to_view()
+        elif preserve_view:
+            current_size = self._editor_scene.main_image_rect().size().toSize()
+            if previous_size.isValid() and current_size.isValid() and previous_size == current_size:
+                self.horizontalScrollBar().setValue(h_scroll)
+                self.verticalScrollBar().setValue(v_scroll)
+            else:
+                self.centerOn(previous_center)
         self._update_navigation_scene_rect()
 
-    def set_image_pixmap(self, pixmap: QPixmap) -> None:
+    def set_image_pixmap(self, pixmap: QPixmap, *, preserve_view: bool = False) -> None:
         previous_rect = QRectF(self._editor_scene.sceneRect())
+        previous_center = self.mapToScene(self._require_viewport().rect().center())
+        previous_size = self._editor_scene.main_image_rect().size().toSize()
+        h_scroll = self.horizontalScrollBar().value()
+        v_scroll = self.verticalScrollBar().value()
         self._editor_scene.set_image_pixmap(pixmap)
         previous_was_placeholder = previous_rect.width() <= 1.0 and previous_rect.height() <= 1.0
         if previous_was_placeholder:
             self.fit_to_view()
+        elif preserve_view:
+            current_size = self._editor_scene.main_image_rect().size().toSize()
+            if previous_size.isValid() and current_size.isValid() and previous_size == current_size:
+                self.horizontalScrollBar().setValue(h_scroll)
+                self.verticalScrollBar().setValue(v_scroll)
+            else:
+                self.centerOn(previous_center)
         self._update_navigation_scene_rect()
 
     def set_polygons(self, polygons: list[PolygonData], *, emit_signal: bool = True) -> None:
@@ -424,7 +457,7 @@ class PolygonEditorView(QGraphicsView):
             self._update_navigation_scene_rect()
             return
         count = max(0, int(frame_count if frame_count is not None else store.frame_count()))
-        should_enable = bool(store.has_zarr()) if enabled is None else bool(enabled and store.has_zarr())
+        should_enable = bool(store.has_lod()) if enabled is None else bool(enabled and store.has_lod())
         if count <= 0 or not should_enable:
             self._pyramid_enabled = False
             self._pyramid_current_frame_id = current_frame_id
@@ -678,6 +711,12 @@ class PolygonEditorView(QGraphicsView):
     def set_polygon_category_visible(self, category: str, visible: bool) -> None:
         self._editor_scene.set_polygon_category_visible(category, visible)
 
+    def set_polygon_overlays_visible(self, visible: bool) -> None:
+        self._editor_scene.set_polygon_overlays_visible(visible)
+
+    def polygon_overlays_visible(self) -> bool:
+        return self._editor_scene.polygon_overlays_visible()
+
     def set_ui_language(self, language: str | None) -> None:
         self._editor_scene.set_ui_language(language)
 
@@ -703,6 +742,23 @@ class PolygonEditorView(QGraphicsView):
         if rect.width() > 0 and rect.height() > 0:
             self.centerOn(rect.center())
             self._update_navigation_scene_rect()
+
+    def main_image_visible_fraction(self) -> float:
+        rect = self._editor_scene.main_image_rect()
+        if rect.width() <= 0.0 or rect.height() <= 0.0:
+            return 1.0
+        viewport_scene = self.mapToScene(self._require_viewport().rect()).boundingRect()
+        intersection = rect.intersected(viewport_scene)
+        if intersection.isEmpty():
+            return 0.0
+        image_area = float(rect.width()) * float(rect.height())
+        visible_area = float(intersection.width()) * float(intersection.height())
+        return max(0.0, min(1.0, visible_area / image_area))
+
+    def should_auto_reposition_view(self, *, force: bool = False) -> bool:
+        if force:
+            return True
+        return self.main_image_visible_fraction() < 0.5
 
     def zoom_in(self) -> None:
         self._start_zoom_animation(self._zoom_focus_viewport_pixel(), DEFAULT_ZOOM_STEP_FACTOR)
@@ -928,6 +984,17 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
 
+            self._update_tool_cursors()
+            event.accept()
+            return
+
+        if event.button() == Qt.MouseButton.RightButton:
+            if self._editor_scene.delete_via_at(scene_pos):
+                event.accept()
+                return
+            super().mousePressEvent(event)
+            return
+
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
             return
@@ -957,8 +1024,17 @@ class PolygonEditorView(QGraphicsView):
             polygon_id = self._editor_scene.polygon_at(scene_pos)
             additive_selection = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
             if polygon_id is None:
+                neighbor_path = self._editor_scene.neighbor_frame_path_at(scene_pos)
+                if neighbor_path is not None:
+                    if self._confirm_frame_navigation():
+                        self.neighborFrameActivated.emit(neighbor_path)
+                    event.accept()
+                    return
                 target_frame_id = self._pyramid_frame_at_viewport_pos(viewport_pixel)
                 if target_frame_id is not None and target_frame_id != self._pyramid_current_frame_id:
+                    if not self._confirm_frame_navigation():
+                        event.accept()
+                        return
                     self.set_current_frame_id(target_frame_id, center=True, emit_signal=True)
                     self.frameNavigationRequested.emit(target_frame_id)
                     event.accept()
@@ -986,14 +1062,18 @@ class PolygonEditorView(QGraphicsView):
             return
 
         if self._tool == EditorTool.ADD_VERTEX:
-            clicked_polygon_id = self._editor_scene.polygon_at(scene_pos)
+            clicked_polygon_id = self._editor_scene.polygon_at_nearest_edge(scene_pos, tolerance)
             selected_polygon_id = self._editor_scene.selected_polygon_id()
-            polygon_id = selected_polygon_id or clicked_polygon_id
+            if selected_polygon_id is None:
+                if clicked_polygon_id is not None:
+                    self._editor_scene.select_polygon(clicked_polygon_id)
+                event.accept()
+                return
             if clicked_polygon_id is not None and clicked_polygon_id != selected_polygon_id:
                 self._editor_scene.select_polygon(clicked_polygon_id)
-                polygon_id = clicked_polygon_id
-            if polygon_id is not None:
-                self._editor_scene.add_vertex_at(polygon_id, scene_pos)
+                event.accept()
+                return
+            self._editor_scene.add_vertex_at(selected_polygon_id, scene_pos)
             event.accept()
             return
 
@@ -1277,33 +1357,38 @@ class PolygonEditorView(QGraphicsView):
                         )
                         profile_timings["clone"] = (perf_counter() - phase_start) * 1000.0
                         phase_start = perf_counter()
-                        processed, changed = postprocess_changed_polygon_only(
+                        processed, accepted, _changed = postprocess_changed_polygon_edit(
                             trial,
                             self._vector_geometry_settings,
                             polygon_id=self._drag_polygon_id,
                         )
                         profile_timings["postprocess"] = (perf_counter() - phase_start) * 1000.0
-                        if not changed:
-                            # Keep direct vertex move if local cleanup produced no effective topology update.
-                            processed = trial
-                        phase_start = perf_counter()
-                        focus_id = resolve_focus_id_after_geometry_pass(
-                            self._drag_polygons_snapshot,
-                            self._drag_polygon_id,
-                            processed,
-                        )
-                        profile_timings["focus"] = (perf_counter() - phase_start) * 1000.0
-                        phase_start = perf_counter()
-                        self.undo_stack.push(
-                            ReplacePolygonSetCommand(
-                                self._editor_scene,
-                                self._drag_polygons_snapshot,
-                                processed,
-                                "Move vertex",
+                        if not accepted:
+                            self._editor_scene.preview_vertex_move(
+                                self._drag_polygon_id,
+                                self._drag_vertex_index,
+                                QPointF(old_point[0], old_point[1]),
                             )
-                        )
-                        self._editor_scene.select_polygon(focus_id)
-                        profile_timings["undo_push"] = (perf_counter() - phase_start) * 1000.0
+                            self._editor_scene.warn_invalid_polygon_geometry()
+                        else:
+                            phase_start = perf_counter()
+                            focus_id = resolve_focus_id_after_geometry_pass(
+                                self._drag_polygons_snapshot,
+                                self._drag_polygon_id,
+                                processed,
+                            )
+                            profile_timings["focus"] = (perf_counter() - phase_start) * 1000.0
+                            phase_start = perf_counter()
+                            self.undo_stack.push(
+                                ReplacePolygonSetCommand(
+                                    self._editor_scene,
+                                    self._drag_polygons_snapshot,
+                                    processed,
+                                    "Move vertex",
+                                )
+                            )
+                            self._editor_scene.select_polygon(focus_id)
+                            profile_timings["undo_push"] = (perf_counter() - phase_start) * 1000.0
                     profile_timings["total_wall"] = (perf_counter() - profile_total_start) * 1000.0
                     if profiler_enabled and profiler is not None:
                         try_disable_profiler(profiler)
@@ -1332,28 +1417,29 @@ class PolygonEditorView(QGraphicsView):
                             self._drag_polygon_id,
                             new_points,
                         )
-                        processed, _c = postprocess_changed_polygon_only(
+                        processed, accepted, _changed = postprocess_changed_polygon_edit(
                             trial,
                             self._vector_geometry_settings,
                             polygon_id=self._drag_polygon_id,
                         )
-                        if not _c:
-                            # Keep direct polygon move if local cleanup produced no effective topology update.
-                            processed = trial
-                        focus_id = resolve_focus_id_after_geometry_pass(
-                            self._drag_polygons_snapshot,
-                            self._drag_polygon_id,
-                            processed,
-                        )
-                        self.undo_stack.push(
-                            ReplacePolygonSetCommand(
-                                self._editor_scene,
+                        if not accepted:
+                            self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
+                            self._editor_scene.warn_invalid_polygon_geometry()
+                        else:
+                            focus_id = resolve_focus_id_after_geometry_pass(
                                 self._drag_polygons_snapshot,
+                                self._drag_polygon_id,
                                 processed,
-                                "Move polygon",
                             )
-                        )
-                        self._editor_scene.select_polygon(focus_id)
+                            self.undo_stack.push(
+                                ReplacePolygonSetCommand(
+                                    self._editor_scene,
+                                    self._drag_polygons_snapshot,
+                                    processed,
+                                    "Move polygon",
+                                )
+                            )
+                            self._editor_scene.select_polygon(focus_id)
             self._drag_kind = None
             self._drag_polygon_id = None
             self._drag_vertex_index = None
@@ -1400,13 +1486,34 @@ class PolygonEditorView(QGraphicsView):
             return
         super().tabletEvent(event)
 
+    def contextMenuEvent(self, event: QContextMenuEvent | None) -> None:
+        if event is None:
+            return
+        scene_pos = self.mapToScene(event.pos())
+        polygon_id = self._editor_scene.polygon_at(scene_pos)
+        polygon = self._editor_scene.polygon_snapshot(polygon_id) if polygon_id is not None else None
+        if polygon is None or (polygon.category != "via" and polygon.shape_hint != "box"):
+            event.ignore()
+            return
+        language = getattr(self._editor_scene, "_ui_language", "en")
+        delete_label = (
+            "Удалить переходное отверстие" if language == "ru" else "Delete transition hole"
+        )
+        menu = QMenu(self)
+        delete_action = menu.addAction(delete_label)
+        chosen = menu.exec(event.globalPos())
+        if chosen == delete_action:
+            self._editor_scene.delete_via_at(scene_pos)
+        event.accept()
+
     def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:
         if event is None:
             return
         if event.button() == Qt.MouseButton.LeftButton:
             neighbor_path = self._editor_scene.neighbor_frame_path_at(self.mapToScene(event.position().toPoint()))
             if neighbor_path:
-                self.neighborFrameActivated.emit(neighbor_path)
+                if self._confirm_frame_navigation():
+                    self.neighborFrameActivated.emit(neighbor_path)
                 event.accept()
                 return
         if (
@@ -1436,7 +1543,18 @@ class PolygonEditorView(QGraphicsView):
                 return
             if self._polygon_overlays_visible_before_space_hold is None:
                 self._polygon_overlays_visible_before_space_hold = self._editor_scene.polygon_overlays_visible()
+                self._gradient_overlay_visible_before_space_hold = (
+                    self._editor_scene.gradient_overlay_user_visible()
+                )
                 self._editor_scene.set_polygon_overlays_visible(False)
+                self._editor_scene.set_gradient_overlay_visible(False)
+            event.accept()
+            return
+        if (
+            event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return)
+            and self._tool == EditorTool.ADD_VERTEX
+        ):
+            self._editor_scene.select_polygon(None)
             event.accept()
             return
         if (
@@ -1455,7 +1573,7 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.clear_measurement()
             self._editor_scene.clear_preview_rect()
             self._exit_paste_mode()
-            if self._tool == EditorTool.SELECT:
+            if self._tool in (EditorTool.SELECT, EditorTool.ADD_VERTEX):
                 self._editor_scene.select_polygon(None)
             self._select_press_polygon_id = None
             self._select_press_start = None
@@ -1500,6 +1618,9 @@ class PolygonEditorView(QGraphicsView):
             and self._polygon_overlays_visible_before_space_hold is not None
         ):
             self._editor_scene.set_polygon_overlays_visible(self._polygon_overlays_visible_before_space_hold)
+            if self._gradient_overlay_visible_before_space_hold is not None:
+                self._editor_scene.set_gradient_overlay_visible(self._gradient_overlay_visible_before_space_hold)
+                self._gradient_overlay_visible_before_space_hold = None
             self._polygon_overlays_visible_before_space_hold = None
             event.accept()
             return

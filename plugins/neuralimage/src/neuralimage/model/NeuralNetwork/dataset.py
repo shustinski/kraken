@@ -34,6 +34,11 @@ from neuralimage.model.NeuralNetwork.context_utils import (
     normalize_patch_coords,
     normalize_size_pair,
 )
+from neuralimage.targets.dataset_hooks import (
+    apply_dataset_preprocessing,
+    apply_dataset_sem_augmentation,
+    maybe_build_supervision_target,
+)
 
 
 def _unwrap_tech_augmented_mask(result: np.ndarray | tuple[np.ndarray, np.ndarray]) -> np.ndarray:
@@ -236,6 +241,10 @@ class NoCutDataset(Dataset):
             if self._apply_train_only_transforms and self._pcb_defects.enabled
             else None
         )
+        self._supervision_targets = getattr(settings, 'supervision_targets', None)
+        self._preprocessing = getattr(settings, 'preprocessing', None)
+        self._sem_augmentation = getattr(settings, 'sem_augmentation', None)
+        self._advanced_validation = bool(getattr(settings, 'advanced_validation', True))
         self._use_defect_mask_as_label = bool(self._pcb_defects.use_defect_mask_as_label)
         self.shuffle_patches_in_frame = bool(
             getattr(self._cut_settings, 'shuffle_patches_in_frame', self.shuffle_frames)
@@ -285,6 +294,10 @@ class NoCutDataset(Dataset):
             frame=frame,
             part=part,
         )
+        if self._apply_train_only_transforms:
+            image, label = apply_dataset_sem_augmentation(image, label, self._sem_augmentation)
+        image = apply_dataset_preprocessing(image, self._preprocessing)
+        label = maybe_build_supervision_target(label, self._supervision_targets)
         if not self._use_context_branch:
             return image, label
         patch_metadata = self._build_patch_metadata(self._current_image_cutter, part)

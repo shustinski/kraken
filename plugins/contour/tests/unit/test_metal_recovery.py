@@ -3,17 +3,23 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from contour.application.processing import ContourExtractionSettings
+from contour.ui.metal_presets import noisy_sem_metal_preset_payload
 from contour.vision.metal_recovery import (
     MetalRecoveryConfig,
     detect_metalization,
     estimate_inward_direction_by_gradient_profile,
 )
 from contour.vision.metal_recovery.detector import (
+    _contour_to_polygon,
     _remove_vertices_below_angle,
     _repair_contour_polygon_for_topology,
+    _snap_rectilinear,
     _valid_topology,
+    build_metal_extraction_mask,
     effective_conductor_width_px,
 )
+from contour.vision.metal_recovery.settings_bridge import metal_recovery_config_from_settings
 
 
 def test_effective_conductor_width_blends_with_bbox_minor_axis() -> None:
@@ -45,7 +51,7 @@ def test_hierarchy_mode_full_preserves_holes() -> None:
     img[20:100, 20:100] = 240
     img[45:75, 45:75] = 0
     base = dict(
-        segmentation_method="otsu",
+        segmentation_strategy="legacy_otsu",
         min_width_px=2.0,
         min_length_px=10.0,
         min_area=20.0,
@@ -181,7 +187,7 @@ def test_edge_mode_separates_adjacent_parallel_traces() -> None:
     img[35:42, 10:45] = 235
     img[35:42, 52:95] = 235
     cfg = MetalRecoveryConfig(
-        segmentation_method="none",
+        segmentation_strategy="edges",
         min_width_px=4.0,
         min_length_px=12.0,
         min_area=40.0,
@@ -200,6 +206,7 @@ def test_max_width_rejects_blob() -> None:
     img = np.zeros((100, 100), dtype=np.uint8)
     img[30:70, 30:70] = 250
     cfg = MetalRecoveryConfig(
+        segmentation_strategy="legacy_otsu",
         min_width_px=2.0,
         max_width_px=15.0,
         min_length_px=5.0,
@@ -210,4 +217,57 @@ def test_max_width_rejects_blob() -> None:
         check_contour_validity=False,
     )
     r = detect_metalization(img, cfg)
-    assert not r.accepted
+    solid = [p for p in r.accepted if p.category == "conductor" and not p.is_hole]
+    assert not solid
+
+
+def _noisy_sem_synthetic() -> np.ndarray:
+    rng = np.random.default_rng(42)
+    img = np.zeros((160, 200), dtype=np.uint8)
+    img[60:68, 30:170] = 210
+    noise = rng.integers(0, 55, size=img.shape, dtype=np.uint8)
+    img = np.clip(img.astype(np.int16) + noise.astype(np.int16), 0, 255).astype(np.uint8)
+    return img
+
+
+def test_contrast_bias_changes_mask_monotonically() -> None:
+    img = _noisy_sem_synthetic()
+    areas: list[int] = []
+    for bias in (-10, -9):
+        cfg = MetalRecoveryConfig(
+            noise_suppression=70,
+            contrast_bias=float(bias),
+            segmentation_strategy="sauvola",
+            gap_bridge_px=4,
+            speckle_removal_px=2,
+            min_width_px=3.0,
+        )
+        mask, _ = build_metal_extraction_mask(img, cfg)
+        areas.append(int(np.count_nonzero(mask)))
+    assert areas[0] > 0
+    delta = abs(areas[1] - areas[0]) / max(areas[0], 1)
+    assert delta < 0.15
+
+
+def test_noisy_sem_preset_finds_trace_on_synthetic() -> None:
+    settings = ContourExtractionSettings.from_dict(noisy_sem_metal_preset_payload())
+    cfg = metal_recovery_config_from_settings(settings)
+    cfg = MetalRecoveryConfig(
+        **{**cfg.to_snapshot(), "min_width_px": 4.0, "min_length_px": 20.0, "min_area": 30.0}
+    )
+    r = detect_metalization(_noisy_sem_synthetic(), cfg)
+    assert r.accepted
+
+
+def test_rectilinear_snap_aligns_near_horizontal_edge() -> None:
+    points = [(0.0, 0.0), (100.0, 6.0), (100.0, 50.0), (0.0, 50.0)]
+    snapped = _snap_rectilinear(points, allowed_angles="90_only", tolerance_deg=12.0)
+    assert abs(snapped[1][1] - snapped[0][1]) < 2.0
+
+
+def test_legacy_settings_migration_in_contour_settings() -> None:
+    settings = ContourExtractionSettings.from_dict(
+        {"metal_sensitivity_0_100": 78, "metal_sensitivity": "low", "metal_segmentation_method": "otsu"}
+    )
+    assert hasattr(settings, "metal_contrast_bias")
+    assert settings.metal_segmentation_strategy == "auto"

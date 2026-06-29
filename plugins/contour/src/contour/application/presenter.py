@@ -36,12 +36,14 @@ class ContourPresenter:
             self.view.set_pipeline(self._load_pipeline_payload(startup.pipeline_json))
 
         input_directory = startup.fallback_input_directory
-        if input_directory:
-            self.view.set_input_directory(input_directory)
         if startup.file_paths:
-            self.view.load_images(startup.file_paths)
-        if not startup.has_explicit_image_source:
+            from ..infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
+
+            self.view.load_images(startup.file_paths, image_list_mode=IMAGE_LIST_MODE_EXPLICIT)
+        elif not startup.has_explicit_image_source:
             self.view.restore_persisted_session_selection()
+        elif input_directory:
+            self.view.set_input_directory(input_directory)
 
     def _on_log_message(self, message: str) -> None:
         self.view.show_status_message(message)

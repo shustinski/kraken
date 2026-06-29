@@ -4,9 +4,9 @@ from collections.abc import Callable
 from typing import Any
 
 from kraken_core.theme import apply_app_theme, normalize_theme
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QIcon
-from PyQt6.QtWidgets import QDockWidget, QMainWindow, QMenu, QMenuBar, QStatusBar, QWidget
+from PyQt6.QtWidgets import QDockWidget, QMainWindow, QMenu, QMenuBar, QSizePolicy, QStatusBar, QWidget
 
 from ..__version__ import __version__
 from ..infrastructure import WidgetAppearanceSettingsStore
@@ -17,10 +17,12 @@ from .styles import resolve_style_path
 WINDOW_SCREEN_MARGIN_PX = 32
 MIN_INITIAL_WINDOW_WIDTH = 640
 MIN_INITIAL_WINDOW_HEIGHT = 420
+DEFAULT_PANEL_DOCK_MIN_WIDTH = 260
+DEFAULT_RIGHT_DOCK_MIN_WIDTH = 240
 CONTOUR_ENABLE_WORK_SIMULATION = True
 
 
-def _required_qt_object[_QtObjectT](value: _QtObjectT | None, description: str) -> _QtObjectT:
+def _required_qt_object[QtObjectT](value: QtObjectT | None, description: str) -> QtObjectT:
     if value is None:
         raise RuntimeError(f"Qt did not create {description}")
     return value
@@ -82,6 +84,7 @@ class ContourMainView(QMainWindow):
         self._update_controller = None
         self._update_menu_action = None
         self._widget = PolygonExtractionWidget(self)
+        self._widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCentralWidget(self._widget)
         menu_bar = _main_menu_bar(self)
         self._file_menu = _add_menu(menu_bar, "")
@@ -158,6 +161,7 @@ class ContourMainView(QMainWindow):
         self._attach_update_menu_action()
         self._refresh_view_and_tools_menus()
         _try_apply_app_icon(self)
+        QTimer.singleShot(0, self._apply_default_dock_layout)
 
     @property
     def widget(self) -> PolygonExtractionWidget:
@@ -166,6 +170,10 @@ class ContourMainView(QMainWindow):
     def _create_panel_dock(self, object_name: str, panel: QWidget) -> QDockWidget:
         dock = QDockWidget("", self)
         dock.setObjectName(object_name)
+        minimum_width = self._minimum_width_for_panel_dock(object_name)
+        dock.setMinimumWidth(minimum_width)
+        panel.setMinimumWidth(max(panel.minimumWidth(), minimum_width))
+        dock.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
         dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -174,6 +182,40 @@ class ContourMainView(QMainWindow):
         dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
         dock.setWidget(panel)
         return dock
+
+    @staticmethod
+    def _minimum_width_for_panel_dock(object_name: str) -> int:
+        if object_name in {"filesDock", "thumbnailMatrixDock", "runDock"}:
+            return DEFAULT_RIGHT_DOCK_MIN_WIDTH
+        return DEFAULT_PANEL_DOCK_MIN_WIDTH
+
+    def _apply_default_dock_layout(self) -> None:
+        horizontal_docks = [
+            dock
+            for dock in (
+                self._paths_dock,
+                self._pipeline_dock,
+                self._recognition_dock,
+                self._display_dock,
+                self._files_dock,
+                self._thumbnail_matrix_dock,
+                self._run_dock,
+            )
+            if dock.isVisible() and not dock.isFloating() and self.dockWidgetArea(dock) != Qt.DockWidgetArea.NoDockWidgetArea
+        ]
+        if horizontal_docks:
+            self.resizeDocks(
+                horizontal_docks,
+                [max(1, dock.minimumWidth()) for dock in horizontal_docks],
+                Qt.Orientation.Horizontal,
+            )
+        right_docks = [
+            dock
+            for dock in (self._files_dock, self._thumbnail_matrix_dock, self._run_dock)
+            if dock.isVisible() and not dock.isFloating() and self.dockWidgetArea(dock) == Qt.DockWidgetArea.RightDockWidgetArea
+        ]
+        if len(right_docks) > 1:
+            self.resizeDocks(right_docks, [1 for _dock in right_docks], Qt.Orientation.Vertical)
 
     def _on_thumbnail_matrix_toggle_triggered(self, checked: bool) -> None:
         if not self._widget._frame_matrix_enabled():
@@ -195,6 +237,7 @@ class ContourMainView(QMainWindow):
         self.splitDockWidget(self._files_dock, dock, Qt.Orientation.Vertical)
         dock.show()
         dock.raise_()
+        QTimer.singleShot(0, self._apply_default_dock_layout)
 
     def _sync_thumbnail_matrix_dock_visibility(self, *_args) -> None:
         if self._widget._frame_matrix_enabled():
@@ -286,6 +329,7 @@ class ContourMainView(QMainWindow):
                 available.height(),
             )
         )
+        QTimer.singleShot(0, self._apply_default_dock_layout)
 
     def set_ui_language(self, language: str) -> None:
         self._widget.set_ui_language(language)
@@ -361,8 +405,8 @@ class ContourMainView(QMainWindow):
     def set_pipeline(self, payload: dict) -> None:
         self._widget.set_pipeline(payload)
 
-    def load_images(self, paths: list[str]) -> None:
-        self._widget.load_images(paths)
+    def load_images(self, paths: list[str], *, image_list_mode: str | None = None) -> None:
+        self._widget.load_images(paths, image_list_mode=image_list_mode)
 
     def restore_persisted_session_selection(self) -> None:
         self._widget._restore_persisted_session_selection()

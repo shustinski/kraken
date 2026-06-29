@@ -58,7 +58,10 @@ from neuralimage.lib.images import _build_enabled_transform_variants
 from neuralimage.lib.loss_config import format_loss_formula, resolve_loss_term_weights, sanitize_loss_term_weights
 from neuralimage.lib.message_bus import AbstractMessageBus
 from neuralimage.lib.random_artifacts import generate_random_artifact_patch
+from neuralimage.losses.composite import compute_auxiliary_head_loss, resolve_auxiliary_head_weights
+from neuralimage.metrics.segmentation import compute_segmentation_metrics
 from neuralimage.model.NeuralNetwork.blocks import extract_confidence_output, extract_mask_outputs
+from neuralimage.targets.dataset_hooks import extract_primary_label
 from neuralimage.model.NeuralNetwork.context_utils import normalize_size_pair
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact, save_model_artifact
 from neuralimage.model.NeuralNetwork.recognition_pipeline import (
@@ -1704,9 +1707,72 @@ class TrainerProcess(mp.Process):
         return torch.clamp(sanitized, min=-20.0, max=20.0)
 
     @staticmethod
-    def _sanitize_labels_for_loss(label: torch.Tensor) -> torch.Tensor:
+    def _sanitize_labels_for_loss(label: torch.Tensor | Mapping[str, torch.Tensor]) -> torch.Tensor:
+        if isinstance(label, Mapping):
+            label = extract_primary_label(label)
         sanitized = torch.nan_to_num(label, nan=0.0, posinf=1.0, neginf=0.0)
         return torch.clamp(sanitized, min=0.0, max=1.0)
+
+    @staticmethod
+    def _resolve_dataset_attribute(dataloader: DataLoader | None, attribute_name: str) -> Any:
+        if dataloader is None:
+            return None
+        dataset = getattr(dataloader, 'dataset', None)
+        visited: set[int] = set()
+        while dataset is not None and id(dataset) not in visited:
+            visited.add(id(dataset))
+            value = getattr(dataset, attribute_name, None)
+            if value is not None:
+                return value
+            dataset = getattr(dataset, '_base_dataset', None)
+            if dataset is None and hasattr(getattr(dataloader, 'dataset', None), '_datasets'):
+                for nested in getattr(dataloader.dataset, '_datasets', []):
+                    value = getattr(nested, attribute_name, None)
+                    if value is not None:
+                        return value
+                break
+        return None
+
+    def _resolved_supervision_targets(self) -> Any:
+        return self._resolve_dataset_attribute(self._train_dataloader, '_supervision_targets')
+
+    def _advanced_validation_enabled(self) -> bool:
+        value = self._resolve_dataset_attribute(self._val_dataloader or self._train_dataloader, '_advanced_validation')
+        if value is None:
+            return True
+        return bool(value)
+
+    def _resolved_auxiliary_head_weights(self) -> dict[str, float]:
+        supervision = self._resolved_supervision_targets()
+        if supervision is None or not getattr(supervision, 'any_enabled', lambda: False)():
+            return {}
+        enabled = supervision.enabled_targets()
+        return resolve_auxiliary_head_weights(
+            enabled,
+            getattr(supervision, 'auxiliary_head_weights', None),
+        )
+
+    def _compute_auxiliary_supervision_loss(
+        self,
+        outputs: Any,
+        label: torch.Tensor | Mapping[str, torch.Tensor],
+    ) -> torch.Tensor | None:
+        if not isinstance(label, Mapping) or not isinstance(outputs, dict):
+            return None
+        head_weights = self._resolved_auxiliary_head_weights()
+        if not head_weights:
+            return None
+        target_tensors = {
+            str(key): value
+            for key, value in label.items()
+            if str(key) != 'mask' and torch.is_tensor(value)
+        }
+        output_tensors = {
+            str(key): value
+            for key, value in outputs.items()
+            if str(key) not in {'mask', 'confidence'} and torch.is_tensor(value)
+        }
+        return compute_auxiliary_head_loss(output_tensors, target_tensors, head_weights=head_weights)
 
     def _resolved_cutout_parameters(self) -> tuple[bool, float, int, float]:
         params = getattr(self, '_cutout_params', None)
@@ -2194,11 +2260,12 @@ class TrainerProcess(mp.Process):
     def _compute_per_sample_loss(
         self,
         outputs: Any,
-        label: torch.Tensor,
+        label: torch.Tensor | Mapping[str, torch.Tensor],
         bce_criterion: nn.Module,
         *,
         apply_pixel_mining: bool = False,
     ) -> torch.Tensor:
+        raw_label = label
         label = self._sanitize_labels_for_loss(label)
         supervised_outputs = self._iter_supervised_output_tensors(outputs)
         primary_output = self._resize_output_like_label(supervised_outputs[0], label)
@@ -2231,37 +2298,41 @@ class TrainerProcess(mp.Process):
             combined_loss = torch.clamp(combined_loss, min=0.0, max=50.0)
 
         confidence_output = self._extract_confidence_output_tensor(outputs)
-        if confidence_output is None:
-            return combined_loss
-        confidence_output = self._resize_output_like_label(confidence_output, label)
-        confidence_target = 1.0 - torch.abs(torch.sigmoid(primary_output).detach() - label)
-        confidence_target = torch.clamp(
-            torch.nan_to_num(confidence_target, nan=0.0, posinf=1.0, neginf=0.0),
-            min=0.0,
-            max=1.0,
-        )
-        confidence_loss_map = F.binary_cross_entropy_with_logits(
-            confidence_output,
-            confidence_target,
-            reduction='none',
-        )
-        confidence_loss_per_sample = self._reduce_loss_map_per_sample(
-            confidence_loss_map,
-            loss_mode='confidence',
-            apply_pixel_mining=False,
-        )
-        confidence_loss_per_sample = torch.nan_to_num(
-            confidence_loss_per_sample,
-            nan=1.0,
-            posinf=50.0,
-            neginf=0.0,
-        )
-        confidence_loss_per_sample = torch.clamp(confidence_loss_per_sample, min=0.0, max=50.0)
-        return torch.clamp(
-            combined_loss + (confidence_loss_per_sample * float(CONFIDENCE_LOSS_WEIGHT)),
-            min=0.0,
-            max=50.0,
-        )
+        if confidence_output is not None:
+            confidence_output = self._resize_output_like_label(confidence_output, label)
+            confidence_target = 1.0 - torch.abs(torch.sigmoid(primary_output).detach() - label)
+            confidence_target = torch.clamp(
+                torch.nan_to_num(confidence_target, nan=0.0, posinf=1.0, neginf=0.0),
+                min=0.0,
+                max=1.0,
+            )
+            confidence_loss_map = F.binary_cross_entropy_with_logits(
+                confidence_output,
+                confidence_target,
+                reduction='none',
+            )
+            confidence_loss_per_sample = self._reduce_loss_map_per_sample(
+                confidence_loss_map,
+                loss_mode='confidence',
+                apply_pixel_mining=False,
+            )
+            confidence_loss_per_sample = torch.nan_to_num(
+                confidence_loss_per_sample,
+                nan=1.0,
+                posinf=50.0,
+                neginf=0.0,
+            )
+            confidence_loss_per_sample = torch.clamp(confidence_loss_per_sample, min=0.0, max=50.0)
+            combined_loss = torch.clamp(
+                combined_loss + (confidence_loss_per_sample * float(CONFIDENCE_LOSS_WEIGHT)),
+                min=0.0,
+                max=50.0,
+            )
+
+        auxiliary_loss = self._compute_auxiliary_supervision_loss(outputs, raw_label)
+        if auxiliary_loss is not None:
+            combined_loss = torch.clamp(combined_loss + auxiliary_loss, min=0.0, max=50.0)
+        return combined_loss
 
     @staticmethod
     def _compute_binary_metrics(
@@ -2830,6 +2901,9 @@ class TrainerProcess(mp.Process):
         skipped_non_finite_batches = 0
         validation_export_cache = self._create_validation_export_cache()
         export_saved_images = 0
+        advanced_metrics_enabled = self._advanced_validation_enabled()
+        advanced_metric_totals: dict[str, float] = {}
+        advanced_metric_count = 0
         with torch.no_grad():
             for batch in self._val_dataloader:
                 data, target, _sample_indices = self._split_batch(batch)
@@ -2856,7 +2930,33 @@ class TrainerProcess(mp.Process):
                 )
                 export_saved_images += int(probs.shape[0])
                 preds = probs >= 0.5
-                label_bin = self._sanitize_labels_for_loss(label) >= 0.5
+                primary_label = extract_primary_label(label) if isinstance(label, Mapping) else label
+                label_bin = self._sanitize_labels_for_loss(primary_label) >= 0.5
+                if advanced_metrics_enabled:
+                    confidence_output = self._extract_confidence_output_tensor(outputs)
+                    confidence_np = None
+                    if confidence_output is not None:
+                        confidence_np = torch.sigmoid(confidence_output).detach().cpu().numpy()
+                    batch_size = int(probs.shape[0])
+                    for sample_index in range(batch_size):
+                        sample_metrics = compute_segmentation_metrics(
+                            probs[sample_index, 0].detach().cpu().numpy(),
+                            primary_label[sample_index, 0].detach().cpu().numpy(),
+                            threshold=float(self._recommended_inference_threshold),
+                            confidence=(
+                                confidence_np[sample_index, 0]
+                                if confidence_np is not None
+                                else None
+                            ),
+                        )
+                        for metric_name, metric_value in sample_metrics.as_dict().items():
+                            if metric_name == 'confidence_histogram':
+                                continue
+                            if isinstance(metric_value, (int, float)):
+                                advanced_metric_totals[metric_name] = (
+                                    advanced_metric_totals.get(metric_name, 0.0) + float(metric_value)
+                                )
+                    advanced_metric_count += batch_size
                 correct += (preds == label_bin).sum().item()
                 total += label_bin.numel()
                 preds_f = preds.float()
@@ -2925,6 +3025,14 @@ class TrainerProcess(mp.Process):
             'best_threshold_iou': float(best_threshold_metrics['iou']),
             'best_threshold_dice': float(best_threshold_metrics['dice']),
             'best_threshold_f1': float(best_threshold_metrics['f1']),
+            **(
+                {
+                    metric_name: float(metric_total / max(1, advanced_metric_count))
+                    for metric_name, metric_total in advanced_metric_totals.items()
+                }
+                if advanced_metrics_enabled and advanced_metric_count > 0
+                else {}
+            ),
         }
 
     def _create_optimizer(self):
@@ -3742,14 +3850,13 @@ class TrainerProcess(mp.Process):
     def _filter_uniform_batch_samples(
         self,
         image: Any,
-        label: torch.Tensor,
+        label: torch.Tensor | Mapping[str, torch.Tensor],
         sample_indices: Any,
-    ) -> tuple[Any, torch.Tensor, Any, int, bool]:
+    ) -> tuple[Any, torch.Tensor | Mapping[str, torch.Tensor], Any, int, bool]:
         if not self._skip_uniform_labels:
             return image, label, sample_indices, 0, True
-        # Binarize before uniformity detection so labels normalized as 255/256
-        # are still treated as "all ones".
-        label_flat = self._sanitize_labels_for_loss(label).reshape(label.shape[0], -1)
+        primary_label = extract_primary_label(label) if isinstance(label, Mapping) else label
+        label_flat = self._sanitize_labels_for_loss(primary_label).reshape(primary_label.shape[0], -1)
         label_bin = label_flat >= 0.5
         is_all_zero = (~label_bin).all(dim=1)
         is_all_one = label_bin.all(dim=1)
@@ -3759,7 +3866,10 @@ class TrainerProcess(mp.Process):
             return image, label, sample_indices, skipped_here, False
 
         image = self._filter_batch_input(image, valid_mask)
-        label = label[valid_mask]
+        if isinstance(label, Mapping):
+            label = {key: value[valid_mask] for key, value in label.items()}
+        else:
+            label = label[valid_mask]
         if sample_indices is None:
             return image, label, None, skipped_here, True
         if torch.is_tensor(sample_indices):
@@ -5360,6 +5470,7 @@ class NeuralRecognizer(threading.Thread):
                 and self._parameters.source_folder is not None
                 else None
             ),
+            preprocessing=getattr(self._parameters, 'preprocessing', None),
         )
         run_multiprocessing_recognition(
             workload=workload,
@@ -5411,6 +5522,7 @@ class NeuralRecognizer(threading.Thread):
                 and self._parameters.source_folder is not None
                 else None
             ),
+            preprocessing=getattr(self._parameters, 'preprocessing', None),
         )
 
     def stop(self):

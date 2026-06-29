@@ -129,6 +129,12 @@ def prepare_image_for_preview(source_image: Any, pipeline_config: dict[str, Any]
     return PreprocessingPipeline.from_dict(pipeline_config).apply(source_image)
 
 
+def _recognition_image(source_image: Any, preprocessed_image: Any | None) -> Any:
+    if preprocessed_image is not None:
+        return preprocessed_image
+    return source_image
+
+
 # ---------------------------------------------------------------------------
 # Public mask builders
 # ---------------------------------------------------------------------------
@@ -144,7 +150,8 @@ def build_conductor_vectorization_mask(
     preprocessed_image: Any,
     settings: ContourExtractionSettings,
 ) -> np.ndarray:
-    base_mask = ensure_binary_mask(preprocessed_image)
+    recognition_image = _recognition_image(source_image, preprocessed_image)
+    base_mask = ensure_binary_mask(recognition_image)
     legacy = str(getattr(settings, "algorithm_backend", "legacy")).lower() == "legacy"
     conductor_polygon = (
         settings.object_type == "conductor" and str(getattr(settings, "output_mode", "polygon")) != "box"
@@ -154,7 +161,7 @@ def build_conductor_vectorization_mask(
         return base_mask
     if settings.object_type == "via" or settings.output_mode == "box" or not settings.conductor_gradient_enabled:
         return base_mask
-    return _refine_conductor_mask_by_gradient(source_image, base_mask, settings)
+    return _refine_conductor_mask_by_gradient(recognition_image, base_mask, settings)
 
 
 def build_via_vectorization_mask(
@@ -387,19 +394,23 @@ def build_detection_debug_maps(
     """
 
     maps: dict[str, np.ndarray] = {}
-    if source_image is None:
+    if source_image is None and preprocessed_image is None:
+        return maps
+    recognition_image = _recognition_image(source_image, preprocessed_image)
+    if recognition_image is None:
         return maps
     raise_if_preview_cancelled()
 
-    source_gray = _via_grayscale(source_image)
-    maps["source_gray"] = source_gray
+    if source_image is not None:
+        maps["source_gray"] = _via_grayscale(source_image)
+    recognition_gray = _via_grayscale(recognition_image)
 
     if settings.object_type == "via" or settings.output_mode == "box":
         edge_method = _resolve_via_edge_method(settings)
     else:
         edge_method = _resolve_conductor_edge_method(settings)
 
-    elevation = build_gradient_elevation(source_gray, edge_method)
+    elevation = build_gradient_elevation(recognition_gray, edge_method)
     maps["gradient_elevation"] = elevation
     if include_color_maps and elevation.size:
         maps["gradient_color"] = cv2.applyColorMap(elevation, cv2.COLORMAP_TURBO)
@@ -417,13 +428,13 @@ def build_detection_debug_maps(
 
         try:
             if vmode == VIA_SEARCH_MODE_TEMPLATE:
-                r = detect_vias_template(source_gray, template_config_from_settings(settings))
+                r = detect_vias_template(recognition_gray, template_config_from_settings(settings))
                 dbg = dict(r.debug_images)
             elif vmode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
-                r = detect_bright_vias(source_gray, BrightViaDetectorConfig.from_legacy_settings(settings))
+                r = detect_bright_vias(recognition_gray, BrightViaDetectorConfig.from_legacy_settings(settings))
                 dbg = dict(r.debug_images)
             else:
-                r = detect_vias_heuristic(source_gray, heuristic_config_from_settings(settings))
+                r = detect_vias_heuristic(recognition_gray, heuristic_config_from_settings(settings))
                 dbg = dict(r.debug_images)
             for _guard in ("source_gray", "gradient_elevation", "gradient_color"):
                 dbg.pop(_guard, None)
@@ -431,22 +442,22 @@ def build_detection_debug_maps(
         except Exception:  # pragma: no cover - defensive debug path
             pass
 
-    maps["scharr"] = scharr_magnitude(source_gray)
+    maps["scharr"] = scharr_magnitude(recognition_gray)
     try:
-        maps["phase_congruency"] = phase_congruency(source_gray)
+        maps["phase_congruency"] = phase_congruency(recognition_gray)
     except Exception:  # pragma: no cover - numerical fallback
-        maps["phase_congruency"] = np.zeros_like(source_gray, dtype=np.uint8)
-    maps["structured"] = structured_edges(source_gray)
-    maps["ridge"] = ridge_response(source_gray)
+        maps["phase_congruency"] = np.zeros_like(recognition_gray, dtype=np.uint8)
+    maps["structured"] = structured_edges(recognition_gray)
+    maps["ridge"] = ridge_response(recognition_gray)
 
     if settings.object_type == "via" or settings.output_mode == "box":
-        mask, _candidates = build_via_vectorization_mask(preprocessed_image, settings)
+        mask, _candidates = build_via_vectorization_mask(recognition_image, settings)
         maps["mask"] = ensure_binary_mask(mask)
     else:
         mask = build_conductor_vectorization_mask(source_image, preprocessed_image, settings)
         maps["mask"] = ensure_binary_mask(mask)
         if include_color_maps:
-            maps["conductor_gradient_elevation"] = _conductor_gradient_elevation(source_gray, settings)
+            maps["conductor_gradient_elevation"] = _conductor_gradient_elevation(recognition_gray, settings)
     return maps
 
 
@@ -1963,16 +1974,17 @@ def _process_image_path_sem_backend(
     vision_json: dict[str, Any]
 
     raise_if_preview_cancelled()
+    recognition_image = _recognition_image(source, preprocessed)
     if contour_settings.object_type == "via":
         phase_started = perf_counter()
         via_output = run_via_detection(
-            source,
+            recognition_image,
             image_path=image_path,
             output_kind=output_kind,
             legacy_settings=contour_settings,
         )
         polygons = via_output_to_polygons(via_output)
-        mask = _render_polygon_mask_from_polygons(source, polygons)
+        mask = _render_polygon_mask_from_polygons(recognition_image, polygons)
         if timing is not None:
             timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         vision_json = via_output.to_json_dict()
@@ -1985,7 +1997,7 @@ def _process_image_path_sem_backend(
         raise_if_preview_cancelled()
         phase_started = perf_counter()
         contour_output = run_contour_filled_mask(
-            source,
+            recognition_image,
             image_path=image_path,
             output_kind=output_kind,
             noise_level=str(getattr(contour_settings, "sem_noise_level", "medium") or "medium"),

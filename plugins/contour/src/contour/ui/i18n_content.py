@@ -490,8 +490,8 @@ EXTRACTION_HELP_TEXTS.update(
             "Chooses how vias are filtered by size: a width/height range or a list of exact sizes.",
         ),
         "via_search_mode": (
-            "Выбирает режим детекции via: гибрид (blob+шаблоны), только blob или только поиск по шаблонам.",
-            "Selects the via detection mode: hybrid (blob+templates), blob only, or template-only matching.",
+            "Режим поиска via: светлые точки (SEM), универсальный (полярность/кольца) или по шаблону.",
+            "Via search mode: bright SEM spots, universal polarity-aware search, or template matching.",
         ),
         "min_via_width": (
             "Минимальная ширина переходного отверстия. Более узкие объекты будут отброшены.",
@@ -822,8 +822,8 @@ EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
         "Place a via of the configured width and height at the click position.",
     ),
     EditorTool.ADD_VERTEX: (
-        "Добавить вершину на ближайший участок границы выбранного полигона.",
-        "Add a vertex to the nearest edge of the selected polygon.",
+        "Сначала выберите полигон кликом, затем добавляйте вершины на его границу. Enter или Escape завершают работу с полигоном.",
+        "Click a polygon to select it, then add vertices along its boundary. Press Enter or Escape to finish with the current polygon.",
     ),
     EditorTool.DELETE_VERTEX: (
         "Удалить вершину выбранного полигона. Режим удаления задает, удаляется одна точка или область.",

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import numpy as np
 import cv2
+import numpy as np
 from PyQt6.QtCore import QRectF
 from PyQt6.QtWidgets import QListWidgetItem
 
-from contour.application.frame_lod import FixedGridFrameLayout, PyramidFrameStore, ZarrFrameStore
+import contour.application.frame_lod as frame_lod_module
+from contour.application.frame_lod import FixedGridFrameLayout, PyramidFrameStore
 from contour.graphics.editor_view import PolygonEditorView
 from contour.ui.frame_matrix_view import FrameMatrixGraphicsView
 
@@ -14,7 +15,7 @@ class FakePyramidStore(PyramidFrameStore):
     def __init__(self) -> None:
         super().__init__([])
 
-    def has_zarr(self) -> bool:
+    def has_lod(self) -> bool:
         return True
 
     def available_lods(self) -> tuple[int, ...]:
@@ -72,47 +73,35 @@ def test_frame_matrix_uses_only_three_most_zoomed_out_lods(_qt_application) -> N
     assert view.navigatorLods() == (2, 3, 4)
 
 
-def test_zarr_store_without_zarr_does_not_fallback_to_image_files(tmp_path) -> None:
-    image_path = tmp_path / "frame_001.png"
-    image_path.write_bytes(b"not-used")
-    store = ZarrFrameStore.from_image_paths([image_path])
+def test_frame_matrix_store_setup_does_not_decode_source_image(_qt_application, tmp_path, monkeypatch) -> None:
+    path = tmp_path / "frame_000.png"
+    path.write_bytes(b"placeholder")
+    store = PyramidFrameStore.from_image_paths([path])
+    view = FrameMatrixGraphicsView()
 
-    assert store.has_zarr() is False
-    assert store.available_lods() == ()
-    assert store.frame_count() == 0
-    try:
-        store.get_frame(0, 0)
-    except RuntimeError as exc:
-        assert "Zarr LOD" in str(exc)
-    else:
-        raise AssertionError("ZarrFrameStore should not decode image files as a fallback")
+    def _fail_decode(_path):
+        raise AssertionError("source image decoded on UI path")
+
+    monkeypatch.setattr(frame_lod_module, "_load_source_image", _fail_decode)
+
+    view.setPyramidFrameStore(store)
+
+    assert view.navigatorLods() == (5, 6, 7)
 
 
-def test_zarr_store_forms_pyramid_from_image_paths(tmp_path) -> None:
+def test_pyramid_store_forms_lods_from_image_paths(tmp_path) -> None:
     paths = []
     for index in range(2):
         path = tmp_path / f"frame_{index:03d}.png"
         cv2.imwrite(str(path), np.full((16, 20, 3), index * 40, dtype=np.uint8))
         paths.append(path)
 
-    store = ZarrFrameStore.from_image_paths(paths)
+    store = PyramidFrameStore.from_image_paths(paths)
 
-    assert store.has_zarr() is True
-    assert not (tmp_path / "frames.zarr").exists()
+    assert store.has_lod() is True
     assert store.frame_count() == 2
-    assert store.available_lods() == (0,)
+    assert store.available_lods() == (0, 1)
     assert store.get_frame_size(0, 0) == (20, 16)
     assert store.get_frame(1, 0).shape == (16, 20, 3)
-    assert store.needs_lod_build() is True
-
-    assert ZarrFrameStore._build_zarr_pyramid(paths, tmp_path / "frames.zarr") == tmp_path / "frames.zarr"
-    store.refresh()
-
-    assert store.available_lods()[0] == 0
-    assert store.available_lods()[1] == 1
-    assert store.needs_lod_build() is False
-    import zarr
-
-    root = zarr.open(str(tmp_path / "frames.zarr"), mode="r")
-    assert "lod_0" not in set(root.keys())
-    assert "lod_1" in set(root.keys())
+    assert store.get_frame_size(1, 1) == (10, 8)
+    assert store.get_frame(1, 1).shape == (8, 10, 3)

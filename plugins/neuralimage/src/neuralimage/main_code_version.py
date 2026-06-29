@@ -26,6 +26,11 @@ from neuralimage.lib.data_interfaces import (
     parse_work_mode,
     normalize_multi_gpu_mode,
 )
+from neuralimage.active_learning.config import build_active_learning_config
+from neuralimage.augmentations.sem_config import build_sem_augmentation_config
+from neuralimage.preprocessing.config import build_preprocessing_config
+from neuralimage.targets.config import build_supervision_targets_parameters
+from neuralimage.uncertainty.config import build_uncertainty_config
 from neuralimage.lib.message_bus import MessageBus
 from neuralimage.model.general_neural_handler import GeneralNeuralHandler
 
@@ -237,6 +242,12 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
         dataloader_num_workers=int(raw.get('dataloader_num_workers', -1)),
         recursive_file_search=bool(raw.get('recursive_file_search', False)),
         pcb_defects=build_pcb_defect_parameters(pcb_defects_raw),
+        supervision_targets=build_supervision_targets_parameters(raw.get('targets', raw.get('supervision_targets'))),
+        preprocessing=build_preprocessing_config(raw.get('preprocessing')),
+        sem_augmentation=build_sem_augmentation_config(raw.get('sem_augmentation')),
+        uncertainty=build_uncertainty_config(raw.get('uncertainty')),
+        active_learning=build_active_learning_config(raw.get('active_learning')),
+        advanced_validation=bool(raw.get('advanced_validation', True)),
     )
 
 
@@ -278,6 +289,9 @@ def _build_recognition_parameters(raw: dict[str, Any]) -> RecognitionParameters:
         ),
         recursive_file_search=bool(raw.get('recursive_file_search', False)),
         compression_factor=max(1, int(raw.get('compression_factor', 1) or 1)),
+        preprocessing=build_preprocessing_config(raw.get('preprocessing')),
+        uncertainty=build_uncertainty_config(raw.get('uncertainty')),
+        active_learning=build_active_learning_config(raw.get('active_learning')),
     )
 
 

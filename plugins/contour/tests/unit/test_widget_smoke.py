@@ -86,8 +86,8 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertEqual(widget.heuristic_background_sigma_spin.value(), 25.0)
             settings = widget._current_contour_settings()
             self.assertEqual(settings.heuristic_background_sigma, 25.0)
-            self.assertEqual(settings.via_search_mode, "bright_tophat_dog")
-            self.assertEqual(widget._contour_settings_profiles["vias"].via_search_mode, "bright_tophat_dog")
+            self.assertEqual(settings.via_search_mode, "heuristic")
+            self.assertEqual(widget._contour_settings_profiles["vias"].via_search_mode, "heuristic")
         finally:
             widget.close()
             widget.deleteLater()
@@ -115,13 +115,13 @@ class WidgetSmokeTests(unittest.TestCase):
             widget.close()
             widget.deleteLater()
 
-    def test_via_mode_flattens_contour_extraction_group(self) -> None:
+    def test_via_mode_hides_contour_extraction_group(self) -> None:
         widget = PolygonExtractionWidget()
         try:
             widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("via"))
 
-            self.assertEqual(widget.contour_group.title(), "")
-            self.assertTrue(widget.contour_group.isFlat())
+            self.assertFalse(widget.contour_group.isVisible())
+            self.assertFalse(widget.advanced_extraction_checkbox.isVisible())
             self.assertFalse(widget.bright_via_group.isHidden())
         finally:
             widget.close()

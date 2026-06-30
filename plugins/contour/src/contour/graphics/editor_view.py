@@ -34,6 +34,7 @@ from PyQt6.QtGui import (
     QResizeEvent,
     QShortcut,
     QTabletEvent,
+    QTransform,
     QUndoStack,
     QWheelEvent,
 )
@@ -103,6 +104,7 @@ class PolygonEditorView(QGraphicsView):
     viaDebugRequested = pyqtSignal(object)
     metalOverlayDetailRequested = pyqtSignal(str, str)
     middlePreviewHoldChanged = pyqtSignal(bool)
+    filterPreviewHoldChanged = pyqtSignal(bool)
     frameNavigationRequested = pyqtSignal(object)
     currentFrameChanged = pyqtSignal(object)
     editorViewportChanged = pyqtSignal(object)
@@ -150,6 +152,7 @@ class PolygonEditorView(QGraphicsView):
         self._middle_pan_last_viewport: QPointF | None = None
         self._polygon_overlays_visible_before_space_hold: bool | None = None
         self._gradient_overlay_visible_before_space_hold: bool | None = None
+        self._filter_preview_hold_active = False
         self._last_pointer_viewport_pos: QPointF | None = None
         self._image_click_mode = False
         self._image_region_selection_mode = False
@@ -352,43 +355,50 @@ class PolygonEditorView(QGraphicsView):
     def _emit_effective_polygon_create_mode_changed(self) -> None:
         self.effectivePolygonCreateModeChanged.emit(self._effective_polygon_create_mode())
 
+    def _viewport_view_anchor(self) -> tuple[QPoint, QPointF, QTransform]:
+        viewport = self._require_viewport()
+        pixel = viewport.rect().center()
+        return pixel, self.mapToScene(pixel), QTransform(self.transform())
+
+    def _restore_viewport_view_anchor(
+        self,
+        pixel: QPoint,
+        scene_anchor: QPointF,
+        transform: QTransform,
+    ) -> None:
+        self.setTransform(transform)
+        mapped = self.mapFromScene(scene_anchor)
+        dx = int(round(mapped.x() - pixel.x()))
+        dy = int(round(mapped.y() - pixel.y()))
+        if dx or dy:
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + dx)
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() + dy)
+
     def set_image(self, image, *, preserve_view: bool = False) -> None:
         previous_rect = QRectF(self._editor_scene.sceneRect())
-        previous_center = self.mapToScene(self._require_viewport().rect().center())
-        previous_size = self._editor_scene.main_image_rect().size().toSize()
-        h_scroll = self.horizontalScrollBar().value()
-        v_scroll = self.verticalScrollBar().value()
+        view_anchor = self._viewport_view_anchor() if preserve_view else None
         self._editor_scene.set_image(image)
         previous_was_placeholder = previous_rect.width() <= 1.0 and previous_rect.height() <= 1.0
         if previous_was_placeholder:
             self.fit_to_view()
-        elif preserve_view:
-            current_size = self._editor_scene.main_image_rect().size().toSize()
-            if previous_size.isValid() and current_size.isValid() and previous_size == current_size:
-                self.horizontalScrollBar().setValue(h_scroll)
-                self.verticalScrollBar().setValue(v_scroll)
-            else:
-                self.centerOn(previous_center)
+        elif view_anchor is not None:
+            self._restore_viewport_view_anchor(*view_anchor)
         self._update_navigation_scene_rect()
+        if view_anchor is not None:
+            self._restore_viewport_view_anchor(*view_anchor)
 
     def set_image_pixmap(self, pixmap: QPixmap, *, preserve_view: bool = False) -> None:
         previous_rect = QRectF(self._editor_scene.sceneRect())
-        previous_center = self.mapToScene(self._require_viewport().rect().center())
-        previous_size = self._editor_scene.main_image_rect().size().toSize()
-        h_scroll = self.horizontalScrollBar().value()
-        v_scroll = self.verticalScrollBar().value()
+        view_anchor = self._viewport_view_anchor() if preserve_view else None
         self._editor_scene.set_image_pixmap(pixmap)
         previous_was_placeholder = previous_rect.width() <= 1.0 and previous_rect.height() <= 1.0
         if previous_was_placeholder:
             self.fit_to_view()
-        elif preserve_view:
-            current_size = self._editor_scene.main_image_rect().size().toSize()
-            if previous_size.isValid() and current_size.isValid() and previous_size == current_size:
-                self.horizontalScrollBar().setValue(h_scroll)
-                self.verticalScrollBar().setValue(v_scroll)
-            else:
-                self.centerOn(previous_center)
+        elif view_anchor is not None:
+            self._restore_viewport_view_anchor(*view_anchor)
         self._update_navigation_scene_rect()
+        if view_anchor is not None:
+            self._restore_viewport_view_anchor(*view_anchor)
 
     def set_polygons(self, polygons: list[PolygonData], *, emit_signal: bool = True) -> None:
         self._editor_scene.set_polygons(polygons, emit_signal=emit_signal)
@@ -1551,6 +1561,20 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if (
+            event.key() == Qt.Key.Key_X
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and self.isEnabled()
+            and (self.hasFocus() or self._require_viewport().hasFocus())
+        ):
+            if event.isAutoRepeat():
+                event.accept()
+                return
+            if not self._filter_preview_hold_active:
+                self._filter_preview_hold_active = True
+                self.filterPreviewHoldChanged.emit(True)
+            event.accept()
+            return
+        if (
             event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return)
             and self._tool == EditorTool.ADD_VERTEX
         ):
@@ -1622,6 +1646,16 @@ class PolygonEditorView(QGraphicsView):
                 self._editor_scene.set_gradient_overlay_visible(self._gradient_overlay_visible_before_space_hold)
                 self._gradient_overlay_visible_before_space_hold = None
             self._polygon_overlays_visible_before_space_hold = None
+            event.accept()
+            return
+        if (
+            event.key() == Qt.Key.Key_X
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and not event.isAutoRepeat()
+            and self._filter_preview_hold_active
+        ):
+            self._filter_preview_hold_active = False
+            self.filterPreviewHoldChanged.emit(False)
             event.accept()
             return
         if (

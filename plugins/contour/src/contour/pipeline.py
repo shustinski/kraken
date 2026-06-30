@@ -45,6 +45,7 @@ class OperationDescriptor:
     display_name: str
     parameters: tuple[OperationParameterSpec, ...]
     handler: OperationCallable
+    public: bool = True
 
     def default_parameters(self) -> dict[str, Any]:
         return {spec.name: spec.default for spec in self.parameters}
@@ -65,7 +66,7 @@ def get_operation_descriptor(operation_name: str) -> OperationDescriptor:
 
 
 def available_operations() -> list[OperationDescriptor]:
-    return list(_OPERATIONS.values())
+    return [descriptor for descriptor in _OPERATIONS.values() if descriptor.public]
 
 
 def get_operation_display_name(operation_key: str, language: str | None = None) -> str:
@@ -392,6 +393,22 @@ def _brightness_contrast(image: np.ndarray, parameters: dict[str, Any]) -> np.nd
         image,
         alpha=float(parameters.get("alpha", 1.0)),
         beta=float(parameters.get("beta", 0.0)),
+    )
+
+
+def _brightness(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    return cv2.convertScaleAbs(
+        image,
+        alpha=1.0,
+        beta=float(parameters.get("brightness", 0.0)),
+    )
+
+
+def _contrast(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    return cv2.convertScaleAbs(
+        image,
+        alpha=float(parameters.get("contrast", 1.0)),
+        beta=0.0,
     )
 
 
@@ -805,6 +822,39 @@ def _register_builtin_operations() -> None:
                 OperationParameterSpec("beta", "Brightness", "float", 0.0, minimum=-255.0, maximum=255.0, step=1.0),
             ),
             _brightness_contrast,
+            public=False,
+        ),
+        OperationDescriptor(
+            "brightness",
+            "Brightness",
+            (
+                OperationParameterSpec(
+                    "brightness",
+                    "Brightness",
+                    "float",
+                    0.0,
+                    minimum=-255.0,
+                    maximum=255.0,
+                    step=1.0,
+                ),
+            ),
+            _brightness,
+        ),
+        OperationDescriptor(
+            "contrast",
+            "Contrast",
+            (
+                OperationParameterSpec(
+                    "contrast",
+                    "Contrast",
+                    "float",
+                    1.0,
+                    minimum=0.1,
+                    maximum=4.0,
+                    step=0.05,
+                ),
+            ),
+            _contrast,
         ),
         OperationDescriptor(
             "gamma_correction",

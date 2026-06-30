@@ -11,7 +11,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt
+from PyQt6.QtCore import QPoint, QPointF, QRectF, QSignalBlocker, QSize, Qt
 from PyQt6.QtGui import QImage, QPainter, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
@@ -384,6 +384,80 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertIsNotNone(request)
         self.assertIsNone(request.preprocessed_image)
+
+    def test_x_hold_shows_source_image_and_combines_with_space_vector_hide(self) -> None:
+        source = np.full((16, 16), 20, dtype=np.uint8)
+        preprocessed = np.full((16, 16), 220, dtype=np.uint8)
+        polygon = _rectangle_polygon(2, 2, 10, 10)
+        state = ImageProcessingState(
+            image_path="frame_1.png",
+            source_image=source,
+            preprocessed_image=preprocessed,
+            pipeline_config=self.widget.get_pipeline(),
+            polygons=[polygon],
+        )
+        self.widget._workspace._current_image_path = "frame_1.png"
+        self.widget._workspace._current_state = state
+        self.widget._workspace._state_cache = {"frame_1.png": state}
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
+        self.widget.show()
+        self._app.processEvents()
+
+        def _wait_for_editor_pixel(expected: int, timeout_ms: int = 1500) -> None:
+            attempts = max(1, timeout_ms // 10)
+            last_value: int | None = None
+            for _ in range(attempts):
+                self.widget._editor_display_thread_pool.waitForDone(10)
+                self._app.processEvents()
+                pixmap = self.widget.polygon_editor._editor_scene._image_item.pixmap()
+                if not pixmap.isNull():
+                    last_value = pixmap.toImage().pixelColor(0, 0).red()
+                    if last_value == expected:
+                        return
+                QTest.qWait(10)
+            self.assertEqual(last_value, expected)
+
+        self.widget._sync_current_state_views(preserve_view=False, sync_neighbors=False)
+        _wait_for_editor_pixel(220)
+        self.assertTrue(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
+
+        self.widget.polygon_editor.setFocus()
+        self._app.processEvents()
+        QTest.keyPress(self.widget.polygon_editor, Qt.Key.Key_X)
+        _wait_for_editor_pixel(20)
+        self.assertTrue(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
+
+        QTest.keyPress(self.widget.polygon_editor, Qt.Key.Key_Space)
+        self._app.processEvents()
+        _wait_for_editor_pixel(20)
+        self.assertFalse(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
+
+        QTest.keyRelease(self.widget.polygon_editor, Qt.Key.Key_Space)
+        self._app.processEvents()
+        _wait_for_editor_pixel(20)
+        self.assertTrue(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
+
+        QTest.keyRelease(self.widget.polygon_editor, Qt.Key.Key_X)
+        _wait_for_editor_pixel(220)
+        self.assertTrue(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
+
+        QTest.keyPress(self.widget.polygon_editor, Qt.Key.Key_Space)
+        self._app.processEvents()
+        _wait_for_editor_pixel(220)
+        self.assertFalse(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
+
+        QTest.keyPress(self.widget.polygon_editor, Qt.Key.Key_X)
+        _wait_for_editor_pixel(20)
+        self.assertFalse(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
+
+        QTest.keyRelease(self.widget.polygon_editor, Qt.Key.Key_X)
+        _wait_for_editor_pixel(220)
+        self.assertFalse(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
+
+        QTest.keyRelease(self.widget.polygon_editor, Qt.Key.Key_Space)
+        self._app.processEvents()
+        _wait_for_editor_pixel(220)
+        self.assertTrue(self.widget.polygon_editor._editor_scene.polygon_overlays_visible())
 
     def test_neighbor_frames_render_around_current_image(self) -> None:
         paths = [f"frame_{index:02d}.png" for index in range(25)]
@@ -1022,6 +1096,33 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertEqual(loaded, [paths[2]])
         self.assertEqual(str(Path(self.widget._workspace.current_image_path or "")), paths[2])
+
+    def test_frame_matrix_navigation_cancel_keeps_current_frame(self) -> None:
+        paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]
+        self.widget._workspace._image_paths = paths
+        self.widget._workspace._current_image_path = paths[0]
+        self.widget._set_image_list_paths(paths)
+        selection = self.widget.image_list.selectionModel()
+        if selection is not None:
+            with QSignalBlocker(selection):
+                self.widget.image_list.setCurrentIndex(self.widget._image_list_proxy.index(0, 0))
+        self.widget.show_frame_matrix_checkbox.setChecked(True)
+        self.widget.show_frame_matrix_thumbnails_checkbox.setChecked(False)
+        self.widget._thumbnail_build_chunk_size = 100
+        self.widget._rebuild_thumbnail_grid()
+        self._wait_for_thumbnail_grid_count(3)
+        loaded: list[str] = []
+        self.widget.load_image = lambda path: loaded.append(str(Path(path)))  # type: ignore[method-assign]
+        self.widget._try_leave_current_frame = lambda: False  # type: ignore[method-assign]
+
+        self.widget._on_frame_navigation_requested(2)
+
+        self.assertEqual(loaded, [])
+        self.assertEqual(str(Path(self.widget._workspace.current_image_path or "")), paths[0])
+        self.assertEqual(
+            str(Path(self.widget._image_list_path_from_proxy_index(self.widget.image_list.currentIndex()) or "")),
+            paths[0],
+        )
 
     def test_neighbor_overlay_navigation_loads_main_editor_frame(self) -> None:
         paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]

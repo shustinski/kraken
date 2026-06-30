@@ -1212,7 +1212,10 @@ class WidgetNavigationMixin:
         if not path:
             return
         self._suppress_thumbnail_grid_scroll_path = str(Path(path))
-        self._set_image_list_current_path(path, fallback_to_first=False)
+        if not self._set_image_list_current_path(path, fallback_to_first=False):
+            self._suppress_thumbnail_grid_scroll_path = None
+            self._update_thumbnail_grid_selection(scroll_to_selection=False)
+            return
         try:
             self.load_image(str(Path(path)))
         except Exception as exc:
@@ -1228,10 +1231,18 @@ class WidgetNavigationMixin:
         if index < 0 or index >= len(image_paths):
             return
         path = image_paths[index]
+        self._suppress_thumbnail_grid_scroll_path = str(Path(path))
+        has_image_list_rows = bool(getattr(self, "_image_list_proxy", None) is not None and self._image_list_proxy.rowCount() > 0)
+        if has_image_list_rows and not self._set_image_list_current_path(path, fallback_to_first=False):
+            self._suppress_thumbnail_grid_scroll_path = None
+            self._update_thumbnail_grid_selection(scroll_to_selection=False)
+            return
+        if not has_image_list_rows and self._workspace.current_state is not None and not self._try_leave_current_frame():
+            self._suppress_thumbnail_grid_scroll_path = None
+            self._update_thumbnail_grid_selection(scroll_to_selection=False)
+            return
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_current_frame_id(index, center=True, emit_signal=False)
-        self._suppress_thumbnail_grid_scroll_path = str(Path(path))
-        self._set_image_list_current_path(path, fallback_to_first=False)
         self._workspace._current_image_path = str(Path(path))
         self._workspace._current_state = None
         try:

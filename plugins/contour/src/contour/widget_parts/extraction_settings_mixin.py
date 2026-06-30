@@ -142,16 +142,12 @@ class WidgetExtractionSettingsMixin:
         ]
         for _mw in (
             "metal_preset_combo",
-            "metal_noise_suppression_slider",
             "metal_contrast_bias_spin",
-            "metal_segmentation_strategy_combo",
             "metal_gap_bridge_spin",
             "metal_speckle_removal_spin",
-            "metal_contour_smooth_spin",
+            "metal_epsilon_spin",
             "metal_min_width_spin",
             "metal_max_width_spin",
-            "metal_min_length_spin",
-            "metal_use_wide_gradient_checkbox",
             "metal_show_conductors_checkbox",
             "metal_show_rejected_checkbox",
             "metal_show_suspicious_checkbox",
@@ -163,25 +159,12 @@ class WidgetExtractionSettingsMixin:
             "metal_max_area_spin",
             "metal_min_perimeter_spin",
             "metal_max_perimeter_spin",
-            "metal_epsilon_spin",
+            "metal_min_length_spin",
             "metal_min_points_spin",
             "metal_min_angle_spin",
             "metal_approximation_checkbox",
             "metal_hierarchy_combo",
-            "metal_allowed_angles_combo",
-            "metal_angle_tolerance_spin",
-            "metal_straightness_spin",
-            "metal_t_junction_checkbox",
             "metal_border_handling_combo",
-            "metal_validity_checkbox",
-            "metal_morph_close_spin",
-            "metal_morph_open_spin",
-            "metal_wide_grad_radius_spin",
-            "metal_wide_grad_conf_spin",
-            "metal_wide_grad_pair_len_spin",
-            "metal_wide_grad_parallel_spin",
-            "metal_wide_grad_gap_spin",
-            "metal_wide_grad_overlap_spin",
             "metal_advanced_group",
         ):
             _w = getattr(self, _mw, None)
@@ -433,24 +416,10 @@ class WidgetExtractionSettingsMixin:
                 mp = self.metal_preset_combo.findText(mp_label)
                 if mp >= 0:
                     self.metal_preset_combo.setCurrentIndex(mp)
-                if hasattr(self, "metal_noise_suppression_slider"):
-                    self.metal_noise_suppression_slider.setValue(
-                        int(getattr(settings, "metal_noise_suppression", 20))
-                    )
-                if hasattr(self, "metal_noise_suppression_value_label"):
-                    self.metal_noise_suppression_value_label.setText(
-                        str(int(getattr(settings, "metal_noise_suppression", 20)))
-                    )
                 if hasattr(self, "metal_contrast_bias_spin"):
                     self.metal_contrast_bias_spin.setValue(
                         int(round(float(getattr(settings, "metal_contrast_bias", 0.0))))
                     )
-                if hasattr(self, "metal_segmentation_strategy_combo"):
-                    _ssi = self.metal_segmentation_strategy_combo.findData(
-                        str(getattr(settings, "metal_segmentation_strategy", "auto") or "auto")
-                    )
-                    if _ssi >= 0:
-                        self.metal_segmentation_strategy_combo.setCurrentIndex(_ssi)
                 if hasattr(self, "metal_gap_bridge_spin"):
                     self.metal_gap_bridge_spin.setValue(
                         int(getattr(settings, "metal_gap_bridge_px", 2) or 2)
@@ -459,45 +428,11 @@ class WidgetExtractionSettingsMixin:
                     self.metal_speckle_removal_spin.setValue(
                         int(getattr(settings, "metal_speckle_removal_px", 0) or 0)
                     )
-                if hasattr(self, "metal_contour_smooth_spin"):
-                    self.metal_contour_smooth_spin.setValue(
-                        float(getattr(settings, "metal_contour_smooth_px", 0.0) or 0.0)
-                    )
+                if hasattr(self, "metal_epsilon_spin"):
+                    self.metal_epsilon_spin.setValue(float(settings.epsilon))
                 self.metal_min_width_spin.setValue(float(getattr(settings, "metal_min_trace_width_px", 8.0) or 8.0))
                 mw = getattr(settings, "metal_max_trace_width_px", None)
                 self.metal_max_width_spin.setValue(0.0 if mw is None else float(mw))
-                self.metal_min_length_spin.setValue(
-                    float(getattr(settings, "metal_min_trace_length_px", 8.0) or 8.0)
-                )
-                if hasattr(self, "metal_use_wide_gradient_checkbox"):
-                    self.metal_use_wide_gradient_checkbox.setChecked(
-                        bool(getattr(settings, "metal_use_wide_conductor_gradient", False))
-                    )
-                if hasattr(self, "metal_wide_grad_radius_spin"):
-                    self.metal_wide_grad_radius_spin.setValue(
-                        int(getattr(settings, "metal_wide_gradient_profile_radius_px", 8) or 8)
-                    )
-                if hasattr(self, "metal_wide_grad_conf_spin"):
-                    self.metal_wide_grad_conf_spin.setValue(
-                        float(getattr(settings, "metal_wide_gradient_min_direction_confidence", 0.15) or 0.15)
-                    )
-                if hasattr(self, "metal_wide_grad_pair_len_spin"):
-                    self.metal_wide_grad_pair_len_spin.setValue(
-                        float(getattr(settings, "metal_wide_gradient_min_pair_length_px", 24.0) or 24.0)
-                    )
-                if hasattr(self, "metal_wide_grad_parallel_spin"):
-                    self.metal_wide_grad_parallel_spin.setValue(
-                        float(getattr(settings, "metal_wide_gradient_parallel_tolerance_deg", 10.0) or 10.0)
-                    )
-                if hasattr(self, "metal_wide_grad_gap_spin"):
-                    self.metal_wide_grad_gap_spin.setValue(
-                        int(getattr(settings, "metal_wide_gradient_max_edge_gap_px", 5) or 5)
-                    )
-                if hasattr(self, "metal_wide_grad_overlap_spin"):
-                    self.metal_wide_grad_overlap_spin.setValue(
-                        float(getattr(settings, "metal_wide_gradient_min_overlap_ratio", 0.5) or 0.5)
-                    )
-                _smi = -1
                 self.metal_min_area_spin.setValue(float(getattr(settings, "metal_min_area", 60.0) or 60.0))
                 ma = getattr(settings, "metal_max_area", None)
                 self.metal_max_area_spin.setValue(0.0 if ma is None else float(ma))
@@ -506,7 +441,9 @@ class WidgetExtractionSettingsMixin:
                 )
                 mp2 = getattr(settings, "metal_max_perimeter", None)
                 self.metal_max_perimeter_spin.setValue(0.0 if mp2 is None else float(mp2))
-                self.metal_epsilon_spin.setValue(float(settings.epsilon))
+                self.metal_min_length_spin.setValue(
+                    float(getattr(settings, "metal_min_trace_length_px", 8.0) or 8.0)
+                )
                 self.metal_min_points_spin.setValue(int(settings.min_points))
                 self.metal_min_angle_spin.setValue(float(settings.min_polygon_angle))
                 self.metal_approximation_checkbox.setChecked(
@@ -517,37 +454,10 @@ class WidgetExtractionSettingsMixin:
                 )
                 if _hm >= 0:
                     self.metal_hierarchy_combo.setCurrentIndex(_hm)
-                _aa = str(getattr(settings, "metal_allowed_angles", "free") or "free")
-                _aai = self.metal_allowed_angles_combo.findData(_aa)
-                if _aai >= 0:
-                    self.metal_allowed_angles_combo.setCurrentIndex(_aai)
-                self.metal_angle_tolerance_spin.setValue(
-                    float(getattr(settings, "metal_angle_tolerance_deg", 7.0) or 7.0)
-                )
-                self.metal_straightness_spin.setValue(
-                    float(getattr(settings, "metal_min_straightness", 0.2) or 0.2)
-                )
-                self.metal_t_junction_checkbox.setChecked(
-                    bool(getattr(settings, "metal_allow_t_junction", True))
-                )
                 _bh = str(getattr(settings, "metal_border_handling", "mark") or "mark")
                 _bhi = self.metal_border_handling_combo.findData(_bh)
                 if _bhi >= 0:
                     self.metal_border_handling_combo.setCurrentIndex(_bhi)
-                self.metal_validity_checkbox.setChecked(
-                    bool(getattr(settings, "metal_check_contour_validity", True))
-                )
-                self.metal_morph_close_spin.setValue(
-                    int(getattr(settings, "metal_gap_bridge_px", getattr(settings, "metal_morph_close_radius", 2)) or 2)
-                )
-                self.metal_morph_open_spin.setValue(
-                    int(
-                        getattr(
-                            settings, "metal_speckle_removal_px", getattr(settings, "metal_morph_open_radius", 0)
-                        )
-                        or 0
-                    )
-                )
                 self.metal_show_conductors_checkbox.setChecked(
                     bool(getattr(settings, "metal_display_show_conductors", True))
                 )
@@ -790,24 +700,16 @@ class WidgetExtractionSettingsMixin:
             metal_preset=self._current_metal_preset_key()
             if hasattr(self, "metal_preset_combo")
             else "standard",
-            metal_noise_suppression=int(self.metal_noise_suppression_slider.value())
-            if hasattr(self, "metal_noise_suppression_slider")
-            else 20,
             metal_contrast_bias=float(self.metal_contrast_bias_spin.value())
             if hasattr(self, "metal_contrast_bias_spin")
             else 0.0,
-            metal_segmentation_strategy=str(self.metal_segmentation_strategy_combo.currentData() or "auto")
-            if hasattr(self, "metal_segmentation_strategy_combo")
-            else "auto",
+            metal_segmentation_strategy="legacy_otsu",
             metal_gap_bridge_px=int(self.metal_gap_bridge_spin.value())
             if hasattr(self, "metal_gap_bridge_spin")
             else 2,
             metal_speckle_removal_px=int(self.metal_speckle_removal_spin.value())
             if hasattr(self, "metal_speckle_removal_spin")
             else 0,
-            metal_contour_smooth_px=float(self.metal_contour_smooth_spin.value())
-            if hasattr(self, "metal_contour_smooth_spin")
-            else 0.0,
             metal_min_object_area=self.metal_min_area_spin.value()
             if hasattr(self, "metal_min_area_spin")
             else 60.0,
@@ -820,47 +722,9 @@ class WidgetExtractionSettingsMixin:
             metal_min_trace_length_px=float(self.metal_min_length_spin.value())
             if hasattr(self, "metal_min_length_spin")
             else 8.0,
-            metal_use_wide_conductor_gradient=(
-                self.metal_use_wide_gradient_checkbox.isChecked()
-                if hasattr(self, "metal_use_wide_gradient_checkbox")
-                else False
-            ),
-            metal_wide_gradient_profile_radius_px=int(self.metal_wide_grad_radius_spin.value())
-            if hasattr(self, "metal_wide_grad_radius_spin")
-            else 8,
-            metal_wide_gradient_min_direction_confidence=float(self.metal_wide_grad_conf_spin.value())
-            if hasattr(self, "metal_wide_grad_conf_spin")
-            else 0.15,
-            metal_wide_gradient_min_pair_length_px=float(self.metal_wide_grad_pair_len_spin.value())
-            if hasattr(self, "metal_wide_grad_pair_len_spin")
-            else 24.0,
-            metal_wide_gradient_parallel_tolerance_deg=float(self.metal_wide_grad_parallel_spin.value())
-            if hasattr(self, "metal_wide_grad_parallel_spin")
-            else 10.0,
-            metal_wide_gradient_max_edge_gap_px=int(self.metal_wide_grad_gap_spin.value())
-            if hasattr(self, "metal_wide_grad_gap_spin")
-            else 5,
-            metal_wide_gradient_min_overlap_ratio=float(self.metal_wide_grad_overlap_spin.value())
-            if hasattr(self, "metal_wide_grad_overlap_spin")
-            else 0.5,
-            metal_allowed_angles=str(self.metal_allowed_angles_combo.currentData() or "free")
-            if hasattr(self, "metal_allowed_angles_combo")
-            else "free",
-            metal_angle_tolerance_deg=float(self.metal_angle_tolerance_spin.value())
-            if hasattr(self, "metal_angle_tolerance_spin")
-            else 7.0,
-            metal_min_straightness=float(self.metal_straightness_spin.value())
-            if hasattr(self, "metal_straightness_spin")
-            else 0.2,
-            metal_allow_t_junction=self.metal_t_junction_checkbox.isChecked()
-            if hasattr(self, "metal_t_junction_checkbox")
-            else True,
             metal_border_handling=str(self.metal_border_handling_combo.currentData() or "mark")
             if hasattr(self, "metal_border_handling_combo")
             else "mark",
-            metal_check_contour_validity=self.metal_validity_checkbox.isChecked()
-            if hasattr(self, "metal_validity_checkbox")
-            else True,
             metal_hierarchy_mode=str(self.metal_hierarchy_combo.currentData() or "full")
             if hasattr(self, "metal_hierarchy_combo")
             else "full",
@@ -1021,15 +885,22 @@ class WidgetExtractionSettingsMixin:
                 return str(payload.get("metal_preset", "standard") or "standard")
         return "standard"
 
-    def _on_metal_noise_suppression_changed(self, value: int) -> None:
-        if hasattr(self, "metal_noise_suppression_value_label"):
-            self.metal_noise_suppression_value_label.setText(str(int(value)))
-        self._on_extraction_settings_changed()
-
     def _on_metal_overlay_opacity_changed(self, value: float) -> None:
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_gradient_overlay_opacity(float(value))
-        self._on_extraction_settings_changed()
+        self._on_metal_display_changed()
+
+    def _on_metal_display_changed(self, *_args) -> None:
+        state = self._workspace.current_state
+        if state is not None and hasattr(self, "_apply_editor_vectors_for_frame"):
+            self._apply_editor_vectors_for_frame(
+                state.image_path,
+                state,
+                list(state.polygons or []),
+                defer_heavy_overlays=False,
+            )
+        if hasattr(self, "_refresh_gradient_overlay"):
+            self._refresh_gradient_overlay()
 
     def _metal_preset_table(self) -> dict[str, dict[str, object]]:
         return metal_preset_table()
@@ -1061,29 +932,19 @@ class WidgetExtractionSettingsMixin:
             ix = self.metal_preset_combo.findText(label)
             if ix >= 0:
                 self.metal_preset_combo.setCurrentIndex(ix)
-        if hasattr(self, "metal_noise_suppression_slider"):
-            self.metal_noise_suppression_slider.setValue(int(defaults.metal_noise_suppression))
-        if hasattr(self, "metal_noise_suppression_value_label"):
-            self.metal_noise_suppression_value_label.setText(str(int(defaults.metal_noise_suppression)))
         if hasattr(self, "metal_contrast_bias_spin"):
             self.metal_contrast_bias_spin.setValue(int(round(defaults.metal_contrast_bias)))
-        if hasattr(self, "metal_segmentation_strategy_combo"):
-            ix = self.metal_segmentation_strategy_combo.findData(defaults.metal_segmentation_strategy)
-            if ix >= 0:
-                self.metal_segmentation_strategy_combo.setCurrentIndex(ix)
         if hasattr(self, "metal_gap_bridge_spin"):
             self.metal_gap_bridge_spin.setValue(int(defaults.metal_gap_bridge_px))
         if hasattr(self, "metal_speckle_removal_spin"):
             self.metal_speckle_removal_spin.setValue(int(defaults.metal_speckle_removal_px))
-        if hasattr(self, "metal_contour_smooth_spin"):
-            self.metal_contour_smooth_spin.setValue(float(defaults.metal_contour_smooth_px))
+        if hasattr(self, "metal_epsilon_spin"):
+            self.metal_epsilon_spin.setValue(float(defaults.epsilon))
         if hasattr(self, "metal_min_width_spin"):
             self.metal_min_width_spin.setValue(float(defaults.metal_min_trace_width_px))
         if hasattr(self, "metal_max_width_spin"):
             mw = defaults.metal_max_trace_width_px
             self.metal_max_width_spin.setValue(0.0 if mw is None else float(mw))
-        if hasattr(self, "metal_min_length_spin"):
-            self.metal_min_length_spin.setValue(float(defaults.metal_min_trace_length_px))
         if hasattr(self, "metal_min_area_spin"):
             self.metal_min_area_spin.setValue(float(defaults.metal_min_area))
         if hasattr(self, "metal_max_area_spin"):
@@ -1094,8 +955,8 @@ class WidgetExtractionSettingsMixin:
         if hasattr(self, "metal_max_perimeter_spin"):
             mp = defaults.metal_max_perimeter
             self.metal_max_perimeter_spin.setValue(0.0 if mp is None else float(mp))
-        if hasattr(self, "metal_epsilon_spin"):
-            self.metal_epsilon_spin.setValue(float(defaults.epsilon))
+        if hasattr(self, "metal_min_length_spin"):
+            self.metal_min_length_spin.setValue(float(defaults.metal_min_trace_length_px))
         if hasattr(self, "metal_min_points_spin"):
             self.metal_min_points_spin.setValue(int(defaults.min_points))
         if hasattr(self, "metal_min_angle_spin"):
@@ -1106,40 +967,10 @@ class WidgetExtractionSettingsMixin:
             ix = self.metal_hierarchy_combo.findData(defaults.metal_hierarchy_mode)
             if ix >= 0:
                 self.metal_hierarchy_combo.setCurrentIndex(ix)
-        if hasattr(self, "metal_allowed_angles_combo"):
-            ix = self.metal_allowed_angles_combo.findData(defaults.metal_allowed_angles)
-            if ix >= 0:
-                self.metal_allowed_angles_combo.setCurrentIndex(ix)
-        if hasattr(self, "metal_angle_tolerance_spin"):
-            self.metal_angle_tolerance_spin.setValue(float(defaults.metal_angle_tolerance_deg))
-        if hasattr(self, "metal_straightness_spin"):
-            self.metal_straightness_spin.setValue(float(defaults.metal_min_straightness))
-        if hasattr(self, "metal_t_junction_checkbox"):
-            self.metal_t_junction_checkbox.setChecked(bool(defaults.metal_allow_t_junction))
         if hasattr(self, "metal_border_handling_combo"):
             ix = self.metal_border_handling_combo.findData(defaults.metal_border_handling)
             if ix >= 0:
                 self.metal_border_handling_combo.setCurrentIndex(ix)
-        if hasattr(self, "metal_validity_checkbox"):
-            self.metal_validity_checkbox.setChecked(bool(defaults.metal_check_contour_validity))
-        if hasattr(self, "metal_morph_close_spin"):
-            self.metal_morph_close_spin.setValue(int(defaults.metal_morph_close_radius))
-        if hasattr(self, "metal_morph_open_spin"):
-            self.metal_morph_open_spin.setValue(int(defaults.metal_morph_open_radius))
-        if hasattr(self, "metal_use_wide_gradient_checkbox"):
-            self.metal_use_wide_gradient_checkbox.setChecked(bool(defaults.metal_use_wide_conductor_gradient))
-        if hasattr(self, "metal_wide_grad_radius_spin"):
-            self.metal_wide_grad_radius_spin.setValue(int(defaults.metal_wide_gradient_profile_radius_px))
-        if hasattr(self, "metal_wide_grad_conf_spin"):
-            self.metal_wide_grad_conf_spin.setValue(float(defaults.metal_wide_gradient_min_direction_confidence))
-        if hasattr(self, "metal_wide_grad_pair_len_spin"):
-            self.metal_wide_grad_pair_len_spin.setValue(float(defaults.metal_wide_gradient_min_pair_length_px))
-        if hasattr(self, "metal_wide_grad_parallel_spin"):
-            self.metal_wide_grad_parallel_spin.setValue(float(defaults.metal_wide_gradient_parallel_tolerance_deg))
-        if hasattr(self, "metal_wide_grad_gap_spin"):
-            self.metal_wide_grad_gap_spin.setValue(int(defaults.metal_wide_gradient_max_edge_gap_px))
-        if hasattr(self, "metal_wide_grad_overlap_spin"):
-            self.metal_wide_grad_overlap_spin.setValue(float(defaults.metal_wide_gradient_min_overlap_ratio))
         if hasattr(self, "metal_show_conductors_checkbox"):
             self.metal_show_conductors_checkbox.setChecked(bool(defaults.metal_display_show_conductors))
         if hasattr(self, "metal_show_rejected_checkbox"):

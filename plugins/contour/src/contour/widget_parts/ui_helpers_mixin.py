@@ -153,6 +153,9 @@ class WidgetUiHelpersMixin:
             self.preview_busy_progress.setRange(0, 100)
             self.preview_busy_progress.setValue(0)
             self.preview_busy_progress.setFormat("%p%")
+        if hasattr(self, "preview_busy_label"):
+            self.preview_busy_label.setText(self._busy_indicator_text())
+            self.preview_busy_label.setToolTip(f"{self._busy_indicator_text()} - 0%")
 
     def _advance_busy_progress(self) -> None:
         if self._preview_running_request_id is None:
@@ -169,7 +172,8 @@ class WidgetUiHelpersMixin:
         if hasattr(self, "preview_busy_progress"):
             self.preview_busy_progress.setValue(self._busy_progress_value)
         if hasattr(self, "preview_busy_label"):
-            self.preview_busy_label.setText(f"{self._busy_indicator_text()} — {self._busy_progress_value}%")
+            self.preview_busy_label.setText(self._busy_indicator_text())
+            self.preview_busy_label.setToolTip(f"{self._busy_indicator_text()} - {self._busy_progress_value}%")
 
     def _set_progress_status(self, key: str, **kwargs) -> None:
         self._progress_status_key = key

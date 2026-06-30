@@ -416,6 +416,7 @@ class PolygonExtractionWidget(
         self._work_simulation_total_points = 0
         self._work_simulation_original_dirty: bool | None = None
         self._work_simulation_original_reference_polygons: list[PolygonData] = []
+        self._show_source_while_filter_hotkey_held = False
 
         self._batch_processor = BatchProcessor(self)
         self._batch_processor.set_ui_language(self._ui_language)

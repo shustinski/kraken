@@ -1632,8 +1632,7 @@ def _run_structural_metal_recovery(
     if bool(getattr(contour_settings, "metal_display_show_mask", True)):
         debug_maps["metal_mask"] = mr.debug_images["metal_binary_mask"]
 
-    show_c = bool(getattr(contour_settings, "metal_display_show_conductors", True))
-    polygons = list(mr.accepted) if show_c else []
+    polygons = list(mr.accepted)
 
     overlays: dict[str, list[PolygonData]] = {"rejected": [], "suspicious": [], "border": []}
     for r in mr.rejected:

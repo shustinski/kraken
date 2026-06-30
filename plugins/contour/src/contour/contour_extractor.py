@@ -10,6 +10,7 @@ from .application.preview_cancellation import raise_if_preview_cancelled
 from .application.processing import ContourDebugCandidate, ContourExtractionSettings
 from .domain import PolygonData, compute_polygon_metrics, integer_points
 from .domain.polygon_ring import is_valid_closed_polygon_ring
+from .polygon_topology_repair import filled_polygon_iou, repair_ring_from_filled_region
 from .utils import ensure_binary_mask
 
 RETRIEVAL_MODE_MAP = {
@@ -539,6 +540,42 @@ def _adaptive_approximate_contour(contour: np.ndarray, epsilon: float, preserve_
     return contour[ordered_indices]
 
 
+def _coords_equal(first: float, second: float, *, tolerance: float = 0.5) -> bool:
+    return abs(float(first) - float(second)) <= tolerance
+
+
+def _compress_axis_aligned_vertex_runs(
+    points: list[tuple[float, float]],
+    *,
+    tolerance: float = 0.5,
+) -> list[tuple[float, float]]:
+    """Keep at most two consecutive vertices on the same axis-aligned line (same X or Y)."""
+    if len(points) < 4:
+        return list(points)
+    cleaned = list(points)
+    changed = True
+    while changed and len(cleaned) >= 4:
+        changed = False
+        total = len(cleaned)
+        for index in range(total):
+            prev_point = cleaned[(index - 1) % total]
+            current_point = cleaned[index]
+            next_point = cleaned[(index + 1) % total]
+            same_x = (
+                _coords_equal(prev_point[0], current_point[0], tolerance=tolerance)
+                and _coords_equal(current_point[0], next_point[0], tolerance=tolerance)
+            )
+            same_y = (
+                _coords_equal(prev_point[1], current_point[1], tolerance=tolerance)
+                and _coords_equal(current_point[1], next_point[1], tolerance=tolerance)
+            )
+            if same_x or same_y:
+                del cleaned[index]
+                changed = True
+                break
+    return cleaned
+
+
 def _dedupe_consecutive_polygon_vertices(
     points: list[tuple[float, float]], *, min_dist: float = 0.35
 ) -> list[tuple[float, float]]:
@@ -581,37 +618,72 @@ def _finalize_closed_polygon_points(
     _image_shape: tuple[int, int],
     config: ContourExtractionSettings,
 ) -> list[tuple[float, float]] | None:
-    """Dedupe, optional acute-vertex cull, then if the ring is invalid try stronger simplification *on the same raw OpenCV* contour."""
+    """Dedupe, optional acute-vertex cull; on invalid ring recover boundary from raster fill (no ε sweep)."""
     points = _dedupe_consecutive_polygon_vertices(integer_points(points))
     points = _remove_acute_polygon_vertices(points, config.min_polygon_angle)
     points = _dedupe_consecutive_polygon_vertices(points)
+    if config.object_type == "conductor" and str(getattr(config, "output_mode", "polygon")) != "box":
+        points = _compress_axis_aligned_vertex_runs(points)
+        points = _dedupe_consecutive_polygon_vertices(points)
     if config.object_type == "via" or config.output_mode == "box":
         return points if len(points) >= 3 else None
     if len(points) < 3:
         return None
     if len(points) > _TOPOLOGY_CHECK_MAX_VERTICES or is_valid_closed_polygon_ring(points):
         return points
-    e0 = _contour_epsilon_value(raw_contour, config)
-    if e0 <= 0.0:
-        mults: tuple[float, ...] = (0.0,)
-    else:
-        # Modest factors only: same raw contour as main path; huge ε collapses concave C-shapes to acute triangles.
-        mults = (1.0, 1.15, 1.3, 1.5, 1.7, 2.0, 2.4, 2.8, 3.2, 3.6, 4.0)
-    for m in mults:
-        eff = e0 * m if e0 > 0.0 else 0.0
-        apx = _adaptive_approximate_contour(raw_contour, eff, config.preserve_corners)
-        if apx is None or len(apx) < 3:
-            continue
-        cand = integer_points([(float(p[0][0]), float(p[0][1])) for p in apx])
-        cand = _dedupe_consecutive_polygon_vertices(cand)
-        cand = _remove_acute_polygon_vertices(cand, config.min_polygon_angle)
-        cand = _dedupe_consecutive_polygon_vertices(cand)
-        if len(cand) < 3 or not is_valid_closed_polygon_ring(cand):
-            continue
-        if not _meets_min_polygon_angle(cand, config.min_polygon_angle):
-            continue
-        return cand
+    repaired = _repair_invalid_ring_from_raster(points, raw_contour, _image_shape, config)
+    if repaired is not None:
+        return repaired
     return points
+
+
+def _repair_invalid_ring_from_raster(
+    points: list[tuple[float, float]],
+    raw_contour: np.ndarray,
+    image_shape: tuple[int, int],
+    config: ContourExtractionSettings,
+) -> list[tuple[float, float]] | None:
+    repaired = repair_ring_from_filled_region(
+        shape_hw=image_shape,
+        source_contour=raw_contour,
+        require_fill_iou=False,
+    )
+    if repaired is None:
+        repaired = repair_ring_from_filled_region(
+            shape_hw=image_shape,
+            points=points,
+            reference_points=points,
+            require_fill_iou=False,
+        )
+    if repaired is None:
+        return None
+    if config.epsilon > 0:
+        e0 = _contour_epsilon_value(np.asarray(repaired, dtype=np.float32).reshape(-1, 1, 2), config)
+        if e0 > 0:
+            apx = _adaptive_approximate_contour(
+                np.asarray(repaired, dtype=np.float32).reshape(-1, 1, 2),
+                e0,
+                config.preserve_corners,
+            )
+            if apx is not None and len(apx) >= 3:
+                simplified = integer_points([(float(p[0][0]), float(p[0][1])) for p in apx])
+                simplified = _dedupe_consecutive_polygon_vertices(simplified)
+                simplified = _remove_acute_polygon_vertices(simplified, config.min_polygon_angle)
+                simplified = _dedupe_consecutive_polygon_vertices(simplified)
+                if (
+                    len(simplified) >= 3
+                    and filled_polygon_iou(repaired, simplified, image_shape) >= 0.98
+                    and _meets_min_polygon_angle(simplified, config.min_polygon_angle)
+                ):
+                    repaired = simplified
+    cand = _dedupe_consecutive_polygon_vertices(integer_points(repaired))
+    cand = _remove_acute_polygon_vertices(cand, config.min_polygon_angle)
+    cand = _dedupe_consecutive_polygon_vertices(cand)
+    if len(cand) < 3 or not is_valid_closed_polygon_ring(cand):
+        return None
+    if not _meets_min_polygon_angle(cand, config.min_polygon_angle):
+        return None
+    return cand
 
 
 def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | None = None) -> list[PolygonData]:

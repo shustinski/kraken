@@ -1067,7 +1067,7 @@ PIPELINE_OPERATION_GROUPS: tuple[tuple[str, tuple[str, str], tuple[str, ...]], .
     (
         "contrast",
         ("Контраст и тон", "Contrast and tone"),
-        ("clahe", "histogram_equalization", "brightness_contrast", "gamma_correction", "sharpen"),
+        ("clahe", "histogram_equalization", "brightness", "contrast", "gamma_correction", "sharpen"),
     ),
     (
         "thresholding",
@@ -1165,6 +1165,26 @@ PIPELINE_OPERATION_HELP_TEXTS: dict[str, dict[str, tuple[str, str]]] = {
         "use": (
             "Используйте для грубой подстройки перед threshold.",
             "Use it for coarse correction before thresholding.",
+        ),
+    },
+    "brightness": {
+        "summary": (
+            "Линейно сдвигает яркость изображения без изменения множителя контраста.",
+            "Linearly shifts image brightness without changing the contrast multiplier.",
+        ),
+        "use": (
+            "Используйте, когда кадр нужно сделать светлее или темнее перед threshold.",
+            "Use when a frame needs to be brightened or darkened before thresholding.",
+        ),
+    },
+    "contrast": {
+        "summary": (
+            "Линейно усиливает или ослабляет различия яркостей без отдельного сдвига яркости.",
+            "Linearly increases or reduces tonal separation without a separate brightness shift.",
+        ),
+        "use": (
+            "Используйте, когда границы нужно сделать выразительнее без изменения базовой яркости.",
+            "Use when edges need stronger separation without changing the base brightness level.",
         ),
     },
     "gamma_correction": {

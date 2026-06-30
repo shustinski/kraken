@@ -365,10 +365,11 @@ class ContourExtractionSettings:
     metal_preset: str = "standard"
     metal_noise_suppression: int = 20
     metal_contrast_bias: float = 0.0
-    metal_segmentation_strategy: str = "auto"
+    metal_segmentation_strategy: str = "legacy_otsu"
     metal_gap_bridge_px: int = 2
     metal_speckle_removal_px: int = 0
     metal_contour_smooth_px: float = 0.0
+    metal_contour_close_px: int = 0
     metal_min_object_area: float = 30.0
     metal_min_trace_width_px: float = 8.0
     metal_max_trace_width_px: float | None = None
@@ -537,6 +538,7 @@ class ContourExtractionSettings:
             "metal_gap_bridge_px": self.metal_gap_bridge_px,
             "metal_speckle_removal_px": self.metal_speckle_removal_px,
             "metal_contour_smooth_px": self.metal_contour_smooth_px,
+            "metal_contour_close_px": self.metal_contour_close_px,
             "metal_min_object_area": self.metal_min_object_area,
             "metal_min_trace_width_px": self.metal_min_trace_width_px,
             "metal_max_trace_width_px": self.metal_max_trace_width_px,
@@ -771,13 +773,14 @@ class ContourExtractionSettings:
             metal_noise_suppression=max(0, min(100, int(payload.get("metal_noise_suppression", 20)))),
             metal_contrast_bias=max(-50.0, min(50.0, float(payload.get("metal_contrast_bias", 0.0)))),
             metal_segmentation_strategy=normalize_metal_segmentation_strategy(
-                payload.get("metal_segmentation_strategy", "auto")
+                payload.get("metal_segmentation_strategy", "legacy_otsu")
             ),
             metal_gap_bridge_px=max(0, int(payload.get("metal_gap_bridge_px", payload.get("metal_morph_close_radius", 2)) or 0)),
             metal_speckle_removal_px=max(
                 0, int(payload.get("metal_speckle_removal_px", payload.get("metal_morph_open_radius", 0)) or 0)
             ),
             metal_contour_smooth_px=max(0.0, float(payload.get("metal_contour_smooth_px", 0.0) or 0.0)),
+            metal_contour_close_px=max(0, int(payload.get("metal_contour_close_px", 0) or 0)),
             metal_min_object_area=max(0.0, float(payload.get("metal_min_object_area", 30.0))),
             metal_min_trace_width_px=max(0.5, float(payload.get("metal_min_trace_width_px", 8.0) or 8.0)),
             metal_max_trace_width_px=None

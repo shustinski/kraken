@@ -181,18 +181,35 @@ class WidgetProcessingMixin:
                 paths.append(path)
         return paths
 
-    def _set_image_list_current_path(self: Any, image_path: str | None, *, fallback_to_first: bool = True) -> None:
+    def _sync_workspace_selection_to_path(self: Any, image_path: str) -> None:
+        normalized = str(Path(image_path))
+        self._workspace._current_image_path = normalized
+        cached_state = getattr(self._workspace, "_state_cache", {}).get(normalized)
+        self._workspace._current_state = cached_state if cached_state is not None else None
+
+    def _set_image_list_current_path(self: Any, image_path: str | None, *, fallback_to_first: bool = True) -> bool:
         if image_path:
             row = self._image_path_index(image_path)
             if row is not None:
                 proxy_index = self._image_list_proxy.mapFromSource(self._image_list_model.index(row))
                 if proxy_index.isValid():
                     self.image_list.setCurrentIndex(proxy_index)
-                return
+                    selected_path = self._image_list_path_from_proxy_index(self.image_list.currentIndex())
+                    if str(Path(selected_path or "")) == str(Path(image_path)):
+                        self._sync_workspace_selection_to_path(image_path)
+                        return True
+                    return False
+                return False
         if fallback_to_first and self._image_list_proxy.rowCount() > 0:
             self.image_list.setCurrentIndex(self._image_list_proxy.index(0, 0))
+            selected_path = self._image_list_path_from_proxy_index(self.image_list.currentIndex())
+            if selected_path:
+                self._sync_workspace_selection_to_path(selected_path)
+                return True
+            return self.image_list.currentIndex().isValid()
         elif self._image_list_proxy.rowCount() <= 0:
             self._sync_current_state_views()
+        return False
 
     def _image_path_in_image_list(self: Any, image_path: str) -> bool:
         return self._image_path_index(image_path) is not None
@@ -461,7 +478,15 @@ class WidgetProcessingMixin:
 
         return self._try_leave_current_frame()
 
+    def _source_preview_active(self: Any) -> bool:
+        return bool(
+            getattr(self, "_show_source_while_middle_held", False)
+            or getattr(self, "_show_source_while_filter_hotkey_held", False)
+        )
+
     def _editor_display_cache_key(self: Any, image_path: str, state) -> tuple[str, str, str]:
+        if state is not None and self._source_preview_active() and state.source_image is not None:
+            return (str(Path(image_path)), "source-preview", "")
         if state is not None and state.preprocessed_image is not None:
             pipeline_key = json.dumps(
                 getattr(state, "pipeline_config", None) or {},
@@ -568,7 +593,14 @@ class WidgetProcessingMixin:
             return False
         return str(Path(sync_path)) == str(Path(current_path))
 
-    def _queue_editor_display_pixmap(self: Any, image_path: str, display_image: object, *, preserve_view: bool = False) -> None:
+    def _queue_editor_display_pixmap(
+        self: Any,
+        image_path: str,
+        display_image: object,
+        *,
+        cache_key: tuple[str, str, str],
+        preserve_view: bool = False,
+    ) -> None:
         if display_image is None:
             self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
             return
@@ -585,6 +617,9 @@ class WidgetProcessingMixin:
                 return
             if str(Path(path)) != str(Path(self._workspace.current_image_path or "")):
                 return
+            current_state = self._workspace.current_state
+            if current_state is not None and self._editor_display_cache_key(path, current_state) != cache_key:
+                return
             pixmap = QPixmap()
             if isinstance(qimage, QImage):
                 try:
@@ -595,9 +630,7 @@ class WidgetProcessingMixin:
                 self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
                 self._pending_editor_frame_apply = None
                 return
-            current_state = self._workspace.current_state
             if current_state is not None:
-                cache_key = self._editor_display_cache_key(path, current_state)
                 cache = getattr(self, "_editor_pixmap_cache", {})
                 cache[cache_key] = pixmap
                 while len(cache) > 48:
@@ -628,8 +661,30 @@ class WidgetProcessingMixin:
         if cached is not None and not cached.isNull():
             self.polygon_editor.set_image_pixmap(cached, preserve_view=preserve_view)
             return True
-        self._queue_editor_display_pixmap(image_path, display_image, preserve_view=preserve_view)
+        self._queue_editor_display_pixmap(
+            image_path,
+            display_image,
+            cache_key=cache_key,
+            preserve_view=preserve_view,
+        )
         return False
+
+    def _refresh_current_display_image_only(self: Any, *, preserve_view: bool = True) -> None:
+        current_state = self._workspace.current_state
+        image_path = self._workspace.current_image_path
+        if current_state is None or not image_path:
+            self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
+            self._last_editor_display_cache_key = None
+            return
+        display_image = self._display_image_for_current_state()
+        image_ready = self._apply_display_image_to_editor(
+            image_path,
+            display_image,
+            state=current_state,
+            preserve_view=preserve_view,
+        )
+        if image_ready:
+            self._last_editor_display_cache_key = self._editor_display_cache_key(image_path, current_state)
 
     def _apply_editor_vectors_for_frame(
         self: Any,
@@ -715,15 +770,26 @@ class WidgetProcessingMixin:
             self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
             self.polygon_editor.set_polygons([], emit_signal=False)
             self._editor_polygons_signature = None
+            self._last_editor_display_cache_key = None
             return
         display_image = self._display_image_for_current_state()
         polygons = list(current_state.polygons)
-        image_ready = self._apply_display_image_to_editor(
-            image_path,
-            display_image,
-            state=current_state,
-            preserve_view=preserve_view,
+        display_cache_key = self._editor_display_cache_key(image_path, current_state)
+        skip_display_refresh = bool(
+            preserve_view
+            and getattr(self, "_last_editor_display_cache_key", None) == display_cache_key
         )
+        if skip_display_refresh:
+            image_ready = True
+        else:
+            image_ready = self._apply_display_image_to_editor(
+                image_path,
+                display_image,
+                state=current_state,
+                preserve_view=preserve_view,
+            )
+            if image_ready:
+                self._last_editor_display_cache_key = display_cache_key
         self._pending_editor_frame_apply = None
         self._apply_editor_vectors_for_frame(
             image_path,
@@ -766,7 +832,7 @@ class WidgetProcessingMixin:
 
     def _display_image_for_current_state(self: Any):
         current_state = self._workspace.current_state
-        if self._show_source_while_middle_held and current_state is not None and current_state.source_image is not None:
+        if self._source_preview_active() and current_state is not None and current_state.source_image is not None:
             return current_state.source_image
         return self._workspace.current_display_image()
 
@@ -1252,8 +1318,8 @@ class WidgetProcessingMixin:
             )
         )
         if hasattr(self, "preview_busy_label"):
-            suffix = f" — {self._busy_progress_value}%" if active and self._busy_progress_value > 0 else ""
-            self.preview_busy_label.setText(f"{self._busy_indicator_text()}{suffix}")
+            self.preview_busy_label.setText(self._busy_indicator_text())
+            self.preview_busy_label.setToolTip(f"{self._busy_indicator_text()} - {self._busy_progress_value}%")
             self.preview_busy_label.setVisible(active)
         if hasattr(self, "preview_busy_progress"):
             if active:

@@ -6,7 +6,11 @@ import cv2
 import numpy as np
 
 from contour.application.processing import ContourExtractionSettings
-from contour.contour_extractor import _finalize_closed_polygon_points, extract_polygons
+from contour.contour_extractor import (
+    _compress_axis_aligned_vertex_runs,
+    _finalize_closed_polygon_points,
+    extract_polygons,
+)
 from contour.domain.polygon_ring import is_valid_closed_polygon_ring
 
 
@@ -310,6 +314,46 @@ class ContourExtractorFilterTests(unittest.TestCase):
                 for index in range(len(polygon_points))
             )
         )
+
+
+class AxisAlignedVertexCompressionTests(unittest.TestCase):
+    def test_collapses_more_than_two_vertices_on_same_axis(self) -> None:
+        horizontal_run = [
+            (0.0, 10.0),
+            (5.0, 10.0),
+            (10.0, 10.0),
+            (15.0, 10.0),
+            (15.0, 0.0),
+            (0.0, 0.0),
+        ]
+        compressed = _compress_axis_aligned_vertex_runs(horizontal_run)
+        ys_on_top = [point[1] for point in compressed if abs(point[1] - 10.0) < 0.5]
+        self.assertEqual(len(ys_on_top), 2)
+        self.assertLessEqual(len(compressed), 5)
+
+    def test_finalize_limits_axis_runs_for_conductors(self) -> None:
+        raw = np.array(
+            [[[0, 0]], [[10, 0]], [[20, 0]], [[30, 0]], [[30, 10]], [[0, 10]]],
+            dtype=np.int32,
+        )
+        points = [(float(x), float(y)) for x, y in raw.reshape(-1, 2)]
+        finalized = _finalize_closed_polygon_points(
+            points,
+            raw,
+            (12, 32),
+            ContourExtractionSettings(object_type="conductor", output_mode="polygon", min_polygon_angle=0.0),
+        )
+        assert finalized is not None
+        same_y = 0
+        max_run = 0
+        for index, point in enumerate(finalized):
+            prev_point = finalized[index - 1]
+            if abs(point[1] - prev_point[1]) < 0.5:
+                same_y += 1
+                max_run = max(max_run, same_y + 1)
+            else:
+                same_y = 0
+        self.assertLessEqual(max_run, 2)
 
 
 if __name__ == "__main__":

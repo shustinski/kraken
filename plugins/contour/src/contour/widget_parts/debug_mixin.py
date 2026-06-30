@@ -1,9 +1,42 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING, cast
+
 from ._imports import *  # noqa: F403
 
 
 class WidgetDebugMixin:
+    if TYPE_CHECKING:
+        _workspace: WorkspaceSession
+        _show_source_while_middle_held: bool
+        _show_source_while_filter_hotkey_held: bool
+
+        control_tabs: QTabWidget
+        gradient_overlay_checkbox: QCheckBox
+        gradient_overlay_mode_combo: QComboBox
+        gradient_overlay_opacity_spin: QDoubleSpinBox
+        metal_debug_visual_combo: QComboBox
+        metal_overlay_opacity_spin: QDoubleSpinBox
+        metal_show_mask_checkbox: QCheckBox
+        pipeline_tab: QWidget
+        polygon_editor: Any
+        recognition_mode_combo: QComboBox
+
+        def _append_log(self, message: str) -> None: ...
+        def _refresh_current_display_image_only(self, *, preserve_view: bool = True) -> None: ...
+        def _current_contour_settings(self) -> ContourExtractionSettings: ...
+        def _sync_current_state_views(
+            self,
+            *,
+            preserve_view: bool = False,
+            sync_neighbors: bool = True,
+        ) -> None: ...
+        def _tr(self, key: str, default: str = "", **kwargs: object) -> str: ...
+
+    def _debug_parent_widget(self) -> QWidget:
+        return cast(QWidget, self)
+
     def _on_via_debug_requested(self, polygon: PolygonData) -> None:
         current_state = self._workspace.current_state
         candidates = list(current_state.debug_candidates) if current_state is not None else []
@@ -11,12 +44,12 @@ class WidgetDebugMixin:
         title = self._tr("debug.via_title" if is_via_like else "debug.polygon_title")
         if not candidates:
             message = self._tr("debug.no_current_frame_data")
-            QMessageBox.information(self, title, message)
+            QMessageBox.information(self._debug_parent_widget(), title, message)
             return
         candidate = self._best_debug_candidate_for_polygon(polygon, candidates)
         if candidate is None:
             message = self._tr("debug.no_source_candidate")
-            QMessageBox.information(self, title, message)
+            QMessageBox.information(self._debug_parent_widget(), title, message)
             return
         source = self._debug_candidate_source(candidate)
         reason = str(getattr(candidate, "reason", "") or "")
@@ -53,7 +86,7 @@ class WidgetDebugMixin:
         ]
         message = "\n".join(lines)
         self._append_log(message.replace("\n", " | "))
-        QMessageBox.information(self, title, message)
+        QMessageBox.information(self._debug_parent_widget(), title, message)
 
     def _on_metal_overlay_detail_requested(self, layer_key: str, reason: str) -> None:
         titles = {
@@ -70,14 +103,21 @@ class WidgetDebugMixin:
         else:
             body = f"{self._tr('debug.field_reason')}:\n{r}"
         self._append_log(f"{title}: {r or body}")
-        QMessageBox.information(self, title, body)
+        QMessageBox.information(self._debug_parent_widget(), title, body)
 
     def _on_middle_preview_hold_changed(self, active: bool) -> None:
         should_show_source = bool(active and self._is_filters_tab_active())
         if self._show_source_while_middle_held == should_show_source:
             return
         self._show_source_while_middle_held = should_show_source
-        self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
+        self._refresh_current_display_image_only(preserve_view=True)
+
+    def _on_filter_preview_hold_changed(self, active: bool) -> None:
+        should_show_source = bool(active)
+        if self._show_source_while_filter_hotkey_held == should_show_source:
+            return
+        self._show_source_while_filter_hotkey_held = should_show_source
+        self._refresh_current_display_image_only(preserve_view=True)
 
     def _is_filters_tab_active(self) -> bool:
         if not hasattr(self, "control_tabs") or not hasattr(self, "pipeline_tab"):
@@ -90,7 +130,7 @@ class WidgetDebugMixin:
         if self._is_filters_tab_active():
             return
         self._show_source_while_middle_held = False
-        self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
+        self._refresh_current_display_image_only(preserve_view=True)
 
     def _show_gradient_debug_window(self) -> None:
         title = self._tr("debug.gradient_title")
@@ -103,17 +143,17 @@ class WidgetDebugMixin:
                 maps = self._compute_gradient_debug_maps_on_demand()
             except Exception as exc:  # pragma: no cover - defensive UI path
                 QMessageBox.warning(
-                    self,
+                    self._debug_parent_widget(),
                     title,
                     self._tr("debug.gradient_build_failed", error=exc),
                 )
                 return
         if not maps:
             message = self._tr("debug.gradient_no_maps")
-            QMessageBox.information(self, title, message)
+            QMessageBox.information(self._debug_parent_widget(), title, message)
             return
 
-        dialog = QDialog(self)
+        dialog = QDialog(self._debug_parent_widget())
         dialog.setWindowTitle(title)
         dialog.resize(1100, 780)
         layout = QVBoxLayout(dialog)
@@ -218,7 +258,7 @@ class WidgetDebugMixin:
         preprocessed = current_state.preprocessed_image
         if preprocessed is None:
             preprocessed = current_state.source_image
-        maps = build_detection_debug_maps(current_state.source_image, preprocessed, settings)
+        maps: dict[str, object] = dict(build_detection_debug_maps(current_state.source_image, preprocessed, settings))
         try:
             current_state.debug_gradient_maps = dict(maps)
         except Exception:  # pragma: no cover - defensive
@@ -425,7 +465,7 @@ class WidgetDebugMixin:
             return None
         return QPixmap.fromImage(qimage)
 
-    def _best_debug_candidate_for_polygon(self, polygon: PolygonData, candidates: list[object]) -> object | None:
+    def _best_debug_candidate_for_polygon(self, polygon: PolygonData, candidates: Sequence[object]) -> object | None:
         polygon_rect = self._polygon_rect(polygon)
         if polygon_rect.isNull() or not candidates:
             return None

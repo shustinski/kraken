@@ -104,13 +104,12 @@ class WidgetSmokeTests(unittest.TestCase):
             widget.close()
             widget.deleteLater()
 
-    def test_conductor_display_defaults_and_advanced_wide_gradient(self) -> None:
+    def test_conductor_display_defaults(self) -> None:
         widget = PolygonExtractionWidget()
         try:
             self.assertTrue(widget.metal_show_rejected_checkbox.isChecked())
             self.assertFalse(widget.metal_show_border_checkbox.isChecked())
-            self.assertFalse(widget.metal_basic_group.isAncestorOf(widget.metal_use_wide_gradient_checkbox))
-            self.assertTrue(widget.metal_advanced_group.isAncestorOf(widget.metal_use_wide_gradient_checkbox))
+            self.assertTrue(widget.metal_hierarchy_combo.currentData() == "full")
         finally:
             widget.close()
             widget.deleteLater()

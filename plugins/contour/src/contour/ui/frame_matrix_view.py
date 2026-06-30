@@ -70,8 +70,8 @@ class FrameMatrixGraphicsView(QGraphicsView):
             int,
             tuple[QGraphicsRectItem, QGraphicsRectItem, QGraphicsRectItem, QGraphicsPixmapItem, QGraphicsSimpleTextItem],
         ] = {}
-        self._icon_size = QSize(64, 48)
-        self._grid_size = QSize(64, 48)
+        self._icon_size = QSize(64, 64)
+        self._grid_size = QSize(64, 64)
         self._spacing = 0
         self._columns = 1
         self._current_row = -1

@@ -716,6 +716,79 @@ class SampleFastCutter:
 
         return image,label
 
+    @staticmethod
+    def _centered_bounds(
+        *,
+        center_x: float,
+        center_y: float,
+        width: int,
+        height: int,
+        source_width: int,
+        source_height: int,
+    ) -> tuple[int, int, int, int]:
+        left = int(round(float(center_x) - (int(width) / 2.0)))
+        top = int(round(float(center_y) - (int(height) / 2.0)))
+        if source_width >= width:
+            left = min(max(0, left), source_width - width)
+        else:
+            left = 0
+        if source_height >= height:
+            top = min(max(0, top), source_height - height)
+        else:
+            top = 0
+        return left, top, left + int(width), top + int(height)
+
+    def get_sized_item(
+        self,
+        item: int,
+        *,
+        size_xy: tuple[int, int],
+    ) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]]:
+        """Extract a physical source crop with a batch-selected output size."""
+
+        width, height = (int(value) for value in size_xy)
+        if width <= 0 or height <= 0:
+            raise ValueError('requested patch size must be positive')
+        _location, transform_variant, _scale_variant, augmentation_variant = self._decode_part_index(item)
+        geometry = self.resolve_part_geometry(item)
+        base_left, base_top, base_right, base_bottom = (
+            int(value) for value in geometry['coords_px']
+        )
+        image_source = self.resolve_transformed_image_matrix(item)
+        label_source = (
+            self.label_matrix
+            if transform_variant == 'identity'
+            else _apply_transform_variant(self.label_matrix, transform_variant)
+        )
+        source_height, source_width = int(image_source.shape[-2]), int(image_source.shape[-1])
+        bounds = self._centered_bounds(
+            center_x=(base_left + base_right) / 2.0,
+            center_y=(base_top + base_bottom) / 2.0,
+            width=width,
+            height=height,
+            source_width=source_width,
+            source_height=source_height,
+        )
+        left, top, right, bottom = bounds
+        clipped_right = min(source_width, right)
+        clipped_bottom = min(source_height, bottom)
+        image = image_source[:, top:clipped_bottom, left:clipped_right].copy()
+        label = label_source[:, top:clipped_bottom, left:clipped_right].copy()
+        if image.shape[-2:] != (height, width):
+            image = self._resize_patch_tensor(
+                image,
+                (width, height),
+                resample=Image.Resampling.BILINEAR,
+            )
+            label = self._resize_patch_tensor(
+                label,
+                (width, height),
+                resample=Image.Resampling.NEAREST,
+            )
+        if self._additional_augmentation and augmentation_variant == 1:
+            image = self._apply_additional_augmentation(image)
+        return image, label, bounds
+
     def _apply_additional_augmentation(self, image: np.ndarray) -> np.ndarray:
         # Lightweight photometric augmentation; labels remain unchanged.
         img = image.copy()

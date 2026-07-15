@@ -3,13 +3,15 @@ import threading
 import os
 import sys
 import hashlib
+import math
+import random
 import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
 import torch
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data import DataLoader, Dataset, RandomSampler, Sampler, SequentialSampler, Subset
 from PIL import Image
 
 from neuralimage.lib.data_interfaces import (
@@ -28,7 +30,12 @@ from neuralimage.lib.func import get_input_channels
 from neuralimage.lib.message_bus import AbstractMessageBus
 from neuralimage.model.NeuralNetwork import create_model, model_supports_init_kwarg
 from neuralimage.model.NeuralNetwork.context_utils import normalize_size_pair
-from neuralimage.model.NeuralNetwork.dataset import CustomDataset, NoCutDataset, SyntheticDefectDataset
+from neuralimage.model.NeuralNetwork.dataset import (
+    CustomDataset,
+    NoCutDataset,
+    PatchSampleRequest,
+    SyntheticDefectDataset,
+)
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact
 from neuralimage.model.NeuralNetwork.model_train_and_recognition import ModelRecognizer, ModelTrainer
 from neuralimage.model.image_workers import ConvertCifThread, CutImageThread
@@ -138,8 +145,9 @@ class IndexedDataset(Dataset):
         return int(len(self._base_dataset))
 
     def __getitem__(self, index: int):
+        resolved_index = int(index.index) if isinstance(index, PatchSampleRequest) else int(index)
         image, label = self._base_dataset[index]
-        return image, label, int(index)
+        return image, label, resolved_index
 
     def describe_sample(self, index: int) -> str:
         describe_fn = getattr(self._base_dataset, 'describe_sample', None)
@@ -151,6 +159,14 @@ class IndexedDataset(Dataset):
         set_epoch_fn = getattr(self._base_dataset, 'set_epoch', None)
         if callable(set_epoch_fn):
             set_epoch_fn()
+
+    def frame_key(self, index: int) -> str:
+        resolver = getattr(self._base_dataset, 'frame_key', None)
+        return str(resolver(int(index))) if callable(resolver) else self.describe_sample(int(index))
+
+    def sample_key(self, index: int) -> str:
+        resolver = getattr(self._base_dataset, 'sample_key', None)
+        return str(resolver(int(index))) if callable(resolver) else self.describe_sample(int(index))
 
 
 class CompositeDataset(Dataset):
@@ -168,11 +184,18 @@ class CompositeDataset(Dataset):
         return self._total_length
 
     def __getitem__(self, index: int):
+        requested_size: tuple[int, int] | None = None
+        if isinstance(index, PatchSampleRequest):
+            requested_size = tuple(index.size_xy)
+            index = int(index.index)
         if index < 0 or index >= self._total_length:
             raise IndexError('dataset index out of range')
         for dataset, offset, length in zip(self._datasets, self._offsets, self._lengths):
             if index < offset + length:
-                return dataset[index - offset]
+                local_index = int(index - offset)
+                if requested_size is not None and isinstance(dataset, (NoCutDataset, SyntheticDefectDataset)):
+                    return dataset[PatchSampleRequest(local_index, requested_size)]
+                return dataset[local_index]
         raise IndexError('dataset index out of range')
 
     def describe_sample(self, index: int) -> str:
@@ -193,79 +216,177 @@ class CompositeDataset(Dataset):
             if callable(set_epoch_fn):
                 set_epoch_fn()
 
+    def _resolve_dataset_index(self, index: int) -> tuple[Dataset, int, int]:
+        if index < 0 or index >= self._total_length:
+            raise IndexError('dataset index out of range')
+        for dataset_number, (dataset, offset, length) in enumerate(zip(self._datasets, self._offsets, self._lengths)):
+            if index < offset + length:
+                return dataset, int(index - offset), int(dataset_number)
+        raise IndexError('dataset index out of range')
 
-class LossAwareSampler(Sampler[int]):
-    MULTINOMIAL_MAX_CATEGORIES = 1 << 24
+    def frame_key(self, index: int) -> str:
+        dataset, local_index, dataset_number = self._resolve_dataset_index(int(index))
+        resolver = getattr(dataset, 'frame_key', None)
+        value = resolver(local_index) if callable(resolver) else self.describe_sample(int(index))
+        return f'{dataset_number}::{value}'
 
-    def __init__(self, size: int, strength: float = 2.0, ema_alpha: float = 0.2, replacement: bool = True):
-        self.size = max(0, int(size))
-        self.strength = max(0.0, float(strength))
-        self.ema_alpha = float(min(max(ema_alpha, 0.0), 1.0))
-        self.replacement = bool(replacement)
-        self._difficulty = torch.ones(self.size, dtype=torch.float32)
-        self._weights = torch.ones(self.size, dtype=torch.float32)
-        self._eps = 1e-8
+    def sample_key(self, index: int) -> str:
+        dataset, local_index, dataset_number = self._resolve_dataset_index(int(index))
+        resolver = getattr(dataset, 'sample_key', None)
+        value = resolver(local_index) if callable(resolver) else self.describe_sample(int(index))
+        return f'{dataset_number}::{value}'
+
+
+class HardFrameSampler(Sampler[int]):
+    """Repeat every patch of frames whose RMS loss is above population sigma."""
+
+    def __init__(self, dataset: Dataset, *, shuffle: bool = True) -> None:
+        self.dataset = dataset
+        self.size = max(0, int(len(dataset)))
+        self.shuffle = bool(shuffle)
+        self._hard_frame_keys: set[str] = set()
+        self._epoch_losses: dict[str, tuple[str, float]] = {}
+        self.last_frame_losses: dict[str, float] = {}
+        self.last_sigma: float = 0.0
 
     def __iter__(self):
-        if self.size <= 0:
-            return iter([])
-        if self.size > self.MULTINOMIAL_MAX_CATEGORIES:
-            # torch.multinomial cannot handle category counts above 2^24.
-            if self.replacement:
-                indices = torch.randint(0, self.size, (self.size,), dtype=torch.long)
-            else:
-                indices = torch.randperm(self.size, dtype=torch.long)
-            return iter(indices.tolist())
-        indices = torch.multinomial(self._weights, self.size, replacement=self.replacement)
-        return iter(indices.tolist())
+        base_indices = list(range(self.size))
+        if self.shuffle:
+            random.shuffle(base_indices)
+        extra_indices = [
+            index for index in range(self.size)
+            if self._frame_key(index) in self._hard_frame_keys
+        ]
+        if self.shuffle:
+            random.shuffle(extra_indices)
+        return iter(base_indices + extra_indices)
 
     def __len__(self) -> int:
-        return self.size
+        return self.size + sum(
+            1 for index in range(self.size)
+            if self._frame_key(index) in self._hard_frame_keys
+        )
 
     def resize(self, size: int, *, reset: bool = False) -> None:
-        resolved_size = max(0, int(size))
-        if resolved_size == self.size and not reset:
-            return
+        self.size = max(0, int(size))
+        if reset:
+            self._hard_frame_keys.clear()
 
-        self.size = resolved_size
-        if reset or resolved_size <= 0:
-            self._difficulty = torch.ones(self.size, dtype=torch.float32)
-            self._weights = torch.ones(self.size, dtype=torch.float32)
-            return
+    def start_epoch(self) -> None:
+        self._epoch_losses.clear()
 
-        new_difficulty = torch.ones(self.size, dtype=torch.float32)
-        new_weights = torch.ones(self.size, dtype=torch.float32)
-        shared = min(len(self._difficulty), self.size)
-        if shared > 0:
-            new_difficulty[:shared] = self._difficulty[:shared]
-            new_weights[:shared] = self._weights[:shared]
-        self._difficulty = new_difficulty
-        self._weights = new_weights
+    def _frame_key(self, index: int) -> str:
+        resolver = getattr(self.dataset, 'frame_key', None)
+        return str(resolver(int(index))) if callable(resolver) else str(int(index))
+
+    def _sample_key(self, index: int) -> str:
+        resolver = getattr(self.dataset, 'sample_key', None)
+        return str(resolver(int(index))) if callable(resolver) else str(int(index))
 
     def update_batch_losses(self, sample_indices: torch.Tensor, sample_losses: torch.Tensor) -> None:
-        if self.size <= 0:
-            return
-        if sample_indices.numel() == 0 or sample_losses.numel() == 0:
-            return
+        indices = sample_indices.detach().to(device='cpu', dtype=torch.long).flatten().tolist()
+        losses = sample_losses.detach().to(device='cpu', dtype=torch.float64).flatten().tolist()
+        for index, loss in zip(indices, losses):
+            if index < 0 or index >= self.size or not math.isfinite(float(loss)):
+                continue
+            sample_key = self._sample_key(int(index))
+            if sample_key in self._epoch_losses:
+                continue
+            self._epoch_losses[sample_key] = (self._frame_key(int(index)), float(loss))
 
-        idx = sample_indices.to(dtype=torch.long).flatten()
-        losses = sample_losses.to(dtype=torch.float32).flatten()
-        valid_mask = (idx >= 0) & (idx < self.size)
-        if not bool(valid_mask.any()):
-            return
+    def finalize_epoch(self) -> set[str]:
+        squared_by_frame: dict[str, list[float]] = {}
+        for frame_key, loss in self._epoch_losses.values():
+            squared_by_frame.setdefault(frame_key, []).append(float(loss) ** 2)
+        frame_losses = {
+            frame_key: math.sqrt(sum(values) / len(values))
+            for frame_key, values in squared_by_frame.items()
+            if values
+        }
+        self.last_frame_losses = frame_losses
+        if not frame_losses:
+            self.last_sigma = 0.0
+            self._hard_frame_keys.clear()
+            return set()
+        values = list(frame_losses.values())
+        mean_value = sum(values) / len(values)
+        sigma = math.sqrt(sum((value - mean_value) ** 2 for value in values) / len(values))
+        self.last_sigma = float(sigma)
+        self._hard_frame_keys = {
+            frame_key for frame_key, value in frame_losses.items()
+            if value > sigma
+        }
+        return set(self._hard_frame_keys)
 
-        idx = idx[valid_mask]
-        losses = losses[valid_mask]
-        batch_mean = float(losses.mean().item())
-        if batch_mean <= self._eps:
-            normalized = torch.ones_like(losses)
-        else:
-            normalized = losses / (batch_mean + self._eps)
+    def state_dict(self) -> dict[str, object]:
+        return {
+            'size': self.size,
+            'hard_frame_keys': sorted(self._hard_frame_keys),
+            'epoch_losses': dict(self._epoch_losses),
+            'last_frame_losses': dict(self.last_frame_losses),
+            'last_sigma': float(self.last_sigma),
+        }
 
-        old_scores = self._difficulty[idx]
-        updated_scores = old_scores * (1.0 - self.ema_alpha) + normalized * self.ema_alpha
-        self._difficulty[idx] = updated_scores
-        self._weights[idx] = 1.0 + self.strength * torch.clamp(updated_scores - 1.0, min=0.0)
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        self.size = max(0, int(state.get('size', self.size)))
+        self._hard_frame_keys = {str(value) for value in state.get('hard_frame_keys', ())}
+        raw_epoch_losses = state.get('epoch_losses', {})
+        self._epoch_losses = {
+            str(sample_key): (str(value[0]), float(value[1]))
+            for sample_key, value in raw_epoch_losses.items()
+            if isinstance(value, (tuple, list)) and len(value) == 2
+        } if isinstance(raw_epoch_losses, dict) else {}
+        raw_frame_losses = state.get('last_frame_losses', {})
+        self.last_frame_losses = {
+            str(frame_key): float(value)
+            for frame_key, value in raw_frame_losses.items()
+        } if isinstance(raw_frame_losses, dict) else {}
+        self.last_sigma = float(state.get('last_sigma', 0.0))
+
+
+class RandomPatchBatchSampler(Sampler[list[PatchSampleRequest]]):
+    def __init__(
+        self,
+        sampler: Sampler[int],
+        *,
+        batch_size: int,
+        min_size: tuple[int, int],
+        max_size: tuple[int, int],
+        drop_last: bool = False,
+    ) -> None:
+        self.sampler = sampler
+        self.batch_size = max(1, int(batch_size))
+        self.drop_last = bool(drop_last)
+        self._widths = self._aligned_values(int(min_size[0]), int(max_size[0]))
+        self._heights = self._aligned_values(int(min_size[1]), int(max_size[1]))
+
+    @staticmethod
+    def _aligned_values(lower: int, upper: int) -> tuple[int, ...]:
+        first = int(math.ceil(int(lower) / 32.0) * 32)
+        values = tuple(range(first, int(upper) + 1, 32))
+        if not values:
+            raise ValueError('random patch range must contain a multiple of 32')
+        return values
+
+    def __iter__(self):
+        batch: list[int] = []
+        for index in self.sampler:
+            batch.append(int(index))
+            if len(batch) >= self.batch_size:
+                yield self._requests(batch)
+                batch = []
+        if batch and not self.drop_last:
+            yield self._requests(batch)
+
+    def _requests(self, indices: list[int]) -> list[PatchSampleRequest]:
+        size = (random.choice(self._widths), random.choice(self._heights))
+        return [PatchSampleRequest(index=index, size_xy=size) for index in indices]
+
+    def __len__(self) -> int:
+        size = len(self.sampler)
+        if self.drop_last:
+            return size // self.batch_size
+        return math.ceil(size / self.batch_size)
 
 
 class GeneralNeuralHandler:
@@ -293,10 +414,13 @@ class GeneralNeuralHandler:
 
         self.current_thread: threading.Thread | None = None
         self._need_stop = False
+        self._need_pause = False
         self._training_failed = False
         self._hard_mining_active = False
         self.train_loader = None
         self.val_loader = None
+        self.control_loader = None
+        self._train_control_dataset = None
 
     @staticmethod
     def _release_torch_memory() -> None:
@@ -608,6 +732,23 @@ class GeneralNeuralHandler:
             ),
             pcb_defects=build_pcb_defect_parameters(None),
         )
+        evaluation_settings = replace(
+            training_without_tech_aug,
+            shuffle=False,
+            generation=replace(
+                training_without_tech_aug.generation,
+                vertical_rotation=False,
+                horizontal_rotation=False,
+                flip_x=False,
+                flip_y=False,
+                additional_augmentation=False,
+                random_crop=False,
+                scale_augmentation=False,
+            ),
+            cutout=replace(training_without_tech_aug.cutout, enabled=False),
+            random_artifacts=replace(training_without_tech_aug.random_artifacts, enabled=False),
+            mixup=replace(training_without_tech_aug.mixup, enabled=False),
+        )
         synthetic_generator = build_synthetic_defect_generator_parameters(
             getattr(self.tranining_parameters, 'synthetic_defect_generator', None)
         )
@@ -640,11 +781,33 @@ class GeneralNeuralHandler:
             val_dataset = (
                 NoCutDataset(
                     val_samples,
-                    training_without_tech_aug,
+                    evaluation_settings,
                     apply_train_only_transforms=False,
                 )
                 if val_samples
                 else None
+            )
+
+        self._train_control_dataset = None
+        if bool(getattr(self.tranining_parameters.early_stopping, 'enabled', False)) and not val_samples:
+            if self.tranining_parameters.cut_mode == SampleCutMode.disk:
+                self._train_control_dataset = CustomDataset(
+                    train_samples,
+                    self.tranining_parameters.generation.channels,
+                    pcb_defects=None,
+                    tech_aug=None,
+                    apply_train_only_transforms=False,
+                )
+            else:
+                self._train_control_dataset = NoCutDataset(
+                    train_samples,
+                    evaluation_settings,
+                    apply_train_only_transforms=False,
+                )
+            self.message_bus.publish(
+                'logging',
+                'Early stopping without validation uses a fixed train-control set. '
+                'This mode cannot objectively determine overfitting.',
             )
 
         if (
@@ -729,36 +892,45 @@ class GeneralNeuralHandler:
             val_loader_kwargs['prefetch_factor'] = 2
 
         hard_mining = self.tranining_parameters.hard_mining
-        train_dataset_size = len(train_dataset)
         hard_mining_enabled = bool(hard_mining.enabled)
-        if hard_mining_enabled and train_dataset_size > LossAwareSampler.MULTINOMIAL_MAX_CATEGORIES:
-            hard_mining_enabled = False
-            self.message_bus.publish(
-                'logging',
-                (
-                    'Hard mining отключен: размер train dataset '
-                    f'({train_dataset_size}) превышает лимит torch.multinomial '
-                    f'({LossAwareSampler.MULTINOMIAL_MAX_CATEGORIES}).'
-                ),
-            )
         self._hard_mining_active = hard_mining_enabled
         if hard_mining_enabled:
             train_dataset = IndexedDataset(train_dataset)
-            train_loader_kwargs['sampler'] = LossAwareSampler(
-                size=len(train_dataset),
-                strength=hard_mining.strength,
-                ema_alpha=hard_mining.ema_alpha,
-            )
+            train_loader_kwargs['sampler'] = HardFrameSampler(train_dataset, shuffle=bool(shuffle))
             train_loader_kwargs['shuffle'] = False
             self.message_bus.publish(
                 'logging',
-                (
-                    f'Hard mining включен: strength={float(hard_mining.strength):.2f}, '
-                    f'ema_alpha={float(hard_mining.ema_alpha):.2f}.'
-                ),
+                'Hard-frame sampling enabled: frames with RMS loss above population sigma '
+                'will be repeated once in the next epoch.',
             )
         else:
             train_loader_kwargs['shuffle'] = shuffle
+        random_patch_size = getattr(self.tranining_parameters, 'random_patch_size', None)
+        random_patch_enabled = bool(
+            random_patch_size is not None
+            and getattr(random_patch_size, 'enabled', False)
+            and self.tranining_parameters.cut_mode == SampleCutMode.online
+        )
+        if random_patch_enabled:
+            base_sampler = train_loader_kwargs.pop('sampler', None)
+            if base_sampler is None:
+                base_sampler = RandomSampler(train_dataset) if shuffle else SequentialSampler(train_dataset)
+            train_loader_kwargs.pop('shuffle', None)
+            train_loader_kwargs.pop('batch_size', None)
+            train_loader_kwargs['batch_sampler'] = RandomPatchBatchSampler(
+                base_sampler,
+                batch_size=self.tranining_parameters.batch_size,
+                min_size=tuple(random_patch_size.min_size),
+                max_size=tuple(random_patch_size.max_size),
+            )
+            self.message_bus.publish(
+                'logging',
+                (
+                    'Random physical patch size enabled for online cutting: '
+                    f'min={tuple(random_patch_size.min_size)}, max={tuple(random_patch_size.max_size)}, '
+                    'alignment=32, one size per batch.'
+                ),
+            )
         if val_dataset is not None:
             val_dataset = IndexedDataset(val_dataset)
         try:
@@ -774,21 +946,22 @@ class GeneralNeuralHandler:
                 if val_dataset
                 else None
             )
+            self.control_loader = self._create_train_control_loader()
         except Exception as error:
             self.message_bus.publish(
                 'logging',
                 f'Ошибка DataLoader (workers={workers}, pin_memory={pin_memory}): {error}. '
                 f'Используется безопасный fallback workers=0.',
             )
-            fallback_train_kwargs = {
-                'batch_size': self.tranining_parameters.batch_size,
-                'num_workers': 0,
-                'pin_memory': False,
-            }
-            if 'sampler' in train_loader_kwargs:
+            fallback_train_kwargs = {'num_workers': 0, 'pin_memory': False}
+            if 'batch_sampler' in train_loader_kwargs:
+                fallback_train_kwargs['batch_sampler'] = train_loader_kwargs['batch_sampler']
+            elif 'sampler' in train_loader_kwargs:
+                fallback_train_kwargs['batch_size'] = self.tranining_parameters.batch_size
                 fallback_train_kwargs['sampler'] = train_loader_kwargs['sampler']
                 fallback_train_kwargs['shuffle'] = False
             else:
+                fallback_train_kwargs['batch_size'] = self.tranining_parameters.batch_size
                 fallback_train_kwargs['shuffle'] = shuffle
             self.train_loader = DataLoader(train_dataset, **fallback_train_kwargs)
             self.val_loader = (
@@ -802,6 +975,30 @@ class GeneralNeuralHandler:
                 if val_dataset
                 else None
             )
+            self.control_loader = self._create_train_control_loader()
+
+    def _create_train_control_loader(self):
+        dataset = getattr(self, '_train_control_dataset', None)
+        if dataset is None:
+            return None
+        train_size = int(len(dataset))
+        if train_size <= 0:
+            return None
+        control_size = min(train_size, 1024, max(32, math.ceil(0.05 * train_size)))
+        generator = torch.Generator().manual_seed(_VALIDATION_SPLIT_SEED)
+        indices = torch.randperm(train_size, generator=generator)[:control_size].tolist()
+        subset = Subset(dataset, [int(index) for index in indices])
+        self.message_bus.publish(
+            'logging',
+            f'Fixed train-control set created: seed={_VALIDATION_SPLIT_SEED}, size={control_size}/{train_size}.',
+        )
+        return DataLoader(
+            subset,
+            batch_size=self.tranining_parameters.batch_size,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=bool(torch.cuda.is_available()),
+        )
 
     def _resolve_dataloader_workers(self) -> int:
         if _is_debugger_attached():
@@ -918,7 +1115,11 @@ class GeneralNeuralHandler:
         return model_name
 
     def _start_training(self, model, model_save_path: Path):
-        resume_from_checkpoint = self.work_mode in (WorkMode.further_training, WorkMode.continue_training)
+        self.message_bus.publish('metrics', {'type': 'workflow_phase', 'phase': 'training'})
+        resume_from_checkpoint = bool(
+            self.work_mode in (WorkMode.further_training, WorkMode.continue_training)
+            or getattr(self.tranining_parameters, 'resume_from_checkpoint', False)
+        )
         multi_gpu_mode = normalize_multi_gpu_mode(
             getattr(self.tranining_parameters, 'multi_gpu_mode', ''),
             use_multi_gpu_fallback=bool(getattr(self.tranining_parameters, 'use_multi_gpu', False)),
@@ -952,6 +1153,7 @@ class GeneralNeuralHandler:
             scheduler_params=getattr(self.tranining_parameters, 'scheduler', None),
             skip_uniform_labels=self.tranining_parameters.skip_uniform_labels,
             resume_from_checkpoint=resume_from_checkpoint,
+            extend_epochs_on_resume=self.work_mode in (WorkMode.further_training, WorkMode.continue_training),
             use_multi_gpu=multi_gpu_mode != 'off',
             multi_gpu_mode=multi_gpu_mode,
             show_batch_preview=self.tranining_parameters.show_batch_preview,
@@ -959,14 +1161,21 @@ class GeneralNeuralHandler:
             save_validation_binary_images=bool(
                 getattr(self.tranining_parameters, 'save_validation_binary_images', False)
             ),
+            control_dataloader=self.control_loader,
         )
         self.current_thread.daemon = False
         self.current_thread.start()
         self._wait_for_current_thread('training')
-        if not getattr(self.current_thread, 'succeeded', False):
+        if not getattr(self.current_thread, 'succeeded', False) and not getattr(self, '_need_stop', False):
             self._training_failed = True
             if getattr(self.current_thread, 'error_message', None) is None:
                 self.message_bus.publish('error', 'Обучение завершилось с ошибкой.')
+        elif not getattr(self, '_need_stop', False):
+            self.message_bus.publish('metrics', {
+                'type': 'training_completed',
+                'model_path': str(model_save_path),
+                'checkpoint_path': str(model_save_path.with_suffix('.ckpt')),
+            })
         self.current_thread = None
         # The process/thread lifecycle is over; drop heavy references eagerly.
         model = None
@@ -978,6 +1187,7 @@ class GeneralNeuralHandler:
         self.message_bus.publish('logging', 'Обучение завершено')
 
     def _start_recognition(self):
+        self.message_bus.publish('metrics', {'type': 'workflow_phase', 'phase': 'recognition'})
         self.current_thread = ModelRecognizer(
             self.recognition_parameters,
             message_bus=self.message_bus,
@@ -1003,6 +1213,18 @@ class GeneralNeuralHandler:
             self._drop_runtime_references()
             return
         if hasattr(self.current_thread, 'stop'):
+            self.current_thread.stop()
+
+    def pause_execution(self):
+        self._need_pause = True
+        self._need_stop = True
+        if self.current_thread is None:
+            self._drop_runtime_references()
+            return
+        pause = getattr(self.current_thread, 'pause', None)
+        if callable(pause):
+            pause()
+        elif hasattr(self.current_thread, 'stop'):
             self.current_thread.stop()
 
     def _wait_for_current_thread(self, operation_name: str) -> None:

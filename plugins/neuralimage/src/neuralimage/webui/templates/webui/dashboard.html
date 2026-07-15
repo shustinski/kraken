@@ -243,6 +243,7 @@
                     <div class="queue-actions">
                         <button type="button" class="ghost-btn" id="queue-properties-btn">{{ desktop_texts.queue_properties }}</button>
                         <button type="button" class="ghost-btn" id="queue-pause-btn">{{ desktop_texts.queue_pause }}</button>
+                        <button type="button" class="ghost-btn" id="queue-restart-btn">{{ desktop_texts.queue_retry }}</button>
                         <button type="button" class="ghost-btn" id="queue-remove-btn">{{ desktop_texts.queue_remove }}</button>
                     </div>
                 </div>
@@ -392,6 +393,8 @@
                         {{ main_form.epochs }}
                         {% if main_form.epochs.errors %}<div class="field-error">{{ main_form.epochs.errors|striptags }}</div>{% endif %}
                     </div>
+                    <label class="check-row" title="{{ settings_form.early_stopping_enabled.help_text }}">{{ settings_form.early_stopping_enabled }} {{ settings_form.early_stopping_enabled.label }}</label>
+                    <p class="field-help" data-role="early-stopping-control-warning">Without validation a fixed train-control set is used. This cannot objectively detect overfitting.</p>
                     <div class="field compact">
                         <label>{{ settings_form.color_mode.label }}</label>
                         {{ settings_form.color_mode }}
@@ -407,6 +410,17 @@
                         </div>
                         {% if settings_form.sample_x.errors %}<div class="field-error">{{ settings_form.sample_x.errors|striptags }}</div>{% endif %}
                         {% if settings_form.sample_y.errors %}<div class="field-error">{{ settings_form.sample_y.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <label class="check-row">{{ settings_form.random_patch_size_enabled }} {{ settings_form.random_patch_size_enabled.label }}</label>
+                    <div class="inline-2" data-role="random-patch-size-fields">
+                        <div class="field compact">
+                            <label>Min X × Y</label>
+                            <div class="size-row">{{ settings_form.random_patch_min_x }}<span>X</span>{{ settings_form.random_patch_min_y }}</div>
+                        </div>
+                        <div class="field compact">
+                            <label>Max X × Y</label>
+                            <div class="size-row">{{ settings_form.random_patch_max_x }}<span>X</span>{{ settings_form.random_patch_max_y }}</div>
+                        </div>
                     </div>
                     <div class="field" data-role="recognition-patch-size">
                         <label>{{ settings_panel_texts.recognition_patch_size }}</label>
@@ -617,6 +631,29 @@
                             {% if settings_form.random_artifacts_size_ratio.errors %}<div class="field-error">{{ settings_form.random_artifacts_size_ratio.errors|striptags }}</div>{% endif %}
                         </div>
                     </div>
+                    <label class="check-row">{{ settings_form.synthetic_defect_generator_enabled }} {{ settings_form.synthetic_defect_generator_enabled.label }}</label>
+                    <div data-role="synthetic-topology-fields">
+                        <div class="inline-2">
+                            <div class="field compact">
+                                <label>{{ settings_form.synthetic_topology_domain.label }}</label>
+                                {{ settings_form.synthetic_topology_domain }}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.synthetic_epoch_size_factor.label }}</label>
+                                {{ settings_form.synthetic_epoch_size_factor }}
+                            </div>
+                        </div>
+                        <div class="inline-2">
+                            <div class="field compact">
+                                <label>{{ settings_form.synthetic_image_width.label }}</label>
+                                {{ settings_form.synthetic_image_width }}
+                            </div>
+                            <div class="field compact">
+                                <label>{{ settings_form.synthetic_image_height.label }}</label>
+                                {{ settings_form.synthetic_image_height }}
+                            </div>
+                        </div>
+                    </div>
                     <label class="check-row" title="{{ settings_form.mixup_enabled.help_text }}">{{ settings_form.mixup_enabled }} {{ settings_form.mixup_enabled.label }}</label>
                     <div class="inline-2" data-role="mixup-fields">
                         <div class="field compact">
@@ -678,7 +715,7 @@
                         </div>
                         {% if settings_form.validation_label_folder.errors %}<div class="field-error">{{ settings_form.validation_label_folder.errors|striptags }}</div>{% endif %}
                     </div>
-                    <label class="check-row" title="{{ settings_form.save_validation_binary_images.help_text }}">{{ settings_form.save_validation_binary_images }} {{ settings_form.save_validation_binary_images.label }}</label>
+                    <label class="check-row" data-role="validation-save-images" title="{{ settings_form.save_validation_binary_images.help_text }}">{{ settings_form.save_validation_binary_images }} {{ settings_form.save_validation_binary_images.label }}</label>
 
                     <div class="radio-col" id="cut-mode-radios">
                         {% with current_cut=settings_form.sample_cut_mode.value %}
@@ -800,18 +837,6 @@
                         </div>
                     </div>
                     <label class="check-row" title="{{ settings_form.hard_mining_enabled.help_text }}">{{ settings_form.hard_mining_enabled }} {{ settings_form.hard_mining_enabled.label }}</label>
-                    <div class="inline-2" data-role="hard-mining-fields">
-                        <div class="field compact">
-                            <label>{{ settings_form.hard_mining_strength.label }}</label>
-                            {{ settings_form.hard_mining_strength }}
-                            {% if settings_form.hard_mining_strength.errors %}<div class="field-error">{{ settings_form.hard_mining_strength.errors|striptags }}</div>{% endif %}
-                        </div>
-                        <div class="field compact">
-                            <label>{{ settings_form.hard_mining_ema_alpha.label }}</label>
-                            {{ settings_form.hard_mining_ema_alpha }}
-                            {% if settings_form.hard_mining_ema_alpha.errors %}<div class="field-error">{{ settings_form.hard_mining_ema_alpha.errors|striptags }}</div>{% endif %}
-                        </div>
-                    </div>
                     <label class="check-row" title="{{ settings_form.hard_pixel_mining_enabled.help_text }}">{{ settings_form.hard_pixel_mining_enabled }} {{ settings_form.hard_pixel_mining_enabled.label }}</label>
                     <div class="field compact" data-role="hard-pixel-mining-fields">
                         <label>{{ settings_form.hard_pixel_mining_ratio.label }}</label>
@@ -819,20 +844,6 @@
                         {% if settings_form.hard_pixel_mining_ratio.errors %}<div class="field-error">{{ settings_form.hard_pixel_mining_ratio.errors|striptags }}</div>{% endif %}
                     </div>
                     <label class="check-row" title="{{ settings_form.skip_uniform_labels.help_text }}">{{ settings_form.skip_uniform_labels }} {{ settings_form.skip_uniform_labels.label }}</label>
-                    <label class="check-row" title="{{ settings_form.early_stopping_enabled.help_text }}">{{ settings_form.early_stopping_enabled }} {{ settings_form.early_stopping_enabled.label }}</label>
-                    <div class="inline-2">
-                        <div class="field compact">
-                            <label>{{ settings_form.early_stopping_patience.label }}</label>
-                            {{ settings_form.early_stopping_patience }}
-                            {% if settings_form.early_stopping_patience.errors %}<div class="field-error">{{ settings_form.early_stopping_patience.errors|striptags }}</div>{% endif %}
-                        </div>
-                        <div class="field compact">
-                            <label>{{ settings_form.early_stopping_min_delta.label }}</label>
-                            {{ settings_form.early_stopping_min_delta }}
-                            {% if settings_form.early_stopping_min_delta.errors %}<div class="field-error">{{ settings_form.early_stopping_min_delta.errors|striptags }}</div>{% endif %}
-                        </div>
-                    </div>
-                    <label class="check-row" title="{{ settings_form.early_stopping_restore_best_weights.help_text }}">{{ settings_form.early_stopping_restore_best_weights }} {{ settings_form.early_stopping_restore_best_weights.label }}</label>
                     <label class="check-row" title="{{ settings_form.show_batch_preview.help_text }}">{{ settings_form.show_batch_preview }} {{ settings_form.show_batch_preview.label }}</label>
                 </section>
 

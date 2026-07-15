@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -10,10 +10,12 @@ SettingsStateT = TypeVar('SettingsStateT')
 
 TASK_WAITING = 'waiting'
 TASK_RUNNING = 'in_progress'
+TASK_PAUSING = 'pausing'
 TASK_PAUSED = 'paused'
+TASK_STOPPED = 'stopped'
 TASK_FINISHED_SUCCESS = 'finished_success'
 TASK_FINISHED_ERROR = 'finished_error'
-TERMINAL_TASK_STATUSES = frozenset({TASK_FINISHED_SUCCESS, TASK_FINISHED_ERROR})
+TERMINAL_TASK_STATUSES = frozenset({TASK_STOPPED, TASK_FINISHED_SUCCESS, TASK_FINISHED_ERROR})
 RECOGNITION_WORK_MODES = frozenset({'train_and_recognition', 'recognition_only', 'further_training'})
 TRAINING_NAME_FROM_SAMPLE_PARENT_MODES = frozenset({'train_only', 'continue_training'})
 
@@ -22,6 +24,29 @@ TRAINING_NAME_FROM_SAMPLE_PARENT_MODES = frozenset({'train_only', 'continue_trai
 class TaskProgress:
     current: int = 0
     total: int = 0
+
+
+@dataclass(slots=True)
+class TaskRuntimeContext:
+    artifact_dir: Path | None = None
+    training_checkpoint: Path | None = None
+    next_epoch: int = 0
+    next_batch: int = 0
+    recognition_manifest: Path | None = None
+    last_recognized_file: str = ''
+    phase: str = ''
+    training_completed: bool = False
+    trained_model_path: Path | None = None
+
+    def clear_resume_state(self) -> None:
+        self.training_checkpoint = None
+        self.next_epoch = 0
+        self.next_batch = 0
+        self.recognition_manifest = None
+        self.last_recognized_file = ''
+        self.phase = ''
+        self.training_completed = False
+        self.trained_model_path = None
 
 
 def _default_display_name(main_window_state: MainStateT) -> str:
@@ -50,6 +75,7 @@ class QueuedTask(Generic[MainStateT, SettingsStateT]):
     status: str = TASK_WAITING
     error_message: str = ''
     progress: TaskProgress = TaskProgress()
+    runtime: TaskRuntimeContext = field(default_factory=TaskRuntimeContext)
 
     @property
     def is_finished(self) -> bool:
@@ -108,21 +134,20 @@ class ProcessingTaskQueue(Generic[MainStateT, SettingsStateT]):
         self._tasks.append(task)
         return task
 
-    def retry_task_by_index(self, index: int) -> QueuedTask[MainStateT, SettingsStateT] | None:
+    def restart_task_by_index(self, index: int) -> QueuedTask[MainStateT, SettingsStateT] | None:
         task = self._get_by_index(index)
-        if task is None or task.status != TASK_FINISHED_ERROR:
+        if task is None or task.status not in TERMINAL_TASK_STATUSES:
             return None
-        retry_task = QueuedTask(
-            task_id=self._next_task_id,
-            main_window_state=task.main_window_state,
-            settings_state=task.settings_state,
-            owner_username=task.owner_username,
-            owner_display_name=task.owner_display_name,
-            display_name=task.display_name,
-        )
-        self._next_task_id += 1
-        self._tasks.insert(index + 1, retry_task)
-        return retry_task
+        task.paused = False
+        task.status = TASK_WAITING
+        task.error_message = ''
+        task.progress = TaskProgress()
+        task.runtime.clear_resume_state()
+        return task
+
+    def retry_task_by_index(self, index: int) -> QueuedTask[MainStateT, SettingsStateT] | None:
+        """Backward-compatible alias; retry now restarts the same queue item."""
+        return self.restart_task_by_index(index)
 
     def remove_by_index(self, index: int) -> QueuedTask[MainStateT, SettingsStateT] | None:
         task = self._get_by_index(index)
@@ -167,6 +192,12 @@ class ProcessingTaskQueue(Generic[MainStateT, SettingsStateT]):
         self._active_task_id = None
         return active_task
 
+    def mark_active_pausing(self) -> QueuedTask[MainStateT, SettingsStateT] | None:
+        active_task = self.active_task
+        if active_task is not None:
+            active_task.status = TASK_PAUSING
+        return active_task
+
     def resume_by_index(self, index: int) -> QueuedTask[MainStateT, SettingsStateT] | None:
         task = self._get_by_index(index)
         if task is None or task.is_finished or task.is_running:
@@ -193,6 +224,16 @@ class ProcessingTaskQueue(Generic[MainStateT, SettingsStateT]):
         active_task.status = TASK_FINISHED_SUCCESS if success else TASK_FINISHED_ERROR
         active_task.error_message = '' if success else str(error_message or '')
         active_task.progress = TaskProgress(1, 1)
+        self._active_task_id = None
+        return active_task
+
+    def stop_active(self) -> QueuedTask[MainStateT, SettingsStateT] | None:
+        active_task = self.active_task
+        if active_task is None:
+            return None
+        active_task.paused = False
+        active_task.status = TASK_STOPPED
+        active_task.error_message = ''
         self._active_task_id = None
         return active_task
 

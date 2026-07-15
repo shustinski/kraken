@@ -12,6 +12,7 @@ from neuralimage.lib.data_interfaces import (
     MixupParameters,
     OptimizerName,
     OptimizerParameters,
+    RandomPatchSizeParameters,
     RandomArtifactsParameters,
     RecognitionParameters,
     SampleCutMode,
@@ -80,6 +81,7 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
     hard_mining_raw = raw.get('hard_mining', {})
     cutout_raw = raw.get('cutout', {})
     random_artifacts_raw = raw.get('random_artifacts', {})
+    random_patch_raw = raw.get('random_patch_size', {})
     mixup_raw = raw.get('mixup', {})
     pcb_defects_raw = raw.get('pcb_defects', {})
     resolved_model_name = str(model_name or raw.get('model_name', '')).strip()
@@ -129,9 +131,6 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
 
     early_stopping = EarlyStoppingParameters(
         enabled=bool(early_stopping_raw.get('enabled', False)),
-        patience=int(early_stopping_raw.get('patience', 10)),
-        min_delta=float(early_stopping_raw.get('min_delta', 0.0)),
-        restore_best_weights=bool(early_stopping_raw.get('restore_best_weights', True)),
     )
 
     warmup = WarmupParameters(
@@ -161,12 +160,10 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
 
     hard_mining = HardMiningParameters(
         enabled=bool(hard_mining_raw.get('enabled', False)),
-        strength=float(hard_mining_raw.get('strength', 2.0)),
-        ema_alpha=float(hard_mining_raw.get('ema_alpha', 0.2)),
         pixel_enabled=bool(hard_mining_raw.get('pixel_enabled', False)),
         pixel_keep_ratio=float(hard_mining_raw.get('pixel_keep_ratio', 0.25)),
     )
-    legacy_use_multi_gpu = bool(raw.get('use_multi_gpu', True))
+    legacy_use_multi_gpu = bool(raw.get('use_multi_gpu', False))
     multi_gpu_mode = normalize_multi_gpu_mode(
         raw.get('multi_gpu_mode', ''),
         use_multi_gpu_fallback=legacy_use_multi_gpu,
@@ -185,7 +182,7 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
         generation=generation,
         prepare=prepare,
         optimizer=optimizer,
-        mixed_precision=MixedPrecisionMode(raw.get('mixed_precision', MixedPrecisionMode.bf16.value)),
+        mixed_precision=MixedPrecisionMode(raw.get('mixed_precision', MixedPrecisionMode.off.value)),
         loss_function=str(raw.get('loss_function', 'bce')),
         dice_loss_weight=float(raw.get('dice_loss_weight', 0.5)),
         iou_loss_weight=float(raw.get('iou_loss_weight', 0.5)),
@@ -193,6 +190,14 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
         warmup=warmup,
         scheduler=scheduler,
         hard_mining=hard_mining,
+        random_patch_size=RandomPatchSizeParameters(
+            enabled=(
+                bool(random_patch_raw.get('enabled', False))
+                and raw.get('cut_mode', SampleCutMode.online.value) == SampleCutMode.online.value
+            ),
+            min_size=_to_tuple2(random_patch_raw.get('min_size', [128, 128]), 'random_patch_size.min_size'),
+            max_size=_to_tuple2(random_patch_raw.get('max_size', [512, 512]), 'random_patch_size.max_size'),
+        ),
         cutout=CutoutParameters(
             enabled=bool(cutout_raw.get('enabled', False)),
             probability=float(cutout_raw.get('probability', 1.0)),
@@ -356,15 +361,12 @@ def _config_template() -> dict[str, Any]:
                 'learning_rate': 0.001,
                 'weight_decay': 0.0001,
             },
-            'mixed_precision': 'bf16',
+            'mixed_precision': 'off',
             'loss_function': 'focal_dice',
             'dice_loss_weight': 0.7,
             'iou_loss_weight': 0.3,
             'early_stopping': {
                 'enabled': True,
-                'patience': 10,
-                'min_delta': 0.001,
-                'restore_best_weights': True,
             },
             'warmup': {
                 'enabled': True,
@@ -391,10 +393,13 @@ def _config_template() -> dict[str, Any]:
             },
             'hard_mining': {
                 'enabled': False,
-                'strength': 2.0,
-                'ema_alpha': 0.2,
                 'pixel_enabled': False,
                 'pixel_keep_ratio': 0.25,
+            },
+            'random_patch_size': {
+                'enabled': False,
+                'min_size': [128, 128],
+                'max_size': [512, 512],
             },
             'cutout': {
                 'enabled': False,
@@ -433,8 +438,8 @@ def _config_template() -> dict[str, Any]:
                 },
             },
             'skip_uniform_labels': False,
-            'use_multi_gpu': True,
-            'multi_gpu_mode': 'distributeddataparallel',
+            'use_multi_gpu': False,
+            'multi_gpu_mode': 'off',
             'show_batch_preview': True,
             'log_update_frequency': 50,
         },

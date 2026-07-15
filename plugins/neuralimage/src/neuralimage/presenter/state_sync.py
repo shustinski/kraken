@@ -180,10 +180,25 @@ def apply_settings_to_panel(presenter) -> None:
     train_patch_size = tuple(getattr(state, 'train_patch_size', None) or state.sample_size)
     recognition_patch_size = tuple(getattr(state, 'recognition_patch_size', None) or state.sample_size)
     panel.shift_spinbox.setValue(state.step)
-    panel.train_patch_x_size.setValue(train_patch_size[0])
-    panel.train_patch_y_size.setValue(train_patch_size[1])
-    panel.recognition_patch_x_size.setValue(recognition_patch_size[0])
-    panel.recognition_patch_y_size.setValue(recognition_patch_size[1])
+    panel.train_patch_size_widget.set_target_size(
+        int(train_patch_size[0]),
+        int(train_patch_size[1]),
+    )
+    panel.random_patch_size_check_box.setChecked(bool(getattr(state, 'random_patch_size_enabled', False)))
+    random_patch_min = tuple(getattr(state, 'random_patch_min_size', (128, 128)))
+    random_patch_max = tuple(getattr(state, 'random_patch_max_size', (512, 512)))
+    panel.random_patch_min_size_widget.set_target_size(
+        int(random_patch_min[0]),
+        int(random_patch_min[1]),
+    )
+    panel.random_patch_max_size_widget.set_target_size(
+        int(random_patch_max[0]),
+        int(random_patch_max[1]),
+    )
+    panel.recognition_patch_size_widget.set_target_size(
+        int(recognition_patch_size[0]),
+        int(recognition_patch_size[1]),
+    )
     main_window_state = getattr(presenter, '__dict__', {}).get('main_window_state')
     panel.epochs_spinbox.setValue(int(getattr(main_window_state, 'epochs', MainWindowState().epochs)))
 
@@ -284,9 +299,6 @@ def apply_settings_to_panel(presenter) -> None:
     panel.learning_rate_spinbox.setValue(state.learning_rate)
     panel.weight_decay_spinbox.setValue(state.weight_decay)
     panel.early_stopping_check_box.setChecked(state.early_stopping_enabled)
-    panel.early_stopping_patience_spinbox.setValue(state.early_stopping_patience)
-    panel.early_stopping_min_delta_spinbox.setValue(state.early_stopping_min_delta)
-    panel.restore_best_weights_check_box.setChecked(state.early_stopping_restore_best_weights)
     panel.warmup_check_box.setChecked(state.warmup_enabled)
     panel.warmup_epochs_spinbox.setValue(state.warmup_epochs)
     panel.warmup_start_factor_spinbox.setValue(state.warmup_start_factor)
@@ -323,8 +335,6 @@ def apply_settings_to_panel(presenter) -> None:
     )
     panel.scheduler_step_lr_gamma_spinbox.setValue(float(getattr(state, 'scheduler_step_lr_gamma', 0.1)))
     panel.hard_mining_check_box.setChecked(state.hard_mining_enabled)
-    panel.hard_mining_strength_spinbox.setValue(state.hard_mining_strength)
-    panel.hard_mining_ema_alpha_spinbox.setValue(state.hard_mining_ema_alpha)
     panel.hard_pixel_mining_check_box.setChecked(bool(getattr(state, 'hard_pixel_mining_enabled', False)))
     panel.hard_pixel_mining_ratio_spinbox.setValue(float(getattr(state, 'hard_pixel_mining_ratio', 0.25)))
     panel.skip_uniform_labels_check_box.setChecked(state.skip_uniform_labels)
@@ -363,6 +373,11 @@ def apply_settings_to_panel(presenter) -> None:
         main_state = presenter.__dict__.get('main_window_state')
         work_mode = getattr(main_state, 'work_mode', '')
         panel.sync_business_logic_controls(work_mode)
+    if not panel.sync_patch_sizes_check_box.isChecked():
+        panel.recognition_patch_size_widget.set_target_size(
+            int(recognition_patch_size[0]),
+            int(recognition_patch_size[1]),
+        )
 
     panel.cut_corner_spinbox.setValue(state.edge_cut_size)
     panel.compression_factor_spinbox.setValue(max(1, int(getattr(state, 'compression_factor', 1))))
@@ -409,6 +424,9 @@ def update_settings_window_state(presenter) -> None:
     augmentation_blur_radius = panel.augmentation_blur_radius_spinbox.value()
     step = panel.shift_spinbox.value()
     train_patch_size = (panel.train_patch_x_size.value(), panel.train_patch_y_size.value())
+    random_patch_size_enabled = panel.random_patch_size_check_box.isChecked()
+    random_patch_min_size = (panel.random_patch_min_x_size.value(), panel.random_patch_min_y_size.value())
+    random_patch_max_size = (panel.random_patch_max_x_size.value(), panel.random_patch_max_y_size.value())
     recognition_patch_size = (
         panel.recognition_patch_x_size.value(),
         panel.recognition_patch_y_size.value(),
@@ -494,9 +512,6 @@ def update_settings_window_state(presenter) -> None:
     learning_rate = panel.learning_rate_spinbox.value()
     weight_decay = panel.weight_decay_spinbox.value()
     early_stopping_enabled = panel.early_stopping_check_box.isChecked()
-    early_stopping_patience = panel.early_stopping_patience_spinbox.value()
-    early_stopping_min_delta = panel.early_stopping_min_delta_spinbox.value()
-    early_stopping_restore_best_weights = panel.restore_best_weights_check_box.isChecked()
     warmup_enabled = panel.warmup_check_box.isChecked()
     warmup_epochs = panel.warmup_epochs_spinbox.value()
     warmup_start_factor = panel.warmup_start_factor_spinbox.value()
@@ -517,8 +532,6 @@ def update_settings_window_state(presenter) -> None:
     scheduler_step_lr_step_size = panel.scheduler_step_lr_step_size_spinbox.value()
     scheduler_step_lr_gamma = panel.scheduler_step_lr_gamma_spinbox.value()
     hard_mining_enabled = panel.hard_mining_check_box.isChecked()
-    hard_mining_strength = panel.hard_mining_strength_spinbox.value()
-    hard_mining_ema_alpha = panel.hard_mining_ema_alpha_spinbox.value()
     hard_pixel_mining_enabled = panel.hard_pixel_mining_check_box.isChecked()
     hard_pixel_mining_ratio = panel.hard_pixel_mining_ratio_spinbox.value()
     skip_uniform_labels = panel.skip_uniform_labels_check_box.isChecked()
@@ -554,6 +567,9 @@ def update_settings_window_state(presenter) -> None:
         augmentation_blur_radius=augmentation_blur_radius,
         sample_size=train_patch_size,
         train_patch_size=train_patch_size,
+        random_patch_size_enabled=random_patch_size_enabled,
+        random_patch_min_size=random_patch_min_size,
+        random_patch_max_size=random_patch_max_size,
         recognition_patch_size=recognition_patch_size,
         model=model,
         color_mode=color_mode,
@@ -625,9 +641,6 @@ def update_settings_window_state(presenter) -> None:
         learning_rate=learning_rate,
         weight_decay=weight_decay,
         early_stopping_enabled=early_stopping_enabled,
-        early_stopping_patience=early_stopping_patience,
-        early_stopping_min_delta=early_stopping_min_delta,
-        early_stopping_restore_best_weights=early_stopping_restore_best_weights,
         warmup_enabled=warmup_enabled,
         warmup_epochs=warmup_epochs,
         warmup_start_factor=warmup_start_factor,
@@ -648,8 +661,6 @@ def update_settings_window_state(presenter) -> None:
         scheduler_step_lr_step_size=scheduler_step_lr_step_size,
         scheduler_step_lr_gamma=scheduler_step_lr_gamma,
         hard_mining_enabled=hard_mining_enabled,
-        hard_mining_strength=hard_mining_strength,
-        hard_mining_ema_alpha=hard_mining_ema_alpha,
         hard_pixel_mining_enabled=hard_pixel_mining_enabled,
         hard_pixel_mining_ratio=hard_pixel_mining_ratio,
         log_update_frequency=log_update_frequency,

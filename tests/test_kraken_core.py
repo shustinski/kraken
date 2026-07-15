@@ -7,7 +7,13 @@ from kraken_core.ipc import ActionRegistry, ActionRequest
 from kraken_core.plugins import PluginMetadata, load_plugin_catalog, scan_plugin_directory
 from kraken_core.qt import resolve_icon_path
 from kraken_core.styles import plugin_icon_path, shared_icon_path
-from kraken_core.updater import compare_versions, parse_update_payload, select_platform_release
+from kraken_core.updater import (
+    UpdateService,
+    compare_versions,
+    parse_update_payload,
+    resolve_source_reference,
+    select_platform_release,
+)
 
 
 def test_plugin_catalog_loads(tmp_path):
@@ -49,6 +55,31 @@ def test_update_payload_selects_platform_release():
     assert select_platform_release(update, "linux").download_url == "app.tar.gz"
 
 
+def test_update_service_dismissal_only_affects_current_session(tmp_path):
+    manifest = tmp_path / "version.json"
+    manifest.write_text(json.dumps({"version": "2.0.0", "download_url": "setup.exe"}), encoding="utf-8")
+    service = UpdateService(str(manifest), current_version="1.0.0", app_id="test")
+
+    update = service.check()
+    assert update is not None
+    service.dismiss_for_session(update)
+
+    assert service.check() is None
+    assert UpdateService(str(manifest), current_version="1.0.0", app_id="test").check() is not None
+
+
+def test_relative_download_source_is_resolved_from_manifest(tmp_path):
+    manifest = tmp_path / "updates" / "version.json"
+    manifest.parent.mkdir()
+
+    assert resolve_source_reference("install/setup.exe", str(manifest)) == str(
+        (manifest.parent / "install" / "setup.exe").resolve()
+    )
+    assert resolve_source_reference("install/setup.exe", "https://updates.example/app/version.json") == (
+        "https://updates.example/app/install/setup.exe"
+    )
+
+
 def test_action_registry_reports_invalid_action():
     registry = ActionRegistry()
 
@@ -80,6 +111,12 @@ def test_hub_prefers_root_plugin_launcher(tmp_path, monkeypatch):
     command = hub_app.build_launch_command(PluginMetadata(id="contour", display_name="Contour"), root=tmp_path)
 
     assert command == ["uv", "run", "python", "__main__.py"]
+
+
+def test_hub_application_version_comes_from_package_metadata(monkeypatch):
+    monkeypatch.setattr(hub_app.importlib_metadata, "version", lambda name: "3.4.5")
+
+    assert hub_app.application_version() == "3.4.5"
 
 
 def test_plugin_directory_scan_reads_manifest_and_changelog(tmp_path):

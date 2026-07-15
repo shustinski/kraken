@@ -288,6 +288,33 @@ class _FailedProcess:
         return
 
 
+def test_multiprocessing_runner_kills_worker_that_ignores_terminate():
+    class _StuckProcess:
+        def __init__(self):
+            self.killed = False
+            self.join_calls = 0
+
+        def is_alive(self):
+            return not self.killed
+
+        def join(self, timeout=None):
+            self.join_calls += 1
+
+        def terminate(self):
+            return
+
+        def kill(self):
+            self.killed = True
+
+    process = _StuckProcess()
+    MultiprocessingRecognitionRunner._shutdown_workers(
+        WorkerGroups(cut=[process], predict=[], sew=[]),
+    )
+
+    assert process.killed is True
+    assert process.join_calls == 3
+
+
 def test_multiprocessing_runner_raises_on_failed_child(monkeypatch):
     workload = RecognitionWorkload(
         source_files=[Path('frame_001.png')],

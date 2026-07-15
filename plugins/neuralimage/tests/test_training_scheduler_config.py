@@ -9,6 +9,47 @@ import neuralimage.model.NeuralNetwork.model_train_and_recognition as target
 from neuralimage.model.NeuralNetwork.model_train_and_recognition import TrainerProcess, _RunContext, _TrainLoopStrides
 
 
+def test_process_escalation_stops_descendants_before_parent(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    descendants = [object(), object()]
+
+    class _Process:
+        pid = 123
+
+        def __init__(self) -> None:
+            self.alive = True
+            self.terminate_requested = False
+
+        def join(self, timeout=None) -> None:
+            calls.append(('join', timeout))
+            if self.terminate_requested:
+                self.alive = False
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def terminate(self) -> None:
+            calls.append(('terminate-parent', self.pid))
+            self.terminate_requested = True
+
+        def kill(self) -> None:
+            calls.append(('kill-parent', self.pid))
+            self.alive = False
+
+    monkeypatch.setattr(target, '_get_process_descendants', lambda pid: descendants)
+    monkeypatch.setattr(
+        target,
+        '_stop_process_descendants',
+        lambda processes, *, force, timeout: calls.append(('stop-descendants', force)),
+    )
+
+    target._join_process_with_escalation(_Process(), join_timeout=0.25)
+
+    assert calls.index(('stop-descendants', False)) < calls.index(('terminate-parent', 123))
+    assert ('stop-descendants', True) in calls
+    assert ('kill-parent', 123) not in calls
+
+
 class _Bus:
     def __init__(self):
         self.messages: list[list[object]] = []
@@ -155,7 +196,7 @@ def test_step_epoch_scheduler_uses_validation_loss_then_train_loss_fallback():
     assert plateau_scheduler.calls == [0.4, 0.9]
 
 
-def test_create_adamw_muon_optimizer_falls_back_when_module_lookup_raises(monkeypatch):
+def test_create_adamw_muon_optimizer_reports_unavailable(monkeypatch):
     trainer = _build_trainer(
         optimizer_params=OptimizerParameters(
             name=OptimizerName.adamw_muon,
@@ -164,19 +205,17 @@ def test_create_adamw_muon_optimizer_falls_back_when_module_lookup_raises(monkey
         ),
     )
 
-    def _raise_missing_spec(module_name):
-        raise ModuleNotFoundError(f"No module named '{module_name}'")
+    monkeypatch.setattr(target, 'resolve_muon_optimizer_class', lambda: None)
 
-    monkeypatch.setattr(target.optim, 'Muon', None, raising=False)
-    monkeypatch.setattr(target.importlib.util, 'find_spec', _raise_missing_spec)
-
-    optimizer = trainer._create_optimizer()
-
-    assert isinstance(optimizer, torch.optim.AdamW)
-    assert any('Muon optimizer is unavailable. Using AdamW.' in str(message[1]) for message in trainer._bus.messages)
+    with pytest.raises(target.MuonOptimizerUnavailableError, match='Muon оптимизатор недоступен, выберите другой'):
+        trainer._create_optimizer()
 
 
-def test_create_adamw_muon_optimizer_prefers_native_torch_muon():
+def test_create_adamw_muon_optimizer_prefers_native_torch_muon(monkeypatch):
+    muon_cls = getattr(torch.optim, 'Muon', None)
+    if muon_cls is None:
+        pytest.skip('Installed PyTorch does not provide torch.optim.Muon.')
+    monkeypatch.setattr(target, 'resolve_muon_optimizer_class', lambda: muon_cls)
     trainer = _build_trainer(
         model=torch.nn.Linear(4, 2, bias=False),
         optimizer_params=OptimizerParameters(

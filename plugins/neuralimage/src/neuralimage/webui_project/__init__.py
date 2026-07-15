@@ -5,6 +5,7 @@ import io
 import logging
 import threading
 import time
+from pathlib import Path
 from dataclasses import replace
 from typing import Any
 
@@ -131,6 +132,7 @@ class TrainingSessionService:
         self._bus.subscribe('logging', self._on_logging)
         self._bus.subscribe('training', self._on_training)
         self._bus.subscribe('metrics', self._on_metrics)
+        self._bus.subscribe('error', self._on_error)
 
         self._presenter = presenter
 
@@ -156,6 +158,12 @@ class TrainingSessionService:
         if not should_forward_log_event('training', payload):
             return
         self._append_event('training', str(payload))
+
+    def _on_error(self, payload: Any) -> None:
+        message = str(payload or 'Processing failed.')
+        with self._lock:
+            self._processing_session.set_active_error(message)
+        self._append_event('error', message)
 
     def _update_recognition_speed(self, current: int, total: int) -> None:
         if total <= 0:
@@ -285,6 +293,31 @@ class TrainingSessionService:
                     'label_url': None,
                     'output_url': _to_png_data_url(payload.get('outputs', payload.get('output', payload.get('result')))),
                 }
+                return
+            if metric_type == 'training_paused':
+                active_task = self._processing_session.active_task
+                if active_task is not None:
+                    active_task.runtime.training_checkpoint = Path(str(payload.get('checkpoint_path', '')))
+                    active_task.runtime.next_epoch = int(payload.get('epoch', 0) or 0)
+                    active_task.runtime.next_batch = int(payload.get('next_batch', 0) or 0)
+                return
+            if metric_type == 'workflow_phase':
+                active_task = self._processing_session.active_task
+                if active_task is not None:
+                    active_task.runtime.phase = str(payload.get('phase', '') or '')
+                return
+            if metric_type == 'training_completed':
+                active_task = self._processing_session.active_task
+                if active_task is not None:
+                    active_task.runtime.training_completed = True
+                    active_task.runtime.trained_model_path = Path(str(payload.get('model_path', '')))
+                    active_task.runtime.training_checkpoint = Path(str(payload.get('checkpoint_path', '')))
+                return
+            if metric_type == 'recognition_completed':
+                active_task = self._processing_session.active_task
+                if active_task is not None:
+                    active_task.runtime.last_recognized_file = str(payload.get('source_path', '') or '')
+                return
 
     def _clear_runtime_metrics(self) -> None:
         with self._lock:
@@ -311,6 +344,8 @@ class TrainingSessionService:
                 handler.start()
         except Exception as error:
             _LOG.exception('TrainingSessionService handler execution failed')
+            with self._lock:
+                self._processing_session.set_active_error(str(error))
             self._append_event('error', f'Ошибка выполнения задачи #{task_id}: {error}')
         finally:
             with self._lock:
@@ -319,7 +354,9 @@ class TrainingSessionService:
                 self._handler = None
                 self._runner_thread = None
             if result.task is not None:
-                if result.stop_requested:
+                if result.paused:
+                    self._append_event('logging', f'Задача #{result.task.task_id} поставлена на паузу.')
+                elif result.stop_requested:
                     self._append_event('logging', f'Задача #{result.task.task_id} остановлена.')
                 else:
                     self._append_event('logging', f'Задача #{result.task.task_id} завершена.')
@@ -342,6 +379,7 @@ class TrainingSessionService:
             message_bus=self._bus,
             question_module=self._question_yes,
             callback=self._on_finished,
+            runtime_context=task.runtime,
         )
         if build_result.error is not None:
             with self._lock:
@@ -454,6 +492,7 @@ class TrainingSessionService:
         return True, None
 
     def toggle_pause_task(self, task_id: int, *, owner_username: str) -> tuple[bool, str | None]:
+        handler_to_pause = None
         try:
             with self._lock:
                 row = self._queue_index_by_task_id(task_id)
@@ -464,16 +503,44 @@ class TrainingSessionService:
                     return False, 'Задача не найдена.'
                 if str(current_task.owner_username or '') != str(owner_username or ''):
                     return False, 'Можно изменять только свои задачи.'
-                task = self._processing_session.toggle_pause_by_index(row)
+                if self._processing_session.active_task is current_task:
+                    task = self._processing_session.request_pause_active()
+                    handler_to_pause = self._handler
+                    self._status = 'pausing'
+                else:
+                    task = self._processing_session.toggle_pause_by_index(row)
         except ActiveTaskMutationError as error:
             return False, f'Нельзя поставить на паузу активную задачу #{error.task_id}.'
 
         if task is None:
             return False, 'Задача не найдена.'
-        state = 'поставлена на паузу' if task.paused else 'снята с паузы'
+        if handler_to_pause is not None:
+            pause = getattr(handler_to_pause, 'pause_execution', None)
+            if callable(pause):
+                pause()
+            else:
+                handler_to_pause.stop_execution()
+        state = 'ставится на паузу' if handler_to_pause is not None else ('поставлена на паузу' if task.paused else 'снята с паузы')
         self._append_event('logging', f'Задача #{task.task_id} {state}.')
         if not task.paused:
             self._start_next_task_if_possible()
+        return True, None
+
+    def restart_task(self, task_id: int, *, owner_username: str) -> tuple[bool, str | None]:
+        with self._lock:
+            row = self._queue_index_by_task_id(task_id)
+            if row is None:
+                return False, 'Задача не найдена.'
+            current_task = self._processing_session.get_task_by_index(row)
+            if current_task is None:
+                return False, 'Задача не найдена.'
+            if str(current_task.owner_username or '') != str(owner_username or ''):
+                return False, 'Можно изменять только свои задачи.'
+            task = self._processing_session.restart_task_by_index(row)
+        if task is None:
+            return False, 'Перезапуск доступен только для завершённой или остановленной задачи.'
+        self._append_event('logging', f'Задача #{task.task_id} перезапущена с начала.')
+        self._start_next_task_if_possible()
         return True, None
 
     def snapshot(self, after_event_id: int = 0, *, current_username: str = '') -> dict[str, Any]:
@@ -487,7 +554,7 @@ class TrainingSessionService:
                 {
                     'task_id': item.task_id,
                     'work_mode': item.work_mode,
-                    'status': item.status,
+                    'status': 'queued' if item.status == 'waiting' else item.status,
                     'owner_username': item.owner_username,
                     'owner_display_name': item.owner_display_name,
                     'is_owner': bool(item.owner_username and item.owner_username == current_username),

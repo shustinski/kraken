@@ -247,13 +247,14 @@ class TaskQueueRowWidget(QWidget):
             self.completion_label.setStyleSheet('color: #d32f2f; font-weight: 700;')
 
         is_running = status == 'in_progress'
+        is_pausing = status == 'pausing'
         is_paused = status == 'paused'
-        is_finished_error = status == 'finished_error'
-        is_finished = status in {'finished_success', 'finished_error'}
+        is_finished = status in {'stopped', 'finished_success', 'finished_error'}
         self.drag_handle.setEnabled(not is_running and not is_finished)
         self.drag_handle.setVisible(not is_running and not is_finished)
-        self.pause_continue_button.setVisible(is_running or is_paused)
-        self.pause_continue_button.setText('▮▮' if is_running else '▶')
+        self.pause_continue_button.setVisible(is_running or is_pausing or is_paused)
+        self.pause_continue_button.setEnabled(not is_pausing)
+        self.pause_continue_button.setText('▮▮' if is_running or is_pausing else '▶')
         self.pause_continue_button.setToolTip(
             str(texts.get('queue_pause_task', 'Pause')) if is_running else str(texts.get('queue_continue_task', 'Continue'))
         )
@@ -263,7 +264,7 @@ class TaskQueueRowWidget(QWidget):
         self.up_button.setEnabled(not is_running and not is_finished)
         self.down_button.setEnabled(not is_running and not is_finished)
         self.remove_button.setEnabled(True)
-        self.retry_button.setVisible(is_finished_error)
+        self.retry_button.setVisible(is_finished)
         self.up_button.setToolTip(str(texts.get('queue_move_up', 'Move up')))
         self.down_button.setToolTip(str(texts.get('queue_move_down', 'Move down')))
         self.remove_button.setToolTip(
@@ -524,9 +525,7 @@ class MainView(QMainWindow):
         self.queue_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.queue_list.setStyleSheet('QListWidget::item:selected { background: transparent; }')
         queue_layout.addWidget(self.queue_list)
-        self.main_grid.addWidget(self.queue_group, row, 0, 1, 2)
 
-        row += 1
         self.progress_group = QGroupBox(t["progress_group"])
         progress_layout = QVBoxLayout(self.progress_group)
         progress_layout.setContentsMargins(8, 8, 8, 8)
@@ -640,6 +639,18 @@ class MainView(QMainWindow):
         self.setCentralWidget(self._central_scroll)
         self.statusBar().showMessage("")
 
+        self.queue_dock = QDockWidget(t["queue"], self)
+        self.queue_dock.setObjectName('taskQueueDock')
+        self.queue_dock.setWidget(self.queue_group)
+        self.queue_dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+        self.queue_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetClosable
+            | QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        self.queue_dock.setMinimumHeight(110)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.queue_dock)
+
         self.metrics_panel = TrainingMetricsDock(self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.metrics_panel)
         self.metrics_panel.setMinimumHeight(220)
@@ -656,6 +667,13 @@ class MainView(QMainWindow):
 
         self._create_menubar(t)
         self._apply_theme(self._theme)
+        settings = _main_window_qsettings()
+        geometry = settings.value('window_geometry')
+        dock_layout = settings.value('dock_layout')
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        if dock_layout is not None:
+            self.restoreState(dock_layout)
 
     def _create_menubar(self, t: dict[str, str]):
         menubar = self.menuBar()
@@ -695,6 +713,11 @@ class MainView(QMainWindow):
             log_action.setText(t.get("menu_log_panel", "Панель лога"))
             view_menu.addAction(log_action)
             self._log_toggle_action = log_action
+        queue_action = self.queue_dock.toggleViewAction()
+        if queue_action is not None:
+            queue_action.setText(t.get('menu_queue_panel', t['queue']))
+            view_menu.addAction(queue_action)
+            self._queue_toggle_action = queue_action
         if self.settings_dock is not None:
             settings_action = self.settings_dock.toggleViewAction()
             if settings_action is not None:
@@ -839,12 +862,6 @@ class MainView(QMainWindow):
             WorkMode.recognition_only.value,
             WorkMode.further_training.value,
             WorkMode.continue_training.value,
-        }
-        uses_epochs = resolved_mode in {
-            WorkMode.train_only.value,
-            WorkMode.continue_training.value,
-            WorkMode.train_and_recognition.value,
-            WorkMode.further_training.value,
         }
 
         if not resolved_mode:
@@ -1659,6 +1676,7 @@ class MainView(QMainWindow):
         self.btn_start.setText(t["start"])
         self.btn_stop.setText(t["stop"])
         self.queue_group.setTitle(t["queue"])
+        self.queue_dock.setWindowTitle(t["queue"])
         self.simple_workflows_group.setTitle(t.get("simple_workflows_group", "Simple workflows"))
         self.btn_simple_conductors.setText(t.get("simple_workflow_conductors", "Conductor recognition"))
         self.btn_simple_contacts.setText(t.get("simple_workflow_contacts", "Contact recognition"))
@@ -1815,6 +1833,10 @@ class MainView(QMainWindow):
 
     def closeEvent(self, event):
         if self._close_allowed:
+            settings = _main_window_qsettings()
+            settings.setValue('window_geometry', self.saveGeometry())
+            settings.setValue('dock_layout', self.saveState())
+            settings.sync()
             event.accept()
             return
         self.request_close.emit()

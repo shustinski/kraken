@@ -397,10 +397,25 @@ class MainPresenter(QObject):
         s.shift_spinbox.setValue(state.step)
         train_patch_size = tuple(getattr(state, 'train_patch_size', None) or state.sample_size)
         recognition_patch_size = tuple(getattr(state, 'recognition_patch_size', None) or state.sample_size)
-        s.train_patch_x_size.setValue(train_patch_size[0])
-        s.train_patch_y_size.setValue(train_patch_size[1])
-        s.recognition_patch_x_size.setValue(recognition_patch_size[0])
-        s.recognition_patch_y_size.setValue(recognition_patch_size[1])
+        s.train_patch_size_widget.set_target_size(
+            int(train_patch_size[0]),
+            int(train_patch_size[1]),
+        )
+        s.random_patch_size_check_box.setChecked(bool(getattr(state, 'random_patch_size_enabled', False)))
+        random_patch_min = tuple(getattr(state, 'random_patch_min_size', (128, 128)))
+        random_patch_max = tuple(getattr(state, 'random_patch_max_size', (512, 512)))
+        s.random_patch_min_size_widget.set_target_size(
+            int(random_patch_min[0]),
+            int(random_patch_min[1]),
+        )
+        s.random_patch_max_size_widget.set_target_size(
+            int(random_patch_max[0]),
+            int(random_patch_max[1]),
+        )
+        s.recognition_patch_size_widget.set_target_size(
+            int(recognition_patch_size[0]),
+            int(recognition_patch_size[1]),
+        )
 
         # 3.3 Combo-box (str - используем setCurrentText, который выбирает
         #      entry if it exists, otherwise it will add a new entry.)
@@ -500,9 +515,6 @@ class MainPresenter(QObject):
         s.learning_rate_spinbox.setValue(state.learning_rate)
         s.weight_decay_spinbox.setValue(state.weight_decay)
         s.early_stopping_check_box.setChecked(state.early_stopping_enabled)
-        s.early_stopping_patience_spinbox.setValue(state.early_stopping_patience)
-        s.early_stopping_min_delta_spinbox.setValue(state.early_stopping_min_delta)
-        s.restore_best_weights_check_box.setChecked(state.early_stopping_restore_best_weights)
         s.warmup_check_box.setChecked(state.warmup_enabled)
         s.warmup_epochs_spinbox.setValue(state.warmup_epochs)
         s.warmup_start_factor_spinbox.setValue(state.warmup_start_factor)
@@ -533,8 +545,6 @@ class MainPresenter(QObject):
         s.scheduler_step_lr_step_size_spinbox.setValue(int(getattr(state, 'scheduler_step_lr_step_size', 10)))
         s.scheduler_step_lr_gamma_spinbox.setValue(float(getattr(state, 'scheduler_step_lr_gamma', 0.1)))
         s.hard_mining_check_box.setChecked(state.hard_mining_enabled)
-        s.hard_mining_strength_spinbox.setValue(state.hard_mining_strength)
-        s.hard_mining_ema_alpha_spinbox.setValue(state.hard_mining_ema_alpha)
         s.hard_pixel_mining_check_box.setChecked(bool(getattr(state, 'hard_pixel_mining_enabled', False)))
         s.hard_pixel_mining_ratio_spinbox.setValue(float(getattr(state, 'hard_pixel_mining_ratio', 0.25)))
         s.skip_uniform_labels_check_box.setChecked(state.skip_uniform_labels)
@@ -602,6 +612,9 @@ class MainPresenter(QObject):
         augmentation_blur_radius = s.augmentation_blur_radius_spinbox.value()
         step = s.shift_spinbox.value()
         train_patch_size = (s.train_patch_x_size.value(), s.train_patch_y_size.value())
+        random_patch_size_enabled = s.random_patch_size_check_box.isChecked()
+        random_patch_min_size = (s.random_patch_min_x_size.value(), s.random_patch_min_y_size.value())
+        random_patch_max_size = (s.random_patch_max_x_size.value(), s.random_patch_max_y_size.value())
         recognition_patch_size = (s.recognition_patch_x_size.value(), s.recognition_patch_y_size.value())
         model = s.get_selected_model()
         color_mode = s.get_color_mode_value() if hasattr(s, 'get_color_mode_value') else s.color_type.currentText()
@@ -682,9 +695,6 @@ class MainPresenter(QObject):
         learning_rate = s.learning_rate_spinbox.value()
         weight_decay = s.weight_decay_spinbox.value()
         early_stopping_enabled = s.early_stopping_check_box.isChecked()
-        early_stopping_patience = s.early_stopping_patience_spinbox.value()
-        early_stopping_min_delta = s.early_stopping_min_delta_spinbox.value()
-        early_stopping_restore_best_weights = s.restore_best_weights_check_box.isChecked()
         warmup_enabled = s.warmup_check_box.isChecked()
         warmup_epochs = s.warmup_epochs_spinbox.value()
         warmup_start_factor = s.warmup_start_factor_spinbox.value()
@@ -705,8 +715,6 @@ class MainPresenter(QObject):
         scheduler_step_lr_step_size = s.scheduler_step_lr_step_size_spinbox.value()
         scheduler_step_lr_gamma = s.scheduler_step_lr_gamma_spinbox.value()
         hard_mining_enabled = s.hard_mining_check_box.isChecked()
-        hard_mining_strength = s.hard_mining_strength_spinbox.value()
-        hard_mining_ema_alpha = s.hard_mining_ema_alpha_spinbox.value()
         hard_pixel_mining_enabled = s.hard_pixel_mining_check_box.isChecked()
         hard_pixel_mining_ratio = s.hard_pixel_mining_ratio_spinbox.value()
         skip_uniform_labels = s.skip_uniform_labels_check_box.isChecked()
@@ -738,6 +746,9 @@ class MainPresenter(QObject):
                               augmentation_blur_radius=augmentation_blur_radius,
                               sample_size=train_patch_size,
                               train_patch_size=train_patch_size,
+                              random_patch_size_enabled=random_patch_size_enabled,
+                              random_patch_min_size=random_patch_min_size,
+                              random_patch_max_size=random_patch_max_size,
                               recognition_patch_size=recognition_patch_size,
                               model=model,
                               color_mode=color_mode,
@@ -809,9 +820,6 @@ class MainPresenter(QObject):
                               learning_rate=learning_rate,
                               weight_decay=weight_decay,
                               early_stopping_enabled=early_stopping_enabled,
-                              early_stopping_patience=early_stopping_patience,
-                              early_stopping_min_delta=early_stopping_min_delta,
-                              early_stopping_restore_best_weights=early_stopping_restore_best_weights,
                               warmup_enabled=warmup_enabled,
                               warmup_epochs=warmup_epochs,
                               warmup_start_factor=warmup_start_factor,
@@ -832,8 +840,6 @@ class MainPresenter(QObject):
                               scheduler_step_lr_step_size=scheduler_step_lr_step_size,
                               scheduler_step_lr_gamma=scheduler_step_lr_gamma,
                               hard_mining_enabled=hard_mining_enabled,
-                              hard_mining_strength=hard_mining_strength,
-                              hard_mining_ema_alpha=hard_mining_ema_alpha,
                               hard_pixel_mining_enabled=hard_pixel_mining_enabled,
                               hard_pixel_mining_ratio=hard_pixel_mining_ratio,
                               log_update_frequency=log_update_frequency,
@@ -1704,6 +1710,11 @@ class GeneralNeuralHandlerThread(QThread):
         if self._waiting_for_answer:
             self.answer.emit(False)
         self.main_logic.stop_execution()
+
+    def pause(self):
+        if self._waiting_for_answer:
+            self.answer.emit(False)
+        self.main_logic.pause_execution()
 
     @QtCore.pyqtSlot(bool)
     def _store_answer(self, val: bool):

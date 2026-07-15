@@ -126,3 +126,49 @@ def test_training_session_stop_rejects_foreign_active_task_without_marking_stop(
     assert ok is False
     assert error is not None
     assert result.stop_requested is False
+
+
+def test_training_session_owner_can_pause_active_task():
+    class _Handler:
+        paused = False
+
+        def pause_execution(self) -> None:
+            self.paused = True
+
+    service = TrainingSessionService(presenter=object())
+    task = service._processing_session.enqueue_task(
+        MainWindowState(work_mode='train_only'),
+        SettingsState(),
+        owner_username='alice',
+    )
+    service._processing_session.next_task_to_start(worker_running=False)
+    handler = _Handler()
+    service._handler = handler
+    service._status = 'running'
+
+    ok, error = service.toggle_pause_task(task.task_id, owner_username='alice')
+
+    assert ok is True
+    assert error is None
+    assert handler.paused is True
+    assert service.snapshot(current_username='alice')['queue'][0]['status'] == 'pausing'
+
+
+def test_training_session_restart_reuses_task_id():
+    service = TrainingSessionService(presenter=object())
+    task = service._processing_session.enqueue_task(
+        MainWindowState(work_mode='train_only'),
+        SettingsState(),
+        owner_username='alice',
+    )
+    service._processing_session.next_task_to_start(worker_running=False)
+    service._processing_session.set_active_error('failed')
+    service._processing_session.complete_active_task()
+    service._handler = object()
+
+    ok, error = service.restart_task(task.task_id, owner_username='alice')
+
+    assert ok is True
+    assert error is None
+    assert len(service._processing_session.queue_snapshot()) == 1
+    assert service._processing_session.queue_snapshot()[0].task_id == task.task_id

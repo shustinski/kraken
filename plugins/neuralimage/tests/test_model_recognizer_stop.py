@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -91,3 +92,34 @@ def test_model_recognizer_stop_kills_child_process(monkeypatch):
     assert recognizer.is_alive() is False
     assert events["killed"] == 1
     assert recognizer.succeeded is False
+
+
+def test_recognition_manifest_skips_completed_files_on_resume(tmp_path):
+    first = tmp_path / 'first.png'
+    second = tmp_path / 'second.png'
+    first.touch()
+    second.touch()
+    manifest = tmp_path / '.neuralimage-recognition-progress.json'
+    bus = _StubBus()
+
+    initial = SimpleNamespace(
+        result_folder=tmp_path,
+        source_folder=tmp_path,
+        source_files=[first, second],
+        recursive_file_search=False,
+        recognition_multiprocessing_enabled=False,
+        resume_manifest_path=manifest,
+        resume_from_manifest=False,
+    )
+    recognizer = ModelRecognizer(initial, bus)
+    recognizer._load_or_reset_manifest()
+    recognizer._record_completed_file(str(first), str(tmp_path / 'first.jpg'))
+
+    resumed = SimpleNamespace(**vars(initial))
+    resumed.source_files = [first, second]
+    resumed.resume_from_manifest = True
+    resumed_recognizer = ModelRecognizer(resumed, bus)
+    resumed_recognizer._load_or_reset_manifest()
+
+    assert resumed.source_files == [second]
+    assert manifest.exists()

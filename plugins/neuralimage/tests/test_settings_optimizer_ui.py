@@ -414,9 +414,6 @@ def test_settings_panel_uses_single_visible_label_inside_each_labeled_row(qapp):
 
     cases = (
         (panel.general_form, 'epochs', panel.epochs_spinbox),
-        (panel.general_form, 'sync_patch_sizes', panel.sync_patch_sizes_check_box),
-        (panel.general_form, 'train_patch_size', panel.train_patch_size_widget),
-        (panel.general_form, 'recognition_patch_size', panel.recognition_patch_size_widget),
         (panel.spatial_form, 'scale_augmentation_strength', panel.scale_augmentation_strength_spinbox),
         (panel.runtime_form, 'train_batch_size', panel.train_batch_spinbox),
         (panel.runtime_form, 'dataloader_num_workers', panel.dataloader_num_workers_spinbox),

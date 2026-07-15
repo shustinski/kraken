@@ -2,6 +2,7 @@ import os
 
 from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.lib.data_interfaces import WorkMode, normalize_validation_source, normalize_work_mode
+from neuralimage.lib.optimizer_availability import MUON_UNAVAILABLE_MESSAGE, is_muon_optimizer_available
 
 
 def _is_existing_dir(path: str) -> bool:
@@ -130,6 +131,13 @@ def get_processing_start_blockers(
 
     if settings_state is None:
         return blockers
+
+    if (
+        training_mode
+        and str(getattr(settings_state, 'optimizer_name', '')).strip().lower() == 'adamw_muon'
+        and not is_muon_optimizer_available()
+    ):
+        blockers.append(MUON_UNAVAILABLE_MESSAGE)
 
     if not training_mode or not bool(getattr(settings_state, 'use_validation', False)):
         return blockers

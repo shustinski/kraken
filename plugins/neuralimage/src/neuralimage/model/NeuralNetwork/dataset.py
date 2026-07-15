@@ -1,5 +1,6 @@
 import os
 import random
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from bisect import bisect_right
@@ -34,6 +35,19 @@ from neuralimage.model.NeuralNetwork.context_utils import (
     normalize_patch_coords,
     normalize_size_pair,
 )
+
+
+@dataclass(frozen=True)
+class PatchSampleRequest:
+    index: int
+    size_xy: tuple[int, int]
+
+    def __post_init__(self) -> None:
+        width, height = (int(value) for value in self.size_xy)
+        if int(self.index) < 0:
+            raise ValueError('patch request index must be non-negative')
+        if width <= 0 or height <= 0:
+            raise ValueError('patch request size must be positive')
 
 
 def _unwrap_tech_augmented_mask(result: np.ndarray | tuple[np.ndarray, np.ndarray]) -> np.ndarray:
@@ -269,6 +283,10 @@ class NoCutDataset(Dataset):
         self._global_context_cache.clear()
 
     def __getitem__(self, index):
+        requested_size: tuple[int, int] | None = None
+        if isinstance(index, PatchSampleRequest):
+            requested_size = tuple(int(value) for value in index.size_xy)
+            index = int(index.index)
         if index < 0 or index >= self._samples_amount:
             raise IndexError('dataset index out of range')
         frame, part = index_in_list(index, self._lookup_len_list)
@@ -278,7 +296,14 @@ class NoCutDataset(Dataset):
                 frame,
                 shuffle=self.shuffle_patches_in_frame,
             )
-        image, label = self._current_image_cutter[part]
+        if requested_size is None:
+            image, label = self._current_image_cutter[part]
+            requested_coords = None
+        else:
+            image, label, requested_coords = self._current_image_cutter.get_sized_item(
+                part,
+                size_xy=requested_size,
+            )
         image, label, augmented_local_image = self._apply_pcb_defects(
             image,
             label,
@@ -287,7 +312,11 @@ class NoCutDataset(Dataset):
         )
         if not self._use_context_branch:
             return image, label
-        patch_metadata = self._build_patch_metadata(self._current_image_cutter, part)
+        patch_metadata = self._build_patch_metadata(
+            self._current_image_cutter,
+            part,
+            coords_px=requested_coords,
+        )
         if self._use_cross_attention:
             global_image = self._build_global_context_image(
                 self._current_image_cutter,
@@ -304,7 +333,11 @@ class NoCutDataset(Dataset):
                 'source_size_hw': patch_metadata['source_size_hw'],
             }, label
 
-        context_image = self._build_context_crop(self._current_image_cutter, part)
+        context_image = self._build_context_crop(
+            self._current_image_cutter,
+            part,
+            coords_px=requested_coords,
+        )
         if augmented_local_image is not None:
             context_image = self._inject_local_patch_into_context(
                 context_image,
@@ -325,6 +358,15 @@ class NoCutDataset(Dataset):
         frame, part = index_in_list(int(index), self._lookup_len_list)
         image_path, _label_path = self.samples[frame]
         return f'{image_path.stem}__part_{int(part):06d}'
+
+    def frame_key(self, index: int) -> str:
+        frame, _part = index_in_list(int(index), self._lookup_len_list)
+        image_path, _label_path = self.samples[frame]
+        return str(image_path.resolve())
+
+    def sample_key(self, index: int) -> str:
+        frame, part = index_in_list(int(index), self._lookup_len_list)
+        return f'{self.frame_key(index)}::{int(part)}'
 
     def _create_files_list(self):
         if self.shuffle_frames:
@@ -472,8 +514,15 @@ class NoCutDataset(Dataset):
             return None
         return rare_mask
 
-    def _build_context_crop(self, cutter: SampleFastCutter, part: int):
-        left, top, right, bottom = cutter.resolve_part_coordinates(part)
+    def _build_context_crop(
+        self,
+        cutter: SampleFastCutter,
+        part: int,
+        *,
+        coords_px: tuple[int, int, int, int] | None = None,
+    ):
+        geometry = cutter.resolve_part_geometry(part)
+        left, top, right, bottom = coords_px or tuple(int(value) for value in geometry['coords_px'])
         window = PatchWindow(
             left=int(left),
             top=int(top),
@@ -481,7 +530,7 @@ class NoCutDataset(Dataset):
             height=max(1, int(bottom - top)),
         )
         return extract_centered_crop(
-            cutter.image_matrix,
+            cutter.resolve_transformed_image_matrix(part),
             center_x=window.center_x,
             center_y=window.center_y,
             crop_size_xy=self._context_crop_size,
@@ -489,13 +538,19 @@ class NoCutDataset(Dataset):
             interpolation_mode='bilinear',
         )
 
-    def _build_patch_metadata(self, cutter: SampleFastCutter, part: int) -> dict[str, np.ndarray | str]:
+    def _build_patch_metadata(
+        self,
+        cutter: SampleFastCutter,
+        part: int,
+        *,
+        coords_px: tuple[int, int, int, int] | None = None,
+    ) -> dict[str, np.ndarray | str]:
         geometry = cutter.resolve_part_geometry(part)
-        coords_px = np.asarray(geometry['coords_px'], dtype=np.float32)
+        resolved_coords = np.asarray(coords_px or geometry['coords_px'], dtype=np.float32)
         source_size_hw_tuple = tuple(int(value) for value in geometry['source_size_hw'])
         return {
-            'patch_coords_px': coords_px,
-            'patch_coords_norm': normalize_patch_coords(coords_px, source_size_hw_tuple),
+            'patch_coords_px': resolved_coords,
+            'patch_coords_norm': normalize_patch_coords(resolved_coords, source_size_hw_tuple),
             'source_size_hw': np.asarray(source_size_hw_tuple, dtype=np.float32),
             'transform_variant': str(geometry['transform_variant']),
         }
@@ -703,7 +758,19 @@ class SyntheticDefectDataset(Dataset):
         frame, part = self._resolve_index(int(idx))
         return f'synthetic_frame_{int(frame):06d}__part_{int(part):06d}'
 
+    def frame_key(self, idx: int) -> str:
+        frame, _part = self._resolve_index(int(idx))
+        return f'synthetic::{int(self._resolve_frame_id(frame))}'
+
+    def sample_key(self, idx: int) -> str:
+        frame, part = self._resolve_index(int(idx))
+        return f'{self.frame_key(idx)}::{int(part)}'
+
     def __getitem__(self, idx: int):
+        requested_size: tuple[int, int] | None = None
+        if isinstance(idx, PatchSampleRequest):
+            requested_size = tuple(int(value) for value in idx.size_xy)
+            idx = int(idx.index)
         if idx < 0 or idx >= self._samples_amount:
             raise IndexError('dataset index out of range')
         frame, part = self._resolve_index(int(idx))
@@ -715,14 +782,25 @@ class SyntheticDefectDataset(Dataset):
             )
         if self._current_frame_cutter is None:
             raise RuntimeError('Synthetic frame cutter is not initialized')
-        image, label = self._current_frame_cutter[part]
+        if requested_size is None:
+            image, label = self._current_frame_cutter[part]
+            requested_coords = None
+        else:
+            image, label, requested_coords = self._current_frame_cutter.get_sized_item(
+                part,
+                size_xy=requested_size,
+            )
         image_tensor = torch.from_numpy(np.ascontiguousarray(image)).float()
         label_tensor = torch.from_numpy(np.ascontiguousarray(label)).float()
 
         if not self._use_context_branch:
             return image_tensor, label_tensor
 
-        patch_metadata = self._build_patch_metadata(self._current_frame_cutter, part)
+        patch_metadata = self._build_patch_metadata(
+            self._current_frame_cutter,
+            part,
+            coords_px=requested_coords,
+        )
         if self._use_cross_attention:
             global_image = self._build_global_context_image(
                 self._current_frame_cutter,
@@ -738,7 +816,11 @@ class SyntheticDefectDataset(Dataset):
                 'source_size_hw': torch.from_numpy(np.ascontiguousarray(patch_metadata['source_size_hw'])).float(),
             }, label_tensor
 
-        context_image = self._build_context_crop(self._current_frame_cutter, part)
+        context_image = self._build_context_crop(
+            self._current_frame_cutter,
+            part,
+            coords_px=requested_coords,
+        )
         return {
             'local_image': image_tensor,
             'context_image': torch.from_numpy(np.ascontiguousarray(context_image)).float(),
@@ -825,8 +907,15 @@ class SyntheticDefectDataset(Dataset):
             self._frame_cache.popitem(last=False)
         return cutter
 
-    def _build_context_crop(self, cutter: SampleFastCutter, part: int) -> np.ndarray:
-        left, top, right, bottom = cutter.resolve_part_coordinates(part)
+    def _build_context_crop(
+        self,
+        cutter: SampleFastCutter,
+        part: int,
+        *,
+        coords_px: tuple[int, int, int, int] | None = None,
+    ) -> np.ndarray:
+        geometry = cutter.resolve_part_geometry(part)
+        left, top, right, bottom = coords_px or tuple(int(value) for value in geometry['coords_px'])
         window = PatchWindow(
             left=int(left),
             top=int(top),
@@ -834,7 +923,7 @@ class SyntheticDefectDataset(Dataset):
             height=max(1, int(bottom - top)),
         )
         return extract_centered_crop(
-            cutter.image_matrix,
+            cutter.resolve_transformed_image_matrix(part),
             center_x=window.center_x,
             center_y=window.center_y,
             crop_size_xy=self._context_crop_size,
@@ -842,13 +931,19 @@ class SyntheticDefectDataset(Dataset):
             interpolation_mode='bilinear',
         )
 
-    def _build_patch_metadata(self, cutter: SampleFastCutter, part: int) -> dict[str, np.ndarray | str]:
+    def _build_patch_metadata(
+        self,
+        cutter: SampleFastCutter,
+        part: int,
+        *,
+        coords_px: tuple[int, int, int, int] | None = None,
+    ) -> dict[str, np.ndarray | str]:
         geometry = cutter.resolve_part_geometry(part)
-        coords_px = np.asarray(geometry['coords_px'], dtype=np.float32)
+        resolved_coords = np.asarray(coords_px or geometry['coords_px'], dtype=np.float32)
         source_size_hw_tuple = tuple(int(value) for value in geometry['source_size_hw'])
         return {
-            'patch_coords_px': coords_px,
-            'patch_coords_norm': normalize_patch_coords(coords_px, source_size_hw_tuple),
+            'patch_coords_px': resolved_coords,
+            'patch_coords_norm': normalize_patch_coords(resolved_coords, source_size_hw_tuple),
             'source_size_hw': np.asarray(source_size_hw_tuple, dtype=np.float32),
             'transform_variant': str(geometry['transform_variant']),
         }
@@ -991,6 +1086,13 @@ class CustomDataset(Dataset):
     def describe_sample(self, idx: int) -> str:
         image_path, _label_path = self.samples[int(idx)]
         return str(image_path.stem)
+
+    def frame_key(self, idx: int) -> str:
+        image_path, _label_path = self.samples[int(idx)]
+        return str(image_path.resolve())
+
+    def sample_key(self, idx: int) -> str:
+        return self.frame_key(idx)
 
     def set_epoch(self) -> None:
         self._epoch_index += 1

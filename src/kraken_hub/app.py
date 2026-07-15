@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from urllib import parse as urlparse
 
@@ -28,6 +29,13 @@ def bundled_catalog_path() -> Path:
 
 def default_plugins_dir() -> Path:
     return Path(os.getenv("KRAKEN_PLUGINS_DIR", "")).expanduser().resolve() if os.getenv("KRAKEN_PLUGINS_DIR") else workspace_root() / "plugins"
+
+
+def application_version() -> str:
+    try:
+        return importlib_metadata.version("kraken")
+    except importlib_metadata.PackageNotFoundError:
+        return "0.0.0"
 
 
 def discover_catalog(explicit_path: str | None = None) -> str:
@@ -135,8 +143,8 @@ def print_inventory(items: list[PluginInventoryItem]) -> None:
         print(f"{plugin.id}\t{plugin.version}\t{enabled}\t{installed}\t{plugin.display_name}")
 
 
-def run_gui(items: list[PluginInventoryItem]) -> int:
-    from PyQt6.QtCore import Qt
+def run_gui(items: list[PluginInventoryItem], *, update_url: str = "") -> int:
+    from PyQt6.QtCore import QSettings, QTimer, Qt
     from PyQt6.QtWidgets import (
         QApplication,
         QFrame,
@@ -149,7 +157,10 @@ def run_gui(items: list[PluginInventoryItem]) -> int:
         QTextEdit,
         QVBoxLayout,
         QWidget,
+        QInputDialog,
     )
+    from kraken_core.update_ui import QtUpdateController
+    from kraken_core.updater import UpdateService
 
     app = QApplication(sys.argv)
     configure_application_identity(app, app_id="Kraken.Hub", icon_name="kraken")
@@ -159,6 +170,38 @@ def run_gui(items: list[PluginInventoryItem]) -> int:
     central = QWidget()
     layout = QVBoxLayout(central)
     layout.setSpacing(10)
+
+    settings = QSettings("Kraken", "KrakenHub")
+    configured_update_url = update_url or os.getenv("KRAKEN_UPDATE_URL", "") or str(settings.value("updates/url", ""))
+    update_service = UpdateService(configured_update_url, current_version=application_version(), app_id="kraken-hub")
+    update_controller = QtUpdateController(window, update_service, application_name="Kraken Hub")
+    update_row = QWidget()
+    update_layout = QHBoxLayout(update_row)
+    update_layout.setContentsMargins(0, 0, 0, 0)
+    update_status = QLabel("Updates are ready" if configured_update_url else "Update source is not configured")
+    update_layout.addWidget(update_status, 1)
+    update_controller.status_changed.connect(update_status.setText)
+    check_updates_button = QPushButton("Check for updates")
+    check_updates_button.clicked.connect(lambda: update_controller.check(include_dismissed=True))
+    update_layout.addWidget(check_updates_button)
+    source_button = QPushButton("Update source…")
+
+    def configure_update_source() -> None:
+        value, accepted = QInputDialog.getText(
+            window,
+            "Update source",
+            "Manifest URL or local path:",
+            text=update_service.manifest_url,
+        )
+        if not accepted:
+            return
+        update_service.manifest_url = value.strip()
+        settings.setValue("updates/url", update_service.manifest_url)
+        update_status.setText("Update source saved" if update_service.manifest_url else "Update source is not configured")
+
+    source_button.clicked.connect(configure_update_source)
+    update_layout.addWidget(source_button)
+    layout.addWidget(update_row)
 
     def refresh_after_install() -> None:
         QMessageBox.information(window, "Kraken Hub", "Plugin installation finished. Restart Kraken Hub to refresh status.")
@@ -225,6 +268,8 @@ def run_gui(items: list[PluginInventoryItem]) -> int:
     window.setCentralWidget(scroll)
     window.resize(920, 540)
     window.show()
+    if update_service.manifest_url:
+        QTimer.singleShot(0, lambda: update_controller.check(quiet=True))
     return app.exec()
 
 
@@ -253,6 +298,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--catalog", help="Path to plugins.json catalog.")
     parser.add_argument("--plugins-dir", help="Folder where Kraken plugins are stored.")
     parser.add_argument("--list", action="store_true", help="Print plugin catalog and exit.")
+    parser.add_argument(
+        "--update-url",
+        help="URL or local path of the Kraken Hub update manifest (also KRAKEN_UPDATE_URL).",
+    )
     args = parser.parse_args(argv)
     catalog = discover_catalog(args.catalog)
     plugins_dir = Path(args.plugins_dir).expanduser().resolve() if args.plugins_dir else default_plugins_dir()
@@ -261,4 +310,4 @@ def main(argv: list[str] | None = None) -> None:
     if args.list:
         print_inventory(inventory)
         return
-    raise SystemExit(run_gui(inventory))
+    raise SystemExit(run_gui(inventory, update_url=args.update_url or ""))

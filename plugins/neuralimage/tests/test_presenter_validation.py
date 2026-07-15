@@ -4,6 +4,8 @@ from neuralimage.application.services.validation import (
     can_start_processing,
     get_processing_start_blockers,
 )
+import neuralimage.application.services.validation as validation_module
+from neuralimage.lib.optimizer_availability import MUON_UNAVAILABLE_MESSAGE
 from tests.helpers import make_test_dir
 
 
@@ -145,3 +147,20 @@ def test_build_processing_start_error_message_formats_blockers_for_dialog():
 
     assert message.startswith('\u0417\u0430\u043f\u0443\u0441\u043a \u043d\u0435\u0432\u043e\u0437\u043c\u043e\u0436\u0435\u043d:\n- ')
     assert '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 \u0440\u0435\u0436\u0438\u043c \u0440\u0430\u0431\u043e\u0442\u044b.' in message
+
+
+def test_muon_unavailable_blocks_training_with_user_warning(monkeypatch):
+    tmp_path = make_test_dir('presenter_validation_muon')
+    state = MainWindowState(
+        work_mode='train_only',
+        sample_folder=str(tmp_path),
+        label_folder=str(tmp_path),
+        epochs=1,
+    )
+    settings = SettingsState(optimizer_name='adamw_muon')
+    monkeypatch.setattr(validation_module, 'is_muon_optimizer_available', lambda: False)
+
+    message = build_processing_start_error_message(state, settings)
+
+    assert MUON_UNAVAILABLE_MESSAGE in message
+    assert can_start_processing(state, settings) is False

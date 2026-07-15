@@ -34,6 +34,46 @@ class UpdateInfo:
     mandatory: bool = False
     releases: tuple[ReleaseInfo, ...] = ()
     channel: str = "stable"
+    source: str = ""
+
+
+@dataclass
+class UpdateService:
+    """Backend for one application's update flow.
+
+    Dismissed versions deliberately live only on this instance.  A new process
+    creates a new service and therefore offers the update again.
+    """
+
+    manifest_url: str
+    current_version: str
+    app_id: str
+    timeout_seconds: float = 5.0
+    _dismissed_versions: set[str] | None = None
+
+    def __post_init__(self) -> None:
+        self.manifest_url = str(self.manifest_url or "").strip()
+        self._dismissed_versions = set()
+
+    def check(self, *, include_dismissed: bool = False) -> UpdateInfo | None:
+        update = fetch_update_info(self.manifest_url, self.timeout_seconds)
+        if update is None or not is_newer_version(update.version, self.current_version):
+            return None
+        if not include_dismissed and update.version in (self._dismissed_versions or set()):
+            return None
+        return update
+
+    def dismiss_for_session(self, update: UpdateInfo | str) -> None:
+        version = update.version if isinstance(update, UpdateInfo) else str(update)
+        if version:
+            assert self._dismissed_versions is not None
+            self._dismissed_versions.add(version)
+
+    def download(self, update: UpdateInfo) -> Path:
+        release = select_platform_release(update)
+        if release is None:
+            raise ValueError("Update does not contain a release for this platform.")
+        return download_update_installer(release, app_id=self.app_id, manifest_url=update.source)
 
 
 def parse_version_parts(version: str) -> tuple[int, ...]:
@@ -85,6 +125,7 @@ def parse_update_payload(payload: dict[str, Any], *, source: str = "") -> Update
         mandatory=bool(payload.get("mandatory", False)),
         releases=tuple(releases),
         channel=channel,
+        source=source,
     )
 
 
@@ -119,12 +160,12 @@ def select_platform_release(update_info: UpdateInfo, platform: str | None = None
     return candidates[0]
 
 
-def download_update_installer(release: ReleaseInfo, *, app_id: str) -> Path:
+def download_update_installer(release: ReleaseInfo, *, app_id: str, manifest_url: str = "") -> Path:
     if not release.download_url:
         raise ValueError("Update release does not contain download_url.")
     target_dir = Path(tempfile.gettempdir()) / "KrakenUpdater" / sanitize_filename(app_id)
     target_dir.mkdir(parents=True, exist_ok=True)
-    source = release.download_url
+    source = resolve_source_reference(release.download_url, manifest_url)
     target_path = target_dir / resolve_installer_name(release, source)
     if is_filesystem_source(source):
         shutil.copyfile(Path(source), target_path)
@@ -161,6 +202,17 @@ def sanitize_filename(value: str) -> str:
 def is_filesystem_source(value: str) -> bool:
     normalized = str(value or "").strip()
     return bool(normalized) and _URL_SCHEME_RE.match(normalized) is None
+
+
+def resolve_source_reference(value: str, manifest_url: str = "") -> str:
+    """Resolve installer paths relative to the manifest that declared them."""
+    source = str(value or "").strip()
+    manifest = str(manifest_url or "").strip()
+    if not source or not manifest or _URL_SCHEME_RE.match(source) or Path(source).is_absolute():
+        return source
+    if is_filesystem_source(manifest):
+        return str((Path(manifest).expanduser().resolve().parent / source).resolve())
+    return urlparse.urljoin(manifest, source)
 
 
 def ensure_posix_executable(path: Path) -> None:

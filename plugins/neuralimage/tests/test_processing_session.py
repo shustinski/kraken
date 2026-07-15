@@ -119,3 +119,36 @@ def test_pause_active_marks_task_paused_without_starting_next():
     assert result.paused is True
     assert first.status == 'paused'
     assert session.active_task is None
+
+
+def test_pause_request_exposes_pausing_then_allows_next_task():
+    session = ProcessingSession()
+    first = session.enqueue_task(*_make_states('train_only'))
+    second = session.enqueue_task(*_make_states('recognition_only'))
+    session.next_task_to_start(worker_running=False)
+
+    session.request_pause_active()
+    assert session.queue_snapshot()[0].status == 'pausing'
+
+    result = session.complete_active_task()
+    next_task = session.next_task_to_start(worker_running=False).task
+
+    assert result.paused is True
+    assert first.status == 'paused'
+    assert next_task is second
+
+
+def test_stopped_task_has_distinct_status_and_restarts_in_place():
+    session = ProcessingSession()
+    task = session.enqueue_task(*_make_states('train_only'))
+    session.next_task_to_start(worker_running=False)
+    session.request_stop()
+
+    result = session.complete_active_task()
+    assert task.status == 'stopped'
+    restarted = session.restart_task_by_index(0)
+
+    assert result.task is task
+    assert task.status == 'waiting'
+    assert restarted is task
+    assert restarted.task_id == 1

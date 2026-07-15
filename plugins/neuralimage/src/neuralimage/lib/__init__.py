@@ -283,11 +283,6 @@ def _build_settings_state(
         learning_rate=read_float('learning_rate', defaults.learning_rate),
         weight_decay=read_float('weight_decay', defaults.weight_decay),
         early_stopping_enabled=read_bool('early_stopping_enabled', defaults.early_stopping_enabled),
-        early_stopping_patience=read_int('early_stopping_patience', defaults.early_stopping_patience),
-        early_stopping_min_delta=read_float('early_stopping_min_delta', defaults.early_stopping_min_delta),
-        early_stopping_restore_best_weights=read_bool(
-            'early_stopping_restore_best_weights', defaults.early_stopping_restore_best_weights
-        ),
         warmup_enabled=read_bool('warmup_enabled', defaults.warmup_enabled),
         deep_supervision=read_bool(
             'deep_supervision',
@@ -359,8 +354,17 @@ def _build_settings_state(
             getattr(defaults, 'scheduler_step_lr_gamma', 0.1),
         ),
         hard_mining_enabled=read_bool('hard_mining_enabled', defaults.hard_mining_enabled),
-        hard_mining_strength=read_float('hard_mining_strength', defaults.hard_mining_strength),
-        hard_mining_ema_alpha=read_float('hard_mining_ema_alpha', defaults.hard_mining_ema_alpha),
+        random_patch_size_enabled=read_bool(
+            'random_patch_size_enabled', getattr(defaults, 'random_patch_size_enabled', False)
+        ),
+        random_patch_min_size=(
+            read_int('random_patch_min_width', getattr(defaults, 'random_patch_min_size', (128, 128))[0]),
+            read_int('random_patch_min_height', getattr(defaults, 'random_patch_min_size', (128, 128))[1]),
+        ),
+        random_patch_max_size=(
+            read_int('random_patch_max_width', getattr(defaults, 'random_patch_max_size', (512, 512))[0]),
+            read_int('random_patch_max_height', getattr(defaults, 'random_patch_max_size', (512, 512))[1]),
+        ),
         hard_pixel_mining_enabled=read_bool(
             'hard_pixel_mining_enabled',
             getattr(defaults, 'hard_pixel_mining_enabled', False),
@@ -572,9 +576,6 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'learning_rate': float(state.learning_rate),
         'weight_decay': float(state.weight_decay),
         'early_stopping_enabled': bool(state.early_stopping_enabled),
-        'early_stopping_patience': int(state.early_stopping_patience),
-        'early_stopping_min_delta': float(state.early_stopping_min_delta),
-        'early_stopping_restore_best_weights': bool(state.early_stopping_restore_best_weights),
         'warmup_enabled': bool(state.warmup_enabled),
         'deep_supervision': bool(getattr(state, 'deep_supervision', False)),
         'warmup_epochs': int(state.warmup_epochs),
@@ -600,8 +601,11 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'scheduler_step_lr_step_size': int(getattr(state, 'scheduler_step_lr_step_size', 10)),
         'scheduler_step_lr_gamma': float(getattr(state, 'scheduler_step_lr_gamma', 0.1)),
         'hard_mining_enabled': bool(state.hard_mining_enabled),
-        'hard_mining_strength': float(state.hard_mining_strength),
-        'hard_mining_ema_alpha': float(state.hard_mining_ema_alpha),
+        'random_patch_size_enabled': bool(getattr(state, 'random_patch_size_enabled', False)),
+        'random_patch_min_width': int(getattr(state, 'random_patch_min_size', (128, 128))[0]),
+        'random_patch_min_height': int(getattr(state, 'random_patch_min_size', (128, 128))[1]),
+        'random_patch_max_width': int(getattr(state, 'random_patch_max_size', (512, 512))[0]),
+        'random_patch_max_height': int(getattr(state, 'random_patch_max_size', (512, 512))[1]),
         'hard_pixel_mining_enabled': bool(getattr(state, 'hard_pixel_mining_enabled', False)),
         'hard_pixel_mining_ratio': float(getattr(state, 'hard_pixel_mining_ratio', 0.25)),
         'cutout_enabled': bool(getattr(state, 'cutout_enabled', False)),

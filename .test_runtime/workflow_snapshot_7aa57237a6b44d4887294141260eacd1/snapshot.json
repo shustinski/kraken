@@ -1,0 +1,733 @@
+{
+  "format_version": 1,
+  "saved_at": "2026-07-15T10:55:12.350407+00:00",
+  "main_window_state": {
+    "work_mode": "train_and_recognition",
+    "source_path": "D:\\code\\kraken\\.test_runtime\\workflow_snapshot_7aa57237a6b44d4887294141260eacd1\\source",
+    "result_path": "D:\\code\\kraken\\.test_runtime\\workflow_snapshot_7aa57237a6b44d4887294141260eacd1\\result",
+    "model_path": "",
+    "label_path": "D:\\code\\kraken\\.test_runtime\\workflow_snapshot_7aa57237a6b44d4887294141260eacd1\\labels",
+    "sample_path": "D:\\code\\kraken\\.test_runtime\\workflow_snapshot_7aa57237a6b44d4887294141260eacd1\\images",
+    "epochs": 12,
+    "ui_mode": "simple",
+    "mode_state_json": "{}"
+  },
+  "settings_state": {
+    "cut_step": 100,
+    "horizontal_rotation": true,
+    "vertical_rotation": true,
+    "flip_x": false,
+    "flip_y": false,
+    "additional_augmentation": false,
+    "augmentation_brightness_strength": 0.1,
+    "augmentation_contrast_strength": 0.1,
+    "augmentation_gamma_strength": 0.15,
+    "augmentation_noise_probability": 0.5,
+    "augmentation_noise_sigma": 0.01,
+    "augmentation_blur_probability": 0.25,
+    "augmentation_blur_radius": 1.0,
+    "model": "M 720k",
+    "color_mode": "RGB",
+    "shuffle": true,
+    "shuffle_patches_in_frame": true,
+    "random_crop": false,
+    "crops_per_image": 64,
+    "scale_augmentation": false,
+    "scale_augmentation_strength": 0.2,
+    "validation": false,
+    "validation_percent": 20,
+    "validation_source": "split",
+    "validation_image_folder": "",
+    "validation_label_folder": "",
+    "save_validation_binary_images": false,
+    "sample_cut_mode": "online",
+    "batch_size": 9,
+    "dataloader_num_workers": -1,
+    "train_batch_size": 9,
+    "recognition_batch_size": 5,
+    "sync_patch_sizes": false,
+    "patch_batch_sync_mode": "off",
+    "overlap": 14,
+    "recognition_jpeg_quality": 88,
+    "recognition_multiprocessing_enabled": true,
+    "recognition_binarize_output": true,
+    "recognition_use_auto_threshold": true,
+    "recognition_threshold": 0.5,
+    "recognition_tta_enabled": true,
+    "confidence_tta_enabled": true,
+    "recognition_postprocess": false,
+    "recognition_postprocess_kernel_size": 3,
+    "confidence_save_mode": "separate_grayscale",
+    "log_update_frequency": 0,
+    "crop_enabled": false,
+    "resize_enabled": false,
+    "additional_processing": false,
+    "edge_cut_size": 0,
+    "compression_factor": 1,
+    "recursive_file_search": false,
+    "sample_x_size": 128,
+    "sample_y_size": 256,
+    "train_patch_x_size": 128,
+    "train_patch_y_size": 256,
+    "recognition_patch_x_size": 64,
+    "recognition_patch_y_size": 96,
+    "optimizer_name": "adam",
+    "mixed_precision": "fp16",
+    "loss_function": "bce",
+    "loss_term_weights_json": "{\"bce\":1.0}",
+    "dice_loss_weight": 0.5,
+    "iou_loss_weight": 0.5,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0,
+    "early_stopping_enabled": false,
+    "warmup_enabled": false,
+    "deep_supervision": false,
+    "warmup_epochs": 3,
+    "warmup_start_factor": 0.1,
+    "scheduler_name": "off",
+    "scheduler_plateau_factor": 0.5,
+    "scheduler_plateau_patience": 3,
+    "scheduler_plateau_threshold": 0.0001,
+    "scheduler_plateau_min_lr": 1e-06,
+    "scheduler_plateau_cooldown": 0,
+    "scheduler_cosine_t_max": 10,
+    "scheduler_cosine_eta_min": 1e-06,
+    "scheduler_one_cycle_max_lr": 0.001,
+    "scheduler_one_cycle_pct_start": 0.3,
+    "scheduler_one_cycle_anneal_strategy": "cos",
+    "scheduler_one_cycle_div_factor": 25.0,
+    "scheduler_one_cycle_final_div_factor": 10000.0,
+    "scheduler_one_cycle_three_phase": false,
+    "scheduler_step_lr_step_size": 10,
+    "scheduler_step_lr_gamma": 0.1,
+    "hard_mining_enabled": false,
+    "random_patch_size_enabled": false,
+    "random_patch_min_width": 128,
+    "random_patch_min_height": 128,
+    "random_patch_max_width": 512,
+    "random_patch_max_height": 512,
+    "hard_pixel_mining_enabled": false,
+    "hard_pixel_mining_ratio": 0.25,
+    "cutout_enabled": false,
+    "cutout_probability": 1.0,
+    "cutout_holes": 1,
+    "cutout_size_ratio": 0.25,
+    "random_artifacts_enabled": false,
+    "random_artifacts_probability": 1.0,
+    "random_artifacts_count": 1,
+    "random_artifacts_size_ratio": 0.25,
+    "random_artifacts_dust_enabled": true,
+    "random_artifacts_resist_residue_enabled": true,
+    "random_artifacts_etch_residue_enabled": true,
+    "random_artifacts_particle_cluster_enabled": true,
+    "random_artifacts_flake_enabled": true,
+    "mixup_enabled": false,
+    "mixup_probability": 1.0,
+    "mixup_alpha": 0.2,
+    "skip_uniform_labels": false,
+    "rare_patch_oversampling_enabled": false,
+    "rare_patch_oversampling_factor": 2,
+    "use_multi_gpu": false,
+    "multi_gpu_mode": "off",
+    "torch_compile_enabled": false,
+    "show_batch_preview": true,
+    "synthetic_defect_generator_json": "{}",
+    "tech_aug_json": "{}",
+    "pcb_defects_json": "{}"
+  },
+  "workflow": {
+    "work_mode": "train_and_recognition",
+    "training": {
+      "image_path": "D:\\code\\kraken\\.test_runtime\\workflow_snapshot_7aa57237a6b44d4887294141260eacd1\\images",
+      "label_path": "D:\\code\\kraken\\.test_runtime\\workflow_snapshot_7aa57237a6b44d4887294141260eacd1\\labels",
+      "shuffle": true,
+      "validation": false,
+      "validation_percent": 20,
+      "batch_size": 9,
+      "cut_mode": "online",
+      "colors": 3,
+      "epochs": 12,
+      "generation": {
+        "step": 100,
+        "segment_size": [
+          128,
+          256
+        ],
+        "vertical_rotation": true,
+        "horizontal_rotation": true,
+        "channels": 3,
+        "flip_x": false,
+        "flip_y": false,
+        "additional_augmentation": false,
+        "augmentation_brightness_strength": 0.1,
+        "augmentation_contrast_strength": 0.1,
+        "augmentation_gamma_strength": 0.15,
+        "augmentation_noise_probability": 0.5,
+        "augmentation_noise_sigma": 0.01,
+        "augmentation_blur_probability": 0.25,
+        "augmentation_blur_radius": 1.0,
+        "shuffle_patches_in_frame": true,
+        "random_crop": false,
+        "crops_per_image": 64,
+        "scale_augmentation": false,
+        "scale_augmentation_strength": 0.2,
+        "recursive_file_search": false,
+        "tech_aug": {
+          "enabled": false,
+          "min_operations": 1,
+          "max_operations": 3,
+          "debug_return_pair": false,
+          "binarization_threshold": 0.5,
+          "binary_tolerance": 0.15,
+          "max_changed_pixels_ratio": 0.32,
+          "max_foreground_ratio_delta": 0.2,
+          "global_width": {
+            "probability": 0.45,
+            "kernel_size_range": [
+              2,
+              3
+            ],
+            "erosion_probability": 0.5
+          },
+          "scale_rethreshold": {
+            "probability": 0.35,
+            "scale_range": [
+              0.82,
+              1.18
+            ],
+            "threshold": 0.5
+          },
+          "blur_threshold": {
+            "probability": 0.3,
+            "blur_radius_range": [
+              0.6,
+              1.8
+            ],
+            "threshold": 0.5
+          },
+          "boundary_aware": {
+            "probability": 0.7,
+            "band_width_range": [
+              2,
+              4
+            ],
+            "noise_cell_size_range": [
+              3,
+              10
+            ],
+            "add_probability": 0.34,
+            "remove_probability": 0.2,
+            "min_addition_support": 1,
+            "min_removal_support": 4,
+            "smoothing_kernel_size": 2
+          },
+          "local_morphology": {
+            "probability": 0.35,
+            "roi_count_range": [
+              2,
+              4
+            ],
+            "roi_size_ratio_range": [
+              0.18,
+              0.4
+            ],
+            "kernel_size_range": [
+              2,
+              3
+            ],
+            "erosion_probability": 0.5
+          },
+          "gap_variation": {
+            "probability": 0.3,
+            "kernel_size_range": [
+              2,
+              3
+            ],
+            "opening_probability": 0.4,
+            "max_bridge_neighbor_count": 5,
+            "min_gap_neighbor_count": 1
+          }
+        }
+      },
+      "prepare": {
+        "enable_crop": false,
+        "enable_resize": false,
+        "edge_cut": [
+          0,
+          0
+        ],
+        "target_size": [
+          2000,
+          2000
+        ],
+        "compression_factor": 1
+      },
+      "validation_source": "split",
+      "validation_image_path": null,
+      "validation_label_path": null,
+      "save_validation_binary_images": false,
+      "optimizer": {
+        "name": "adam",
+        "learning_rate": 0.001,
+        "weight_decay": 0.0
+      },
+      "mixed_precision": "fp16",
+      "loss_function": "bce",
+      "loss_term_weights": {
+        "bce": 1.0
+      },
+      "dice_loss_weight": 0.5,
+      "iou_loss_weight": 0.5,
+      "early_stopping": {
+        "enabled": false
+      },
+      "warmup": {
+        "enabled": false,
+        "epochs": 3,
+        "start_factor": 0.1
+      },
+      "scheduler": {
+        "name": "off",
+        "plateau_factor": 0.5,
+        "plateau_patience": 3,
+        "plateau_threshold": 0.0001,
+        "plateau_min_lr": 1e-06,
+        "plateau_cooldown": 0,
+        "cosine_t_max": 10,
+        "cosine_eta_min": 1e-06,
+        "one_cycle_max_lr": 0.001,
+        "one_cycle_pct_start": 0.3,
+        "one_cycle_anneal_strategy": "cos",
+        "one_cycle_div_factor": 25.0,
+        "one_cycle_final_div_factor": 10000.0,
+        "one_cycle_three_phase": false,
+        "step_lr_step_size": 10,
+        "step_lr_gamma": 0.1
+      },
+      "hard_mining": {
+        "enabled": false,
+        "pixel_enabled": false,
+        "pixel_keep_ratio": 0.25
+      },
+      "random_patch_size": {
+        "enabled": false,
+        "min_size": [
+          128,
+          128
+        ],
+        "max_size": [
+          512,
+          512
+        ]
+      },
+      "cutout": {
+        "enabled": false,
+        "probability": 1.0,
+        "holes": 1,
+        "size_ratio": 0.25
+      },
+      "random_artifacts": {
+        "enabled": false,
+        "probability": 1.0,
+        "count": 1,
+        "size_ratio": 0.25,
+        "dust_enabled": true,
+        "resist_residue_enabled": true,
+        "etch_residue_enabled": true,
+        "particle_cluster_enabled": true,
+        "flake_enabled": true
+      },
+      "mixup": {
+        "enabled": false,
+        "probability": 1.0,
+        "alpha": 0.2
+      },
+      "skip_uniform_labels": false,
+      "rare_patch_oversampling_enabled": false,
+      "rare_patch_oversampling_factor": 2,
+      "use_multi_gpu": false,
+      "multi_gpu_mode": "off",
+      "show_batch_preview": true,
+      "log_update_frequency": 0,
+      "local_crop_size": [
+        128,
+        256
+      ],
+      "context_crop_size": null,
+      "context_input_size": null,
+      "context_branch_channels": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "fusion_type": "concat",
+      "use_context_branch": false,
+      "use_cross_attention": true,
+      "attention_dim": 128,
+      "attention_heads": 4,
+      "attention_max_global_tokens": 1024,
+      "deep_supervision": false,
+      "artifact_dir": null,
+      "resume_from_checkpoint": false,
+      "dataloader_num_workers": -1,
+      "recursive_file_search": false,
+      "pcb_defects": {
+        "enabled": false,
+        "defect_probability": 0.5,
+        "min_defects": 1,
+        "max_defects": 3,
+        "max_attempts_per_defect": 8,
+        "min_component_area": 12,
+        "break_width_range": [
+          1,
+          5
+        ],
+        "short_bridge_distance_range": [
+          2,
+          24
+        ],
+        "missing_copper_radius_range": [
+          2,
+          8
+        ],
+        "excess_copper_radius_range": [
+          2,
+          7
+        ],
+        "pinhole_radius_range": [
+          1,
+          3
+        ],
+        "spurious_copper_radius_range": [
+          1,
+          4
+        ],
+        "via_hole_area_range": [
+          12,
+          400
+        ],
+        "via_shift_range": [
+          1,
+          4
+        ],
+        "via_size_delta_range": [
+          1,
+          3
+        ],
+        "misalignment_shift_range": [
+          1,
+          5
+        ],
+        "misalignment_roi_scale_range": [
+          0.2,
+          0.45
+        ],
+        "use_input_mask": true,
+        "use_defect_mask_as_label": false,
+        "defect_probabilities": {
+          "break": 1.0,
+          "short": 1.0,
+          "missing_copper": 1.0,
+          "excess_copper": 1.0,
+          "pinhole": 1.0,
+          "spurious_copper": 1.0,
+          "via": 1.0,
+          "misalignment": 1.0
+        },
+        "defect_severities": {
+          "break": 0.5,
+          "short": 0.5,
+          "missing_copper": 0.5,
+          "excess_copper": 0.5,
+          "pinhole": 0.5,
+          "spurious_copper": 0.5,
+          "via": 0.5,
+          "misalignment": 0.5
+        }
+      },
+      "synthetic_defect_generator": {
+        "enabled": false,
+        "epoch_size_factor": 1.0,
+        "topology_domain": "pcb",
+        "topology_family": "pcb_mixed",
+        "image_size_xy": [
+          1024,
+          1024
+        ],
+        "trace_count_range": [
+          5,
+          5
+        ],
+        "segment_count_range": [
+          4,
+          4
+        ],
+        "trace_half_width_range": [
+          2,
+          2
+        ],
+        "margin": 12,
+        "background_noise_sigma_range": [
+          0.02,
+          0.02
+        ],
+        "trace_noise_sigma_range": [
+          0.01,
+          0.01
+        ],
+        "pcb_defects": {
+          "enabled": false,
+          "defect_probability": 0.5,
+          "min_defects": 1,
+          "max_defects": 3,
+          "max_attempts_per_defect": 8,
+          "min_component_area": 12,
+          "break_width_range": [
+            1,
+            5
+          ],
+          "short_bridge_distance_range": [
+            2,
+            24
+          ],
+          "missing_copper_radius_range": [
+            2,
+            8
+          ],
+          "excess_copper_radius_range": [
+            2,
+            7
+          ],
+          "pinhole_radius_range": [
+            1,
+            3
+          ],
+          "spurious_copper_radius_range": [
+            1,
+            4
+          ],
+          "via_hole_area_range": [
+            12,
+            400
+          ],
+          "via_shift_range": [
+            1,
+            4
+          ],
+          "via_size_delta_range": [
+            1,
+            3
+          ],
+          "misalignment_shift_range": [
+            1,
+            5
+          ],
+          "misalignment_roi_scale_range": [
+            0.2,
+            0.45
+          ],
+          "use_input_mask": true,
+          "use_defect_mask_as_label": false,
+          "defect_probabilities": {
+            "break": 1.0,
+            "short": 1.0,
+            "missing_copper": 1.0,
+            "excess_copper": 1.0,
+            "pinhole": 1.0,
+            "spurious_copper": 1.0,
+            "via": 1.0,
+            "misalignment": 1.0
+          },
+          "defect_severities": {
+            "break": 0.5,
+            "short": 0.5,
+            "missing_copper": 0.5,
+            "excess_copper": 0.5,
+            "pinhole": 0.5,
+            "spurious_copper": 0.5,
+            "via": 0.5,
+            "misalignment": 0.5
+          }
+        },
+        "ic_defects": {
+          "enabled": false,
+          "defect_probability": 0.5,
+          "min_defects": 1,
+          "max_defects": 3,
+          "max_attempts_per_defect": 8,
+          "min_component_area": 12,
+          "line_break_width_range": [
+            1,
+            4
+          ],
+          "bridge_distance_range": [
+            1,
+            12
+          ],
+          "necking_radius_range": [
+            1,
+            3
+          ],
+          "missing_metal_radius_range": [
+            2,
+            5
+          ],
+          "spur_radius_range": [
+            1,
+            4
+          ],
+          "pinhole_radius_range": [
+            1,
+            2
+          ],
+          "via_hole_area_range": [
+            8,
+            220
+          ],
+          "via_shift_range": [
+            1,
+            3
+          ],
+          "via_size_delta_range": [
+            1,
+            2
+          ],
+          "line_shift_range": [
+            1,
+            3
+          ],
+          "line_shift_roi_scale_range": [
+            0.12,
+            0.3
+          ],
+          "use_input_mask": true,
+          "use_defect_mask_as_label": false,
+          "defect_probabilities": {
+            "line_break": 1.0,
+            "bridge": 1.0,
+            "necking": 1.0,
+            "missing_metal": 1.0,
+            "spur": 1.0,
+            "pinhole": 1.0,
+            "via_open": 1.0,
+            "line_shift": 1.0
+          },
+          "defect_severities": {
+            "line_break": 0.5,
+            "bridge": 0.5,
+            "necking": 0.5,
+            "missing_metal": 0.5,
+            "spur": 0.5,
+            "pinhole": 0.5,
+            "via_open": 0.5,
+            "line_shift": 0.5
+          }
+        },
+        "defects": {
+          "enabled": false,
+          "defect_probability": 0.5,
+          "min_defects": 1,
+          "max_defects": 3,
+          "max_attempts_per_defect": 8,
+          "min_component_area": 12,
+          "break_width_range": [
+            1,
+            5
+          ],
+          "short_bridge_distance_range": [
+            2,
+            24
+          ],
+          "missing_copper_radius_range": [
+            2,
+            8
+          ],
+          "excess_copper_radius_range": [
+            2,
+            7
+          ],
+          "pinhole_radius_range": [
+            1,
+            3
+          ],
+          "spurious_copper_radius_range": [
+            1,
+            4
+          ],
+          "via_hole_area_range": [
+            12,
+            400
+          ],
+          "via_shift_range": [
+            1,
+            4
+          ],
+          "via_size_delta_range": [
+            1,
+            3
+          ],
+          "misalignment_shift_range": [
+            1,
+            5
+          ],
+          "misalignment_roi_scale_range": [
+            0.2,
+            0.45
+          ],
+          "use_input_mask": true,
+          "use_defect_mask_as_label": false,
+          "defect_probabilities": {
+            "break": 1.0,
+            "short": 1.0,
+            "missing_copper": 1.0,
+            "excess_copper": 1.0,
+            "pinhole": 1.0,
+            "spurious_copper": 1.0,
+            "via": 1.0,
+            "misalignment": 1.0
+          },
+          "defect_severities": {
+            "break": 0.5,
+            "short": 0.5,
+            "missing_copper": 0.5,
+            "excess_copper": 0.5,
+            "pinhole": 0.5,
+            "spurious_copper": 0.5,
+            "via": 0.5,
+            "misalignment": 0.5
+          }
+        }
+      }
+    },
+    "recognition": {
+      "result_folder": "D:\\code\\kraken\\.test_runtime\\workflow_snapshot_7aa57237a6b44d4887294141260eacd1\\result",
+      "model": "M 720k",
+      "part_size": [
+        64,
+        96
+      ],
+      "batch_size": 5,
+      "overlap": 14,
+      "source_folder": "D:\\code\\kraken\\.test_runtime\\workflow_snapshot_7aa57237a6b44d4887294141260eacd1\\source",
+      "jpeg_quality": 88,
+      "recognition_multiprocessing_enabled": true,
+      "binarize_output": true,
+      "use_auto_threshold": true,
+      "threshold": 0.5,
+      "postprocess_enabled": false,
+      "postprocess_kernel_size": 3,
+      "recognition_tta_enabled": true,
+      "confidence_tta_enabled": true,
+      "confidence_save_mode": "separate_grayscale",
+      "resume_manifest_path": null,
+      "resume_from_manifest": false,
+      "use_context_branch": null,
+      "use_cross_attention": null,
+      "context_crop_size": null,
+      "context_input_size": null,
+      "recursive_file_search": false,
+      "compression_factor": 1
+    }
+  }
+}

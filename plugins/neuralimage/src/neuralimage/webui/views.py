@@ -1102,6 +1102,22 @@ def queue_pause_toggle_api(request: HttpRequest):
     return JsonResponse({'ok': True})
 
 
+@require_POST
+def queue_restart_api(request: HttpRequest):
+    language = _resolve_ui_language(request)
+    unauthorized = _require_authenticated_api(request, language=language)
+    if unauthorized is not None:
+        return unauthorized
+    try:
+        task_id = int(str(request.POST.get('task_id', '')).strip())
+    except ValueError:
+        return JsonResponse({'ok': False, 'error': 'Invalid task id.'}, status=400)
+    ok, error = get_session_service().restart_task(task_id, owner_username=str(request.user.username))
+    if not ok:
+        return JsonResponse({'ok': False, 'error': error or 'Failed to restart task.'}, status=400)
+    return JsonResponse({'ok': True})
+
+
 @require_GET
 def queue_properties_api(request: HttpRequest):
     language = _resolve_ui_language(request)

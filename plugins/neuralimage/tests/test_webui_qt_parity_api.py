@@ -101,6 +101,25 @@ class TestWebuiQtParityApis(TestCase):
         assert payload['state']['main']['work_mode'] == 'recognition_only'
         assert payload['state']['settings']['batch_size'] == 7
 
+    def test_queue_restart_api_reuses_existing_task(self):
+        task = self.service._processing_session.enqueue_task(
+            MainWindowState(work_mode='train_only'),
+            SettingsState(),
+            owner_username='alice',
+        )
+        self.service._processing_session.next_task_to_start(worker_running=False)
+        self.service._processing_session.set_active_error('failed')
+        self.service._processing_session.complete_active_task()
+        self.service._handler = object()
+
+        response = self.client.post(reverse('webui:queue_restart_api'), data={'task_id': task.task_id})
+
+        assert response.status_code == 200
+        snapshot = self.service._processing_session.queue_snapshot()
+        assert len(snapshot) == 1
+        assert snapshot[0].task_id == task.task_id
+        assert snapshot[0].status == 'waiting'
+
     def test_help_and_changelog_content_apis_return_markdown(self):
         help_response = self.client.get(reverse('webui:help_content_api'))
         changelog_response = self.client.get(reverse('webui:changelog_content_api'))

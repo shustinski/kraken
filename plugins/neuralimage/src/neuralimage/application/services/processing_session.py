@@ -7,6 +7,7 @@ from .processing_queue import (
     TASK_FINISHED_ERROR,
     TASK_FINISHED_SUCCESS,
     TASK_PAUSED,
+    TASK_PAUSING,
     TASK_RUNNING,
     TASK_WAITING,
     ActiveTaskMutationError,
@@ -29,6 +30,7 @@ class QueueTaskSnapshot:
     progress_total: int = 0
     owner_username: str = ''
     owner_display_name: str = ''
+    last_recognized_file: str = ''
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +91,9 @@ class ProcessingSession:
     def retry_task_by_index(self, index: int) -> TaskType | None:
         return self._queue.retry_task_by_index(index)
 
+    def restart_task_by_index(self, index: int) -> TaskType | None:
+        return self._queue.restart_task_by_index(index)
+
     def move_task_by_index(self, source_index: int, target_index: int) -> TaskType | None:
         return self._queue.move_by_index(source_index, target_index)
 
@@ -107,8 +112,8 @@ class ProcessingSession:
     def request_pause_active(self) -> TaskType | None:
         active_task = self.active_task
         if active_task is not None:
-            self._stop_requested = True
             self._pause_requested = True
+            self._queue.mark_active_pausing()
         return active_task
 
     def mark_active_paused_after_stop(self) -> TaskType | None:
@@ -143,12 +148,21 @@ class ProcessingSession:
 
     def complete_active_task(self) -> CompleteActiveTaskResult:
         if self._pause_requested:
+            active_task = self.active_task
+            error_message = str(getattr(active_task, 'error_message', '') or '') if active_task is not None else ''
+            if error_message:
+                completed_task = self._queue.complete_active(success=False, error_message=error_message)
+                self._stop_requested = False
+                self._pause_requested = False
+                return CompleteActiveTaskResult(task=completed_task, stop_requested=False, paused=False)
             paused_task = self.mark_active_paused_after_stop()
             return CompleteActiveTaskResult(task=paused_task, stop_requested=True, paused=True)
         active_task = self.active_task
         error_message = str(getattr(active_task, 'error_message', '') or '') if active_task is not None else ''
-        success = not error_message and not self._stop_requested
-        completed_task = self._queue.complete_active(success=success, error_message=error_message)
+        if self._stop_requested and not error_message:
+            completed_task = self._queue.stop_active()
+        else:
+            completed_task = self._queue.complete_active(success=not error_message, error_message=error_message)
         result = CompleteActiveTaskResult(task=completed_task, stop_requested=self._stop_requested)
         self._stop_requested = False
         self._pause_requested = False
@@ -162,7 +176,7 @@ class ProcessingSession:
             status = str(task.status or TASK_WAITING)
             if task.paused and status not in (TASK_FINISHED_SUCCESS, TASK_FINISHED_ERROR):
                 status = TASK_PAUSED
-            if task.task_id == active_task_id:
+            if task.task_id == active_task_id and status != TASK_PAUSING:
                 status = TASK_RUNNING
             items.append(
                 QueueTaskSnapshot(
@@ -175,6 +189,7 @@ class ProcessingSession:
                     progress_total=int(task.progress.total),
                     owner_username=str(task.owner_username or ''),
                     owner_display_name=str(task.owner_display_name or task.owner_username or ''),
+                    last_recognized_file=str(task.runtime.last_recognized_file or ''),
                 )
             )
         return tuple(items)

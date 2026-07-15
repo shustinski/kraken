@@ -148,7 +148,7 @@ def test_remove_task_clears_active_when_active_task_removed():
     assert queue.active_task is None
 
 
-def test_finished_error_is_skipped_and_can_be_retried():
+def test_finished_error_is_skipped_and_restart_reuses_same_task():
     queue = ProcessingTaskQueue[MainWindowState, SettingsState]()
 
     first = queue.enqueue(*_make_states('train_only'))
@@ -157,14 +157,15 @@ def test_finished_error_is_skipped_and_can_be_retried():
     queue.complete_active(success=False, error_message='failed')
 
     active = queue.activate_next_ready()
-    retry = queue.retry_task_by_index(0)
+    original_id = first.task_id
+    restart = queue.restart_task_by_index(0)
 
     assert active is second
-    assert first.status == 'finished_error'
-    assert first.error_message == 'failed'
-    assert retry is not None
-    assert retry.task_id != first.task_id
-    assert retry.status == 'waiting'
+    assert restart is first
+    assert restart.task_id == original_id
+    assert restart.status == 'waiting'
+    assert restart.error_message == ''
+    assert queue.tasks == (first, second)
 
 
 def test_move_waiting_task_changes_order():

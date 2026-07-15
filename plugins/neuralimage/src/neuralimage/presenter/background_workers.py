@@ -107,6 +107,11 @@ class GeneralNeuralHandlerThread(QThread):
             self.answer.emit(False)
         self.main_logic.stop_execution()
 
+    def pause(self):
+        if self._waiting_for_answer:
+            self.answer.emit(False)
+        self.main_logic.pause_execution()
+
     @QtCore.pyqtSlot(bool)
     def _store_answer(self, val: bool):
         self._last_answer = val

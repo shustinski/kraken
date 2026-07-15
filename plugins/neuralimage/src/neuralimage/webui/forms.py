@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 
 from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.lib.data_interfaces import (
+    build_synthetic_defect_generator_parameters,
     ConfidenceSaveMode,
     OptimizerName,
     MixedPrecisionMode,
@@ -276,6 +277,11 @@ class SettingsForm(forms.Form):
     )
     sample_x = forms.IntegerField(label='Sample X', min_value=8, max_value=4096)
     sample_y = forms.IntegerField(label='Sample Y', min_value=8, max_value=4096)
+    random_patch_size_enabled = forms.BooleanField(label='Random patch size', required=False)
+    random_patch_min_x = forms.IntegerField(label='Random patch min X', min_value=32, max_value=4096, required=False)
+    random_patch_min_y = forms.IntegerField(label='Random patch min Y', min_value=32, max_value=4096, required=False)
+    random_patch_max_x = forms.IntegerField(label='Random patch max X', min_value=32, max_value=4096, required=False)
+    random_patch_max_y = forms.IntegerField(label='Random patch max Y', min_value=32, max_value=4096, required=False)
     sync_patch_sizes = forms.BooleanField(label='Use the same patch size', required=False)
     recognition_sample_x = forms.IntegerField(label='Recognition sample X', min_value=8, max_value=4096, required=False)
     recognition_sample_y = forms.IntegerField(label='Recognition sample Y', min_value=8, max_value=4096, required=False)
@@ -385,10 +391,6 @@ class SettingsForm(forms.Form):
     scheduler_step_lr_step_size = forms.IntegerField(label='StepLR step size', min_value=1, max_value=10000, required=False)
     scheduler_step_lr_gamma = forms.FloatField(label='StepLR gamma', min_value=0.01, max_value=1.0, required=False)
     hard_mining_enabled = forms.BooleanField(label='Enable hard mining', required=False)
-    hard_mining_strength = forms.FloatField(label='Hard mining strength', min_value=0.0, max_value=10.0, required=False)
-    hard_mining_ema_alpha = forms.FloatField(
-        label='Hard mining EMA alpha', min_value=0.0, max_value=1.0, required=False
-    )
     hard_pixel_mining_enabled = forms.BooleanField(label='Enable hard pixel mining', required=False)
     hard_pixel_mining_ratio = forms.FloatField(
         label='Hard pixel keep ratio', min_value=0.01, max_value=1.0, required=False
@@ -416,6 +418,17 @@ class SettingsForm(forms.Form):
     random_artifacts_etch_residue_enabled = forms.BooleanField(label='Etch residue', required=False)
     random_artifacts_particle_cluster_enabled = forms.BooleanField(label='Particle cluster', required=False)
     random_artifacts_flake_enabled = forms.BooleanField(label='Flake', required=False)
+    synthetic_defect_generator_enabled = forms.BooleanField(label='Enable synthetic topology', required=False)
+    synthetic_topology_domain = forms.ChoiceField(
+        label='Synthetic topology domain',
+        choices=(('pcb', 'PCB'), ('ic', 'IC')),
+        required=False,
+    )
+    synthetic_epoch_size_factor = forms.FloatField(
+        label='Synthetic epoch size factor', min_value=0.01, max_value=100.0, required=False
+    )
+    synthetic_image_width = forms.IntegerField(label='Synthetic image width', min_value=32, max_value=16384, required=False)
+    synthetic_image_height = forms.IntegerField(label='Synthetic image height', min_value=32, max_value=16384, required=False)
     mixup_enabled = forms.BooleanField(label='Enable mixup', required=False)
     mixup_probability = forms.FloatField(label='Mixup probability', min_value=0.0, max_value=1.0, required=False)
     mixup_alpha = forms.FloatField(label='Mixup alpha', min_value=0.0, max_value=10.0, required=False)
@@ -428,9 +441,6 @@ class SettingsForm(forms.Form):
         required=False,
     )
     early_stopping_enabled = forms.BooleanField(label='Enable early stopping', required=False)
-    early_stopping_patience = forms.IntegerField(label='Early stopping patience', min_value=0, max_value=2000)
-    early_stopping_min_delta = forms.FloatField(label='Early stopping min delta', min_value=0.0, max_value=10.0)
-    early_stopping_restore_best_weights = forms.BooleanField(label='Restore best weights', required=False)
     torch_compile_enabled = forms.BooleanField(label='Enable torch.compile', required=False)
     show_batch_preview = forms.BooleanField(label='Show batch preview', required=False)
     use_multi_gpu = forms.BooleanField(label='Use multi-GPU', required=False)
@@ -450,6 +460,10 @@ class SettingsForm(forms.Form):
             'scale_augmentation_strength',
             'sample_x',
             'sample_y',
+            'random_patch_min_x',
+            'random_patch_min_y',
+            'random_patch_max_x',
+            'random_patch_max_y',
             'recognition_sample_x',
             'recognition_sample_y',
             'validation_percent',
@@ -483,8 +497,6 @@ class SettingsForm(forms.Form):
             'scheduler_one_cycle_final_div_factor',
             'scheduler_step_lr_step_size',
             'scheduler_step_lr_gamma',
-            'hard_mining_strength',
-            'hard_mining_ema_alpha',
             'hard_pixel_mining_ratio',
             'cutout_probability',
             'cutout_holes',
@@ -495,8 +507,6 @@ class SettingsForm(forms.Form):
             'mixup_probability',
             'mixup_alpha',
             'rare_patch_oversampling_factor',
-            'early_stopping_patience',
-            'early_stopping_min_delta',
         ):
             self.fields[field_name].widget.attrs.update(_BASE_NUM_INPUT_ATTRS)
 
@@ -623,19 +633,32 @@ class SettingsForm(forms.Form):
         cleaned['validation_image_folder'] = validation_image_folder
         cleaned['validation_label_folder'] = validation_label_folder
 
-        if not use_validation or validation_source != ValidationSource.external.value:
-            return cleaned
+        if cleaned.get('random_patch_size_enabled') and cleaned.get('sample_cut_mode') == SampleCutMode.online.value:
+            ranges = (
+                ('random_patch_min_x', 'random_patch_max_x', 'width'),
+                ('random_patch_min_y', 'random_patch_max_y', 'height'),
+            )
+            for min_name, max_name, axis in ranges:
+                lower = int(cleaned.get(min_name) or 0)
+                upper = int(cleaned.get(max_name) or 0)
+                if upper < lower:
+                    self.add_error(max_name, f'Random patch maximum {axis} must be >= minimum.')
+                first_aligned = ((lower + 31) // 32) * 32
+                if first_aligned > upper:
+                    self.add_error(max_name, f'Random patch {axis} range must contain a multiple of 32.')
 
-        if not validation_image_folder or not Path(validation_image_folder).is_dir():
-            self.add_error('validation_image_folder', 'Validation image folder must point to an existing directory.')
-        if not validation_label_folder or not Path(validation_label_folder).is_dir():
-            self.add_error('validation_label_folder', 'Validation label folder must point to an existing directory.')
+        if use_validation and validation_source == ValidationSource.external.value:
+            if not validation_image_folder or not Path(validation_image_folder).is_dir():
+                self.add_error('validation_image_folder', 'Validation image folder must point to an existing directory.')
+            if not validation_label_folder or not Path(validation_label_folder).is_dir():
+                self.add_error('validation_label_folder', 'Validation label folder must point to an existing directory.')
 
         return cleaned
 
     def to_state(self) -> SettingsState:
         cleaned = self.cleaned_data
         defaults = SettingsState()
+        synthetic_defaults = build_synthetic_defect_generator_parameters(None)
 
         def _with_default(name: str):
             value = cleaned.get(name)
@@ -666,6 +689,18 @@ class SettingsForm(forms.Form):
             augmentation_noise_sigma=_with_default('augmentation_noise_sigma'),
             sample_size=(cleaned['sample_x'], cleaned['sample_y']),
             train_patch_size=(cleaned['sample_x'], cleaned['sample_y']),
+            random_patch_size_enabled=(
+                cleaned.get('random_patch_size_enabled', False)
+                and cleaned.get('sample_cut_mode') == SampleCutMode.online.value
+            ),
+            random_patch_min_size=(
+                int(cleaned.get('random_patch_min_x') or defaults.random_patch_min_size[0]),
+                int(cleaned.get('random_patch_min_y') or defaults.random_patch_min_size[1]),
+            ),
+            random_patch_max_size=(
+                int(cleaned.get('random_patch_max_x') or defaults.random_patch_max_size[0]),
+                int(cleaned.get('random_patch_max_y') or defaults.random_patch_max_size[1]),
+            ),
             recognition_patch_size=(
                 (cleaned['sample_x'], cleaned['sample_y'])
                 if cleaned.get('sync_patch_sizes')
@@ -734,8 +769,6 @@ class SettingsForm(forms.Form):
             scheduler_step_lr_step_size=_with_default('scheduler_step_lr_step_size'),
             scheduler_step_lr_gamma=_with_default('scheduler_step_lr_gamma'),
             hard_mining_enabled=cleaned.get('hard_mining_enabled', False),
-            hard_mining_strength=_with_default('hard_mining_strength'),
-            hard_mining_ema_alpha=_with_default('hard_mining_ema_alpha'),
             hard_pixel_mining_enabled=cleaned.get('hard_pixel_mining_enabled', False),
             hard_pixel_mining_ratio=_with_default('hard_pixel_mining_ratio'),
             cutout_enabled=cleaned.get('cutout_enabled', False),
@@ -754,6 +787,21 @@ class SettingsForm(forms.Form):
                 False,
             ),
             random_artifacts_flake_enabled=cleaned.get('random_artifacts_flake_enabled', False),
+            synthetic_defect_generator=(
+                {
+                    'enabled': True,
+                    'topology_domain': str(cleaned.get('synthetic_topology_domain') or synthetic_defaults.topology_domain),
+                    'epoch_size_factor': float(
+                        cleaned.get('synthetic_epoch_size_factor') or synthetic_defaults.epoch_size_factor
+                    ),
+                    'image_size_xy': [
+                        int(cleaned.get('synthetic_image_width') or synthetic_defaults.image_size_xy[0]),
+                        int(cleaned.get('synthetic_image_height') or synthetic_defaults.image_size_xy[1]),
+                    ],
+                }
+                if cleaned.get('synthetic_defect_generator_enabled', False)
+                else {}
+            ),
             mixup_enabled=cleaned.get('mixup_enabled', False),
             mixup_probability=_with_default('mixup_probability'),
             mixup_alpha=_with_default('mixup_alpha'),
@@ -761,12 +809,12 @@ class SettingsForm(forms.Form):
             rare_patch_oversampling_enabled=cleaned.get('rare_patch_oversampling_enabled', False),
             rare_patch_oversampling_factor=_with_default('rare_patch_oversampling_factor'),
             early_stopping_enabled=cleaned.get('early_stopping_enabled', False),
-            early_stopping_patience=cleaned['early_stopping_patience'],
-            early_stopping_min_delta=cleaned['early_stopping_min_delta'],
-            early_stopping_restore_best_weights=cleaned.get('early_stopping_restore_best_weights', False),
             torch_compile_enabled=cleaned.get('torch_compile_enabled', False),
             show_batch_preview=cleaned.get('show_batch_preview', False),
             use_multi_gpu=cleaned.get('use_multi_gpu', False),
+            multi_gpu_mode=(
+                'dataparallel' if cleaned.get('use_multi_gpu', False) else 'off'
+            ),
         )
 
 
@@ -789,6 +837,9 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         dice_weight=float(getattr(state, 'dice_loss_weight', 0.5)),
         iou_weight=float(getattr(state, 'iou_loss_weight', 0.5)),
     )
+    synthetic = build_synthetic_defect_generator_parameters(
+        getattr(state, 'synthetic_defect_generator', None)
+    )
     return {
         'step': state.step,
         'vertical_rotation': state.vertical_rotation,
@@ -806,6 +857,11 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'augmentation_noise_sigma': state.augmentation_noise_sigma,
         'sample_x': state.sample_size[0],
         'sample_y': state.sample_size[1],
+        'random_patch_size_enabled': getattr(state, 'random_patch_size_enabled', False),
+        'random_patch_min_x': getattr(state, 'random_patch_min_size', (128, 128))[0],
+        'random_patch_min_y': getattr(state, 'random_patch_min_size', (128, 128))[1],
+        'random_patch_max_x': getattr(state, 'random_patch_max_size', (512, 512))[0],
+        'random_patch_max_y': getattr(state, 'random_patch_max_size', (512, 512))[1],
         'sync_patch_sizes': getattr(state, 'sync_patch_sizes', True),
         'recognition_sample_x': (getattr(state, 'recognition_patch_size', None) or state.sample_size)[0],
         'recognition_sample_y': (getattr(state, 'recognition_patch_size', None) or state.sample_size)[1],
@@ -862,8 +918,6 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'scheduler_step_lr_step_size': getattr(state, 'scheduler_step_lr_step_size', 10),
         'scheduler_step_lr_gamma': getattr(state, 'scheduler_step_lr_gamma', 0.1),
         'hard_mining_enabled': state.hard_mining_enabled,
-        'hard_mining_strength': state.hard_mining_strength,
-        'hard_mining_ema_alpha': state.hard_mining_ema_alpha,
         'hard_pixel_mining_enabled': getattr(state, 'hard_pixel_mining_enabled', False),
         'hard_pixel_mining_ratio': getattr(state, 'hard_pixel_mining_ratio', 0.25),
         'cutout_enabled': getattr(state, 'cutout_enabled', False),
@@ -891,6 +945,11 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
             True,
         ),
         'random_artifacts_flake_enabled': getattr(state, 'random_artifacts_flake_enabled', True),
+        'synthetic_defect_generator_enabled': bool(synthetic.enabled),
+        'synthetic_topology_domain': str(synthetic.topology_domain),
+        'synthetic_epoch_size_factor': float(synthetic.epoch_size_factor),
+        'synthetic_image_width': int(synthetic.image_size_xy[0]),
+        'synthetic_image_height': int(synthetic.image_size_xy[1]),
         'mixup_enabled': getattr(state, 'mixup_enabled', False),
         'mixup_probability': getattr(state, 'mixup_probability', 1.0),
         'mixup_alpha': getattr(state, 'mixup_alpha', 0.2),
@@ -898,9 +957,6 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'rare_patch_oversampling_enabled': getattr(state, 'rare_patch_oversampling_enabled', False),
         'rare_patch_oversampling_factor': getattr(state, 'rare_patch_oversampling_factor', 2),
         'early_stopping_enabled': state.early_stopping_enabled,
-        'early_stopping_patience': state.early_stopping_patience,
-        'early_stopping_min_delta': state.early_stopping_min_delta,
-        'early_stopping_restore_best_weights': state.early_stopping_restore_best_weights,
         'torch_compile_enabled': state.torch_compile_enabled,
         'show_batch_preview': state.show_batch_preview,
         'use_multi_gpu': state.use_multi_gpu,

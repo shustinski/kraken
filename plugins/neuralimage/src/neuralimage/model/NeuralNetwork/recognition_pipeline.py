@@ -523,6 +523,12 @@ class MultiprocessingRecognitionRunner:
             )
         updated = completed + 1
         self._reporter.publish_frame(updated)
+        if isinstance(completed_item, dict):
+            self._publish('metrics', {
+                'type': 'recognition_completed',
+                'source_path': str(completed_item.get('source_path') or ''),
+                'output_path': str(completed_item.get('output_path') or ''),
+            })
         return updated
 
     def _get_failed_process_message(self, groups: WorkerGroups) -> str | None:
@@ -557,6 +563,9 @@ class MultiprocessingRecognitionRunner:
         for process in groups.all():
             if process.is_alive():
                 process.terminate()
+                process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
                 process.join(timeout=5)
 
 
@@ -724,6 +733,11 @@ def run_single_thread_recognition(
             frame_name=image_path.name,
         )
         reporter.publish_frame(index)
+        publish('metrics', {
+            'type': 'recognition_completed',
+            'source_path': str(image_path),
+            'output_path': str(output_path),
+        })
         _publish_memory_metrics(publish=publish, collect_memory_metrics=collect_memory_metrics)
 
 
@@ -1336,6 +1350,12 @@ def _confidence_output_root(save_dir: Path | str) -> Path:
     return result_dir.parent / f'confidence_{result_name}'
 
 
+def _save_jpeg_atomic(image: Image.Image, path: Path, *, quality: int) -> None:
+    temp_path = path.with_name(f'.{path.name}.tmp')
+    image.save(temp_path, format='JPEG', quality=quality)
+    os.replace(temp_path, path)
+
+
 def sew(
     save_dir: Path | str,
     item: dict[str, Any],
@@ -1359,7 +1379,7 @@ def sew(
         ),
     )
     quality = max(1, min(100, int(jpeg_quality)))
-    image.save(output_path, format='JPEG', quality=quality)
+    _save_jpeg_atomic(image, output_path, quality=quality)
     if str(confidence_save_mode).strip().lower() != 'separate_grayscale':
         return output_path
     confidence_predictions = item.get('confidence_image')
@@ -1377,7 +1397,7 @@ def sew(
             postprocess_kernel_size=0,
         ),
     )
-    confidence_image.save(confidence_path, format='JPEG', quality=quality)
+    _save_jpeg_atomic(confidence_image, confidence_path, quality=quality)
     return output_path
 
 

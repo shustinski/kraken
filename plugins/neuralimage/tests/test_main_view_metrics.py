@@ -294,6 +294,8 @@ def test_main_view_queue_widget_and_start_stop_visibility(qapp):
 
     assert view.queue_list.count() == 2
     assert view.get_selected_queue_row() == 1
+    assert view.queue_dock.widget() is view.queue_group
+    assert view.dockWidgetArea(view.queue_dock) == Qt.DockWidgetArea.BottomDockWidgetArea
 
     view._switch_start_stop(True)
     assert view.btn_start.isHidden() is False

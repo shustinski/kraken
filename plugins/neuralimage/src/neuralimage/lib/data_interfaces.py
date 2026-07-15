@@ -1,4 +1,5 @@
 import enum
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -203,9 +204,29 @@ class OptimizerParameters:
 @dataclass
 class EarlyStoppingParameters:
     enabled: bool = False
-    patience: int = 10
-    min_delta: float = 0.0
-    restore_best_weights: bool = True
+
+
+@dataclass(frozen=True)
+class RandomPatchSizeParameters:
+    enabled: bool = False
+    min_size: tuple[int, int] = (128, 128)
+    max_size: tuple[int, int] = (512, 512)
+
+    def __post_init__(self) -> None:
+        min_width, min_height = (int(value) for value in self.min_size)
+        max_width, max_height = (int(value) for value in self.max_size)
+        if min_width <= 0 or min_height <= 0:
+            raise ValueError('random patch minimum size must be positive')
+        if max_width < min_width or max_height < min_height:
+            raise ValueError('random patch maximum size must be greater than or equal to minimum size')
+        if self.enabled:
+            for lower, upper, axis in (
+                (min_width, max_width, 'width'),
+                (min_height, max_height, 'height'),
+            ):
+                first_aligned = int(math.ceil(lower / 32.0) * 32)
+                if first_aligned > upper:
+                    raise ValueError(f'random patch {axis} range must contain a multiple of 32')
 
 
 @dataclass
@@ -238,8 +259,6 @@ class SchedulerParameters:
 @dataclass
 class HardMiningParameters:
     enabled: bool = False
-    strength: float = 2.0
-    ema_alpha: float = 0.2
     pixel_enabled: bool = False
     pixel_keep_ratio: float = 0.25
 
@@ -1326,7 +1345,7 @@ class TrainingParameters:
     validation_label_path: Path | None = None
     save_validation_binary_images: bool = False
     optimizer: OptimizerParameters = field(default_factory=OptimizerParameters)
-    mixed_precision: MixedPrecisionMode = MixedPrecisionMode.fp16
+    mixed_precision: MixedPrecisionMode = MixedPrecisionMode.off
     loss_function: str = 'bce'
     loss_term_weights: dict[str, float] = field(default_factory=dict)
     dice_loss_weight: float = 0.5
@@ -1335,14 +1354,15 @@ class TrainingParameters:
     warmup: WarmupParameters = field(default_factory=WarmupParameters)
     scheduler: SchedulerParameters = field(default_factory=SchedulerParameters)
     hard_mining: HardMiningParameters = field(default_factory=HardMiningParameters)
+    random_patch_size: RandomPatchSizeParameters = field(default_factory=RandomPatchSizeParameters)
     cutout: CutoutParameters = field(default_factory=CutoutParameters)
     random_artifacts: RandomArtifactsParameters = field(default_factory=RandomArtifactsParameters)
     mixup: MixupParameters = field(default_factory=MixupParameters)
     skip_uniform_labels: bool = False
     rare_patch_oversampling_enabled: bool = False
     rare_patch_oversampling_factor: int = 2
-    use_multi_gpu: bool = True
-    multi_gpu_mode: str = ''
+    use_multi_gpu: bool = False
+    multi_gpu_mode: str = 'off'
     show_batch_preview: bool = True
     log_update_frequency: int = 0
     local_crop_size: tuple[int, int] | None = None
@@ -1357,6 +1377,7 @@ class TrainingParameters:
     attention_max_global_tokens: int = 1024
     deep_supervision: bool = False
     artifact_dir: Path | None = None
+    resume_from_checkpoint: bool = False
     dataloader_num_workers: int = -1
     recursive_file_search: bool = False
     pcb_defects: PCBDefectParameters = field(default_factory=PCBDefectParameters)
@@ -1383,6 +1404,8 @@ class RecognitionParameters:
     recognition_tta_enabled: bool = False
     confidence_tta_enabled: bool = False
     confidence_save_mode: str = ConfidenceSaveMode.off.value
+    resume_manifest_path: Path | None = None
+    resume_from_manifest: bool = False
     use_context_branch: bool | None = None
     use_cross_attention: bool | None = None
     context_crop_size: tuple[int, int] | None = None

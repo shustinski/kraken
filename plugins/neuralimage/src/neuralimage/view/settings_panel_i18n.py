@@ -2,8 +2,6 @@
 
 from typing import Any
 
-from PyQt6.QtWidgets import QWidget
-
 TEXT_FIELD_LOG_UPDATE_FREQUENCY = 'log_update_frequency'
 TEXT_FIELD_RECOGNITION_JPEG_QUALITY = 'recognition_jpeg_quality'
 
@@ -815,7 +813,9 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
-    panel.sync_patch_sizes_check_box.setText('')
+    panel.sync_patch_sizes_check_box.setText(
+        str(labels_map.get('sync_patch_sizes', t.get('sync_patch_sizes', 'Use one patch size')))
+    )
     panel.sync_patch_sizes_check_box.setToolTip(
         str(
             t.get(
@@ -824,8 +824,60 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
-    panel.train_patch_size_widget.setToolTip(str(t.get('train_patch_tip', t.get('sample_size_tip', ''))))
-    panel.recognition_patch_size_widget.setToolTip(str(t.get('recognition_patch_tip', t.get('sample_size_tip', ''))))
+    train_patch_tip = str(t.get('train_patch_tip', t.get('sample_size_tip', '')))
+    recognition_patch_tip = str(t.get('recognition_patch_tip', t.get('sample_size_tip', '')))
+    panel.train_patch_size_groupbox.setTitle(
+        str(labels_map.get('train_patch_size', t.get('train_patch_size', 'Training patch (X × Y)')))
+    )
+    panel.recognition_patch_size_groupbox.setTitle(
+        str(labels_map.get('recognition_patch_size', t.get('recognition_patch_size', 'Recognition patch (X × Y)')))
+    )
+    panel.random_patch_min_size_groupbox.setTitle(
+        str(t.get('random_patch_min_group', 'Minimum size'))
+    )
+    panel.random_patch_max_size_groupbox.setTitle(
+        str(t.get('random_patch_max_group', 'Maximum size'))
+    )
+    panel.train_patch_size_groupbox.setToolTip(train_patch_tip)
+    panel.recognition_patch_size_groupbox.setToolTip(recognition_patch_tip)
+    panel.train_patch_size_widget.setToolTip(train_patch_tip)
+    panel.recognition_patch_size_widget.setToolTip(recognition_patch_tip)
+    random_min_tip = str(descriptions.get('random_patch_min_size', 'Minimum random patch size.'))
+    random_max_tip = str(descriptions.get('random_patch_max_size', 'Maximum random patch size.'))
+    panel.random_patch_min_size_groupbox.setToolTip(random_min_tip)
+    panel.random_patch_max_size_groupbox.setToolTip(random_max_tip)
+    panel.random_patch_min_size_widget.setToolTip(random_min_tip)
+    panel.random_patch_max_size_widget.setToolTip(random_max_tip)
+    axis_resize_texts = {
+        "preview": str(t.get('axis_resize_preview', 'Image size preview')),
+        "width_input": str(t.get('axis_resize_width_input', 'Width in pixels')),
+        "height_input": str(t.get('axis_resize_height_input', 'Height in pixels')),
+        "width_axis": str(t.get('axis_resize_width_axis', 'Horizontal size')),
+        "height_axis": str(t.get('axis_resize_height_axis', 'Vertical size')),
+        "pixels": str(t.get('axis_resize_pixels', 'Pixels')),
+        "unit": str(t.get('axis_resize_unit', 'px')),
+        "linked": str(
+            t.get('axis_resize_linked', 'X and Y are linked. Click to edit them independently.')
+        ),
+        "unlinked": str(
+            t.get('axis_resize_unlinked', 'X and Y are independent. Click to make them equal.')
+        ),
+        "height_linked": str(t.get('axis_resize_height_linked', 'Height is kept equal to width.')),
+    }
+    for axis_widget in (
+        panel.train_patch_size_widget,
+        panel.recognition_patch_size_widget,
+        panel.random_patch_min_size_widget,
+        panel.random_patch_max_size_widget,
+        panel.synthetic_image_size_widget,
+    ):
+        axis_widget.apply_texts(axis_resize_texts)
+    panel.random_patch_size_check_box.setText(
+        str(t.get('random_patch_size_enable', 'Use random patch size'))
+    )
+    panel.random_patch_size_check_box.setToolTip(
+        str(t.get('random_patch_size_tip', 'Available for online cutting; one aligned size is selected per batch.'))
+    )
     panel.vertical_rotation.setText(str(t.get('rotate_180', 'Rotate frame by 180 degrees')))
     panel.vertical_rotation.setToolTip(str(t.get('rotate_180_tip', '')))
     panel.horizontal_rotation.setText(str(t.get('rotate_90', 'Rotate frame by 90 degrees')))
@@ -1340,8 +1392,6 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.hard_pixel_mining_check_box.setToolTip(str(t.get('hard_pixel_mining_tip', '')))
     panel.early_stopping_check_box.setText(str(t.get('early_stopping_enable', 'Enable early stopping')))
     panel.early_stopping_check_box.setToolTip(str(t.get('early_stopping_tip', '')))
-    panel.restore_best_weights_check_box.setText(str(t.get('restore_best', 'Restore best weights')))
-    panel.restore_best_weights_check_box.setToolTip(str(t.get('restore_best_tip', '')))
     panel.reset_defaults_button.setText(str(t.get('reset_defaults', 'Reset defaults')))
     panel.reset_defaults_button.setToolTip(str(t.get('reset_defaults_tip', 'Reset all parameters to initial values.')))
     color_modes = t.get('color_modes', {'RGB': 'RGB', 'ЧБ': 'ЧБ'})

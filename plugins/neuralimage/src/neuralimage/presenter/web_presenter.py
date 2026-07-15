@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.application.ports import StateStore
@@ -44,6 +44,7 @@ class WebPresenter:
         message_bus: AbstractMessageBus,
         question_module: QuestionModule,
         callback: Callable[..., None] | None = None,
+        runtime_context: Any | None = None,
     ) -> BuildHandlerResult:
         if not can_start_processing(main_state, settings_state):
             return BuildHandlerResult(None, 'Fill in required fields and verify that all paths exist.')
@@ -54,11 +55,31 @@ class WebPresenter:
         )
         if work_mode is None:
             return BuildHandlerResult(None, 'Invalid work mode.')
+        if (
+            runtime_context is not None
+            and getattr(runtime_context, 'training_completed', False)
+            and work_mode in (WorkMode.train_and_recognition, WorkMode.further_training)
+            and getattr(runtime_context, 'trained_model_path', None) is not None
+        ):
+            work_mode = WorkMode.recognition_only
+            recognition_parameters.model = runtime_context.trained_model_path
 
-        if work_mode in (WorkMode.train_only, WorkMode.train_and_recognition, WorkMode.further_training):
+        if work_mode in (
+            WorkMode.train_only,
+            WorkMode.continue_training,
+            WorkMode.train_and_recognition,
+            WorkMode.further_training,
+        ):
             try:
-                artifact_dir = build_training_artifact_dir(main_state, settings_state, work_mode)
+                artifact_dir = getattr(runtime_context, 'artifact_dir', None)
+                if artifact_dir is None:
+                    artifact_dir = build_training_artifact_dir(main_state, settings_state, work_mode)
+                    if runtime_context is not None:
+                        runtime_context.artifact_dir = artifact_dir
                 training_parameters.artifact_dir = artifact_dir
+                training_parameters.resume_from_checkpoint = bool(
+                    runtime_context is not None and getattr(runtime_context, 'training_checkpoint', None)
+                )
                 save_workflow_snapshot(
                     main_state,
                     settings_state,
@@ -67,6 +88,15 @@ class WebPresenter:
                 )
             except OSError as error:
                 return BuildHandlerResult(None, f'Failed to prepare run artifacts: {error}')
+
+        if recognition_parameters is not None:
+            manifest_path = Path(recognition_parameters.result_folder) / '.neuralimage-recognition-progress.json'
+            recognition_parameters.resume_manifest_path = manifest_path
+            recognition_parameters.resume_from_manifest = bool(
+                runtime_context is not None and getattr(runtime_context, 'recognition_manifest', None)
+            )
+            if runtime_context is not None and runtime_context.recognition_manifest is None:
+                runtime_context.recognition_manifest = manifest_path
 
         self._state_store.save_main_window_state(main_state)
         self._state_store.save_settings_state(settings_state)

@@ -2,7 +2,7 @@ from typing import Any, Iterable
 from collections.abc import Mapping
 from copy import deepcopy
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget,
     QDockWidget,
@@ -43,6 +43,7 @@ from neuralimage.lib.loss_config import (
     sanitize_loss_term_weights,
 )
 from neuralimage.lib.ui_texts import get_ui_section, set_ui_language as set_global_ui_language
+from neuralimage.view.axis_resize_widget import AxisResizeWidget
 from neuralimage.view.settings_panel_bindings import connect_settings_panel_signals
 from neuralimage.view.settings_panel_i18n import apply_settings_panel_texts
 from neuralimage.view.settings_panel_policy import (
@@ -374,20 +375,17 @@ class SettingsPanel(QDockWidget):
             default_value=1.0,
             decimals=2,
         )
-        self.synthetic_image_width_spinbox = create_spinbox(
-            (MIN_SYNTHETIC_IMAGE_SIZE, MAX_SYNTHETIC_IMAGE_SIZE),
-            default_value=1024,
-            step=32,
+        self.synthetic_image_size_widget = AxisResizeWidget(
+            target_width=256,
+            target_height=256,
+            minimum_pixels=MIN_SYNTHETIC_IMAGE_SIZE,
+            maximum_pixels=MAX_SYNTHETIC_IMAGE_SIZE,
+            single_step=32,
         )
-        self.synthetic_image_height_spinbox = create_spinbox(
-            (MIN_SYNTHETIC_IMAGE_SIZE, MAX_SYNTHETIC_IMAGE_SIZE),
-            default_value=1024,
-            step=32,
-        )
-        self.synthetic_image_size_widget = create_size_widget(
-            self.synthetic_image_width_spinbox,
-            self.synthetic_image_height_spinbox,
-        )
+        # Preserve the established settings-panel control attributes for bindings,
+        # state synchronization, tests, and third-party integrations.
+        self.synthetic_image_width_spinbox = self.synthetic_image_size_widget.width_spinbox
+        self.synthetic_image_height_spinbox = self.synthetic_image_size_widget.height_spinbox
         self.synthetic_trace_count_min_spinbox = create_spinbox(
             (MIN_SYNTHETIC_TRACE_COUNT, MAX_SYNTHETIC_TRACE_COUNT),
             default_value=5,
@@ -612,10 +610,39 @@ class SettingsPanel(QDockWidget):
         for checkbox in self.ic_defect_type_checkboxes.values():
             checkbox.setChecked(True)
 
-        self.train_patch_x_size = create_spinbox((SAMPLE_SIZE_MIN, SAMPLE_SIZE_MAX), default_value=256, step=10)
-        self.train_patch_y_size = create_spinbox((SAMPLE_SIZE_MIN, SAMPLE_SIZE_MAX), default_value=256, step=10)
-        self.recognition_patch_x_size = create_spinbox((SAMPLE_SIZE_MIN, SAMPLE_SIZE_MAX), default_value=256, step=10)
-        self.recognition_patch_y_size = create_spinbox((SAMPLE_SIZE_MIN, SAMPLE_SIZE_MAX), default_value=256, step=10)
+        self.train_patch_size_widget = AxisResizeWidget(
+            minimum_pixels=SAMPLE_SIZE_MIN,
+            maximum_pixels=SAMPLE_SIZE_MAX,
+            single_step=10,
+        )
+        self.train_patch_x_size = self.train_patch_size_widget.width_spinbox
+        self.train_patch_y_size = self.train_patch_size_widget.height_spinbox
+        self.recognition_patch_size_widget = AxisResizeWidget(
+            minimum_pixels=SAMPLE_SIZE_MIN,
+            maximum_pixels=SAMPLE_SIZE_MAX,
+            single_step=10,
+        )
+        self.recognition_patch_x_size = self.recognition_patch_size_widget.width_spinbox
+        self.recognition_patch_y_size = self.recognition_patch_size_widget.height_spinbox
+        self.random_patch_size_check_box = QCheckBox('')
+        self.random_patch_min_size_widget = AxisResizeWidget(
+            target_width=128,
+            target_height=128,
+            minimum_pixels=32,
+            maximum_pixels=SAMPLE_SIZE_MAX,
+            single_step=32,
+        )
+        self.random_patch_min_x_size = self.random_patch_min_size_widget.width_spinbox
+        self.random_patch_min_y_size = self.random_patch_min_size_widget.height_spinbox
+        self.random_patch_max_size_widget = AxisResizeWidget(
+            target_width=512,
+            target_height=512,
+            minimum_pixels=32,
+            maximum_pixels=SAMPLE_SIZE_MAX,
+            single_step=32,
+        )
+        self.random_patch_max_x_size = self.random_patch_max_size_widget.width_spinbox
+        self.random_patch_max_y_size = self.random_patch_max_size_widget.height_spinbox
         self.epochs_spinbox = create_spinbox(EPOCHS_RANGE, default_value=EPOCHS_DEFAULT, step=1)
         # Backward-compatible aliases (legacy code expects training patch controls here).
         self.sample_x_size = self.train_patch_x_size
@@ -1018,6 +1045,7 @@ class SettingsPanel(QDockWidget):
         )
         self._sync_optional_training_mode_controls(training_applicable)
         self._sync_patch_size_controls()
+        self._sync_random_patch_size_controls()
         self._set_settings_page_visible('training', training_applicable)
         self._set_settings_page_visible('recognition', recognition_applicable)
         self._ensure_visible_settings_page_selected()
@@ -1170,7 +1198,7 @@ class SettingsPanel(QDockWidget):
         self.optimizer_type.addItems(list(OPTIMIZERS))
         self.mixed_precision_type = NoWheelComboBox()
         self.mixed_precision_type.addItems(list(MIXED_PRECISION_MODES))
-        self.mixed_precision_type.setCurrentText('fp16')
+        self.mixed_precision_type.setCurrentText('off')
         self.deep_supervision_check_box = QCheckBox('')
         self.deep_supervision_check_box.setChecked(False)
         self.loss_function_type = NoWheelComboBox()
@@ -1333,18 +1361,6 @@ class SettingsPanel(QDockWidget):
             decimals=2,
         )
         self.hard_mining_check_box = QCheckBox('')
-        self.hard_mining_strength_spinbox = create_double_spinbox(
-            (MIN_HARD_MINING_STRENGTH, MAX_HARD_MINING_STRENGTH),
-            step=0.1,
-            default_value=2.0,
-            decimals=2,
-        )
-        self.hard_mining_ema_alpha_spinbox = create_double_spinbox(
-            (MIN_HARD_MINING_EMA_ALPHA, MAX_HARD_MINING_EMA_ALPHA),
-            step=0.05,
-            default_value=0.2,
-            decimals=2,
-        )
         self.hard_pixel_mining_check_box = QCheckBox('')
         self.hard_pixel_mining_ratio_spinbox = create_double_spinbox(
             (MIN_HARD_PIXEL_KEEP_RATIO, MAX_HARD_PIXEL_KEEP_RATIO),
@@ -1361,19 +1377,8 @@ class SettingsPanel(QDockWidget):
         )
         self.edit_rare_regions_button = QPushButton('')
         self.early_stopping_check_box = QCheckBox('')
-        self.early_stopping_patience_spinbox = create_spinbox(
-            (MIN_EARLY_STOPPING_PATIENCE, MAX_EARLY_STOPPING_PATIENCE),
-            step=1,
-            default_value=10,
-        )
-        self.early_stopping_min_delta_spinbox = create_double_spinbox(
-            (MIN_EARLY_STOPPING_MIN_DELTA, MAX_EARLY_STOPPING_MIN_DELTA),
-            step=1e-4,
-            default_value=0.0,
-            decimals=6,
-        )
-        self.restore_best_weights_check_box = QCheckBox('')
-        self.restore_best_weights_check_box.setChecked(True)
+        self.early_stopping_control_warning = QLabel('')
+        self.early_stopping_control_warning.setWordWrap(True)
 
         self.optimizer_groupbox, self.optimizer_form = _build_subgroup()
         self.precision_loss_groupbox, self.precision_loss_form = _build_subgroup()
@@ -1497,15 +1502,8 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.scheduler_form, self.scheduler_step_lr_gamma_spinbox, 'scheduler_step_lr_gamma')
 
         self.hard_mining_form.addRow(self.hard_mining_check_box)
-        self._add_labeled_row(self.hard_mining_form, self.hard_mining_strength_spinbox, 'hard_mining_strength')
-        self._add_labeled_row(self.hard_mining_form, self.hard_mining_ema_alpha_spinbox, 'hard_mining_ema_alpha')
         self.hard_mining_form.addRow(self.hard_pixel_mining_check_box)
         self._add_labeled_row(self.hard_mining_form, self.hard_pixel_mining_ratio_spinbox, 'hard_pixel_mining_ratio')
-
-        self.early_stopping_form.addRow(self.early_stopping_check_box)
-        self._add_labeled_row(self.early_stopping_form, self.early_stopping_patience_spinbox, 'early_stop_patience')
-        self._add_labeled_row(self.early_stopping_form, self.early_stopping_min_delta_spinbox, 'early_stop_min_delta')
-        self.early_stopping_form.addRow(self.restore_best_weights_check_box)
 
         nn_sections_layout.addWidget(self.optimizer_groupbox)
         nn_sections_layout.addWidget(self.precision_loss_groupbox)
@@ -1513,7 +1511,6 @@ class SettingsPanel(QDockWidget):
         nn_sections_layout.addWidget(self.warmup_groupbox)
         nn_sections_layout.addWidget(self.scheduler_groupbox)
         nn_sections_layout.addWidget(self.hard_mining_groupbox)
-        nn_sections_layout.addWidget(self.early_stopping_groupbox)
         nn_sections_layout.addWidget(self.runtime_groupbox)
         nn_sections_layout.addStretch(1)
 
@@ -1536,25 +1533,75 @@ class SettingsPanel(QDockWidget):
         self._sync_recognition_output_controls()
 
     def _init_layout(self) -> None:
-        self.train_patch_size_widget = create_size_widget(self.train_patch_x_size, self.train_patch_y_size)
-        self.recognition_patch_size_widget = create_size_widget(
-            self.recognition_patch_x_size,
-            self.recognition_patch_y_size,
-        )
         # Backward-compatible alias (legacy code expects training patch widget).
         self.sample_size_widget = self.train_patch_size_widget
+
+        self.train_patch_size_groupbox = QGroupBox('')
+        train_patch_layout = QVBoxLayout(self.train_patch_size_groupbox)
+        train_patch_layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
+        train_patch_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        train_patch_layout.addWidget(self.train_patch_size_widget, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.random_patch_widgets_container = QWidget()
+        random_patch_widgets_layout = QHBoxLayout(self.random_patch_widgets_container)
+        random_patch_widgets_layout.setContentsMargins(0, 0, 0, 0)
+        random_patch_widgets_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        self.random_patch_min_size_groupbox = QGroupBox('')
+        random_min_layout = QVBoxLayout(self.random_patch_min_size_groupbox)
+        random_min_layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
+        random_min_layout.addWidget(self.random_patch_min_size_widget, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.random_patch_max_size_groupbox = QGroupBox('')
+        random_max_layout = QVBoxLayout(self.random_patch_max_size_groupbox)
+        random_max_layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
+        random_max_layout.addWidget(self.random_patch_max_size_widget, alignment=Qt.AlignmentFlag.AlignCenter)
+        random_patch_widgets_layout.addWidget(self.random_patch_min_size_groupbox, 1)
+        random_patch_widgets_layout.addWidget(self.random_patch_max_size_groupbox, 1)
+        train_patch_layout.addWidget(self.random_patch_widgets_container)
+
+        self.recognition_patch_size_groupbox = QGroupBox('')
+        recognition_patch_layout = QVBoxLayout(self.recognition_patch_size_groupbox)
+        recognition_patch_layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
+        recognition_patch_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        recognition_patch_layout.addWidget(
+            self.recognition_patch_size_widget,
+            alignment=Qt.AlignmentFlag.AlignCenter,
+        )
+
+        # Size controls use titled groups instead of a description label on the left.
+        # Keep the field-row mapping so existing visibility and enablement policy
+        # applies to the complete group, including its title.
+        self._field_rows[self.train_patch_size_widget] = self.train_patch_size_groupbox
+        self._field_rows[self.recognition_patch_size_widget] = self.recognition_patch_size_groupbox
+        self._field_rows[self.random_patch_min_size_widget] = self.random_patch_min_size_groupbox
+        self._field_rows[self.random_patch_max_size_widget] = self.random_patch_max_size_groupbox
 
         self.general_groupbox = QGroupBox('')
         self.general_form = self._create_form_layout()
         self.general_groupbox.setLayout(self.general_form)
         self._add_labeled_row(self.general_form, self.nn_model_type, 'model')
         self._add_labeled_row(self.general_form, self.epochs_spinbox, 'epochs')
+        self.general_form.addRow(self.early_stopping_check_box)
+        self.general_form.addRow(self.early_stopping_control_warning)
         self._add_labeled_row(self.general_form, self.color_type, 'image_format')
+        self.patch_size_section_widget = QWidget()
+        patch_size_section_layout = QVBoxLayout(self.patch_size_section_widget)
+        patch_size_section_layout.setContentsMargins(0, 0, 0, 0)
+        patch_size_section_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        patch_options_layout = QHBoxLayout()
+        patch_options_layout.setContentsMargins(0, 0, 0, 0)
+        patch_options_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        patch_options_layout.addWidget(self.random_patch_size_check_box)
+        patch_options_layout.addStretch(1)
         self.sync_patch_sizes_check_box = QCheckBox('')
         self.sync_patch_sizes_check_box.setChecked(True)
-        self._add_labeled_row(self.general_form, self.sync_patch_sizes_check_box, 'sync_patch_sizes')
-        self._add_labeled_row(self.general_form, self.train_patch_size_widget, 'train_patch_size')
-        self._add_labeled_row(self.general_form, self.recognition_patch_size_widget, 'recognition_patch_size')
+        patch_options_layout.addWidget(self.sync_patch_sizes_check_box)
+        patch_size_section_layout.addLayout(patch_options_layout)
+        self.patch_size_groups_layout = QGridLayout()
+        self.patch_size_groups_layout.setContentsMargins(0, 0, 0, 0)
+        self.patch_size_groups_layout.setHorizontalSpacing(CONTENT_LAYOUT_SPACING)
+        self.patch_size_groups_layout.setVerticalSpacing(CONTENT_LAYOUT_SPACING)
+        patch_size_section_layout.addLayout(self.patch_size_groups_layout)
+        self.general_form.addRow(self.patch_size_section_widget)
         self.model_variants_groupbox = QGroupBox('')
         self.model_variants_form = self._create_form_layout()
         self.model_variants_groupbox.setLayout(self.model_variants_form)
@@ -1806,7 +1853,6 @@ class SettingsPanel(QDockWidget):
         self.expert_content_layout.addWidget(self.warmup_groupbox)
         self.expert_content_layout.addWidget(self.scheduler_groupbox)
         self.expert_content_layout.addWidget(self.hard_mining_groupbox)
-        self.expert_content_layout.addWidget(self.early_stopping_groupbox)
         self.expert_content_layout.addWidget(self.runtime_groupbox)
         self.expert_groupbox_layout.addWidget(self.expert_content_widget)
         self.training_page_layout.addWidget(self.expert_groupbox)
@@ -1847,7 +1893,10 @@ class SettingsPanel(QDockWidget):
         self.recognition_form.setAlignment(self.overlap_spinbox, Qt.AlignmentFlag.AlignRight)
         self.recognition_form.setAlignment(self.recognition_jpeg_quality_spinbox, Qt.AlignmentFlag.AlignRight)
         self.expert_groupbox.toggled.connect(self._sync_expert_groupbox_controls)
+        self.random_patch_size_check_box.toggled.connect(self._sync_random_patch_size_controls)
+        self.no_cut_dataset_type.toggled.connect(self._sync_random_patch_size_controls)
         self._sync_expert_groupbox_controls(self.expert_groupbox.isChecked())
+        self._sync_random_patch_size_controls()
 
         self._content_widget.setLayout(layout)
 
@@ -1954,8 +2003,10 @@ class SettingsPanel(QDockWidget):
         resolved = build_synthetic_defect_generator_parameters(config)
         self.synthetic_defect_generator_check_box.setChecked(bool(resolved.enabled))
         self.synthetic_dataset_factor_spinbox.setValue(float(resolved.epoch_size_factor))
-        self.synthetic_image_width_spinbox.setValue(int(resolved.image_size_xy[0]))
-        self.synthetic_image_height_spinbox.setValue(int(resolved.image_size_xy[1]))
+        self.synthetic_image_size_widget.set_target_size(
+            int(resolved.image_size_xy[0]),
+            int(resolved.image_size_xy[1]),
+        )
         self.synthetic_trace_count_min_spinbox.setValue(int(resolved.trace_count_range[0]))
         self.synthetic_trace_count_max_spinbox.setValue(int(resolved.trace_count_range[1]))
         self.synthetic_segment_count_min_spinbox.setValue(int(resolved.segment_count_range[0]))
@@ -2541,6 +2592,11 @@ class SettingsPanel(QDockWidget):
     def _sync_validation_controls(self, enabled: bool) -> None:
         validation_enabled = self._training_controls_applicable and bool(enabled)
         external_mode = self.get_validation_source_value() == 'external'
+        self._set_field_visible(self.validation_mode_combo, validation_enabled)
+        self._set_field_visible(self.validation_spinbox, validation_enabled and not external_mode)
+        self._set_field_visible(self.validation_image_path_label, validation_enabled and external_mode)
+        self._set_field_visible(self.validation_label_path_label, validation_enabled and external_mode)
+        self.save_validation_binary_images_check_box.setVisible(validation_enabled)
         self._set_field_enabled(self.validation_mode_combo, validation_enabled)
         self._set_field_enabled(
             self.validation_spinbox,
@@ -2556,6 +2612,8 @@ class SettingsPanel(QDockWidget):
         )
         self.save_validation_binary_images_check_box.setEnabled(validation_enabled)
         self._sync_validation_path_labels()
+        if hasattr(self, 'early_stopping_check_box'):
+            self._sync_early_stopping_controls(self.early_stopping_check_box.isChecked())
 
     def _sync_validation_path_labels(self) -> None:
         texts = self._texts if isinstance(self._texts, dict) else {}
@@ -2613,10 +2671,7 @@ class SettingsPanel(QDockWidget):
             self._set_field_enabled(field, scheduler_enabled and is_visible)
 
     def _sync_hard_mining_controls(self, enabled: bool) -> None:
-        sample_control_enabled = self._training_controls_applicable and bool(self.hard_mining_check_box.isChecked())
         pixel_control_enabled = self._training_controls_applicable and bool(self.hard_pixel_mining_check_box.isChecked())
-        self._set_field_enabled(self.hard_mining_strength_spinbox, sample_control_enabled)
-        self._set_field_enabled(self.hard_mining_ema_alpha_spinbox, sample_control_enabled)
         self._set_field_enabled(self.hard_pixel_mining_ratio_spinbox, pixel_control_enabled)
 
     def _sync_loss_controls(self, _index: int | None = None) -> None:
@@ -2641,9 +2696,50 @@ class SettingsPanel(QDockWidget):
 
     def _sync_early_stopping_controls(self, enabled: bool) -> None:
         control_enabled = self._training_controls_applicable and bool(enabled)
-        self._set_field_enabled(self.early_stopping_patience_spinbox, control_enabled)
-        self._set_field_enabled(self.early_stopping_min_delta_spinbox, control_enabled)
-        self.restore_best_weights_check_box.setEnabled(control_enabled)
+        self._set_field_visible(self.epochs_spinbox, not control_enabled)
+        self._set_field_enabled(self.epochs_spinbox, self._training_controls_applicable and not control_enabled)
+        show_warning = control_enabled and not self.validation_check_box.isChecked()
+        warning_text = (
+            'Без validation используется фиксированный train-control set. '
+            'Этот режим не позволяет объективно определить переобучение.'
+        )
+        self.early_stopping_control_warning.setText(warning_text)
+        self.early_stopping_control_warning.setVisible(show_warning)
+
+    def _sync_random_patch_size_controls(self, _enabled: bool | None = None) -> None:
+        online_mode = self._training_controls_applicable and bool(self.no_cut_dataset_type.isChecked())
+        enabled = online_mode and bool(self.random_patch_size_check_box.isChecked())
+        self.random_patch_size_check_box.setEnabled(online_mode)
+        if enabled and self.sync_patch_sizes_check_box.isChecked():
+            self.sync_patch_sizes_check_box.setChecked(False)
+        self.sync_patch_sizes_check_box.setEnabled(self._recognition_controls_applicable and not enabled)
+        self._set_field_visible(self.random_patch_min_size_widget, enabled)
+        self._set_field_visible(self.random_patch_max_size_widget, enabled)
+        self._set_field_enabled(self.random_patch_min_size_widget, enabled)
+        self._set_field_enabled(self.random_patch_max_size_widget, enabled)
+        self._sync_patch_size_controls()
+
+    def _sync_patch_size_layout(self, *, random_enabled: bool, patch_sync: bool) -> None:
+        self.patch_size_groups_layout.removeWidget(self.train_patch_size_groupbox)
+        self.patch_size_groups_layout.removeWidget(self.recognition_patch_size_groupbox)
+
+        self.train_patch_size_widget.setVisible(not random_enabled)
+        self.random_patch_widgets_container.setVisible(random_enabled)
+        self.train_patch_size_groupbox.setVisible(self._training_controls_applicable)
+
+        show_recognition = self._recognition_controls_applicable and (random_enabled or not patch_sync)
+        self.recognition_patch_size_groupbox.setVisible(show_recognition)
+
+        if random_enabled:
+            self.patch_size_groups_layout.addWidget(self.train_patch_size_groupbox, 0, 0, 1, 2)
+            if show_recognition:
+                self.patch_size_groups_layout.addWidget(self.recognition_patch_size_groupbox, 1, 0, 1, 2)
+        else:
+            self.patch_size_groups_layout.addWidget(self.train_patch_size_groupbox, 0, 0)
+            if show_recognition:
+                self.patch_size_groups_layout.addWidget(self.recognition_patch_size_groupbox, 0, 1)
+        self.patch_size_groups_layout.setColumnStretch(0, 1)
+        self.patch_size_groups_layout.setColumnStretch(1, 1)
 
     def _sync_rare_patch_oversampling_controls(self, _enabled: bool | None = None) -> None:
         online_mode_enabled = self._training_controls_applicable and bool(self.no_cut_dataset_type.isChecked())
@@ -2670,6 +2766,16 @@ class SettingsPanel(QDockWidget):
         random_crop_enabled = online_mode_enabled and bool(self.random_crop_check_box.isChecked())
         self.spatial_groupbox.setEnabled(self._training_controls_applicable)
         self.photometric_groupbox.setEnabled(self._training_controls_applicable)
+        for field in (
+            self.augmentation_brightness_spinbox,
+            self.augmentation_contrast_spinbox,
+            self.augmentation_gamma_spinbox,
+            self.augmentation_noise_probability_spinbox,
+            self.augmentation_noise_sigma_spinbox,
+            self.augmentation_blur_probability_spinbox,
+            self.augmentation_blur_radius_spinbox,
+        ):
+            self._set_field_visible(field, control_enabled)
         self._set_field_enabled(self.augmentation_brightness_spinbox, control_enabled)
         self._set_field_enabled(self.augmentation_contrast_spinbox, control_enabled)
         self._set_field_enabled(self.augmentation_gamma_spinbox, control_enabled)
@@ -2717,6 +2823,27 @@ class SettingsPanel(QDockWidget):
         current_domain = self.get_synthetic_topology_domain_value()
         self.synthetic_defect_generator_groupbox.setEnabled(training_enabled)
         self.synthetic_defect_generator_check_box.setEnabled(training_enabled)
+        synthetic_fields = (
+            self.synthetic_topology_domain_combo,
+            self.pcb_topology_family_combo,
+            self.ic_topology_family_combo,
+            self.synthetic_dataset_factor_spinbox,
+            self.synthetic_image_size_widget,
+            self.synthetic_trace_count_range_widget,
+            self.synthetic_segment_count_range_widget,
+            self.synthetic_trace_half_width_range_widget,
+            self.synthetic_background_noise_sigma_range_widget,
+            self.synthetic_trace_noise_sigma_range_widget,
+            self.pcb_defects_probability_spinbox,
+            self.pcb_defects_min_count_spinbox,
+            self.pcb_defects_max_count_spinbox,
+            *self.pcb_defect_type_checkboxes.values(),
+            *self.pcb_defect_type_spinboxes.values(),
+            *self.ic_defect_type_checkboxes.values(),
+            *self.ic_defect_type_spinboxes.values(),
+        )
+        for field in synthetic_fields:
+            self._set_field_visible(field, synthetic_enabled)
         self._set_field_enabled(self.synthetic_topology_domain_combo, synthetic_enabled)
         self._set_field_enabled(
             self.pcb_topology_family_combo,
@@ -2758,14 +2885,15 @@ class SettingsPanel(QDockWidget):
 
     def _sync_synthetic_domain_controls(self, _enabled: bool | None = None) -> None:
         is_ic = self.get_synthetic_topology_domain_value() == 'ic'
-        self._set_field_visible(self.pcb_topology_family_combo, not is_ic)
-        self._set_field_visible(self.ic_topology_family_combo, is_ic)
+        synthetic_enabled = self._training_controls_applicable and self.synthetic_defect_generator_check_box.isChecked()
+        self._set_field_visible(self.pcb_topology_family_combo, synthetic_enabled and not is_ic)
+        self._set_field_visible(self.ic_topology_family_combo, synthetic_enabled and is_ic)
         for defect_name, _label_key in PCB_DEFECT_WEIGHT_FIELDS:
-            self._set_field_visible(self.pcb_defect_type_checkboxes[defect_name], not is_ic)
-            self._set_field_visible(self.pcb_defect_type_spinboxes[defect_name], not is_ic)
+            self._set_field_visible(self.pcb_defect_type_checkboxes[defect_name], synthetic_enabled and not is_ic)
+            self._set_field_visible(self.pcb_defect_type_spinboxes[defect_name], synthetic_enabled and not is_ic)
         for defect_name, _label_key in IC_DEFECT_WEIGHT_FIELDS:
-            self._set_field_visible(self.ic_defect_type_checkboxes[defect_name], is_ic)
-            self._set_field_visible(self.ic_defect_type_spinboxes[defect_name], is_ic)
+            self._set_field_visible(self.ic_defect_type_checkboxes[defect_name], synthetic_enabled and is_ic)
+            self._set_field_visible(self.ic_defect_type_spinboxes[defect_name], synthetic_enabled and is_ic)
 
     def _sync_recognition_output_controls(self, _enabled: bool | None = None) -> None:
         recognition_enabled = self._recognition_controls_applicable
@@ -2871,6 +2999,7 @@ class SettingsPanel(QDockWidget):
         self.random_artifacts_groupbox.setEnabled(training_enabled)
         for checkbox in self.random_artifact_type_checkboxes.values():
             checkbox.setEnabled(random_artifacts_enabled)
+            checkbox.setVisible(random_artifacts_enabled)
         self.mixup_check_box.setEnabled(training_enabled)
         self.mixup_groupbox.setEnabled(training_enabled)
         pcb_defects_enabled = training_enabled and bool(self.pcb_defects_check_box.isChecked())
@@ -2882,6 +3011,15 @@ class SettingsPanel(QDockWidget):
             self.cutout_probability_spinbox,
             training_enabled and bool(self.cutout_check_box.isChecked()),
         )
+        cutout_enabled = training_enabled and bool(self.cutout_check_box.isChecked())
+        for field in (self.cutout_probability_spinbox, self.cutout_holes_spinbox, self.cutout_size_ratio_spinbox):
+            self._set_field_visible(field, cutout_enabled)
+        for field in (
+            self.random_artifacts_probability_spinbox,
+            self.random_artifacts_count_spinbox,
+            self.random_artifacts_size_ratio_spinbox,
+        ):
+            self._set_field_visible(field, random_artifacts_enabled)
         self._set_field_enabled(
             self.cutout_holes_spinbox,
             training_enabled and bool(self.cutout_check_box.isChecked()),
@@ -2922,18 +3060,30 @@ class SettingsPanel(QDockWidget):
             return
         self._patch_size_sync_guard = True
         try:
-            patch_sync = bool(self.sync_patch_sizes_check_box.isChecked())
+            random_enabled = (
+                self._training_controls_applicable
+                and bool(self.no_cut_dataset_type.isChecked())
+                and bool(self.random_patch_size_check_box.isChecked())
+            )
+            if random_enabled and self.sync_patch_sizes_check_box.isChecked():
+                self.sync_patch_sizes_check_box.setChecked(False)
+            self.sync_patch_sizes_check_box.setEnabled(
+                self._recognition_controls_applicable and not random_enabled
+            )
+            patch_sync = bool(self.sync_patch_sizes_check_box.isChecked()) and not random_enabled
             if patch_sync:
                 train_x = int(self.train_patch_x_size.value())
                 train_y = int(self.train_patch_y_size.value())
-                if int(self.recognition_patch_x_size.value()) != train_x:
-                    self.recognition_patch_x_size.setValue(train_x)
-                if int(self.recognition_patch_y_size.value()) != train_y:
-                    self.recognition_patch_y_size.setValue(train_y)
+                if self.recognition_patch_size_widget.target_size() != QSize(train_x, train_y):
+                    self.recognition_patch_size_widget.set_target_size(
+                        train_x,
+                        train_y,
+                    )
             self._set_field_enabled(
                 self.recognition_patch_size_widget,
                 self._recognition_controls_applicable and not patch_sync,
             )
+            self._sync_patch_size_layout(random_enabled=random_enabled, patch_sync=patch_sync)
         finally:
             self._patch_size_sync_guard = False
 

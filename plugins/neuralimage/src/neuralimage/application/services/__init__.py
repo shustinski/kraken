@@ -4,7 +4,7 @@ from .processing_session import (
     QueueTaskSnapshot,
     StartNextTaskDecision,
 )
-from .processing_queue import ActiveTaskMutationError, ProcessingTaskQueue, QueuedTask
+from .processing_queue import ActiveTaskMutationError, ProcessingTaskQueue, QueuedTask, TaskRuntimeContext
 from .validation import build_processing_start_error_message, can_start_processing
 from .workflow_mapper import build_workflow_parameters, resolve_work_mode
 
@@ -16,6 +16,7 @@ __all__ = [
     'QueueTaskSnapshot',
     'QueuedTask',
     'StartNextTaskDecision',
+    'TaskRuntimeContext',
     'build_processing_start_error_message',
     'build_workflow_parameters',
     'can_start_processing',

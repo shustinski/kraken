@@ -110,6 +110,13 @@ uv run python -m kraken_hub
 
 `--list` lists registered plugins.
 
+Kraken Hub checks for its own updates at startup when an update manifest is
+configured. Set it in the Hub with **Update source…**, pass
+`--update-url https://example.org/kraken/version.json`, or set the
+`KRAKEN_UPDATE_URL` environment variable. A choice of **Later** suppresses the
+same offer only for the current process; it is offered again after the next
+launch.
+
 **Plugins** — always from that plugin’s directory (separate `uv sync` per plugin the first time):
 
 ```powershell

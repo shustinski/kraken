@@ -75,7 +75,7 @@ class SettingsState:
     compression_factor: int = 1
     recursive_file_search: bool = False
     optimizer_name: str = 'adam'
-    mixed_precision: str = 'fp16'
+    mixed_precision: str = 'off'
     loss_function: str = 'bce'
     loss_term_weights: dict[str, float] = field(default_factory=lambda: {'bce': 1.0})
     dice_loss_weight: float = 0.5
@@ -83,9 +83,6 @@ class SettingsState:
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
     early_stopping_enabled: bool = False
-    early_stopping_patience: int = 10
-    early_stopping_min_delta: float = 0.0
-    early_stopping_restore_best_weights: bool = True
     warmup_enabled: bool = False
     warmup_epochs: int = 3
     warmup_start_factor: float = 0.1
@@ -106,8 +103,9 @@ class SettingsState:
     scheduler_step_lr_step_size: int = 10
     scheduler_step_lr_gamma: float = 0.1
     hard_mining_enabled: bool = False
-    hard_mining_strength: float = 2.0
-    hard_mining_ema_alpha: float = 0.2
+    random_patch_size_enabled: bool = False
+    random_patch_min_size: tuple[int, int] = (128, 128)
+    random_patch_max_size: tuple[int, int] = (512, 512)
     hard_pixel_mining_enabled: bool = False
     hard_pixel_mining_ratio: float = 0.25
     cutout_enabled: bool = False
@@ -129,9 +127,9 @@ class SettingsState:
     skip_uniform_labels: bool = False
     rare_patch_oversampling_enabled: bool = False
     rare_patch_oversampling_factor: int = 2
-    use_multi_gpu: bool = True
-    multi_gpu_mode: str = ''
-    torch_compile_enabled: bool = True
+    use_multi_gpu: bool = False
+    multi_gpu_mode: str = 'off'
+    torch_compile_enabled: bool = False
     show_batch_preview: bool = True
     log_update_frequency: int = 0
     local_crop_size: tuple[int, int] | None = None

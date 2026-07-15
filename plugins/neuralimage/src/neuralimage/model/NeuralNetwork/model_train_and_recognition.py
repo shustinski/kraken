@@ -1,4 +1,3 @@
-import importlib
 import os
 import datetime
 import time
@@ -9,6 +8,7 @@ import math
 import random
 import re
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty
@@ -57,9 +57,17 @@ from neuralimage.lib.images import ImagePreparator, SampleCalculator
 from neuralimage.lib.images import _build_enabled_transform_variants
 from neuralimage.lib.loss_config import format_loss_formula, resolve_loss_term_weights, sanitize_loss_term_weights
 from neuralimage.lib.message_bus import AbstractMessageBus
+from neuralimage.lib.optimizer_availability import MUON_UNAVAILABLE_MESSAGE, resolve_muon_optimizer_class
 from neuralimage.lib.random_artifacts import generate_random_artifact_patch
 from neuralimage.model.NeuralNetwork.blocks import extract_confidence_output, extract_mask_outputs
 from neuralimage.model.NeuralNetwork.context_utils import normalize_size_pair
+from neuralimage.model.NeuralNetwork.early_stopping import (
+    CheckpointManager,
+    EarlyStoppingConfigCalculator,
+    EarlyStoppingPolicy,
+    EarlyStoppingRuntimeConfig,
+    MetricEvaluator,
+)
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact, save_model_artifact
 from neuralimage.model.NeuralNetwork.recognition_pipeline import (
     RecognitionWorkload,
@@ -158,6 +166,17 @@ class TrainingInstabilityError(RuntimeError):
     pass
 
 
+class _TrainingPauseRequested(RuntimeError):
+    def __init__(self, epoch: int, next_batch: int):
+        self.epoch = int(epoch)
+        self.next_batch = int(next_batch)
+        super().__init__(f'Training paused at epoch {epoch}, batch {next_batch}.')
+
+
+class MuonOptimizerUnavailableError(RuntimeError):
+    pass
+
+
 class _NoOpQueue:
     def put(self, item: Any) -> None:
         return
@@ -230,9 +249,16 @@ def _join_process_with_escalation(process: Any, *, join_timeout: float = 5.0) ->
     try:
         process.join(timeout=join_timeout)
     except Exception:
-        return
+        pass
     if not process.is_alive():
         return
+
+    # A training process can own DataLoader/DDP workers.  Terminating only the
+    # direct multiprocessing.Process on Windows reparents those workers and
+    # leaves NeuralImage processes behind after the UI has closed.  Snapshot
+    # and stop the complete tree before the direct child loses ownership of it.
+    descendants = _get_process_descendants(getattr(process, 'pid', None))
+    _stop_process_descendants(descendants, force=False, timeout=min(join_timeout, 1.0))
     try:
         process.terminate()
     except Exception:
@@ -240,9 +266,15 @@ def _join_process_with_escalation(process: Any, *, join_timeout: float = 5.0) ->
     try:
         process.join(timeout=join_timeout)
     except Exception:
-        return
+        pass
     if not process.is_alive():
+        _stop_process_descendants(descendants, force=True, timeout=join_timeout)
         return
+    descendants.extend(
+        child for child in _get_process_descendants(getattr(process, 'pid', None))
+        if child not in descendants
+    )
+    _stop_process_descendants(descendants, force=True, timeout=join_timeout)
     try:
         process.kill()
     except Exception:
@@ -251,6 +283,44 @@ def _join_process_with_escalation(process: Any, *, join_timeout: float = 5.0) ->
         process.join(timeout=join_timeout)
     except Exception:
         pass
+
+
+def _get_process_descendants(pid: Any) -> list[Any]:
+    if pid is None:
+        return []
+    try:
+        import psutil
+
+        return list(psutil.Process(int(pid)).children(recursive=True))
+    except Exception:
+        return []
+
+
+def _stop_process_descendants(processes: list[Any], *, force: bool, timeout: float) -> None:
+    if not processes:
+        return
+    action_name = 'kill' if force else 'terminate'
+    for child in reversed(processes):
+        try:
+            getattr(child, action_name)()
+        except Exception:
+            pass
+    try:
+        import psutil
+
+        _gone, alive = psutil.wait_procs(processes, timeout=max(0.0, float(timeout)))
+    except Exception:
+        return
+    if force:
+        for child in alive:
+            try:
+                child.kill()
+            except Exception:
+                pass
+        try:
+            psutil.wait_procs(alive, timeout=max(0.0, float(timeout)))
+        except Exception:
+            pass
 
 
 def _ddp_worker_entry(rank: int, trainer: 'TrainerProcess', world_size: int, master_port: int) -> None:
@@ -263,9 +333,6 @@ class _SupportsSetEpoch(Protocol):
 
 
 class _SupportsLossAwareSampling(Protocol):
-    strength: float
-    ema_alpha: float
-
     def update_batch_losses(self, sample_indices: torch.Tensor, sample_losses: torch.Tensor) -> None:
         ...
 
@@ -285,6 +352,7 @@ class _TrainLoopStrides:
 class _EpochStats:
     train_loss_sum: torch.Tensor | None = None
     train_samples_count: int = 0
+    early_stop_requested: bool = False
     skipped_uniform_count: int = 0
     skipped_non_finite_count: int = 0
     data_wait_ms: float = 0.0
@@ -411,7 +479,7 @@ class _TrainStepResult:
             self.batch_loss = self.metric_loss
 
 
-@dataclass(frozen=True)
+@dataclass
 class _TrainingRuntimeState:
     is_main_process: bool
     run_context: _RunContext
@@ -419,6 +487,7 @@ class _TrainingRuntimeState:
     early_stopping_state: _EarlyStoppingState
     early_stopping_config: _EarlyStoppingConfig
     active_profiler: _ActiveTrainProfiler | None
+    automatic_stop_requested: bool = False
 
 
 class _RandomArtifactBank:
@@ -443,6 +512,7 @@ class _RandomArtifactBank:
         self._condition = threading.Condition()
         self._ready_event = threading.Event()
         self._stop_event = threading.Event()
+        self._pause_event = mp.Event()
         self._thread: threading.Thread | None = None
 
     @property
@@ -789,7 +859,7 @@ class ModelTrainer(threading.Thread):
                  model:nn.Module, save_path:Path,epochs:int, message_bus:AbstractMessageBus,
                  callback:Callable[..., None]|None = None,
                  optimizer_params: OptimizerParameters | None = None,
-                 mixed_precision: MixedPrecisionMode = MixedPrecisionMode.bf16,
+                 mixed_precision: MixedPrecisionMode = MixedPrecisionMode.off,
                  loss_function: str = 'bce',
                  loss_term_weights: dict[str, float] | None = None,
                  dice_loss_weight: float = 0.5,
@@ -803,14 +873,17 @@ class ModelTrainer(threading.Thread):
                  scheduler_params: SchedulerParameters | None = None,
                  skip_uniform_labels: bool = False,
                  resume_from_checkpoint: bool = False,
-                 use_multi_gpu: bool = True,
+                 extend_epochs_on_resume: bool = True,
+                 use_multi_gpu: bool = False,
                  multi_gpu_mode: str | None = None,
                  show_batch_preview: bool = True,
                  log_update_frequency: int = 0,
-                 save_validation_binary_images: bool = False):
+                 save_validation_binary_images: bool = False,
+                 control_dataloader: DataLoader | None = None):
         super().__init__()
         self._train_dataloader = train_dataloader
         self._val_dataloader = val_dataloader
+        self._control_dataloader = control_dataloader
         self._model = model
         self._save_path = save_path
         self._epochs = epochs
@@ -831,6 +904,7 @@ class ModelTrainer(threading.Thread):
         self._scheduler_params = scheduler_params or SchedulerParameters()
         self._skip_uniform_labels = bool(skip_uniform_labels)
         self._resume_from_checkpoint = resume_from_checkpoint
+        self._extend_epochs_on_resume = bool(extend_epochs_on_resume)
         self._multi_gpu_mode = normalize_multi_gpu_mode(
             multi_gpu_mode,
             use_multi_gpu_fallback=bool(use_multi_gpu),
@@ -879,11 +953,14 @@ class ModelTrainer(threading.Thread):
             scheduler_params=self._scheduler_params,
             skip_uniform_labels=self._skip_uniform_labels,
             resume_from_checkpoint=self._resume_from_checkpoint,
+            extend_epochs_on_resume=self._extend_epochs_on_resume,
             use_multi_gpu=self._use_multi_gpu,
             multi_gpu_mode=self._multi_gpu_mode,
             show_batch_preview=self._show_batch_preview,
             log_update_frequency=self._log_update_frequency,
             save_validation_binary_images=self._save_validation_binary_images,
+            control_dataloader=self._control_dataloader,
+            pause_event=self._pause_event,
         )
 
     @staticmethod
@@ -948,6 +1025,11 @@ class ModelTrainer(threading.Thread):
                 started_at = time.perf_counter()
                 try:
                     training_process.run()
+                except MuonOptimizerUnavailableError as error:
+                    self.error_message = str(error)
+                    self._bus.publish('error', self.error_message)
+                    self.succeeded = False
+                    return
                 except TrainingInstabilityError as error:
                     self.error_message = str(error)
                     self._bus.publish('error', self.error_message)
@@ -992,17 +1074,21 @@ class ModelTrainer(threading.Thread):
             self._model = None
             self._train_dataloader = None
             self._val_dataloader = None
+            self._control_dataloader = None
             _release_torch_memory()
 
     def stop(self):
         self._stop_event.set()
+
+    def pause(self):
+        self._pause_event.set()
 
 class TrainerProcess(mp.Process):
     def __init__(self,train_dataloader:DataLoader, val_dataloader:DataLoader | None,
                  model:nn.Module, save_path:Path, epochs:int, message_bus:mp.Queue,
                  callback:Callable[...,None]|None = None,
                  optimizer_params: OptimizerParameters | None = None,
-                 mixed_precision: MixedPrecisionMode = MixedPrecisionMode.bf16,
+                 mixed_precision: MixedPrecisionMode = MixedPrecisionMode.off,
                  loss_function: str = 'bce',
                  loss_term_weights: dict[str, float] | None = None,
                  dice_loss_weight: float = 0.5,
@@ -1016,14 +1102,18 @@ class TrainerProcess(mp.Process):
                  scheduler_params: SchedulerParameters | None = None,
                  skip_uniform_labels: bool = False,
                  resume_from_checkpoint: bool = False,
-                 use_multi_gpu: bool = True,
+                 extend_epochs_on_resume: bool = True,
+                 use_multi_gpu: bool = False,
                  multi_gpu_mode: str | None = None,
                  show_batch_preview: bool = True,
                  log_update_frequency: int = 0,
-                 save_validation_binary_images: bool = False):
+                 save_validation_binary_images: bool = False,
+                 pause_event: Any | None = None,
+                 control_dataloader: DataLoader | None = None):
         super().__init__()
         self._train_dataloader = train_dataloader
         self._val_dataloader = val_dataloader
+        self._control_dataloader = control_dataloader
         self._model = model
         self._save_path = save_path
         self._epochs = epochs
@@ -1044,6 +1134,7 @@ class TrainerProcess(mp.Process):
         self._scheduler_params = scheduler_params or SchedulerParameters()
         self._skip_uniform_labels = bool(skip_uniform_labels)
         self._resume_from_checkpoint = resume_from_checkpoint
+        self._extend_epochs_on_resume = bool(extend_epochs_on_resume)
         self._multi_gpu_mode = normalize_multi_gpu_mode(
             multi_gpu_mode,
             use_multi_gpu_fallback=bool(use_multi_gpu),
@@ -1052,6 +1143,11 @@ class TrainerProcess(mp.Process):
         self._show_batch_preview = show_batch_preview
         self._log_update_frequency = max(0, int(log_update_frequency))
         self._save_validation_binary_images = bool(save_validation_binary_images)
+        self._pause_event = pause_event if pause_event is not None else mp.Event()
+        self._resume_batch = 0
+        self._epoch_start_torch_rng_state: torch.Tensor | None = None
+        self._resume_epoch_torch_rng_state: torch.Tensor | None = None
+        self._resume_runtime_torch_rng_state: torch.Tensor | None = None
         self._training_profiler_config = self._resolve_training_profiler_config()
         self._uncompiled_model: nn.Module | None = None
         self._torch_compile_active = False
@@ -1065,6 +1161,13 @@ class TrainerProcess(mp.Process):
         self._bus = _RecordingQueue(message_bus, self._training_log_lines)
         self._random_artifact_bank: _RandomArtifactBank | None = None
         self._non_finite_gradient_skip_count = 0
+        self._global_batch = 0
+        self._automatic_early_stopping_policy: EarlyStoppingPolicy | None = None
+        self._automatic_early_stopping_config: EarlyStoppingRuntimeConfig | None = None
+        self._checkpoint_manager = CheckpointManager(
+            self._checkpoint_path(),
+            logger=lambda message: self._bus.put(['logging', message]),
+        )
 
     @property
     def _base_model(self) -> nn.Module:
@@ -1471,9 +1574,23 @@ class TrainerProcess(mp.Process):
         early_stopping_best_epoch: int = 0,
         early_stopping_best_model_state: dict[str, torch.Tensor] | None = None,
         early_stopping_best_threshold: float = 0.5,
+        current_epoch: int | None = None,
+        next_batch: int = 0,
     ) -> None:
+        checkpoint_manager = getattr(self, '_checkpoint_manager', None)
+        if checkpoint_manager is None:
+            checkpoint_manager = CheckpointManager(self._checkpoint_path())
+            self._checkpoint_manager = checkpoint_manager
+        automatic_policy = getattr(self, '_automatic_early_stopping_policy', None)
+        train_dataloader = getattr(self, '_train_dataloader', None)
+        sampler = getattr(train_dataloader, 'sampler', None)
+        wrapped_sampler = getattr(getattr(train_dataloader, 'batch_sampler', None), 'sampler', None)
+        if callable(getattr(wrapped_sampler, 'state_dict', None)):
+            sampler = wrapped_sampler
+        sampler_state_fn = getattr(sampler, 'state_dict', None)
+        sampler_state = sampler_state_fn() if callable(sampler_state_fn) else None
         checkpoint = {
-            'version': 1,
+            'version': 2,
             'completed_epoch': completed_epoch,
             'epochs': self._epochs,
             'model_state_dict': self._base_model.state_dict(),
@@ -1493,8 +1610,55 @@ class TrainerProcess(mp.Process):
             'recommended_inference_threshold': float(
                 min(max(getattr(self, '_recommended_inference_threshold', 0.5), 0.0), 1.0)
             ),
+            'current_epoch': int(completed_epoch if current_epoch is None else current_epoch),
+            'next_batch': max(0, int(next_batch)),
+            'python_random_state': random.getstate(),
+            'numpy_random_state': np.random.get_state(),
+            'torch_rng_state': torch.get_rng_state(),
+            'cuda_rng_state_all': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            'sampler_state_dict': sampler_state,
+            'epoch_start_torch_rng_state': getattr(self, '_epoch_start_torch_rng_state', None),
+            'global_batch': int(getattr(self, '_global_batch', 0)),
+            'automatic_early_stopping_state': (
+                automatic_policy.state_dict()
+                if automatic_policy is not None
+                else None
+            ),
+            'best_checkpoint_loss': checkpoint_manager.best_loss,
+            'best_checkpoint_global_batch': checkpoint_manager.best_global_batch,
         }
-        torch.save(checkpoint, self._checkpoint_path())
+        checkpoint_manager.save_regular(checkpoint)
+
+    def _save_pause_checkpoint(
+        self,
+        *,
+        epoch: int,
+        next_batch: int,
+        run_context: _RunContext,
+        early_stopping_state: _EarlyStoppingState,
+    ) -> None:
+        self._save_model_artifact()
+        self._save_checkpoint(
+            epoch,
+            run_context.optimizer,
+            run_context.scaler,
+            run_context.warmup_scheduler,
+            run_context.scheduler,
+            early_stopping_best_loss=early_stopping_state.best_loss,
+            early_stopping_bad_epochs=early_stopping_state.bad_epochs,
+            early_stopping_best_epoch=early_stopping_state.best_epoch,
+            early_stopping_best_model_state=early_stopping_state.best_model_state,
+            early_stopping_best_threshold=early_stopping_state.best_threshold,
+            current_epoch=epoch,
+            next_batch=next_batch,
+        )
+        checkpoint_path = self._checkpoint_path()
+        self._bus.put(['metrics', {
+            'type': 'training_paused',
+            'checkpoint_path': str(checkpoint_path),
+            'epoch': int(epoch),
+            'next_batch': int(next_batch),
+        }])
 
     def _load_checkpoint_if_available(
         self,
@@ -1513,7 +1677,7 @@ class TrainerProcess(mp.Process):
 
         try:
             checkpoint = retry_file_read(
-                lambda: torch.load(checkpoint_path, map_location='cpu', weights_only=True),
+                lambda: torch.load(checkpoint_path, map_location='cpu', weights_only=False),
                 path=checkpoint_path,
             )
             model_state = checkpoint.get('model_state_dict')
@@ -1539,6 +1703,38 @@ class TrainerProcess(mp.Process):
                     1.0,
                 )
             )
+            best_checkpoint_loss = checkpoint.get('best_checkpoint_loss')
+            if best_checkpoint_loss is not None:
+                self._checkpoint_manager.best_loss = float(best_checkpoint_loss)
+            best_checkpoint_batch = checkpoint.get('best_checkpoint_global_batch')
+            if best_checkpoint_batch is not None:
+                self._checkpoint_manager.best_global_batch = int(best_checkpoint_batch)
+
+            self._resume_batch = max(0, int(checkpoint.get('next_batch', 0) or 0))
+            if self._resume_batch > 0:
+                completed_epoch = max(0, int(checkpoint.get('current_epoch', completed_epoch)))
+            python_state = checkpoint.get('python_random_state')
+            numpy_state = checkpoint.get('numpy_random_state')
+            torch_state = checkpoint.get('torch_rng_state')
+            cuda_state = checkpoint.get('cuda_rng_state_all')
+            sampler_state = checkpoint.get('sampler_state_dict')
+            self._resume_epoch_torch_rng_state = checkpoint.get('epoch_start_torch_rng_state')
+            if python_state is not None:
+                random.setstate(python_state)
+            if numpy_state is not None:
+                np.random.set_state(numpy_state)
+            if torch_state is not None:
+                torch.set_rng_state(torch_state)
+                self._resume_runtime_torch_rng_state = torch_state
+            if cuda_state is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all(cuda_state)
+            sampler = getattr(self._train_dataloader, 'sampler', None)
+            wrapped_sampler = getattr(getattr(self._train_dataloader, 'batch_sampler', None), 'sampler', None)
+            if callable(getattr(wrapped_sampler, 'load_state_dict', None)):
+                sampler = wrapped_sampler
+            load_sampler_state = getattr(sampler, 'load_state_dict', None)
+            if sampler_state is not None and callable(load_sampler_state):
+                load_sampler_state(sampler_state)
 
             start_epoch = max(0, min(completed_epoch, self._epochs))
             self._bus.put([
@@ -1701,7 +1897,7 @@ class TrainerProcess(mp.Process):
         In fine-tuning mode the UI epoch value is treated as "additional epochs".
         For fresh training it is treated as total epochs.
         """
-        if self._resume_from_checkpoint and start_epoch > 0:
+        if self._resume_from_checkpoint and self._extend_epochs_on_resume and start_epoch > 0:
             return start_epoch + int(self._epochs)
         return int(self._epochs)
 
@@ -2934,6 +3130,7 @@ class TrainerProcess(mp.Process):
         skipped_non_finite_batches = 0
         validation_export_cache = self._create_validation_export_cache()
         export_saved_images = 0
+        evaluation_model = self._base_model if isinstance(self._model, DDP) else self._model
         with torch.no_grad():
             for batch in self._val_dataloader:
                 data, target, _sample_indices = self._split_batch(batch)
@@ -2941,7 +3138,7 @@ class TrainerProcess(mp.Process):
                 image = self._extract_local_image(inputs)
                 label = target.to(device, non_blocking=True)
                 with autocast_ctx():
-                    outputs = self._forward_model(inputs)
+                    outputs = evaluation_model(inputs)
                     per_sample_loss = self._compute_per_sample_loss(outputs, label, bce_criterion)
                     loss = per_sample_loss.mean()
 
@@ -3136,38 +3333,10 @@ class TrainerProcess(mp.Process):
             adamw_kwargs.pop('fused', None)
             return optim.AdamW(self._model.parameters(), **adamw_kwargs)
 
-    @staticmethod
-    def _load_optional_attribute(module_name: str, attribute_name: str) -> Any | None:
-        try:
-            module_spec = importlib.util.find_spec(module_name)
-        except (AttributeError, ImportError, ModuleNotFoundError, ValueError):
-            return None
-        if module_spec is None:
-            return None
-        try:
-            module = importlib.import_module(module_name)
-        except Exception:
-            return None
-        return getattr(module, attribute_name, None)
-
     def _create_adamw_muon_optimizer(self, params: OptimizerParameters):
-        """
-        Prepared hook for Muon integration.
-        Tries to use optional Muon package; if unavailable falls back to AdamW.
-        """
-        muon_cls = getattr(optim, 'Muon', None)
+        muon_cls = resolve_muon_optimizer_class()
         if muon_cls is None:
-            for module_name in ('muon', 'optimizers.muon', 'torch_optimizer'):
-                muon_cls = self._load_optional_attribute(module_name, 'Muon')
-                if muon_cls is not None:
-                    break
-
-        if muon_cls is None:
-            self._bus.put([
-                'logging',
-                'Muon optimizer is unavailable. Using AdamW.',
-            ])
-            return self._create_adamw_optimizer(params)
+            raise MuonOptimizerUnavailableError(MUON_UNAVAILABLE_MESSAGE)
 
         try:
             return self._create_split_muon_adamw_optimizer(params, muon_cls)
@@ -3258,7 +3427,7 @@ class TrainerProcess(mp.Process):
             if is_main_process:
                 self._bus.put(['logging', 'torch.compile skipped: nn.DataParallel model wrapper is active.'])
             return
-        if not self._env_bool('NEURALIMAGE_TORCH_COMPILE', True):
+        if not self._env_bool('NEURALIMAGE_TORCH_COMPILE', False):
             self._torch_compile_active = False
             if is_main_process:
                 self._bus.put(['logging', 'torch.compile disabled by NEURALIMAGE_TORCH_COMPILE=0.'])
@@ -3373,6 +3542,9 @@ class TrainerProcess(mp.Process):
                 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self._model.to(device)
             self._run_impl(device=device, rank=0, world_size=1, distributed=False)
+        except MuonOptimizerUnavailableError as error:
+            self._bus.put(['error', str(error)])
+            raise
         except TrainingInstabilityError as error:
             self._bus.put(['error', str(error)])
             raise
@@ -3533,6 +3705,9 @@ class TrainerProcess(mp.Process):
     def _resolve_train_loader_context(self) -> tuple[int, Any, bool, _TrainLoopStrides]:
         train_size = self._safe_loader_len(self._train_dataloader)
         train_sampler = getattr(self._train_dataloader, 'sampler', None) if self._train_dataloader is not None else None
+        wrapped_sampler = getattr(getattr(self._train_dataloader, 'batch_sampler', None), 'sampler', None)
+        if hasattr(wrapped_sampler, 'update_batch_losses'):
+            train_sampler = wrapped_sampler
         supports_loss_aware_sampling = hasattr(train_sampler, 'update_batch_losses')
         strides = self._build_train_loop_strides(train_size, self._log_update_frequency)
         return train_size, train_sampler, supports_loss_aware_sampling, strides
@@ -3604,11 +3779,7 @@ class TrainerProcess(mp.Process):
             return
         self._bus.put([
             'logging',
-            (
-                f'Loss-aware sampling is enabled: '
-                f'strength={float(getattr(train_sampler, "strength", 0.0)):.2f}, '
-                f'ema_alpha={float(getattr(train_sampler, "ema_alpha", 0.0)):.2f}.'
-            ),
+            'Hard-frame sampling is enabled; selected frames are repeated once in the next epoch.',
         ])
 
     @staticmethod
@@ -3753,29 +3924,43 @@ class TrainerProcess(mp.Process):
             best_threshold=float(checkpoint.get('early_stopping_best_threshold', self._recommended_inference_threshold)),
         )
 
-        has_validation = bool(self._val_dataloader is not None)
-        if has_validation and self._val_dataloader is not None:
-            has_validation = len(cast(Sized, self._val_dataloader.dataset)) > 0
         early_stopping_config = _EarlyStoppingConfig(
-            enabled=bool(self._early_stopping_params.enabled and has_validation),
-            patience=max(0, int(self._early_stopping_params.patience)),
-            min_delta=max(0.0, float(self._early_stopping_params.min_delta)),
+            enabled=False,
+            patience=0,
+            min_delta=0.0,
         )
-        if self._early_stopping_params.enabled and not has_validation:
-            self._bus.put([
-                'logging',
-                'Early stopping включен, но валидационный датасет отсутствует. Early stopping отключен.',
-            ])
-        elif early_stopping_config.enabled:
+        if self._early_stopping_params.enabled:
+            train_size = int(len(cast(Sized, self._train_dataloader.dataset)))
+            batches_per_epoch = max(1, int(len(self._train_dataloader)))
+            automatic_config = EarlyStoppingConfigCalculator.calculate(
+                train_size=train_size,
+                batches_per_epoch=batches_per_epoch,
+            )
+            self._automatic_early_stopping_config = automatic_config
+            self._automatic_early_stopping_policy = EarlyStoppingPolicy(automatic_config)
+            policy_state = checkpoint.get('automatic_early_stopping_state')
+            if isinstance(policy_state, Mapping):
+                self._automatic_early_stopping_policy.load_state_dict(policy_state)
+            self._checkpoint_manager.best_loss = self._automatic_early_stopping_policy.best_actual_loss
+            self._checkpoint_manager.best_global_batch = self._automatic_early_stopping_policy.best_actual_batch
+            self._global_batch = max(0, int(checkpoint.get('global_batch', start_epoch * batches_per_epoch)))
+            self._epochs = int(automatic_config.max_epochs)
+            metric_source = 'validation loss' if self._val_dataloader is not None else 'train-control loss'
             self._bus.put([
                 'logging',
                 (
-                    f'Early stopping включен: patience={early_stopping_config.patience}, '
-                    f'min_delta={early_stopping_config.min_delta:.6f}.'
+                    'Automatic early stopping enabled: '
+                    f'metric={metric_source}, train_size={train_size}, '
+                    f'batches_per_epoch={batches_per_epoch}, control_size={automatic_config.control_size}, '
+                    f'check_every_batches={automatic_config.check_every_batches}, '
+                    f'checks_per_epoch={automatic_config.checks_per_epoch}, '
+                    f'patience_checks={automatic_config.patience_checks}, '
+                    f'warmup_batches={automatic_config.warmup_batches}, '
+                    f'trend_window={automatic_config.trend_window}, max_epochs={automatic_config.max_epochs}.'
                 ),
             ])
 
-        target_epochs = self._resolve_target_epochs(start_epoch)
+        target_epochs = self._epochs if self._early_stopping_params.enabled else self._resolve_target_epochs(start_epoch)
         if target_epochs != self._epochs:
             self._bus.put([
                 'logging',
@@ -4623,30 +4808,130 @@ class TrainerProcess(mp.Process):
                 },
             ])
 
+    def _evaluate_automatic_stop_metric(
+        self,
+        *,
+        device: torch.device,
+        run_context: _RunContext,
+    ) -> float:
+        dataloader = self._val_dataloader if self._val_dataloader is not None else self._control_dataloader
+        if dataloader is None:
+            raise RuntimeError('Early stopping requires validation or train-control dataloader')
+
+        def adapt_batch(batch: Any, target_device: torch.device) -> tuple[Any, torch.Tensor]:
+            data, target, _sample_indices = self._split_batch(batch)
+            return (
+                self._move_batch_input_to_device(data, target_device),
+                target.to(target_device, non_blocking=True),
+            )
+
+        evaluator = MetricEvaluator()
+        return evaluator.evaluate(
+            model=self._base_model,
+            dataloader=dataloader,
+            device=device,
+            batch_adapter=adapt_batch,
+            forward_fn=lambda model, inputs: model(inputs),
+            per_sample_loss_fn=lambda outputs, target: self._compute_per_sample_loss(
+                outputs,
+                target,
+                run_context.bce_criterion,
+            ),
+            autocast_ctx=run_context.autocast_ctx,
+        )
+
+    def _run_automatic_early_stopping_check(
+        self,
+        *,
+        device: torch.device,
+        run_context: _RunContext,
+        is_main_process: bool,
+        distributed: bool,
+    ) -> bool:
+        policy = self._automatic_early_stopping_policy
+        should_stop = False
+        if policy is not None and is_main_process:
+            loss = self._evaluate_automatic_stop_metric(device=device, run_context=run_context)
+            decision = policy.update(loss=loss, global_batch=self._global_batch)
+            source = 'validation' if self._val_dataloader is not None else 'train-control'
+            if decision.actual_best_improved:
+                self._checkpoint_manager.save_best(
+                    model=self._base_model,
+                    loss=loss,
+                    global_batch=self._global_batch,
+                    extra={
+                        'metric_source': source,
+                        'recommended_inference_threshold': float(self._recommended_inference_threshold),
+                    },
+                )
+            trend = 'n/a' if decision.trend_improvement is None else f'{decision.trend_improvement:.4%}'
+            self._bus.put([
+                'logging',
+                (
+                    f'Early stopping check: source={source}, global_batch={self._global_batch}, '
+                    f'loss={loss:.8f}, significant={decision.significant_improvement}, '
+                    f'bad_checks={decision.bad_checks}/{policy.config.patience_checks}, trend={trend}.'
+                ),
+            ])
+            should_stop = decision.should_stop
+            if should_stop:
+                self._bus.put([
+                    'logging',
+                    f'Early stopping reason at global batch {self._global_batch}: {decision.reason}.',
+                ])
+        return self._sync_early_stopping_signal(
+            should_stop,
+            is_main_process=is_main_process,
+            distributed=distributed,
+            device=device,
+        )
+
     def _run_train_epoch(
         self,
         epoch: int,
         device: torch.device,
         run_context: _RunContext,
+        *,
+        is_main_process: bool = True,
+        distributed: bool = False,
         active_profiler: _ActiveTrainProfiler | None = None,
     ) -> _EpochStats:
         epoch_stats = _EpochStats()
+        if not hasattr(self, '_global_batch'):
+            self._global_batch = 0
+        if not hasattr(self, '_resume_batch'):
+            self._resume_batch = 0
+        if not hasattr(self, '_resume_epoch_torch_rng_state'):
+            self._resume_epoch_torch_rng_state = None
+        if not hasattr(self, '_resume_runtime_torch_rng_state'):
+            self._resume_runtime_torch_rng_state = None
+        last_automatic_check_batch: int | None = None
 
         train_dataset = self._train_dataloader.dataset
         if hasattr(train_dataset, 'set_epoch'):
             cast(_SupportsSetEpoch, train_dataset).set_epoch()
         train_sampler = getattr(self._train_dataloader, 'sampler', None)
+        batch_sampler = getattr(self._train_dataloader, 'batch_sampler', None)
+        wrapped_sampler = getattr(batch_sampler, 'sampler', None)
+        if hasattr(wrapped_sampler, 'update_batch_losses'):
+            train_sampler = wrapped_sampler
         if hasattr(train_sampler, 'resize'):
             base_dataset = getattr(train_dataset, '_base_dataset', train_dataset)
             reset_sampling_state = bool(
                 getattr(base_dataset, 'shuffle_frames', False)
                 or getattr(base_dataset, '_dynamic_frame_lengths', False)
-            )
+            ) and not hasattr(train_sampler, 'finalize_epoch')
             cast(_SupportsLossAwareSampling, train_sampler).resize(
                 len(train_dataset),
                 reset=reset_sampling_state,
             )
+        start_epoch_fn = getattr(train_sampler, 'start_epoch', None)
+        if callable(start_epoch_fn) and self._resume_batch <= 0:
+            start_epoch_fn()
 
+        if self._resume_batch > 0 and self._resume_epoch_torch_rng_state is not None:
+            torch.set_rng_state(self._resume_epoch_torch_rng_state)
+        self._epoch_start_torch_rng_state = torch.get_rng_state().clone()
         train_iterator = iter(self._train_dataloader)
         batch_index = 0
         while True:
@@ -4655,6 +4940,27 @@ class TrainerProcess(mp.Process):
                 batch = next(train_iterator)
             except StopIteration:
                 break
+            if batch_index < self._resume_batch:
+                batch_index += 1
+                continue
+            if (
+                getattr(self, '_automatic_early_stopping_config', None) is not None
+                and self._global_batch > 0
+                and self._global_batch % self._automatic_early_stopping_config.check_every_batches == 0
+                and last_automatic_check_batch != self._global_batch
+            ):
+                epoch_stats.early_stop_requested = self._run_automatic_early_stopping_check(
+                    device=device,
+                    run_context=run_context,
+                    is_main_process=is_main_process,
+                    distributed=distributed,
+                )
+                last_automatic_check_batch = self._global_batch
+                if epoch_stats.early_stop_requested:
+                    break
+            if self._resume_runtime_torch_rng_state is not None:
+                torch.set_rng_state(self._resume_runtime_torch_rng_state)
+                self._resume_runtime_torch_rng_state = None
             enable_cuda_event_timing = bool(getattr(run_context, 'enable_cuda_event_timing', True))
             prepared_batch, skipped_here = self._prepare_train_batch(
                 batch=batch,
@@ -4667,6 +4973,7 @@ class TrainerProcess(mp.Process):
 
             if prepared_batch is None:
                 self._step_training_profiler(active_profiler)
+                self._global_batch += 1
                 batch_index += 1
                 continue
 
@@ -4674,6 +4981,7 @@ class TrainerProcess(mp.Process):
             if step_result is None:
                 epoch_stats.skipped_non_finite_count += 1
                 self._step_training_profiler(active_profiler)
+                self._global_batch += 1
                 batch_index += 1
                 continue
             batch_total_ms = (time.perf_counter() - prepared_batch.batch_start) * 1000.0
@@ -4704,8 +5012,39 @@ class TrainerProcess(mp.Process):
                 batch_total_ms=batch_total_ms,
             )
             self._step_training_profiler(active_profiler)
+            self._global_batch += 1
             batch_index += 1
+            pause_event = getattr(self, '_pause_event', None)
+            if pause_event is not None and pause_event.is_set():
+                raise _TrainingPauseRequested(epoch, batch_index)
 
+        if (
+            not epoch_stats.early_stop_requested
+            and getattr(self, '_automatic_early_stopping_config', None) is not None
+            and self._global_batch > 0
+            and last_automatic_check_batch != self._global_batch
+        ):
+            epoch_stats.early_stop_requested = self._run_automatic_early_stopping_check(
+                device=device,
+                run_context=run_context,
+                is_main_process=is_main_process,
+                distributed=distributed,
+            )
+
+        self._resume_batch = 0
+        self._resume_epoch_torch_rng_state = None
+        self._resume_runtime_torch_rng_state = None
+        finalize_sampler_epoch = getattr(train_sampler, 'finalize_epoch', None)
+        if callable(finalize_sampler_epoch):
+            hard_frames = finalize_sampler_epoch()
+            self._bus.put([
+                'logging',
+                (
+                    f'Hard-frame sampling: frames={len(getattr(train_sampler, "last_frame_losses", {}))}, '
+                    f'sigma={float(getattr(train_sampler, "last_sigma", 0.0)):.8f}, '
+                    f'repeated_next_epoch={len(hard_frames)}.'
+                ),
+            ])
         return epoch_stats
 
     @staticmethod
@@ -4897,11 +5236,6 @@ class TrainerProcess(mp.Process):
             early_stopping_state.bad_epochs = 0
             early_stopping_state.best_epoch = int(epoch + 1)
             early_stopping_state.best_threshold = float(validation_result.get('best_threshold', self._recommended_inference_threshold))
-            if self._early_stopping_params.restore_best_weights:
-                early_stopping_state.best_model_state = {
-                    key: value.detach().cpu().clone()
-                    for key, value in self._base_model.state_dict().items()
-                }
             self._bus.put([
                 'logging',
                 f'Early stopping: new best result at epoch {epoch + 1} (val_loss={avg_val_loss:.6f}).',
@@ -5022,8 +5356,11 @@ class TrainerProcess(mp.Process):
             epoch,
             device,
             run_context,
+            is_main_process=runtime_state.is_main_process,
+            distributed=distributed,
             active_profiler=runtime_state.active_profiler,
         )
+        runtime_state.automatic_stop_requested = bool(epoch_stats.early_stop_requested)
         train_stage_ms = (time.perf_counter() - train_stage_start) * 1000.0
 
         global_train_loss, global_train_samples = self._reduce_epoch_train_stats(
@@ -5054,6 +5391,22 @@ class TrainerProcess(mp.Process):
             early_stopping_config=runtime_state.early_stopping_config,
             is_main_process=runtime_state.is_main_process,
         )
+        if runtime_state.is_main_process and self._automatic_early_stopping_policy is None:
+            checkpoint_loss = (
+                float(validation_result['loss'])
+                if validation_result is not None
+                else average_train_loss
+            )
+            if checkpoint_loss is not None:
+                self._checkpoint_manager.save_best(
+                    model=self._base_model,
+                    loss=float(checkpoint_loss),
+                    global_batch=self._global_batch,
+                    extra={
+                        'metric_source': 'validation' if validation_result is not None else 'train',
+                        'recommended_inference_threshold': float(self._recommended_inference_threshold),
+                    },
+                )
         self._step_epoch_scheduler(
             run_context=run_context,
             validation_result=validation_result,
@@ -5103,6 +5456,15 @@ class TrainerProcess(mp.Process):
         distributed: bool,
         runtime_state: _TrainingRuntimeState,
     ) -> bool:
+        if runtime_state.automatic_stop_requested:
+            if runtime_state.is_main_process:
+                policy = self._automatic_early_stopping_policy
+                best_batch = None if policy is None else policy.best_actual_batch
+                self._bus.put([
+                    'logging',
+                    f'Automatic early stopping completed at epoch {epoch + 1}; best checkpoint batch={best_batch}.',
+                ])
+            return True
         should_stop = bool(
             runtime_state.early_stopping_config.enabled
             and runtime_state.early_stopping_state.bad_epochs > 0
@@ -5125,10 +5487,6 @@ class TrainerProcess(mp.Process):
                     f'Best val_loss reached at epoch {runtime_state.early_stopping_state.best_epoch}.'
                 ),
             ])
-            if self._early_stopping_params.restore_best_weights and runtime_state.early_stopping_state.best_model_state:
-                self._base_model.load_state_dict(runtime_state.early_stopping_state.best_model_state)
-                self._recommended_inference_threshold = float(runtime_state.early_stopping_state.best_threshold)
-                self._bus.put(['logging', 'Best validation weights restored.'])
         return True
 
     def _publish_epoch_end_memory(self, *, epoch: int, is_main_process: bool) -> None:
@@ -5140,6 +5498,21 @@ class TrainerProcess(mp.Process):
 
     def _finalize_training_success(self, *, is_main_process: bool) -> None:
         if is_main_process:
+            if self._automatic_early_stopping_config is not None:
+                policy = self._automatic_early_stopping_policy
+                if policy is not None and self._global_batch >= (
+                    self._automatic_early_stopping_config.max_epochs
+                    * self._automatic_early_stopping_config.batches_per_epoch
+                ):
+                    self._bus.put([
+                        'logging',
+                        f'Early stopping guard reached max_epochs={self._automatic_early_stopping_config.max_epochs}.',
+                    ])
+            best_payload = self._checkpoint_manager.restore_best(self._base_model)
+            if best_payload is not None:
+                self._recommended_inference_threshold = float(
+                    best_payload.get('recommended_inference_threshold', self._recommended_inference_threshold)
+                )
             self._save_model_artifact()
             try:
                 self._save_metric_charts()
@@ -5167,14 +5540,29 @@ class TrainerProcess(mp.Process):
         if runtime_state.start_epoch >= self._epochs:
             self._bus.put(['logging', 'All epochs from checkpoint are already completed. Additional training is not required.'])
 
+        paused = False
         try:
             for epoch in range(runtime_state.start_epoch, self._epochs):
-                self._run_single_training_epoch(
-                    epoch=epoch,
-                    device=device,
-                    distributed=distributed,
-                    runtime_state=runtime_state,
-                )
+                try:
+                    self._run_single_training_epoch(
+                        epoch=epoch,
+                        device=device,
+                        distributed=distributed,
+                        runtime_state=runtime_state,
+                    )
+                except _TrainingPauseRequested as pause:
+                    paused = True
+                    if distributed:
+                        dist.barrier()
+                    if runtime_state.is_main_process:
+                        self._save_pause_checkpoint(
+                            epoch=pause.epoch,
+                            next_batch=pause.next_batch,
+                            run_context=runtime_state.run_context,
+                            early_stopping_state=runtime_state.early_stopping_state,
+                        )
+                        self._bus.put(['logging', 'Training paused after a completed batch; checkpoint saved.'])
+                    break
                 if self._should_stop_after_epoch(
                     epoch=epoch,
                     device=device,
@@ -5190,7 +5578,8 @@ class TrainerProcess(mp.Process):
             self._stop_random_artifact_bank()
             self._stop_training_profiler(runtime_state.active_profiler)
 
-        self._finalize_training_success(is_main_process=runtime_state.is_main_process)
+        if not paused:
+            self._finalize_training_success(is_main_process=runtime_state.is_main_process)
 
 @dataclass(frozen=True)
 class RecognitionRuntimePlan:
@@ -5443,7 +5832,7 @@ class NeuralRecognizer(threading.Thread):
             raise TypeError('Recognition model must be a torch.nn.Module or a model path.')
         self._resolve_output_threshold(loaded_model)
         if not bool(getattr(sys, 'frozen', False)):
-            compile_enabled = str(os.getenv('NEURALIMAGE_TORCH_COMPILE', '1')).strip().lower() in {'1', 'true', 'yes', 'on'}
+            compile_enabled = str(os.getenv('NEURALIMAGE_TORCH_COMPILE', '0')).strip().lower() in {'1', 'true', 'yes', 'on'}
             compile_fn = getattr(torch, 'compile', None)
             target_device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
             compile_unavailable_reason = _get_torch_compile_unavailable_reason(target_device_type)
@@ -5641,6 +6030,61 @@ class ModelRecognizer(threading.Thread):
         self._inline_recognizer: NeuralRecognizer | None = None
         self.succeeded = False
         self.error_message: str | None = None
+        self._manifest_path = Path(
+            getattr(recognition_parameters, 'resume_manifest_path', None)
+            or (Path(recognition_parameters.result_folder) / '.neuralimage-recognition-progress.json')
+        )
+        self._completed_outputs: dict[str, str] = {}
+
+    def _load_or_reset_manifest(self) -> None:
+        resume = bool(getattr(self._parameters, 'resume_from_manifest', False))
+        if not resume:
+            self._completed_outputs = {}
+            try:
+                self._manifest_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+        try:
+            payload = json.loads(self._manifest_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError):
+            payload = {}
+        completed = payload.get('completed', []) if isinstance(payload, dict) else []
+        self._completed_outputs = {
+            str(item.get('source_path')): str(item.get('output_path', ''))
+            for item in completed
+            if isinstance(item, dict) and str(item.get('source_path', '')).strip()
+        }
+
+        if not self._parameters.source_files:
+            source_folder = getattr(self._parameters, 'source_folder', None)
+            if source_folder is not None and str(source_folder).strip():
+                self._parameters.source_files = filter_images(
+                    Path(source_folder),
+                    recursive=bool(getattr(self._parameters, 'recursive_file_search', False)),
+                )
+        self._parameters.source_files = [
+            path for path in self._parameters.source_files
+            if str(path) not in self._completed_outputs
+        ]
+
+    def _record_completed_file(self, source_path: str, output_path: str) -> None:
+        source_path = str(source_path or '').strip()
+        if not source_path:
+            return
+        self._completed_outputs[source_path] = str(output_path or '')
+        payload = {
+            'version': 1,
+            'last_completed_file': source_path,
+            'completed': [
+                {'source_path': source, 'output_path': output}
+                for source, output in self._completed_outputs.items()
+            ],
+        }
+        self._manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self._manifest_path.with_suffix(f'{self._manifest_path.suffix}.tmp')
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+        os.replace(temp_path, self._manifest_path)
 
     @staticmethod
     def _elapsed_suffix(since: float) -> str:
@@ -5657,6 +6101,11 @@ class ModelRecognizer(threading.Thread):
         started_at: float,
     ) -> None:
         topic, payload = message[0], message[1]
+        if topic == 'metrics' and isinstance(payload, dict) and payload.get('type') == 'recognition_completed':
+            self._record_completed_file(
+                str(payload.get('source_path', '') or ''),
+                str(payload.get('output_path', '') or ''),
+            )
         if append_elapsed_suffix and isinstance(payload, str) and topic != 'error':
             payload = payload + self._elapsed_suffix(started_at)
         if topic == 'error' and isinstance(payload, str):
@@ -5689,6 +6138,7 @@ class ModelRecognizer(threading.Thread):
     def run(self):
         recognition_process: Any = None
         try:
+            self._load_or_reset_manifest()
             recognition_process = RecognizerProcess(
                 self._parameters,
                 self.message_queue,
@@ -5711,6 +6161,10 @@ class ModelRecognizer(threading.Thread):
             _join_process_with_escalation(recognition_process)
             self._drain_recognition_queue(append_elapsed_suffix=False, started_at=started_at)
             self._finalize_recognition_result(recognition_process)
+        except Exception as error:
+            self.succeeded = False
+            self.error_message = f'Recognition error: {error}'
+            self._bus.publish('error', self.error_message)
         finally:
             self._inline_recognizer = None
             if recognition_process is not None and recognition_process.is_alive():

@@ -46,6 +46,7 @@
     const queuePropertiesBtn = document.getElementById('queue-properties-btn');
     const queueRemoveBtn = document.getElementById('queue-remove-btn');
     const queuePauseBtn = document.getElementById('queue-pause-btn');
+    const queueRestartBtn = document.getElementById('queue-restart-btn');
     const uiModeButtons = document.querySelectorAll('.mode-btn');
     const themeButtons = document.querySelectorAll('.theme-btn');
     const workflowPresetButtons = document.querySelectorAll('.workflow-preset-btn');
@@ -121,9 +122,12 @@
     const recognitionPatchYInput = document.querySelector('[name="settings-recognition_sample_y"]');
     const cutoutEnabledInput = document.querySelector('[name="settings-cutout_enabled"]');
     const randomArtifactsEnabledInput = document.querySelector('[name="settings-random_artifacts_enabled"]');
+    const syntheticTopologyEnabledInput = document.querySelector('[name="settings-synthetic_defect_generator_enabled"]');
     const mixupEnabledInput = document.querySelector('[name="settings-mixup_enabled"]');
     const hardMiningEnabledInput = document.querySelector('[name="settings-hard_mining_enabled"]');
     const hardPixelMiningEnabledInput = document.querySelector('[name="settings-hard_pixel_mining_enabled"]');
+    const earlyStoppingEnabledInput = document.querySelector('[name="settings-early_stopping_enabled"]');
+    const randomPatchSizeEnabledInput = document.querySelector('[name="settings-random_patch_size_enabled"]');
     const lossFunctionInput = document.querySelector('[name="settings-loss_function"]');
     const schedulerInput = document.querySelector('[name="settings-scheduler_name"]');
 
@@ -146,6 +150,7 @@
     const validationPercentField = document.querySelector('[data-role="validation-percent"]');
     const validationImageFolderField = document.querySelector('[data-role="validation-image-folder"]');
     const validationLabelFolderField = document.querySelector('[data-role="validation-label-folder"]');
+    const validationSaveImagesField = document.querySelector('[data-role="validation-save-images"]');
     const edgeCutField = document.querySelector('[data-role="edge-cut"]');
     const targetSizeField = document.querySelector('[data-role="target-size"]');
     const extraAugmentationFields = document.querySelector('[data-role="extra-aug-fields"]');
@@ -154,6 +159,7 @@
     const scaleAugmentationStrengthField = document.querySelector('[data-role="scale-augmentation-strength"]');
     const cutoutFields = document.querySelector('[data-role="cutout-fields"]');
     const randomArtifactsFields = document.querySelector('[data-role="random-artifacts-fields"]');
+    const syntheticTopologyFields = document.querySelector('[data-role="synthetic-topology-fields"]');
     const mixupFields = document.querySelector('[data-role="mixup-fields"]');
     const hardMiningField = document.querySelector('[data-role="hard-mining-fields"]');
     const hardPixelMiningField = document.querySelector('[data-role="hard-pixel-mining-fields"]');
@@ -163,6 +169,9 @@
     const recognitionPatchSizeField = document.querySelector('[data-role="recognition-patch-size"]');
     const rarePatchFields = document.querySelector('[data-role="rare-patch-fields"]');
     const rarePatchEnabledInput = document.querySelector('[name="settings-rare_patch_oversampling_enabled"]');
+    const randomPatchSizeFields = document.querySelector('[data-role="random-patch-size-fields"]');
+    const epochsField = document.querySelector('[data-role="epochs"]');
+    const earlyStoppingControlWarning = document.querySelector('[data-role="early-stopping-control-warning"]');
     const schedulerGroups = document.querySelectorAll('[data-scheduler-group]');
 
     let afterId = 0;
@@ -592,20 +601,42 @@
         const validationSource = validationSourceInput ? validationSourceInput.value : 'split';
         const useExternalValidation = validationEnabled && validationSource === 'external';
         const schedulerValue = schedulerInput ? schedulerInput.value : 'off';
+        const earlyStoppingEnabled = !!(earlyStoppingEnabledInput && earlyStoppingEnabledInput.checked);
+        const randomPatchEnabled = !!(
+            isOnlineCutMode && randomPatchSizeEnabledInput && randomPatchSizeEnabledInput.checked
+        );
 
         syncRecognitionPatchSize();
         setFieldEnabled(validationSourceField, validationEnabled);
         setFieldEnabled(validationPercentField, validationEnabled && !useExternalValidation);
         setFieldEnabled(validationImageFolderField, useExternalValidation);
         setFieldEnabled(validationLabelFolderField, useExternalValidation);
+        setFieldVisible(validationSourceField, validationEnabled);
+        setFieldVisible(validationPercentField, validationEnabled && !useExternalValidation);
+        setFieldVisible(validationImageFolderField, useExternalValidation);
+        setFieldVisible(validationLabelFolderField, useExternalValidation);
+        setFieldVisible(validationSaveImagesField, validationEnabled);
         setFieldEnabled(edgeCutField, !!(cropEnabledInput && cropEnabledInput.checked));
         setFieldEnabled(targetSizeField, !!(resizeEnabledInput && resizeEnabledInput.checked));
         setFieldEnabled(extraAugmentationFields, !!(additionalAugmentationInput && additionalAugmentationInput.checked));
+        setFieldVisible(extraAugmentationFields, !!(additionalAugmentationInput && additionalAugmentationInput.checked));
         setFieldReadonly(stepField, !randomCropEnabled);
         setFieldReadonly(cropsPerImageField, randomCropEnabled);
         setFieldEnabled(scaleAugmentationStrengthField, scaleAugmentationEnabled);
         setFieldEnabled(cutoutFields, !!(cutoutEnabledInput && cutoutEnabledInput.checked));
         setFieldEnabled(randomArtifactsFields, !!(randomArtifactsEnabledInput && randomArtifactsEnabledInput.checked));
+        setFieldVisible(cutoutFields, !!(cutoutEnabledInput && cutoutEnabledInput.checked));
+        setFieldVisible(randomArtifactsFields, !!(randomArtifactsEnabledInput && randomArtifactsEnabledInput.checked));
+        setFieldVisible(syntheticTopologyFields, !!(syntheticTopologyEnabledInput && syntheticTopologyEnabledInput.checked));
+        setFieldEnabled(syntheticTopologyFields, !!(syntheticTopologyEnabledInput && syntheticTopologyEnabledInput.checked));
+        setFieldVisible(randomPatchSizeFields, randomPatchEnabled);
+        setFieldEnabled(randomPatchSizeFields, randomPatchEnabled);
+        if (randomPatchSizeEnabledInput) randomPatchSizeEnabledInput.disabled = !isOnlineCutMode;
+        setFieldVisible(epochsField, !earlyStoppingEnabled);
+        // Keep the hidden value submitted so MainWindowForm remains valid;
+        // the trainer ignores it and applies the internal max_epochs guard.
+        setFieldEnabled(epochsField, true);
+        setFieldVisible(earlyStoppingControlWarning, earlyStoppingEnabled && !validationEnabled);
         setFieldEnabled(mixupFields, !!(mixupEnabledInput && mixupEnabledInput.checked));
         setFieldEnabled(hardMiningField, !!(hardMiningEnabledInput && hardMiningEnabledInput.checked));
         setFieldEnabled(hardPixelMiningField, !!(hardPixelMiningEnabledInput && hardPixelMiningEnabledInput.checked));
@@ -1204,7 +1235,8 @@
         const selectedStatus = selected ? selected.status : '';
         const isOwner = !!(selected && selected.is_owner);
         if (queuePropertiesBtn) queuePropertiesBtn.disabled = !selected;
-        if (queuePauseBtn) queuePauseBtn.disabled = !selected || !isOwner || selectedStatus === 'running';
+        if (queuePauseBtn) queuePauseBtn.disabled = !selected || !isOwner || ['pausing', 'stopped', 'finished_success', 'finished_error'].includes(selectedStatus);
+        if (queueRestartBtn) queueRestartBtn.disabled = !selected || !isOwner || !['stopped', 'finished_success', 'finished_error'].includes(selectedStatus);
         if (queueRemoveBtn) queueRemoveBtn.disabled = !selected || !isOwner || selectedStatus === 'running';
     }
 
@@ -1682,6 +1714,17 @@
         }
     }
 
+    async function restartSelectedQueueTask() {
+        if (!selectedQueueTaskId) return;
+        if (queueRestartBtn) queueRestartBtn.disabled = true;
+        try {
+            const ok = await postQueueAction('/api/queue/restart/', selectedQueueTaskId);
+            if (ok) await poll();
+        } finally {
+            if (queueRestartBtn) queueRestartBtn.disabled = false;
+        }
+    }
+
     async function poll() {
         try {
             const response = await fetch(`/api/status/?after=${afterId}&notification_after=${notificationAfterId}`, { cache: 'no-store' });
@@ -1714,6 +1757,9 @@
     }
     if (queuePauseBtn) {
         queuePauseBtn.addEventListener('click', pauseSelectedQueueTask);
+    }
+    if (queueRestartBtn) {
+        queueRestartBtn.addEventListener('click', restartSelectedQueueTask);
     }
     if (queuePropertiesBtn) {
         queuePropertiesBtn.addEventListener('click', openQueueProperties);
@@ -1878,9 +1924,12 @@
     if (scaleAugmentationInput) scaleAugmentationInput.addEventListener('change', applyDependentRules);
     if (cutoutEnabledInput) cutoutEnabledInput.addEventListener('change', applyDependentRules);
     if (randomArtifactsEnabledInput) randomArtifactsEnabledInput.addEventListener('change', applyDependentRules);
+    if (syntheticTopologyEnabledInput) syntheticTopologyEnabledInput.addEventListener('change', applyDependentRules);
     if (mixupEnabledInput) mixupEnabledInput.addEventListener('change', applyDependentRules);
     if (hardMiningEnabledInput) hardMiningEnabledInput.addEventListener('change', applyDependentRules);
     if (hardPixelMiningEnabledInput) hardPixelMiningEnabledInput.addEventListener('change', applyDependentRules);
+    if (earlyStoppingEnabledInput) earlyStoppingEnabledInput.addEventListener('change', applyDependentRules);
+    if (randomPatchSizeEnabledInput) randomPatchSizeEnabledInput.addEventListener('change', applyDependentRules);
     if (lossFunctionInput) lossFunctionInput.addEventListener('change', applyDependentRules);
     if (schedulerInput) schedulerInput.addEventListener('change', applyDependentRules);
 

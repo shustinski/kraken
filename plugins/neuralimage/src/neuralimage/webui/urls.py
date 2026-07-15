@@ -15,6 +15,7 @@ urlpatterns = [
     path('api/broadcast/', views.broadcast_notification_api, name='broadcast_notification_api'),
     path('api/queue/remove/', views.queue_remove_api, name='queue_remove_api'),
     path('api/queue/pause-toggle/', views.queue_pause_toggle_api, name='queue_pause_toggle_api'),
+    path('api/queue/restart/', views.queue_restart_api, name='queue_restart_api'),
     path('api/queue/properties/', views.queue_properties_api, name='queue_properties_api'),
     path('api/queue/restore/', views.queue_restore_api, name='queue_restore_api'),
     path('api/workflow/import/', views.workflow_import_api, name='workflow_import_api'),

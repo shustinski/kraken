@@ -13,6 +13,7 @@ from neuralimage.lib.data_interfaces import (
     MixedPrecisionMode,
     OptimizerName,
     OptimizerParameters,
+    RandomPatchSizeParameters,
     RandomArtifactsParameters,
     RecognitionParameters,
     SampleCutMode,
@@ -117,7 +118,7 @@ def build_workflow_parameters(
     try:
         mixed_precision = MixedPrecisionMode(settings.mixed_precision)
     except ValueError:
-        mixed_precision = MixedPrecisionMode.fp16
+        mixed_precision = MixedPrecisionMode.off
     try:
         scheduler_name = SchedulerName(
             normalize_scheduler_name(getattr(settings, 'scheduler_name', SchedulerName.off.value))
@@ -177,9 +178,6 @@ def build_workflow_parameters(
         iou_loss_weight=settings.iou_loss_weight,
         early_stopping=EarlyStoppingParameters(
             enabled=settings.early_stopping_enabled,
-            patience=settings.early_stopping_patience,
-            min_delta=settings.early_stopping_min_delta,
-            restore_best_weights=settings.early_stopping_restore_best_weights,
         ),
         warmup=WarmupParameters(
             enabled=settings.warmup_enabled,
@@ -213,10 +211,16 @@ def build_workflow_parameters(
         ),
         hard_mining=HardMiningParameters(
             enabled=settings.hard_mining_enabled,
-            strength=settings.hard_mining_strength,
-            ema_alpha=settings.hard_mining_ema_alpha,
             pixel_enabled=getattr(settings, 'hard_pixel_mining_enabled', False),
             pixel_keep_ratio=float(getattr(settings, 'hard_pixel_mining_ratio', 0.25)),
+        ),
+        random_patch_size=RandomPatchSizeParameters(
+            enabled=(
+                bool(getattr(settings, 'random_patch_size_enabled', False))
+                and settings.sample_cut_mode == SampleCutMode.online.value
+            ),
+            min_size=tuple(getattr(settings, 'random_patch_min_size', (128, 128))),
+            max_size=tuple(getattr(settings, 'random_patch_max_size', (512, 512))),
         ),
         cutout=CutoutParameters(
             enabled=bool(getattr(settings, 'cutout_enabled', False)),

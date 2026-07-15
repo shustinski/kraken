@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
+from pathlib import Path
 
 from neuralimage.application.dto import clone_main_window_state
-from neuralimage.application.services import ActiveTaskMutationError, build_processing_start_error_message, build_workflow_parameters
+from neuralimage.application.services import (
+    ActiveTaskMutationError,
+    TaskRuntimeContext,
+    build_processing_start_error_message,
+    build_workflow_parameters,
+)
 from neuralimage.application.services.training_artifacts import build_training_artifact_dir
 from neuralimage.infrastructure.config.state_store import WORKFLOW_SNAPSHOT_FILENAME, save_workflow_snapshot
 from neuralimage.lib.data_interfaces import WorkMode
@@ -48,8 +54,12 @@ def on_queue_pause_continue_requested(presenter, row: int) -> None:
     if presenter._processing_session.active_task is task:
         presenter._processing_session.request_pause_active()
         if presenter.neuaral_handler is not None:
-            presenter.neuaral_handler.stop()
-        presenter.message_bus.publish('logging', f'Задача #{task.task_id} поставлена на паузу.')
+            pause = getattr(presenter.neuaral_handler, 'pause', None)
+            if callable(pause):
+                pause()
+            else:
+                presenter.neuaral_handler.stop()
+        presenter.message_bus.publish('logging', f'Для задачи #{task.task_id} запрошена пауза.')
         presenter._refresh_queue_view(selected_task_id=task.task_id)
         return
     resumed = presenter._processing_session.resume_task_by_index(row)
@@ -124,10 +134,10 @@ def on_queue_task_name_changed(presenter, row: int, display_name: str) -> None:
 
 
 def on_queue_retry_requested(presenter, row: int) -> None:
-    task = presenter._processing_session.retry_task_by_index(row)
+    task = presenter._processing_session.restart_task_by_index(row)
     if task is None:
         return
-    presenter.message_bus.publish('logging', f'Задача #{task.task_id} добавлена повторно.')
+    presenter.message_bus.publish('logging', f'Задача #{task.task_id} перезапущена с начала.')
     presenter._refresh_queue_view(selected_task_id=task.task_id)
     presenter._start_next_task_if_possible()
 
@@ -171,6 +181,30 @@ def on_metrics_message(presenter, data) -> None:
     if not isinstance(data, dict):
         return
     metric_type = data.get('type')
+    if metric_type == 'workflow_phase':
+        active_task = presenter._processing_session.active_task
+        if active_task is not None:
+            active_task.runtime.phase = str(data.get('phase', '') or '')
+        return
+    if metric_type == 'training_completed':
+        active_task = presenter._processing_session.active_task
+        if active_task is not None:
+            active_task.runtime.training_completed = True
+            active_task.runtime.trained_model_path = Path(str(data.get('model_path', '')))
+            active_task.runtime.training_checkpoint = Path(str(data.get('checkpoint_path', '')))
+        return
+    if metric_type == 'training_paused':
+        active_task = presenter._processing_session.active_task
+        if active_task is not None:
+            active_task.runtime.training_checkpoint = Path(str(data.get('checkpoint_path', '')))
+            active_task.runtime.next_epoch = int(data.get('epoch', 0) or 0)
+            active_task.runtime.next_batch = int(data.get('next_batch', 0) or 0)
+        return
+    if metric_type == 'recognition_completed':
+        active_task = presenter._processing_session.active_task
+        if active_task is not None:
+            active_task.runtime.last_recognized_file = str(data.get('source_path', '') or '')
+        return
     if metric_type not in {'train_epoch_progress', 'train_batch_progress', 'recognition_progress'}:
         return
     current = int(data.get('current', 0) or 0)
@@ -210,7 +244,9 @@ def refresh_queue_view(presenter, *, selected_row: int = -1, selected_task_id: i
     texts = presenter.view._main_texts()
     status_map = {
         'waiting': texts.get('queue_status_waiting', 'waiting'),
+        'pausing': texts.get('queue_status_pausing', 'pausing'),
         'paused': texts.get('queue_status_paused', 'paused'),
+        'stopped': texts.get('queue_status_stopped', 'stopped'),
         'in_progress': texts.get('queue_status_in_progress', 'in progress'),
         'finished_success': texts.get('queue_status_finished_success', 'finished successfully'),
         'finished_error': texts.get('queue_status_finished_error', 'finished with error'),
@@ -266,6 +302,10 @@ def start_task(
     workflow_snapshot_saver=save_workflow_snapshot,
     workflow_snapshot_filename: str = WORKFLOW_SNAPSHOT_FILENAME,
 ) -> None:
+    runtime = getattr(task, 'runtime', None)
+    if runtime is None:
+        runtime = TaskRuntimeContext()
+        task.runtime = runtime
     os.environ['NEURALIMAGE_TORCH_COMPILE'] = '1' if task.settings_state.torch_compile_enabled else '0'
     presenter.message_bus.publish(
         'logging',
@@ -275,6 +315,13 @@ def start_task(
         task.main_window_state,
         task.settings_state,
     )
+    if (
+        runtime.training_completed
+        and work_mode in (WorkMode.train_and_recognition, WorkMode.further_training)
+        and runtime.trained_model_path is not None
+    ):
+        work_mode = WorkMode.recognition_only
+        recognition_parameters.model = runtime.trained_model_path
     if work_mode is None:
         presenter.message_bus.publish('error', f'Задача #{task.task_id}: не удалось определить режим работы.')
         presenter._processing_session.drop_task(task.task_id)
@@ -290,12 +337,16 @@ def start_task(
         WorkMode.further_training,
     ):
         try:
-            artifact_dir = artifact_dir_builder(
-                task.main_window_state,
-                task.settings_state,
-                work_mode,
-            )
+            artifact_dir = runtime.artifact_dir
+            if artifact_dir is None:
+                artifact_dir = artifact_dir_builder(
+                    task.main_window_state,
+                    task.settings_state,
+                    work_mode,
+                )
+                runtime.artifact_dir = artifact_dir
             training_settings.artifact_dir = artifact_dir
+            training_settings.resume_from_checkpoint = bool(runtime.training_checkpoint)
             snapshot_path = workflow_snapshot_saver(
                 task.main_window_state,
                 task.settings_state,
@@ -306,6 +357,13 @@ def start_task(
             presenter.message_bus.publish('logging', f'Параметры запуска сохранены в {snapshot_path}.')
         except OSError as error:
             presenter.message_bus.publish('error', f'Не удалось сохранить параметры запуска: {error}')
+
+    if recognition_parameters is not None:
+        manifest_path = Path(recognition_parameters.result_folder) / '.neuralimage-recognition-progress.json'
+        recognition_parameters.resume_manifest_path = manifest_path
+        recognition_parameters.resume_from_manifest = bool(runtime.recognition_manifest)
+        if runtime.recognition_manifest is None:
+            runtime.recognition_manifest = manifest_path
 
     presenter.neuaral_handler = handler_thread_cls(
         work_mode=work_mode,
@@ -333,5 +391,4 @@ def on_task_finished(presenter) -> None:
             presenter.message_bus.publish('logging', f'Задача #{result.task.task_id} завершена.')
     presenter.neuaral_handler = None
     presenter._refresh_queue_view()
-    if not result.paused:
-        presenter._start_next_task_if_possible()
+    presenter._start_next_task_if_possible()

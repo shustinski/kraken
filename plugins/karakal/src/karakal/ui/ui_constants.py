@@ -14,12 +14,14 @@ SETTINGS_BUILD_KEY = "ui/build_settings"
 SETTINGS_DETAILS_VIEW_KEY = "ui/details_view_settings"
 SETTINGS_LANGUAGE_KEY = "ui/language"
 SETTINGS_MANAGEMENT_KEY = "ui/management_settings"
+SETTINGS_VALIDATION_MASK_KEY = "ui/validation_mask"
 SETTINGS_ORIGINAL_FOLDER_KEY = "ui/original_folder"
 SETTINGS_GT_FOLDER_KEY = "ui/gt_folder"
 
 FOLDER_CHECKED_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 FOLDER_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 FOLDER_CONFIDENCE_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+FOLDER_CONFIDENCE_EXPANDED_ROLE = int(Qt.ItemDataRole.UserRole) + 4
 
 DEFAULT_COMPARISON_MODE = ComparisonMode.DISAGREEMENT
 DEFAULT_CELL_SIZE = 15
@@ -113,7 +115,7 @@ METRIC_SETTINGS_LABEL_MIN_WIDTH = 140
 METRIC_SETTINGS_COMBO_MIN_CONTENTS_LENGTH = 14
 OVERVIEW_PANEL_MAX_WIDTH = 380
 FOLDER_BUTTON_SIZE = 20
-FOLDER_ROW_MIN_HEIGHT = 58
+FOLDER_ROW_MIN_HEIGHT = 42
 CARD_CONTENT_SPACING = 3
 GRADIENT_PREVIEW_MIN_HEIGHT = 22
 GRADIENT_RANGE_SELECTOR_MIN_HEIGHT = 60
@@ -238,6 +240,8 @@ EXTEND_WIDGET_STYLESHEET = """
 #KarakalRoot QListWidget::item { border-radius: 8px; margin: 1px 0px; padding: 1px; }
 #KarakalRoot QListWidget::item:selected { background-color: #275fbb; color: #ffffff; }
 #KarakalRoot QLineEdit, #KarakalRoot QComboBox, #KarakalRoot QSpinBox, #KarakalRoot QDoubleSpinBox { background-color: #10151c; border: 1px solid #30445a; border-radius: 8px; padding: 6px 10px; min-height: 26px; }
+#KarakalRoot QComboBox QAbstractItemView { background-color: #11161d; selection-background-color: #275fbb; selection-color: #ffffff; }
+#KarakalRoot QComboBox QAbstractItemView::item:disabled { color: #6f7a86; background-color: #11161d; }
 #KarakalRoot QToolButton[toolbarButton="true"] { background-color: #1e2630; border: 1px solid #314355; border-radius: 8px; padding: 4px; min-width: 28px; min-height: 28px; max-width: 28px; max-height: 28px; }
 #KarakalRoot QToolButton[toolbarButton="true"]:hover { background-color: #283342; border-color: #46627f; }
 #KarakalRoot QToolButton#extendLanguageToggleButton { background-color: #275fbb; border: 1px solid #3f7ee1; border-radius: 10px; padding: 6px 14px; min-width: 40px; font-weight: 700; }

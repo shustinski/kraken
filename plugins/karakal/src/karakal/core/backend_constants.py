@@ -1,16 +1,29 @@
 """Store backend-related constants used by the extended validation widget."""
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
+
+
+def _default_cache_dir() -> Path:
+    override = os.environ.get("KARAKAL_CACHE_DIR")
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base) / "Karakal" / "Cache"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "karakal"
+
 
 NATURAL_SPLIT_PATTERN = re.compile(r"(\d+)")
 INVALID_FILENAME_PATTERN = re.compile(r'[<>:"/\\|?*\x00-\x1F]+')
 FRAME_NUMBER_PATTERN = re.compile(r"^\d+$")
-CACHE_DIR = Path(__file__).resolve().parent / ".cache"
+CACHE_DIR = _default_cache_dir()
 ANALYSIS_CACHE_DIR = CACHE_DIR / "analysis_payloads"
 DETAIL_CACHE_DIR = CACHE_DIR / "detail_payloads"
-ANALYSIS_CACHE_VERSION = "v44_restore_legacy_confidence_proxy"
+ANALYSIS_CACHE_VERSION = "v45_bulk_analytics_without_detail_comparison"
 SCORE_CACHE_DB = CACHE_DIR / "score_cache.sqlite3"
 IMAGE_CACHE_SIZE = 256
 SQLITE_BATCH_SIZE = 900

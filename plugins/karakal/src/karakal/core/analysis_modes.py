@@ -8,12 +8,14 @@ from .domain import BuildResult, GeometryMode
 INTER_MODEL_ANALYSIS_MODE = "inter_model"
 INTRA_MODEL_CONFIDENCE_MODE = "intra_model_confidence"
 MODEL_OUTPUT_CONFIDENCE_MODE = "model_output_confidence"
+CONFIDENCE_COMPARISON_MODE = "confidence_comparison"
 
 POLYGON_OBJECT_TYPE = "polygon"
 POINT_OBJECT_TYPE = "point"
 
 ANALYSIS_MODE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("analysis.mode.inter_model", INTER_MODEL_ANALYSIS_MODE),
+    ("analysis.mode.confidence_comparison", CONFIDENCE_COMPARISON_MODE),
     ("analysis.mode.intra_model_confidence", INTRA_MODEL_CONFIDENCE_MODE),
     ("analysis.mode.model_output_confidence", MODEL_OUTPUT_CONFIDENCE_MODE),
 )
@@ -61,7 +63,18 @@ SCORE_100_METRIC_KEYS = frozenset({
     "recall_score",
     "f1_score",
     "localization_score",
+    "confidence_model_score",
+    "confidence_difference_score",
+    "confidence_bce_score",
+    "confidence_threshold_crossing_score",
 })
+
+CONFIDENCE_COMPARISON_DISPLAY_KEYS: tuple[str, ...] = (
+    "confidence_model_score",
+    "confidence_difference_score",
+    "confidence_bce_score",
+    "confidence_threshold_crossing_score",
+)
 
 LOWER_IS_BETTER_METRIC_KEYS = frozenset({
     "bce",
@@ -85,7 +98,7 @@ class AnalysisContext:
 
 def normalize_analysis_mode(value: str | None) -> str:
     text = str(value or "")
-    if text in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}:
+    if text in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE, CONFIDENCE_COMPARISON_MODE}:
         return text
     return INTER_MODEL_ANALYSIS_MODE
 
@@ -171,6 +184,8 @@ def resolve_analysis_context(
         valid_ids = set(available_model_output_confidence_model_ids(build_result) if output_only else available_confidence_model_ids(build_result))
         resolved_model_id = str(confidence_model_id) if confidence_model_id in valid_ids else default_confidence_model_id(build_result, output_only=output_only)
         return AnalysisContext(normalized_mode, normalized_object_type, resolved_model_id)
+    if normalized_mode == CONFIDENCE_COMPARISON_MODE:
+        return AnalysisContext(normalized_mode, normalized_object_type, None)
     return AnalysisContext(normalized_mode, normalized_object_type, None)
 
 
@@ -183,6 +198,8 @@ def display_metric_keys(context: AnalysisContext) -> tuple[str, ...]:
         if context.confidence_model_id is None:
             return tuple()
         return (model_output_confidence_metric_key(context.confidence_model_id),)
+    if context.analysis_mode == CONFIDENCE_COMPARISON_MODE:
+        return CONFIDENCE_COMPARISON_DISPLAY_KEYS
     if context.object_type == POINT_OBJECT_TYPE:
         return INTER_MODEL_POINT_DISPLAY_KEYS
     return INTER_MODEL_POLYGON_DISPLAY_KEYS
@@ -197,6 +214,8 @@ def percentile_basis_keys(context: AnalysisContext) -> tuple[str, ...]:
         if context.confidence_model_id is None:
             return tuple()
         return (model_output_confidence_metric_key(context.confidence_model_id),)
+    if context.analysis_mode == CONFIDENCE_COMPARISON_MODE:
+        return CONFIDENCE_COMPARISON_DISPLAY_KEYS
     if context.object_type == POINT_OBJECT_TYPE:
         return INTER_MODEL_POINT_PERCENTILE_KEYS
     return INTER_MODEL_POLYGON_PERCENTILE_KEYS

@@ -60,6 +60,8 @@ class ExtendMatrixTabState:
     management_scenario_id: str = ""
     management_scenario_payload_by_key: dict[str, dict[str, str]] = field(default_factory=dict)
     management_scenario_summary: str = ""
+    excluded_record_keys: set[str] = field(default_factory=set)
+    last_analytics_request_signature: tuple[object, ...] | None = None
 
 
 # Backward-compatible aliases for legacy lite imports.

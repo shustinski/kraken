@@ -10,7 +10,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "numpy>=1.26",
+    "opencv-python>=4.13",
     "PyQt6>=6.6",
+    "scipy>=1.14",
 ]
 
 [project.scripts]
@@ -19,3 +21,6 @@ karakal = "karakal.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["karakal", "karakal.*"]
+
+[tool.setuptools.package-data]
+karakal = ["resources/**/*"]

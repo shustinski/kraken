@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Any
 
 from .version import __version__
@@ -16,24 +17,19 @@ __all__ = [
 ]
 
 
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "KarakalMainWindow": (".app.main_window", "KarakalMainWindow"),
+    "KarakalWidget": (".app.main_window", "KarakalWidget"),
+    "KarakalPlugin": (".plugin.plugin", "KarakalPlugin"),
+    "KarakalPresenter": (".app.presenter", "KarakalPresenter"),
+    "KarakalSettingsService": (".infra.services", "KarakalSettingsService"),
+}
+
+
 def __getattr__(name: str) -> Any:
-    if name in {"KarakalMainWindow", "KarakalWidget"}:
-        from .app.main_window import KarakalMainWindow, KarakalWidget
-
-        return {
-            "KarakalMainWindow": KarakalMainWindow,
-            "KarakalWidget": KarakalWidget,
-        }[name]
-    if name == "KarakalPlugin":
-        from .plugin.plugin import KarakalPlugin
-
-        return KarakalPlugin
-    if name == "KarakalPresenter":
-        from .app.presenter import KarakalPresenter
-
-        return KarakalPresenter
-    if name == "KarakalSettingsService":
-        from .infra.services import KarakalSettingsService
-
-        return KarakalSettingsService
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        module_name, attr_name = _LAZY_EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    module = import_module(module_name, __name__)
+    return getattr(module, attr_name)

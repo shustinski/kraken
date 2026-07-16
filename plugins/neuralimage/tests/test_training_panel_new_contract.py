@@ -36,8 +36,10 @@ def test_early_stopping_is_single_toggle_and_disables_epochs(app):
     assert not hasattr(panel, 'early_stopping_min_delta_spinbox')
     assert not hasattr(panel, 'restore_best_weights_check_box')
     epochs_row, _ = panel.general_form.getWidgetPosition(panel._field_rows[panel.epochs_spinbox])
-    early_stopping_row, _ = panel.general_form.getWidgetPosition(panel.early_stopping_check_box)
-    assert early_stopping_row == epochs_row + 1
+    toggles_row, _ = panel.general_form.getWidgetPosition(panel.training_feature_toggles_widget)
+    assert toggles_row == epochs_row - 1
+    assert panel.training_feature_toggles_widget.isAncestorOf(panel.early_stopping_check_box)
+    assert panel.training_feature_toggles_widget.isAncestorOf(panel.validation_check_box)
 
     panel.early_stopping_check_box.setChecked(True)
 
@@ -46,12 +48,30 @@ def test_early_stopping_is_single_toggle_and_disables_epochs(app):
     assert not panel.early_stopping_control_warning.isHidden()
 
 
+def test_validation_toggle_is_basic_but_parameters_remain_expert(app):
+    panel = SettingsPanel()
+
+    assert panel.general_groupbox.isAncestorOf(panel.validation_check_box)
+    assert not panel.validation_groupbox.isAncestorOf(panel.validation_check_box)
+    assert panel.validation_groupbox.isAncestorOf(panel.validation_mode_combo)
+    assert panel.validation_groupbox.isAncestorOf(panel.validation_spinbox)
+    assert panel.validation_groupbox.isAncestorOf(panel.validation_image_path_label)
+    assert panel.validation_groupbox.isAncestorOf(panel.validation_label_path_label)
+
+    panel.validation_check_box.setChecked(True)
+    panel.expert_groupbox.setChecked(True)
+    assert panel.validation_spinbox.isEnabled()
+
+
 def test_random_patch_size_is_online_only_and_hidden_until_enabled(app):
     panel = SettingsPanel()
     assert _field_is_hidden(panel, panel.random_patch_min_size_widget)
+    panel.torch_compile_check_box.setChecked(True)
     panel.random_patch_size_check_box.setChecked(True)
     assert not _field_is_hidden(panel, panel.random_patch_min_size_widget)
     assert not _field_is_hidden(panel, panel.random_patch_max_size_widget)
+    assert not panel.torch_compile_check_box.isEnabled()
+    assert not panel.torch_compile_check_box.isChecked()
 
     panel.cut_dataset_type.setChecked(True)
 

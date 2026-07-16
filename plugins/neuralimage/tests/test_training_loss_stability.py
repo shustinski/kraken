@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,84 @@ class _StubBus:
 
     def put(self, item):
         self.messages.append(item)
+
+
+def test_variable_patch_sizes_disable_torch_compile(monkeypatch):
+    trainer = TrainerProcess.__new__(TrainerProcess)
+    trainer._train_dataloader = SimpleNamespace(
+        batch_sampler=SimpleNamespace(variable_patch_sizes=True),
+    )
+    trainer._model = torch.nn.Identity()
+    trainer._torch_compile_active = True
+    trainer._bus = _StubBus()
+    monkeypatch.setenv('NEURALIMAGE_TORCH_COMPILE', '1')
+
+    trainer._try_compile_model(device=torch.device('cuda'))
+
+    assert trainer._torch_compile_active is False
+    assert any('random patch sizes' in str(message) for message in trainer._bus.messages)
+
+
+def test_variable_patch_sizes_disable_cudnn_benchmark(monkeypatch):
+    trainer = TrainerProcess.__new__(TrainerProcess)
+    trainer._train_dataloader = SimpleNamespace(
+        batch_sampler=SimpleNamespace(variable_patch_sizes=True),
+    )
+    trainer._bus = _StubBus()
+    trainer._try_compile_model = lambda **_kwargs: None
+    monkeypatch.setattr(torch.backends.cudnn, 'benchmark', True)
+
+    trainer._prepare_training_device(
+        torch.device('cuda'),
+        is_main_process=True,
+        distributed=False,
+    )
+
+    assert torch.backends.cudnn.benchmark is False
+
+
+def test_random_patch_code_switch_enables_profiler(monkeypatch):
+    trainer = TrainerProcess.__new__(TrainerProcess)
+    trainer._train_dataloader = SimpleNamespace(
+        batch_sampler=SimpleNamespace(variable_patch_sizes=True),
+    )
+    monkeypatch.setattr(target, 'RANDOM_PATCH_PROFILING_ENABLED', True)
+    monkeypatch.setattr(target, 'RANDOM_PATCH_PROFILE_BATCHES', 17)
+
+    config = trainer._resolve_training_profiler_config()
+
+    assert config.enabled
+    assert config.max_batches == 17
+
+
+def test_random_patch_profile_writes_batch_and_shape_csv(tmp_path):
+    trainer = TrainerProcess.__new__(TrainerProcess)
+    trainer._save_path = tmp_path / 'model.pth'
+    trainer._training_profiler_config = SimpleNamespace(output_dir_name='profiles')
+    trainer._random_patch_profile_rows = [
+        {
+            'epoch': 1, 'batch': 1, 'batch_size': 2, 'width': 64, 'height': 96,
+            'pixels_per_object': 6144, 'megapixels_per_batch': 0.012288,
+            'data_wait_ms': 4.0, 'augmentation_ms': 1.0, 'forward_ms': 2.0,
+            'backward_ms': 3.0, 'optimizer_ms': 1.0, 'total_ms': 11.0,
+            'objects_per_second': 181.8, 'cuda_allocated_mb': 0.0, 'cuda_reserved_mb': 0.0,
+        },
+        {
+            'epoch': 1, 'batch': 2, 'batch_size': 2, 'width': 64, 'height': 96,
+            'pixels_per_object': 6144, 'megapixels_per_batch': 0.012288,
+            'data_wait_ms': 6.0, 'augmentation_ms': 1.0, 'forward_ms': 4.0,
+            'backward_ms': 5.0, 'optimizer_ms': 2.0, 'total_ms': 18.0,
+            'objects_per_second': 111.1, 'cuda_allocated_mb': 0.0, 'cuda_reserved_mb': 0.0,
+        },
+    ]
+
+    trainer._save_random_patch_profile_csv()
+
+    detail = (tmp_path / 'profiles' / 'random_patch_batches.csv').read_text(encoding='utf-8')
+    summary = (tmp_path / 'profiles' / 'random_patch_shapes.csv').read_text(encoding='utf-8')
+    assert 'data_wait_ms' in detail
+    assert 'avg_data_wait_ms' in summary
+    assert '5.0' in summary
 
 
 class _NoOpScaler:

@@ -2,7 +2,8 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QSize
+from PyQt6.QtCore import QPoint, QPointF, QSize, Qt
+from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtWidgets import QApplication, QSpinBox
 
 from neuralimage.view.axis_resize_widget import AxisResizeWidget
@@ -35,6 +36,28 @@ def test_spinboxes_are_buttonless_and_badges_are_present(qapp):
     assert widget.height_spinbox.buttonSymbols() == QSpinBox.ButtonSymbols.NoButtons
     badge_texts = {label.text() for label in widget.findChildren(type(widget.preview))}
     assert {"↔", "↕", "px"}.issubset(badge_texts)
+
+
+def test_spinbox_values_do_not_change_with_mouse_wheel(qapp):
+    widget = AxisResizeWidget()
+    widget.size_lock_button.setChecked(False)
+    widget.width_spinbox.setValue(320)
+    widget.height_spinbox.setValue(192)
+
+    for spinbox in (widget.width_spinbox, widget.height_spinbox):
+        before = spinbox.value()
+        event = QWheelEvent(
+            QPointF(5, 5),
+            QPointF(5, 5),
+            QPoint(),
+            QPoint(0, 120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.ScrollUpdate,
+            False,
+        )
+        QApplication.sendEvent(spinbox, event)
+        assert spinbox.value() == before
 
 
 def test_widget_applies_localized_texts_without_changing_values(qapp):
@@ -166,8 +189,30 @@ def test_settings_panel_uses_axis_widget_and_preserves_control_aliases(qapp):
     assert 'recognition_patch_size' not in panel._desc_labels
     assert panel.train_patch_size_groupbox.title().strip()
     assert panel.recognition_patch_size_groupbox.title().strip()
+    assert isinstance(panel.recognition_tab_patch_size_widget, AxisResizeWidget)
+    assert panel.recognition_page_layout.indexOf(panel.recognition_tab_patch_size_groupbox) != -1
+    assert panel.recognition_tab_patch_size_groupbox.isAncestorOf(
+        panel.recognition_tab_patch_size_widget
+    )
+    assert panel.recognition_tab_patch_size_groupbox.title() == panel.recognition_patch_size_groupbox.title()
     assert isinstance(panel.random_patch_min_size_widget, AxisResizeWidget)
     assert isinstance(panel.random_patch_max_size_widget, AxisResizeWidget)
+
+
+def test_recognition_tab_patch_size_copy_stays_synchronized(qapp):
+    panel = SettingsPanel()
+
+    panel.recognition_tab_patch_size_widget.set_target_size(384, 192)
+    assert panel.recognition_patch_size_widget.target_size() == QSize(384, 192)
+    assert panel.train_patch_size_widget.target_size() == QSize(384, 192)
+
+    panel.sync_patch_sizes_check_box.setChecked(False)
+    panel.recognition_tab_patch_size_widget.set_target_size(640, 320)
+    assert panel.recognition_patch_size_widget.target_size() == QSize(640, 320)
+    assert panel.train_patch_size_widget.target_size() == QSize(384, 192)
+
+    panel.recognition_patch_size_widget.set_target_size(512, 256)
+    assert panel.recognition_tab_patch_size_widget.target_size() == QSize(512, 256)
 
 
 def test_patch_group_layout_follows_sync_and_random_modes(qapp):

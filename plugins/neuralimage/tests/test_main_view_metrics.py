@@ -5,11 +5,12 @@ import numpy as np
 pytest.importorskip('PyQt6')
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QSizePolicy, QScrollArea, QWidget
+from PyQt6.QtGui import QFontMetrics
+from PyQt6.QtWidgets import QApplication, QHBoxLayout, QSizePolicy, QScrollArea, QWidget
 
 from neuralimage.UI.clickable_label import ClickableLabel
 from neuralimage.lib.logging_policy import MAX_LOG_MESSAGES
-from neuralimage.view.main_window import MainView
+from neuralimage.view.main_window import MainView, TaskQueueRowWidget
 
 
 @pytest.fixture(scope='module')
@@ -192,13 +193,14 @@ def test_main_view_log_history_is_capped(qapp):
     assert first_widget.text() == "log message 25"
 
 
-def test_main_view_status_bar_shows_last_log_message(qapp):
+def test_main_view_status_bar_is_not_replaced_by_last_log_message(qapp):
     view = MainView(QWidget())
     view.connect_internal_signals()
 
     view.log_message.emit("background indexing started")
 
-    assert view.statusBar().currentMessage() == "background indexing started"
+    assert view.statusBar().currentMessage() == ""
+    assert view.log_layout.itemAt(view.log_layout.count() - 1).widget().text() == "background indexing started"
 
 
 def test_main_view_recognition_speed_label_updates_and_resets(qapp, monkeypatch):
@@ -219,17 +221,132 @@ def test_main_view_recognition_speed_label_updates_and_resets(qapp, monkeypatch)
     view._switch_start_stop(True)
     assert "—" in view.recognition_speed_label.text()
 
-def test_main_view_training_progress_uses_one_horizontal_row(qapp):
+def test_main_view_progress_group_is_not_part_of_central_layout(qapp):
     view = MainView(QWidget())
     view.connect_internal_signals()
 
     view.metrics_message.emit({'type': 'train_epoch_progress', 'current': 1, 'total': 4})
     view.metrics_message.emit({'type': 'train_batch_progress', 'current': 2, 'total': 8})
 
-    assert not view.training_progress_widget.isHidden()
-    assert view.recognition_progress_widget.isHidden()
-    assert view.training_progress_widget.layout().indexOf(view.epoch_progress_bar) >= 0
-    assert view.training_progress_widget.layout().indexOf(view.batch_progress_bar) >= 0
+    assert view.main_grid.indexOf(view.progress_group) == -1
+    assert view.progress_group.isHidden()
+
+
+def test_runtime_metrics_live_in_bottom_status_row_instead_of_log_text(qapp):
+    view = MainView(QWidget())
+    view.connect_internal_signals()
+
+    assert view.statusBar().isAncestorOf(view.runtime_status_widget)
+    for label in (view.memory_usage_label, view.validation_quality_label, view.performance_label):
+        assert view.runtime_status_widget.isAncestorOf(label)
+
+    view.metrics_message.emit(
+        {
+            'type': 'system_memory',
+            'ram_mb': 512.0,
+            'vram_used_mb': 1024.0,
+            'vram_total_mb': 4096.0,
+        }
+    )
+    view.metrics_message.emit(
+        {'type': 'val_epoch', 'epoch': 1, 'loss': 0.2, 'iou': 0.8, 'dice': 0.85, 'f1': 0.84}
+    )
+    view.metrics_message.emit(
+        {'type': 'train_perf', 'total_ms': 25.0}
+    )
+    view.log_message.emit('ordinary log line')
+
+    assert 'RAM: 512' in view.memory_usage_label.text()
+    assert 'IoU: 80.00%' in view.validation_quality_label.text()
+    assert 'total: 25.0' in view.performance_label.text()
+    assert view.statusBar().currentMessage() == ''
+
+
+def test_queue_row_labels_epoch_progress_for_specific_task(qapp):
+    view = MainView(QWidget())
+    view.set_task_queue_items(
+        [
+            {
+                'task_id': 7,
+                'work_mode': 'train_only',
+                'work_mode_label': 'Training',
+                'display_name': 'Task 7',
+                'status': 'in_progress',
+                'status_label': 'in progress',
+            }
+        ]
+    )
+    initial_row_widget = view.queue_list.itemWidget(view.queue_list.item(0))
+    assert isinstance(initial_row_widget.progress_widget.layout(), QHBoxLayout)
+    assert not initial_row_widget.validation_progress_bar.isHidden()
+
+    view.update_task_queue_item_training_progress(
+        7,
+        epoch_current=0,
+        epoch_total=10,
+        batch_current=25,
+        batch_total=100,
+        validation_current=4,
+        validation_total=20,
+    )
+
+    row_widget = view.queue_list.itemWidget(view.queue_list.item(0))
+    assert isinstance(row_widget, TaskQueueRowWidget)
+    assert row_widget.epoch_progress_bar.value() == 0
+    assert '0/10' in row_widget.epoch_progress_bar.text()
+    assert view._main_texts()['progress_epochs'] in row_widget.epoch_progress_bar.text()
+    assert row_widget.batch_progress_bar.value() == 25
+    assert '25/100' in row_widget.batch_progress_bar.text()
+    assert view._main_texts()['progress_batches'] in row_widget.batch_progress_bar.text()
+    assert row_widget.validation_progress_bar.value() == 20
+    assert '4/20' in row_widget.validation_progress_bar.text()
+    assert view._main_texts()['progress_validation'] in row_widget.validation_progress_bar.text()
+    progress_layout = row_widget.progress_widget.layout()
+    assert isinstance(progress_layout, QHBoxLayout)
+    assert progress_layout.indexOf(row_widget.epoch_progress_bar) == 0
+    assert progress_layout.indexOf(row_widget.batch_progress_bar) == 1
+    assert progress_layout.indexOf(row_widget.validation_progress_bar) == 2
+    for progress_bar in (
+        row_widget.epoch_progress_bar,
+        row_widget.batch_progress_bar,
+        row_widget.validation_progress_bar,
+    ):
+        assert progress_bar.width() >= QFontMetrics(progress_bar.font()).horizontalAdvance(
+            progress_bar.text()
+        )
+
+
+def test_stopped_queue_task_buttons_are_retry_up_down_remove(qapp):
+    view = MainView(QWidget())
+    view.set_task_queue_items(
+        [
+            {
+                'task_id': 3,
+                'work_mode': 'train_only',
+                'work_mode_label': 'Training',
+                'display_name': 'Short name',
+                'status': 'stopped',
+                'status_label': 'stopped',
+            }
+        ]
+    )
+    row_widget = view.queue_list.itemWidget(view.queue_list.item(0))
+    layout = row_widget.layout()
+
+    assert row_widget.name_edit.width() < 160
+    assert [
+        layout.indexOf(row_widget.retry_button),
+        layout.indexOf(row_widget.up_button),
+        layout.indexOf(row_widget.down_button),
+        layout.indexOf(row_widget.remove_button),
+    ] == sorted(
+        [
+            layout.indexOf(row_widget.retry_button),
+            layout.indexOf(row_widget.up_button),
+            layout.indexOf(row_widget.down_button),
+            layout.indexOf(row_widget.remove_button),
+        ]
+    )
 
 
 def test_main_view_preview_columns_align_titles_and_pixmaps(qapp):
@@ -243,6 +360,49 @@ def test_main_view_preview_columns_align_titles_and_pixmaps(qapp):
         assert column.width() == preview.width()
         assert title.alignment() & Qt.AlignmentFlag.AlignHCenter
         assert preview.alignment() & Qt.AlignmentFlag.AlignCenter
+
+
+def test_main_view_preview_columns_share_free_space_and_rescale_pixmaps(qapp, monkeypatch, tmp_path):
+    monkeypatch.setenv('NEURALIMAGE_SETTINGS_DIR', str(tmp_path))
+    view = MainView(QWidget())
+    view.metrics_panel.hide()
+    view.log_dock.hide()
+    view.resize(1200, 900)
+    view.show()
+    qapp.processEvents()
+
+    columns = (
+        view.preview_image_column_widget,
+        view.preview_label_column_widget,
+        view.preview_output_column_widget,
+    )
+    previews = (
+        view.preview_image_label,
+        view.preview_label_label,
+        view.preview_output_label,
+    )
+
+    assert [column.x() for column in columns] == sorted(column.x() for column in columns)
+    assert max(column.width() for column in columns) - min(column.width() for column in columns) <= 1
+    for column, preview in zip(columns, previews):
+        assert column.minimumWidth() == 220
+        assert column.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+        assert preview.minimumWidth() == 220
+        assert preview.minimumHeight() == 220
+        assert preview.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+        assert preview.width() == column.width()
+
+    view._set_preview_image(view.preview_image_label, np.full((80, 400), 128, dtype=np.uint8))
+    initial_column_width = columns[0].width()
+    initial_pixmap_width = view.preview_image_label.pixmap().width()
+
+    view.resize(1700, 900)
+    qapp.processEvents()
+
+    assert columns[0].width() > initial_column_width
+    assert view.preview_image_label.pixmap().width() > initial_pixmap_width
+    assert max(column.width() for column in columns) - min(column.width() for column in columns) <= 1
+    view.close()
 
 
 def test_metrics_panel_can_be_restored_from_view_menu(qapp):

@@ -128,6 +128,7 @@
     const hardPixelMiningEnabledInput = document.querySelector('[name="settings-hard_pixel_mining_enabled"]');
     const earlyStoppingEnabledInput = document.querySelector('[name="settings-early_stopping_enabled"]');
     const randomPatchSizeEnabledInput = document.querySelector('[name="settings-random_patch_size_enabled"]');
+    const torchCompileInput = document.querySelector('[name="settings-torch_compile_enabled"]');
     const lossFunctionInput = document.querySelector('[name="settings-loss_function"]');
     const schedulerInput = document.querySelector('[name="settings-scheduler_name"]');
 
@@ -632,6 +633,10 @@
         setFieldVisible(randomPatchSizeFields, randomPatchEnabled);
         setFieldEnabled(randomPatchSizeFields, randomPatchEnabled);
         if (randomPatchSizeEnabledInput) randomPatchSizeEnabledInput.disabled = !isOnlineCutMode;
+        if (torchCompileInput) {
+            if (randomPatchEnabled) torchCompileInput.checked = false;
+            torchCompileInput.disabled = randomPatchEnabled;
+        }
         setFieldVisible(epochsField, !earlyStoppingEnabled);
         // Keep the hidden value submitted so MainWindowForm remains valid;
         // the trainer ignores it and applies the internal max_epochs guard.

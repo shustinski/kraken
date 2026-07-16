@@ -35,6 +35,9 @@ class TaskRuntimeContext:
     recognition_manifest: Path | None = None
     last_recognized_file: str = ''
     phase: str = ''
+    epoch_progress: TaskProgress = TaskProgress()
+    batch_progress: TaskProgress = TaskProgress()
+    validation_progress: TaskProgress = TaskProgress()
     training_completed: bool = False
     trained_model_path: Path | None = None
 
@@ -45,6 +48,9 @@ class TaskRuntimeContext:
         self.recognition_manifest = None
         self.last_recognized_file = ''
         self.phase = ''
+        self.epoch_progress = TaskProgress()
+        self.batch_progress = TaskProgress()
+        self.validation_progress = TaskProgress()
         self.training_completed = False
         self.trained_model_path = None
 

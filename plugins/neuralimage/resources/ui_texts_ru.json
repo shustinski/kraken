@@ -79,6 +79,7 @@
     "runtime_speed_label": "Скорость",
     "validation_quality_default": "Качество валидации: —",
     "validation_quality_template": "IoU: {iou} | Dice: {dice} | F1: {f1}",
+    "progress_validation": "Валидация",
     "performance_label_default": "Производительность: —",
     "performance_label_template": "Время батча | загрузка: {data_wait_ms:.1f} ms | аугментации: {augmentation_ms:.1f} ms | forward: {forward_ms:.1f} ms | backward: {backward_ms:.1f} ms | optimizer: {optimizer_ms:.1f} ms | total: {total_ms:.1f} ms",
     "samples_count": "Кадров в выборке: 0",

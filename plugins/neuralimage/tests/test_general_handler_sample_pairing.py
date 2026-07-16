@@ -32,7 +32,7 @@ def _build_handler(validation: bool = False) -> GeneralNeuralHandler:
     return handler
 
 
-def test_get_zipped_samples_sets_stop_on_image_label_mismatch():
+def test_get_zipped_samples_warns_and_uses_matched_pairs_on_mismatch():
     root = make_test_dir('pairing_mismatch')
     image_dir = root / 'images'
     label_dir = root / 'labels'
@@ -42,6 +42,28 @@ def test_get_zipped_samples_sets_stop_on_image_label_mismatch():
     (image_dir / 'a.jpg').write_bytes(b'x')
     (image_dir / 'b.jpg').write_bytes(b'x')
     (label_dir / 'a.jpg').write_bytes(b'x')
+
+    handler = _build_handler(validation=False)
+    train_samples, val_samples = GeneralNeuralHandler._get_zipped_samples(handler, image_dir, label_dir)
+
+    assert handler._need_stop is False
+    assert [(image.stem, label.stem) for image, label in train_samples] == [('a', 'a')]
+    assert val_samples is None
+    assert any(
+        topic == 'warning' and '1 matched pair' in message
+        for topic, message in handler.message_bus.messages
+    )
+
+
+def test_get_zipped_samples_stops_when_no_matched_pairs_exist():
+    root = make_test_dir('pairing_no_matches')
+    image_dir = root / 'images'
+    label_dir = root / 'labels'
+    image_dir.mkdir()
+    label_dir.mkdir()
+
+    (image_dir / 'image_only.jpg').write_bytes(b'x')
+    (label_dir / 'label_only.jpg').write_bytes(b'x')
 
     handler = _build_handler(validation=False)
     train_samples, val_samples = GeneralNeuralHandler._get_zipped_samples(handler, image_dir, label_dir)

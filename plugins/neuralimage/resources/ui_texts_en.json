@@ -79,6 +79,7 @@
     "runtime_speed_label": "Speed",
     "validation_quality_default": "Validation quality: —",
     "validation_quality_template": "IoU: {iou} | Dice: {dice} | F1: {f1}",
+    "progress_validation": "Validation",
     "performance_label_default": "Performance: —",
     "performance_label_template": "Batch timing | data: {data_wait_ms:.1f} ms | augmentation: {augmentation_ms:.1f} ms | forward: {forward_ms:.1f} ms | backward: {backward_ms:.1f} ms | optimizer: {optimizer_ms:.1f} ms | total: {total_ms:.1f} ms",
     "samples_count": "Dataset frames: 0",

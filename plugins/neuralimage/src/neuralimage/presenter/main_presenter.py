@@ -234,6 +234,7 @@ class MainPresenter(QObject):
         self.message_bus.subscribe('logging', self._log_message_emit)
         self.message_bus.subscribe('training', self._train_message_emit)
         self.message_bus.subscribe('metrics', self._metrics_message_emit)
+        self.message_bus.subscribe('warning', self._warning_message_emit)
         self.message_bus.subscribe('error', self._error_message_emit)
 
     def _connect_view_signals(self):
@@ -1049,6 +1050,11 @@ class MainPresenter(QObject):
     def _metrics_message_emit(self, data):
         self._queue_metrics_received.emit(data)
         self.view.metrics_message.emit(data)
+
+    def _warning_message_emit(self, data):
+        message = str(data) if data is not None else 'Предупреждение.'
+        self.view.show_warning.emit(message)
+        self.view.log_message.emit(f'Предупреждение: {message}')
 
     def _error_message_emit(self, data):
         message = str(data) if data is not None else 'Произошла ошибка выполнения.'

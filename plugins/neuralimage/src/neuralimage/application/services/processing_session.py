@@ -13,6 +13,7 @@ from .processing_queue import (
     ActiveTaskMutationError,
     ProcessingTaskQueue,
     QueuedTask,
+    TaskProgress,
 )
 
 
@@ -28,6 +29,13 @@ class QueueTaskSnapshot:
     error_message: str = ''
     progress_current: int = 0
     progress_total: int = 0
+    progress_kind: str = ''
+    epoch_progress_current: int = 0
+    epoch_progress_total: int = 0
+    batch_progress_current: int = 0
+    batch_progress_total: int = 0
+    validation_progress_current: int = 0
+    validation_progress_total: int = 0
     owner_username: str = ''
     owner_display_name: str = ''
     last_recognized_file: str = ''
@@ -128,6 +136,20 @@ class ProcessingSession:
     def update_active_progress(self, current: int, total: int) -> TaskType | None:
         return self._queue.set_progress_for_active(current, total)
 
+    def update_active_training_progress(self, kind: str, current: int, total: int) -> TaskType | None:
+        active_task = self.active_task
+        if active_task is None:
+            return None
+        progress = TaskProgress(max(0, int(current)), max(0, int(total)))
+        if str(kind) == 'train_epoch_progress':
+            active_task.runtime.epoch_progress = progress
+        elif str(kind) == 'train_batch_progress':
+            active_task.runtime.batch_progress = progress
+        elif str(kind) == 'validation_progress':
+            active_task.runtime.validation_progress = progress
+        active_task.runtime.phase = str(kind)
+        return active_task
+
     def next_task_to_start(self, *, worker_running: bool) -> StartNextTaskDecision:
         if worker_running:
             return StartNextTaskDecision(task=None, worker_busy=True)
@@ -187,6 +209,13 @@ class ProcessingSession:
                     error_message=str(task.error_message or ''),
                     progress_current=int(task.progress.current),
                     progress_total=int(task.progress.total),
+                    progress_kind=str(task.runtime.phase or ''),
+                    epoch_progress_current=int(task.runtime.epoch_progress.current),
+                    epoch_progress_total=int(task.runtime.epoch_progress.total),
+                    batch_progress_current=int(task.runtime.batch_progress.current),
+                    batch_progress_total=int(task.runtime.batch_progress.total),
+                    validation_progress_current=int(task.runtime.validation_progress.current),
+                    validation_progress_total=int(task.runtime.validation_progress.total),
                     owner_username=str(task.owner_username or ''),
                     owner_display_name=str(task.owner_display_name or task.owner_username or ''),
                     last_recognized_file=str(task.runtime.last_recognized_file or ''),

@@ -1,7 +1,9 @@
 import pytest
+from types import SimpleNamespace
 
 from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.application.services import ActiveTaskMutationError, ProcessingSession
+from neuralimage.presenter.task_flow import on_metrics_message
 
 
 def _make_states(work_mode: str) -> tuple[MainWindowState, SettingsState]:
@@ -35,6 +37,49 @@ def test_next_task_to_start_reports_busy_worker_without_mutating_session():
     assert decision.worker_busy is True
     assert decision.task is None
     assert [item.status for item in session.queue_snapshot()] == ['waiting']
+
+
+def test_queue_keeps_epoch_batch_and_validation_progress_independently():
+    session = ProcessingSession()
+    task = session.enqueue_task(*_make_states('train_only'))
+    session.next_task_to_start(worker_running=False)
+    updates: list[tuple[str, int, int, int]] = []
+    presenter = SimpleNamespace(
+        _processing_session=session,
+        view=SimpleNamespace(
+            update_task_queue_item_training_progress=lambda task_id, **values: updates.append(
+                (
+                    'epoch'
+                    if 'epoch_current' in values
+                    else ('validation' if 'validation_current' in values else 'batch'),
+                    task_id,
+                    values.get(
+                        'epoch_current',
+                        values.get('batch_current', values.get('validation_current')),
+                    ),
+                    values.get(
+                        'epoch_total',
+                        values.get('batch_total', values.get('validation_total')),
+                    ),
+                )
+            ),
+        ),
+    )
+
+    on_metrics_message(presenter, {'type': 'train_epoch_progress', 'current': 2, 'total': 8})
+    on_metrics_message(presenter, {'type': 'train_batch_progress', 'current': 40, 'total': 100})
+    on_metrics_message(presenter, {'type': 'validation_progress', 'current': 3, 'total': 12})
+
+    snapshot = session.queue_snapshot()[0]
+    assert updates == [
+        ('epoch', task.task_id, 2, 8),
+        ('batch', task.task_id, 40, 100),
+        ('validation', task.task_id, 3, 12),
+    ]
+    assert (snapshot.epoch_progress_current, snapshot.epoch_progress_total) == (2, 8)
+    assert (snapshot.batch_progress_current, snapshot.batch_progress_total) == (40, 100)
+    assert (snapshot.validation_progress_current, snapshot.validation_progress_total) == (3, 12)
+    assert snapshot.progress_kind == 'validation_progress'
 
 
 def test_request_stop_marks_completion_as_stopped():

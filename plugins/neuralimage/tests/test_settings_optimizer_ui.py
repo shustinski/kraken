@@ -196,11 +196,19 @@ def test_settings_panel_switches_between_split_and_external_validation_controls(
 
     panel.validation_check_box.setChecked(True)
     panel.set_validation_source_value('split')
+    assert panel.validation_mode_combo.isHidden() is False
+    assert panel.validation_spinbox.isHidden() is False
+    assert panel.validation_image_path_label.isHidden() is True
+    assert panel.validation_label_path_label.isHidden() is True
     assert panel._field_rows[panel.validation_spinbox].isEnabled() is True
     assert panel._field_rows[panel.validation_image_path_label].isEnabled() is False
     assert panel._field_rows[panel.validation_label_path_label].isEnabled() is False
 
     panel.set_validation_source_value('external')
+    assert panel.validation_mode_combo.isHidden() is False
+    assert panel.validation_spinbox.isHidden() is True
+    assert panel.validation_image_path_label.isHidden() is False
+    assert panel.validation_label_path_label.isHidden() is False
     assert panel._field_rows[panel.validation_spinbox].isEnabled() is False
     assert panel._field_rows[panel.validation_image_path_label].isEnabled() is True
     assert panel._field_rows[panel.validation_label_path_label].isEnabled() is True

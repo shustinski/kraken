@@ -8,7 +8,7 @@ import random
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import torch
 from torch.utils.data import DataLoader, Dataset, RandomSampler, Sampler, SequentialSampler, Subset
@@ -43,6 +43,13 @@ from neuralimage.model.image_workers import ConvertCifThread, CutImageThread
 
 _VALIDATION_SPLIT_SEED = 1337
 _VALIDATION_FOREGROUND_BUCKETS: tuple[float, ...] = (0.0, 0.001, 0.01, 0.05, 0.2, 1.0)
+
+
+def _validation_grid_step(segment_size: tuple[int, int]) -> int:
+    """Choose a deterministic covering stride without dense training overlap."""
+    return max(1, min(int(segment_size[0]), int(segment_size[1])))
+
+
 def _is_debugger_attached() -> bool:
     gettrace = getattr(sys, 'gettrace', None)
     if not callable(gettrace):
@@ -345,6 +352,8 @@ class HardFrameSampler(Sampler[int]):
 
 
 class RandomPatchBatchSampler(Sampler[list[PatchSampleRequest]]):
+    variable_patch_sizes = True
+
     def __init__(
         self,
         sampler: Sampler[int],
@@ -387,6 +396,25 @@ class RandomPatchBatchSampler(Sampler[list[PatchSampleRequest]]):
         if self.drop_last:
             return size // self.batch_size
         return math.ceil(size / self.batch_size)
+
+
+class FrameBatchSampler(Sampler[list[int]]):
+    """Yield sequential batches without mixing patches from different frames."""
+
+    def __init__(self, frame_lengths: Iterable[int], *, batch_size: int) -> None:
+        self.frame_lengths = tuple(max(0, int(length)) for length in frame_lengths)
+        self.batch_size = max(1, int(batch_size))
+
+    def __iter__(self):
+        offset = 0
+        for frame_length in self.frame_lengths:
+            frame_end = offset + frame_length
+            for batch_start in range(offset, frame_end, self.batch_size):
+                yield list(range(batch_start, min(batch_start + self.batch_size, frame_end)))
+            offset = frame_end
+
+    def __len__(self) -> int:
+        return sum(math.ceil(length / self.batch_size) for length in self.frame_lengths if length > 0)
 
 
 class GeneralNeuralHandler:
@@ -737,6 +765,10 @@ class GeneralNeuralHandler:
             shuffle=False,
             generation=replace(
                 training_without_tech_aug.generation,
+                # Validation evaluates a deterministic covering grid. Reusing
+                # the small training shift here can multiply work by hundreds
+                # (for example, 2000px frames, 256px patches, step=12).
+                step=_validation_grid_step(training_without_tech_aug.generation.segment_size),
                 vertical_rotation=False,
                 horizontal_rotation=False,
                 flip_x=False,
@@ -888,8 +920,13 @@ class GeneralNeuralHandler:
             'persistent_workers': val_persistent_workers,
         }
         if workers > 0:
-            train_loader_kwargs['prefetch_factor'] = 2
-            val_loader_kwargs['prefetch_factor'] = 2
+            # Each prefetched Windows batch is transferred through a named
+            # shared-memory file mapping.  Keeping only one batch queued per
+            # explicitly requested worker substantially reduces mapping/pagefile
+            # pressure while preserving the opt-in multiprocessing path.
+            prefetch_factor = 1 if sys.platform.startswith('win') else 2
+            train_loader_kwargs['prefetch_factor'] = prefetch_factor
+            val_loader_kwargs['prefetch_factor'] = prefetch_factor
 
         hard_mining = self.tranining_parameters.hard_mining
         hard_mining_enabled = bool(hard_mining.enabled)
@@ -933,6 +970,15 @@ class GeneralNeuralHandler:
             )
         if val_dataset is not None:
             val_dataset = IndexedDataset(val_dataset)
+            base_val_dataset = getattr(val_dataset, '_base_dataset', None)
+            frame_lengths_fn = getattr(base_val_dataset, 'validation_frame_lengths', None)
+            if callable(frame_lengths_fn):
+                val_loader_kwargs.pop('batch_size', None)
+                val_loader_kwargs.pop('shuffle', None)
+                val_loader_kwargs['batch_sampler'] = FrameBatchSampler(
+                    frame_lengths_fn(),
+                    batch_size=self.tranining_parameters.batch_size,
+                )
         try:
             self.train_loader = DataLoader(
                 train_dataset,
@@ -946,6 +992,20 @@ class GeneralNeuralHandler:
                 if val_dataset
                 else None
             )
+            if self.val_loader is not None:
+                try:
+                    validation_batches = len(self.val_loader)
+                except TypeError:
+                    validation_batches = 'unknown'
+                self.message_bus.publish(
+                    'logging',
+                    (
+                        'Validation loader ready: '
+                        f'frames={len(getattr(getattr(val_dataset, "_base_dataset", None), "samples", ()))}, '
+                        f'patches={len(val_dataset)}, batches={validation_batches}, '
+                        f'batch_size={self.tranining_parameters.batch_size}.'
+                    ),
+                )
             self.control_loader = self._create_train_control_loader()
         except Exception as error:
             self.message_bus.publish(
@@ -964,17 +1024,13 @@ class GeneralNeuralHandler:
                 fallback_train_kwargs['batch_size'] = self.tranining_parameters.batch_size
                 fallback_train_kwargs['shuffle'] = shuffle
             self.train_loader = DataLoader(train_dataset, **fallback_train_kwargs)
-            self.val_loader = (
-                DataLoader(
-                val_dataset,
-                batch_size=self.tranining_parameters.batch_size,
-                shuffle=False,
-                    num_workers=0,
-                    pin_memory=False,
-                )
-                if val_dataset
-                else None
-            )
+            fallback_val_kwargs = {'num_workers': 0, 'pin_memory': False}
+            if 'batch_sampler' in val_loader_kwargs:
+                fallback_val_kwargs['batch_sampler'] = val_loader_kwargs['batch_sampler']
+            else:
+                fallback_val_kwargs['batch_size'] = self.tranining_parameters.batch_size
+                fallback_val_kwargs['shuffle'] = False
+            self.val_loader = DataLoader(val_dataset, **fallback_val_kwargs) if val_dataset else None
             self.control_loader = self._create_train_control_loader()
 
     def _create_train_control_loader(self):
@@ -1009,8 +1065,15 @@ class GeneralNeuralHandler:
             configured_workers = -1
         if configured_workers >= 0:
             return configured_workers
+        # PyTorch's spawn-based Windows workers transfer collated tensors via
+        # named shared-memory file mappings.  Large image batches can exhaust
+        # those mappings only while iterating (after DataLoader construction),
+        # so the constructor fallback above cannot recover.  Make automatic
+        # mode reliable on Windows; users can still explicitly opt into workers.
+        if sys.platform.startswith('win'):
+            return 0
         cpu_count = os.cpu_count() or 1
-        max_workers = 8 if sys.platform.startswith('win') else 16
+        max_workers = 16
         workers = max(0, min(max_workers, cpu_count - 1))
         if self.tranining_parameters.cut_mode == SampleCutMode.online:
             workers = min(workers, 8)
@@ -1070,21 +1133,21 @@ class GeneralNeuralHandler:
         label_stems = set(label_map.keys())
         missing_labels = sorted(image_stems - label_stems)
         missing_images = sorted(label_stems - image_stems)
-        if missing_labels or missing_images:
+        common_stems = sorted(image_stems & label_stems)
+        if (missing_labels or missing_images) and common_stems:
             missing_labels_preview = ', '.join(missing_labels[:10]) if missing_labels else '-'
             missing_images_preview = ', '.join(missing_images[:10]) if missing_images else '-'
+            pair_word = 'pair' if len(common_stems) == 1 else 'pairs'
             self.message_bus.publish(
-                'error',
+                'warning',
                 (
                     'Image/label mismatch detected. '
                     f'Missing labels for images: {missing_labels_preview}. '
-                    f'Missing images for labels: {missing_images_preview}.'
+                    f'Missing images for labels: {missing_images_preview}. '
+                    f'Training will continue with {len(common_stems)} matched {pair_word}.'
                 ),
             )
-            self._need_stop = True
-            return None
 
-        common_stems = sorted(image_stems)
         zipped_images = [(image_map[stem], label_map[stem]) for stem in common_stems]
         if not zipped_images:
             self.message_bus.publish('error', 'No matched image/label pairs found in the selected dataset.')

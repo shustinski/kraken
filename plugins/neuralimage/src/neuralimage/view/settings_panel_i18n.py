@@ -832,6 +832,7 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.recognition_patch_size_groupbox.setTitle(
         str(labels_map.get('recognition_patch_size', t.get('recognition_patch_size', 'Recognition patch (X × Y)')))
     )
+    panel.recognition_tab_patch_size_groupbox.setTitle(panel.recognition_patch_size_groupbox.title())
     panel.random_patch_min_size_groupbox.setTitle(
         str(t.get('random_patch_min_group', 'Minimum size'))
     )
@@ -840,8 +841,10 @@ def apply_settings_panel_texts(panel: Any) -> None:
     )
     panel.train_patch_size_groupbox.setToolTip(train_patch_tip)
     panel.recognition_patch_size_groupbox.setToolTip(recognition_patch_tip)
+    panel.recognition_tab_patch_size_groupbox.setToolTip(recognition_patch_tip)
     panel.train_patch_size_widget.setToolTip(train_patch_tip)
     panel.recognition_patch_size_widget.setToolTip(recognition_patch_tip)
+    panel.recognition_tab_patch_size_widget.setToolTip(recognition_patch_tip)
     random_min_tip = str(descriptions.get('random_patch_min_size', 'Minimum random patch size.'))
     random_max_tip = str(descriptions.get('random_patch_max_size', 'Maximum random patch size.'))
     panel.random_patch_min_size_groupbox.setToolTip(random_min_tip)
@@ -867,6 +870,7 @@ def apply_settings_panel_texts(panel: Any) -> None:
     for axis_widget in (
         panel.train_patch_size_widget,
         panel.recognition_patch_size_widget,
+        panel.recognition_tab_patch_size_widget,
         panel.random_patch_min_size_widget,
         panel.random_patch_max_size_widget,
         panel.synthetic_image_size_widget,

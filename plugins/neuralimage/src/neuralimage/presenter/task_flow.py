@@ -205,17 +205,47 @@ def on_metrics_message(presenter, data) -> None:
         if active_task is not None:
             active_task.runtime.last_recognized_file = str(data.get('source_path', '') or '')
         return
-    if metric_type not in {'train_epoch_progress', 'train_batch_progress', 'recognition_progress'}:
+    if metric_type not in {
+        'train_epoch_progress',
+        'train_batch_progress',
+        'validation_progress',
+        'recognition_progress',
+    }:
         return
     current = int(data.get('current', 0) or 0)
     total = int(data.get('total', 0) or 0)
-    presenter._processing_session.update_active_progress(
-        current,
-        total,
-    )
+    if metric_type in {'train_epoch_progress', 'train_batch_progress', 'validation_progress'}:
+        presenter._processing_session.update_active_training_progress(metric_type, current, total)
+    else:
+        presenter._processing_session.update_active_progress(current, total)
     active_task = presenter._processing_session.active_task
     if active_task is not None:
-        presenter.view.update_task_queue_item_progress(active_task.task_id, current, total)
+        active_task.runtime.phase = metric_type
+        if metric_type == 'train_epoch_progress':
+            presenter.view.update_task_queue_item_training_progress(
+                active_task.task_id,
+                epoch_current=current,
+                epoch_total=total,
+            )
+        elif metric_type == 'train_batch_progress':
+            presenter.view.update_task_queue_item_training_progress(
+                active_task.task_id,
+                batch_current=current,
+                batch_total=total,
+            )
+        elif metric_type == 'validation_progress':
+            presenter.view.update_task_queue_item_training_progress(
+                active_task.task_id,
+                validation_current=current,
+                validation_total=total,
+            )
+        else:
+            presenter.view.update_task_queue_item_progress(
+                active_task.task_id,
+                current,
+                total,
+                metric_type,
+            )
 
 
 def on_error_message(presenter, data) -> None:
@@ -264,6 +294,13 @@ def refresh_queue_view(presenter, *, selected_row: int = -1, selected_task_id: i
                 'error_message': task.error_message,
                 'progress_current': task.progress_current,
                 'progress_total': task.progress_total,
+                'progress_kind': task.progress_kind,
+                'epoch_progress_current': task.epoch_progress_current,
+                'epoch_progress_total': task.epoch_progress_total,
+                'batch_progress_current': task.batch_progress_current,
+                'batch_progress_total': task.batch_progress_total,
+                'validation_progress_current': task.validation_progress_current,
+                'validation_progress_total': task.validation_progress_total,
             }
         )
         if selected_task_id is not None and task.task_id == selected_task_id:

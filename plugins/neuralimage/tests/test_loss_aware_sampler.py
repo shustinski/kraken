@@ -5,7 +5,7 @@ safe_import_or_skip('PIL')
 
 import torch
 import numpy as np
-from torch.utils.data import Dataset, SequentialSampler
+from torch.utils.data import DataLoader, Dataset, SequentialSampler
 
 from neuralimage.lib.data_interfaces import SampleGenerationSettings
 from neuralimage.lib.images import SampleFastCutter
@@ -85,6 +85,34 @@ def test_random_patch_batch_sampler_uses_one_aligned_size_per_batch():
         width, height = batch[0].size_xy
         assert 65 <= width <= 128 and width % 32 == 0
         assert 97 <= height <= 160 and height % 32 == 0
+
+
+class _VariableTensorDataset(Dataset):
+    def __len__(self):
+        return 6
+
+    def __getitem__(self, request):
+        width, height = request.size_xy
+        return torch.zeros(1, height, width), torch.zeros(1, height, width)
+
+
+def test_random_patch_dataloader_continues_after_first_batch():
+    dataset = _VariableTensorDataset()
+    loader = DataLoader(
+        dataset,
+        batch_sampler=RandomPatchBatchSampler(
+            SequentialSampler(dataset),
+            batch_size=2,
+            min_size=(64, 64),
+            max_size=(128, 128),
+        ),
+        num_workers=0,
+    )
+
+    batches = list(loader)
+
+    assert len(batches) == 3
+    assert all(images.shape == labels.shape for images, labels in batches)
 
 
 def test_sample_fast_cutter_extracts_requested_rectangular_size_after_rotation():

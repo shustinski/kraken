@@ -4,8 +4,8 @@ import math
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal, QSettings
-from PyQt6.QtGui import QAction, QActionGroup, QIcon, QImage, QPixmap
+from PyQt6.QtCore import QEvent, QSize, Qt, QSettings, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction, QActionGroup, QFontMetrics, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -72,6 +73,44 @@ def _save_persisted_ui_mode(mode: str) -> None:
     settings = _main_window_qsettings()
     settings.setValue('ui_mode', 'advanced' if mode == 'advanced' else 'simple')
     settings.sync()
+
+
+WINDOW_LAYOUT_STATE_VERSION = 1
+PREVIEW_MINIMUM_SIZE = 220
+
+
+class ResponsivePreviewLabel(QLabel):
+    """A centered preview that grows with its layout and keeps its source pixmap."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._source_pixmap = QPixmap()
+        self.setMinimumSize(PREVIEW_MINIMUM_SIZE, PREVIEW_MINIMUM_SIZE)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    def set_source_pixmap(self, pixmap: QPixmap) -> None:
+        self._source_pixmap = QPixmap(pixmap)
+        self._refresh_pixmap()
+
+    def clear(self) -> None:
+        self._source_pixmap = QPixmap()
+        super().clear()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._refresh_pixmap()
+
+    def _refresh_pixmap(self) -> None:
+        if self._source_pixmap.isNull() or self.width() <= 0 or self.height() <= 0:
+            return
+        super().setPixmap(
+            self._source_pixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
 
 
 def _modal_dialogs_enabled() -> bool:
@@ -122,7 +161,7 @@ class TaskQueueRowWidget(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
-        self.setMinimumHeight(46)
+        self.setMinimumHeight(64)
 
         self.drag_handle = QLabel('...', self)
         self.drag_handle.setFixedWidth(18)
@@ -137,9 +176,9 @@ class TaskQueueRowWidget(QWidget):
         layout.addWidget(self.mode_label)
 
         self.name_edit = QLineEdit(self)
-        self.name_edit.setMinimumWidth(160)
         self.name_edit.setMinimumHeight(30)
         self.name_edit.setStyleSheet('padding-left: 8px; padding-right: 8px;')
+        self.name_edit.textChanged.connect(lambda _text: self._fit_name_edit_to_text())
         self.name_edit.editingFinished.connect(self._emit_name_changed)
         layout.addWidget(self.name_edit, 1)
 
@@ -147,11 +186,26 @@ class TaskQueueRowWidget(QWidget):
         self.status_label.setMinimumWidth(105)
         layout.addWidget(self.status_label)
 
-        self.progress_bar = QProgressBar(self)
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setFixedWidth(135)
-        self.progress_bar.setFixedHeight(28)
-        layout.addWidget(self.progress_bar)
+        self.progress_widget = QWidget(self)
+        progress_layout = QHBoxLayout(self.progress_widget)
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+        progress_layout.setSpacing(3)
+        self.epoch_progress_bar = QProgressBar(self.progress_widget)
+        self.batch_progress_bar = QProgressBar(self.progress_widget)
+        self.validation_progress_bar = QProgressBar(self.progress_widget)
+        for progress_bar in (
+            self.epoch_progress_bar,
+            self.batch_progress_bar,
+            self.validation_progress_bar,
+        ):
+            progress_bar.setRange(0, 100)
+            progress_bar.setMinimumWidth(145)
+            progress_bar.setMaximumWidth(190)
+            progress_bar.setFixedHeight(23)
+            progress_layout.addWidget(progress_bar, 1)
+        # Compatibility alias for recognition and older callers.
+        self.progress_bar = self.epoch_progress_bar
+        layout.addWidget(self.progress_widget)
 
         self.completion_label = QLabel(self)
         self.completion_label.setFixedWidth(24)
@@ -175,10 +229,10 @@ class TaskQueueRowWidget(QWidget):
         self._style_action_button(self.remove_button, foreground='#ffb4b4', border='#7f2a2a')
         for button in (
             self.pause_continue_button,
+            self.retry_button,
             self.up_button,
             self.down_button,
             self.remove_button,
-            self.retry_button,
         ):
             layout.addWidget(button)
 
@@ -224,18 +278,43 @@ class TaskQueueRowWidget(QWidget):
         self.name_edit.blockSignals(True)
         self.name_edit.setText(str(item.get('display_name', '')))
         self.name_edit.blockSignals(False)
+        self._fit_name_edit_to_text()
         self.status_label.setText(str(item.get('status_label', status)))
 
-        current = int(item.get('progress_current', 0) or 0)
-        total = int(item.get('progress_total', 0) or 0)
-        if total > 0:
-            value = max(0, min(100, int((current / total) * 100)))
-            self.progress_bar.setValue(value)
-            self.progress_bar.setFormat(f'{value}% ({current}/{total})')
+        progress_kind = str(item.get('progress_kind', '') or '')
+        is_recognition_progress = progress_kind == 'recognition_progress'
+        if is_recognition_progress:
+            self._set_row_progress(
+                self.epoch_progress_bar,
+                str(self._texts.get('progress_recognition', 'Recognition')),
+                int(item.get('progress_current', 0) or 0),
+                int(item.get('progress_total', 0) or 0),
+            )
         else:
-            self.progress_bar.setValue(0)
-            self.progress_bar.setFormat('0%')
-        self.progress_bar.setVisible(status == 'in_progress')
+            self._set_row_progress(
+                self.epoch_progress_bar,
+                str(self._texts.get('progress_epochs', 'Epochs')),
+                int(item.get('epoch_progress_current', 0) or 0),
+                int(item.get('epoch_progress_total', 0) or 0),
+            )
+            self._set_row_progress(
+                self.batch_progress_bar,
+                str(self._texts.get('progress_batches', 'Batches')),
+                int(item.get('batch_progress_current', 0) or 0),
+                int(item.get('batch_progress_total', 0) or 0),
+            )
+            self._set_row_progress(
+                self.validation_progress_bar,
+                str(self._texts.get('progress_validation', 'Validation')),
+                int(item.get('validation_progress_current', 0) or 0),
+                int(item.get('validation_progress_total', 0) or 0),
+            )
+        self.progress_widget.setVisible(status == 'in_progress')
+        self.batch_progress_bar.setVisible(status == 'in_progress' and not is_recognition_progress)
+        self.validation_progress_bar.setVisible(
+            status == 'in_progress'
+            and not is_recognition_progress
+        )
 
         self.completion_label.setText('')
         self.completion_label.setStyleSheet('')
@@ -271,6 +350,22 @@ class TaskQueueRowWidget(QWidget):
             str(texts.get('stop', 'Stop')) if is_running else str(texts.get('queue_remove', 'Remove from queue'))
         )
         self.retry_button.setToolTip(str(texts.get('queue_retry', 'Retry')))
+
+    @staticmethod
+    def _set_row_progress(progress_bar: QProgressBar, title: str, current: int, total: int) -> None:
+        bounded_current = max(0, int(current))
+        bounded_total = max(0, int(total))
+        value = max(0, min(100, int((bounded_current / bounded_total) * 100))) if bounded_total else 0
+        progress_bar.setValue(value)
+        text = f'{title}: {value}% ({bounded_current}/{bounded_total})' if bounded_total else f'{title}: 0%'
+        progress_bar.setFormat(text)
+        text_width = QFontMetrics(progress_bar.font()).horizontalAdvance(text)
+        progress_bar.setFixedWidth(max(120, text_width + 28))
+
+    def _fit_name_edit_to_text(self) -> None:
+        text = self.name_edit.text() or self.name_edit.placeholderText() or 'Task'
+        text_width = QFontMetrics(self.name_edit.font()).horizontalAdvance(text)
+        self.name_edit.setFixedWidth(max(80, text_width + 28))
 
 
 class MainView(QMainWindow):
@@ -322,6 +417,11 @@ class MainView(QMainWindow):
 
     def __init__(self, side_panel: QWidget | None = None):
         super().__init__()
+        self._window_layout_restore_pending = True
+        self._window_layout_save_timer = QTimer(self)
+        self._window_layout_save_timer.setSingleShot(True)
+        self._window_layout_save_timer.setInterval(300)
+        self._window_layout_save_timer.timeout.connect(self._save_window_layout)
         self.setWindowTitle(get_app_title())
         self.setWindowIcon(QIcon(str(resolve_internal_path('icon.png'))))
         self.setGeometry(200, 200, 1200, 740)
@@ -526,7 +626,7 @@ class MainView(QMainWindow):
         self.queue_list.setStyleSheet('QListWidget::item:selected { background: transparent; }')
         queue_layout.addWidget(self.queue_list)
 
-        self.progress_group = QGroupBox(t["progress_group"])
+        self.progress_group = QGroupBox(t["progress_group"], self._central_content)
         progress_layout = QVBoxLayout(self.progress_group)
         progress_layout.setContentsMargins(8, 8, 8, 8)
         progress_layout.setSpacing(6)
@@ -547,7 +647,8 @@ class MainView(QMainWindow):
         for title in (self.progress_epochs_title_label, self.progress_batches_title_label):
             title.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         training_progress_layout.addWidget(self.progress_epochs_title_label)
-        training_progress_layout.addWidget(self.epoch_progress_bar, 1)
+        self.progress_epochs_title_label.hide()
+        self.epoch_progress_bar.hide()
         training_progress_layout.addWidget(self.progress_batches_title_label)
         training_progress_layout.addWidget(self.batch_progress_bar, 1)
         progress_layout.addWidget(self.training_progress_widget)
@@ -567,13 +668,10 @@ class MainView(QMainWindow):
         self.recognition_speed_label = QLabel(t.get("recognition_speed_default", recognition_speed_default))
         self.recognition_speed_label.hide()
         self.memory_usage_label = QLabel(t["memory_label_default"])
-        progress_layout.addWidget(self.memory_usage_label)
         self.validation_quality_label = QLabel(t["validation_quality_default"])
-        progress_layout.addWidget(self.validation_quality_label)
         self.performance_label = QLabel(t["performance_label_default"])
-        progress_layout.addWidget(self.performance_label)
         self._show_progress_mode("idle")
-        self.main_grid.addWidget(self.progress_group, row, 0, 1, 2)
+        self.progress_group.hide()
 
         row += 1
         self.preview_group = QGroupBox(t["preview_group"])
@@ -589,12 +687,10 @@ class MainView(QMainWindow):
         self.preview_image_title_label = QLabel(t["preview_image"])
         self.preview_label_title_label = QLabel(t["preview_label"])
         self.preview_output_title_label = QLabel(t["preview_output"])
-        self.preview_image_label = QLabel()
-        self.preview_label_label = QLabel()
-        self.preview_output_label = QLabel()
+        self.preview_image_label = ResponsivePreviewLabel()
+        self.preview_label_label = ResponsivePreviewLabel()
+        self.preview_output_label = ResponsivePreviewLabel()
         for preview in (self.preview_image_label, self.preview_label_label, self.preview_output_label):
-            preview.setFixedSize(220, 220)
-            preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
             preview.setStyleSheet("border: 1px solid #666; background: #111;")
         for title in (self.preview_image_title_label, self.preview_label_title_label, self.preview_output_title_label):
             title.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -604,15 +700,15 @@ class MainView(QMainWindow):
             ("preview_output", self.preview_output_title_label, self.preview_output_label),
         ):
             column_widget = QWidget()
-            column_widget.setFixedWidth(220)
+            column_widget.setMinimumWidth(PREVIEW_MINIMUM_SIZE)
+            column_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             column_layout = QVBoxLayout(column_widget)
             column_layout.setContentsMargins(0, 0, 0, 0)
             column_layout.setSpacing(4)
             column_layout.addWidget(title, 0, Qt.AlignmentFlag.AlignHCenter)
-            column_layout.addWidget(preview, 0, Qt.AlignmentFlag.AlignHCenter)
+            column_layout.addWidget(preview, 1)
             setattr(self, f"{attr_prefix}_column_widget", column_widget)
-            preview_row.addWidget(column_widget, 0, Qt.AlignmentFlag.AlignTop)
-        preview_row.addStretch(1)
+            preview_row.addWidget(column_widget, 1)
         preview_layout.addLayout(preview_row)
         self.main_grid.addWidget(self.preview_group, row, 0, 1, 2)
 
@@ -637,7 +733,20 @@ class MainView(QMainWindow):
         self._central_scroll.setWidgetResizable(True)
         self._central_scroll.setWidget(self._central_content)
         self.setCentralWidget(self._central_scroll)
-        self.statusBar().showMessage("")
+        self.runtime_status_widget = QWidget(self)
+        runtime_status_layout = QHBoxLayout(self.runtime_status_widget)
+        runtime_status_layout.setContentsMargins(6, 0, 6, 0)
+        runtime_status_layout.setSpacing(14)
+        for runtime_label in (
+            self.memory_usage_label,
+            self.validation_quality_label,
+            self.performance_label,
+        ):
+            runtime_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            runtime_status_layout.addWidget(runtime_label)
+        runtime_status_layout.addStretch(1)
+        self.statusBar().setSizeGripEnabled(False)
+        self.statusBar().addPermanentWidget(self.runtime_status_widget, 1)
 
         self.queue_dock = QDockWidget(t["queue"], self)
         self.queue_dock.setObjectName('taskQueueDock')
@@ -667,13 +776,151 @@ class MainView(QMainWindow):
 
         self._create_menubar(t)
         self._apply_theme(self._theme)
+        self._restore_window_layout()
+        for dock in self._managed_docks():
+            dock.installEventFilter(self)
+            dock.dockLocationChanged.connect(self._schedule_window_layout_save)
+            dock.topLevelChanged.connect(self._schedule_window_layout_save)
+            dock.visibilityChanged.connect(self._schedule_window_layout_save)
+
+    def _managed_docks(self) -> tuple[QDockWidget, ...]:
+        docks = [self.queue_dock, self.metrics_panel, self.log_dock]
+        if self.settings_dock is not None:
+            docks.append(self.settings_dock)
+        return tuple(docks)
+
+    def _save_window_layout(self) -> None:
+        settings = _main_window_qsettings()
+        settings.setValue('window_geometry', self.saveGeometry())
+        window_size = self.normalGeometry().size() if self.isMaximized() or self.isFullScreen() else self.size()
+        settings.setValue('window_size', window_size)
+        settings.setValue('dock_layout', self.saveState(WINDOW_LAYOUT_STATE_VERSION))
+        for dock in self._managed_docks():
+            name = dock.objectName().strip()
+            if not name:
+                continue
+            settings.beginGroup(f'docks/{name}')
+            settings.setValue('size', dock.size())
+            settings.setValue('area', int(self.dockWidgetArea(dock).value))
+            settings.setValue('floating', dock.isFloating())
+            settings.setValue('visible', not dock.isHidden())
+            if dock.isFloating():
+                settings.setValue('floating_geometry', dock.saveGeometry())
+            else:
+                settings.remove('floating_geometry')
+            settings.endGroup()
+        settings.sync()
+
+    def _restore_window_layout(self) -> None:
         settings = _main_window_qsettings()
         geometry = settings.value('window_geometry')
+        saved_window_size = settings.value('window_size', type=QSize)
         dock_layout = settings.value('dock_layout')
+        self._restored_window_size: QSize | None = None
         if geometry is not None:
-            self.restoreGeometry(geometry)
+            if self.restoreGeometry(geometry):
+                self._restored_window_size = self.size()
+        if isinstance(saved_window_size, QSize) and saved_window_size.isValid():
+            self._restored_window_size = saved_window_size
+
+        state_restored = False
         if dock_layout is not None:
-            self.restoreState(dock_layout)
+            state_restored = self.restoreState(dock_layout, WINDOW_LAYOUT_STATE_VERSION)
+            if not state_restored:
+                state_restored = self.restoreState(dock_layout)
+
+        dock_sizes: dict[str, QSize] = {}
+        for dock in self._managed_docks():
+            name = dock.objectName().strip()
+            if not name:
+                continue
+            settings.beginGroup(f'docks/{name}')
+            saved_size = settings.value('size', type=QSize)
+            saved_area = settings.value('area')
+            floating = settings.value('floating', dock.isFloating(), type=bool)
+            visible = settings.value('visible', not dock.isHidden(), type=bool)
+            floating_geometry = settings.value('floating_geometry')
+            settings.endGroup()
+
+            if isinstance(saved_size, QSize) and saved_size.isValid():
+                dock_sizes[name] = saved_size
+            if not state_restored and saved_area is not None:
+                try:
+                    self.addDockWidget(Qt.DockWidgetArea(int(saved_area)), dock)
+                except (TypeError, ValueError):
+                    pass
+            dock.setFloating(bool(floating))
+            if floating and floating_geometry is not None:
+                dock.restoreGeometry(floating_geometry)
+            dock.setVisible(bool(visible))
+
+        settings.sync()
+        self._restored_dock_sizes = dock_sizes
+        self._apply_restored_dock_sizes()
+
+    def _apply_restored_dock_sizes(self) -> None:
+        saved_sizes = getattr(self, '_restored_dock_sizes', {})
+        if not saved_sizes:
+            return
+        for area in (
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+            Qt.DockWidgetArea.RightDockWidgetArea,
+        ):
+            docks = [
+                dock
+                for dock in self._managed_docks()
+                if not dock.isFloating() and self.dockWidgetArea(dock) == area and dock.objectName() in saved_sizes
+            ]
+            if docks:
+                self.resizeDocks(docks, [saved_sizes[dock.objectName()].width() for dock in docks], Qt.Orientation.Horizontal)
+        for area in (
+            Qt.DockWidgetArea.TopDockWidgetArea,
+            Qt.DockWidgetArea.BottomDockWidgetArea,
+        ):
+            docks = [
+                dock
+                for dock in self._managed_docks()
+                if not dock.isFloating() and self.dockWidgetArea(dock) == area and dock.objectName() in saved_sizes
+            ]
+            if docks:
+                self.resizeDocks(docks, [saved_sizes[dock.objectName()].height() for dock in docks], Qt.Orientation.Vertical)
+        if self._restored_window_size is not None and not self.isMaximized() and not self.isFullScreen():
+            self.resize(self._restored_window_size)
+
+    def _finish_window_layout_restore(self) -> None:
+        self._apply_restored_dock_sizes()
+        self._window_layout_restore_pending = False
+
+    def _schedule_window_layout_save(self, *_args) -> None:
+        if self._window_layout_restore_pending or not self.isVisible():
+            return
+        if os.getenv('PYTEST_CURRENT_TEST') and not os.getenv('NEURALIMAGE_SETTINGS_DIR'):
+            return
+        self._window_layout_save_timer.start()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._window_layout_restore_pending:
+            QTimer.singleShot(0, self._finish_window_layout_restore)
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        self._schedule_window_layout_save()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._schedule_window_layout_save()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched in self._managed_docks() and event.type() in {
+            QEvent.Type.Move,
+            QEvent.Type.Resize,
+            QEvent.Type.Show,
+            QEvent.Type.Hide,
+        }:
+            self._schedule_window_layout_save()
+        return super().eventFilter(watched, event)
 
     def _create_menubar(self, t: dict[str, str]):
         menubar = self.menuBar()
@@ -851,7 +1098,7 @@ class MainView(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        return
+        self._schedule_window_layout_save()
 
     def apply_work_mode(self, mode: str) -> None:
         self._current_work_mode = str(mode or '').strip()
@@ -1117,7 +1364,6 @@ class MainView(QMainWindow):
         new_label = QLabel(message_text)
         layout.addWidget(new_label)
         self._last_status_message = message_text
-        self.statusBar().showMessage(message_text)
         while layout.count() > MAX_LOG_MESSAGES:
             item = layout.takeAt(0)
             old_widget = item.widget() if item is not None else None
@@ -1357,8 +1603,8 @@ class MainView(QMainWindow):
         self._active_progress_mode = resolved_mode
         self.training_progress_widget.setVisible(resolved_mode == "train")
         self.recognition_progress_widget.setVisible(resolved_mode == "recognition")
-        self.validation_quality_label.setVisible(resolved_mode != "recognition")
-        self.performance_label.setVisible(resolved_mode != "recognition")
+        self.validation_quality_label.setVisible(True)
+        self.performance_label.setVisible(True)
 
     def _set_training_batch_progress_bar(self) -> None:
         current, total = self._last_batch_progress
@@ -1437,14 +1683,18 @@ class MainView(QMainWindow):
             qimg = QImage(arr.data, arr.shape[1], arr.shape[0], arr.strides[0], QImage.Format.Format_RGB888).copy()
         else:
             return
-        pix = QPixmap.fromImage(qimg).scaled(
-            widget.width(),
-            widget.height(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
         widget.setText("")
-        widget.setPixmap(pix)
+        pix = QPixmap.fromImage(qimg)
+        if isinstance(widget, ResponsivePreviewLabel):
+            widget.set_source_pixmap(pix)
+            return
+        widget.setPixmap(
+            pix.scaled(
+                widget.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
 
     def _set_start_enabled(self, ok: bool):
         self.btn_start.setEnabled(True)
@@ -1513,7 +1763,7 @@ class MainView(QMainWindow):
         self.queue_list.clear()
         for row, item in enumerate(normalized_items):
             list_item = QListWidgetItem()
-            list_item.setSizeHint(QSize(860, 48))
+            list_item.setSizeHint(QSize(920, 66))
             status = str(item.get('status', 'waiting'))
             flags = list_item.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
             if status not in {'in_progress', 'finished_success', 'finished_error'}:
@@ -1535,12 +1785,19 @@ class MainView(QMainWindow):
             max(0, min(previous_scroll_value, self.queue_list.verticalScrollBar().maximum()))
         )
 
-    def update_task_queue_item_progress(self, task_id: int, current: int, total: int) -> None:
+    def update_task_queue_item_progress(
+        self,
+        task_id: int,
+        current: int,
+        total: int,
+        progress_kind: str = '',
+    ) -> None:
         for row, item in enumerate(self._queue_items):
             if int(item.get('task_id', -1)) != int(task_id):
                 continue
             item['progress_current'] = int(current)
             item['progress_total'] = int(total)
+            item['progress_kind'] = str(progress_kind or '')
             list_item = self.queue_list.item(row)
             widget = self.queue_list.itemWidget(list_item) if list_item is not None else None
             if isinstance(widget, TaskQueueRowWidget):
@@ -1693,7 +1950,7 @@ class MainView(QMainWindow):
         self.preview_group.setTitle(t["preview_group"])
         self._set_preview_frame_name(self._current_preview_sample_name)
         self._set_preview_mode(self._current_preview_mode)
-        self.statusBar().showMessage(self._last_status_message)
+        self.statusBar().clearMessage()
         if self._settings_menu is not None:
             self._settings_menu.setTitle(t["menu_settings"])
         if self._file_menu is not None:
@@ -1833,14 +2090,50 @@ class MainView(QMainWindow):
 
     def closeEvent(self, event):
         if self._close_allowed:
-            settings = _main_window_qsettings()
-            settings.setValue('window_geometry', self.saveGeometry())
-            settings.setValue('dock_layout', self.saveState())
-            settings.sync()
+            self._window_layout_save_timer.stop()
+            self._save_window_layout()
             event.accept()
             return
         self.request_close.emit()
         event.ignore()
+
+    def update_task_queue_item_training_progress(
+        self,
+        task_id: int,
+        *,
+        epoch_current: int | None = None,
+        epoch_total: int | None = None,
+        batch_current: int | None = None,
+        batch_total: int | None = None,
+        validation_current: int | None = None,
+        validation_total: int | None = None,
+    ) -> None:
+        for row, item in enumerate(self._queue_items):
+            if int(item.get('task_id', -1)) != int(task_id):
+                continue
+            if epoch_current is not None:
+                item['epoch_progress_current'] = max(0, int(epoch_current))
+            if epoch_total is not None:
+                item['epoch_progress_total'] = max(0, int(epoch_total))
+            if batch_current is not None:
+                item['batch_progress_current'] = max(0, int(batch_current))
+            if batch_total is not None:
+                item['batch_progress_total'] = max(0, int(batch_total))
+            if validation_current is not None:
+                item['validation_progress_current'] = max(0, int(validation_current))
+            if validation_total is not None:
+                item['validation_progress_total'] = max(0, int(validation_total))
+            if validation_current is not None:
+                item['progress_kind'] = 'validation_progress'
+            elif batch_current is not None:
+                item['progress_kind'] = 'train_batch_progress'
+            else:
+                item['progress_kind'] = 'train_epoch_progress'
+            list_item = self.queue_list.item(row)
+            widget = self.queue_list.itemWidget(list_item) if list_item is not None else None
+            if isinstance(widget, TaskQueueRowWidget):
+                widget.update_item(row, item, self._main_texts())
+            return
 
     def allow_close(self):
         self._close_allowed = True

@@ -55,7 +55,6 @@ from neuralimage.view.settings_panel_widgets import (
     create_double_spinbox,
     create_min_max_widget,
     create_slider,
-    create_size_widget,
     create_spinbox,
 )
 
@@ -231,6 +230,7 @@ class SettingsPanel(QDockWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName('settingsDock')
         texts = get_ui_section('settings_panel')
         self._texts = texts if isinstance(texts, dict) else {}
         self._content_widget = QWidget()
@@ -241,6 +241,7 @@ class SettingsPanel(QDockWidget):
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
         self.models: list[str] = []
@@ -624,6 +625,18 @@ class SettingsPanel(QDockWidget):
         )
         self.recognition_patch_x_size = self.recognition_patch_size_widget.width_spinbox
         self.recognition_patch_y_size = self.recognition_patch_size_widget.height_spinbox
+        self.recognition_tab_patch_size_widget = AxisResizeWidget(
+            minimum_pixels=SAMPLE_SIZE_MIN,
+            maximum_pixels=SAMPLE_SIZE_MAX,
+            single_step=10,
+        )
+        self._recognition_patch_copy_sync_guard = False
+        self.recognition_patch_size_widget.sizeChanged.connect(
+            self._sync_recognition_patch_copy_from_primary
+        )
+        self.recognition_tab_patch_size_widget.sizeChanged.connect(
+            self._sync_recognition_patch_primary_from_copy
+        )
         self.random_patch_size_check_box = QCheckBox('')
         self.random_patch_min_size_widget = AxisResizeWidget(
             target_width=128,
@@ -860,8 +873,7 @@ class SettingsPanel(QDockWidget):
         row_widget = self._field_rows.get(field)
         if row_widget is not None:
             row_widget.setVisible(visible)
-        else:
-            field.setVisible(visible)
+        field.setVisible(visible)
 
     def _set_fields_enabled(self, fields: Iterable[QWidget], enabled: bool) -> None:
         for field in fields:
@@ -1567,11 +1579,21 @@ class SettingsPanel(QDockWidget):
             alignment=Qt.AlignmentFlag.AlignCenter,
         )
 
+        self.recognition_tab_patch_size_groupbox = QGroupBox('')
+        recognition_tab_patch_layout = QVBoxLayout(self.recognition_tab_patch_size_groupbox)
+        recognition_tab_patch_layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
+        recognition_tab_patch_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        recognition_tab_patch_layout.addWidget(
+            self.recognition_tab_patch_size_widget,
+            alignment=Qt.AlignmentFlag.AlignCenter,
+        )
+
         # Size controls use titled groups instead of a description label on the left.
         # Keep the field-row mapping so existing visibility and enablement policy
         # applies to the complete group, including its title.
         self._field_rows[self.train_patch_size_widget] = self.train_patch_size_groupbox
         self._field_rows[self.recognition_patch_size_widget] = self.recognition_patch_size_groupbox
+        self._field_rows[self.recognition_tab_patch_size_widget] = self.recognition_tab_patch_size_groupbox
         self._field_rows[self.random_patch_min_size_widget] = self.random_patch_min_size_groupbox
         self._field_rows[self.random_patch_max_size_widget] = self.random_patch_max_size_groupbox
 
@@ -1579,8 +1601,15 @@ class SettingsPanel(QDockWidget):
         self.general_form = self._create_form_layout()
         self.general_groupbox.setLayout(self.general_form)
         self._add_labeled_row(self.general_form, self.nn_model_type, 'model')
+        self.training_feature_toggles_widget = QWidget()
+        self.training_feature_toggles_layout = QHBoxLayout(self.training_feature_toggles_widget)
+        self.training_feature_toggles_layout.setContentsMargins(0, 0, 0, 0)
+        self.training_feature_toggles_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        self.training_feature_toggles_layout.addWidget(self.early_stopping_check_box)
+        self.training_feature_toggles_layout.addWidget(self.validation_check_box)
+        self.training_feature_toggles_layout.addStretch(1)
+        self.general_form.addRow(self.training_feature_toggles_widget)
         self._add_labeled_row(self.general_form, self.epochs_spinbox, 'epochs')
-        self.general_form.addRow(self.early_stopping_check_box)
         self.general_form.addRow(self.early_stopping_control_warning)
         self._add_labeled_row(self.general_form, self.color_type, 'image_format')
         self.patch_size_section_widget = QWidget()
@@ -1806,7 +1835,6 @@ class SettingsPanel(QDockWidget):
         self.validation_groupbox = QGroupBox('')
         self.validation_form = self._create_form_layout()
         self.validation_groupbox.setLayout(self.validation_form)
-        self.validation_form.addRow(self.validation_check_box)
         self._add_labeled_row(self.validation_form, self.validation_mode_combo, 'validation_source')
         self._add_labeled_row(self.validation_form, self.validation_spinbox, 'validation_percent')
         self._add_labeled_row(self.validation_form, self.validation_image_path_label, 'validation_image_path')
@@ -1862,6 +1890,7 @@ class SettingsPanel(QDockWidget):
         self.recognition_page_layout = QVBoxLayout(self.recognition_page)
         self.recognition_page_layout.setContentsMargins(0, 0, 0, 0)
         self.recognition_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        self.recognition_page_layout.addWidget(self.recognition_tab_patch_size_groupbox)
         self.recognition_page_layout.addWidget(self.recognition_groupbox)
         self.recognition_page_layout.addStretch(1)
 
@@ -2712,7 +2741,10 @@ class SettingsPanel(QDockWidget):
         self.random_patch_size_check_box.setEnabled(online_mode)
         if enabled and self.sync_patch_sizes_check_box.isChecked():
             self.sync_patch_sizes_check_box.setChecked(False)
+        if enabled and self.torch_compile_check_box.isChecked():
+            self.torch_compile_check_box.setChecked(False)
         self.sync_patch_sizes_check_box.setEnabled(self._recognition_controls_applicable and not enabled)
+        self.torch_compile_check_box.setEnabled(self._training_controls_applicable and not enabled)
         self._set_field_visible(self.random_patch_min_size_widget, enabled)
         self._set_field_visible(self.random_patch_max_size_widget, enabled)
         self._set_field_enabled(self.random_patch_min_size_widget, enabled)
@@ -3083,9 +3115,44 @@ class SettingsPanel(QDockWidget):
                 self.recognition_patch_size_widget,
                 self._recognition_controls_applicable and not patch_sync,
             )
+            self._set_field_enabled(
+                self.recognition_tab_patch_size_widget,
+                self._recognition_controls_applicable,
+            )
             self._sync_patch_size_layout(random_enabled=random_enabled, patch_sync=patch_sync)
         finally:
             self._patch_size_sync_guard = False
+
+    def _sync_recognition_patch_copy_from_primary(self, width: int, height: int) -> None:
+        if self._recognition_patch_copy_sync_guard:
+            return
+        if self.recognition_tab_patch_size_widget.target_size() == QSize(width, height):
+            return
+        self._recognition_patch_copy_sync_guard = True
+        try:
+            self.recognition_tab_patch_size_widget.set_target_size(width, height)
+        finally:
+            self._recognition_patch_copy_sync_guard = False
+
+    def _sync_recognition_patch_primary_from_copy(self, width: int, height: int) -> None:
+        if self._recognition_patch_copy_sync_guard:
+            return
+        self._recognition_patch_copy_sync_guard = True
+        try:
+            random_enabled = (
+                self._training_controls_applicable
+                and bool(self.no_cut_dataset_type.isChecked())
+                and bool(self.random_patch_size_check_box.isChecked())
+            )
+            patch_sync = bool(self.sync_patch_sizes_check_box.isChecked()) and not random_enabled
+            if patch_sync:
+                self.train_patch_size_widget.set_target_size(width, height)
+            self.recognition_patch_size_widget.set_target_size(width, height)
+        finally:
+            self._recognition_patch_copy_sync_guard = False
+        if patch_sync:
+            self.sample_size_changed.emit()
+        self.optimizer_settings_changed.emit()
 
     @staticmethod
     def _normalize_model_group(values: Iterable[str] | str | None) -> list[str]:

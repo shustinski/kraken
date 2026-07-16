@@ -15,7 +15,7 @@ def _build_handler(dataloader_num_workers: int = -1, *, batch_size: int = 8, cut
 
 
 def test_resolve_dataloader_workers_uses_explicit_override(monkeypatch):
-    monkeypatch.setattr('model.general_neural_handler._is_debugger_attached', lambda: False)
+    monkeypatch.setattr('neuralimage.model.general_neural_handler._is_debugger_attached', lambda: False)
 
     handler = _build_handler(dataloader_num_workers=4)
 
@@ -23,16 +23,27 @@ def test_resolve_dataloader_workers_uses_explicit_override(monkeypatch):
 
 
 def test_resolve_dataloader_workers_keeps_auto_mode_when_override_is_negative(monkeypatch):
-    monkeypatch.setattr('model.general_neural_handler._is_debugger_attached', lambda: False)
-    monkeypatch.setattr('model.general_neural_handler.os.cpu_count', lambda: 12)
+    monkeypatch.setattr('neuralimage.model.general_neural_handler._is_debugger_attached', lambda: False)
+    monkeypatch.setattr('neuralimage.model.general_neural_handler.os.cpu_count', lambda: 12)
+    monkeypatch.setattr('neuralimage.model.general_neural_handler.sys.platform', 'linux')
 
     handler = _build_handler(dataloader_num_workers=-1, batch_size=8, cut_mode='disk')
 
-    assert handler._resolve_dataloader_workers() == 8
+    assert handler._resolve_dataloader_workers() == 11
+
+
+def test_resolve_dataloader_workers_uses_safe_auto_mode_on_windows(monkeypatch):
+    monkeypatch.setattr('neuralimage.model.general_neural_handler._is_debugger_attached', lambda: False)
+    monkeypatch.setattr('neuralimage.model.general_neural_handler.os.cpu_count', lambda: 32)
+    monkeypatch.setattr('neuralimage.model.general_neural_handler.sys.platform', 'win32')
+
+    handler = _build_handler(dataloader_num_workers=-1, batch_size=8, cut_mode='disk')
+
+    assert handler._resolve_dataloader_workers() == 0
 
 
 def test_resolve_dataloader_workers_forces_zero_under_debugger(monkeypatch):
-    monkeypatch.setattr('model.general_neural_handler._is_debugger_attached', lambda: True)
+    monkeypatch.setattr('neuralimage.model.general_neural_handler._is_debugger_attached', lambda: True)
 
     handler = _build_handler(dataloader_num_workers=6)
 
@@ -67,8 +78,8 @@ def test_create_dataloader_disables_persistent_workers_for_epoch_mutating_datase
         hard_mining=SimpleNamespace(enabled=False),
     )
     monkeypatch.setattr(handler, '_resolve_dataloader_workers', lambda: 2)
-    monkeypatch.setattr('model.general_neural_handler.DataLoader', _fake_dataloader)
-    monkeypatch.setattr('model.general_neural_handler.torch.cuda.is_available', lambda: False)
+    monkeypatch.setattr('neuralimage.model.general_neural_handler.DataLoader', _fake_dataloader)
+    monkeypatch.setattr('neuralimage.model.general_neural_handler.torch.cuda.is_available', lambda: False)
 
     handler._create_dataloader(_DatasetWithEpochState(), _DatasetWithEpochState())
 

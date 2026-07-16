@@ -354,6 +354,10 @@ class NoCutDataset(Dataset):
     def __len__(self):
         return self._samples_amount
 
+    def validation_frame_lengths(self) -> tuple[int, ...]:
+        """Return stable patch counts for sequential frame-wise evaluation."""
+        return tuple(max(0, int(length)) for length in self._frame_lengths)
+
     def describe_sample(self, index: int) -> str:
         frame, part = index_in_list(int(index), self._lookup_len_list)
         image_path, _label_path = self.samples[frame]

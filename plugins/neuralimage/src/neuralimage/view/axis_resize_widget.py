@@ -14,11 +14,12 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QSizePolicy,
-    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
+
+from neuralimage.view.settings_panel_widgets import NoWheelSpinBox
 
 
 class _ChainLinkButton(QToolButton):
@@ -153,12 +154,12 @@ class AxisResizeWidget(QWidget):
         self.size_lock_button.setAccessibleName(self._localized_texts["linked"])
         self.size_lock_button.setFixedSize(44, 44)
 
-    def _create_spinbox(self, value: int, accessible_name: str) -> QSpinBox:
-        spinbox = QSpinBox()
+    def _create_spinbox(self, value: int, accessible_name: str) -> NoWheelSpinBox:
+        spinbox = NoWheelSpinBox()
         spinbox.setObjectName("dimensionSpinBox")
         spinbox.setRange(self._minimum_pixels, self._maximum_pixels)
         spinbox.setSingleStep(self._single_step)
-        spinbox.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        spinbox.setButtonSymbols(NoWheelSpinBox.ButtonSymbols.NoButtons)
         spinbox.setKeyboardTracking(True)
         spinbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
         spinbox.setAccessibleName(accessible_name)

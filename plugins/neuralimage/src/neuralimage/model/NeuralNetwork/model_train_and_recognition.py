@@ -89,6 +89,12 @@ CHECKPOINT_SUFFIX = '.ckpt'
 STOP_TOKEN = '__STOP__'
 # Global profiler switch (set in code, not via env var).
 TRAINING_PROFILER_ENABLED = False
+# Diagnostic profiler for the variable-size patch path. Change only this
+# constant to True, reproduce the slowdown, then inspect profiles/ next to the
+# model. It captures a Chrome trace plus per-batch/per-shape CSV timings.
+RANDOM_PATCH_PROFILING_ENABLED = False
+RANDOM_PATCH_PROFILE_BATCHES = 40
+RANDOM_PATCH_PROFILE_LOG_EVERY = 5
 FOCAL_LOSS_ALPHA = 0.25
 FOCAL_LOSS_GAMMA = 2.0
 FOCAL_TVERSKY_ALPHA = 0.3
@@ -96,6 +102,7 @@ FOCAL_TVERSKY_BETA = 0.7
 BOUNDARY_LOSS_KERNEL_SIZE = 3
 CLDICE_SKELETON_ITERATIONS = 16
 VALIDATION_THRESHOLD_CANDIDATES: tuple[float, ...] = tuple(value / 100.0 for value in range(10, 95, 5))
+VALIDATION_CHECK_INTERVAL_BATCHES = 10_000
 
 
 class _CombinedOptimizer(optim.Optimizer):
@@ -196,6 +203,9 @@ class _RecordingQueue:
         except Exception:
             pass
         self._queue.put(item)
+
+    def log(self, message: str) -> None:
+        self.put(['logging', message])
 
 
 def _drain_process_queue(
@@ -512,7 +522,6 @@ class _RandomArtifactBank:
         self._condition = threading.Condition()
         self._ready_event = threading.Event()
         self._stop_event = threading.Event()
-        self._pause_event = mp.Event()
         self._thread: threading.Thread | None = None
 
     @property
@@ -914,6 +923,7 @@ class ModelTrainer(threading.Thread):
         self._log_update_frequency = max(0, int(log_update_frequency))
         self._save_validation_binary_images = bool(save_validation_binary_images)
         self._stop_event = threading.Event()
+        self._pause_event = mp.Event()
         self.message_queue = mp.Queue()
         self.succeeded = False
         self.error_message: str | None = None
@@ -1149,6 +1159,7 @@ class TrainerProcess(mp.Process):
         self._resume_epoch_torch_rng_state: torch.Tensor | None = None
         self._resume_runtime_torch_rng_state: torch.Tensor | None = None
         self._training_profiler_config = self._resolve_training_profiler_config()
+        self._random_patch_profile_rows: list[dict[str, int | float]] = []
         self._uncompiled_model: nn.Module | None = None
         self._torch_compile_active = False
         self._recommended_inference_threshold = 0.5
@@ -1164,9 +1175,11 @@ class TrainerProcess(mp.Process):
         self._global_batch = 0
         self._automatic_early_stopping_policy: EarlyStoppingPolicy | None = None
         self._automatic_early_stopping_config: EarlyStoppingRuntimeConfig | None = None
+        self._latest_validation_result: dict[str, float] | None = None
+        self._latest_validation_global_batch: int | None = None
         self._checkpoint_manager = CheckpointManager(
             self._checkpoint_path(),
-            logger=lambda message: self._bus.put(['logging', message]),
+            logger=self._bus.log,
         )
 
     @property
@@ -3109,9 +3122,12 @@ class TrainerProcess(mp.Process):
         if val_dataset_len == 0:
             return None
 
+        was_training = bool(self._model.training)
         self._model.eval()
         val_loss = 0.0
         val_loss_samples = 0
+        frame_loss_sums: dict[str, float] = {}
+        frame_loss_counts: dict[str, int] = {}
         correct = 0
         total = 0
         true_positive = 0.0
@@ -3131,8 +3147,27 @@ class TrainerProcess(mp.Process):
         validation_export_cache = self._create_validation_export_cache()
         export_saved_images = 0
         evaluation_model = self._base_model if isinstance(self._model, DDP) else self._model
+        try:
+            validation_total = max(1, int(len(self._val_dataloader)))
+        except TypeError:
+            validation_batch_size = max(1, int(getattr(self._val_dataloader, 'batch_size', 1) or 1))
+            validation_total = max(1, math.ceil(val_dataset_len / validation_batch_size))
+        base_validation_dataset = self._unwrap_validation_dataset(self._val_dataloader.dataset)
+        frame_lengths_fn = getattr(base_validation_dataset, 'validation_frame_lengths', None)
+        if callable(frame_lengths_fn):
+            validation_frame_total = len(frame_lengths_fn())
+        else:
+            validation_frame_total = len(getattr(base_validation_dataset, 'samples', ())) or val_dataset_len
+        self._bus.put([
+            'metrics',
+            {'type': 'validation_progress', 'current': 0, 'total': validation_total},
+        ])
+        self._bus.put([
+            'logging',
+            f'Validation epoch {epoch + 1} started: frames={validation_frame_total}, batches={validation_total}.',
+        ])
         with torch.no_grad():
-            for batch in self._val_dataloader:
+            for validation_index, batch in enumerate(self._val_dataloader):
                 data, target, _sample_indices = self._split_batch(batch)
                 inputs = self._move_batch_input_to_device(data, device)
                 image = self._extract_local_image(inputs)
@@ -3144,10 +3179,35 @@ class TrainerProcess(mp.Process):
 
                 if not self._is_finite_tensor(loss):
                     skipped_non_finite_batches += 1
+                    self._bus.put([
+                        'metrics',
+                        {
+                            'type': 'validation_progress',
+                            'current': int(validation_index + 1),
+                            'total': validation_total,
+                        },
+                    ])
                     continue
 
                 val_loss += loss.item() * image.size(0)
                 val_loss_samples += int(image.size(0))
+                sample_losses = per_sample_loss.detach().float().cpu().flatten()
+                if _sample_indices is not None:
+                    if isinstance(_sample_indices, torch.Tensor):
+                        resolved_indices = [int(value) for value in _sample_indices.detach().cpu().flatten().tolist()]
+                    else:
+                        resolved_indices = [int(value) for value in _sample_indices]
+                else:
+                    resolved_indices = []
+                validation_dataset = getattr(self._val_dataloader, 'dataset', None)
+                frame_key_fn = getattr(validation_dataset, 'frame_key', None)
+                for sample_offset, sample_loss in enumerate(sample_losses.tolist()):
+                    if sample_offset < len(resolved_indices) and callable(frame_key_fn):
+                        frame_key = str(frame_key_fn(resolved_indices[sample_offset]))
+                    else:
+                        frame_key = f'batch_{validation_index:08d}'
+                    frame_loss_sums[frame_key] = frame_loss_sums.get(frame_key, 0.0) + float(sample_loss)
+                    frame_loss_counts[frame_key] = frame_loss_counts.get(frame_key, 0) + 1
                 probs = torch.sigmoid(self._sanitize_outputs_for_loss(outputs))
                 self._collect_validation_export_batch(
                     validation_export_cache,
@@ -3173,6 +3233,14 @@ class TrainerProcess(mp.Process):
                     counts['tp'] += float((threshold_preds_f * label_f).sum().item())
                     counts['fp'] += float((threshold_preds_f * (1.0 - label_f)).sum().item())
                     counts['fn'] += float(((1.0 - threshold_preds_f) * label_f).sum().item())
+                self._bus.put([
+                    'metrics',
+                    {
+                        'type': 'validation_progress',
+                        'current': int(validation_index + 1),
+                        'total': validation_total,
+                    },
+                ])
 
         if skipped_non_finite_batches > 0:
             self._bus.put([
@@ -3185,9 +3253,19 @@ class TrainerProcess(mp.Process):
             validation_export_cache = None
         if val_loss_samples <= 0:
             self._bus.put(['logging', 'Validation warning: all batches were skipped due to non-finite loss.'])
+            self._model.train(was_training)
             return None
 
-        avg_val_loss = val_loss / val_loss_samples
+        frame_losses = [
+            frame_loss_sums[frame_key] / frame_loss_counts[frame_key]
+            for frame_key in frame_loss_sums
+            if frame_loss_counts.get(frame_key, 0) > 0
+        ]
+        avg_val_loss = (
+            sum(frame_losses) / len(frame_losses)
+            if frame_losses
+            else val_loss / val_loss_samples
+        )
         base_metrics = self._compute_binary_metrics(
             true_positive=true_positive,
             false_positive=false_positive,
@@ -3214,6 +3292,7 @@ class TrainerProcess(mp.Process):
             threshold=float(best_threshold),
             export_cache=validation_export_cache,
         )
+        self._model.train(was_training)
 
         return {
             'loss': float(avg_val_loss),
@@ -3416,7 +3495,19 @@ class TrainerProcess(mp.Process):
             arr = np.zeros_like(arr)
         return np.clip(arr, 0, 255).astype(np.uint8)
 
+    def _uses_variable_patch_sizes(self) -> bool:
+        batch_sampler = getattr(getattr(self, '_train_dataloader', None), 'batch_sampler', None)
+        return bool(getattr(batch_sampler, 'variable_patch_sizes', False))
+
     def _try_compile_model(self, is_main_process: bool = True, device: torch.device | None = None) -> None:
+        if self._uses_variable_patch_sizes():
+            self._torch_compile_active = False
+            if is_main_process:
+                self._bus.put([
+                    'logging',
+                    'torch.compile disabled: random patch sizes require dynamic input geometry.',
+                ])
+            return
         if bool(getattr(sys, 'frozen', False)):
             self._torch_compile_active = False
             if is_main_process:
@@ -3585,8 +3676,13 @@ class TrainerProcess(mp.Process):
             return max(minimum, int(default))
 
     def _resolve_training_profiler_config(self) -> _TrainingProfilerConfig:
-        enabled = bool(TRAINING_PROFILER_ENABLED)
-        max_batches = self._env_int('NEURALIMAGE_TRAIN_PROFILE_STEPS', 40, minimum=1)
+        random_patch_profile = bool(RANDOM_PATCH_PROFILING_ENABLED and self._uses_variable_patch_sizes())
+        enabled = bool(TRAINING_PROFILER_ENABLED or random_patch_profile)
+        max_batches = (
+            max(1, int(RANDOM_PATCH_PROFILE_BATCHES))
+            if random_patch_profile
+            else self._env_int('NEURALIMAGE_TRAIN_PROFILE_STEPS', 40, minimum=1)
+        )
         row_limit = self._env_int('NEURALIMAGE_TRAIN_PROFILE_ROW_LIMIT', 15, minimum=5)
         output_dir_name = str(os.getenv('NEURALIMAGE_TRAIN_PROFILE_DIR', 'profiles')).strip() or 'profiles'
         return _TrainingProfilerConfig(
@@ -3598,6 +3694,101 @@ class TrainerProcess(mp.Process):
             row_limit=row_limit,
             output_dir_name=output_dir_name,
         )
+
+    def _random_patch_profiling_active(self) -> bool:
+        return bool(RANDOM_PATCH_PROFILING_ENABLED and self._uses_variable_patch_sizes())
+
+    def _profile_region(self, name: str) -> ContextManager[Any]:
+        if not self._random_patch_profiling_active() or not hasattr(torch, 'profiler'):
+            return nullcontext()
+        return torch.profiler.record_function(f'random_patch/{name}')
+
+    def _record_random_patch_profile_batch(
+        self,
+        *,
+        epoch: int,
+        batch_index: int,
+        batch: _PreparedTrainBatch,
+        step_result: _TrainStepResult,
+        batch_total_ms: float,
+    ) -> None:
+        if not self._random_patch_profiling_active():
+            return
+        rows = self._random_patch_profile_rows
+        if len(rows) >= max(1, int(RANDOM_PATCH_PROFILE_BATCHES)):
+            return
+        height, width = (int(value) for value in batch.image.shape[-2:])
+        batch_size = int(batch.image.shape[0])
+        row: dict[str, int | float] = {
+            'epoch': int(epoch + 1),
+            'batch': int(batch_index + 1),
+            'batch_size': batch_size,
+            'width': width,
+            'height': height,
+            'pixels_per_object': width * height,
+            'megapixels_per_batch': (batch_size * width * height) / 1_000_000.0,
+            'data_wait_ms': float(batch.data_wait_ms),
+            'augmentation_ms': float(batch.augmentation_ms),
+            'forward_ms': float(step_result.forward_ms),
+            'backward_ms': float(step_result.backward_ms),
+            'optimizer_ms': float(step_result.optimizer_ms),
+            'total_ms': float(batch_total_ms),
+            'objects_per_second': (batch_size * 1000.0) / max(float(batch_total_ms), 1e-9),
+            'cuda_allocated_mb': 0.0,
+            'cuda_reserved_mb': 0.0,
+        }
+        if batch.image.is_cuda:
+            device = batch.image.device
+            row['cuda_allocated_mb'] = torch.cuda.memory_allocated(device) / (1024.0 * 1024.0)
+            row['cuda_reserved_mb'] = torch.cuda.memory_reserved(device) / (1024.0 * 1024.0)
+        rows.append(row)
+        log_every = max(1, int(RANDOM_PATCH_PROFILE_LOG_EVERY))
+        if len(rows) == 1 or len(rows) % log_every == 0:
+            self._bus.put([
+                'logging',
+                (
+                    f'Random-patch profile [{len(rows)}/{RANDOM_PATCH_PROFILE_BATCHES}]: '
+                    f'{width}x{height}, batch={batch_size}, total={batch_total_ms:.2f} ms, '
+                    f'data={batch.data_wait_ms:.2f}, aug={batch.augmentation_ms:.2f}, '
+                    f'forward={step_result.forward_ms:.2f}, backward={step_result.backward_ms:.2f}, '
+                    f'optimizer={step_result.optimizer_ms:.2f} ms.'
+                ),
+            ])
+            self._save_random_patch_profile_csv()
+
+    def _save_random_patch_profile_csv(self) -> None:
+        rows = getattr(self, '_random_patch_profile_rows', [])
+        if not rows:
+            return
+        profiler_config = getattr(self, '_training_profiler_config', None)
+        output_dir_name = getattr(profiler_config, 'output_dir_name', 'profiles')
+        profile_dir = self._save_path.parent / output_dir_name
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        detail_path = profile_dir / 'random_patch_batches.csv'
+        with detail_path.open('w', encoding='utf-8', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+
+        grouped: dict[tuple[int, int], list[dict[str, int | float]]] = {}
+        for row in rows:
+            grouped.setdefault((int(row['width']), int(row['height'])), []).append(row)
+        summary_path = profile_dir / 'random_patch_shapes.csv'
+        timing_names = ('data_wait_ms', 'augmentation_ms', 'forward_ms', 'backward_ms', 'optimizer_ms', 'total_ms')
+        with summary_path.open('w', encoding='utf-8', newline='') as stream:
+            fieldnames = ['width', 'height', 'batches', *[f'avg_{name}' for name in timing_names]]
+            writer = csv.DictWriter(stream, fieldnames=fieldnames)
+            writer.writeheader()
+            for (width, height), shape_rows in sorted(grouped.items()):
+                writer.writerow({
+                    'width': width,
+                    'height': height,
+                    'batches': len(shape_rows),
+                    **{
+                        f'avg_{name}': sum(float(row[name]) for row in shape_rows) / len(shape_rows)
+                        for name in timing_names
+                    },
+                })
 
     def _start_training_profiler(
         self,
@@ -3655,6 +3846,15 @@ class TrainerProcess(mp.Process):
                 f'trace={trace_path.name}'
             ),
         ])
+        if self._random_patch_profiling_active():
+            self._bus.put([
+                'logging',
+                (
+                    'Random-patch diagnostic profiling enabled in code. '
+                    f'Outputs: {profile_dir / "random_patch_batches.csv"}, '
+                    f'{profile_dir / "random_patch_shapes.csv"}, {trace_path}.'
+                ),
+            ])
         return _ActiveTrainProfiler(
             profiler=profiler,
             steps_left=steps,
@@ -3696,9 +3896,15 @@ class TrainerProcess(mp.Process):
 
     def _prepare_training_device(self, device: torch.device, *, is_main_process: bool, distributed: bool) -> None:
         if device.type == 'cuda':
-            torch.backends.cudnn.benchmark = True
+            variable_patch_sizes = self._uses_variable_patch_sizes()
+            torch.backends.cudnn.benchmark = not variable_patch_sizes
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
+            if variable_patch_sizes and is_main_process:
+                self._bus.put([
+                    'logging',
+                    'cuDNN benchmark disabled: random patch sizes change input geometry between batches.',
+                ])
         if not distributed:
             self._try_compile_model(is_main_process=is_main_process, device=device)
 
@@ -3936,6 +4142,23 @@ class TrainerProcess(mp.Process):
                 train_size=train_size,
                 batches_per_epoch=batches_per_epoch,
             )
+            self._global_batch = max(0, int(checkpoint.get('global_batch', start_epoch * batches_per_epoch)))
+            self._epochs = int(automatic_config.max_epochs)
+            if self._val_dataloader is not None:
+                checks_per_epoch = max(1, math.ceil(batches_per_epoch / VALIDATION_CHECK_INTERVAL_BATCHES))
+                automatic_config = EarlyStoppingRuntimeConfig(
+                    train_size=automatic_config.train_size,
+                    batches_per_epoch=automatic_config.batches_per_epoch,
+                    control_size=automatic_config.control_size,
+                    check_every_batches=VALIDATION_CHECK_INTERVAL_BATCHES,
+                    checks_per_epoch=checks_per_epoch,
+                    patience_checks=max(3, 2 * checks_per_epoch),
+                    warmup_batches=automatic_config.warmup_batches,
+                    trend_window=max(2, 2 * checks_per_epoch),
+                    max_epochs=automatic_config.max_epochs,
+                    single_check_min_improvement=automatic_config.single_check_min_improvement,
+                    trend_min_improvement=automatic_config.trend_min_improvement,
+                )
             self._automatic_early_stopping_config = automatic_config
             self._automatic_early_stopping_policy = EarlyStoppingPolicy(automatic_config)
             policy_state = checkpoint.get('automatic_early_stopping_state')
@@ -3943,9 +4166,7 @@ class TrainerProcess(mp.Process):
                 self._automatic_early_stopping_policy.load_state_dict(policy_state)
             self._checkpoint_manager.best_loss = self._automatic_early_stopping_policy.best_actual_loss
             self._checkpoint_manager.best_global_batch = self._automatic_early_stopping_policy.best_actual_batch
-            self._global_batch = max(0, int(checkpoint.get('global_batch', start_epoch * batches_per_epoch)))
-            self._epochs = int(automatic_config.max_epochs)
-            metric_source = 'validation loss' if self._val_dataloader is not None else 'train-control loss'
+            metric_source = 'frame-averaged validation loss' if self._val_dataloader is not None else 'train-control loss'
             self._bus.put([
                 'logging',
                 (
@@ -3988,11 +4209,15 @@ class TrainerProcess(mp.Process):
         self._bus.put(['logging', f'Текущий learning rate: {current_lr:.8f}'])
         self._bus.put([
             'metrics',
-            {'type': 'train_epoch_progress', 'current': int(epoch + 1), 'total': int(self._epochs)},
+            {'type': 'train_epoch_progress', 'current': int(epoch), 'total': int(self._epochs)},
         ])
         self._bus.put([
             'metrics',
             {'type': 'train_batch_progress', 'current': 0, 'total': int(run_context.train_size)},
+        ])
+        self._bus.put([
+            'metrics',
+            {'type': 'validation_progress', 'current': 0, 'total': 0},
         ])
         memory_payload = _collect_memory_metrics()
         if memory_payload is not None:
@@ -4843,6 +5068,7 @@ class TrainerProcess(mp.Process):
     def _run_automatic_early_stopping_check(
         self,
         *,
+        epoch: int,
         device: torch.device,
         run_context: _RunContext,
         is_main_process: bool,
@@ -4850,8 +5076,30 @@ class TrainerProcess(mp.Process):
     ) -> bool:
         policy = self._automatic_early_stopping_policy
         should_stop = False
-        if policy is not None and is_main_process:
-            loss = self._evaluate_automatic_stop_metric(device=device, run_context=run_context)
+        if is_main_process:
+            validation_result = None
+            if self._val_dataloader is not None:
+                validation_result = self._run_validation_epoch(
+                    epoch,
+                    device,
+                    run_context.bce_criterion,
+                    run_context.autocast_ctx,
+                )
+                if validation_result is None:
+                    raise RuntimeError('Validation produced no finite result for early stopping.')
+                self._publish_validation_metrics(epoch=epoch, validation_result=validation_result)
+                self._latest_validation_result = dict(validation_result)
+                self._latest_validation_global_batch = int(self._global_batch)
+                loss = float(validation_result['loss'])
+            else:
+                loss = self._evaluate_automatic_stop_metric(device=device, run_context=run_context)
+            if policy is None:
+                return self._sync_early_stopping_signal(
+                    False,
+                    is_main_process=is_main_process,
+                    distributed=distributed,
+                    device=device,
+                )
             decision = policy.update(loss=loss, global_batch=self._global_batch)
             source = 'validation' if self._val_dataloader is not None else 'train-control'
             if decision.actual_best_improved:
@@ -4886,6 +5134,31 @@ class TrainerProcess(mp.Process):
             device=device,
         )
 
+    def _validation_check_interval(self) -> int | None:
+        if getattr(self, '_val_dataloader', None) is not None:
+            return VALIDATION_CHECK_INTERVAL_BATCHES
+        config = getattr(self, '_automatic_early_stopping_config', None)
+        if config is None:
+            return None
+        return max(1, int(config.check_every_batches))
+
+    @staticmethod
+    def _periodic_validation_due(global_batch: int, last_check_batch: int | None, interval: int | None) -> bool:
+        return bool(
+            interval is not None
+            and int(global_batch) > 0
+            and int(global_batch) % int(interval) == 0
+            and last_check_batch != int(global_batch)
+        )
+
+    @staticmethod
+    def _epoch_end_validation_due(global_batch: int, last_check_batch: int | None, interval: int | None) -> bool:
+        return bool(
+            interval is not None
+            and int(global_batch) > 0
+            and last_check_batch != int(global_batch)
+        )
+
     def _run_train_epoch(
         self,
         epoch: int,
@@ -4906,6 +5179,7 @@ class TrainerProcess(mp.Process):
         if not hasattr(self, '_resume_runtime_torch_rng_state'):
             self._resume_runtime_torch_rng_state = None
         last_automatic_check_batch: int | None = None
+        validation_check_interval = self._validation_check_interval()
 
         train_dataset = self._train_dataloader.dataset
         if hasattr(train_dataset, 'set_epoch'):
@@ -4937,19 +5211,20 @@ class TrainerProcess(mp.Process):
         while True:
             data_wait_started_at = time.perf_counter()
             try:
-                batch = next(train_iterator)
+                with self._profile_region('data_wait_and_cut'):
+                    batch = next(train_iterator)
             except StopIteration:
                 break
             if batch_index < self._resume_batch:
                 batch_index += 1
                 continue
-            if (
-                getattr(self, '_automatic_early_stopping_config', None) is not None
-                and self._global_batch > 0
-                and self._global_batch % self._automatic_early_stopping_config.check_every_batches == 0
-                and last_automatic_check_batch != self._global_batch
+            if self._periodic_validation_due(
+                self._global_batch,
+                last_automatic_check_batch,
+                validation_check_interval,
             ):
                 epoch_stats.early_stop_requested = self._run_automatic_early_stopping_check(
+                    epoch=epoch,
                     device=device,
                     run_context=run_context,
                     is_main_process=is_main_process,
@@ -4962,12 +5237,13 @@ class TrainerProcess(mp.Process):
                 torch.set_rng_state(self._resume_runtime_torch_rng_state)
                 self._resume_runtime_torch_rng_state = None
             enable_cuda_event_timing = bool(getattr(run_context, 'enable_cuda_event_timing', True))
-            prepared_batch, skipped_here = self._prepare_train_batch(
-                batch=batch,
-                device=device,
-                data_wait_started_at=data_wait_started_at,
-                enable_cuda_event_timing=enable_cuda_event_timing,
-            )
+            with self._profile_region('transfer_and_augment'):
+                prepared_batch, skipped_here = self._prepare_train_batch(
+                    batch=batch,
+                    device=device,
+                    data_wait_started_at=data_wait_started_at,
+                    enable_cuda_event_timing=enable_cuda_event_timing,
+                )
             if skipped_here > 0:
                 epoch_stats.skipped_uniform_count += skipped_here
 
@@ -4977,7 +5253,8 @@ class TrainerProcess(mp.Process):
                 batch_index += 1
                 continue
 
-            step_result = self._run_train_step(run_context=run_context, batch=prepared_batch)
+            with self._profile_region('model_train_step'):
+                step_result = self._run_train_step(run_context=run_context, batch=prepared_batch)
             if step_result is None:
                 epoch_stats.skipped_non_finite_count += 1
                 self._step_training_profiler(active_profiler)
@@ -5011,6 +5288,13 @@ class TrainerProcess(mp.Process):
                 step_result=step_result,
                 batch_total_ms=batch_total_ms,
             )
+            self._record_random_patch_profile_batch(
+                epoch=epoch,
+                batch_index=batch_index,
+                batch=prepared_batch,
+                step_result=step_result,
+                batch_total_ms=batch_total_ms,
+            )
             self._step_training_profiler(active_profiler)
             self._global_batch += 1
             batch_index += 1
@@ -5020,11 +5304,14 @@ class TrainerProcess(mp.Process):
 
         if (
             not epoch_stats.early_stop_requested
-            and getattr(self, '_automatic_early_stopping_config', None) is not None
-            and self._global_batch > 0
-            and last_automatic_check_batch != self._global_batch
+            and self._epoch_end_validation_due(
+                self._global_batch,
+                last_automatic_check_batch,
+                validation_check_interval,
+            )
         ):
             epoch_stats.early_stop_requested = self._run_automatic_early_stopping_check(
+                epoch=epoch,
                 device=device,
                 run_context=run_context,
                 is_main_process=is_main_process,
@@ -5360,7 +5647,7 @@ class TrainerProcess(mp.Process):
             distributed=distributed,
             active_profiler=runtime_state.active_profiler,
         )
-        runtime_state.automatic_stop_requested = bool(epoch_stats.early_stop_requested)
+        runtime_state.automatic_stop_requested = bool(getattr(epoch_stats, 'early_stop_requested', False))
         train_stage_ms = (time.perf_counter() - train_stage_start) * 1000.0
 
         global_train_loss, global_train_samples = self._reduce_epoch_train_stats(
@@ -5383,15 +5670,27 @@ class TrainerProcess(mp.Process):
             )
 
         validation_start = time.perf_counter()
-        validation_result = self._handle_validation(
-            epoch=epoch,
-            device=device,
-            run_context=run_context,
-            early_stopping_state=runtime_state.early_stopping_state,
-            early_stopping_config=runtime_state.early_stopping_config,
-            is_main_process=runtime_state.is_main_process,
+        validation_already_checked = bool(
+            getattr(self, '_val_dataloader', None) is not None
+            and getattr(self, '_latest_validation_result', None) is not None
+            and getattr(self, '_latest_validation_global_batch', None) == self._global_batch
         )
-        if runtime_state.is_main_process and self._automatic_early_stopping_policy is None:
+        if validation_already_checked:
+            validation_result = dict(cast(dict[str, float], self._latest_validation_result))
+        else:
+            validation_result = self._handle_validation(
+                epoch=epoch,
+                device=device,
+                run_context=run_context,
+                early_stopping_state=runtime_state.early_stopping_state,
+                early_stopping_config=runtime_state.early_stopping_config,
+                is_main_process=runtime_state.is_main_process,
+            )
+        if (
+            runtime_state.is_main_process
+            and getattr(self, '_automatic_early_stopping_policy', None) is None
+            and getattr(self, '_checkpoint_manager', None) is not None
+        ):
             checkpoint_loss = (
                 float(validation_result['loss'])
                 if validation_result is not None
@@ -5444,6 +5743,10 @@ class TrainerProcess(mp.Process):
                     f'Epoch [{epoch + 1}/{self._epochs}] completed in '
                     f'{self._format_elapsed_duration(time.perf_counter() - epoch_started_at)}.'
                 ),
+            ])
+            self._bus.put([
+                'metrics',
+                {'type': 'train_epoch_progress', 'current': int(epoch + 1), 'total': int(self._epochs)},
             ])
 
         return None
@@ -5498,6 +5801,7 @@ class TrainerProcess(mp.Process):
 
     def _finalize_training_success(self, *, is_main_process: bool) -> None:
         if is_main_process:
+            self._save_random_patch_profile_csv()
             if self._automatic_early_stopping_config is not None:
                 policy = self._automatic_early_stopping_policy
                 if policy is not None and self._global_batch >= (

@@ -1,7 +1,12 @@
 ; Build with:
-;   ISCC NeuralImageInstaller.iss
+;   ISCC packaging\NeuralImageInstaller.iss
 ; or override defaults:
-;   ISCC /DAppVersion=5.3.0 /DBuildDir="dist\NeuralImage 5.4" NeuralImageInstaller.iss
+;   ISCC /DAppVersion=5.3.0 /DBuildDir="D:\builds\NeuralImage" packaging\NeuralImageInstaller.iss
+
+; SourcePath is the directory containing this .iss file. Resolve the default
+; build/output directories from it so compilation does not depend on the
+; shell's current working directory.
+#define ProjectDir AddBackslash(SourcePath) + ".."
 
 #ifndef AppName
   #define AppName "NeuralImage"
@@ -20,11 +25,11 @@
 #endif
 
 #ifndef BuildDir
-  #define BuildDir "dist\\NeuralImage"
+  #define BuildDir ProjectDir + "\dist\NeuralImage"
 #endif
 
 #ifndef OutputDir
-  #define OutputDir "dist\\installer"
+  #define OutputDir ProjectDir + "\dist\installer"
 #endif
 
 [Setup]

@@ -2,7 +2,7 @@
   "id": "neuralimage",
   "display_name": "NeuralImage",
   "description": "Neural IC image segmentation, training, and recognition.",
-  "version": "6.2.0",
+  "version": "6.3.0",
   "enabled": true,
   "platforms": ["windows", "linux"],
   "executables": {

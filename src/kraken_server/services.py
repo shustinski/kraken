@@ -48,10 +48,48 @@ class ServerServices(Protocol):
 
     def get_project(self, project_id: str) -> dict[str, Any]: ...
 
+    def rename_project(
+        self, project_id: str, name: str, context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def archive_project(self, project_id: str, context: CommandContext) -> dict[str, Any]: ...
+
+    def restore_project(self, project_id: str, context: CommandContext) -> dict[str, Any]: ...
+
     def list_layers(self, project_id: str) -> list[dict[str, Any]]: ...
 
     def create_layer(
         self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def rename_layer(
+        self, project_id: str, layer_id: str, name: str, context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def reorder_layer(
+        self, project_id: str, layer_id: str, order: int, context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def archive_layer(
+        self, project_id: str, layer_id: str, context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def project_roles(self, project_id: str, principal_id: str) -> dict[str, Any]: ...
+
+    def assign_project_role(
+        self,
+        project_id: str,
+        principal_id: str,
+        role: str,
+        context: CommandContext,
+    ) -> dict[str, Any]: ...
+
+    def revoke_project_role(
+        self,
+        project_id: str,
+        principal_id: str,
+        role: str,
+        context: CommandContext,
     ) -> dict[str, Any]: ...
 
     def list_representations(self, project_id: str, layer_id: str) -> list[dict[str, Any]]: ...
@@ -62,6 +100,11 @@ class ServerServices(Protocol):
         layer_id: str,
         payload: Mapping[str, Any],
         context: CommandContext,
+    ) -> dict[str, Any]: ...
+
+    def update_representation(
+        self, project_id: str, layer_id: str, representation_id: str,
+        payload: Mapping[str, Any], context: CommandContext,
     ) -> dict[str, Any]: ...
 
     def matrix_viewport(
@@ -80,6 +123,8 @@ class InMemoryServerServices:
         self._idempotency: dict[tuple[str, str], dict[str, Any]] = {}
         self._layers: dict[str, list[dict[str, Any]]] = {}
         self._representations: dict[str, list[dict[str, Any]]] = {}
+        self._acl: dict[tuple[str, str], set[str]] = {}
+        self._acl_revisions: dict[tuple[str, str], int] = {}
         self._lock = threading.RLock()
 
     def health(self) -> dict[str, Any]:
@@ -127,6 +172,8 @@ class InMemoryServerServices:
             self._projects[project_id] = project
             self._events[project_id] = [event]
             self._layers[project_id] = []
+            self._acl[(project_id, context.actor_id)] = {"owner"}
+            self._acl_revisions[(project_id, context.actor_id)] = 0
             self._idempotency[key] = project
             return dict(project)
 
@@ -136,6 +183,62 @@ class InMemoryServerServices:
                 return dict(self._projects[project_id])
             except KeyError as exc:
                 raise NotFoundError(project_id) from exc
+
+    def _project_lifecycle(
+        self,
+        project_id: str,
+        context: CommandContext,
+        *,
+        operation: str,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        key = (f"project:{operation}:{project_id}:{context.actor_id}", context.idempotency_key)
+        with self._lock:
+            if key in self._idempotency:
+                return dict(self._idempotency[key])
+            project = self._projects.get(project_id)
+            if project is None:
+                raise NotFoundError(project_id)
+            if context.expected_revision != project["revision"]:
+                raise ConflictError("Project revision changed")
+            if operation == "rename":
+                value = str(name or "").strip()
+                if not value:
+                    raise ValidationError("Project name is required")
+                if project["state"] == "archived":
+                    raise ConflictError("Archived project is read-only")
+                project["name"] = value
+            elif operation == "archive":
+                if project["state"] == "archived":
+                    raise ConflictError("Project is already archived")
+                project["state"] = "archived"
+            elif operation == "restore":
+                if project["state"] == "active":
+                    raise ConflictError("Project is already active")
+                project["state"] = "active"
+            project["revision"] += 1
+            snapshot = dict(project)
+            self._events[project_id].append(
+                {
+                    "event_id": str(uuid4()),
+                    "event_type": f"Project{operation.title()}",
+                    "revision": project["revision"],
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                    "actor_id": context.actor_id,
+                    "payload": {"project": snapshot},
+                }
+            )
+            self._idempotency[key] = snapshot
+            return snapshot
+
+    def rename_project(self, project_id: str, name: str, context: CommandContext) -> dict[str, Any]:
+        return self._project_lifecycle(project_id, context, operation="rename", name=name)
+
+    def archive_project(self, project_id: str, context: CommandContext) -> dict[str, Any]:
+        return self._project_lifecycle(project_id, context, operation="archive")
+
+    def restore_project(self, project_id: str, context: CommandContext) -> dict[str, Any]:
+        return self._project_lifecycle(project_id, context, operation="restore")
 
     def list_layers(self, project_id: str) -> list[dict[str, Any]]:
         self.get_project(project_id)
@@ -173,6 +276,143 @@ class InMemoryServerServices:
             self._projects[project_id]["revision"] += 1
             self._idempotency[key] = layer
             return dict(layer)
+
+    def _layer_lifecycle(
+        self,
+        project_id: str,
+        layer_id: str,
+        context: CommandContext,
+        *,
+        operation: str,
+        value: object | None = None,
+    ) -> dict[str, Any]:
+        self.get_project(project_id)
+        key = (f"layer:{operation}:{layer_id}:{context.actor_id}", context.idempotency_key)
+        with self._lock:
+            if key in self._idempotency:
+                return dict(self._idempotency[key])
+            layer = next((item for item in self._layers[project_id] if item["layer_id"] == layer_id), None)
+            if layer is None:
+                raise NotFoundError(layer_id)
+            if context.expected_revision != layer["revision"]:
+                raise ConflictError("Layer revision changed")
+            if operation != "archive" and layer["state"] == "archived":
+                raise ConflictError("Archived layer is read-only")
+            if operation == "rename":
+                name = str(value or "").strip()
+                if not name:
+                    raise ValidationError("Layer name is required")
+                layer["name"] = name
+            elif operation == "reorder":
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValidationError("Layer order must be a non-negative integer")
+                layer["order"] = value
+            elif operation == "archive":
+                if layer["state"] == "archived":
+                    raise ConflictError("Layer is already archived")
+                layer["state"] = "archived"
+            layer["revision"] += 1
+            snapshot = dict(layer)
+            self._events[project_id].append(
+                {
+                    "event_id": str(uuid4()),
+                    "event_type": f"Layer{operation.title()}",
+                    "revision": layer["revision"],
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                    "actor_id": context.actor_id,
+                    "payload": {"layer": snapshot},
+                }
+            )
+            self._idempotency[key] = snapshot
+            return snapshot
+
+    def rename_layer(
+        self, project_id: str, layer_id: str, name: str, context: CommandContext
+    ) -> dict[str, Any]:
+        return self._layer_lifecycle(project_id, layer_id, context, operation="rename", value=name)
+
+    def reorder_layer(
+        self, project_id: str, layer_id: str, order: int, context: CommandContext
+    ) -> dict[str, Any]:
+        return self._layer_lifecycle(project_id, layer_id, context, operation="reorder", value=order)
+
+    def archive_layer(
+        self, project_id: str, layer_id: str, context: CommandContext
+    ) -> dict[str, Any]:
+        return self._layer_lifecycle(project_id, layer_id, context, operation="archive")
+
+    def project_roles(self, project_id: str, principal_id: str) -> dict[str, Any]:
+        self.get_project(project_id)
+        key = (project_id, principal_id)
+        with self._lock:
+            return {
+                "project_id": project_id,
+                "principal_id": principal_id,
+                "roles": sorted(self._acl.get(key, set())),
+                "revision": self._acl_revisions.get(key, 0),
+            }
+
+    def _change_project_role(
+        self,
+        project_id: str,
+        principal_id: str,
+        role: str,
+        context: CommandContext,
+        *,
+        revoke: bool,
+    ) -> dict[str, Any]:
+        self.get_project(project_id)
+        supported = {"owner", "manager", "contributor", "reviewer", "viewer"}
+        if role not in supported:
+            raise ValidationError("Unsupported project role")
+        operation = "revoke" if revoke else "assign"
+        idempotency = (f"acl:{operation}:{project_id}:{principal_id}", context.idempotency_key)
+        key = (project_id, principal_id)
+        with self._lock:
+            if idempotency in self._idempotency:
+                return dict(self._idempotency[idempotency])
+            revision = self._acl_revisions.get(key, 0)
+            if context.expected_revision != revision:
+                raise ConflictError("ACL revision changed")
+            roles = self._acl.setdefault(key, set())
+            if revoke and role not in roles:
+                raise ConflictError("The principal does not have this role")
+            if not revoke and role in roles:
+                raise ConflictError("The principal already has this role")
+            if revoke:
+                roles.remove(role)
+            else:
+                roles.add(role)
+            revision += 1
+            self._acl_revisions[key] = revision
+            result = {
+                "project_id": project_id,
+                "principal_id": principal_id,
+                "roles": sorted(roles),
+                "revision": revision,
+            }
+            self._events[project_id].append(
+                {
+                    "event_id": str(uuid4()),
+                    "event_type": "ProjectRoleRevoked" if revoke else "ProjectRoleAssigned",
+                    "revision": revision,
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                    "actor_id": context.actor_id,
+                    "payload": {"principal_id": principal_id, "role": role},
+                }
+            )
+            self._idempotency[idempotency] = result
+            return dict(result)
+
+    def assign_project_role(
+        self, project_id: str, principal_id: str, role: str, context: CommandContext
+    ) -> dict[str, Any]:
+        return self._change_project_role(project_id, principal_id, role, context, revoke=False)
+
+    def revoke_project_role(
+        self, project_id: str, principal_id: str, role: str, context: CommandContext
+    ) -> dict[str, Any]:
+        return self._change_project_role(project_id, principal_id, role, context, revoke=True)
 
     def list_representations(self, project_id: str, layer_id: str) -> list[dict[str, Any]]:
         self.get_project(project_id)
@@ -228,6 +468,57 @@ class InMemoryServerServices:
             layer["revision"] += 1
             self._idempotency[key] = representation
             return dict(representation)
+
+    def update_representation(
+        self, project_id: str, layer_id: str, representation_id: str,
+        payload: Mapping[str, Any], context: CommandContext,
+    ) -> dict[str, Any]:
+        self.get_project(project_id)
+        layer = next((item for item in self._layers[project_id] if item["layer_id"] == layer_id), None)
+        if layer is None:
+            raise NotFoundError(layer_id)
+        values = self._representations.get(layer_id, [])
+        representation = next((item for item in values if item["representation_id"] == representation_id), None)
+        if representation is None:
+            raise NotFoundError(representation_id)
+        operations = [key for key in ("name", "note", "active", "archive") if key in payload]
+        if len(operations) != 1:
+            raise ValidationError("Exactly one representation operation is required")
+        operation = operations[0]
+        key = (f"representation:{operation}:{representation_id}:{context.actor_id}", context.idempotency_key)
+        with self._lock:
+            if key in self._idempotency:
+                return dict(self._idempotency[key])
+            if context.expected_revision != layer["revision"]:
+                raise ConflictError("Layer revision changed")
+            expected_representation = int(payload.get("expected_representation_revision", -1))
+            if expected_representation != representation["revision"]:
+                raise ConflictError("Representation revision changed")
+            if operation == "name":
+                name = str(payload["name"]).strip()
+                if not name:
+                    raise ValidationError("Representation name is required")
+                representation["name"] = name
+            elif operation == "note":
+                representation["note"] = str(payload["note"])
+            elif operation == "active":
+                if not bool(payload["active"]):
+                    raise ValidationError("Use archive instead of deactivating the selected representation")
+                if representation["active"]:
+                    raise ConflictError("Representation is already active")
+                for previous in values:
+                    if previous is not representation and previous["kind"] == representation["kind"] and previous["active"]:
+                        previous["active"] = False
+                        previous["revision"] += 1
+                representation["active"] = True
+            else:
+                representation["state"] = "archived"
+                representation["active"] = False
+            representation["revision"] += 1
+            layer["revision"] += 1
+            result = dict(representation)
+            self._idempotency[key] = result
+            return result
 
     def matrix_viewport(
         self, project_id: str, *, layer_id: str, x1: int, y1: int, x2: int, y2: int, lod: int

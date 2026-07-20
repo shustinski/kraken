@@ -9,6 +9,7 @@ from kraken_manager.application.dto import CommandContext, CreateProjectCommand
 from kraken_manager.application.use_cases import CreateProjectHandler
 from kraken_manager.domain.identity import ProjectRole
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
+from kraken_manager.domain.artifacts import deterministic_frame_series_id
 from kraken_manager.infrastructure.filesystem import LocalProjectUnitOfWorkFactory, SQLiteProjectionStore
 
 
@@ -168,6 +169,275 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
                 frozenset({ProjectRole.OWNER}),
                 service.identities.roles_for(command.project_id, session.principal.id),
             )
+
+    def test_project_and_layer_lifecycle_is_audited_temporal_and_rebuildable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = EmbeddedProjectService(Path(temporary))
+            session = service.create_initial_account("owner", "Owner", "")
+            project = service.create_project(
+                principal=session.principal,
+                name="Original",
+                width=4,
+                height=3,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="project",
+            )
+            layer = service.create_layer(
+                principal=session.principal,
+                project=project,
+                name="Metal",
+                layer_type=LayerType.METAL,
+                order=1,
+                idempotency_key="layer",
+            )
+            project = service.get_project(project.id)
+            assert project is not None
+            project = service.rename_project(
+                principal=session.principal,
+                project=project,
+                name="Renamed",
+                idempotency_key="rename-project",
+            )
+            renamed_at = service.history(project.id)[-1].recorded_at
+            layer = service.rename_layer(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                name="M1",
+                idempotency_key="rename-layer",
+            )
+            layer = service.reorder_layer(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                order=7,
+                idempotency_key="reorder-layer",
+            )
+            layer = service.archive_layer(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                idempotency_key="archive-layer",
+            )
+            project = service.archive_project(
+                principal=session.principal,
+                project=project,
+                idempotency_key="archive-project",
+            )
+
+            self.assertEqual((), service.list_projects())
+            self.assertEqual("Renamed", service.get_project(project.id, as_of=renamed_at).name)
+            self.assertEqual("archived", project.state.value)
+            self.assertEqual("archived", layer.state.value)
+
+            # The same command key is a no-op even with the stale revision supplied by the caller.
+            self.assertEqual(
+                project,
+                service.archive_project(
+                    principal=session.principal,
+                    project=project,
+                    idempotency_key="archive-project",
+                ),
+            )
+            project = service.restore_project(
+                principal=session.principal,
+                project=project,
+                idempotency_key="restore-project",
+            )
+            SQLiteProjectionStore(service.catalog_root, str(project.id)).destroy_cache()
+            rebuilt = service.get_project(project.id)
+            rebuilt_layer = service.list_layers(project.id, include_archived=True)[0]
+            self.assertEqual(("Renamed", "active"), (rebuilt.name, rebuilt.state.value))
+            self.assertEqual(("M1", 7, "archived"), (rebuilt_layer.name, rebuilt_layer.order, rebuilt_layer.state.value))
+            self.assertIn("ProjectArchived", {item.event_type for item in service.activity_records()})
+
+    def test_directory_import_is_preflighted_managed_immutable_and_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "1_1.png").write_bytes(b"first")
+            (source / "2_1.png").write_bytes(b"second")
+            service = EmbeddedProjectService(root / "data")
+            session = service.create_initial_account("owner", "Owner", "")
+            project = service.create_project(
+                principal=session.principal,
+                name="Import",
+                width=2,
+                height=2,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="project",
+            )
+            layer = service.create_layer(
+                principal=session.principal,
+                project=project,
+                name="Metal",
+                layer_type=LayerType.METAL,
+                order=1,
+                idempotency_key="layer",
+            )
+            project = service.get_project(project.id)
+            assert project is not None
+            representation = service.create_representation(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                name="Raw",
+                kind=RepresentationKind.IMAGE,
+                idempotency_key="representation",
+                active=True,
+            )
+            plan = service.plan_import_directory(project=project, directory=source)
+            self.assertTrue(plan.ready)
+            self.assertEqual((2, 2, 11), (len(plan.items), plan.missing_coordinates, plan.total_bytes))
+            imported = service.commit_managed_import(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                representation=representation,
+                plan=plan,
+                idempotency_key="import",
+            )
+            repeated = service.commit_managed_import(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                representation=representation,
+                plan=plan,
+                idempotency_key="import",
+            )
+            self.assertEqual(imported.versions, repeated.versions)
+            cells = service.frame_cells(project.id, layer.id, representation.id)
+            self.assertEqual(
+                ((1, 1, "image_ready"), (2, 1, "image_ready")),
+                tuple((cell.x, cell.y, cell.status) for cell in cells),
+            )
+            projection = service._projection(project.id)
+            for item, version in zip(plan.items, imported.versions, strict=True):
+                series_id = deterministic_frame_series_id(
+                    representation.id, project.frame_id_at(item.x, item.y)
+                )
+                self.assertEqual(version, projection.get_active_artifact_version(series_id))
+                self.assertTrue(
+                    (
+                        service.catalog_root
+                        / "projects"
+                        / str(project.id)
+                        / "objects"
+                        / "sha256"
+                        / version.sha256[:2]
+                        / version.sha256[2:4]
+                        / version.sha256
+                    ).is_file()
+                )
+            scan = service.scan_integrity()
+            self.assertTrue(scan.valid)
+            self.assertEqual(2, scan.blobs)
+            backup = root / "backup"
+            manifest = service.export_backup(project.id, backup)
+            self.assertGreater(manifest.event_count, 0)
+            restored_service = EmbeddedProjectService(root / "restored")
+            restored = restored_service.import_backup(backup)
+            self.assertEqual((project.id, project.name), (restored.id, restored.name))
+            self.assertTrue(restored_service.scan_integrity().valid)
+
+    def test_project_acl_changes_are_optimistic_idempotent_and_audited(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = EmbeddedProjectService(Path(temporary))
+            owner = service.create_initial_account("owner", "Owner", "")
+            service.accounts.create_account("worker", "Worker", "")
+            worker = service.login("worker", "")
+            assert worker is not None
+            project = service.create_project(
+                principal=owner.principal,
+                name="ACL",
+                width=1,
+                height=1,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="project",
+            )
+            roles = service.assign_project_role(
+                principal=owner.principal,
+                project=project,
+                target_principal_id=worker.principal.id,
+                role=ProjectRole.CONTRIBUTOR,
+                expected_revision=0,
+                idempotency_key="assign",
+            )
+            self.assertEqual(frozenset({ProjectRole.CONTRIBUTOR}), roles)
+            self.assertEqual(
+                roles,
+                service.assign_project_role(
+                    principal=owner.principal,
+                    project=project,
+                    target_principal_id=worker.principal.id,
+                    role=ProjectRole.CONTRIBUTOR,
+                    expected_revision=0,
+                    idempotency_key="assign",
+                ),
+            )
+            roles = service.revoke_project_role(
+                principal=owner.principal,
+                project=project,
+                target_principal_id=worker.principal.id,
+                role=ProjectRole.CONTRIBUTOR,
+                expected_revision=1,
+                idempotency_key="revoke",
+            )
+            self.assertEqual(frozenset(), roles)
+            event_types = {event.event_type for event in service.history(project.id)}
+            self.assertTrue({"ProjectRoleAssigned", "ProjectRoleRevoked"}.issubset(event_types))
+
+    def test_representation_lifecycle_switches_active_variant_and_rebuilds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = EmbeddedProjectService(Path(temporary))
+            session = service.create_initial_account("owner", "Owner", "")
+            project = service.create_project(
+                principal=session.principal, name="R", width=1, height=1,
+                orientation=GridOrientation.Y_DOWN, idempotency_key="p",
+            )
+            layer = service.create_layer(
+                principal=session.principal, project=project, name="M", layer_type=LayerType.METAL,
+                order=1, idempotency_key="l",
+            )
+            project = service.get_project(project.id)
+            assert project is not None
+            first = service.create_representation(
+                principal=session.principal, project=project, layer=layer, name="A",
+                kind=RepresentationKind.IMAGE, idempotency_key="a", active=True,
+            )
+            layer = service.list_layers(project.id)[0]
+            second = service.create_representation(
+                principal=session.principal, project=project, layer=layer, name="B",
+                kind=RepresentationKind.IMAGE, idempotency_key="b", active=False,
+            )
+            layer = service.list_layers(project.id)[0]
+            first = service.rename_representation(
+                principal=session.principal, project=project, layer=layer,
+                representation=first, name="Original", idempotency_key="rename",
+            )
+            layer = service.list_layers(project.id)[0]
+            first = service.update_representation_note(
+                principal=session.principal, project=project, layer=layer,
+                representation=first, note="source scan", idempotency_key="note",
+            )
+            layer = service.list_layers(project.id)[0]
+            second = service.activate_representation(
+                principal=session.principal, project=project, layer=layer,
+                representation=second, idempotency_key="activate",
+            )
+            values = service.list_representations(project.id, layer.id)
+            first = next(item for item in values if item.id == first.id)
+            self.assertFalse(first.active)
+            self.assertTrue(second.active)
+            layer = service.list_layers(project.id)[0]
+            service.archive_representation(
+                principal=session.principal, project=project, layer=layer,
+                representation=first, idempotency_key="archive",
+            )
+            SQLiteProjectionStore(service.catalog_root, str(project.id)).destroy_cache()
+            rebuilt = service.list_representations(project.id, layer.id)
+            self.assertEqual(("B",), tuple(item.name for item in rebuilt))
 
 
 if __name__ == "__main__":

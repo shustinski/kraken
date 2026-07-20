@@ -11,7 +11,12 @@ from .imports import (
 )
 from .dto import (
     AcceptReviewCommand,
+    ActivateRepresentationCommand,
     AddArtifactVersionCommand,
+    ArchiveLayerCommand,
+    ArchiveProjectCommand,
+    ArchiveRepresentationCommand,
+    AssignProjectRoleCommand,
     CommitReviewReturnCommand,
     CreateArtifactSeriesCommand,
     CommandContext,
@@ -27,6 +32,12 @@ from .dto import (
     PluginResultImport,
     ReturnedFileDigest,
     RequestReviewChangesCommand,
+    RenameLayerCommand,
+    RenameProjectCommand,
+    RenameRepresentationCommand,
+    ReorderLayerCommand,
+    RestoreProjectCommand,
+    RevokeProjectRoleCommand,
     ReviewPackagePlan,
     ReviewReturnCommitResult,
     ReviewReturnPlan,
@@ -34,6 +45,7 @@ from .dto import (
     StorageScope,
     StoredContent,
     SubmitPluginJobCommand,
+    UpdateRepresentationNoteCommand,
 )
 from .errors import (
     ApplicationError,
@@ -89,13 +101,38 @@ from .review_workflow import (
 )
 from .performers import default_performer_color, ensure_gitlab_performer
 from .plugin_jobs import ImportPluginResultHandler, SubmitPluginJobHandler
+from .acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
+from .representation_lifecycle import (
+    ActivateRepresentationHandler,
+    ArchiveRepresentationHandler,
+    RenameRepresentationHandler,
+    UpdateRepresentationNoteHandler,
+)
+from .lifecycle import (
+    ArchiveLayerHandler,
+    ArchiveProjectHandler,
+    RenameLayerHandler,
+    RenameProjectHandler,
+    ReorderLayerHandler,
+    RestoreProjectHandler,
+)
 
 __all__ = [
     "AclStore",
     "AcceptReviewCommand",
     "AcceptReviewHandler",
+    "ActivateRepresentationCommand",
+    "ActivateRepresentationHandler",
     "AddArtifactVersionCommand",
     "AddArtifactVersionHandler",
+    "ArchiveLayerCommand",
+    "ArchiveLayerHandler",
+    "ArchiveProjectCommand",
+    "ArchiveProjectHandler",
+    "ArchiveRepresentationCommand",
+    "ArchiveRepresentationHandler",
+    "AssignProjectRoleCommand",
+    "AssignProjectRoleHandler",
     "CreateArtifactSeriesCommand",
     "CreateArtifactSeriesHandler",
     "ImportPluginResultCommand",
@@ -147,6 +184,18 @@ __all__ = [
     "ReturnedFileDigest",
     "RequestReviewChangesCommand",
     "RequestReviewChangesHandler",
+    "RenameLayerCommand",
+    "RenameLayerHandler",
+    "RenameProjectCommand",
+    "RenameProjectHandler",
+    "RenameRepresentationCommand",
+    "RenameRepresentationHandler",
+    "ReorderLayerCommand",
+    "ReorderLayerHandler",
+    "RestoreProjectCommand",
+    "RestoreProjectHandler",
+    "RevokeProjectRoleCommand",
+    "RevokeProjectRoleHandler",
     "ReviewPackagePlan",
     "ReviewPackageReader",
     "ReviewPackageWriter",
@@ -169,6 +218,8 @@ __all__ = [
     "SubmitPluginJobHandler",
     "UnitOfWork",
     "UnitOfWorkFactory",
+    "UpdateRepresentationNoteCommand",
+    "UpdateRepresentationNoteHandler",
     "default_performer_color",
     "ensure_gitlab_performer",
 ]

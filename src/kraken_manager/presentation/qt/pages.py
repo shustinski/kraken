@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QModelIndex, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -47,6 +48,9 @@ class ProjectCatalogPage(_TitledPage):
     refreshRequested = pyqtSignal()
     projectActivated = pyqtSignal(object)
     selectionChanged = pyqtSignal(object)
+    renameRequested = pyqtSignal(object)
+    archiveRequested = pyqtSignal(object)
+    restoreRequested = pyqtSignal(object)
 
     def __init__(
         self,
@@ -58,8 +62,16 @@ class ProjectCatalogPage(_TitledPage):
         self.create_button = QPushButton("Создать проект")
         self.create_button.setObjectName("primaryAction")
         self.refresh_button = QPushButton("Обновить")
+        self.rename_button = QPushButton("Переименовать")
+        self.archive_button = QPushButton("В архив")
+        self.restore_button = QPushButton("Восстановить")
+        self.show_archived_check = QCheckBox("Показывать архивные")
         actions.addWidget(self.create_button)
         actions.addWidget(self.refresh_button)
+        actions.addWidget(self.rename_button)
+        actions.addWidget(self.archive_button)
+        actions.addWidget(self.restore_button)
+        actions.addWidget(self.show_archived_check)
         actions.addStretch(1)
         self.root_layout.addLayout(actions)
 
@@ -80,11 +92,16 @@ class ProjectCatalogPage(_TitledPage):
 
         self.create_button.clicked.connect(self.createRequested)
         self.refresh_button.clicked.connect(self.refreshRequested)
+        self.show_archived_check.toggled.connect(self.refreshRequested)
+        self.rename_button.clicked.connect(lambda: self.renameRequested.emit(self.selected_project()))
+        self.archive_button.clicked.connect(lambda: self.archiveRequested.emit(self.selected_project()))
+        self.restore_button.clicked.connect(lambda: self.restoreRequested.emit(self.selected_project()))
         self.project_list.doubleClicked.connect(self._activate_index)
         self.project_list.selectionModel().currentChanged.connect(self._selection_changed)
         self.project_model.modelReset.connect(self._sync_empty_state)
         self.project_model.rowsInserted.connect(self._sync_empty_state)
         self.project_model.rowsRemoved.connect(self._sync_empty_state)
+        self._sync_selection_actions(None)
 
     def set_model(self, model: ProjectListModel) -> None:
         self.project_model = model
@@ -104,7 +121,16 @@ class ProjectCatalogPage(_TitledPage):
             self.projectActivated.emit(item)
 
     def _selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
-        self.selectionChanged.emit(self.project_model.item_for_index(current))
+        item = self.project_model.item_for_index(current)
+        self._sync_selection_actions(item)
+        self.selectionChanged.emit(item)
+
+    def _sync_selection_actions(self, item: ProjectListItem | None) -> None:
+        selected = item is not None
+        archived = bool(item.archived) if item is not None else False
+        self.rename_button.setEnabled(selected and not archived)
+        self.archive_button.setEnabled(selected and not archived)
+        self.restore_button.setEnabled(selected and archived)
 
     def _sync_empty_state(self, *_args: object) -> None:
         empty = self.project_model.rowCount() == 0

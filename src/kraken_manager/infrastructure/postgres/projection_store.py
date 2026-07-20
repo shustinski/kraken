@@ -271,6 +271,28 @@ class PostgresProjectionStore:
     def get_artifact_series(self, series_id: Any, *, as_of: datetime | None = None) -> Any | None:
         return self._get("artifact_series", series_id, as_of=as_of)
 
+    def list_artifact_series(
+        self,
+        project_id: Any,
+        *,
+        layer_id: Any | None = None,
+        representation_id: Any | None = None,
+        include_archived: bool = False,
+        as_of: datetime | None = None,
+    ) -> tuple[Any, ...]:
+        values = self._list(
+            "artifact_series",
+            "project_id" if layer_id is None else "layer_id",
+            project_id if layer_id is None else layer_id,
+            include_archived=include_archived,
+            as_of=as_of,
+        )
+        return tuple(
+            item
+            for item in values
+            if representation_id is None or item.representation_id == representation_id
+        )
+
     def save_artifact_series(self, series: Any) -> None:
         self._save("artifact_series", series)
 

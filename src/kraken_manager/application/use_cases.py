@@ -18,7 +18,14 @@ from kraken_manager.application.dto import (
 from kraken_manager.application.errors import ConcurrencyError, ConflictError, NotFoundError, StorageCapabilityError
 from kraken_manager.application.ports import Clock, StorageProfile, StorageProfileCatalog, UnitOfWork, UnitOfWorkFactory
 from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion, validate_sha256
-from kraken_manager.domain.common import ArtifactVersionId, FrameId, LayerId, ProjectId, RepresentationId
+from kraken_manager.domain.common import (
+    ArtifactSeriesId,
+    ArtifactVersionId,
+    FrameId,
+    LayerId,
+    ProjectId,
+    RepresentationId,
+)
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope
 from kraken_manager.domain.identity import Permission, Principal, ProjectRole, ProjectRoleAssignment
 from kraken_manager.domain.project import Layer, Project, ProjectState, Representation, StructureState

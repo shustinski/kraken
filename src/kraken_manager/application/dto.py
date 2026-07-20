@@ -15,6 +15,7 @@ from kraken_manager.domain.common import (
     LayerId,
     PerformerId,
     PluginJobId,
+    PrincipalId,
     ProjectId,
     RepresentationId,
     ReviewBatchId,
@@ -24,6 +25,7 @@ from kraken_manager.domain.common import (
     validate_uuid,
 )
 from kraken_manager.domain.identity import Principal
+from kraken_manager.domain.identity import ProjectRole
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
 from kraken_manager.domain.selection import FrameSelectionV1
 from kraken_manager.domain.workflows import PluginInputV1, PluginJob, PluginResultManifestV1
@@ -110,6 +112,114 @@ class CreateRepresentationCommand:
     note: str = ""
     source: str | None = None
     active: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RenameProjectCommand:
+    context: CommandContext
+    project_id: ProjectId
+    name: str
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveProjectCommand:
+    context: CommandContext
+    project_id: ProjectId
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreProjectCommand:
+    context: CommandContext
+    project_id: ProjectId
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class RenameLayerCommand:
+    context: CommandContext
+    project_id: ProjectId
+    layer_id: LayerId
+    name: str
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReorderLayerCommand:
+    context: CommandContext
+    project_id: ProjectId
+    layer_id: LayerId
+    order: int
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveLayerCommand:
+    context: CommandContext
+    project_id: ProjectId
+    layer_id: LayerId
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class AssignProjectRoleCommand:
+    context: CommandContext
+    project_id: ProjectId
+    principal_id: PrincipalId
+    role: ProjectRole
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class RevokeProjectRoleCommand:
+    context: CommandContext
+    project_id: ProjectId
+    principal_id: PrincipalId
+    role: ProjectRole
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class RenameRepresentationCommand:
+    context: CommandContext
+    project_id: ProjectId
+    layer_id: LayerId
+    representation_id: RepresentationId
+    name: str
+    expected_layer_revision: int
+    expected_representation_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateRepresentationNoteCommand:
+    context: CommandContext
+    project_id: ProjectId
+    layer_id: LayerId
+    representation_id: RepresentationId
+    note: str
+    expected_layer_revision: int
+    expected_representation_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ActivateRepresentationCommand:
+    context: CommandContext
+    project_id: ProjectId
+    layer_id: LayerId
+    representation_id: RepresentationId
+    expected_layer_revision: int
+    expected_representation_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveRepresentationCommand:
+    context: CommandContext
+    project_id: ProjectId
+    layer_id: LayerId
+    representation_id: RepresentationId
+    expected_layer_revision: int
+    expected_representation_revision: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,8 +441,13 @@ class StoredContent:
 
 __all__ = [
     "AcceptReviewCommand",
+    "ActivateRepresentationCommand",
     "ActiveVersionSnapshot",
     "AddArtifactVersionCommand",
+    "ArchiveLayerCommand",
+    "ArchiveProjectCommand",
+    "ArchiveRepresentationCommand",
+    "AssignProjectRoleCommand",
     "CommitReviewReturnCommand",
     "CommandContext",
     "CreateLayerCommand",
@@ -347,6 +462,12 @@ __all__ = [
     "PlanReviewPackageCommand",
     "ProblemDetails",
     "RequestReviewChangesCommand",
+    "RenameLayerCommand",
+    "RenameProjectCommand",
+    "RenameRepresentationCommand",
+    "ReorderLayerCommand",
+    "RestoreProjectCommand",
+    "RevokeProjectRoleCommand",
     "ReturnedFileDigest",
     "ReviewPackagePlan",
     "ReviewReturnCommitResult",
@@ -355,4 +476,5 @@ __all__ = [
     "StorageScope",
     "StoredContent",
     "SubmitPluginJobCommand",
+    "UpdateRepresentationNoteCommand",
 ]

@@ -182,9 +182,85 @@ def create_app(
     async def get_project(project_id: str, _: SessionPrincipal = Depends(principal)) -> dict[str, Any]:
         return backend.get_project(project_id)
 
+    @app.patch(f"{API_PREFIX}/projects/{{project_id}}")
+    async def rename_project(
+        project_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        return backend.rename_project(
+            project_id,
+            str(payload.get("name", "")),
+            command_context(actor, idempotency_key, if_match, revision_required=True),
+        )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/archive")
+    async def archive_project(
+        project_id: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        return backend.archive_project(
+            project_id, command_context(actor, idempotency_key, if_match, revision_required=True)
+        )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/restore")
+    async def restore_project(
+        project_id: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        return backend.restore_project(
+            project_id, command_context(actor, idempotency_key, if_match, revision_required=True)
+        )
+
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/layers")
     async def list_layers(project_id: str, _: SessionPrincipal = Depends(principal)) -> dict[str, Any]:
         return {"items": backend.list_layers(project_id)}
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/acl/{{principal_id}}")
+    async def project_roles(
+        project_id: str,
+        principal_id: str,
+        _: SessionPrincipal = Depends(principal),
+    ) -> dict[str, Any]:
+        return backend.project_roles(project_id, principal_id)
+
+    @app.put(f"{API_PREFIX}/projects/{{project_id}}/acl/{{principal_id}}/{{role}}")
+    async def assign_project_role(
+        project_id: str,
+        principal_id: str,
+        role: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        return backend.assign_project_role(
+            project_id,
+            principal_id,
+            role,
+            command_context(actor, idempotency_key, if_match, revision_required=True),
+        )
+
+    @app.delete(f"{API_PREFIX}/projects/{{project_id}}/acl/{{principal_id}}/{{role}}")
+    async def revoke_project_role(
+        project_id: str,
+        principal_id: str,
+        role: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        return backend.revoke_project_role(
+            project_id,
+            principal_id,
+            role,
+            command_context(actor, idempotency_key, if_match, revision_required=True),
+        )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers", status_code=201)
     async def create_layer(
@@ -197,6 +273,52 @@ def create_app(
         return backend.create_layer(
             project_id,
             payload,
+            command_context(actor, idempotency_key, if_match, revision_required=True),
+        )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/rename")
+    async def rename_layer(
+        project_id: str,
+        layer_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        return backend.rename_layer(
+            project_id,
+            layer_id,
+            str(payload.get("name", "")),
+            command_context(actor, idempotency_key, if_match, revision_required=True),
+        )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/reorder")
+    async def reorder_layer(
+        project_id: str,
+        layer_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        return backend.reorder_layer(
+            project_id,
+            layer_id,
+            int(payload.get("order", -1)),
+            command_context(actor, idempotency_key, if_match, revision_required=True),
+        )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/archive")
+    async def archive_layer(
+        project_id: str,
+        layer_id: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        return backend.archive_layer(
+            project_id,
+            layer_id,
             command_context(actor, idempotency_key, if_match, revision_required=True),
         )
 
@@ -224,6 +346,21 @@ def create_app(
             project_id,
             layer_id,
             payload,
+            command_context(actor, idempotency_key, if_match, revision_required=True),
+        )
+
+    @app.patch(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/representations/{{representation_id}}")
+    async def update_representation(
+        project_id: str,
+        layer_id: str,
+        representation_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        return backend.update_representation(
+            project_id, layer_id, representation_id, payload,
             command_context(actor, idempotency_key, if_match, revision_required=True),
         )
 

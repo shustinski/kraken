@@ -120,6 +120,43 @@ class ProjectionRebuilder:
                     )
                 )
             return True
+        if event.event_type == "ProjectRoleAssigned":
+            if self.acl is not None:
+                self.acl.assign(
+                    ProjectRoleAssignment.create(
+                        project_id=event.project_id,
+                        principal_id=PrincipalId(str(payload["principal_id"])),
+                        role=ProjectRole(str(payload["role"])),
+                        assigned_by=PrincipalId(str(payload.get("assigned_by", event.actor.principal_id))),
+                        assigned_at=self._time(payload, "changed_at", event.recorded_at),
+                    )
+                )
+            return True
+        if event.event_type == "ProjectRoleRevoked":
+            if self.acl is not None:
+                self.acl.revoke(
+                    event.project_id,
+                    PrincipalId(str(payload["principal_id"])),
+                    ProjectRole(str(payload["role"])),
+                )
+            return True
+        if event.event_type in {"ProjectRenamed", "ProjectArchived", "ProjectRestored"}:
+            raw = payload.get("project")
+            if not isinstance(raw, Mapping):
+                raise ValueError("Project lifecycle event has no aggregate snapshot")
+            project = Project(
+                id=ProjectId(str(raw["id"])),
+                name=str(raw["name"]),
+                width=int(raw["width"]),
+                height=int(raw["height"]),
+                orientation=GridOrientation(str(raw["orientation"])),
+                storage_profile=str(raw["storage_profile"]),
+                state=ProjectState(str(raw["state"])),
+                revision=event.revision,
+                created_at=self._time(raw, "created_at", event.recorded_at),
+            )
+            self._save("project", project, event)
+            return True
         if event.event_type == "LayerCreated":
             layer = Layer(
                 id=LayerId(str(payload["layer_id"])),
@@ -135,6 +172,22 @@ class ProjectionRebuilder:
             project = self.store.get_project(event.project_id)
             if project is not None:
                 self._save("project", replace(project, revision=event.revision), event)
+            return True
+        if event.event_type in {"LayerRenamed", "LayerReordered", "LayerArchived"}:
+            raw = payload.get("layer")
+            if not isinstance(raw, Mapping):
+                raise ValueError("Layer lifecycle event has no aggregate snapshot")
+            layer = Layer(
+                id=LayerId(str(raw["id"])),
+                project_id=ProjectId(str(raw["project_id"])),
+                name=str(raw["name"]),
+                type=LayerType(str(raw["type"])),
+                order=int(raw["order"]),
+                state=StructureState(str(raw["state"])),
+                revision=event.revision,
+                created_at=self._time(raw, "created_at", event.recorded_at),
+            )
+            self._save("layer", layer, event)
             return True
         if event.event_type == "RepresentationCreated":
             representation = Representation(
@@ -156,6 +209,40 @@ class ProjectionRebuilder:
                     self._save("representation", previous.deactivate(), event)
             self._save("representation", representation, event)
             layer = self.store.get_layer(representation.layer_id)
+            if layer is not None:
+                self._save("layer", replace(layer, revision=event.revision), event)
+            return True
+        if event.event_type in {
+            "RepresentationRenamed",
+            "RepresentationNoteUpdated",
+            "RepresentationActivated",
+            "RepresentationArchived",
+        }:
+            raw = payload.get("representation")
+            if not isinstance(raw, Mapping):
+                raise ValueError("Representation lifecycle event has no aggregate snapshot")
+
+            def representation_from_snapshot(item: Mapping[str, Any]) -> Representation:
+                return Representation(
+                    id=RepresentationId(str(item["id"])),
+                    project_id=ProjectId(str(item["project_id"])),
+                    layer_id=LayerId(str(item["layer_id"])),
+                    name=str(item["name"]),
+                    kind=RepresentationKind(str(item["kind"])),
+                    note=str(item.get("note", "")),
+                    source=None if item.get("source") is None else str(item["source"]),
+                    active=bool(item.get("active", False)),
+                    state=StructureState(str(item["state"])),
+                    revision=int(item["revision"]),
+                    created_at=self._time(item, "created_at", event.recorded_at),
+                )
+
+            for previous in payload.get("deactivated", ()):
+                if isinstance(previous, Mapping):
+                    self._save("representation", representation_from_snapshot(previous), event)
+            value = representation_from_snapshot(raw)
+            self._save("representation", value, event)
+            layer = self.store.get_layer(value.layer_id)
             if layer is not None:
                 self._save("layer", replace(layer, revision=event.revision), event)
             return True

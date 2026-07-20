@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib import request
 
+from .plugin_protocol import PLUGIN_PROTOCOL_VERSION, PluginCapability
 from .runtime import current_platform
 
 
@@ -35,6 +36,9 @@ class PluginMetadata:
     executables: dict[str, PluginExecutable] = field(default_factory=dict)
     update_manifests: dict[str, str] = field(default_factory=dict)
     actions: tuple[str, ...] = ()
+    protocol_version: str = PLUGIN_PROTOCOL_VERSION
+    capabilities: tuple[PluginCapability, ...] = ()
+    deprecated_actions: tuple[str, ...] = ()
     source_dir: str = ""
     version_history: tuple[PluginVersionEntry, ...] = ()
 
@@ -82,6 +86,14 @@ def parse_plugin_metadata(payload: dict[str, Any]) -> PluginMetadata:
                 path=str(raw_value.get("path", "") or ""),
                 command=tuple(str(part) for part in command) if isinstance(command, list) else (),
             )
+    capabilities: list[PluginCapability] = []
+    for item in payload.get("capabilities", ()):
+        if not isinstance(item, dict):
+            continue
+        try:
+            capabilities.append(PluginCapability.from_dict(item))
+        except (TypeError, ValueError):
+            continue
     return PluginMetadata(
         id=str(payload["id"]),
         display_name=str(payload.get("display_name", payload["id"])),
@@ -92,6 +104,9 @@ def parse_plugin_metadata(payload: dict[str, Any]) -> PluginMetadata:
         executables=executables,
         update_manifests={str(k).lower(): str(v) for k, v in (payload.get("update_manifests") or {}).items()},
         actions=tuple(str(item) for item in payload.get("actions", ())),
+        protocol_version=str(payload.get("protocol_version", PLUGIN_PROTOCOL_VERSION)),
+        capabilities=tuple(capabilities),
+        deprecated_actions=tuple(str(item) for item in payload.get("deprecated_actions", ())),
         source_dir=str(payload.get("source_dir", "") or ""),
         version_history=parse_version_history(payload),
     )
@@ -151,6 +166,9 @@ def load_plugin_metadata_from_directory(plugin_root: Path) -> PluginMetadata | N
         executables=plugin.executables,
         update_manifests=plugin.update_manifests,
         actions=plugin.actions,
+        protocol_version=plugin.protocol_version,
+        capabilities=plugin.capabilities,
+        deprecated_actions=plugin.deprecated_actions,
         source_dir=plugin.source_dir,
         version_history=load_changelog_history(plugin_root),
     )
@@ -186,6 +204,9 @@ def merge_plugin_metadata(primary: PluginMetadata, fallback: PluginMetadata | No
         executables=primary.executables or fallback.executables,
         update_manifests=primary.update_manifests or fallback.update_manifests,
         actions=primary.actions or fallback.actions,
+        protocol_version=primary.protocol_version or fallback.protocol_version,
+        capabilities=primary.capabilities or fallback.capabilities,
+        deprecated_actions=primary.deprecated_actions or fallback.deprecated_actions,
         source_dir=primary.source_dir or fallback.source_dir,
         version_history=primary.version_history or fallback.version_history,
     )

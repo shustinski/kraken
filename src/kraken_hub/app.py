@@ -143,7 +143,7 @@ def print_inventory(items: list[PluginInventoryItem]) -> None:
         print(f"{plugin.id}\t{plugin.version}\t{enabled}\t{installed}\t{plugin.display_name}")
 
 
-def run_gui(items: list[PluginInventoryItem], *, update_url: str = "") -> int:
+def run_legacy_gui(items: list[PluginInventoryItem], *, update_url: str = "") -> int:
     from PyQt6.QtCore import QSettings, QTimer, Qt
     from PyQt6.QtWidgets import (
         QApplication,
@@ -273,6 +273,14 @@ def run_gui(items: list[PluginInventoryItem], *, update_url: str = "") -> int:
     return app.exec()
 
 
+def run_gui(items: list[PluginInventoryItem], *, update_url: str = "") -> int:
+    """Launch the project manager while retaining the old launcher by flag."""
+
+    from .manager_app import run_manager_gui
+
+    return run_manager_gui(items, update_url=update_url)
+
+
 def format_version_history(plugin: PluginMetadata) -> str:
     if not plugin.version_history:
         return f"Current version: {plugin.version}"
@@ -302,6 +310,7 @@ def main(argv: list[str] | None = None) -> None:
         "--update-url",
         help="URL or local path of the Kraken Hub update manifest (also KRAKEN_UPDATE_URL).",
     )
+    parser.add_argument("--legacy-launcher", action="store_true", help="Open the deprecated standalone plugin hub.")
     args = parser.parse_args(argv)
     catalog = discover_catalog(args.catalog)
     plugins_dir = Path(args.plugins_dir).expanduser().resolve() if args.plugins_dir else default_plugins_dir()
@@ -310,4 +319,5 @@ def main(argv: list[str] | None = None) -> None:
     if args.list:
         print_inventory(inventory)
         return
-    raise SystemExit(run_gui(inventory, update_url=args.update_url or ""))
+    launcher = run_legacy_gui if args.legacy_launcher else run_gui
+    raise SystemExit(launcher(inventory, update_url=args.update_url or ""))

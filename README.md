@@ -1,15 +1,19 @@
 # Kraken
 
-Kraken is a PyQt6 hub plus a shared runtime for independently installed
-plugins. The repository is a monorepo: the hub and common code live under
-`src/`, while every application lives under `plugins/<plugin_name>/`.
+Kraken is a clean-architecture project manager for sparse frame grids. It can
+run as an offline, single-writer Desktop application or as a PostgreSQL-backed
+shared service. Contour, NeuralImage and the remaining applications stay
+isolated plugins and exchange only versioned manifests through Kraken Agent.
 
 ## Layout
 
 ```text
 src/
+  kraken_manager/        # domain, application, infrastructure, Qt presentation
   kraken_hub/
-  kraken_core/
+  kraken_server/
+  kraken_agent/
+  kraken_core/           # technical runtime and plugin wire protocol
 
 plugins/
   neuralimage/
@@ -59,13 +63,19 @@ The active plugin package names are `neuralimage`, `contour`, `krona`,
 
 ## UV Setup
 
-Install project dependencies from the repository root:
+Install only the profiles needed on a workstation:
 
 ```powershell
-uv sync
+uv sync --extra desktop
 ```
 
-Install root development tools, such as test and lint dependencies:
+For a server with PostgreSQL and reports:
+
+```powershell
+uv sync --extra server --extra postgres --extra reports --extra packages
+```
+
+Install root development tools (this also includes the Desktop test runtime):
 
 ```powershell
 uv sync --extra dev
@@ -102,13 +112,25 @@ dependency, so `uv sync` inside the plugin also installs the root
 
 ## Run
 
-**Hub (main app)** — from the repository root after `uv sync`:
+Create the first workstation account (there is no self-registration), then
+start Desktop:
 
 ```powershell
-uv run python -m kraken_hub
+uv run kraken-admin bootstrap-local --username admin --display-name "Administrator"
+uv run kraken-hub
 ```
 
-`--list` lists registered plugins.
+The previous plugin-only launcher remains available behind
+`kraken-hub --legacy-launcher`; `--list` lists registered plugins.
+
+Production server startup is fail-closed. Run Alembic first and select the
+built-in composition as documented in
+[`docs/deployment/server.md`](docs/deployment/server.md). Ephemeral state is
+available only with an explicit `kraken-server --development`.
+
+Kraken Agent uses a durable local SQLite queue and authenticated loopback
+channel. Start it with `kraken-agent`; its registry determines which V1 plugin
+operations may run.
 
 Kraken Hub checks for its own updates at startup when an update manifest is
 configured. Set it in the Hub with **Update source…**, pass

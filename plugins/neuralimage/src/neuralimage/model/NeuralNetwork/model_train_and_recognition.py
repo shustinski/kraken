@@ -6253,6 +6253,7 @@ class NeuralRecognizer(threading.Thread):
             context_crop_size=self._context_crop_size,
             context_input_size=self._context_input_size,
             compression_factor=max(1, int(getattr(self._parameters, 'compression_factor', 1))),
+            lossless_binary_png=bool(getattr(self._parameters, 'lossless_binary_png', False)),
             source_root=(
                 Path(self._parameters.source_folder)
                 if bool(getattr(self._parameters, 'recursive_file_search', False))

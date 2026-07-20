@@ -97,6 +97,21 @@ def _build_parser() -> argparse.ArgumentParser:
         action='version',
         version=get_app_title(),
     )
+    parser.add_argument(
+        '--kraken-job-manifest',
+        default=None,
+        help='Kraken Agent job manifest (managed headless mode).',
+    )
+    parser.add_argument(
+        '--kraken-result-manifest',
+        default=None,
+        help='Kraken Agent result manifest (managed headless mode).',
+    )
+    parser.add_argument(
+        '--kraken-staging-root',
+        default=None,
+        help='Kraken Agent staging workspace (managed headless mode).',
+    )
     return parser
 
 
@@ -121,6 +136,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     _configure_multiprocessing_start_method()
     parser = _build_parser()
     args = parser.parse_args(argv)
+    from neuralimage.kraken_bridge import load_session_from_values
+
+    kraken_session = load_session_from_values(
+        job_manifest=args.kraken_job_manifest,
+        result_manifest=args.kraken_result_manifest,
+        staging_root=args.kraken_staging_root,
+    )
+    if kraken_session is not None:
+        if args.web or args.ui_only:
+            parser.error('Kraken Agent mode is headless and cannot be combined with --web or --ui-only.')
+        kraken_session.run_headless()
+        return
     if args.web:
         _run_web_ui(args.host, args.port)
         return

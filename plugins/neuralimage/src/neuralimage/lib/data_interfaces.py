@@ -1412,6 +1412,7 @@ class RecognitionParameters:
     context_input_size: tuple[int, int] | None = None
     recursive_file_search: bool = False
     compression_factor: int = 1
+    lossless_binary_png: bool = False
 
 
 @dataclass

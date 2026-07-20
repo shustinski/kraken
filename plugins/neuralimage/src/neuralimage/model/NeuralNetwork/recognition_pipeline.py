@@ -616,6 +616,7 @@ def run_single_thread_recognition(
     context_input_size: tuple[int, int] | None = None,
     compression_factor: int = 1,
     source_root: Path | None = None,
+    lossless_binary_png: bool = False,
 ) -> None:
     model.eval()
     model.to(device)
@@ -725,6 +726,7 @@ def run_single_thread_recognition(
             threshold=(float(threshold) if binarize_output and threshold is not None else None),
             postprocess_kernel_size=(int(postprocess_kernel_size) if postprocess_enabled else 0),
             confidence_save_mode=confidence_save_mode,
+            lossless_binary_png=lossless_binary_png,
         )
         _publish_recognition_preview(
             publish=publish,
@@ -1356,6 +1358,12 @@ def _save_jpeg_atomic(image: Image.Image, path: Path, *, quality: int) -> None:
     os.replace(temp_path, path)
 
 
+def _save_png_atomic(image: Image.Image, path: Path) -> None:
+    temp_path = path.with_name(f'.{path.name}.tmp')
+    image.save(temp_path, format='PNG', optimize=False, compress_level=6)
+    os.replace(temp_path, path)
+
+
 def sew(
     save_dir: Path | str,
     item: dict[str, Any],
@@ -1364,8 +1372,10 @@ def sew(
     threshold: float | None = None,
     postprocess_kernel_size: int = 0,
     confidence_save_mode: str = 'off',
+    lossless_binary_png: bool = False,
 ) -> Path:
-    output_name = Path(str(item['name'])).with_suffix('.jpg')
+    save_binary_png = bool(lossless_binary_png and threshold is not None)
+    output_name = Path(str(item['name'])).with_suffix('.png' if save_binary_png else '.jpg')
     output_path = Path(save_dir) / output_name
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image = cast(
@@ -1379,13 +1389,19 @@ def sew(
         ),
     )
     quality = max(1, min(100, int(jpeg_quality)))
-    _save_jpeg_atomic(image, output_path, quality=quality)
+    if save_binary_png:
+        if image.mode != 'L':
+            image = image.convert('L')
+        _save_png_atomic(image, output_path)
+    else:
+        _save_jpeg_atomic(image, output_path, quality=quality)
     if str(confidence_save_mode).strip().lower() != 'separate_grayscale':
         return output_path
     confidence_predictions = item.get('confidence_image')
     if confidence_predictions is None:
         return output_path
-    confidence_path = _confidence_output_root(save_dir) / output_name
+    confidence_name = Path(str(item['name'])).with_suffix('.jpg')
+    confidence_path = _confidence_output_root(save_dir) / confidence_name
     confidence_path.parent.mkdir(parents=True, exist_ok=True)
     confidence_image = cast(
         Image.Image,

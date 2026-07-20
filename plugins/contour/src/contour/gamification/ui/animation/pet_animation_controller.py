@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path
+from time import monotonic
 
-from PyQt6.QtCore import QObject, QTimer
+from PyQt6.QtCore import QObject, Qt, QTimer
 from PyQt6.QtGui import QPixmap
 
 from ...assets.resources import ensure_gamification_qt_resources_registered
@@ -197,12 +198,18 @@ class PetAnimationController(QObject):
         self._pet_type = PetType.KRAKEN
         self._rarity: Rarity | None = Rarity.COMMON
         self._state = PetAnimationState.IDLE
+        self._return_deadline: float | None = None
         self._return_timer = QTimer(self)
         self._return_timer.setSingleShot(True)
+        self._return_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._return_timer.timeout.connect(self.return_to_idle)
 
     @property
     def state(self) -> PetAnimationState:
+        # A saturated UI event loop may deliver the single-shot timer late.
+        # Do not expose an expired temporary state in the meantime.
+        if self._return_deadline is not None and monotonic() >= self._return_deadline:
+            self.return_to_idle()
         return self._state
 
     def has_animation(self, pet_type: PetType, rarity: Rarity | None = Rarity.COMMON) -> bool:
@@ -224,13 +231,16 @@ class PetAnimationController(QObject):
             animation = self._registry.get_animation(self._rarity, normalized)
         self._state = normalized
         self._return_timer.stop()
+        self._return_deadline = None
         if animation is None:
             self._player.set_animation(None)
             return
         self._player.set_animation(animation)
         self._player.play()
         if temporary_ms is not None and normalized != PetAnimationState.IDLE:
-            self._return_timer.start(max(1, int(temporary_ms)))
+            duration_ms = max(1, int(temporary_ms))
+            self._return_deadline = monotonic() + duration_ms / 1000.0
+            self._return_timer.start(duration_ms)
 
     def return_to_idle(self) -> None:
         self.set_state(PetAnimationState.IDLE)

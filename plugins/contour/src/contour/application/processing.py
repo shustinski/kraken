@@ -582,7 +582,10 @@ class ContourExtractionSettings:
     def from_dict(cls, payload: dict[str, Any]) -> ContourExtractionSettings:
         from ..vision.metal_recovery.segmentation import migrate_legacy_metal_settings
 
+        legacy_method_only = "metal_segmentation_method" in payload and "metal_segmentation_strategy" not in payload
         payload = migrate_legacy_metal_settings(dict(payload))
+        if legacy_method_only:
+            payload["metal_segmentation_strategy"] = "legacy_otsu"
         max_area = payload.get("max_area")
         max_perimeter = payload.get("max_perimeter")
         max_bbox_width = payload.get("max_bbox_width")

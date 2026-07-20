@@ -61,8 +61,9 @@ def estimate_effective_polygon_width_px(
         return 0.0, "minAreaRect_fallback"
     dist = cv2.distanceTransform(component, cv2.DIST_L2, 5)
     fg = component > 0
-    dmax = float(np.max(dist[fg])) if int(np.count_nonzero(fg)) else 0.0
-    if dmax <= 1e-6:
+    finite_distances = dist[fg & np.isfinite(dist)]
+    dmax = float(np.max(finite_distances)) if int(finite_distances.size) else 0.0
+    if dmax <= 1e-6 or not np.isfinite(dmax):
         rect = cv2.minAreaRect(contour)
         rw, rh = float(rect[1][0]), float(rect[1][1])
         return (min(rw, rh) if rw > 0 and rh > 0 else 0.0), "minAreaRect_fallback"
@@ -74,8 +75,8 @@ def estimate_effective_polygon_width_px(
     # Ignore boundary-adjacent pixels (large area with small 2*dist) when taking a low % tile.
     tau = _MEDIAL_CORE_FRACTION * dmax
     core = fg & (dist >= tau) & (dist > 0.25)
-    local_w = 2.0 * dist
-    values = local_w[core]
+    values = dist[core].astype(np.float64, copy=False) * 2.0
+    values = values[np.isfinite(values)]
     if int(values.size) < 3:
         return full_width, "dt_dmax"
     w_est = float(np.percentile(values, percentile))
@@ -259,7 +260,7 @@ def _matched_fixed_via_bbox(
 
 
 def _matches_via_size_constraints(bbox_width: int, bbox_height: int, config: ContourExtractionSettings) -> bool:
-    if config.via_size_mode == "fixed":
+    if config.via_size_mode == "fixed" and (config.fixed_via_widths or config.fixed_via_heights):
         return _matched_fixed_via_bbox((0, 0, bbox_width, bbox_height), config) is not None
 
     if bbox_width < config.min_via_width:
@@ -629,12 +630,12 @@ def _finalize_closed_polygon_points(
         return points if len(points) >= 3 else None
     if len(points) < 3:
         return None
-    if len(points) > _TOPOLOGY_CHECK_MAX_VERTICES or is_valid_closed_polygon_ring(points):
+    if is_valid_closed_polygon_ring(points):
         return points
     repaired = _repair_invalid_ring_from_raster(points, raw_contour, _image_shape, config)
     if repaired is not None:
         return repaired
-    return points
+    return None
 
 
 def _repair_invalid_ring_from_raster(

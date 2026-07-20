@@ -428,9 +428,16 @@ class WidgetNavigationMixin:
         full_w, full_h = self._frame_matrix_reference_image_size()
         if full_w <= 0 or full_h <= 0:
             return (0, 0)
-        overlap_x = int(round(full_overlap * max(1, int(icon_size.width())) / float(full_w)))
-        overlap_y = int(round(full_overlap * max(1, int(icon_size.height())) / float(full_h)))
-        return (max(0, overlap_x), max(0, overlap_y))
+        icon_w = max(1, int(icon_size.width()))
+        icon_h = max(1, int(icon_size.height()))
+        overlap_x = int(round(full_overlap * icon_w / float(full_w)))
+        overlap_y = int(round(full_overlap * icon_h / float(full_h)))
+        # An overlap equal to (or larger than) a cell would make the matrix
+        # extent negative and all following frames collapse onto one point.
+        return (
+            min(max(0, overlap_x), icon_w - 1),
+            min(max(0, overlap_y), icon_h - 1),
+        )
 
     def _frame_matrix_reference_image_size(self: Any) -> tuple[int, int]:
         if hasattr(self, "_display_image_dimensions_for_vectors"):
@@ -719,7 +726,10 @@ class WidgetNavigationMixin:
             return
         if self._thumbnail_loading_blocked():
             return
-        current = self._workspace.current_image_path
+        # Follow the user's most recent selection immediately.  The workspace
+        # changes only after the asynchronous frame load completes, so using it
+        # alone leaves the matrix highlighting the previous frame meanwhile.
+        current = getattr(self, "_desired_image_path", None) or self._workspace.current_image_path
         if not current:
             return
         normalized_current = self._normalized_path(current)
@@ -748,7 +758,10 @@ class WidgetNavigationMixin:
             return
         if self._thumbnail_loading_blocked():
             return
-        current = self._workspace.current_image_path
+        # Selection leads the asynchronous workspace load.  Highlight the
+        # requested frame immediately, while generation checks below still
+        # prevent stale load results from changing the editor.
+        current = getattr(self, "_desired_image_path", None) or self._workspace.current_image_path
         if not current:
             return
         normalized = self._normalized_path(current)
@@ -1086,7 +1099,10 @@ class WidgetNavigationMixin:
             return
         if scroll_to_selection is None:
             scroll_to_selection = getattr(self, "_suppress_thumbnail_grid_scroll_path", None) is None
-        current = self._workspace.current_image_path
+        # Selection leads the asynchronous workspace load.  Highlight the
+        # requested frame immediately, while generation checks still prevent
+        # stale load results from changing the editor.
+        current = getattr(self, "_desired_image_path", None) or self._workspace.current_image_path
         previous = getattr(self, "_thumbnail_selected_path", None)
         path_index = getattr(self, "_thumbnail_path_to_row", {})
         matched_index = -1

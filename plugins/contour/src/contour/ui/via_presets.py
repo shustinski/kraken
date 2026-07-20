@@ -44,7 +44,7 @@ def blurred_via_preset_payload() -> dict[str, object]:
     }
 
 
-def built_in_via_presets(language: str) -> dict[str, dict[str, object]]:
+def _legacy_via_presets(language: str) -> dict[str, dict[str, object]]:
     """Return the built-in preset name → payload mapping for *language* (``"ru"`` or ``"en"``)."""
     if language == "ru":
         return {
@@ -67,7 +67,6 @@ __all__ = [
 def _standard_via_preset_payload() -> dict[str, object]:
     return {
         "via_search_mode": "heuristic",
-        "via_heuristic_polarity": "bright",
         "via_size_mode": "fixed",
         "bright_via_diameter_min": 8,
         "bright_via_diameter_max": 8,
@@ -103,7 +102,7 @@ def _bright_via_preset_payload() -> dict[str, object]:
     }
 
 
-def built_in_via_presets(language: str) -> dict[str, dict[str, object]]:  # type: ignore[no-redef]
+def built_in_via_presets(language: str) -> dict[str, dict[str, object]]:
     standard = _standard_via_preset_payload()
     small = {**standard, "bright_via_diameter_min": 5, "bright_via_diameter_max": 5, "bright_via_nms_distance": 4}
     large = {**standard, "bright_via_diameter_min": 14, "bright_via_diameter_max": 14, "bright_via_nms_distance": 10}

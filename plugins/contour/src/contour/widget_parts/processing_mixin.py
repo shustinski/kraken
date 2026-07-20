@@ -10,6 +10,7 @@ from typing import Any
 
 from PyQt6.QtGui import QImage, QImageReader
 
+from ..adapters.qt.object_validity import qt_object_is_valid
 from ..infrastructure.frame_switch_profiler import (
     MAX_IDLE_POLLS,
     FrameSwitchProfile,
@@ -615,6 +616,11 @@ class WidgetProcessingMixin:
         runnable = EditorDisplayRunnable(request_id, target_path, display_image)
 
         def _on_display_ready(req_id: int, path: str, qimage: object) -> None:
+            if bool(getattr(self, "_closing", False)) or not qt_object_is_valid(self):
+                return
+            editor = getattr(self, "polygon_editor", None)
+            if not qt_object_is_valid(editor):
+                return
             if req_id != self._editor_display_request_serial:
                 return
             if str(Path(path)) != str(Path(self._workspace.current_image_path or "")):
@@ -2744,7 +2750,6 @@ class WidgetProcessingMixin:
         if self._work_simulation_visible_points >= self._work_simulation_total_points:
             self._work_simulation_timer.stop()
             self._restore_work_simulation_frame()
-            self._work_simulation_target_polygons = []
             QTimer.singleShot(max(1, int(self._work_simulation_interval_ms)), self._begin_next_work_simulation_frame)
             return
         partial = self._partial_work_simulation_polygons(
@@ -2760,7 +2765,10 @@ class WidgetProcessingMixin:
         self._work_simulation_timer.stop()
         self._work_simulation_path_index += 1
         if self._work_simulation_path_index >= len(self._work_simulation_paths):
-            self._stop_work_simulation(restore_current=False)
+            # Restore once more at the transaction boundary.  Queued editor
+            # notifications from the drawing animation must not leave the last
+            # frame at an intermediate vertex count.
+            self._stop_work_simulation(restore_current=True)
             self._append_log("Симуляция завершена." if self._ui_language == "ru" else "Work simulation finished.")
             return
         path = self._work_simulation_paths[self._work_simulation_path_index]

@@ -10,6 +10,7 @@ batchProgress
 imageProcessed
 logMessage
 polygonsEdited
+workSimulationActiveChanged
 
 [methods]
 append_images

@@ -87,7 +87,8 @@ def test_main_view_docks_thumbnail_matrix_and_keeps_file_menu_first() -> None:
         assert files_dock is not None
         assert files_dock.widget() is view.widget.files_tab
         assert recognition_dock is not None
-        assert recognition_dock.widget() is view.widget.extraction_tab
+        assert recognition_dock.widget() is view.widget.recognition_panel_scroll
+        assert view.widget.recognition_panel_scroll.widget() is view.widget.extraction_tab
         assert dock is not None
         assert dock.widget() is view.widget.thumbnail_matrix_panel
         assert view.widget.thumbnail_grid_scroll_area.widget() is view.widget.thumbnail_grid

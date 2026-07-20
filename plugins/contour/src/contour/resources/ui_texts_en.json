@@ -1,5 +1,7 @@
 {
   "translations": {
+    "via_search_mode_universal": "Universal",
+    "via_search_mode_bright_sem": "Bright spots (SEM)",
     "path_panel_title": "Paths",
     "tab_paths": "Paths",
     "input_directory_label": "Input directory",

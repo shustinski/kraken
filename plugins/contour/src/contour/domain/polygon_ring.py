@@ -73,9 +73,9 @@ def _segment_forbidden_for_simple_polygon(
     if o4 == 0 and _on_segment2(b, c, d):
         return not (_point_equal(b, c) or _point_equal(b, d))
     if o1 == 0 and o2 == 0 and o3 == 0 and o4 == 0:
-        return not (
-            _point_equal(a, c) or _point_equal(a, d) or _point_equal(b, c) or _point_equal(b, d)
-        )
+        overlap_x = max(min(a[0], b[0]), min(c[0], d[0])) <= min(max(a[0], b[0]), max(c[0], d[0])) + _SEG_EPS
+        overlap_y = max(min(a[1], b[1]), min(c[1], d[1])) <= min(max(a[1], b[1]), max(c[1], d[1])) + _SEG_EPS
+        return overlap_x and overlap_y
     return False
 
 
@@ -108,7 +108,12 @@ def is_valid_closed_polygon_ring(points: list[tuple[float, float]]) -> bool:
     if n < 3:
         return True
     if n > TOPOLOGY_CHECK_MAX_VERTICES:
-        return True
+        # GEOS uses a sweep-line topology check and remains practical for
+        # mask-derived rings with thousands of vertices.
+        from shapely.geometry import Polygon
+
+        polygon = Polygon(points)
+        return bool(polygon.is_valid and not polygon.is_empty and polygon.area > _SEG_EPS)
     inv_eps = 1.0 / _POINT_EQ_EPS
     buckets: dict[tuple[int, int], list[int]] = {}
     for index, (x_coord, y_coord) in enumerate(points):

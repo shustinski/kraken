@@ -1,6 +1,6 @@
 #define MyAppName "Contour"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.6.1"
+  #define MyAppVersion "0.8.5"
 #endif
 #define MyAppPublisher "ViaLaNet"
 #define MyAppExeName "Contour.exe"

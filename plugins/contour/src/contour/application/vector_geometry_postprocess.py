@@ -518,7 +518,9 @@ def _postprocess_scoped_single_polygon(
         scoped = filter_simple_valid_polygons(scoped)
     else:
         scoped = dissolve_small_holes(scoped, settings.min_hole_area_to_remove_px2)
-        scoped = apply_spike_removal_all(scoped, settings.min_spike_interior_angle_deg)
+        # A direct edit is transactional: keep any valid geometry the user
+        # authored. Automatic spike simplification belongs to an explicit/full
+        # cleanup pass and must not silently turn a vertex drag into a rollback.
         scoped = filter_simple_valid_polygons(scoped)
         scoped = drop_small_outer_polygons(scoped, settings.min_outer_area_px2)
         scoped = drop_triangle_outer_artifacts(

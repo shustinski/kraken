@@ -106,7 +106,7 @@ def _run_sem_via_detection(
     if mode == VIA_SEARCH_MODE_TEMPLATE:
         tcfg = template_config_from_settings(legacy_settings)
         result = detect_vias_template(gray, tcfg)
-        hits = [_detection_to_hit(d, "template", fixed_output_diameters) for d in result.accepted]
+        hits = [_detection_to_hit(d, "legacy_template", fixed_output_diameters) for d in result.accepted]
         dbg = _result_debug(result, "template")
         return ViaDetectionOutput(
             image=image_ref,
@@ -164,7 +164,7 @@ def _run_sem_via_detection(
         mode = VIA_SEARCH_MODE_HEURISTIC
     hcfg = heuristic_config_from_settings(legacy_settings)
     result = detect_vias_heuristic(gray, hcfg)
-    hits = [_detection_to_hit(d, "heuristic", fixed_output_diameters) for d in result.accepted]
+    hits = [_detection_to_hit(d, "sem_primary", fixed_output_diameters) for d in result.accepted]
     dbg = _result_debug(result, "heuristic")
     ad = hcfg.allowed_diameters()
     log.append(f"heuristic: polar={hcfg.polarity!r}")

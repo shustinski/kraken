@@ -15,7 +15,12 @@ from ...domain import PolygonData
 from ...utils import ensure_binary_mask, ensure_uint8
 
 from .pipeline_stages import build_metal_segmentation_mask_staged, image_signature
-from .segmentation import MetalSegmentationConfig
+from .segmentation import MetalSegmentationConfig, normalize_metal_segmentation_strategy
+
+
+def _normalize_metal_extraction_mode(value: Any) -> str:
+    """Compatibility bridge to the canonical segmentation normalizer."""
+    return normalize_metal_segmentation_strategy(value)
 
 
 @dataclass(slots=True)

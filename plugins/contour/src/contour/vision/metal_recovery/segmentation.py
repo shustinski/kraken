@@ -13,9 +13,27 @@ from ..schemas import SemPolarity
 
 
 def normalize_metal_segmentation_strategy(value: Any) -> str:
-    """All strategies normalize to Otsu (legacy UI values are migrated here)."""
-    _ = value
-    return "legacy_otsu"
+    """Normalize persisted and localized values to one supported strategy."""
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if text in {
+        "edges",
+        "edge",
+        "none",
+        "disabled",
+        "without_segmentation",
+        "без",
+        "без_сегментации",
+    }:
+        return "edges"
+    if text in {"auto", "hybrid", "adaptive_auto", "гибрид", "гибридная"}:
+        return "auto"
+    if text in {"local_adaptive", "adaptive", "адаптивная", "адаптивный"}:
+        return "local_adaptive"
+    if text in {"global_otsu", "legacy_otsu", "otsu"}:
+        return "legacy_otsu"
+    if text == "sauvola":
+        return "sauvola"
+    return "auto"
 
 
 def contrast_bias_to_otsu_offset(contrast_bias: float) -> float:
@@ -39,12 +57,17 @@ def migrate_legacy_metal_settings(payload: dict[str, Any]) -> dict[str, Any]:
         tok = str(payload.get("metal_sensitivity", "medium") or "medium").lower()
         mid = {"low": 35, "medium": 50, "high": 65}.get(tok, 50)
         blend = 0.35 * mid + 0.65 * sens
-        out["metal_contrast_bias"] = int(round((blend - 50.0) * 0.6))
+        out["metal_contrast_bias"] = round((blend - 50.0) * 0.6)
     if "metal_gap_bridge_px" not in payload and "metal_morph_close_radius" in payload:
         out["metal_gap_bridge_px"] = int(payload.get("metal_morph_close_radius", 2) or 2)
     if "metal_speckle_removal_px" not in payload and "metal_morph_open_radius" in payload:
         out["metal_speckle_removal_px"] = int(payload.get("metal_morph_open_radius", 0) or 0)
-    out["metal_segmentation_strategy"] = "legacy_otsu"
+    if "metal_segmentation_strategy" in payload:
+        out["metal_segmentation_strategy"] = normalize_metal_segmentation_strategy(payload["metal_segmentation_strategy"])
+    else:
+        # Old sensitivity/method combinations had no stable semantic match;
+        # the v2-compatible migration selects the automatic strategy.
+        out["metal_segmentation_strategy"] = "auto"
     if "metal_hierarchy_mode" not in payload:
         out["metal_hierarchy_mode"] = "full"
     return out

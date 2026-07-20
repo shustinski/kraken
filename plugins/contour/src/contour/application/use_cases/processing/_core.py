@@ -181,6 +181,17 @@ def build_via_vectorization_mask(
     if gray.size == 0:
         return ensure_binary_mask(image), []
 
+    selected_mode = normalize_via_search_mode(settings.via_search_mode)
+    if (
+        normalize_algorithm_backend(settings.algorithm_backend) == ALGORITHM_BACKEND_LEGACY
+        and selected_mode == VIA_SEARCH_MODE_HEURISTIC
+    ):
+        accepted, rejected = _detect_via_candidates(gray, settings)
+        accepted, duplicates = _iou_nms(accepted, iou_threshold=0.35)
+        debug = _debug_candidates_from_via_candidates(accepted, accepted=True)
+        debug.extend(_debug_candidates_from_via_candidates(rejected, accepted=False))
+        debug.extend(_debug_candidates_from_via_candidates(duplicates, accepted=False, reason="duplicate_iou"))
+        return _render_via_candidates_mask(gray.shape, accepted, settings), debug
     return _build_modern_via_vectorization_mask(gray, settings)
 
 
@@ -389,8 +400,8 @@ def build_detection_debug_maps(
       outputs of individual modern edge detectors for side-by-side
       inspection.
     * ``"mask"`` – final binary mask actually fed into ``extract_polygons``.
-    Modern via debug maps are populated by the selected template or heuristic
-    detector; old blob/top-hat response maps are intentionally not produced.
+    Via debug maps include the common spot and ring responses used by the
+    unified legacy/modern candidate view.
     """
 
     maps: dict[str, np.ndarray] = {}
@@ -441,6 +452,16 @@ def build_detection_debug_maps(
             maps.update(dbg)
         except Exception:  # pragma: no cover - defensive debug path
             pass
+
+        expected_span = _expected_via_span(settings)
+        enhanced = _clahe_gray(recognition_gray) if min(recognition_gray.shape[:2]) >= 8 else recognition_gray
+        maps["spot_response"] = _multiscale_blob_response(
+            enhanced,
+            expected_span,
+            bright=True,
+            line_suppression=max(0.0, min(1.0, float(settings.via_spot_line_suppression))),
+        )
+        maps["ring_response"] = _ring_template_response(elevation, _via_candidate_radii(settings, expected_span))
 
     maps["scharr"] = scharr_magnitude(recognition_gray)
     try:
@@ -618,8 +639,8 @@ def _detect_via_candidates(
     polarity_scans = _via_polarity_scans(settings)
     line_suppression = max(0.0, min(1.0, float(settings.via_spot_line_suppression)))
     search_mode = normalize_via_search_mode(settings.via_search_mode)
-    run_blob = False
-    run_template = search_mode == VIA_SEARCH_MODE_TEMPLATE
+    run_blob = search_mode == VIA_SEARCH_MODE_HEURISTIC
+    run_template = search_mode == VIA_SEARCH_MODE_TEMPLATE or bool(settings.via_template_images)
     edge_method = _resolve_via_edge_method(settings)
     gradient = build_gradient_elevation(enhanced, edge_method)
     if gradient.size == 0:

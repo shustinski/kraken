@@ -68,10 +68,9 @@ def _imread_unicode_safe(path: str | Path, flags: int) -> np.ndarray | None:
             raise FileNotFoundError(tr("unable_to_load_image", path=normalized_path))
         normalized_text = str(normalized_path)
     try:
-        raw_data = Path(normalized_text).read_bytes()
+        raw_bytes = np.fromfile(normalized_text, dtype=np.uint8)
     except OSError as exc:
         raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_text)) from exc
-    raw_bytes = np.frombuffer(raw_data, dtype=np.uint8).copy()
     if raw_bytes.size == 0:
         raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_text))
     with _CV2_DECODE_LOCK:

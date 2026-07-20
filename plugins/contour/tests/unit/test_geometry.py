@@ -49,10 +49,10 @@ class GeometryTests(unittest.TestCase):
         self.assertFalse(is_valid_closed_polygon_ring(pts))
         self.assertTrue(is_valid_closed_polygon_vertex_move(pts, 1))
 
-    def test_large_dense_ring_skips_full_topology_check(self) -> None:
+    def test_large_dense_degenerate_ring_is_not_accepted_without_check(self) -> None:
         n = TOPOLOGY_CHECK_MAX_VERTICES + 50
         ring = [(float(i), 0.0) for i in range(n)]
-        self.assertTrue(is_valid_closed_polygon_ring(ring))
+        self.assertFalse(is_valid_closed_polygon_ring(ring))
 
     def test_vertex_move_validation_rejects_moved_edge_crossing(self) -> None:
         pts = [(0.0, 0.0), (20.0, 60.0), (40.0, 0.0), (0.0, 40.0)]

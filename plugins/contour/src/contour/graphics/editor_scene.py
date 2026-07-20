@@ -32,7 +32,6 @@ from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
     postprocess_after_editor_mutation,
     postprocess_changed_polygon_edit,
-    postprocess_changed_polygon_only,
 )
 from ..commands import (
     AddPolygonCommand,
@@ -1389,6 +1388,40 @@ class PolygonEditorScene(QGraphicsScene):
         return out
 
     def _clip_authored_polygons_to_image(self, polygons: list[PolygonData]) -> list[PolygonData]:
+        image_rect = QRectF(self._image_rect).normalized()
+        if image_rect.width() <= 1.0 or image_rect.height() <= 1.0:
+            return [polygon.clone() for polygon in polygons]
+        if all(
+            image_rect.contains(QPointF(float(x_coord), float(y_coord)))
+            for polygon in polygons
+            for x_coord, y_coord in polygon.points
+        ):
+            # Preserve the complete root/hole family when clipping is a no-op.
+            # Clipping rings independently turns every hole into an outer ring.
+            return [polygon.clone() for polygon in polygons]
+        try:
+            by_id = {polygon.id: polygon.clone() for polygon in polygons}
+            family_geom = region_geometry(by_id, list(by_id))
+            image_geom = shapely_box(
+                float(image_rect.left()),
+                float(image_rect.top()),
+                float(image_rect.right()),
+                float(image_rect.bottom()),
+            )
+            clipped_family = shapely_to_polygon_data_list(
+                unary_union(make_valid(family_geom.intersection(image_geom)))
+            )
+            if not clipped_family:
+                return []
+            reference = next((polygon for polygon in polygons if not polygon.is_hole), polygons[0])
+            for candidate in clipped_family:
+                candidate.category = reference.category
+                candidate.shape_hint = reference.shape_hint
+            return self._assign_polygon_ids(clipped_family, [polygon.id for polygon in polygons])
+        except Exception:
+            # Fall back to the older per-ring path only for malformed legacy
+            # families that cannot be represented by GEOS.
+            pass
         clipped: list[PolygonData] = []
         used_ids: set[int] = set()
         for polygon in polygons:

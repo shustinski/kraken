@@ -1,5 +1,7 @@
 {
   "translations": {
+    "via_search_mode_universal": "Универсальный",
+    "via_search_mode_bright_sem": "Светлые точки (SEM)",
     "path_panel_title": "Пути",
     "tab_paths": "Пути",
     "input_directory_label": "Базовый слой",

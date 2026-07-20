@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import cv2
 import numpy as np
@@ -805,7 +805,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
                 self.widget.image_list.setCurrentIndex(proxy_index)
                 for _ in range(100):
                     self._app.processEvents()
-                    if center_mock.call_count:
+                    if call(force=True) in center_mock.call_args_list:
                         break
                     QTest.qWait(20)
 
@@ -859,7 +859,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.assertEqual(len(queued_loads), 1)
 
             self.widget.load_image(paths[1], load_vectors=False)
-            self.assertEqual(self.widget._frame_load_pending, (paths[1], False))
+            self.assertEqual(self.widget._frame_load_pending, (paths[1], False, False))
 
             queued_loads[0].run()
             self._app.processEvents()
@@ -868,6 +868,11 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.assertIsNone(self.widget._workspace.current_state)
             self.assertIn(paths[0], self.widget._workspace._state_cache)
             self.assertEqual(len(queued_loads), 2)
+            # Finish the deliberately intercepted successor request before the
+            # TemporaryDirectory removes its Windows image files.
+            queued_loads[1].run()
+            self._app.processEvents()
+            self.widget._thumbnail_thread_pool.waitForDone(3000)
             self.assertEqual(queued_loads[1].image_path, paths[1])
 
     def test_cached_first_frame_is_applied_when_switching_back_from_second_frame(self) -> None:

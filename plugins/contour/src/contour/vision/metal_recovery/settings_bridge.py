@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .detector import MetalRecoveryConfig
+from .segmentation import normalize_metal_segmentation_strategy
 
 
 def _normalize_border_mode(value: Any) -> str:
@@ -46,7 +47,9 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
     external_only = _normalize_hierarchy_mode(getattr(settings, "metal_hierarchy_mode", "full"))
     return MetalRecoveryConfig(
         contrast_bias=max(-50.0, min(50.0, float(getattr(settings, "metal_contrast_bias", 0.0) or 0.0))),
-        segmentation_strategy="legacy_otsu",
+        segmentation_strategy=normalize_metal_segmentation_strategy(
+            getattr(settings, "metal_segmentation_strategy", "auto")
+        ),
         gap_bridge_px=_non_negative_int(gap_raw, default=2),
         speckle_removal_px=_non_negative_int(speckle_raw, default=0),
         min_width_px=max(0.5, float(getattr(settings, "metal_min_trace_width_px", 8) or 8)),

@@ -15,7 +15,8 @@ dist/
 .coverage
 htmlcov/
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
 *.log
 *.tmp
 *.bak

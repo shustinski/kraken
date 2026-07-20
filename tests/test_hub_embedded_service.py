@@ -8,11 +8,77 @@ from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.application.dto import CommandContext, CreateProjectCommand
 from kraken_manager.application.use_cases import CreateProjectHandler
 from kraken_manager.domain.identity import ProjectRole
-from kraken_manager.domain.project import GridOrientation
+from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
 from kraken_manager.infrastructure.filesystem import LocalProjectUnitOfWorkFactory, SQLiteProjectionStore
 
 
 class EmbeddedProjectServiceTests(unittest.TestCase):
+    def test_image_and_vector_representations_can_be_added_to_a_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = EmbeddedProjectService(Path(temporary))
+            session = service.create_initial_account("operator", "Operator", "")
+            project = service.create_project(
+                principal=session.principal,
+                name="Representations",
+                width=2,
+                height=2,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="create-project",
+            )
+            layer = service.create_layer(
+                principal=session.principal,
+                project=project,
+                name="Metal",
+                layer_type=LayerType.METAL,
+                order=1,
+                idempotency_key="create-layer",
+            )
+
+            image = service.create_representation(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                name="Original",
+                kind=RepresentationKind.IMAGE,
+                idempotency_key="create-image",
+                active=True,
+            )
+            vector = service.create_representation(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                name="Contours",
+                kind=RepresentationKind.VECTOR,
+                idempotency_key="create-vector",
+                active=True,
+            )
+
+            representations = service.list_representations(project.id, layer.id)
+            self.assertEqual({image.id, vector.id}, {item.id for item in representations})
+            self.assertEqual(
+                {RepresentationKind.IMAGE, RepresentationKind.VECTOR},
+                {item.kind for item in representations},
+            )
+
+    def test_initial_account_is_created_with_identity_and_authenticated_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = EmbeddedProjectService(Path(temporary))
+
+            session = service.create_initial_account("operator", "Оператор", "correct horse battery staple")
+
+            self.assertTrue(service.has_accounts)
+            self.assertEqual("operator", session.principal.subject)
+            self.assertEqual("Оператор", session.principal.display_name)
+            self.assertEqual(session.principal, service.resolve_session(session.token))
+
+    def test_initial_account_cannot_be_created_when_an_account_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = EmbeddedProjectService(Path(temporary))
+            service.create_initial_account("operator", "Operator", "correct horse battery staple")
+
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                service.create_initial_account("second", "Second", "another correct password")
+
     def test_manual_performer_catalog_is_persistent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service = EmbeddedProjectService(Path(directory))

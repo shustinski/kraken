@@ -1,0 +1,107 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Contour",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/plugins/contour/__main__.py",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}/plugins/contour",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src;${workspaceFolder}/plugins/contour/src"
+      }
+    },
+    {
+      "name": "NeuralImage",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/plugins/neuralimage/src/neuralimage/__main__.py",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}/plugins/neuralimage",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src;${workspaceFolder}/plugins/neuralimage/src"
+      }
+    },
+    {
+      "name": "Krona",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/plugins/krona/__main__.py",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}/plugins/krona",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src;${workspaceFolder}/plugins/krona/src"
+      }
+    },
+    {
+      "name": "CSliser",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/plugins/csliser/__main__.py",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}/plugins/csliser",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src;${workspaceFolder}/plugins/csliser/src"
+      }
+    },
+    {
+      "name": "KateGB",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/plugins/kategb/__main__.py",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}/plugins/kategb",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src;${workspaceFolder}/plugins/kategb/src"
+      }
+    },
+    {
+      "name": "Karakal",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/plugins/karakal/__main__.py",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}/plugins/karakal",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src;${workspaceFolder}/plugins/karakal/src"
+      }
+    },
+    {
+      "name": "Kraken Hub",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "kraken_hub",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
+    },
+    {
+      "name": "Kraken Project Manager (dev auto-login)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "kraken_hub",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "KRAKEN_DATA_DIR": "${workspaceFolder}/.test_runtime/vscode-project-manager",
+        "KRAKEN_DEV_AUTO_LOGIN": "1",
+        "KRAKEN_DEV_USERNAME": "vscode",
+        "KRAKEN_DEV_DISPLAY_NAME": "VS Code Developer",
+        "KRAKEN_DEV_PASSWORD": ""
+      }
+    }
+  ]
+}

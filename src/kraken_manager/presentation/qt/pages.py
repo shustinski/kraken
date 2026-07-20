@@ -117,6 +117,8 @@ class ProjectWorkspacePage(_TitledPage):
 
     layerActivated = pyqtSignal(object)
     addLayerRequested = pyqtSignal()
+    addImageRepresentationRequested = pyqtSignal()
+    addVectorRepresentationRequested = pyqtSignal()
     imageRepresentationChanged = pyqtSignal(str)
     vectorRepresentationChanged = pyqtSignal(str)
 
@@ -134,10 +136,16 @@ class ProjectWorkspacePage(_TitledPage):
         self.image_representation_combo = QComboBox()
         self.image_representation_combo.setObjectName("imageRepresentationCombo")
         representation_row.addWidget(self.image_representation_combo, 1)
+        self.add_image_representation_button = QPushButton("Добавить")
+        self.add_image_representation_button.setObjectName("addImageRepresentationButton")
+        representation_row.addWidget(self.add_image_representation_button)
         representation_row.addWidget(QLabel("Векторы:"))
         self.vector_representation_combo = QComboBox()
         self.vector_representation_combo.setObjectName("vectorRepresentationCombo")
         representation_row.addWidget(self.vector_representation_combo, 1)
+        self.add_vector_representation_button = QPushButton("Добавить")
+        self.add_vector_representation_button.setObjectName("addVectorRepresentationButton")
+        representation_row.addWidget(self.add_vector_representation_button)
         self.root_layout.addLayout(representation_row)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -155,8 +163,10 @@ class ProjectWorkspacePage(_TitledPage):
         self.splitter.setSizes([220, 720, 260])
         self.root_layout.addWidget(self.splitter, 1)
 
-        self.layer_list.doubleClicked.connect(self._activate_layer)
+        self.layer_list.clicked.connect(self._activate_layer)
         self.add_layer_button.clicked.connect(self.addLayerRequested)
+        self.add_image_representation_button.clicked.connect(self.addImageRepresentationRequested)
+        self.add_vector_representation_button.clicked.connect(self.addVectorRepresentationRequested)
         self.image_representation_combo.currentIndexChanged.connect(
             lambda: self.imageRepresentationChanged.emit(
                 str(self.image_representation_combo.currentData() or "")

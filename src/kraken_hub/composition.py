@@ -12,12 +12,13 @@ from kraken_manager.application.dto import (
     CommandContext,
     CreateLayerCommand,
     CreateProjectCommand,
+    CreateRepresentationCommand,
 )
 from kraken_manager.application.ports import StorageProfile
-from kraken_manager.application.use_cases import CreateLayerHandler, CreateProjectHandler
-from kraken_manager.domain.common import LayerId, ProjectId
+from kraken_manager.application.use_cases import CreateLayerHandler, CreateProjectHandler, CreateRepresentationHandler
+from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId
 from kraken_manager.domain.identity import Performer, Principal
-from kraken_manager.domain.project import GridOrientation, Layer, LayerType, Project, Representation
+from kraken_manager.domain.project import GridOrientation, Layer, LayerType, Project, Representation, RepresentationKind
 from kraken_manager.infrastructure.auth.identity_store import LocalIdentityAclStore
 from kraken_manager.infrastructure.auth.local import LocalAccountStore, ScryptPasswordHasher
 from kraken_manager.infrastructure.auth.performer_store import LocalSQLitePerformerStore
@@ -78,6 +79,22 @@ class EmbeddedProjectService:
     @property
     def has_accounts(self) -> bool:
         return self.accounts.account_count() > 0
+
+    def create_initial_account(self, username: str, display_name: str, password: str) -> DesktopSession:
+        """Create and sign in the first workstation-local account."""
+        if self.has_accounts:
+            raise ValueError("A local account already exists")
+        account = self.accounts.create_account(username, display_name, password)
+        principal = Principal.local(
+            subject=account.username,
+            display_name=account.display_name,
+            principal_id=account.account_id,
+        )
+        self.identities.save(principal)
+        session = self.accounts.authenticate(account.username, password)
+        if session is None:  # pragma: no cover - the freshly created account is enabled
+            raise RuntimeError("The new local account could not be signed in")
+        return DesktopSession(session.token, principal, session.expires_at)
 
     def list_performers(self, *, include_archived: bool = False) -> tuple[Performer, ...]:
         return self.performers.list(include_archived=include_archived)
@@ -167,6 +184,35 @@ class EmbeddedProjectService:
             expected_project_revision=project.revision,
         )
         return CreateLayerHandler(self._uow(str(project.id)), self.profiles, self.clock)(command)
+
+    def create_representation(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        name: str,
+        kind: RepresentationKind,
+        idempotency_key: str,
+        note: str = "",
+        source: str | None = None,
+        active: bool = False,
+    ) -> Representation:
+        current_layer = next((item for item in self.list_layers(project.id) if item.id == layer.id), None)
+        if current_layer is None:
+            raise ValueError("Layer is no longer available")
+        command = CreateRepresentationCommand(
+            context=CommandContext(actor=principal, idempotency_key=idempotency_key),
+            project_id=project.id,
+            layer_id=current_layer.id,
+            name=name,
+            kind=kind,
+            expected_layer_revision=current_layer.revision,
+            note=note,
+            source=source,
+            active=active,
+        )
+        return CreateRepresentationHandler(self._uow(str(project.id)), self.profiles, self.clock)(command)
 
     def get_project(self, project_id: ProjectId | str, *, as_of: datetime | None = None) -> Project | None:
         projections = self._projection(project_id)

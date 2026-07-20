@@ -55,7 +55,16 @@ def test_shell_opens_lightweight_project_workspace(qapp):
     shell = ProjectManagerShell()
     workspace = shell.open_project_workspace()
 
+    image_requests = []
+    vector_requests = []
+    workspace.addImageRepresentationRequested.connect(lambda: image_requests.append(True))
+    workspace.addVectorRepresentationRequested.connect(lambda: vector_requests.append(True))
+    workspace.add_image_representation_button.click()
+    workspace.add_vector_representation_button.click()
+
     assert isinstance(workspace, ProjectWorkspacePage)
     assert shell.current_page_key() == "workspace"
     assert workspace.matrix_view.matrix_size() == (1, 1)
+    assert image_requests == [True]
+    assert vector_requests == [True]
 

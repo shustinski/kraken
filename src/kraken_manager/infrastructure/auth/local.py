@@ -23,14 +23,6 @@ class PasswordHasher(Protocol):
     def verify(self, encoded: str, password: str) -> bool: ...
 
 
-def _password(value: str) -> str:
-    if len(value) < 12:
-        raise ValueError("Password must contain at least 12 characters")
-    if len(value) > 1024:
-        raise ValueError("Password is too long")
-    return value
-
-
 class ScryptPasswordHasher:
     """Dependency-free offline desktop hasher; server profiles use Argon2id."""
 
@@ -38,7 +30,7 @@ class ScryptPasswordHasher:
 
     def hash(self, password: str) -> str:
         salt = os.urandom(16)
-        derived = hashlib.scrypt(_password(password).encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
+        derived = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
         return "$".join(
             (
                 self.algorithm,
@@ -75,7 +67,7 @@ class Argon2PasswordHasher:
         self._backend = Backend(type=Type.ID)
 
     def hash(self, password: str) -> str:
-        return str(self._backend.hash(_password(password)))
+        return str(self._backend.hash(password))
 
     def verify(self, encoded: str, password: str) -> bool:
         try:

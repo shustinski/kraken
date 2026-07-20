@@ -8,6 +8,13 @@ from kraken_manager.infrastructure.auth.local import LocalAccountStore, ScryptPa
 
 
 class LocalAccountTests(unittest.TestCase):
+    def test_empty_password_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = LocalAccountStore(Path(temporary) / "accounts.sqlite3", ScryptPasswordHasher())
+            store.create_account("operator", "Operator", "")
+
+            self.assertIsNotNone(store.authenticate("operator", ""))
+
     def test_account_sessions_are_opaque_revocable_and_persistent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "accounts.sqlite3"

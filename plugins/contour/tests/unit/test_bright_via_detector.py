@@ -18,6 +18,7 @@ from contour.vision.via.bright_tophat_dog import (
     radial_symmetry_score,
     suppress_close_points,
 )
+from contour.vision.via_detection import HeuristicViaDetectorConfig, detect_vias_heuristic
 
 
 def _synthetic_bright_vias() -> np.ndarray:
@@ -52,12 +53,12 @@ def test_detect_bright_vias_finds_synthetic_bright_spots() -> None:
     centers = [(d.center[0], d.center[1]) for d in result.detections]
     assert len(result.detections) >= 2
     tol = 4.0
-    assert any(
-        abs(x - 34) <= tol and abs(y - 34) <= tol for x, y in centers
-    ), f"expected a detection near (34,34), got {centers}"
-    assert any(
-        abs(x - 72) <= tol and abs(y - 56) <= tol for x, y in centers
-    ), f"expected a detection near (72,56), got {centers}"
+    assert any(abs(x - 34) <= tol and abs(y - 34) <= tol for x, y in centers), (
+        f"expected a detection near (34,34), got {centers}"
+    )
+    assert any(abs(x - 72) <= tol and abs(y - 56) <= tol for x, y in centers), (
+        f"expected a detection near (72,56), got {centers}"
+    )
     assert {
         "processed",
         "tophat",
@@ -341,3 +342,25 @@ def test_bright_via_detection_exposes_annular_and_isolation_fields() -> None:
     assert hasattr(sample, "isolation_score")
     assert sample.annular_contrast >= 0.0
     assert 0.0 <= sample.isolation_score <= 1.0
+
+
+def test_heuristic_center_is_stable_when_one_half_is_overexposed() -> None:
+    image = np.full((96, 96), 60, dtype=np.uint8)
+    cv2.circle(image, (48, 48), 6, 180, thickness=-1)
+    yy, xx = np.ogrid[:96, :96]
+    disk = (xx - 48) ** 2 + (yy - 48) ** 2 <= 36
+    image[disk & (xx >= 48)] = 245
+
+    result = detect_vias_heuristic(
+        image,
+        HeuristicViaDetectorConfig(
+            diameter_min=10,
+            diameter_max=14,
+            polarity="bright",
+            bright_range_min=100,
+            max_seed_count=100,
+        ),
+    )
+
+    nearest = min(result.accepted, key=lambda item: np.hypot(item.x - 48, item.y - 48))
+    assert np.hypot(nearest.x - 48, nearest.y - 48) < 0.75

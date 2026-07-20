@@ -184,8 +184,10 @@ class WidgetProcessingMixin:
     def _sync_workspace_selection_to_path(self: Any, image_path: str) -> None:
         normalized = str(Path(image_path))
         self._workspace._current_image_path = normalized
-        cached_state = getattr(self._workspace, "_state_cache", {}).get(normalized)
-        self._workspace._current_state = cached_state if cached_state is not None else None
+        # Selection is only a requested destination.  Keeping a cached state
+        # here makes resolve_cached_load() report "already current" before the
+        # editor has actually switched to this frame.
+        self._workspace._current_state = None
 
     def _set_image_list_current_path(self: Any, image_path: str | None, *, fallback_to_first: bool = True) -> bool:
         if image_path:
@@ -637,6 +639,7 @@ class WidgetProcessingMixin:
                     cache.pop(next(iter(cache)))
                 self._editor_pixmap_cache = cache
             self.polygon_editor.set_image_pixmap(pixmap, preserve_view=preserve_view)
+            self._last_editor_display_cache_key = cache_key
             session = self._frame_switch_profile_for_path(path)
             if session is not None:
                 session.complete_pending("editor_display", suffix="_ready")
@@ -1973,12 +1976,7 @@ class WidgetProcessingMixin:
         if load_vectors is None:
             load_vectors = not self._should_defer_vector_load()
         if self._image_path_in_image_list(normalized_load_path):
-            cached_selected_state = getattr(self._workspace, "_state_cache", {}).get(normalized_load_path)
-            self._workspace._current_image_path = normalized_load_path
-            if cached_selected_state is not None:
-                self._workspace._current_state = cached_selected_state
-            else:
-                self._workspace._current_state = None
+            self._desired_image_path = normalized_load_path
         active_load_path = getattr(self, "_loading_image_path", None)
         if active_load_path is not None:
             if active_load_path == normalized_load_path:
@@ -2090,6 +2088,8 @@ class WidgetProcessingMixin:
                 payload = payload_obj
                 if not isinstance(payload, FrameLoadPayload):
                     return
+                desired_path = str(Path(getattr(self, "_desired_image_path", "") or ""))
+                superseded = bool(desired_path and desired_path != str(Path(payload.image_path)))
                 session = self._frame_switch_profile_for_path(payload.image_path)
                 if session is not None:
                     session.enable_main_profiler()
@@ -2098,19 +2098,21 @@ class WidgetProcessingMixin:
                     payload.image_path,
                     source_image=payload.source_image,
                     polygons=list(payload.polygons),
+                    make_current=not superseded,
                 )
                 profile_timings["workspace_apply_loaded_frame"] = (perf_counter() - apply_start) * 1000.0
                 self._frame_load_running_path = None
-                self._finish_frame_load_ui(
-                    image_result,
-                    load_vectors=load_vectors,
-                    profile_enabled=session is not None,
-                    profile_timings=profile_timings,
-                    profile_total_start=profile_total_start,
-                    profiler=session.profiler if session is not None else None,
-                    cif_path_for_profile=cif_path_for_profile,
-                    phase_start=perf_counter(),
-                )
+                if not superseded:
+                    self._finish_frame_load_ui(
+                        image_result,
+                        load_vectors=load_vectors,
+                        profile_enabled=session is not None,
+                        profile_timings=profile_timings,
+                        profile_total_start=profile_total_start,
+                        profiler=session.profiler if session is not None else None,
+                        cif_path_for_profile=cif_path_for_profile,
+                        phase_start=perf_counter(),
+                    )
                 if getattr(self, "_loading_image_path", None) == payload.image_path:
                     self._loading_image_path = None
                 self._resume_frame_matrix_thumbnail_loading()
@@ -2125,12 +2127,16 @@ class WidgetProcessingMixin:
                 self._frame_load_running_path = None
                 if getattr(self, "_loading_image_path", None) == image_path:
                     self._loading_image_path = None
-                self._append_log(self._tr("failed_to_load_image_log", image_path=image_path, error=message))
+                desired_path = str(Path(getattr(self, "_desired_image_path", "") or ""))
+                superseded = bool(desired_path and desired_path != str(Path(image_path)))
+                if not superseded:
+                    self._append_log(self._tr("failed_to_load_image_log", image_path=image_path, error=message))
                 failed_session = getattr(self, "_frame_switch_profile", None)
                 if failed_session is not None:
                     failed_session.disable_main_profiler()
                     self._frame_switch_profile = None
-                QMessageBox.warning(self, self._tr("image_load_error_title"), message)
+                if not superseded:
+                    QMessageBox.warning(self, self._tr("image_load_error_title"), message)
                 self._resume_frame_matrix_thumbnail_loading()
                 self._flush_pending_thumbnail_grid_rebuild()
                 self._drain_pending_frame_load()
@@ -2205,6 +2211,8 @@ class WidgetProcessingMixin:
             payload = payload_obj
             if not isinstance(payload, FrameLoadPayload):
                 return
+            desired_path = str(Path(getattr(self, "_desired_image_path", "") or ""))
+            superseded = bool(desired_path and desired_path != str(Path(payload.image_path)))
             session = self._frame_switch_profile_for_path(payload.image_path)
             if session is not None:
                 session.enable_main_profiler()
@@ -2216,7 +2224,7 @@ class WidgetProcessingMixin:
             )
             profile_timings["workspace_apply_frame_vectors"] = (perf_counter() - apply_start) * 1000.0
             self._frame_load_running_path = None
-            if image_result is not None:
+            if image_result is not None and not superseded:
                 self._finish_frame_load_ui(
                     image_result,
                     load_vectors=True,
@@ -2227,7 +2235,7 @@ class WidgetProcessingMixin:
                     cif_path_for_profile=cif_path_for_profile,
                     phase_start=perf_counter(),
                 )
-            else:
+            elif image_result is None and not superseded:
                 self.load_image(payload.image_path, load_vectors=True)
             if getattr(self, "_loading_image_path", None) == payload.image_path:
                 self._loading_image_path = None

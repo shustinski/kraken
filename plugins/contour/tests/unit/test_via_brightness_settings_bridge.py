@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import cv2
+import numpy as np
+
 from contour.application.processing import ContourExtractionSettings
+from contour.vision.integration import run_via_detection
+from contour.vision.schemas import OutputShapeKind
+from contour.vision.via.orchestrator import _detection_to_hit
 from contour.vision.via_detection.config import ViaPolarity
+from contour.vision.via_detection.result import ViaDetection
 from contour.vision.via_detection.settings_bridge import heuristic_config_from_settings
 
 
@@ -33,3 +40,60 @@ def test_heuristic_config_uses_both_ranges_when_enabled() -> None:
     assert cfg.dark_range_enabled is True
     assert cfg.dark_range_min == 5.0
     assert cfg.dark_range_max == 40.0
+
+
+def test_fixed_size_uses_selected_diameter_instead_of_legacy_diameter_list() -> None:
+    settings = ContourExtractionSettings(
+        via_size_mode="fixed",
+        bright_via_diameter_min=14,
+        bright_via_diameter_max=14,
+        via_fixed_diameters_text="6, 8, 10",
+    )
+
+    cfg = heuristic_config_from_settings(settings)
+
+    assert cfg.allowed_diameters() == [14]
+
+
+def test_fixed_size_forces_candidate_output_geometry() -> None:
+    detection = ViaDetection(
+        x=20.0,
+        y=30.0,
+        bbox=(15, 25, 10, 12),
+        score=90.0,
+        diameter_estimate=11.0,
+        contrast=20.0,
+        prominence=15.0,
+        compactness=0.9,
+        aspect=1.0,
+    )
+
+    hit = _detection_to_hit(detection, "heuristic", [14])
+
+    assert hit.width == 14.0
+    assert hit.height == 14.0
+
+
+def test_fixed_size_is_preserved_by_full_sem_via_detection() -> None:
+    image = np.zeros((48, 48), dtype=np.uint8)
+    cv2.circle(image, (24, 24), 5, 255, thickness=-1)
+    settings = ContourExtractionSettings(
+        algorithm_backend="sem",
+        object_type="via",
+        via_search_mode="heuristic",
+        via_size_mode="fixed",
+        bright_via_diameter_min=14,
+        bright_via_diameter_max=14,
+        via_fixed_diameters_text="6, 8, 10",
+    )
+
+    output = run_via_detection(
+        image,
+        image_path="frame.png",
+        output_kind=OutputShapeKind.AXIS_ALIGNED_BOX,
+        legacy_settings=settings,
+    )
+
+    assert len(output.hits) == 1
+    assert output.hits[0].width == 14.0
+    assert output.hits[0].height == 14.0

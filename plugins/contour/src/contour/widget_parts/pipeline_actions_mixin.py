@@ -224,6 +224,15 @@ class WidgetPipelineActionsMixin:
                 with QSignalBlocker(selection):
                     self.image_list.setCurrentIndex(previous)
             return
+        for timer in list(getattr(self, "_deferred_image_load_timers", [])):
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
+        self._deferred_image_load_timers = []
+        self._image_selection_request_serial = int(getattr(self, "_image_selection_request_serial", 0)) + 1
+        selection_request_id = self._image_selection_request_serial
+        self._desired_image_path = str(Path(image_path)) if image_path else None
         if session is not None:
             session.note_timing("selection_try_leave", (time.perf_counter() - selection_start) * 1000.0)
         if not image_path:
@@ -235,6 +244,10 @@ class WidgetPipelineActionsMixin:
             def _load_selected_image(path: str = normalized_image_path) -> None:
                 if bool(getattr(self, "_closing", False)):
                     return
+                if selection_request_id != getattr(self, "_image_selection_request_serial", 0):
+                    return
+                if str(Path(getattr(self, "_desired_image_path", "") or "")) != path:
+                    return
                 selected_path = self._image_list_path_from_proxy_index(self.image_list.currentIndex())
                 if str(Path(selected_path or "")) != path:
                     return
@@ -244,8 +257,6 @@ class WidgetPipelineActionsMixin:
                     self._append_log(self._tr("failed_to_load_image_log", image_path=path, error=exc))
                     QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
 
-            if not hasattr(self, "_deferred_image_load_timers"):
-                self._deferred_image_load_timers = []
             timer = QTimer(self)
             timer.setSingleShot(True)
 
@@ -262,6 +273,27 @@ class WidgetPipelineActionsMixin:
             self._deferred_image_load_timers.append(timer)
             timer.start(250)
         self._update_thumbnail_grid_selection()
+
+    def _on_image_list_clicked(self, index: QModelIndex) -> None:
+        """Retry a selected row whose frame is not currently available."""
+
+        image_path = self._image_list_path_from_proxy_index(index)
+        if not image_path:
+            return
+        normalized = str(Path(image_path))
+        selected_path = self._image_list_path_from_proxy_index(self.image_list.currentIndex())
+        if str(Path(selected_path or "")) != normalized:
+            return
+        current_path = str(Path(self._workspace.current_image_path or ""))
+        current_state = self._workspace.current_state
+        state_matches = current_state is not None and str(Path(current_state.image_path)) == normalized
+        load_active = normalized in {
+            str(Path(getattr(self, "_loading_image_path", "") or "")),
+            str(Path(getattr(self, "_frame_load_running_path", "") or "")),
+        }
+        if current_path == normalized and (state_matches or load_active):
+            return
+        self._on_image_list_current_changed(index, QModelIndex())
 
     def _on_image_item_changed(self, current, previous) -> None:
         image_path = None

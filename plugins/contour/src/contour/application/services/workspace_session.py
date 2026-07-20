@@ -232,6 +232,7 @@ class WorkspaceSession:
         *,
         source_image: Any,
         polygons: list[PolygonData],
+        make_current: bool = True,
     ) -> WorkspaceLoadResult:
         path = str(Path(image_path))
         state = ImageProcessingState(
@@ -239,7 +240,7 @@ class WorkspaceSession:
             source_image=source_image,
             polygons=list(polygons),
         )
-        return self._store_loaded_state(path, state)
+        return self._store_loaded_state(path, state, make_current=make_current)
 
     def apply_frame_vectors(
         self,
@@ -268,10 +269,17 @@ class WorkspaceSession:
             vectors_only=True,
         )
 
-    def _store_loaded_state(self, image_path: str, state: ImageProcessingState) -> WorkspaceLoadResult:
+    def _store_loaded_state(
+        self,
+        image_path: str,
+        state: ImageProcessingState,
+        *,
+        make_current: bool = True,
+    ) -> WorkspaceLoadResult:
         self._state_cache[image_path] = state
-        self._current_image_path = image_path
-        self._current_state = state
+        if make_current:
+            self._current_image_path = image_path
+            self._current_state = state
         return WorkspaceLoadResult(
             image_path=image_path,
             state=state,

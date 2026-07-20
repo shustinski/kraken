@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import math
-from typing import Any
 
 import cv2
 import numpy as np
 
+from .binary_mask import detect_binary_components, looks_like_binary_mask
 from .config import HeuristicViaDetectorConfig, ViaPolarity
 from .result import DetectionResult, ViaDetection
 
@@ -35,6 +35,38 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
     if not allowed:
         return DetectionResult(method="heuristic", accepted=[], parameters_snapshot=snap0)
     d_min, d_max = min(allowed), max(allowed)
+    if looks_like_binary_mask(g):
+        _mask, components = detect_binary_components(
+            g,
+            diameter_min=d_min,
+            diameter_max=d_max,
+            min_area_factor=0.35,
+            max_area_factor=2.0,
+            min_aspect=1.0 / max(1.0, float(config.max_elongation)),
+            max_aspect=max(1.0, float(config.max_elongation)),
+            nms_distance=config.nms_distance,
+        )
+        accepted = [
+            ViaDetection(
+                x=item.center[0],
+                y=item.center[1],
+                bbox=item.bbox,
+                score=100.0,
+                diameter_estimate=0.5 * (item.bbox[2] + item.bbox[3]),
+                contrast=255.0,
+                prominence=255.0,
+                compactness=item.circularity,
+                aspect=item.aspect,
+                polarity_hypothesis="binary",
+            )
+            for item in components
+        ]
+        return DetectionResult(
+            method="heuristic_binary",
+            accepted=accepted,
+            debug_images={"binary_mask": _mask},
+            parameters_snapshot={**snap0, "binary_mask": True, "accepted_count": len(accepted)},
+        )
 
     sens = _sensitivity_map(config.sensitivity)
     g_pre = _preprocess_denoise(g, config)
@@ -55,11 +87,14 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
     min_sep = int(config.min_distance_between_peaks) if config.min_distance_between_peaks else max(2, d_min // 2)
     if polar in (str(ViaPolarity.BRIGHT), "bright"):
         raw_seeds = _spread_points(seeds_b, min_sep, h, w)
+        seed_score_map = bright_map
     elif polar in (str(ViaPolarity.DARK), "dark"):
         raw_seeds = _spread_points(seeds_d, min_sep, h, w)
+        seed_score_map = dark_map
     else:
         raw_seeds = _merge_seeds(list(seeds_b) + list(seeds_d), min_sep, h, w)
-    raw_seeds = _limit_seed_count(raw_seeds, bright_map, dark_map, int(config.max_seed_count))
+        seed_score_map = np.maximum(bright_map, dark_map)
+    raw_seeds = _limit_seed_count(raw_seeds, seed_score_map, int(config.max_seed_count))
 
     hyps: list[str]
     if polar in ("auto", str(ViaPolarity.AUTO)):
@@ -70,7 +105,12 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
             hyps.append(str(ViaPolarity.DARK))
         if not hyps:
             hyps = [str(ViaPolarity.BRIGHT)]
-    elif polar in (str(ViaPolarity.RING_LIGHT_RING), str(ViaPolarity.RING_DARK_RING), ViaPolarity.RING_LIGHT_RING, ViaPolarity.RING_DARK_RING):
+    elif polar in (
+        str(ViaPolarity.RING_LIGHT_RING),
+        str(ViaPolarity.RING_DARK_RING),
+        ViaPolarity.RING_LIGHT_RING,
+        ViaPolarity.RING_DARK_RING,
+    ):
         hyps = [polar] if not isinstance(polar, ViaPolarity) else [str(polar)]
     else:
         hyps = [polar]
@@ -116,17 +156,14 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
     dets = [d for d in dets if d.reject_reason is None or (d.reject_reason and "hard" in d.reject_reason)]
     dets = _dedupe_by_score(dets, min_dist=1.0)
     dets.sort(key=lambda d: d.score, reverse=True)
-    after = _nms_simple(dets, max(0, int(config.nms_distance)))
+    effective_nms = max(0, int(config.nms_distance), int(round(0.6 * d_max)))
+    after = _nms_simple(dets, effective_nms)
 
     accepted: list[ViaDetection] = [
-        d
-        for d in after
-        if d.reject_reason is None and d.score >= float(config.min_final_score)
+        d for d in after if d.reject_reason is None and d.score >= float(config.min_final_score)
     ]
     below: list[ViaDetection] = [
-        d
-        for d in after
-        if d.reject_reason is None and 0 < d.score < float(config.min_final_score)
+        d for d in after if d.reject_reason is None and 0 < d.score < float(config.min_final_score)
     ]
     hard = [d for d in after if d.reject_reason and "hard" in d.reject_reason]
 
@@ -153,6 +190,7 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
             "scored_candidate_count": scored_count,
             "candidate_count_after_dedupe": len(dets),
             "candidate_count_after_nms": len(after),
+            "effective_nms_distance": effective_nms,
             "accepted_count": len(accepted),
             "below_threshold_count": len(below),
             "hard_rejected_count": len(hard),
@@ -267,19 +305,18 @@ def _spread_points(pts: list[tuple[int, int]], min_dist: int, h: int, w: int) ->
 
 def _limit_seed_count(
     pts: list[tuple[int, int]],
-    bright_map: np.ndarray,
-    dark_map: np.ndarray,
+    score_map: np.ndarray,
     max_count: int,
 ) -> list[tuple[int, int]]:
     if max_count <= 0 or len(pts) <= max_count:
         return pts
-    h, w = bright_map.shape[:2]
+    h, w = score_map.shape[:2]
 
     def score(point: tuple[int, int]) -> int:
         y, x = point
         yy = max(0, min(h - 1, int(y)))
         xx = max(0, min(w - 1, int(x)))
-        return max(int(bright_map[yy, xx]), int(dark_map[yy, xx]))
+        return int(score_map[yy, xx])
 
     return sorted(pts, key=score, reverse=True)[:max_count]
 
@@ -369,6 +406,32 @@ def _refine_center_xy(
     if mm.get("m00", 0) and float(mm["m00"]) > 1e-6:
         return float(mm["m10"] / mm["m00"]), float(mm["m01"] / mm["m00"])
     return float(seed_x), float(seed_y)
+
+
+def _component_geometry_center(
+    contour: np.ndarray,
+    stats: np.ndarray,
+    weighted_center: tuple[float, float],
+) -> tuple[float, float]:
+    """Center a via by shape while retaining a little sub-pixel intensity detail."""
+
+    left = float(stats[cv2.CC_STAT_LEFT])
+    top = float(stats[cv2.CC_STAT_TOP])
+    width = float(stats[cv2.CC_STAT_WIDTH])
+    height = float(stats[cv2.CC_STAT_HEIGHT])
+    bbox_center = (left + 0.5 * max(0.0, width - 1.0), top + 0.5 * max(0.0, height - 1.0))
+    rect_center = tuple(float(value) for value in cv2.minAreaRect(contour)[0])
+    circle_center_raw, _radius = cv2.minEnclosingCircle(contour)
+    circle_center = tuple(float(value) for value in circle_center_raw)
+    geometry_x = float(np.median([bbox_center[0], rect_center[0], circle_center[0]]))
+    geometry_y = float(np.median([bbox_center[1], rect_center[1], circle_center[1]]))
+    correction = math.hypot(geometry_x - weighted_center[0], geometry_y - weighted_center[1])
+    if correction < 0.5:
+        return weighted_center
+    return (
+        0.70 * geometry_x + 0.30 * float(weighted_center[0]),
+        0.70 * geometry_y + 0.30 * float(weighted_center[1]),
+    )
 
 
 def _annulus_masks(shape: tuple[int, int], cx: int, cy: int, d: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -524,7 +587,15 @@ def _score_one(
             hyp,
             f"hard:size_mismatch(eq={eq_diam:.1f},d={d_est})",
         )
-    fcx, fcy = _refine_center_xy(gpatch, (lab == lab_at), seed_x=float(pcx), seed_y=float(pcy), med=med, hyp=hyp)
+    weighted_center = _refine_center_xy(
+        gpatch,
+        (lab == lab_at),
+        seed_x=float(pcx),
+        seed_y=float(pcy),
+        med=med,
+        hyp=hyp,
+    )
+    fcx, fcy = _component_geometry_center(cnt0, stat[lab_at], weighted_center)
     drift = math.hypot(fcx - float(pcx), fcy - float(pcy))
     max_drift = float(config.max_center_drift_ratio) * re
     if drift > max_drift:

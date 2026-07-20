@@ -211,6 +211,23 @@ class WorkspaceSessionTests(unittest.TestCase):
         assert resolved is not None
         self.assertEqual(resolved.state.image_path, str(Path("a.png")))
 
+    def test_apply_loaded_frame_can_cache_superseded_result_without_selecting_it(self) -> None:
+        session = WorkspaceSession()
+        session._current_image_path = str(Path("new.png"))
+        session._current_state = None
+
+        result = session.apply_loaded_frame(
+            "old.png",
+            source_image="old pixels",
+            polygons=[],
+            make_current=False,
+        )
+
+        self.assertEqual(result.image_path, str(Path("old.png")))
+        self.assertEqual(session.current_image_path, str(Path("new.png")))
+        self.assertIsNone(session.current_state)
+        self.assertIs(session._state_cache[str(Path("old.png"))], result.state)
+
 
 if __name__ == "__main__":
     unittest.main()

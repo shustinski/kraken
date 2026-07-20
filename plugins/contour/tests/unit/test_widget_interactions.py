@@ -215,6 +215,11 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(self.widget.recognition_mode_combo.currentData(), "disabled")
         self.assertEqual(self.widget.recognition_mode_combo.currentText(), "Без извлечения")
 
+    def test_via_size_is_configured_only_in_shared_lower_controls(self) -> None:
+        self.assertFalse(hasattr(self.widget, "via_fixed_diameters_edit"))
+        self.assertTrue(hasattr(self.widget, "via_diameter_size_mode_combo"))
+        self.assertTrue(hasattr(self.widget, "bright_via_diameter_fixed_spin"))
+
     def test_pipeline_preview_request_is_built_in_no_extraction_mode(self) -> None:
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))
 
@@ -781,6 +786,88 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
                     QTest.qWait(20)
 
             center_mock.assert_any_call(force=True)
+
+    def test_rapid_image_row_navigation_loads_only_latest_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for name in ("frame_001.png", "frame_002.png", "frame_003.png"):
+                path = os.path.join(directory, name)
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+                paths.append(str(Path(path)))
+
+            self.widget.load_images(paths)
+            for _ in range(50):
+                self._app.processEvents()
+                if self.widget._image_list_proxy.rowCount() == len(paths):
+                    break
+                QTest.qWait(10)
+
+            loaded_paths: list[str] = []
+            self.widget.load_image = lambda path: loaded_paths.append(str(Path(path)))  # type: ignore[method-assign]
+            self.widget.image_list.setCurrentIndex(self.widget._image_list_proxy.index(1, 0))
+            self.widget.image_list.setCurrentIndex(self.widget._image_list_proxy.index(2, 0))
+            QTest.qWait(350)
+            self._app.processEvents()
+
+            self.assertEqual(loaded_paths, [paths[2]])
+
+    def test_completed_background_load_does_not_replace_newer_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for name in ("frame_001.png", "frame_002.png"):
+                path = os.path.join(directory, name)
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+                paths.append(str(Path(path)))
+
+            queued_loads = []
+            self.widget._frame_load_thread_pool.start = queued_loads.append  # type: ignore[method-assign]
+            self.widget.load_images(paths)
+            for _ in range(50):
+                self._app.processEvents()
+                if self.widget._image_list_proxy.rowCount() == len(paths):
+                    break
+                QTest.qWait(10)
+            for timer in list(self.widget._deferred_image_load_timers):
+                timer.stop()
+            self.widget._deferred_image_load_timers = []
+            self.widget._loading_image_path = None
+            self.widget.load_image(paths[0], load_vectors=False)
+            self.assertEqual(len(queued_loads), 1)
+
+            self.widget.load_image(paths[1], load_vectors=False)
+            self.assertEqual(self.widget._frame_load_pending, (paths[1], False))
+
+            queued_loads[0].run()
+            self._app.processEvents()
+
+            self.assertEqual(self.widget._workspace.current_image_path, paths[0])
+            self.assertIsNone(self.widget._workspace.current_state)
+            self.assertIn(paths[0], self.widget._workspace._state_cache)
+            self.assertEqual(len(queued_loads), 2)
+            self.assertEqual(queued_loads[1].image_path, paths[1])
+
+    def test_cached_first_frame_is_applied_when_switching_back_from_second_frame(self) -> None:
+        paths = [str(Path("frame_001.png")), str(Path("frame_002.png"))]
+        self.widget._workspace.replace_image_selection(paths, is_supported_image=lambda _path: True)
+        for path, value in zip(paths, (1, 2), strict=True):
+            self.widget._workspace.apply_loaded_frame(
+                path,
+                source_image=np.full((8, 8), value, dtype=np.uint8),
+                polygons=[],
+            )
+        self.widget._desired_image_path = paths[1]
+        self.widget._last_editor_display_cache_key = (paths[1], "source", "")
+
+        with (
+            patch.object(self.widget, "_apply_frame_to_editor") as apply_frame,
+            patch.object(self.widget, "_try_extract_if_recognition_enabled"),
+        ):
+            self.widget.load_image(paths[0], load_vectors=False)
+
+        self.assertEqual(self.widget._workspace.current_image_path, paths[0])
+        self.assertIsNotNone(self.widget._workspace.current_state)
+        self.assertEqual(self.widget._workspace.current_state.image_path, paths[0])
+        apply_frame.assert_called_once()
 
     def test_checked_toolbar_tool_has_explicit_high_contrast_style(self) -> None:
         stylesheet = self.widget.styleSheet()

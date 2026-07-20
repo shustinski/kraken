@@ -723,7 +723,6 @@ def build_extraction_tab(self) -> QWidget:
     self.via_heuristic_polarity_combo.addItem("Светлое кольцо / тёмный центр", "ring_light_ring")
     self.via_heuristic_polarity_combo.addItem("Тёмное кольцо / светлый центр", "ring_dark_ring")
     self.via_heuristic_polarity_combo.addItem("Авто", "auto")
-    self.via_fixed_diameters_edit = QLineEdit("6, 8, 10")
     self.via_diameter_size_mode_combo = QComboBox()
     self.via_diameter_size_mode_combo.addItem("Фиксированный", VIA_SIZE_MODE_FIXED)
     self.via_diameter_size_mode_combo.addItem("Диапазон", VIA_SIZE_MODE_RANGE)
@@ -739,7 +738,6 @@ def build_extraction_tab(self) -> QWidget:
     _vmh = QFormLayout(self.via_mode_heuristic_widget)
     self._configure_compact_form(_vmh)
     _vmh.addRow("Полярность via", self.via_heuristic_polarity_combo)
-    _vmh.addRow("Размеры via, px", self.via_fixed_diameters_edit)
     self.via_white_range_checkbox = QCheckBox("Распознавать светлые")
     self.via_white_range_checkbox.setChecked(True)
     self.via_white_range_min_spin = QSpinBox()
@@ -1170,12 +1168,6 @@ def build_extraction_tab(self) -> QWidget:
     self.via_search_mode_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.via_diameter_size_mode_combo.currentIndexChanged.connect(self._sync_via_diameter_size_mode)
     self.via_heuristic_polarity_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
-    _connect_line_edit_with_delay(
-        self,
-        self.via_fixed_diameters_edit,
-        self._on_extraction_settings_changed,
-        delay_ms=350,
-    )
     self.via_template_nms_distance_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_template_scale_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_template_scale_max_spin.valueChanged.connect(self._on_extraction_settings_changed)

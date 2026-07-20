@@ -11,15 +11,19 @@ from typing import Any
 from ..schemas import AppMode, ImageRef, OutputShapeKind, ViaDetectionOutput, ViaHit
 from ..via_detection.heuristic_detector import detect_vias_heuristic
 from ..via_detection.result import DetectionResult
-from ..via_detection.settings_bridge import heuristic_config_from_settings, template_config_from_settings
+from ..via_detection.settings_bridge import (
+    fixed_via_diameters_from_settings,
+    heuristic_config_from_settings,
+    template_config_from_settings,
+)
 from ..via_detection.template_detector import detect_vias_template
 
 try:
     from ...application.processing import (
-        ContourExtractionSettings,
         VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
         VIA_SEARCH_MODE_HEURISTIC,
         VIA_SEARCH_MODE_TEMPLATE,
+        ContourExtractionSettings,
         normalize_via_search_mode,
     )
 except ImportError:  # pragma: no cover
@@ -55,6 +59,7 @@ class CompositeViaDetector:
         legacy_settings: ContourExtractionSettings,
     ) -> ViaDetectionOutput:
         log: list[str] = []
+        fixed_output_diameters = fixed_via_diameters_from_settings(legacy_settings)
         if normalize_via_search_mode is not None:
             mode = normalize_via_search_mode(legacy_settings.via_search_mode)
         else:
@@ -65,10 +70,10 @@ class CompositeViaDetector:
             result = detect_vias_template(gray, tcfg)
             strategy = str(ViaStrategyName.TEMPLATE)
             log.append(f"template: n_templates={len(tcfg.templates)} min_corr={tcfg.min_correlation:.3f}")
-            hits = [_detection_to_hit(d, strategy) for d in result.accepted]
+            hits = [_detection_to_hit(d, strategy, fixed_output_diameters) for d in result.accepted]
         elif mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
-            from .bright_tophat_dog import BrightViaDetectorConfig, detect_bright_vias
             from ..via_detection.result import DetectionResult, ViaDetection
+            from .bright_tophat_dog import BrightViaDetectorConfig, detect_bright_vias
 
             cfg = BrightViaDetectorConfig.from_legacy_settings(legacy_settings)
             bright = detect_bright_vias(gray, cfg)
@@ -97,7 +102,7 @@ class CompositeViaDetector:
             log.append(
                 f"bright_tophat_dog: diameter={cfg.diameter_min}-{cfg.diameter_max} min_score={cfg.min_final_score:.1f}"
             )
-            hits = [_detection_to_hit(d, strategy) for d in result.accepted]
+            hits = [_detection_to_hit(d, strategy, fixed_output_diameters) for d in result.accepted]
         else:
             hcfg = heuristic_config_from_settings(legacy_settings)
             result = detect_vias_heuristic(gray, hcfg)
@@ -105,7 +110,7 @@ class CompositeViaDetector:
             log.append(f"heuristic: polar={hcfg.polarity!r}")
             ad = hcfg.allowed_diameters()
             log.append(f"heuristic: diameters={ad[:6]!r}{'...' if len(ad) > 6 else ''}")
-            hits = [_detection_to_hit(d, strategy) for d in result.accepted]
+            hits = [_detection_to_hit(d, strategy, fixed_output_diameters) for d in result.accepted]
 
         dbg = _result_debug(result, strategy)
         return ViaDetectionOutput(
@@ -119,20 +124,35 @@ class CompositeViaDetector:
         )
 
 
-def _detection_to_hit(detection: Any, strategy: str) -> ViaHit:
+def _detection_to_hit(
+    detection: Any,
+    strategy: str,
+    fixed_output_diameters: list[int] | tuple[int, ...] = (),
+) -> ViaHit:
     bbox = getattr(detection, "bbox", (0, 0, 0, 0))
     bw = float(bbox[2]) if isinstance(bbox, (tuple, list)) and len(bbox) >= 4 else 0.0
     bh = float(bbox[3]) if isinstance(bbox, (tuple, list)) and len(bbox) >= 4 else 0.0
     d_est = float(getattr(detection, "diameter_estimate", 0.0) or 0.0)
-    if bw > 0.0 and bh > 0.0:
+    observed_diameter = d_est if d_est > 0.0 else 0.5 * (bw + bh)
+    configured_diameters = [float(value) for value in fixed_output_diameters if int(value) > 0]
+    if configured_diameters:
+        output_diameter = min(configured_diameters, key=lambda value: abs(value - observed_diameter))
+        w = h = output_diameter
+    elif bw > 0.0 and bh > 0.0:
         w, h = bw, bh
     elif d_est > 0.0:
         w = h = d_est
     else:
         w = h = 4.0
+    # OpenCV contour/extrema centers are expressed at integer pixel sample
+    # locations, while polygons, Qt scenes and CIF boxes use continuous image
+    # coordinates where a pixel occupies [x, x + 1).  Convert sample centers to
+    # that coordinate system. Template matching already adds half the template
+    # width/height and therefore already contains this half-pixel correction.
+    pixel_center_offset = 0.0 if strategy == str(ViaStrategyName.TEMPLATE) else 0.5
     return ViaHit(
-        center_x=float(detection.x),
-        center_y=float(detection.y),
+        center_x=float(detection.x) + pixel_center_offset,
+        center_y=float(detection.y) + pixel_center_offset,
         width=float(w),
         height=float(h),
         score=float(detection.score),

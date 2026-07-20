@@ -329,6 +329,9 @@ class PolygonExtractionWidget(
         self._frame_load_request_serial = 0
         self._frame_load_running_path: str | None = None
         self._frame_load_pending: tuple[str, bool] | None = None
+        self._desired_image_path: str | None = None
+        self._image_selection_request_serial = 0
+        self._deferred_image_load_timers: list[QTimer] = []
         self._defer_vector_load_until_cif_index = False
         self._pending_thumbnail_rebuild_after_vectors = False
         self._thumbnail_flush_retry_count = 0
@@ -435,6 +438,7 @@ class PolygonExtractionWidget(
         image_list_selection = self.image_list.selectionModel()
         if image_list_selection is not None:
             image_list_selection.currentChanged.connect(self._on_image_list_current_changed)
+        self.image_list.clicked.connect(self._on_image_list_clicked)
         self._apply_compact_ui_style()
         self._disable_spinbox_wheel_changes()
         self._restore_persisted_paths()
@@ -465,6 +469,7 @@ class PolygonExtractionWidget(
         self._frame_load_pending = None
         self._frame_load_running_path = None
         self._loading_image_path = None
+        self._desired_image_path = None
         if hasattr(self, "_cancel_thumbnail_loading"):
             self._cancel_thumbnail_loading()
         if hasattr(self, "thumbnail_grid") and hasattr(self.thumbnail_grid, "shutdownPyramidLoading"):

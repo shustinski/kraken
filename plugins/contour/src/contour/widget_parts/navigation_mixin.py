@@ -312,6 +312,9 @@ class WidgetNavigationMixin:
             self.thumbnail_matrix_panel.setVisible(enabled)
 
     def _disable_frame_matrix_runtime(self: Any) -> None:
+        self._thumbnail_grid_build_generation = int(
+            getattr(self, "_thumbnail_grid_build_generation", 0)
+        ) + 1
         self._pending_thumbnail_rebuild_after_vectors = False
         self._thumbnail_flush_retry_count = 0
         self._thumbnail_rebuild_in_progress = False
@@ -518,7 +521,10 @@ class WidgetNavigationMixin:
         if not hasattr(self, "thumbnail_grid"):
             return
         self._cancel_thumbnail_loading()
-        generation = self._thumbnail_generation
+        self._thumbnail_grid_build_generation = int(
+            getattr(self, "_thumbnail_grid_build_generation", 0)
+        ) + 1
+        build_generation = self._thumbnail_grid_build_generation
         self._thumbnail_loaded_generation.clear()
         self._thumbnail_rebuild_in_progress = True
         getattr(self, "_thumbnail_icon_cache", {}).clear()
@@ -548,7 +554,11 @@ class WidgetNavigationMixin:
             return
 
         def _add_thumbnail_chunk(start: int) -> None:
-            if generation != self._thumbnail_generation or not hasattr(self, "thumbnail_grid"):
+            if (
+                build_generation != getattr(self, "_thumbnail_grid_build_generation", 0)
+                or bool(getattr(self, "_closing", False))
+                or not hasattr(self, "thumbnail_grid")
+            ):
                 return
             end = min(len(paths), start + chunk_size)
             self.thumbnail_grid.blockSignals(True)
@@ -1217,7 +1227,7 @@ class WidgetNavigationMixin:
             self._update_thumbnail_grid_selection(scroll_to_selection=False)
             return
         try:
-            self.load_image(str(Path(path)))
+            self.load_image(str(Path(path)), preserve_editor_view_position=True)
         except Exception as exc:
             self._append_log(self._tr("failed_to_load_image_log", image_path=path, error=exc))
             QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
@@ -1242,11 +1252,11 @@ class WidgetNavigationMixin:
             self._update_thumbnail_grid_selection(scroll_to_selection=False)
             return
         if hasattr(self, "polygon_editor"):
-            self.polygon_editor.set_current_frame_id(index, center=True, emit_signal=False)
+            self.polygon_editor.set_current_frame_id(index, center=False, emit_signal=False)
         self._workspace._current_image_path = str(Path(path))
         self._workspace._current_state = None
         try:
-            self.load_image(str(Path(path)))
+            self.load_image(str(Path(path)), preserve_editor_view_position=True)
         except Exception as exc:
             self._append_log(self._tr("failed_to_load_image_log", image_path=path, error=exc))
             QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))

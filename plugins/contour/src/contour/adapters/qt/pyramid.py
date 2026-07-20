@@ -17,6 +17,17 @@ class PyramidThumbnailLoadSignals(QObject):
     error = pyqtSignal(int, int, int, int, int, str)
 
 
+def _emit_if_alive(signal_owner: QObject, signal_name: str, *args: object) -> None:
+    """Treat deletion of a runnable's Qt signal owner as normal cancellation."""
+
+    try:
+        getattr(signal_owner, signal_name).emit(*args)
+    except RuntimeError:
+        # The view can be rebuilt or closed while OpenCV is still decoding.
+        # In that case Qt deletes the signal object before the worker returns.
+        return
+
+
 class PyramidFrameLoadRunnable(QRunnable):
     def __init__(self, generation: int, frame_id: int, lod: int, store: PyramidFrameStore) -> None:
         super().__init__()
@@ -30,9 +41,10 @@ class PyramidFrameLoadRunnable(QRunnable):
         try:
             array = self.store.get_frame(self.frame_id, self.lod)
             qimage = qimage_from_array(array)
-            self.signals.result.emit(self.generation, self.frame_id, self.lod, qimage)
         except Exception as exc:
-            self.signals.error.emit(self.generation, self.frame_id, self.lod, str(exc))
+            _emit_if_alive(self.signals, "error", self.generation, self.frame_id, self.lod, str(exc))
+            return
+        _emit_if_alive(self.signals, "result", self.generation, self.frame_id, self.lod, qimage)
 
 
 class PyramidThumbnailLoadRunnable(QRunnable):
@@ -67,7 +79,7 @@ class PyramidThumbnailLoadRunnable(QRunnable):
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            self.signals.result.emit(
+            result_args = (
                 self.generation,
                 self.frame_id,
                 self.lod,
@@ -76,7 +88,9 @@ class PyramidThumbnailLoadRunnable(QRunnable):
                 qimage,
             )
         except Exception as exc:
-            self.signals.error.emit(
+            _emit_if_alive(
+                self.signals,
+                "error",
                 self.generation,
                 self.frame_id,
                 self.lod,
@@ -84,6 +98,8 @@ class PyramidThumbnailLoadRunnable(QRunnable):
                 self.target_height,
                 str(exc),
             )
+            return
+        _emit_if_alive(self.signals, "result", *result_args)
 
 
 def qimage_from_array(array: np.ndarray) -> QImage:

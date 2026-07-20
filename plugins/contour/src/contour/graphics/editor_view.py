@@ -1045,7 +1045,7 @@ class PolygonEditorView(QGraphicsView):
                     if not self._confirm_frame_navigation():
                         event.accept()
                         return
-                    self.set_current_frame_id(target_frame_id, center=True, emit_signal=True)
+                    self.set_current_frame_id(target_frame_id, center=False, emit_signal=True)
                     self.frameNavigationRequested.emit(target_frame_id)
                     event.accept()
                     return

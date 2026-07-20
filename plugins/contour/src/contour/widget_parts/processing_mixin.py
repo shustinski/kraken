@@ -762,11 +762,14 @@ class WidgetProcessingMixin:
         defer_neighbors: bool = True,
         defer_heavy_overlays: bool = False,
         preserve_view: bool = False,
+        clear_neighbors: bool | None = None,
         sync_neighbors: bool = True,
     ) -> None:
         current_state = self._workspace.current_state
         image_path = self._workspace.current_image_path
-        if not preserve_view:
+        if clear_neighbors is None:
+            clear_neighbors = not preserve_view
+        if clear_neighbors:
             self._clear_neighbor_frame_display_for_frame_change()
         if current_state is None or not image_path:
             self._pending_editor_frame_apply = None
@@ -1044,6 +1047,8 @@ class WidgetProcessingMixin:
     def _center_editor_on_current_main_image(self: Any, *, force: bool = False) -> None:
         if not hasattr(self, "polygon_editor") or not self._workspace.current_image_path:
             return
+        if self._should_preserve_editor_view_position(self._workspace.current_image_path):
+            return
         if not self.polygon_editor.should_auto_reposition_view(force=force):
             return
         if self.polygon_editor.pyramid_mode_enabled():
@@ -1051,6 +1056,14 @@ class WidgetProcessingMixin:
             self.polygon_editor.set_current_frame_id(frame_id, center=True, emit_signal=False)
             return
         self.polygon_editor.center_main_image()
+
+    def _should_preserve_editor_view_position(self: Any, image_path: str | None) -> bool:
+        preserve_path = str(getattr(self, "_preserve_editor_view_position_path", "") or "")
+        return bool(
+            preserve_path
+            and image_path
+            and str(Path(image_path)) == str(Path(preserve_path))
+        )
 
     def _odd_neighbor_grid_size(self: Any, value: int) -> int:
         size = max(3, min(7, int(value)))
@@ -1971,8 +1984,17 @@ class WidgetProcessingMixin:
             self._append_log(self._tr("cif_overlay_loaded_log", file_name=Path(cif_path).name, count=len(polygons)))
         return polygons
 
-    def load_image(self: Any, path: str, *, load_vectors: bool | None = None) -> None:
+    def load_image(
+        self: Any,
+        path: str,
+        *,
+        load_vectors: bool | None = None,
+        preserve_editor_view_position: bool = False,
+    ) -> None:
         normalized_load_path = str(Path(path))
+        self._preserve_editor_view_position_path = (
+            normalized_load_path if preserve_editor_view_position else None
+        )
         if load_vectors is None:
             load_vectors = not self._should_defer_vector_load()
         if self._image_path_in_image_list(normalized_load_path):
@@ -1981,11 +2003,19 @@ class WidgetProcessingMixin:
         if active_load_path is not None:
             if active_load_path == normalized_load_path:
                 return
-            self._frame_load_pending = (normalized_load_path, bool(load_vectors))
+            self._frame_load_pending = (
+                normalized_load_path,
+                bool(load_vectors),
+                bool(preserve_editor_view_position),
+            )
             return
         running_path = getattr(self, "_frame_load_running_path", None)
         if running_path is not None:
-            self._frame_load_pending = (normalized_load_path, bool(load_vectors))
+            self._frame_load_pending = (
+                normalized_load_path,
+                bool(load_vectors),
+                bool(preserve_editor_view_position),
+            )
             return
         self._loading_image_path = normalized_load_path
         if hasattr(self, "_pause_thumbnail_radial_fill"):
@@ -2162,7 +2192,7 @@ class WidgetProcessingMixin:
         running_path = getattr(self, "_frame_load_running_path", None)
         if running_path is not None or getattr(self, "_loading_image_path", None) is not None:
             self._mark_thumbnail_grid_rebuild_pending()
-            self._frame_load_pending = (normalized, True)
+            self._frame_load_pending = (normalized, True, False)
             return
         self._loading_image_path = normalized
         try:
@@ -2275,8 +2305,12 @@ class WidgetProcessingMixin:
         pending = getattr(self, "_frame_load_pending", None)
         if pending:
             self._frame_load_pending = None
-            path, load_vectors = pending
-            self.load_image(path, load_vectors=load_vectors)
+            path, load_vectors, preserve_editor_view_position = pending
+            self.load_image(
+                path,
+                load_vectors=load_vectors,
+                preserve_editor_view_position=preserve_editor_view_position,
+            )
             return
         self._flush_pending_thumbnail_grid_rebuild()
 
@@ -2294,6 +2328,9 @@ class WidgetProcessingMixin:
     ) -> None:
         profile_timings = profile_timings or {}
         phase_start = phase_start or perf_counter()
+        preserve_editor_view_position = self._should_preserve_editor_view_position(
+            image_result.image_path
+        )
         self._save_persisted_current_image_path(image_result.image_path)
         if not self._is_extraction_mode_enabled():
             self._viewed_image_paths.add(str(Path(image_result.image_path)))
@@ -2360,7 +2397,12 @@ class WidgetProcessingMixin:
             self._updating_views = True
             try:
                 step_start = perf_counter()
-                self._apply_frame_to_editor(defer_neighbors=True, defer_heavy_overlays=False)
+                self._apply_frame_to_editor(
+                    defer_neighbors=True,
+                    defer_heavy_overlays=False,
+                    preserve_view=preserve_editor_view_position,
+                    clear_neighbors=True,
+                )
                 if profile_enabled:
                     profile_timings["apply_frame_to_editor"] = (perf_counter() - step_start) * 1000.0
             finally:
@@ -2381,7 +2423,12 @@ class WidgetProcessingMixin:
             self._updating_views = True
             try:
                 step_start = perf_counter()
-                self._apply_frame_to_editor(defer_neighbors=True, defer_heavy_overlays=False)
+                self._apply_frame_to_editor(
+                    defer_neighbors=True,
+                    defer_heavy_overlays=False,
+                    preserve_view=preserve_editor_view_position,
+                    clear_neighbors=True,
+                )
                 if profile_enabled:
                     profile_timings["apply_frame_to_editor"] = (perf_counter() - step_start) * 1000.0
             finally:

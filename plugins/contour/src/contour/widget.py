@@ -328,7 +328,8 @@ class PolygonExtractionWidget(
         self._frame_load_thread_pool.setExpiryTimeout(30000)
         self._frame_load_request_serial = 0
         self._frame_load_running_path: str | None = None
-        self._frame_load_pending: tuple[str, bool] | None = None
+        self._frame_load_pending: tuple[str, bool, bool] | None = None
+        self._preserve_editor_view_position_path: str | None = None
         self._desired_image_path: str | None = None
         self._image_selection_request_serial = 0
         self._deferred_image_load_timers: list[QTimer] = []
@@ -346,6 +347,7 @@ class PolygonExtractionWidget(
         self._thumbnail_path_to_row: dict[str, int] = {}
         self._pending_frame_chrome_path: str | None = None
         self._thumbnail_generation = 0
+        self._thumbnail_grid_build_generation = 0
         self._thumbnail_icon_size = QSize(64, 48)
         self._thumbnail_placeholder_icon = QIcon()
         self._thumbnail_loaded_generation: dict[str, int] = {}

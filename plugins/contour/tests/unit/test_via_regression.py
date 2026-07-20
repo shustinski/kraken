@@ -134,13 +134,18 @@ def test_heuristic_binary_mask_recovers_every_cif_via(stem: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("stem", "min_recall", "min_precision"),
+    ("stem", "min_recall", "min_precision", "max_false_positives"),
     [
-        ("KEEL_3W4_BS_12749", 0.98, 0.90),
-        ("KALIBR3_2W3_10557", 1.0, 0.67),
+        ("KEEL_3W4_BS_12749", 0.98, 0.91, 92),
+        ("KALIBR3_2W3_10557", 1.0, 0.72, 60),
     ],
 )
-def test_heuristic_real_frame_quality(stem: str, min_recall: float, min_precision: float) -> None:
+def test_heuristic_real_frame_quality(
+    stem: str,
+    min_recall: float,
+    min_precision: float,
+    max_false_positives: int,
+) -> None:
     image = cv2.imread(str(_TEST_VIA_ROOT / "img" / f"{stem}.jpg"), cv2.IMREAD_GRAYSCALE)
     assert image is not None
     ground_truth = _cif_ground_truth_centers(_TEST_VIA_ROOT / "cif" / f"{stem}.cif")
@@ -163,9 +168,10 @@ def test_heuristic_real_frame_quality(stem: str, min_recall: float, min_precisio
         ),
     )
     detected = [(item.center_x, item.center_y) for item in result.hits]
-    recall, precision, _false_positives, _count = _detection_metrics(ground_truth, detected, tolerance=7.0)
+    recall, precision, false_positives, _count = _detection_metrics(ground_truth, detected, tolerance=7.0)
     assert recall >= min_recall
     assert precision >= min_precision
+    assert false_positives <= max_false_positives
     nearest_offsets = [
         min(
             ((dx - gx, dy - gy) for dx, dy in detected),

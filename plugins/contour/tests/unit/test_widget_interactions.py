@@ -11,7 +11,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPoint, QPointF, QRectF, QSignalBlocker, QSize, Qt
+from PyQt6.QtCore import QPoint, QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer
 from PyQt6.QtGui import QImage, QPainter, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
@@ -646,7 +646,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.widget.show_frame_matrix_thumbnails_checkbox.setChecked(False)
             self.widget.load_images(paths)
             self._wait_for_thumbnail_grid_count(2)
-            self.widget.load_image = lambda path: setattr(self.widget, "_last_loaded_from_thumb", path)  # type: ignore[method-assign]
+            self.widget.load_image = lambda path, **_kwargs: setattr(self.widget, "_last_loaded_from_thumb", path)  # type: ignore[method-assign]
 
             self.assertEqual(self.widget.image_list.item(0).text(), "frame_001")
             self.assertEqual(self.widget.thumbnail_grid.count(), 2)
@@ -718,11 +718,35 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.widget._session_settings_store.save_current_image_path(image_paths[1])
 
             self.widget._restore_persisted_session_selection()
-            self._app.processEvents()
+            self._wait_for_thumbnail_grid_count(len(image_paths))
 
             self.assertEqual(self.widget._workspace.image_paths, tuple(str(Path(path)) for path in image_paths))
             self.assertEqual(self.widget._workspace.current_image_path, str(Path(image_paths[1])))
+            self.assertEqual(self.widget.thumbnail_grid.count(), len(image_paths))
             self.assertIn("frame_999", self.widget._workspace.cif_paths_by_stem)
+
+    def test_restored_frame_matrix_build_does_not_wait_for_cif_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image_paths = []
+            for name in ("frame_001.png", "frame_002.png"):
+                path = os.path.join(directory, name)
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+                image_paths.append(path)
+
+            self.widget._session_settings_store.save_image_paths(image_paths)
+            self.widget._session_settings_store.save_current_image_path(image_paths[0])
+            self.widget.cif_dir_edit.setText(directory)
+            self.widget._indexed_cif_directory = None
+            index_requests: list[str] = []
+            self.widget._begin_async_cif_directory_index = lambda path: index_requests.append(  # type: ignore[method-assign]
+                str(Path(path))
+            )
+
+            self.widget._restore_persisted_session_selection()
+            self._wait_for_thumbnail_grid_count(len(image_paths))
+
+            self.assertEqual(self.widget.thumbnail_grid.count(), len(image_paths))
+            self.assertEqual(index_requests, [str(Path(directory))])
 
     def test_refresh_preserves_explicit_image_subset(self) -> None:
         from contour.infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
@@ -1031,6 +1055,20 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(self.widget.thumbnail_grid.count(), self.widget._image_list_proxy.rowCount())
         self.assertEqual(self.widget.thumbnail_grid.count(), len(normalized))
 
+    def test_thumbnail_lod_change_does_not_cancel_large_matrix_build(self) -> None:
+        paths = [str(Path(fr"d:\frames\frame_{index:04d}.png")) for index in range(350)]
+        self.widget._workspace._image_paths = paths
+        self.widget.show_frame_matrix_checkbox.setChecked(True)
+        self.widget.show_frame_matrix_thumbnails_checkbox.setChecked(False)
+        self.widget._thumbnail_build_chunk_size = 100
+
+        self.widget._rebuild_thumbnail_grid()
+        QTimer.singleShot(5, self.widget._on_thumbnail_lod_changed)
+        self._wait_for_thumbnail_grid_count(len(paths))
+
+        self.assertEqual(self.widget.thumbnail_grid.count(), len(paths))
+        self.assertFalse(self.widget._thumbnail_rebuild_in_progress)
+
     def test_frame_matrix_rebuild_yields_before_adding_items(self) -> None:
         paths = [fr"d:\frames\frame_{index:05d}.png" for index in range(300)]
         self.widget._workspace._image_paths = [str(Path(path)) for path in paths]
@@ -1176,13 +1214,25 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
     def test_frame_matrix_navigation_loads_main_editor_frame(self) -> None:
         paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]
         self.widget._workspace._image_paths = paths
-        loaded: list[str] = []
-        self.widget.load_image = lambda path: loaded.append(str(Path(path)))  # type: ignore[method-assign]
+        loaded: list[tuple[str, bool]] = []
+        self.widget.load_image = lambda path, **kwargs: loaded.append(  # type: ignore[method-assign]
+            (str(Path(path)), bool(kwargs.get("preserve_editor_view_position")))
+        )
 
         self.widget._on_frame_navigation_requested(2)
 
-        self.assertEqual(loaded, [paths[2]])
+        self.assertEqual(loaded, [(paths[2], True)])
         self.assertEqual(str(Path(self.widget._workspace.current_image_path or "")), paths[2])
+
+    def test_frame_matrix_navigation_does_not_center_editor_scene(self) -> None:
+        paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]
+        self.widget._workspace._image_paths = paths
+        self.widget.load_image = lambda _path, **_kwargs: None  # type: ignore[method-assign]
+
+        with patch.object(self.widget.polygon_editor, "set_current_frame_id") as set_frame_mock:
+            self.widget._on_frame_navigation_requested(2)
+
+        set_frame_mock.assert_called_once_with(2, center=False, emit_signal=False)
 
     def test_frame_matrix_navigation_cancel_keeps_current_frame(self) -> None:
         paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]
@@ -1199,7 +1249,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget._rebuild_thumbnail_grid()
         self._wait_for_thumbnail_grid_count(3)
         loaded: list[str] = []
-        self.widget.load_image = lambda path: loaded.append(str(Path(path)))  # type: ignore[method-assign]
+        self.widget.load_image = lambda path, **_kwargs: loaded.append(str(Path(path)))  # type: ignore[method-assign]
         self.widget._try_leave_current_frame = lambda: False  # type: ignore[method-assign]
 
         self.widget._on_frame_navigation_requested(2)
@@ -1215,7 +1265,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]
         self.widget._workspace._image_paths = paths
         loaded: list[str] = []
-        self.widget.load_image = lambda path: loaded.append(str(Path(path)))  # type: ignore[method-assign]
+        self.widget.load_image = lambda path, **_kwargs: loaded.append(str(Path(path)))  # type: ignore[method-assign]
 
         self.widget._on_neighbor_frame_activated(paths[1])
 
@@ -1234,7 +1284,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self._wait_for_thumbnail_grid_count(9)
         self.widget.thumbnail_grid.setCurrentRow(4)
         loaded: list[str] = []
-        self.widget.load_image = lambda path: loaded.append(str(Path(path)))  # type: ignore[method-assign]
+        self.widget.load_image = lambda path, **_kwargs: loaded.append(str(Path(path)))  # type: ignore[method-assign]
 
         QTest.keyClick(self.widget.polygon_editor.viewport(), Qt.Key.Key_Right, Qt.KeyboardModifier.ControlModifier)
         QTest.keyClick(self.widget.polygon_editor.viewport(), Qt.Key.Key_Down, Qt.KeyboardModifier.ControlModifier)
@@ -1654,6 +1704,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         with patch.object(self.widget.polygon_editor, "center_main_image") as center_mock:
             self.widget._center_editor_on_current_main_image(force=False)
         center_mock.assert_not_called()
+
         self.widget.neighbor_max_grid_spin.setValue(7)
         self.widget.polygon_editor.resetTransform()
         self.widget.polygon_editor.scale(1.0, 1.0)
@@ -1665,6 +1716,16 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget.neighbor_max_grid_spin.setValue(5)
 
         self.assertEqual(self.widget._neighbor_grid_size(), 5)
+
+    def test_frame_matrix_load_suppresses_deferred_editor_centering(self) -> None:
+        path = str(Path(r"d:\frames\frame_002.png"))
+        self.widget._workspace._current_image_path = path
+        self.widget._preserve_editor_view_position_path = path
+
+        with patch.object(self.widget.polygon_editor, "center_main_image") as center_mock:
+            self.widget._center_editor_on_current_main_image(force=True)
+
+        center_mock.assert_not_called()
 
     def test_neighbor_frame_border_is_hidden_when_neighbors_are_disabled(self) -> None:
         self.widget.polygon_editor.set_image(np.zeros((24, 24), dtype=np.uint8))

@@ -426,6 +426,9 @@ class WidgetPipelineActionsMixin:
     def _start_vector_index_or_rebuild_frame_matrix_after_images(self) -> None:
         if bool(getattr(self, "_image_list_rebuild_in_progress", False)):
             return
+        # The frame matrix depends only on image paths. Build it immediately;
+        # CIF indexing may still be running (or unavailable during session restore).
+        self._schedule_thumbnail_grid_rebuild(force=True)
         pending_directory = getattr(self, "_pending_cif_directory_path_after_images", None)
         if pending_directory:
             self._pending_cif_directory_path_after_images = None
@@ -437,7 +440,6 @@ class WidgetPipelineActionsMixin:
             self._mark_thumbnail_grid_rebuild_pending()
             self._begin_async_cif_directory_index(normalized_directory)
             return
-        self._schedule_thumbnail_grid_rebuild(force=True)
 
     def _on_cif_directory_index_finished(self, directory_state) -> None:
         if bool(getattr(self, "_image_list_rebuild_in_progress", False)):

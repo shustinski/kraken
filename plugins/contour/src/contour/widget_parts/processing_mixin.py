@@ -704,7 +704,9 @@ class WidgetProcessingMixin:
         defer_heavy_overlays: bool,
     ) -> None:
         if hasattr(self, "polygon_editor"):
-            self.polygon_editor.set_polygon_overlays_visible(self._is_extraction_mode_enabled())
+            # Recognition controls whether new geometry is extracted.  It must
+            # not hide vectors that were loaded from CIF/CV or edited manually.
+            self.polygon_editor.set_polygon_overlays_visible(True)
         self._sync_polygons_to_editor(image_path, polygons)
         if defer_heavy_overlays:
             return
@@ -1194,6 +1196,8 @@ class WidgetProcessingMixin:
                 self._preview_run_cancel.set()
             self._preview_pending_request = None
             self._preview_pending_signature = None
+            self._preview_pending_save_result = False
+            self._preview_running_save_result = False
         if prepared:
             if self._prepared_image_run_cancel is not None:
                 self._prepared_image_run_cancel.set()
@@ -1271,7 +1275,7 @@ class WidgetProcessingMixin:
     def _prepared_image_request_signature(self: Any, request: PreparedImageRequest) -> tuple[str, str]:
         return build_prepared_image_signature(request)
 
-    def _queue_preview_processing(self: Any, *, debounced: bool) -> None:
+    def _queue_preview_processing(self: Any, *, debounced: bool, save_result: bool = False) -> None:
         request = self._build_preview_request()
         if request is None:
             self._append_log(self._tr("no_image_selected_log"))
@@ -1284,14 +1288,21 @@ class WidgetProcessingMixin:
         if hasattr(self, "recognition_mode_combo"):
             self._set_recognition_status("updating")
         signature = self._preview_request_signature(request)
-        if signature == self._preview_running_signature or signature == self._preview_pending_signature:
+        if signature == self._preview_running_signature:
+            self._preview_running_save_result = self._preview_running_save_result or save_result
+            self._refresh_busy_indicator()
+            return
+        if signature == self._preview_pending_signature:
+            self._preview_pending_save_result = self._preview_pending_save_result or save_result
             self._refresh_busy_indicator()
             return
         self._preview_update_timer.stop()
         if self._preview_run_cancel is not None:
             self._preview_run_cancel.set()
+            self._preview_running_save_result = False
         self._preview_pending_request = request
         self._preview_pending_signature = signature
+        self._preview_pending_save_result = bool(save_result)
         self._refresh_busy_indicator()
         if debounced:
             self._preview_update_timer.start()
@@ -1310,10 +1321,13 @@ class WidgetProcessingMixin:
         self._preview_pending_request = None
         request_signature = self._preview_pending_signature
         self._preview_pending_signature = None
+        save_result = self._preview_pending_save_result
+        self._preview_pending_save_result = False
         self._preview_request_serial += 1
         request_id = self._preview_request_serial
         self._preview_running_request_id = request_id
         self._preview_running_signature = request_signature
+        self._preview_running_save_result = save_result
         cancel = threading.Event()
         self._preview_run_cancel = cancel
         self._reset_busy_progress(request)
@@ -1437,6 +1451,8 @@ class WidgetProcessingMixin:
                 count=len(result.polygons),
             )
         )
+        if self._preview_running_save_result:
+            self.save_current_result(polygons=list(result.polygons))
         self.imageProcessed.emit(result.image_path, result.polygons)
 
     def _on_preview_processing_error(self: Any, request_id: int, message: str) -> None:
@@ -1450,6 +1466,7 @@ class WidgetProcessingMixin:
         if request_id == self._preview_running_request_id:
             self._preview_running_request_id = None
             self._preview_running_signature = None
+            self._preview_running_save_result = False
             self._preview_run_cancel = None
             self._preview_running_request_for_progress = None
             self._busy_progress_stage = ""
@@ -2852,6 +2869,11 @@ class WidgetProcessingMixin:
     def process_current_image(self: Any, *_args, debounced: bool = False) -> None:
         self._queue_preview_processing(debounced=debounced)
 
+    def _process_current_image_and_save(self: Any, *_args) -> None:
+        """Process the selected frame and persist the enabled result formats."""
+
+        self._queue_preview_processing(debounced=False, save_result=True)
+
     def _export_dataset_frame_for_state(
         self: Any,
         image_path: str,
@@ -2890,6 +2912,8 @@ class WidgetProcessingMixin:
         self: Any,
         output_directory: str | None = None,
         save_options: SaveOptions | None = None,
+        *,
+        polygons: list[PolygonData] | None = None,
     ) -> dict[str, str]:
         current_state = self._workspace.current_state
         current_image_path = self._workspace.current_image_path
@@ -2900,12 +2924,13 @@ class WidgetProcessingMixin:
         if not target_directory:
             self._append_log(self._tr("output_directory_not_set_log"))
             return {}
-        self._workspace.update_current_polygons(self.get_polygons())
+        current_polygons = self.get_polygons() if polygons is None else [polygon.clone() for polygon in polygons]
+        self._workspace.update_current_polygons(current_polygons)
         had_vector_edits = self._workspace.current_image_has_changes()
         saved_files = save_result_bundle(
             output_directory=target_directory,
             image_path=current_image_path,
-            polygons=self.get_polygons(),
+            polygons=current_polygons,
             source_image=current_state.source_image,
             display_settings=self._display_settings,
             save_options=save_options or self._current_save_options(),
@@ -2919,7 +2944,7 @@ class WidgetProcessingMixin:
             self._handle_gamification_after_save(
                 image_path=current_image_path,
                 state=current_state,
-                polygons=self.get_polygons(),
+                polygons=current_polygons,
                 saved_files=saved_files,
                 had_vector_edits=had_vector_edits,
             )

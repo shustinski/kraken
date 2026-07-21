@@ -274,6 +274,8 @@ class PolygonExtractionWidget(
         self._preview_pending_request: PreviewProcessingRequest | None = None
         self._preview_running_signature: tuple[str, str, str] | None = None
         self._preview_pending_signature: tuple[str, str, str] | None = None
+        self._preview_pending_save_result = False
+        self._preview_running_save_result = False
         self._preview_run_cancel: threading.Event | None = None
         self._preview_running_request_for_progress: PreviewProcessingRequest | None = None
         self._busy_progress_timer = QTimer(self)

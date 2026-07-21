@@ -10,6 +10,7 @@ from contour.vision.schemas import OutputShapeKind
 from contour.vision.via.bright_tophat_dog import (
     BrightViaDetection,
     BrightViaDetectorConfig,
+    _local_maxima_points,
     bright_center_score,
     detect_bright_vias,
     edge_likeness_score,
@@ -29,6 +30,16 @@ def _synthetic_bright_vias() -> np.ndarray:
         cv2.circle(image, center, 3, 235, thickness=-1, lineType=cv2.LINE_AA)
     noise = rng.normal(0, 5, image.shape).astype(np.int16)
     return np.clip(image.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+
+
+def test_bright_via_local_maxima_are_not_truncated_by_count() -> None:
+    response = np.zeros((301, 301), dtype=np.uint8)
+    response[1::3, 1::3] = 255
+    support = np.full_like(response, 255)
+
+    points = _local_maxima_points(response, support)
+
+    assert len(points) == 10_000
 
 
 def _synthetic_image_detector_config(**overrides: object) -> BrightViaDetectorConfig:
@@ -358,7 +369,6 @@ def test_heuristic_center_is_stable_when_one_half_is_overexposed() -> None:
             diameter_max=14,
             polarity="bright",
             bright_range_min=100,
-            max_seed_count=100,
         ),
     )
 

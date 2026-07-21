@@ -21,10 +21,6 @@ _COLOR_ACCEPT = (0, 220, 0)
 _COLOR_SOFT = (0, 220, 255)
 _COLOR_HARD = (0, 0, 255)
 
-# Flat or noisy response plateaus can mark almost every pixel as a "local maximum";
-# combined with a slow all-vs-all distance check, that stalls the UI. Cap and index.
-_MAX_LOCAL_MAXIMA_PEAKS = 8192
-_MAX_STAGE1_RAW_CANDIDATES = 10_000
 _MATCHED_PCT_OFFSET = 0.5
 _RADIAL_SMOOTH_SIGMA = 1.0
 
@@ -539,8 +535,6 @@ def score_bright_via_candidates(
     candidates_scored = suppress_close_points(candidates_scored, cfg.nms_distance)
     accepted = [c for c in candidates_scored if c.status == "accepted"]
     rejected = [c for c in candidates_scored if c.status != "accepted"]
-    if len(rejected) > 1000:
-        rejected = sorted(rejected, key=lambda item: item.final_score, reverse=True)[:1000]
     compact_candidates = accepted + rejected
     show_rejected = bool(cfg.show_rejected_candidates)
     if prepared.gray.shape[0] * prepared.gray.shape[1] >= 1_800_000:
@@ -587,56 +581,26 @@ def _stage1_raw_candidates(
     pi_v = float(pi)
     tophat_f32 = tophat_u8.astype(np.float32, copy=False)
     dog_f32 = dog_u8.astype(np.float32, copy=False)
-    nms = max(2.0, float(cfg.nms_distance) * 0.5, float(cfg.diameter_min) * 0.35)
-    near = _CenterDistanceIndex(nms)
-    existing: set[tuple[float, float]] = set()
-    # Matched-filter peaks first: they are the most via-specific source, so they
-    # claim their centers before contours (which merge on bright metal) and the
-    # noisier tophat/DoG/gray peaks can crowd them out.
-    for cx, cy, val in _local_maxima_points(matched_u8, matched_mask, max_points=_MAX_LOCAL_MAXIMA_PEAKS):
-        if near.is_close(cx, cy):
-            continue
+    # Gather every source first. The score-ranked NMS after this stage resolves
+    # duplicates without imposing a count-dependent cutoff or source-order bias.
+    for cx, cy, val in _local_maxima_points(matched_u8, matched_mask):
         raw = _raw_from_peak(cx, cy, val, matched_u8, "matched_peak", cfg, min_area, max_area, pi_v)
         if raw is not None:
             raws.append(raw)
-            near.add(cx, cy)
-            existing.add((_round2(cx), _round2(cy)))
     for contour, tag in _contours_from_mask(via_mask, min_area, max_area):
         det = _raw_from_contour(contour, tophat_f32, dog_f32, tag, pi_v)
-        if det is not None and not near.is_close(det.center[0], det.center[1]):
+        if det is not None:
             raws.append(det)
-            near.add(det.center[0], det.center[1])
-            existing.add((_round2(det.center[0]), _round2(det.center[1])))
-    if len(raws) > _MAX_STAGE1_RAW_CANDIDATES:
-        raws = sorted(raws, key=lambda z: z.prelim, reverse=True)[:_MAX_STAGE1_RAW_CANDIDATES]
-        near = _CenterDistanceIndex(nms)
-        existing = set()
-        for r in raws:
-            near.add(r.center[0], r.center[1])
-            existing.add((_round2(r.center[0]), _round2(r.center[1])))
     for label, tmask, response in (
         ("tophat_peak", tophat_mask, tophat_u8),
         ("dog_peak", dog_mask, dog_u8),
         ("gray_peak", _percentile_mask(gray_u8, 95.0), gray_u8),
     ):
-        for cx, cy, val in _local_maxima_points(response, tmask, max_points=_MAX_LOCAL_MAXIMA_PEAKS):
-            key = (_round2(cx), _round2(cy))
-            if key in existing:
-                continue
-            if near.is_close(cx, cy):
-                continue
+        for cx, cy, val in _local_maxima_points(response, tmask):
             raw = _raw_from_peak(cx, cy, val, response, label, cfg, min_area, max_area, pi_v)
             if raw is not None:
                 raws.append(raw)
-                near.add(cx, cy)
-                existing.add(key)
-    if len(raws) > _MAX_STAGE1_RAW_CANDIDATES:
-        raws = sorted(raws, key=lambda z: z.prelim, reverse=True)[:_MAX_STAGE1_RAW_CANDIDATES]
     return raws
-
-
-def _round2(x: float) -> float:
-    return round(x * 2.0) * 0.5
 
 
 def _contours_from_mask(via_mask: np.ndarray, min_area: float, max_area: float) -> list[tuple[np.ndarray, str]]:
@@ -791,23 +755,40 @@ def _fixed_size_bbox(center: tuple[float, float], diameter: float, shape: tuple[
 
 
 def _local_maxima_points(
-    response_u8: np.ndarray, support: np.ndarray, *, max_points: int = _MAX_LOCAL_MAXIMA_PEAKS
+    response_u8: np.ndarray,
+    support: np.ndarray,
 ) -> list[tuple[float, float, float]]:
-    if response_u8.size == 0 or max_points <= 0:
+    if response_u8.size == 0:
         return []
     work = response_u8.astype(np.float32)
     work[support == 0] = 0.0
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     dil = cv2.dilate(work, kernel)
     lm = (work >= dil) & (work > 0) & (support > 0)
-    ys, xs = np.where(lm)
-    if ys.size == 0:
+    maxima = lm.astype(np.uint8)
+    if int(cv2.countNonZero(maxima)) == 0:
         return []
-    if ys.size > max_points:
-        vals = work[ys, xs]
-        pick = np.argpartition(-vals, max_points - 1)[:max_points]
-        ys, xs = ys[pick], xs[pick]
-    return [(float(x), float(y), float(work[y, x])) for y, x in zip(ys, xs, strict=True)]
+    # A saturated/flat peak is one maximum, not one candidate per pixel. Collapse
+    # each connected plateau while retaining every spatially distinct maximum.
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(maxima, connectivity=8)
+    points: list[tuple[float, float, float]] = []
+    for label in range(1, count):
+        x, y, width, height, area = stats[label]
+        if int(area) <= 0:
+            continue
+        roi = work[y : y + height, x : x + width]
+        region = labels[y : y + height, x : x + width] == label
+        peak = float(np.max(roi[region]))
+        peak_y, peak_x = np.nonzero(region & (roi == peak))
+        points.append(
+            (
+                float(x) + float(np.mean(peak_x)),
+                float(y) + float(np.mean(peak_y)),
+                peak,
+            )
+        )
+    points.sort(key=lambda point: point[2], reverse=True)
+    return points
 
 
 def _raw_nms(raws: list[_RawStage1], min_dist: float) -> list[_RawStage1]:
@@ -1095,6 +1076,9 @@ def _composite_final_0_100(
     elif metal_mode == "strict":
         mbonus = 3.0 * _clip01(metal_fraction)
     distb = min(5.0, max(0.0, float(distance_to_edge) * 0.25))
+    edge_penalty = 30.0 * max(0.0, float(edge_likeness) / max(float(max_edge), 1e-3) - 1.0)
+    line_penalty = 5.0 * max(0.0, float(line_likeness) / max(float(max_line), 1e-3) - 1.0)
+    proximity_penalty = 5.0 * max(0.0, 1.0 - float(distance_to_edge))
     core = (
         10.0 * bright_abs_norm
         + 8.0 * bright_contrast_norm
@@ -1105,7 +1089,7 @@ def _composite_final_0_100(
         + 20.0 * annular_norm
         + 25.0 * isolation_norm
     )
-    total = core + mbonus + distb
+    total = core + mbonus + distb - edge_penalty - line_penalty - proximity_penalty
     if total <= 0.0:
         return 0.0
     if total >= 100.0:
@@ -1425,7 +1409,17 @@ def _nms_quality(det: BrightViaDetection) -> float:
 
 
 def _raw_nms_rank(raw: _RawStage1) -> float:
-    return float(raw.prelim) * max(0.2, min(1.0, float(raw.circularity) * 1.2))
+    # Via-specific responses take precedence over generic gray-level peaks when
+    # two candidates describe the same location. This is a quality ordering,
+    # independent of how many candidates exist in the image.
+    source_priority = {
+        "matched_peak": 3.0,
+        "contour": 2.0,
+        "tophat_peak": 1.0,
+        "dog_peak": 1.0,
+    }.get(raw.source, 0.0)
+    quality = float(raw.prelim) * max(0.2, min(1.0, float(raw.circularity) * 1.2))
+    return source_priority * 256.0 + quality
 
 
 def _metal_mask(gray: np.ndarray) -> np.ndarray:

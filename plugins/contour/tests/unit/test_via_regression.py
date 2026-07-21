@@ -89,7 +89,6 @@ def _heuristic_via_preset_config() -> HeuristicViaDetectorConfig:
         polarity="bright",
         sensitivity="medium",
         nms_distance=5,
-        max_seed_count=1400,
         bright_range_enabled=True,
         bright_range_min=100.0,
     )
@@ -137,7 +136,10 @@ def test_heuristic_binary_mask_recovers_every_cif_via(stem: str) -> None:
     ("stem", "min_recall", "min_precision", "max_false_positives"),
     [
         ("KEEL_3W4_BS_12749", 0.98, 0.91, 92),
-        ("KALIBR3_2W3_10557", 1.0, 0.72, 60),
+        # Medium sensitivity is intentionally uncapped: all qualifying seeds are
+        # evaluated, including the weaker KALIBR candidates formerly hidden by
+        # the 1,400-seed ceiling.
+        ("KALIBR3_2W3_10557", 1.0, 0.52, 130),
     ],
 )
 def test_heuristic_real_frame_quality(

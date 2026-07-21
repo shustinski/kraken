@@ -227,6 +227,19 @@ class CifViaSupportTests(unittest.TestCase):
         self.assertIn("B ", payload)
         self.assertNotIn("P ", payload)
 
+    def test_cif_via_round_trip_preserves_odd_size_and_position_exactly(self) -> None:
+        polygon = _rectangle_polygon(11, 13, 22, 22)
+        polygon.category = "via"
+        polygon.shape_hint = "box"
+        cif_path = self._artifact_path("odd_via_box.cif")
+
+        save_polygons_cif(cif_path, "sample.png", [polygon], image_size=(100, 80))
+        _image_name, _image_size, loaded = load_polygons_cif(cif_path)
+
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].points, polygon.points)
+        self.assertEqual(loaded[0].bbox, polygon.bbox)
+
     def test_dataset_export_writes_image_and_cif_subdirectories(self) -> None:
         with TemporaryDirectory() as temp_root:
             root = Path(temp_root)
@@ -374,6 +387,19 @@ class CifViaSupportTests(unittest.TestCase):
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0].category, "via")
         self.assertEqual(loaded[0].shape_hint, "box")
+        self.assertEqual(loaded[0].bbox, polygon.bbox)
+
+    def test_cv_via_round_trip_preserves_odd_size_and_position_exactly(self) -> None:
+        polygon = _rectangle_polygon(11, 13, 22, 22)
+        polygon.category = "via"
+        polygon.shape_hint = "box"
+        cv_path = self._artifact_path("odd_via_box.cv")
+
+        save_polygons_cv(cv_path, "sample.png", [polygon], image_size=(100, 80))
+        _image_name, _image_size, loaded = load_polygons_cv(cv_path)
+
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].points, polygon.points)
         self.assertEqual(loaded[0].bbox, polygon.bbox)
 
     def test_cv_loader_reads_rectangle_point(self) -> None:

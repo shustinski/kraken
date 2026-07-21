@@ -420,7 +420,7 @@ def build_files_tab(self) -> QWidget:
     self.run_group = QGroupBox("Run")
     run_layout = QGridLayout(self.run_group)
     self.process_current_button = QPushButton()
-    self.process_current_button.clicked.connect(self.process_current_image)
+    self.process_current_button.clicked.connect(self._process_current_image_and_save)
     self.batch_button = QPushButton()
     self.batch_button.clicked.connect(self.start_batch_processing)
     self.stop_batch_button = QPushButton()

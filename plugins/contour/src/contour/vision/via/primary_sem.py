@@ -48,7 +48,6 @@ class SemPrimaryViaConfig:
     min_contrast: float = 10.0
     min_edge_coverage: float = 0.25
     line_suppression: float = 0.65
-    max_candidates: int = 1500
 
     @classmethod
     def from_legacy_settings(cls, settings: Any) -> SemPrimaryViaConfig:
@@ -125,7 +124,7 @@ class SemPrimaryViaDetector:
                 response = cv2.bitwise_and(response, gate)
             peaks = _extract_peaks(response, min_distance=max(2, int(np.median(radii) * 1.35)))
             isolation = _build_isolation(gate, gray, scan.bright, max_radius=max(radii))
-            for cy, cx in peaks[: self.config.max_candidates]:
+            for cy, cx in peaks:
                 candidate = _verify_candidate(
                     gray=gray,
                     prepared=prepared,

@@ -79,7 +79,6 @@ def heuristic_config_from_settings(settings: ContourExtractionSettings) -> Heuri
         nms_distance=max(0, int(getattr(settings, "bright_via_nms_distance", 5) or 0)),
         min_final_score=float(getattr(settings, "bright_via_min_final_score", 38.0) or 0.0),
         min_distance_between_peaks=0,
-        max_seed_count={"low": 900, "medium": 1400, "high": 3000}.get(sensitivity, 1400),
         min_peak_grey=float(getattr(settings, "heuristic_min_abs_peak", 0.0) or 0.0),
         background_sigma=float(getattr(settings, "heuristic_background_sigma", 25.0) or 25.0),
         analysis_window_scale=float(getattr(settings, "heuristic_analysis_window_scale", 3.0) or 3.0),

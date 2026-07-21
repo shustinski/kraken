@@ -806,7 +806,9 @@ class WidgetExtractionSettingsMixin:
         if hasattr(self, "via_group"):
             self.via_group.setVisible(self._active_extraction_profile == "vias" and data == "disabled")
         if hasattr(self, "polygon_editor"):
-            self.polygon_editor.set_polygon_overlays_visible(data != "disabled")
+            # "No extraction" disables recognition only; existing imported or
+            # manually edited vectors remain part of the editor overlay.
+            self.polygon_editor.set_polygon_overlays_visible(True)
         self.polygon_editor.set_debug_candidates([])
         if hasattr(self, "_update_extraction_profile_controls_state"):
             self._update_extraction_profile_controls_state()

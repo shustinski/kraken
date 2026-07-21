@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 import cv2
 import numpy as np
@@ -93,19 +94,42 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
         float(config.min_peak_grey),
     )
 
+    # An explicitly enabled intensity range is a candidate-generation rule, not
+    # merely a late validation gate. Otherwise dense frames keep only the top
+    # response percentile and valid, slightly weaker vias never get scored.
+    if config.bright_range_enabled and float(config.bright_range_min) >= 128.0:
+        range_seeds, range_mask = _intensity_range_seeds(
+            g_pre,
+            ker,
+            float(config.bright_range_min),
+            float(config.bright_range_max),
+            d_min,
+            d_max,
+            bright=True,
+        )
+        seeds_b.extend(range_seeds)
+        mask_b = cv2.bitwise_or(mask_b, range_mask)
+    if config.dark_range_enabled and float(config.dark_range_max) <= 127.0:
+        range_seeds, range_mask = _intensity_range_seeds(
+            g_pre,
+            ker,
+            float(config.dark_range_min),
+            float(config.dark_range_max),
+            d_min,
+            d_max,
+            bright=False,
+        )
+        seeds_d.extend(range_seeds)
+        mask_d = cv2.bitwise_or(mask_d, range_mask)
+
     polar = str(config.polarity or ViaPolarity.AUTO).lower()
     min_sep = int(config.min_distance_between_peaks) if config.min_distance_between_peaks else max(2, d_min // 2)
     if polar in (str(ViaPolarity.BRIGHT), "bright"):
         raw_seeds = _spread_points(seeds_b, min_sep, h, w)
-        seed_score_map = bright_map
     elif polar in (str(ViaPolarity.DARK), "dark"):
         raw_seeds = _spread_points(seeds_d, min_sep, h, w)
-        seed_score_map = dark_map
     else:
         raw_seeds = _merge_seeds(list(seeds_b) + list(seeds_d), min_sep, h, w)
-        seed_score_map = np.maximum(bright_map, dark_map)
-    raw_seeds = _limit_seed_count(raw_seeds, seed_score_map, int(config.max_seed_count))
-
     hyps: list[str]
     if polar in ("auto", str(ViaPolarity.AUTO)):
         hyps = []
@@ -278,6 +302,42 @@ def _local_extrema_seeds(
     return pts, m * 255
 
 
+def _intensity_range_seeds(
+    gray: np.ndarray,
+    _kernel: np.ndarray,
+    value_min: float,
+    value_max: float,
+    diameter_min: int,
+    diameter_max: int,
+    *,
+    bright: bool,
+) -> tuple[list[tuple[int, int]], np.ndarray]:
+    lo = min(float(value_min), float(value_max))
+    hi = max(float(value_min), float(value_max))
+    gray_f32 = gray.astype(np.float32)
+    support = ((gray_f32 >= lo) & (gray_f32 <= hi)).astype(np.uint8)
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(support, connectivity=8)
+    min_area = max(2.0, math.pi * (max(1, diameter_min) * 0.5) ** 2 * 0.15)
+    max_area = math.pi * (max(1, diameter_max) * 0.5) ** 2 * 2.2
+    max_span = max(3, int(round(float(diameter_max) * 2.0)))
+    points: list[tuple[int, int]] = []
+    accepted_labels = np.zeros(count, dtype=np.uint8)
+    for label in range(1, count):
+        _x, _y, width, height, area = stats[label]
+        if not (min_area <= float(area) <= max_area):
+            continue
+        if int(width) > max_span or int(height) > max_span:
+            continue
+        aspect = max(float(width), float(height)) / max(1.0, min(float(width), float(height)))
+        if aspect > 3.2:
+            continue
+        cx, cy = centroids[label]
+        points.append((int(round(cy)), int(round(cx))))
+        accepted_labels[label] = 255
+    filtered = accepted_labels[labels]
+    return points, filtered
+
+
 def _grid_suppressed_points(
     pts: list[tuple[int, int]],
     min_dist: int,
@@ -319,24 +379,6 @@ def _merge_seeds(allp: list[tuple[int, int]], min_dist: int, h: int, w: int) -> 
 
 def _spread_points(pts: list[tuple[int, int]], min_dist: int, h: int, w: int) -> list[tuple[int, int]]:
     return _grid_suppressed_points(pts, min_dist, h, w)
-
-
-def _limit_seed_count(
-    pts: list[tuple[int, int]],
-    score_map: np.ndarray,
-    max_count: int,
-) -> list[tuple[int, int]]:
-    if max_count <= 0 or len(pts) <= max_count:
-        return pts
-    h, w = score_map.shape[:2]
-
-    def score(point: tuple[int, int]) -> int:
-        y, x = point
-        yy = max(0, min(h - 1, int(y)))
-        xx = max(0, min(w - 1, int(x)))
-        return int(score_map[yy, xx])
-
-    return sorted(set(pts), key=score, reverse=True)[:max_count]
 
 
 def _dedupe_by_score(dets: list[ViaDetection], min_dist: float) -> list[ViaDetection]:
@@ -418,7 +460,7 @@ def _refine_center_xy(
     wts = np.maximum(wts, 0.0)
     sw = float(wts.sum())
     if sw > 1e-2:
-        yy, xx = np.indices((ph, pw), dtype=np.float32)
+        yy, xx = _coordinate_grids((ph, pw))
         return float((xx * wts).sum() / sw), float((yy * wts).sum() / sw)
     mm = cv2.moments((mask_bool.astype(np.uint8) * 255), binaryImage=True)
     if mm.get("m00", 0) and float(mm["m00"]) > 1e-6:
@@ -452,6 +494,12 @@ def _component_geometry_center(
     )
 
 
+@lru_cache(maxsize=512)
+def _coordinate_grids(shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+    return np.indices(shape, dtype=np.float32)
+
+
+@lru_cache(maxsize=2048)
 def _annulus_masks(shape: tuple[int, int], cx: int, cy: int, d: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     h, w = shape
     yy, xx = np.ogrid[:h, :w]
@@ -502,11 +550,7 @@ def _contrast_for_polarity(
 def _local_center_background_contrast(gray: np.ndarray, cx: int, cy: int, d: float, hyp: str) -> float:
     """Contrast of the via core against a true local background annulus."""
 
-    yy, xx = np.ogrid[: gray.shape[0], : gray.shape[1]]
-    radius = max(1.0, float(d) * 0.5)
-    distance = np.sqrt((xx - float(cx)) ** 2 + (yy - float(cy)) ** 2)
-    core = distance <= 0.45 * radius
-    background = (distance >= 1.25 * radius) & (distance <= 1.85 * radius)
+    core, background = _local_background_masks(gray.shape[:2], int(cx), int(cy), float(d))
     core_mean = _mean_mask(gray, core)
     background_mean = _mean_mask(gray, background)
     if hyp in (str(ViaPolarity.DARK), "dark"):
@@ -514,6 +558,18 @@ def _local_center_background_contrast(gray: np.ndarray, cx: int, cy: int, d: flo
     if hyp in (str(ViaPolarity.BRIGHT), "bright"):
         return core_mean - background_mean
     return 0.0
+
+
+@lru_cache(maxsize=2048)
+def _local_background_masks(
+    shape: tuple[int, int], cx: int, cy: int, d: float
+) -> tuple[np.ndarray, np.ndarray]:
+    yy, xx = np.ogrid[: shape[0], : shape[1]]
+    radius = max(1.0, float(d) * 0.5)
+    distance = np.sqrt((xx - float(cx)) ** 2 + (yy - float(cy)) ** 2)
+    core = distance <= 0.45 * radius
+    background = (distance >= 1.25 * radius) & (distance <= 1.85 * radius)
+    return core, background
 
 
 def _local_structure_metrics(
@@ -526,7 +582,7 @@ def _local_structure_metrics(
     """Return line coherence, closed-edge SNR and normalized edge sharpness."""
 
     radius = max(1.0, float(d) * 0.5)
-    yy, xx = np.indices(gray.shape, dtype=np.float32)
+    yy, xx = _coordinate_grids(gray.shape[:2])
     distance = np.sqrt((xx - float(cx)) ** 2 + (yy - float(cy)) ** 2)
     gx = cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3)
@@ -616,13 +672,31 @@ def _score_one(
     delta = max(float(config.min_center_contrast), abs(float(contrast)) * 0.30, 2.0)
     if hyp in (str(ViaPolarity.DARK), "dark"):
         thr2 = min(float(np.percentile(gpatch, max(1.0, 100.0 - p))), med - delta)
-        binm = (gpatch <= thr2).astype(np.uint8) * 255
+        if config.dark_range_enabled and float(config.dark_range_max) <= 127.0:
+            thr2 = max(thr2, min(float(config.dark_range_max), center_grey + delta))
+            binm = (
+                (gpatch >= float(config.dark_range_min))
+                & (gpatch <= thr2)
+            ).astype(np.uint8) * 255
+        else:
+            binm = (gpatch <= thr2).astype(np.uint8) * 255
     elif hyp in (str(ViaPolarity.RING_DARK_RING), "ring_dark_ring") and gpatch[pcy, pcx] < med:
         thr2 = min(float(np.percentile(gpatch, max(1.0, 100.0 - p))), med - delta)
         binm = (gpatch <= thr2).astype(np.uint8) * 255
     else:
         thr = max(float(np.percentile(gpatch, p)), med + delta)
-        binm = (gpatch >= thr).astype(np.uint8) * 255
+        if (
+            hyp in (str(ViaPolarity.BRIGHT), "bright")
+            and config.bright_range_enabled
+            and float(config.bright_range_min) >= 128.0
+        ):
+            thr = min(thr, max(float(config.bright_range_min), center_grey - delta))
+            binm = (
+                (gpatch >= thr)
+                & (gpatch <= float(config.bright_range_max))
+            ).astype(np.uint8) * 255
+        else:
+            binm = (gpatch >= thr).astype(np.uint8) * 255
     nlab, lab, stat, _ = cv2.connectedComponentsWithStats(binm, connectivity=8)
     lab_at = int(lab[pcy, pcx])
     if lab_at <= 0:

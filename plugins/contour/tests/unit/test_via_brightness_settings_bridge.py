@@ -13,6 +13,7 @@ from contour.vision.via_detection.config import ViaPolarity
 from contour.vision.via_detection.heuristic_detector import detect_vias_heuristic
 from contour.vision.via_detection.result import ViaDetection
 from contour.vision.via_detection.settings_bridge import heuristic_config_from_settings
+from contour.vision.via.primary_sem import SemPrimaryViaConfig
 
 
 def test_heuristic_config_uses_white_range_for_bright_only() -> None:
@@ -27,6 +28,8 @@ def test_heuristic_config_uses_white_range_for_bright_only() -> None:
     assert cfg.bright_range_enabled is True
     assert cfg.bright_range_min == 150.0
     assert cfg.dark_range_enabled is False
+    assert not hasattr(cfg, "max_seed_count")
+    assert not hasattr(SemPrimaryViaConfig(), "max_candidates")
 
 
 def test_heuristic_config_uses_both_ranges_when_enabled() -> None:
@@ -116,6 +119,33 @@ def test_local_contrast_recovers_subtle_via_within_absolute_brightness_range() -
     assert len(result.accepted) == 1
     assert abs(result.accepted[0].x - 48.0) < 0.1
     assert abs(result.accepted[0].y - 48.0) < 0.1
+
+
+def test_white_range_generates_candidates_for_every_allowed_brightness() -> None:
+    image = np.zeros((180, 180), dtype=np.uint8)
+    expected: list[tuple[int, int]] = []
+    for row, y in enumerate(range(10, 171, 10)):
+        for column, x in enumerate(range(10, 171, 10)):
+            cv2.circle(image, (x, y), 4, 150 if (row + column) % 2 else 245, thickness=-1)
+            expected.append((x, y))
+    settings = ContourExtractionSettings(
+        via_size_mode="fixed",
+        bright_via_diameter_min=7,
+        bright_via_diameter_max=7,
+        via_white_range_enabled=True,
+        via_white_range_min=140,
+        bright_via_min_final_score=0.0,
+        heuristic_min_center_contrast=1.0,
+        heuristic_min_peak_prominence=1.0,
+        heuristic_min_compactness=0.01,
+    )
+
+    result = detect_vias_heuristic(image, heuristic_config_from_settings(settings))
+    detected = np.asarray([(item.x, item.y) for item in result.accepted], dtype=np.float32)
+
+    assert len(result.accepted) == len(expected)
+    for x, y in expected:
+        assert float(np.min(np.hypot(detected[:, 0] - x, detected[:, 1] - y))) <= 1.0
 
 
 def test_white_brightness_range_remains_a_hard_gate() -> None:

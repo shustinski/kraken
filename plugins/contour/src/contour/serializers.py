@@ -97,18 +97,43 @@ def _cv_ring(points: list[tuple[float, float]]) -> list[list[int]]:
     return ring
 
 
+def _pixel_box_center_and_size(
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+) -> tuple[int, int, int, int]:
+    """Encode integer pixel bounds without moving odd-sized boxes."""
+
+    left_i = _cv_coord(left)
+    top_i = _cv_coord(top)
+    right_i = _cv_coord(right)
+    bottom_i = _cv_coord(bottom)
+    width = max(1, right_i - left_i)
+    height = max(1, bottom_i - top_i)
+    return left_i + width // 2, top_i + height // 2, width, height
+
+
+def _pixel_box_bounds(center: float, size: float) -> tuple[float, float]:
+    """Decode the pixel-bound convention used by CIF/CV box records."""
+
+    size_i = max(1, _cv_coord(size))
+    center_i = _cv_coord(center)
+    start = center_i - size_i // 2
+    return float(start), float(start + size_i)
+
+
 def _cv_object_from_polygon(polygon: PolygonData, holes: list[PolygonData]) -> dict[str, object]:
     if polygon.shape_hint == "box" or polygon.category == "via":
         left, top, right, bottom = _polygon_bbox_values(polygon)
-        width = max(0.0, right - left)
-        height = max(0.0, bottom - top)
+        center_x, center_y, width, height = _pixel_box_center_and_size(left, top, right, bottom)
         if polygon.category == "via":
             return {
                 "type": "Point",
                 "id": int(polygon.id),
                 "shape": "ellipse",
-                "center": [_cv_coord((left + right) / 2.0), _cv_coord((top + bottom) / 2.0)],
-                "diagonals": [_cv_coord(width), _cv_coord(height)],
+                "center": [center_x, center_y],
+                "diagonals": [width, height],
             }
         return {
             "type": "Point",
@@ -259,14 +284,13 @@ def _cv_point_points(item: dict[str, object]) -> tuple[list[tuple[float, float]]
     raw_diameters = item.get("diagonals") or item.get("diameters")
     if not isinstance(raw_diameters, (list, tuple)) or len(raw_diameters) < 2:
         raise ValueError("Ellipse point requires diagonals [width, height]")
-    width, height = max(0.0, float(raw_diameters[0])), max(0.0, float(raw_diameters[1]))
-    half_width = width / 2.0
-    half_height = height / 2.0
+    left, right = _pixel_box_bounds(center_x, float(raw_diameters[0]))
+    top, bottom = _pixel_box_bounds(center_y, float(raw_diameters[1]))
     ellipse_points = _cv_box_points(
-        center_x - half_width,
-        center_y - half_height,
-        center_x + half_width,
-        center_y + half_height,
+        left,
+        top,
+        right,
+        bottom,
     )
     return ellipse_points, "via", "box"
 
@@ -499,13 +523,13 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
 
             _, height = image_size
             image_center_y = int(height) - center_y
-            half_width = box_width / 2
-            half_height = box_height / 2
+            left, right = _pixel_box_bounds(center_x, box_width)
+            top, bottom = _pixel_box_bounds(image_center_y, box_height)
             image_points = [
-                (center_x - half_width, image_center_y - half_height),
-                (center_x + half_width, image_center_y - half_height),
-                (center_x + half_width, image_center_y + half_height),
-                (center_x - half_width, image_center_y + half_height),
+                (left, top),
+                (right, top),
+                (right, bottom),
+                (left, bottom),
             ]
             area, perimeter, bbox = compute_polygon_metrics(image_points)
             polygons.append(
@@ -571,10 +595,12 @@ def _polygon_to_cif_line(polygon: PolygonData, image_width: int, image_height: i
         y_values = [point[1] for point in polygon.points]
         if len(x_values) < 4 or len(y_values) < 4:
             return ""
-        width = max(1, round(max(x_values) - min(x_values)))
-        height = max(1, round(max(y_values) - min(y_values)))
-        center_x = round((min(x_values) + max(x_values)) / 2.0)
-        center_y = round((min(y_values) + max(y_values)) / 2.0)
+        center_x, center_y, width, height = _pixel_box_center_and_size(
+            min(x_values),
+            min(y_values),
+            max(x_values),
+            max(y_values),
+        )
         cif_x = max(0, min(image_width, center_x))
         cif_y = max(0, min(image_height, round(image_height - center_y)))
         return f"B {width} {height} {cif_x} {cif_y};"

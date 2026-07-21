@@ -215,6 +215,36 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(self.widget.recognition_mode_combo.currentData(), "disabled")
         self.assertEqual(self.widget.recognition_mode_combo.currentText(), "Без извлечения")
 
+    def test_process_selected_button_requests_processing_and_save(self) -> None:
+        queued: list[dict[str, bool]] = []
+        self.widget._queue_preview_processing = lambda **kwargs: queued.append(kwargs)  # type: ignore[method-assign]
+
+        self.widget.process_current_button.click()
+
+        self.assertEqual(queued, [{"debounced": False, "save_result": True}])
+
+    def test_explicit_preview_result_is_saved_with_processed_polygons(self) -> None:
+        polygon = _rectangle_polygon(4, 4, 20, 20)
+        save_calls: list[list[PolygonData]] = []
+        self.widget.save_current_result = lambda *args, **kwargs: save_calls.append(kwargs["polygons"])  # type: ignore[method-assign]
+        self.widget._preview_running_request_id = 7
+        self.widget._preview_running_save_result = True
+
+        self.widget._on_preview_processing_result(
+            7,
+            BatchImageResult(
+                image_path="sample.png",
+                source_image=np.zeros((32, 32), dtype=np.uint8),
+                preprocessed_image=np.zeros((32, 32), dtype=np.uint8),
+                pipeline_config=self.widget.get_pipeline(),
+                mask_image=np.zeros((32, 32), dtype=np.uint8),
+                polygons=[polygon],
+            ),
+        )
+
+        self.assertEqual(len(save_calls), 1)
+        self.assertEqual(save_calls[0][0].points, polygon.points)
+
     def test_via_size_is_configured_only_in_shared_lower_controls(self) -> None:
         self.assertFalse(hasattr(self.widget, "via_fixed_diameters_edit"))
         self.assertTrue(hasattr(self.widget, "via_diameter_size_mode_combo"))
@@ -242,7 +272,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertNotEqual(first_key, second_key)
 
-    def test_no_extraction_hides_vector_overlay_completely(self) -> None:
+    def test_no_extraction_keeps_loaded_vector_overlay_visible(self) -> None:
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
         self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
         self.widget.polygon_editor.set_polygons([_rectangle_polygon(4, 4, 20, 20)])
@@ -254,8 +284,8 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))
         self._app.processEvents()
 
-        self.assertFalse(self.widget.polygon_editor.polygon_overlays_visible())
-        self.assertTrue(all(not item.isVisible() for item in items))
+        self.assertTrue(self.widget.polygon_editor.polygon_overlays_visible())
+        self.assertTrue(all(item.isVisible() for item in items))
 
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
         self._app.processEvents()

@@ -7,7 +7,8 @@ from .polygon import Point
 
 
 def compute_polygon_metrics(points: Iterable[Point]) -> tuple[float, float, tuple[int, int, int, int]]:
-    vertices = [(float(x_coord), float(y_coord)) for x_coord, y_coord in points]
+    point_list = list(points)
+    vertices = [(float(x_coord), float(y_coord)) for x_coord, y_coord in point_list]
     if not vertices:
         return 0.0, 0.0, (0, 0, 0, 0)
     if len(vertices) == 1:

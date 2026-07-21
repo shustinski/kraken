@@ -1,0 +1,1 @@
+"""Bundled gamification UI assets."""

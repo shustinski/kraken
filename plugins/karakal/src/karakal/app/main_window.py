@@ -32,10 +32,11 @@ from PyQt6.QtWidgets import (
     QWidget,
     QWidgetAction,
 )
+from updater.qt import QtUpdateController
 
 from ..infra.services import KarakalSettingsService
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
-from ..ui.app_icon import apply_karakal_icon
+from ..version import __version__
 from ..ui.i18n import Translator, set_current_language
 from ..ui.matrix_view import MatrixListWidget, MatrixMiniMapWidget
 from ..ui.ui_constants import (
@@ -382,6 +383,7 @@ class KarakalWidget(QWidget):
         set_current_language(language)
         self._i18n = Translator(language)
         self._t = self._i18n.tr
+        self._update_controller: QtUpdateController | None = None
 
         self._build_ui()
         self._setup_menu_bar()
@@ -893,36 +895,19 @@ class KarakalWidget(QWidget):
 
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()
-        self._menu_bar.setCornerWidget(self._top_corner_widget, Qt.Corner.TopRightCorner)
-
-    def _rebuild_mode_menu(self) -> None:
-        self._mode_menu.clear()
-        for label_key, mode_key in (
-            ("management.mode.validation", "validation"),
-            ("grid_inspection.mode", "grid_inspection"),
-            ("management.mode.management", "management"),
-        ):
-            action = self._mode_menu.addAction(self._t(label_key))
-            action.setData(mode_key)
-            action.setCheckable(True)
-            action.setChecked(str(self.app_mode_combo.currentData() or "validation") == mode_key)
-
-    def _on_mode_menu_triggered(self, action) -> None:
-        mode = str(action.data() or "validation")
-        index = self.app_mode_combo.findData(mode)
-        if index >= 0:
-            self.app_mode_combo.setCurrentIndex(index)
-
-    def _update_mode_toggle_button(self) -> None:
-        current_mode = str(self.app_mode_combo.currentData() or "validation")
-        current_label = {
-            "validation": self._t("management.mode.validation"),
-            "grid_inspection": self._t("grid_inspection.mode"),
-            "management": self._t("management.mode.management"),
-        }.get(current_mode, self._t("management.mode.validation"))
-        self.mode_toggle_button.setToolTip(f"{self._t('management.mode_group')}: {current_label}")
-        for action in self._mode_menu.actions():
-            action.setChecked(str(action.data() or "") == current_mode)
+        help_menu = self._menu_bar.addMenu("Help" if self._i18n.language == "en" else "Справка")
+        self._update_controller = QtUpdateController(
+            self,
+            app_id="karakal",
+            app_name="Karakal",
+            current_version=__version__,
+        )
+        self._update_controller.add_menu_action(
+            help_menu,
+            "Check for updates" if self._i18n.language == "en" else "Проверить обновления",
+            submenu_title="Update" if self._i18n.language == "en" else "Обновление",
+        )
+        self._menu_bar.setCornerWidget(self.language_toggle_button, Qt.Corner.TopRightCorner)
 
     def _populate_app_mode_combo(self, selected_mode: str | None) -> None:
         current = str(selected_mode or "validation")

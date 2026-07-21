@@ -32,6 +32,25 @@ def _triangle() -> list[tuple[float, float]]:
     return [(0.0, 0.0), (100.0, 0.0), (50.0, 80.0)]
 
 
+def _polygon(
+    polygon_id: int,
+    points: list[tuple[float, float]],
+    *,
+    is_hole: bool = False,
+    parent_id: int | None = None,
+) -> PolygonData:
+    area, perimeter, bbox = compute_polygon_metrics(points)
+    return PolygonData(
+        id=polygon_id,
+        points=points,
+        is_hole=is_hole,
+        parent_id=parent_id,
+        area=area,
+        perimeter=perimeter,
+        bbox=bbox,
+    )
+
+
 class PolygonCommitAcceptabilityTests(unittest.TestCase):
     def test_too_few_vertices(self) -> None:
         ok, reason = polygon_commit_acceptability([(0.0, 0.0), (1.0, 0.0)])
@@ -104,6 +123,17 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(active[-1], new_id)
 
+    def test_points_mode_rounds_vertices_to_integer_coordinates(self) -> None:
+        self._reset([])
+
+        self.scene.append_pending_point(QPointF(10.2, 10.6))
+        self.scene.append_pending_point(QPointF(40.4, 10.1))
+        self.scene.append_pending_point(QPointF(25.5, 50.5))
+        ok = self.scene.finish_pending_polygon()
+
+        self.assertTrue(ok)
+        self.assertEqual(self.scene.get_polygons()[0].points, [(10, 11), (40, 10), (26, 50)])
+
     def test_rectangle_adds_polygon_selected(self) -> None:
         self._reset([])
         ok = self.scene.add_rectangle_polygon(QPointF(5.0, 5.0), QPointF(35.0, 28.0), erase=False)
@@ -111,6 +141,75 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         ids = sorted(polygon.id for polygon in self.scene.get_polygons())
         self.assertEqual(len(ids), 1)
         self.assertEqual(self.scene.selected_polygon_id(), ids[0])
+
+    def test_rectangle_rounds_vertices_to_integer_coordinates(self) -> None:
+        self._reset([])
+
+        ok = self.scene.add_rectangle_polygon(QPointF(5.2, 5.6), QPointF(35.4, 28.5), erase=False)
+
+        self.assertTrue(ok)
+        self.assertEqual(self.scene.get_polygons()[0].points, [(5, 6), (35, 6), (35, 28), (5, 28)])
+
+    def test_delete_parent_polygon_removes_internal_contours(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (40.0, 20.0), (40.0, 40.0), (20.0, 40.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        unrelated = _polygon(3, [(100.0, 0.0), (130.0, 0.0), (130.0, 30.0), (100.0, 30.0)])
+        self._reset([outer, hole, unrelated])
+
+        self.assertTrue(self.scene.delete_polygon(1))
+
+        remaining_ids = {polygon.id for polygon in self.scene.get_polygons()}
+        self.assertEqual(remaining_ids, {3})
+
+        self.scene.undo_stack.undo()
+        restored = {polygon.id: polygon for polygon in self.scene.get_polygons()}
+        self.assertEqual(set(restored), {1, 2, 3})
+        self.assertTrue(restored[2].is_hole)
+        self.assertEqual(restored[2].parent_id, 1)
+
+    def test_select_parent_polygon_shows_internal_contour_vertices(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (40.0, 20.0), (40.0, 40.0), (20.0, 40.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        self._reset([outer, hole])
+
+        self.scene.select_polygon(1)
+
+        self.assertEqual(len(self.scene._polygon_items[1]._handles), 4)
+        self.assertEqual(len(self.scene._polygon_items[2]._handles), 4)
+
+    def test_select_internal_contour_shows_parent_vertices(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (40.0, 20.0), (40.0, 40.0), (20.0, 40.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        self._reset([outer, hole])
+
+        self.scene.select_polygon(2)
+
+        self.assertEqual(len(self.scene._polygon_items[1]._handles), 4)
+        self.assertEqual(len(self.scene._polygon_items[2]._handles), 4)
+
+    def test_selected_via_uses_via_selection_color(self) -> None:
+        via = _polygon(7, [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)])
+        via.category = "via"
+        self._reset([via])
+
+        self.scene.select_polygon(7)
+
+        self.assertEqual(self.scene._polygon_items[7].pen().color().name().upper(), "#FACC15")
 
     def test_invalid_polygon_not_committed_keeps_pending(self) -> None:
         self._reset([])
@@ -121,6 +220,22 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(len(self.scene.get_polygons()), 0)
         self.assertTrue(self.scene.has_pending_polygon())
+
+    def test_points_mode_preview_fills_valid_polygon_blue(self) -> None:
+        self._reset([])
+        self.scene.append_pending_point(QPointF(10.0, 10.0))
+        self.scene.append_pending_point(QPointF(40.0, 10.0))
+        self.scene.append_pending_point(QPointF(25.0, 50.0))
+
+        self.assertEqual(self.scene._pending_path_item.brush().color().name().lower(), "#38bdf8")
+
+    def test_points_mode_preview_fills_unfinishable_polygon_red(self) -> None:
+        self._reset([])
+        self.scene.append_pending_point(QPointF(10.0, 10.0))
+        self.scene.append_pending_point(QPointF(20.0, 10.0))
+        self.scene.append_pending_point(QPointF(15.0, 10.0))
+
+        self.assertEqual(self.scene._pending_path_item.brush().color().name().lower(), "#ef4444")
 
     def test_finish_with_under_three_vertices_clears_pending(self) -> None:
         self._reset([])

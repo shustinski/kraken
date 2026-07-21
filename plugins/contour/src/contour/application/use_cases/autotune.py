@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from ...contour_extractor import extract_polygons
-from ...domain import PolygonData
+from ...domain import PolygonData, integer_points
 from ...pipeline import PreprocessingPipeline
 from ...utils import ensure_binary_mask, ensure_uint8
 from ..processing import ContourExtractionSettings
@@ -599,7 +599,7 @@ def _shift_polygons(polygons: list[PolygonData], dx: int, dy: int) -> list[Polyg
     shifted: list[PolygonData] = []
     for polygon in polygons:
         clone = polygon.clone()
-        clone.points = [(x_coord + dx, y_coord + dy) for x_coord, y_coord in clone.points]
+        clone.points = integer_points([(x_coord + dx, y_coord + dy) for x_coord, y_coord in clone.points])
         bbox_x, bbox_y, bbox_width, bbox_height = clone.bbox
         clone.bbox = (bbox_x + dx, bbox_y + dy, bbox_width, bbox_height)
         shifted.append(clone)

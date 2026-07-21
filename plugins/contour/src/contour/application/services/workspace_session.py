@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,10 +22,21 @@ class WorkspaceLoadResult:
     cache_hit: bool = False
     reused_current_state: bool = False
     prepared_image_required: bool = False
+    vectors_only: bool = False
 
 
-def _normalize_polygon_points(points: list[tuple[float, float]]) -> tuple[tuple[float, float], ...]:
-    return tuple((round(float(x_coord), 6), round(float(y_coord), 6)) for x_coord, y_coord in points)
+_POINT_SIGNATURE_SCALE = 1_000_000
+
+
+def _normalize_polygon_points(points: list[tuple[float, float]]) -> tuple[tuple[int, int], ...]:
+    scale = _POINT_SIGNATURE_SCALE
+    normalized: list[tuple[int, int]] = []
+    for x_coord, y_coord in points:
+        if isinstance(x_coord, int) and isinstance(y_coord, int):
+            normalized.append((x_coord * scale, y_coord * scale))
+            continue
+        normalized.append((int(round(float(x_coord) * scale)), int(round(float(y_coord) * scale))))
+    return tuple(normalized)
 
 
 def _sortable_optional_int(value: int | None) -> tuple[int, int]:
@@ -43,11 +55,25 @@ def _polygon_signature(polygon: PolygonData) -> tuple[object, ...]:
     )
 
 
+def _polygon_matches(first: PolygonData, second: PolygonData) -> bool:
+    return (
+        bool(first.is_hole) == bool(second.is_hole)
+        and first.parent_id == second.parent_id
+        and str(first.category) == str(second.category)
+        and str(first.shape_hint) == str(second.shape_hint)
+        and first.points == second.points
+    )
+
+
 def _polygons_equal(first: list[PolygonData], second: list[PolygonData]) -> bool:
     if len(first) != len(second):
         return False
-    first_signatures = sorted(_polygon_signature(polygon) for polygon in first)
-    second_signatures = sorted(_polygon_signature(polygon) for polygon in second)
+    if all(_polygon_matches(left, right) for left, right in zip(first, second, strict=True)):
+        return True
+    first_signatures = [_polygon_signature(polygon) for polygon in first]
+    second_signatures = [_polygon_signature(polygon) for polygon in second]
+    first_signatures.sort()
+    second_signatures.sort()
     return first_signatures == second_signatures
 
 
@@ -75,14 +101,28 @@ class WorkspaceSession:
     def cif_paths_by_stem(self) -> dict[str, str]:
         return dict(self._cif_paths_by_stem)
 
+    def cached_states(self) -> tuple[tuple[str, ImageProcessingState], ...]:
+        return tuple((path, state) for path, state in self._state_cache.items())
+
     def replace_image_selection(
         self,
         paths: Iterable[str | Path],
         *,
         is_supported_image: Callable[[str | Path], bool],
+        clear_state_cache: bool = True,
     ) -> list[str]:
         self._image_paths = normalize_image_selection(paths, is_supported_image=is_supported_image)
+        if clear_state_cache:
+            self._state_cache.clear()
+            self._current_state = None
+        else:
+            retained = set(self._image_paths)
+            for key in list(self._state_cache):
+                if key not in retained:
+                    self._state_cache.pop(key, None)
         if not self._image_paths:
+            self.clear_current_selection()
+        elif self._current_image_path not in self._image_paths:
             self.clear_current_selection()
         return list(self._image_paths)
 
@@ -90,9 +130,21 @@ class WorkspaceSession:
         self._current_image_path = None
         self._current_state = None
 
-    def set_cif_index(self, indexed_paths: Mapping[str, str]) -> None:
-        self._cif_paths_by_stem = dict(indexed_paths)
+    def clear_project(self) -> None:
+        self._image_paths.clear()
+        self.clear_current_selection()
         self._state_cache.clear()
+        self._cif_paths_by_stem.clear()
+
+    def set_cif_index(self, indexed_paths: Mapping[str, str]) -> None:
+        """Update stem → vector path map; clear overlays but keep loaded source pixels."""
+
+        self._cif_paths_by_stem = dict(indexed_paths)
+        for state in self._state_cache.values():
+            state.polygons = []
+            state.loaded_cif_path = None
+            state.reference_polygons = []
+            state.polygons_dirty = None
 
     def merge_cif_paths(self, indexed_paths: Mapping[str, str]) -> None:
         """Update stem → CIF mapping; clears cache like :meth:`set_cif_index`."""
@@ -122,19 +174,15 @@ class WorkspaceSession:
         if state is None:
             return False
         state.reference_polygons = [polygon.clone() for polygon in state.polygons]
+        state.polygons_dirty = False
         return True
 
-    def load_image(
-        self,
-        path: str | Path,
-        *,
-        load_source_image: Callable[[str], Any],
-        load_cif_overlay: Callable[[str], list[PolygonData]],
-    ) -> WorkspaceLoadResult:
+    def resolve_cached_load(self, path: str | Path) -> WorkspaceLoadResult | None:
         image_path = str(Path(path))
         if (
             self._current_image_path == image_path
             and self._current_state is not None
+            and self._current_state.image_path == image_path
             and image_path in self._state_cache
         ):
             return WorkspaceLoadResult(
@@ -154,15 +202,84 @@ class WorkspaceSession:
                 prepared_image_required=cached_state.preprocessed_image is None
                 and cached_state.source_image is not None,
             )
+        return None
 
+    def load_image(
+        self,
+        path: str | Path,
+        *,
+        load_source_image: Callable[[str], Any],
+        load_cif_overlay: Callable[[str], list[PolygonData]],
+    ) -> WorkspaceLoadResult:
+        image_path = str(Path(path))
+        cached = self.resolve_cached_load(image_path)
+        if cached is not None:
+            return cached
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="contour-load") as executor:
+            source_future = executor.submit(load_source_image, image_path)
+            cif_future = executor.submit(load_cif_overlay, image_path)
+            state = ImageProcessingState(
+                image_path=image_path,
+                source_image=source_future.result(),
+                polygons=cif_future.result(),
+            )
+        return self._store_loaded_state(image_path, state)
+
+    def apply_loaded_frame(
+        self,
+        image_path: str | Path,
+        *,
+        source_image: Any,
+        polygons: list[PolygonData],
+        make_current: bool = True,
+    ) -> WorkspaceLoadResult:
+        path = str(Path(image_path))
         state = ImageProcessingState(
-            image_path=image_path,
-            source_image=load_source_image(image_path),
-            polygons=load_cif_overlay(image_path),
+            image_path=path,
+            source_image=source_image,
+            polygons=list(polygons),
         )
+        return self._store_loaded_state(path, state, make_current=make_current)
+
+    def apply_frame_vectors(
+        self,
+        image_path: str | Path,
+        *,
+        polygons: list[PolygonData],
+        loaded_cif_path: str | None = None,
+    ) -> WorkspaceLoadResult | None:
+        path = str(Path(image_path))
+        state = self._state_cache.get(path)
+        if state is None and self._current_image_path == path and self._current_state is not None:
+            state = self._current_state
+        if state is None or state.source_image is None:
+            return None
+        state.polygons = list(polygons)
+        if loaded_cif_path is not None:
+            state.loaded_cif_path = loaded_cif_path
+        self._state_cache[path] = state
+        if self._current_image_path == path:
+            self._current_state = state
+        return WorkspaceLoadResult(
+            image_path=path,
+            state=state,
+            cache_hit=True,
+            prepared_image_required=state.preprocessed_image is None,
+            vectors_only=True,
+        )
+
+    def _store_loaded_state(
+        self,
+        image_path: str,
+        state: ImageProcessingState,
+        *,
+        make_current: bool = True,
+    ) -> WorkspaceLoadResult:
         self._state_cache[image_path] = state
-        self._current_image_path = image_path
-        self._current_state = state
+        if make_current:
+            self._current_image_path = image_path
+            self._current_state = state
         return WorkspaceLoadResult(
             image_path=image_path,
             state=state,
@@ -210,6 +327,7 @@ class WorkspaceSession:
         if self._current_state is None or self._current_image_path is None:
             return False
         self._current_state.polygons = polygons
+        self._current_state.polygons_dirty = None
         self._state_cache[self._current_image_path] = self._current_state
         return True
 
@@ -217,7 +335,11 @@ class WorkspaceSession:
         state = self._state_cache.get(str(Path(image_path)))
         if state is None:
             return False
-        return not _polygons_equal(state.polygons, state.reference_polygons)
+        dirty = state.polygons_dirty
+        if dirty is None:
+            dirty = not _polygons_equal(state.polygons, state.reference_polygons)
+            state.polygons_dirty = dirty
+        return dirty
 
     def current_image_has_changes(self) -> bool:
         if self._current_image_path is None:

@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from contour.application.processing_v2 import (
+    MetalRecoverySettings,
+    ProcessingRequestV2,
+    ProcessingResultV2,
+    ViaDetectionSettings,
+)
+from contour.domain import PolygonData
+
+
+def test_v2_request_round_trip_keeps_discriminated_settings() -> None:
+    request = ProcessingRequestV2(
+        input_id="frame.png",
+        input_version="sha256:123",
+        recognition=MetalRecoverySettings(segmentation_strategy="local_adaptive"),
+    )
+
+    restored = ProcessingRequestV2.from_dict(request.to_dict())
+
+    assert restored.to_dict() == request.to_dict()
+    assert isinstance(restored.recognition, MetalRecoverySettings)
+
+
+def test_legacy_migrator_reports_unknown_fields() -> None:
+    request, report = ProcessingRequestV2.migrate_legacy(
+        {"recognition_mode": "via", "min_via_width": 7, "removed_knob": 42}
+    )
+
+    assert isinstance(request.recognition, ViaDetectionSettings)
+    assert request.recognition.min_width == 7
+    assert report.dropped_fields == {"removed_knob": 42}
+    assert report.warnings
+
+
+def test_v2_result_round_trip_preserves_hierarchy_and_provenance() -> None:
+    result = ProcessingResultV2(
+        polygons=[
+            PolygonData(id=1, points=[(0, 0), (10, 0), (10, 10), (0, 10)]),
+            PolygonData(id=2, points=[(2, 2), (4, 2), (4, 4), (2, 4)], is_hole=True, parent_id=1),
+        ],
+        hierarchy={1: [2]},
+        warnings=["suspicious repair"],
+        stage_timings_ms={"topology": 1.5},
+        provenance={"algorithm": "auto"},
+    )
+
+    restored = ProcessingResultV2.from_dict(result.to_dict())
+
+    assert restored.hierarchy == {1: [2]}
+    assert restored.polygons[1].parent_id == 1
+    assert restored.provenance == {"algorithm": "auto"}

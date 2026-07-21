@@ -13,6 +13,7 @@ from kraken_core.qt import configure_application_identity
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from ..__version__ import __version__
+from ..infrastructure import WidgetAppearanceSettingsStore
 from ..infrastructure.logging import configure_logging
 from .model import ContourApplicationModel, StartupConfiguration
 from .presenter import ContourPresenter
@@ -63,7 +64,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--language",
         choices=("ru", "en"),
-        default="ru",
+        default=None,
         help="UI language override.",
     )
     parser.add_argument(
@@ -109,9 +110,13 @@ def _try_apply_app_qss(app: QApplication) -> None:
         app.setStyleSheet(stylesheet)
 
 
-def _build_model(args: argparse.Namespace) -> ContourApplicationModel:
+def _build_model(
+    args: argparse.Namespace,
+    appearance_settings_store: WidgetAppearanceSettingsStore,
+) -> ContourApplicationModel:
     return ContourApplicationModel(
-        language=args.language,
+        language=args.language or appearance_settings_store.load_language(),
+        theme=None if args.no_qss else appearance_settings_store.load_theme(),
         width=args.width,
         height=args.height,
         startup=StartupConfiguration.from_cli(
@@ -177,8 +182,9 @@ def assemble_application(argv: Sequence[str] | None = None) -> ContourApplicatio
     if not args.no_qss:
         _try_apply_app_qss(app)
 
-    model = _build_model(args)
-    view = ContourStandaloneWindow()
+    appearance_settings_store = WidgetAppearanceSettingsStore()
+    model = _build_model(args, appearance_settings_store)
+    view = ContourStandaloneWindow(appearance_settings_store=appearance_settings_store)
     presenter = ContourPresenter(model=model, view=view)
     view.set_presenter(presenter)
     presenter.initialize()

@@ -1,0 +1,12 @@
+{
+  "format": "contour-vector",
+  "image": {"path": "sample.png", "size": [100, 80]},
+  "objects": [
+    {
+      "type": "Point",
+      "id": 7,
+      "shape": "rectangle",
+      "coordinates": [4, 5, 14, 25]
+    }
+  ]
+}

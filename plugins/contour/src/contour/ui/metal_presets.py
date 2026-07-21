@@ -1,0 +1,120 @@
+"""Built-in conductor recovery preset payloads."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def _metal_keys() -> tuple[str, ...]:
+    return (
+        "metal_preset",
+        "metal_contrast_bias",
+        "metal_gap_bridge_px",
+        "metal_speckle_removal_px",
+        "metal_min_trace_width_px",
+        "metal_max_trace_width_px",
+        "metal_min_trace_length_px",
+        "metal_min_area",
+        "metal_min_perimeter",
+        "metal_hierarchy_mode",
+        "epsilon",
+        "min_polygon_angle",
+        "min_points",
+        "metal_approximation_enabled",
+        "metal_border_handling",
+    )
+
+
+def standard_metal_preset_payload() -> dict[str, Any]:
+    return {
+        "metal_preset": "standard",
+        "metal_contrast_bias": 0.0,
+        "metal_gap_bridge_px": 0,
+        "metal_speckle_removal_px": 3,
+        "metal_min_trace_width_px": 4.0,
+        "metal_max_trace_width_px": None,
+        "metal_min_area": 95.0,
+        "metal_min_perimeter": 10.0,
+        "metal_hierarchy_mode": "full",
+        "epsilon": 1.0,
+        "min_polygon_angle": 0.0,
+        "min_points": 3,
+        "metal_approximation_enabled": True,
+        "metal_border_handling": "mark",
+    }
+
+
+def noisy_sem_metal_preset_payload() -> dict[str, Any]:
+    return {
+        "metal_preset": "noisy_sem",
+        "metal_contrast_bias": -15.0,
+        "metal_gap_bridge_px": 4,
+        "metal_speckle_removal_px": 2,
+        "metal_min_trace_width_px": 10.0,
+        "metal_min_area": 85.0,
+        "metal_min_perimeter": 40.0,
+        "epsilon": 2.0,
+    }
+
+
+def thin_traces_metal_preset_payload() -> dict[str, Any]:
+    return {
+        "metal_preset": "thin_traces",
+        "metal_contrast_bias": 10.0,
+        "metal_gap_bridge_px": 2,
+        "metal_speckle_removal_px": 1,
+        "metal_min_trace_width_px": 4.0,
+        "metal_max_trace_width_px": 24.0,
+        "metal_min_area": 35.0,
+        "metal_min_perimeter": 26.0,
+        "epsilon": 1.8,
+    }
+
+
+def wide_fills_metal_preset_payload() -> dict[str, Any]:
+    return {
+        "metal_preset": "wide_fills",
+        "metal_contrast_bias": -5.0,
+        "metal_gap_bridge_px": 3,
+        "metal_speckle_removal_px": 1,
+        "metal_min_trace_width_px": 14.0,
+        "metal_min_area": 100.0,
+        "metal_min_perimeter": 42.0,
+        "epsilon": 2.5,
+    }
+
+
+def built_in_metal_presets(language: str) -> dict[str, dict[str, Any]]:
+    if language == "ru":
+        return {
+            "Стандартный": standard_metal_preset_payload(),
+            "Шумное SEM": noisy_sem_metal_preset_payload(),
+            "Тонкие дорожки": thin_traces_metal_preset_payload(),
+            "Широкие заливки": wide_fills_metal_preset_payload(),
+        }
+    return {
+        "Standard": standard_metal_preset_payload(),
+        "Noisy SEM": noisy_sem_metal_preset_payload(),
+        "Thin traces": thin_traces_metal_preset_payload(),
+        "Wide fills": wide_fills_metal_preset_payload(),
+    }
+
+
+def metal_preset_table() -> dict[str, dict[str, Any]]:
+    """Preset key → payload (builtin scenario keys)."""
+    return {
+        "standard": standard_metal_preset_payload(),
+        "noisy_sem": noisy_sem_metal_preset_payload(),
+        "thin_traces": thin_traces_metal_preset_payload(),
+        "wide_fills": wide_fills_metal_preset_payload(),
+    }
+
+
+__all__ = [
+    "built_in_metal_presets",
+    "metal_preset_table",
+    "noisy_sem_metal_preset_payload",
+    "standard_metal_preset_payload",
+    "thin_traces_metal_preset_payload",
+    "wide_fills_metal_preset_payload",
+]

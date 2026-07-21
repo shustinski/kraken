@@ -33,8 +33,10 @@ from krona.application.use_cases import LoadSceneData
 from krona.presentation.qt.scene_renderer import EdifSceneRenderer
 from krona.presentation.qt.theme.manager import ThemeManager
 from krona.presentation.qt.ui_strings import available_languages, load_ui_strings
+from krona.version import __version__
 from kraken_core.qt import resolve_icon_path
 from kraken_core.theme import add_theme_menu
+from updater.qt import QtUpdateController
 
 
 def _resolve_window_icon_path() -> Path | None:
@@ -78,6 +80,7 @@ class EdifViewerWindow(QMainWindow):
         self._filtered_instance_indexes: list[int] = []
         self._instance_to_connections: dict[str, list[tuple[str, str]]] = {}
         self._ui = ui_strings if ui_strings is not None else load_ui_strings(self._current_language)
+        self._update_controller: QtUpdateController | None = None
 
         self.setWindowTitle(self._t("window.title", "EDF Netlist Viewer"))
         icon_path = _resolve_window_icon_path()
@@ -103,6 +106,19 @@ class EdifViewerWindow(QMainWindow):
             self,
             initial_theme=self._current_theme.lower(),
             on_theme_changed=lambda theme: self._on_theme_changed("Light" if theme == "light" else "Dark"),
+        )
+        help_menu = self.menuBar().addMenu(self._t("menu.help", "Help"))
+        self._update_controller = QtUpdateController(
+            self,
+            app_id="krona",
+            app_name="Krona",
+            current_version=__version__,
+            status_callback=lambda message: self.statusBar().showMessage(message, 5000),
+        )
+        self._update_controller.add_menu_action(
+            help_menu,
+            self._t("menu.check_updates", "Check updates"),
+            submenu_title=self._t("menu.update", "Update"),
         )
         root = QWidget(self)
         root_layout = QVBoxLayout(root)

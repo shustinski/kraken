@@ -4,20 +4,34 @@ from __future__ import annotations
 
 import numpy as np
 import cv2
+from dataclasses import dataclass
 
 from .config import TemplateViaDetectorConfig
 from .result import DetectionResult, ViaDetection
 
 
+@dataclass(frozen=True, slots=True)
+class TemplateRawMatch:
+    x: float
+    y: float
+    bbox: tuple[int, int, int, int]
+    score: float
+    diameter_estimate: float
+
+
 def detect_vias_template(image: np.ndarray, config: TemplateViaDetectorConfig) -> DetectionResult:
+    raw, shape = detect_vias_template_raw(image, config)
+    return score_vias_template_raw(raw, shape, config)
+
+
+def detect_vias_template_raw(image: np.ndarray, config: TemplateViaDetectorConfig) -> tuple[list[TemplateRawMatch], tuple[int, int]]:
     g = _to_gray_u8(image)
     h, w = g.shape[:2]
-    base = dict(config.snapshot())
     if h < 3 or w < 3 or not config.templates:
-        return DetectionResult(method="template", accepted=[], parameters_snapshot=base)
+        return [], (h, w)
 
     method = cv2.TM_CCOEFF_NORMED if config.use_ccoeff_normed else cv2.TM_CCORR_NORMED
-    all_dets: list[ViaDetection] = []
+    all_dets: list[TemplateRawMatch] = []
     scales = _iter_scales(float(config.scale_min), float(config.scale_max), float(config.scale_step))
 
     for tmpl in config.templates:
@@ -33,9 +47,32 @@ def detect_vias_template(image: np.ndarray, config: TemplateViaDetectorConfig) -
                 continue
             t = cv2.resize(t0, (tw, th), interpolation=cv2.INTER_AREA if sc < 1.0 else cv2.INTER_LINEAR)
             res = cv2.matchTemplate(g, t, method)
-            floor = max(0.1, float(config.min_correlation) * 0.35)
+            floor = 0.1
             _collect_peaks(res, t, floor, all_dets)
+    return all_dets, (h, w)
 
+
+def score_vias_template_raw(
+    raw_matches: list[TemplateRawMatch], image_shape: tuple[int, int], config: TemplateViaDetectorConfig
+) -> DetectionResult:
+    h, w = image_shape
+    base = dict(config.snapshot())
+    all_dets = [
+        ViaDetection(
+            d.x,
+            d.y,
+            d.bbox,
+            d.score,
+            d.diameter_estimate,
+            d.score * 0.32,
+            d.score * 0.20,
+            0.5,
+            float(max(d.bbox[2], d.bbox[3]) / (min(d.bbox[2], d.bbox[3]) + 1e-6)),
+            "template",
+            None,
+        )
+        for d in raw_matches
+    ]
     nmsd = max(0, int(config.nms_distance))
     d2 = float(nmsd * nmsd) if nmsd else 0.0
     all_dets.sort(key=lambda d: d.score, reverse=True)
@@ -51,7 +88,7 @@ def detect_vias_template(image: np.ndarray, config: TemplateViaDetectorConfig) -
     below = [d for d in kept if d.score < thr]
 
     dbg = {
-        "source_gray": cv2.cvtColor(g, cv2.COLOR_GRAY2BGR),
+        "source_gray": np.zeros((h, w, 3), np.uint8),
         "template_count": np.zeros((h, w, 3), np.uint8),
     }
     return DetectionResult(
@@ -86,7 +123,7 @@ def _iter_scales(smin: float, smax: float, step: float) -> list[float]:
 
 
 def _collect_peaks(
-    res: np.ndarray, tmpl: np.ndarray, thr: float, out: list[ViaDetection]
+    res: np.ndarray, tmpl: np.ndarray, thr: float, out: list[TemplateRawMatch]
 ) -> None:
     if res.size == 0:
         return
@@ -105,17 +142,11 @@ def _collect_peaks(
         cx = float(x) + float(tw) * 0.5
         cy = float(y) + float(th) * 0.5
         out.append(
-            ViaDetection(
-                cx,
-                cy,
-                (int(x), int(y), int(tw), int(th)),
-                v * 100.0,
-                float((tw + th) * 0.5),
-                v * 32.0,
-                v * 20.0,
-                0.5,
-                float(max(tw, th) / (min(tw, th) + 1e-6)),
-                "template",
-                None,
+            TemplateRawMatch(
+                x=cx,
+                y=cy,
+                bbox=(int(x), int(y), int(tw), int(th)),
+                score=v * 100.0,
+                diameter_estimate=float((tw + th) * 0.5),
             )
         )

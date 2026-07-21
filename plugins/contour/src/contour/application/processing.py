@@ -19,6 +19,13 @@ VIA_CHANNEL_MODE_GRAYSCALE = "grayscale"
 VIA_CHANNEL_MODE_RED_BLUE = "red_blue"
 ALGORITHM_BACKEND_LEGACY = "legacy"
 ALGORITHM_BACKEND_SEM = "sem"
+VIA_DISPLAY_MODE_RECTANGLE = "rectangle"
+VIA_DISPLAY_MODE_CIRCLE = "circle"
+
+
+def normalize_via_display_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return VIA_DISPLAY_MODE_RECTANGLE if text == VIA_DISPLAY_MODE_RECTANGLE else VIA_DISPLAY_MODE_CIRCLE
 
 
 def normalize_via_size_mode(value: Any) -> str:
@@ -27,6 +34,8 @@ def normalize_via_size_mode(value: Any) -> str:
 
 def normalize_via_search_mode(value: Any) -> str:
     text = str(value or "").strip().lower()
+    if not text:
+        return VIA_SEARCH_MODE_HEURISTIC
     if text == VIA_SEARCH_MODE_HEURISTIC:
         return VIA_SEARCH_MODE_HEURISTIC
     if text == VIA_SEARCH_MODE_TEMPLATE:
@@ -110,29 +119,15 @@ def normalize_via_search_sensitivity(value: Any) -> str:
     return "medium"
 
 
+def normalize_metal_segmentation_strategy(value: Any) -> str:
+    from ..vision.metal_recovery.segmentation import normalize_metal_segmentation_strategy as _norm
+
+    return _norm(value)
+
+
 def normalize_metal_segmentation_method(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    if text in {
-        "none",
-        "off",
-        "disabled",
-        "без",
-        "без_сегментации",
-        "без сегментации",
-        "grayscale",
-        "edges",
-        "edge",
-        "no_segmentation",
-        "no-segmentation",
-    }:
-        return "none"
-    if text in {"hybrid", "гибрид", "гибридная", "both", "комбинированный"}:
-        return "hybrid"
-    if text in {"adaptive", "адаптив", "адаптивная"}:
-        return "adaptive"
-    if text in {"otsu"}:
-        return "otsu"
-    return "none"
+    """Deprecated alias — maps to segmentation strategy."""
+    return normalize_metal_segmentation_strategy(value)
 
 
 def normalize_metal_sensitivity(value: Any) -> str:
@@ -279,13 +274,13 @@ class ContourExtractionSettings:
     max_via_width: int | None = None
     min_via_height: int = 0
     max_via_height: int | None = None
-    via_size_mode: str = VIA_SIZE_MODE_RANGE
+    via_size_mode: str = VIA_SIZE_MODE_FIXED
     via_search_mode: str = VIA_SEARCH_MODE_HEURISTIC
     fixed_via_widths: list[int] = field(default_factory=list)
     fixed_via_heights: list[int] = field(default_factory=list)
     via_channel_mode: str = VIA_CHANNEL_MODE_GRAYSCALE
     via_white_range_enabled: bool = True
-    via_white_range_min: int = 200
+    via_white_range_min: int = 140
     via_white_range_max: int = 255
     via_black_range_enabled: bool = False
     via_black_range_min: int = 0
@@ -317,7 +312,7 @@ class ContourExtractionSettings:
     heuristic_size_tolerance_range: float = 0.36
     heuristic_size_tolerance_fixed: float = 0.26
     heuristic_max_center_drift_ratio: float = 0.72
-    bright_via_diameter_min: int = 6
+    bright_via_diameter_min: int = 8
     bright_via_diameter_max: int = 8
     bright_via_clahe_clip_limit: float = 2.0
     bright_via_clahe_tile_grid_size: int = 8
@@ -332,19 +327,24 @@ class ContourExtractionSettings:
     bright_via_min_circularity: float = 0.30
     bright_via_min_aspect: float = 0.45
     bright_via_max_aspect: float = 2.2
-    bright_via_bright_center_min_score: float = 6.0
+    bright_via_bright_center_min_score: float = 140.0
     bright_via_metal_constraint_mode: str = "soft"
     bright_via_use_metal_mask: bool = True
     bright_via_metal_fraction_min: float = 0.3
-    bright_via_max_radial_asymmetry: float = 18.0
+    bright_via_max_radial_asymmetry: float = 32.0
     bright_via_max_edge_likeness: float = 35.0
     bright_via_max_line_likeness: float = 65.0
     bright_via_nms_distance: int = 5
     bright_via_min_final_score: float = 38.0
     bright_via_show_rejected: bool = True
-    bright_via_hard_reject_on_asymmetry: bool = False
+    bright_via_hard_reject_on_asymmetry: bool = True
     bright_via_hard_reject_on_edge: bool = False
     bright_via_hard_reject_on_line: bool = False
+    bright_via_min_isolation_score: float = 0.38
+    bright_via_min_annular_contrast: float = 6.0
+    bright_via_max_annular_contrast: float = 0.0
+    bright_via_tiled_threshold_size: int = 256
+    bright_via_scale_kernels_from_diameter: bool = True
     debug_enabled: bool = False
     debug_gradient_map_enabled: bool = False
     min_hierarchy_depth: int = 0
@@ -363,9 +363,13 @@ class ContourExtractionSettings:
     via_display_show_candidates: bool = True
     metal_structural_pipeline: bool = False
     metal_preset: str = "standard"
-    metal_segmentation_method: str = "otsu"
-    metal_sensitivity: str = "medium"
-    metal_sensitivity_0_100: int = 50
+    metal_noise_suppression: int = 20
+    metal_contrast_bias: float = 0.0
+    metal_segmentation_strategy: str = "legacy_otsu"
+    metal_gap_bridge_px: int = 2
+    metal_speckle_removal_px: int = 0
+    metal_contour_smooth_px: float = 0.0
+    metal_contour_close_px: int = 0
     metal_min_object_area: float = 30.0
     metal_min_trace_width_px: float = 8.0
     metal_max_trace_width_px: float | None = None
@@ -375,7 +379,7 @@ class ContourExtractionSettings:
     metal_min_straightness: float = 0.2
     metal_allow_t_junction: bool = True
     metal_border_handling: str = "mark"
-    metal_check_contour_validity: bool = False
+    metal_check_contour_validity: bool = True
     metal_hierarchy_mode: str = "full"
     metal_min_area: float = 60.0
     metal_max_area: float | None = None
@@ -387,9 +391,9 @@ class ContourExtractionSettings:
     metal_display_show_conductors: bool = True
     metal_display_show_mask: bool = True
     metal_display_show_contours: bool = True
-    metal_display_show_rejected: bool = False
+    metal_display_show_rejected: bool = True
     metal_display_show_suspicious: bool = True
-    metal_display_show_border_highlight: bool = True
+    metal_display_show_border_highlight: bool = False
     metal_debug_visual: str = "overlay"
     metal_overlay_opacity: float = 0.45
     metal_use_wide_conductor_gradient: bool = False
@@ -505,6 +509,11 @@ class ContourExtractionSettings:
             "bright_via_hard_reject_on_asymmetry": self.bright_via_hard_reject_on_asymmetry,
             "bright_via_hard_reject_on_edge": self.bright_via_hard_reject_on_edge,
             "bright_via_hard_reject_on_line": self.bright_via_hard_reject_on_line,
+            "bright_via_min_isolation_score": self.bright_via_min_isolation_score,
+            "bright_via_min_annular_contrast": self.bright_via_min_annular_contrast,
+            "bright_via_max_annular_contrast": self.bright_via_max_annular_contrast,
+            "bright_via_tiled_threshold_size": self.bright_via_tiled_threshold_size,
+            "bright_via_scale_kernels_from_diameter": self.bright_via_scale_kernels_from_diameter,
             "debug_enabled": self.debug_enabled,
             "debug_gradient_map_enabled": self.debug_gradient_map_enabled,
             "min_hierarchy_depth": self.min_hierarchy_depth,
@@ -523,9 +532,13 @@ class ContourExtractionSettings:
             "via_display_show_candidates": self.via_display_show_candidates,
             "metal_structural_pipeline": self.metal_structural_pipeline,
             "metal_preset": self.metal_preset,
-            "metal_segmentation_method": normalize_metal_segmentation_method(self.metal_segmentation_method),
-            "metal_sensitivity": normalize_metal_sensitivity(self.metal_sensitivity),
-            "metal_sensitivity_0_100": self.metal_sensitivity_0_100,
+            "metal_noise_suppression": self.metal_noise_suppression,
+            "metal_contrast_bias": self.metal_contrast_bias,
+            "metal_segmentation_strategy": normalize_metal_segmentation_strategy(self.metal_segmentation_strategy),
+            "metal_gap_bridge_px": self.metal_gap_bridge_px,
+            "metal_speckle_removal_px": self.metal_speckle_removal_px,
+            "metal_contour_smooth_px": self.metal_contour_smooth_px,
+            "metal_contour_close_px": self.metal_contour_close_px,
             "metal_min_object_area": self.metal_min_object_area,
             "metal_min_trace_width_px": self.metal_min_trace_width_px,
             "metal_max_trace_width_px": self.metal_max_trace_width_px,
@@ -567,6 +580,12 @@ class ContourExtractionSettings:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ContourExtractionSettings:
+        from ..vision.metal_recovery.segmentation import migrate_legacy_metal_settings
+
+        legacy_method_only = "metal_segmentation_method" in payload and "metal_segmentation_strategy" not in payload
+        payload = migrate_legacy_metal_settings(dict(payload))
+        if legacy_method_only:
+            payload["metal_segmentation_strategy"] = "legacy_otsu"
         max_area = payload.get("max_area")
         max_perimeter = payload.get("max_perimeter")
         max_bbox_width = payload.get("max_bbox_width")
@@ -623,7 +642,7 @@ class ContourExtractionSettings:
             max_via_width=None if max_via_width in (None, "", 0, 0.0) else max(1, int(max_via_width)),
             min_via_height=max(0, int(payload.get("min_via_height", 0))),
             max_via_height=None if max_via_height in (None, "", 0, 0.0) else max(1, int(max_via_height)),
-            via_size_mode=normalize_via_size_mode(payload.get("via_size_mode", VIA_SIZE_MODE_RANGE)),
+            via_size_mode=normalize_via_size_mode(payload.get("via_size_mode", VIA_SIZE_MODE_FIXED)),
             via_search_mode=normalize_via_search_mode(payload.get("via_search_mode", VIA_SEARCH_MODE_HEURISTIC)),
             fixed_via_widths=parse_integer_value_list(payload.get("fixed_via_widths")),
             fixed_via_heights=parse_integer_value_list(payload.get("fixed_via_heights")),
@@ -689,7 +708,7 @@ class ContourExtractionSettings:
             bright_via_min_aspect=max(0.01, float(payload.get("bright_via_min_aspect", 0.45))),
             bright_via_max_aspect=max(0.01, float(payload.get("bright_via_max_aspect", 2.2))),
             bright_via_bright_center_min_score=max(
-                0.0, float(payload.get("bright_via_bright_center_min_score", 6.0))
+                0.0, float(payload.get("bright_via_bright_center_min_score", 140.0))
             ),
             bright_via_metal_constraint_mode=_normalize_bright_via_metal_constraint_mode(
                 payload.get(
@@ -702,7 +721,7 @@ class ContourExtractionSettings:
                 0.0, min(1.0, float(payload.get("bright_via_metal_fraction_min", 0.3)))
             ),
             bright_via_max_radial_asymmetry=max(
-                0.0, float(payload.get("bright_via_max_radial_asymmetry", 18.0))
+                0.0, float(payload.get("bright_via_max_radial_asymmetry", 32.0))
             ),
             bright_via_max_edge_likeness=max(0.0, float(payload.get("bright_via_max_edge_likeness", 35.0))),
             bright_via_max_line_likeness=max(0.0, float(payload.get("bright_via_max_line_likeness", 65.0))),
@@ -712,10 +731,19 @@ class ContourExtractionSettings:
             ),
             bright_via_show_rejected=bool(payload.get("bright_via_show_rejected", True)),
             bright_via_hard_reject_on_asymmetry=bool(
-                payload.get("bright_via_hard_reject_on_asymmetry", False)
+                payload.get("bright_via_hard_reject_on_asymmetry", True)
             ),
             bright_via_hard_reject_on_edge=bool(payload.get("bright_via_hard_reject_on_edge", False)),
             bright_via_hard_reject_on_line=bool(payload.get("bright_via_hard_reject_on_line", False)),
+            bright_via_min_isolation_score=float(payload.get("bright_via_min_isolation_score", 0.38)),
+            bright_via_min_annular_contrast=float(payload.get("bright_via_min_annular_contrast", 6.0)),
+            bright_via_max_annular_contrast=float(payload.get("bright_via_max_annular_contrast", 0.0)),
+            bright_via_tiled_threshold_size=max(
+                32, int(payload.get("bright_via_tiled_threshold_size", 256))
+            ),
+            bright_via_scale_kernels_from_diameter=bool(
+                payload.get("bright_via_scale_kernels_from_diameter", True)
+            ),
             debug_enabled=bool(payload.get("debug_enabled", False)),
             debug_gradient_map_enabled=bool(payload.get("debug_gradient_map_enabled", False)),
             min_hierarchy_depth=max(0, int(payload.get("min_hierarchy_depth", 0))),
@@ -745,11 +773,17 @@ class ContourExtractionSettings:
             via_display_show_candidates=bool(payload.get("via_display_show_candidates", True)),
             metal_structural_pipeline=bool(payload.get("metal_structural_pipeline", False)),
             metal_preset=str(payload.get("metal_preset", "standard") or "standard"),
-            metal_segmentation_method=normalize_metal_segmentation_method(
-                payload.get("metal_segmentation_method", "otsu")
+            metal_noise_suppression=max(0, min(100, int(payload.get("metal_noise_suppression", 20)))),
+            metal_contrast_bias=max(-50.0, min(50.0, float(payload.get("metal_contrast_bias", 0.0)))),
+            metal_segmentation_strategy=normalize_metal_segmentation_strategy(
+                payload.get("metal_segmentation_strategy", "legacy_otsu")
             ),
-            metal_sensitivity=normalize_metal_sensitivity(payload.get("metal_sensitivity", "medium")),
-            metal_sensitivity_0_100=max(0, min(100, int(payload.get("metal_sensitivity_0_100", 50)))),
+            metal_gap_bridge_px=max(0, int(payload.get("metal_gap_bridge_px", payload.get("metal_morph_close_radius", 2)) or 0)),
+            metal_speckle_removal_px=max(
+                0, int(payload.get("metal_speckle_removal_px", payload.get("metal_morph_open_radius", 0)) or 0)
+            ),
+            metal_contour_smooth_px=max(0.0, float(payload.get("metal_contour_smooth_px", 0.0) or 0.0)),
+            metal_contour_close_px=max(0, int(payload.get("metal_contour_close_px", 0) or 0)),
             metal_min_object_area=max(0.0, float(payload.get("metal_min_object_area", 30.0))),
             metal_min_trace_width_px=max(0.5, float(payload.get("metal_min_trace_width_px", 8.0) or 8.0)),
             metal_max_trace_width_px=None
@@ -763,7 +797,7 @@ class ContourExtractionSettings:
             ),
             metal_allow_t_junction=bool(payload.get("metal_allow_t_junction", True)),
             metal_border_handling=str(payload.get("metal_border_handling", "mark") or "mark"),
-            metal_check_contour_validity=bool(payload.get("metal_check_contour_validity", False)),
+            metal_check_contour_validity=bool(payload.get("metal_check_contour_validity", True)),
             metal_hierarchy_mode=str(payload.get("metal_hierarchy_mode", "full") or "full"),
             metal_min_area=max(
                 0.0,
@@ -785,10 +819,10 @@ class ContourExtractionSettings:
             metal_display_show_conductors=bool(payload.get("metal_display_show_conductors", True)),
             metal_display_show_mask=bool(payload.get("metal_display_show_mask", True)),
             metal_display_show_contours=bool(payload.get("metal_display_show_contours", True)),
-            metal_display_show_rejected=bool(payload.get("metal_display_show_rejected", False)),
+            metal_display_show_rejected=bool(payload.get("metal_display_show_rejected", True)),
             metal_display_show_suspicious=bool(payload.get("metal_display_show_suspicious", True)),
             metal_display_show_border_highlight=bool(
-                payload.get("metal_display_show_border_highlight", True)
+                payload.get("metal_display_show_border_highlight", False)
             ),
             metal_debug_visual=str(payload.get("metal_debug_visual", "overlay") or "overlay"),
             metal_overlay_opacity=max(
@@ -838,6 +872,7 @@ class DisplaySettings:
     external_color: str = "#28C76F"
     hole_color: str = "#FF9F43"
     selected_color: str = "#00CFE8"
+    via_selection_color: str = "#FACC15"
     conductor_hover_highlight_color: str = "#FB923C"
     vertex_color: str = "#FF4D6D"
     line_width: float = 2.0
@@ -845,12 +880,14 @@ class DisplaySettings:
     fill_opacity: float = 0.18
     show_vertices: bool = True
     show_labels: bool = False
+    via_display_mode: str = VIA_DISPLAY_MODE_CIRCLE
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "external_color": self.external_color,
             "hole_color": self.hole_color,
             "selected_color": self.selected_color,
+            "via_selection_color": self.via_selection_color,
             "conductor_hover_highlight_color": self.conductor_hover_highlight_color,
             "vertex_color": self.vertex_color,
             "line_width": self.line_width,
@@ -858,6 +895,7 @@ class DisplaySettings:
             "fill_opacity": self.fill_opacity,
             "show_vertices": self.show_vertices,
             "show_labels": self.show_labels,
+            "via_display_mode": normalize_via_display_mode(self.via_display_mode),
         }
 
     @classmethod
@@ -866,6 +904,7 @@ class DisplaySettings:
             external_color=str(payload.get("external_color", "#28C76F")),
             hole_color=str(payload.get("hole_color", "#FF9F43")),
             selected_color=str(payload.get("selected_color", "#00CFE8")),
+            via_selection_color=str(payload.get("via_selection_color", "#FACC15")),
             conductor_hover_highlight_color=str(payload.get("conductor_hover_highlight_color", "#FB923C")),
             vertex_color=str(payload.get("vertex_color", "#FF4D6D")),
             line_width=float(payload.get("line_width", 2.0)),
@@ -873,12 +912,14 @@ class DisplaySettings:
             fill_opacity=float(payload.get("fill_opacity", 0.18)),
             show_vertices=bool(payload.get("show_vertices", True)),
             show_labels=bool(payload.get("show_labels", False)),
+            via_display_mode=normalize_via_display_mode(payload.get("via_display_mode", VIA_DISPLAY_MODE_CIRCLE)),
         )
 
 
 @dataclass(slots=True)
 class SaveOptions:
     save_cif: bool = True
+    save_cv: bool = False
     save_json: bool = False
     save_csv: bool = False
     save_txt: bool = False
@@ -888,6 +929,7 @@ class SaveOptions:
     def to_dict(self) -> dict[str, Any]:
         return {
             "save_cif": self.save_cif,
+            "save_cv": self.save_cv,
             "save_json": self.save_json,
             "save_csv": self.save_csv,
             "save_txt": self.save_txt,
@@ -899,6 +941,7 @@ class SaveOptions:
     def from_dict(cls, payload: dict[str, Any]) -> SaveOptions:
         return cls(
             save_cif=bool(payload.get("save_cif", True)),
+            save_cv=bool(payload.get("save_cv", False)),
             save_json=bool(payload.get("save_json", False)),
             save_csv=bool(payload.get("save_csv", False)),
             save_txt=bool(payload.get("save_txt", False)),
@@ -920,6 +963,8 @@ class ImageProcessingState:
     metal_overlay_polygons: dict[str, list[PolygonData]] = field(default_factory=dict)
     loaded_cif_path: str | None = None
     reference_polygons: list[PolygonData] = field(default_factory=list)
+    #: Cached ``image_has_changes``; ``None`` means recompute on next query.
+    polygons_dirty: bool | None = None
 
 
 @dataclass(slots=True)
@@ -938,8 +983,41 @@ class BatchImageResult:
 
 
 @dataclass(slots=True)
+class BatchFrameTiming:
+    image_loading_ms: float = 0.0
+    morphology_ms: float = 0.0
+    threshold_ms: float = 0.0
+    contour_extraction_ms: float = 0.0
+    postprocessing_ms: float = 0.0
+    saving_ms: float = 0.0
+    total_frame_ms: float = 0.0
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "image_loading_ms": float(self.image_loading_ms),
+            "morphology_ms": float(self.morphology_ms),
+            "threshold_ms": float(self.threshold_ms),
+            "contour_extraction_ms": float(self.contour_extraction_ms),
+            "postprocessing_ms": float(self.postprocessing_ms),
+            "saving_ms": float(self.saving_ms),
+            "total_frame_ms": float(self.total_frame_ms),
+        }
+
+
+@dataclass(slots=True)
+class BatchImageMetadata:
+    image_path: str
+    polygon_count: int = 0
+    saved_files: dict[str, str] = field(default_factory=dict)
+    timing: BatchFrameTiming = field(default_factory=BatchFrameTiming)
+    worker_pid: int | None = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
 class BatchProcessingOptions:
     max_workers: int = 4
+    chunk_size: int = 16
     output_directory: str | None = None
     save_options: SaveOptions = field(default_factory=SaveOptions)
 

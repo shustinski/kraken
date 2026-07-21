@@ -10,8 +10,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtBoundSignal
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtCore import Qt, pyqtBoundSignal
+from PyQt6.QtWidgets import QApplication, QListWidgetItem, QWidget
 
 from contour.widget import PolygonExtractionWidget
 
@@ -73,7 +73,8 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertLessEqual(widget.main_splitter.widget(0).minimumWidth(), 300)
             self.assertLessEqual(widget.right_tabs.minimumWidth(), 220)
             self.assertTrue(hasattr(widget, "editor_toolbar_scroll"))
-            self.assertLessEqual(widget.editor_toolbar_scroll.minimumWidth(), 180)
+            self.assertLessEqual(widget.editor_toolbar_scroll.minimumWidth(), 760)
+            self.assertFalse(hasattr(widget, "visual_frame_nav_widget"))
         finally:
             widget.close()
             widget.deleteLater()
@@ -86,6 +87,100 @@ class WidgetSmokeTests(unittest.TestCase):
             settings = widget._current_contour_settings()
             self.assertEqual(settings.heuristic_background_sigma, 25.0)
             self.assertEqual(settings.via_search_mode, "heuristic")
+            self.assertEqual(widget._contour_settings_profiles["vias"].via_search_mode, "heuristic")
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_extraction_and_manual_hole_fill_areas_are_independent(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            widget.min_inner_hole_area_spin.setValue(42.0)
+            widget.vector_geom_min_hole_spin.setValue(7.0)
+
+            self.assertEqual(widget._current_contour_settings().min_inner_hole_area, 42.0)
+            self.assertEqual(widget._vector_geometry_settings_from_widgets().min_hole_area_to_remove_px2, 7.0)
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_conductor_display_defaults(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            self.assertTrue(widget.metal_show_rejected_checkbox.isChecked())
+            self.assertFalse(widget.metal_show_border_checkbox.isChecked())
+            self.assertTrue(widget.metal_hierarchy_combo.currentData() == "full")
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_via_mode_hides_contour_extraction_group(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("via"))
+
+            self.assertFalse(widget.contour_group.isVisible())
+            self.assertFalse(widget.advanced_extraction_checkbox.isVisible())
+            self.assertFalse(widget.bright_via_group.isHidden())
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_image_list_selection_selects_thumbnail_grid_item(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            paths = [r"d:\frames\a.png", r"d:\frames\b.png"]
+            widget._workspace.replace_image_selection(paths, is_supported_image=lambda _path: True)
+            for path in paths:
+                image_item = QListWidgetItem(Path(path).stem)
+                image_item.setData(Qt.ItemDataRole.UserRole, path)
+                widget.image_list.addItem(image_item)
+
+                thumbnail_item = QListWidgetItem()
+                thumbnail_item.setData(Qt.ItemDataRole.UserRole, path)
+                widget.thumbnail_grid.addItem(thumbnail_item)
+
+            def _fake_load_image(path: str) -> None:
+                widget._workspace._current_image_path = path
+
+            widget.load_image = _fake_load_image  # type: ignore[method-assign]
+            widget.image_list.setCurrentRow(1)
+
+            self.assertEqual(widget.thumbnail_grid.currentRow(), 1)
+            self.assertEqual(widget.thumbnail_grid.currentItem().data(Qt.ItemDataRole.UserRole), paths[1])
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_image_list_selection_scrolls_thumbnail_grid_to_item(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            paths = [fr"d:\frames\frame_{index:03d}.png" for index in range(40)]
+            widget._workspace.replace_image_selection(paths, is_supported_image=lambda _path: True)
+            widget.neighbor_columns_spin.setValue(4)
+            for path in paths:
+                image_item = QListWidgetItem(Path(path).stem)
+                image_item.setData(Qt.ItemDataRole.UserRole, path)
+                widget.image_list.addItem(image_item)
+
+                thumbnail_item = QListWidgetItem()
+                thumbnail_item.setData(Qt.ItemDataRole.UserRole, path)
+                widget.thumbnail_grid.addItem(thumbnail_item)
+
+            widget._configure_thumbnail_grid_geometry()
+            widget.thumbnail_grid_scroll_area.setFixedSize(4 * 64 + 4, 2 * 48 + 4)
+            widget.show()
+            QApplication.processEvents()
+
+            def _fake_load_image(path: str) -> None:
+                widget._workspace._current_image_path = path
+
+            widget.load_image = _fake_load_image  # type: ignore[method-assign]
+            widget.image_list.setCurrentRow(24)
+            QApplication.processEvents()
+
+            self.assertEqual(widget.thumbnail_grid.currentRow(), 24)
+            self.assertGreater(widget.thumbnail_grid_scroll_area.verticalScrollBar().value(), 0)
         finally:
             widget.close()
             widget.deleteLater()

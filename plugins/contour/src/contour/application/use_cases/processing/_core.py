@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import cProfile
 import json
+import hashlib
+import io
+import pstats
+from time import perf_counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
@@ -22,6 +27,12 @@ from ....pipeline import PreprocessingPipeline
 from ....serializers import save_result_bundle
 from ....utils import ensure_binary_mask, ensure_uint8, load_image_color
 from ...preview_cancellation import raise_if_preview_cancelled
+from ....infrastructure.profiling import (
+    processing_profiling_enabled,
+    processing_top_lines,
+    try_disable_profiler,
+    try_enable_profiler,
+)
 from ...processing import (
     ALGORITHM_BACKEND_LEGACY,
     RECOGNITION_MODE_CONDUCTORS,
@@ -31,6 +42,7 @@ from ...processing import (
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
     BatchImageResult,
+    BatchFrameTiming,
     ContourDebugCandidate,
     ContourExtractionSettings,
     DisplaySettings,
@@ -72,6 +84,25 @@ class _ViaCandidate:
     reason: str = ""
 
 
+_VIA_DETECTION_CACHE: dict[tuple[str, str, str], Any] = {}
+_VIA_DETECTION_CACHE_MAX_ITEMS = 8
+
+
+def _make_image_signature(gray: np.ndarray) -> str:
+    digest = hashlib.sha1(gray.tobytes()).hexdigest()
+    return f"{gray.shape[0]}x{gray.shape[1]}:{digest}"
+
+
+def _bounded_cache_set(key: tuple[str, str, str], value: Any) -> None:
+    if key in _VIA_DETECTION_CACHE:
+        _VIA_DETECTION_CACHE[key] = value
+        return
+    if len(_VIA_DETECTION_CACHE) >= _VIA_DETECTION_CACHE_MAX_ITEMS:
+        oldest = next(iter(_VIA_DETECTION_CACHE))
+        _VIA_DETECTION_CACHE.pop(oldest, None)
+    _VIA_DETECTION_CACHE[key] = value
+
+
 # ---------------------------------------------------------------------------
 # Public signature / preview helpers
 # ---------------------------------------------------------------------------
@@ -98,6 +129,12 @@ def prepare_image_for_preview(source_image: Any, pipeline_config: dict[str, Any]
     return PreprocessingPipeline.from_dict(pipeline_config).apply(source_image)
 
 
+def _recognition_image(source_image: Any, preprocessed_image: Any | None) -> Any:
+    if preprocessed_image is not None:
+        return preprocessed_image
+    return source_image
+
+
 # ---------------------------------------------------------------------------
 # Public mask builders
 # ---------------------------------------------------------------------------
@@ -113,7 +150,8 @@ def build_conductor_vectorization_mask(
     preprocessed_image: Any,
     settings: ContourExtractionSettings,
 ) -> np.ndarray:
-    base_mask = ensure_binary_mask(preprocessed_image)
+    recognition_image = _recognition_image(source_image, preprocessed_image)
+    base_mask = ensure_binary_mask(recognition_image)
     legacy = str(getattr(settings, "algorithm_backend", "legacy")).lower() == "legacy"
     conductor_polygon = (
         settings.object_type == "conductor" and str(getattr(settings, "output_mode", "polygon")) != "box"
@@ -123,7 +161,7 @@ def build_conductor_vectorization_mask(
         return base_mask
     if settings.object_type == "via" or settings.output_mode == "box" or not settings.conductor_gradient_enabled:
         return base_mask
-    return _refine_conductor_mask_by_gradient(source_image, base_mask, settings)
+    return _refine_conductor_mask_by_gradient(recognition_image, base_mask, settings)
 
 
 def build_via_vectorization_mask(
@@ -143,24 +181,102 @@ def build_via_vectorization_mask(
     if gray.size == 0:
         return ensure_binary_mask(image), []
 
+    selected_mode = normalize_via_search_mode(settings.via_search_mode)
+    if (
+        normalize_algorithm_backend(settings.algorithm_backend) == ALGORITHM_BACKEND_LEGACY
+        and selected_mode == VIA_SEARCH_MODE_HEURISTIC
+    ):
+        accepted, rejected = _detect_via_candidates(gray, settings)
+        accepted, duplicates = _iou_nms(accepted, iou_threshold=0.35)
+        debug = _debug_candidates_from_via_candidates(accepted, accepted=True)
+        debug.extend(_debug_candidates_from_via_candidates(rejected, accepted=False))
+        debug.extend(_debug_candidates_from_via_candidates(duplicates, accepted=False, reason="duplicate_iou"))
+        return _render_via_candidates_mask(gray.shape, accepted, settings), debug
     return _build_modern_via_vectorization_mask(gray, settings)
 
 
 def _build_modern_via_vectorization_mask(
     gray: np.ndarray, settings: ContourExtractionSettings
 ) -> tuple[np.ndarray, list[ContourDebugCandidate]]:
-    from ....vision.via.bright_tophat_dog import BrightViaDetectorConfig, detect_bright_vias
+    from ....vision.via.bright_tophat_dog import (
+        BrightViaDetectorConfig,
+        prepare_bright_via_candidates,
+        score_bright_via_candidates,
+    )
     from ....vision.via_detection.heuristic_detector import detect_vias_heuristic
     from ....vision.via_detection.result import DetectionResult, ViaDetection
     from ....vision.via_detection.settings_bridge import heuristic_config_from_settings, template_config_from_settings
-    from ....vision.via_detection.template_detector import detect_vias_template
+    from ....vision.via_detection.template_detector import (
+        detect_vias_template_raw,
+        score_vias_template_raw,
+    )
 
     mode = normalize_via_search_mode(settings.via_search_mode)
+    image_sig = _make_image_signature(gray)
     if mode == VIA_SEARCH_MODE_TEMPLATE:
-        result = detect_vias_template(gray, template_config_from_settings(settings))
+        tcfg = template_config_from_settings(settings)
+        if not tcfg.templates:
+            empty = np.zeros(gray.shape[:2], dtype=np.uint8)
+            debug_candidates = [
+                ContourDebugCandidate(
+                    contour_index=0,
+                    bbox=(0, 0, 0, 0),
+                    accepted=False,
+                    reason="Для режима поиска по шаблону добавьте хотя бы один шаблон",
+                    source=VIA_SEARCH_MODE_TEMPLATE,
+                    score=0.0,
+                )
+            ]
+            return empty, debug_candidates
+        heavy_key = (
+            VIA_SEARCH_MODE_TEMPLATE,
+            image_sig,
+            json.dumps(
+                {
+                    "via_search_mode": mode,
+                    "via_template_images": len(tcfg.templates),
+                    "via_template_scale_min": float(tcfg.scale_min),
+                    "via_template_scale_max": float(tcfg.scale_max),
+                    "via_template_scale_step": float(tcfg.scale_step),
+                },
+                sort_keys=True,
+            ),
+        )
+        raw_payload = _VIA_DETECTION_CACHE.get(heavy_key)
+        if raw_payload is None:
+            raw_payload = detect_vias_template_raw(gray, tcfg)
+            _bounded_cache_set(heavy_key, raw_payload)
+        raw_matches, shape = raw_payload
+        result = score_vias_template_raw(raw_matches, shape, tcfg)
     elif mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
         bright_config = BrightViaDetectorConfig.from_legacy_settings(settings)
-        bright = detect_bright_vias(gray, bright_config)
+        heavy_key = (
+            VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
+            image_sig,
+            json.dumps(
+                {
+                    "via_search_mode": mode,
+                    "bright_via_diameter_min": bright_config.diameter_min,
+                    "bright_via_diameter_max": bright_config.diameter_max,
+                    "bright_via_clahe_clip_limit": bright_config.clahe_clip_limit,
+                    "bright_via_clahe_tile_grid_size": bright_config.clahe_tile_grid_size,
+                    "bright_via_median_blur_kernel": bright_config.median_blur_kernel,
+                    "bright_via_tophat_kernel_size": bright_config.tophat_kernel_size,
+                    "bright_via_dog_sigma_small": bright_config.dog_sigma_small,
+                    "bright_via_dog_sigma_large": bright_config.dog_sigma_large,
+                    "bright_via_threshold_percentile": bright_config.threshold_percentile,
+                    "bright_via_mask_combine_mode": bright_config.mask_combine_mode,
+                    "bright_via_use_metal_mask": bright_config.use_metal_mask,
+                    "bright_via_metal_constraint_mode": bright_config.metal_constraint_mode,
+                },
+                sort_keys=True,
+            ),
+        )
+        prepared = _VIA_DETECTION_CACHE.get(heavy_key)
+        if prepared is None:
+            prepared = prepare_bright_via_candidates(gray, bright_config)
+            _bounded_cache_set(heavy_key, prepared)
+        bright = score_bright_via_candidates(prepared, bright_config)
         accepted = [
             ViaDetection(
                 x=float(det.center[0]),
@@ -284,24 +400,28 @@ def build_detection_debug_maps(
       outputs of individual modern edge detectors for side-by-side
       inspection.
     * ``"mask"`` – final binary mask actually fed into ``extract_polygons``.
-    Modern via debug maps are populated by the selected template or heuristic
-    detector; old blob/top-hat response maps are intentionally not produced.
+    Via debug maps include the common spot and ring responses used by the
+    unified legacy/modern candidate view.
     """
 
     maps: dict[str, np.ndarray] = {}
-    if source_image is None:
+    if source_image is None and preprocessed_image is None:
+        return maps
+    recognition_image = _recognition_image(source_image, preprocessed_image)
+    if recognition_image is None:
         return maps
     raise_if_preview_cancelled()
 
-    source_gray = _via_grayscale(source_image)
-    maps["source_gray"] = source_gray
+    if source_image is not None:
+        maps["source_gray"] = _via_grayscale(source_image)
+    recognition_gray = _via_grayscale(recognition_image)
 
     if settings.object_type == "via" or settings.output_mode == "box":
         edge_method = _resolve_via_edge_method(settings)
     else:
         edge_method = _resolve_conductor_edge_method(settings)
 
-    elevation = build_gradient_elevation(source_gray, edge_method)
+    elevation = build_gradient_elevation(recognition_gray, edge_method)
     maps["gradient_elevation"] = elevation
     if include_color_maps and elevation.size:
         maps["gradient_color"] = cv2.applyColorMap(elevation, cv2.COLORMAP_TURBO)
@@ -319,13 +439,13 @@ def build_detection_debug_maps(
 
         try:
             if vmode == VIA_SEARCH_MODE_TEMPLATE:
-                r = detect_vias_template(source_gray, template_config_from_settings(settings))
+                r = detect_vias_template(recognition_gray, template_config_from_settings(settings))
                 dbg = dict(r.debug_images)
             elif vmode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
-                r = detect_bright_vias(source_gray, BrightViaDetectorConfig.from_legacy_settings(settings))
+                r = detect_bright_vias(recognition_gray, BrightViaDetectorConfig.from_legacy_settings(settings))
                 dbg = dict(r.debug_images)
             else:
-                r = detect_vias_heuristic(source_gray, heuristic_config_from_settings(settings))
+                r = detect_vias_heuristic(recognition_gray, heuristic_config_from_settings(settings))
                 dbg = dict(r.debug_images)
             for _guard in ("source_gray", "gradient_elevation", "gradient_color"):
                 dbg.pop(_guard, None)
@@ -333,22 +453,32 @@ def build_detection_debug_maps(
         except Exception:  # pragma: no cover - defensive debug path
             pass
 
-    maps["scharr"] = scharr_magnitude(source_gray)
+        expected_span = _expected_via_span(settings)
+        enhanced = _clahe_gray(recognition_gray) if min(recognition_gray.shape[:2]) >= 8 else recognition_gray
+        maps["spot_response"] = _multiscale_blob_response(
+            enhanced,
+            expected_span,
+            bright=True,
+            line_suppression=max(0.0, min(1.0, float(settings.via_spot_line_suppression))),
+        )
+        maps["ring_response"] = _ring_template_response(elevation, _via_candidate_radii(settings, expected_span))
+
+    maps["scharr"] = scharr_magnitude(recognition_gray)
     try:
-        maps["phase_congruency"] = phase_congruency(source_gray)
+        maps["phase_congruency"] = phase_congruency(recognition_gray)
     except Exception:  # pragma: no cover - numerical fallback
-        maps["phase_congruency"] = np.zeros_like(source_gray, dtype=np.uint8)
-    maps["structured"] = structured_edges(source_gray)
-    maps["ridge"] = ridge_response(source_gray)
+        maps["phase_congruency"] = np.zeros_like(recognition_gray, dtype=np.uint8)
+    maps["structured"] = structured_edges(recognition_gray)
+    maps["ridge"] = ridge_response(recognition_gray)
 
     if settings.object_type == "via" or settings.output_mode == "box":
-        mask, _candidates = build_via_vectorization_mask(preprocessed_image, settings)
+        mask, _candidates = build_via_vectorization_mask(recognition_image, settings)
         maps["mask"] = ensure_binary_mask(mask)
     else:
         mask = build_conductor_vectorization_mask(source_image, preprocessed_image, settings)
         maps["mask"] = ensure_binary_mask(mask)
         if include_color_maps:
-            maps["conductor_gradient_elevation"] = _conductor_gradient_elevation(source_gray, settings)
+            maps["conductor_gradient_elevation"] = _conductor_gradient_elevation(recognition_gray, settings)
     return maps
 
 
@@ -509,8 +639,8 @@ def _detect_via_candidates(
     polarity_scans = _via_polarity_scans(settings)
     line_suppression = max(0.0, min(1.0, float(settings.via_spot_line_suppression)))
     search_mode = normalize_via_search_mode(settings.via_search_mode)
-    run_blob = False
-    run_template = search_mode == VIA_SEARCH_MODE_TEMPLATE
+    run_blob = search_mode == VIA_SEARCH_MODE_HEURISTIC
+    run_template = search_mode == VIA_SEARCH_MODE_TEMPLATE or bool(settings.via_template_images)
     edge_method = _resolve_via_edge_method(settings)
     gradient = build_gradient_elevation(enhanced, edge_method)
     if gradient.size == 0:
@@ -1523,8 +1653,7 @@ def _run_structural_metal_recovery(
     if bool(getattr(contour_settings, "metal_display_show_mask", True)):
         debug_maps["metal_mask"] = mr.debug_images["metal_binary_mask"]
 
-    show_c = bool(getattr(contour_settings, "metal_display_show_conductors", True))
-    polygons = list(mr.accepted) if show_c else []
+    polygons = list(mr.accepted)
 
     overlays: dict[str, list[PolygonData]] = {"rejected": [], "suspicious": [], "border": []}
     for r in mr.rejected:
@@ -1579,20 +1708,121 @@ def process_image_path(
     include_images_in_result: bool = True,
     passthrough_polygons: list[PolygonData] | None = None,
 ) -> BatchImageResult:
+    if processing_profiling_enabled():
+        profiler = cProfile.Profile()
+        profiler_enabled = try_enable_profiler(profiler)
+        try:
+            return _process_image_path_impl(
+                image_path=image_path,
+                pipeline_config=pipeline_config,
+                contour_settings=contour_settings,
+                output_directory=output_directory,
+                save_options=save_options,
+                display_settings=display_settings,
+                source_image=source_image,
+                preprocessed_image=preprocessed_image,
+                pipeline=pipeline,
+                image_loader=image_loader,
+                save_bundle=save_bundle,
+                include_images_in_result=include_images_in_result,
+                passthrough_polygons=passthrough_polygons,
+            )
+        finally:
+            if not profiler_enabled:
+                print(f"[contour profiling] image={image_path} skipped=yes reason=cprofile_already_active")
+            else:
+                try_disable_profiler(profiler)
+                top_lines = processing_top_lines()
+                stream = io.StringIO()
+                stats = pstats.Stats(profiler, stream=stream).sort_stats("cumtime")
+                stats.print_stats(top_lines)
+                print(f"[contour profiling] image={image_path} top={top_lines}")
+                print(stream.getvalue())
+
+    return _process_image_path_impl(
+        image_path=image_path,
+        pipeline_config=pipeline_config,
+        contour_settings=contour_settings,
+        output_directory=output_directory,
+        save_options=save_options,
+        display_settings=display_settings,
+        source_image=source_image,
+        preprocessed_image=preprocessed_image,
+        pipeline=pipeline,
+        image_loader=image_loader,
+        save_bundle=save_bundle,
+        include_images_in_result=include_images_in_result,
+        passthrough_polygons=passthrough_polygons,
+    )
+
+
+def process_image_path_timed(
+    image_path: str,
+    pipeline_config: dict[str, Any],
+    contour_settings: ContourExtractionSettings,
+    output_directory: str | None = None,
+    save_options: SaveOptions | None = None,
+    display_settings: DisplaySettings | None = None,
+    *,
+    pipeline: PreprocessingPipeline | None = None,
+) -> tuple[BatchImageResult, BatchFrameTiming]:
+    timing = BatchFrameTiming()
+    result = _process_image_path_impl(
+        image_path=image_path,
+        pipeline_config=pipeline_config,
+        contour_settings=contour_settings,
+        output_directory=output_directory,
+        save_options=save_options,
+        display_settings=display_settings,
+        pipeline=pipeline,
+        include_images_in_result=False,
+        timing=timing,
+    )
+    return result, timing
+
+
+def _process_image_path_impl(
+    *,
+    image_path: str,
+    pipeline_config: dict[str, Any],
+    contour_settings: ContourExtractionSettings,
+    output_directory: str | None = None,
+    save_options: SaveOptions | None = None,
+    display_settings: DisplaySettings | None = None,
+    source_image: Any | None = None,
+    preprocessed_image: Any | None = None,
+    pipeline: PreprocessingPipeline | None = None,
+    image_loader: Callable[[str], Any] = load_image_color,
+    save_bundle: Callable[..., dict[str, str]] = save_result_bundle,
+    include_images_in_result: bool = True,
+    passthrough_polygons: list[PolygonData] | None = None,
+    timing: BatchFrameTiming | None = None,
+) -> BatchImageResult:
+    frame_started = perf_counter()
     raise_if_preview_cancelled()
+    phase_started = perf_counter()
     source = source_image if source_image is not None else image_loader(image_path)
+    if timing is not None and source_image is None:
+        timing.image_loading_ms += (perf_counter() - phase_started) * 1000.0
     raise_if_preview_cancelled()
     if preprocessed_image is not None:
         preprocessed = preprocessed_image
     else:
         active_pipeline = pipeline or PreprocessingPipeline.from_dict(pipeline_config)
-        preprocessed = active_pipeline.apply(source)
+        if timing is None:
+            preprocessed = active_pipeline.apply(source)
+        else:
+            preprocessed, pipeline_timings = active_pipeline.apply_with_timing(source)
+            timing.threshold_ms += float(pipeline_timings.get("threshold_ms", 0.0))
+            timing.morphology_ms += float(pipeline_timings.get("morphology_ms", 0.0))
+            timing.postprocessing_ms += float(pipeline_timings.get("postprocessing_ms", 0.0))
     raise_if_preview_cancelled()
 
     rec = normalize_recognition_mode(getattr(contour_settings, "recognition_mode", "via"))
     if rec == RECOGNITION_MODE_DISABLED:
         saved_files: dict[str, str] = {}
         if output_directory:
+            phase_started = perf_counter()
             saved_files = save_bundle(
                 output_directory=output_directory,
                 image_path=image_path,
@@ -1605,7 +1835,11 @@ def process_image_path(
                     "pipeline": pipeline_config,
                 },
             )
+            if timing is not None:
+                timing.saving_ms += (perf_counter() - phase_started) * 1000.0
         polys = list(passthrough_polygons) if passthrough_polygons else []
+        if timing is not None:
+            timing.total_frame_ms = (perf_counter() - frame_started) * 1000.0
         return BatchImageResult(
             image_path=image_path,
             source_image=source if include_images_in_result else None,
@@ -1629,35 +1863,55 @@ def process_image_path(
             preprocessed=preprocessed,
             save_bundle=save_bundle,
             include_images_in_result=include_images_in_result,
+            timing=timing,
+            frame_started=frame_started,
         )
 
     metal_overlays: dict[str, list[PolygonData]] = {}
     metal_debug_extra: dict[str, np.ndarray] = {}
     if contour_settings.object_type == "via" or contour_settings.output_mode == "box":
+        phase_started = perf_counter()
         mask, debug_candidates = build_via_vectorization_mask(preprocessed, contour_settings)
+        if timing is not None:
+            timing.postprocessing_ms += (perf_counter() - phase_started) * 1000.0
         raise_if_preview_cancelled()
+        phase_started = perf_counter()
         polygons = extract_polygons(mask, contour_settings)
+        if timing is not None:
+            timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         raise_if_preview_cancelled()
     elif _use_structural_metal_recovery(contour_settings):
         raise_if_preview_cancelled()
+        phase_started = perf_counter()
         polygons, mask, metal_debug_extra, metal_overlays = _run_structural_metal_recovery(
             preprocessed, contour_settings
         )
+        if timing is not None:
+            timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         raise_if_preview_cancelled()
         debug_candidates = []
     else:
+        phase_started = perf_counter()
         mask = build_conductor_vectorization_mask(source, preprocessed, contour_settings)
+        if timing is not None:
+            timing.postprocessing_ms += (perf_counter() - phase_started) * 1000.0
         raise_if_preview_cancelled()
         debug_candidates = []
+        phase_started = perf_counter()
         polygons = extract_polygons(mask, contour_settings)
+        if timing is not None:
+            timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         if _should_run_sem_dual_branch(contour_settings):
             raise_if_preview_cancelled()
+            phase_started = perf_counter()
             via_settings = _build_via_settings_for_dual_branch(contour_settings)
             via_mask, via_debug_candidates = build_via_vectorization_mask(preprocessed, via_settings)
             via_polygons = extract_polygons(via_mask, via_settings)
             via_polygons = _filter_vias_by_conductor_linearity(via_polygons, mask)
             polygons = _merge_dual_branch_polygons(polygons, via_polygons)
             debug_candidates.extend(via_debug_candidates)
+            if timing is not None:
+                timing.postprocessing_ms += (perf_counter() - phase_started) * 1000.0
     if not contour_settings.debug_enabled:
         debug_candidates = []
     base_metal_maps: dict[str, np.ndarray] = (
@@ -1677,6 +1931,7 @@ def process_image_path(
         debug_gradient_maps["mask"] = ensure_binary_mask(mask)
     saved_files: dict[str, str] = {}
     if output_directory:
+        phase_started = perf_counter()
         saved_files = save_bundle(
             output_directory=output_directory,
             image_path=image_path,
@@ -1689,9 +1944,13 @@ def process_image_path(
                 "pipeline": pipeline_config,
             },
         )
+        if timing is not None:
+            timing.saving_ms += (perf_counter() - phase_started) * 1000.0
     result_source = source if include_images_in_result else None
     result_preprocessed = preprocessed if include_images_in_result else None
     result_mask = mask if include_images_in_result else None
+    if timing is not None:
+        timing.total_frame_ms = (perf_counter() - frame_started) * 1000.0
     return BatchImageResult(
         image_path=image_path,
         source_image=result_source,
@@ -1718,6 +1977,8 @@ def _process_image_path_sem_backend(
     preprocessed: Any,
     save_bundle: Callable[..., dict[str, str]],
     include_images_in_result: bool,
+    timing: BatchFrameTiming | None = None,
+    frame_started: float | None = None,
 ) -> BatchImageResult:
     from ....vision.integration import (
         contour_output_to_polygons,
@@ -1733,15 +1994,19 @@ def _process_image_path_sem_backend(
     vision_json: dict[str, Any]
 
     raise_if_preview_cancelled()
+    recognition_image = _recognition_image(source, preprocessed)
     if contour_settings.object_type == "via":
+        phase_started = perf_counter()
         via_output = run_via_detection(
-            source,
+            recognition_image,
             image_path=image_path,
             output_kind=output_kind,
             legacy_settings=contour_settings,
         )
         polygons = via_output_to_polygons(via_output)
-        mask = _render_polygon_mask_from_polygons(source, polygons)
+        mask = _render_polygon_mask_from_polygons(recognition_image, polygons)
+        if timing is not None:
+            timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         vision_json = via_output.to_json_dict()
         if contour_settings.debug_enabled:
             debug_candidates = _debug_candidates_from_via_hits(via_output.hits)
@@ -1750,8 +2015,9 @@ def _process_image_path_sem_backend(
             debug_gradient_maps = dict(getattr(via_output, "debug", {}) or {})
     else:
         raise_if_preview_cancelled()
+        phase_started = perf_counter()
         contour_output = run_contour_filled_mask(
-            source,
+            recognition_image,
             image_path=image_path,
             output_kind=output_kind,
             noise_level=str(getattr(contour_settings, "sem_noise_level", "medium") or "medium"),
@@ -1759,6 +2025,8 @@ def _process_image_path_sem_backend(
         )
         polygons = contour_output_to_polygons(contour_output)
         mask = contour_output.filled_mask
+        if timing is not None:
+            timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0
         vision_json = contour_output.to_json_dict()
         preprocessed = contour_output.debug.get("preprocessed", preprocessed)
         if contour_settings.debug_gradient_map_enabled:
@@ -1770,6 +2038,7 @@ def _process_image_path_sem_backend(
 
     saved_files: dict[str, str] = {}
     if output_directory:
+        phase_started = perf_counter()
         saved_files = save_bundle(
             output_directory=output_directory,
             image_path=image_path,
@@ -1783,7 +2052,11 @@ def _process_image_path_sem_backend(
                 "vision_backend": vision_json,
             },
         )
+        if timing is not None:
+            timing.saving_ms += (perf_counter() - phase_started) * 1000.0
 
+    if timing is not None and frame_started is not None:
+        timing.total_frame_ms = (perf_counter() - frame_started) * 1000.0
     return BatchImageResult(
         image_path=image_path,
         source_image=source if include_images_in_result else None,

@@ -16,9 +16,11 @@ def _add_source_paths() -> None:
 
 def main() -> None:
     _add_source_paths()
+    from contour.batch_processor import configure_batch_runtime
     from contour.application.cli import main as contour_main
 
     mp.freeze_support()
+    configure_batch_runtime()
     contour_main()
 
 

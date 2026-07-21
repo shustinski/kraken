@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QModelIndex, Qt
 from PyQt6.QtGui import QColor, QBrush, QPainter
-from PyQt6.QtWidgets import QListWidget, QStyledItemDelegate, QStyleOptionViewItem
+from PyQt6.QtWidgets import QAbstractItemView, QStyledItemDelegate, QStyleOptionViewItem
 
 
 class StatusBackgroundListDelegate(QStyledItemDelegate):
@@ -28,5 +28,5 @@ class StatusBackgroundListDelegate(QStyledItemDelegate):
         super().paint(painter, opt, index)
 
 
-def attach_status_row_delegate(list_widget: QListWidget) -> None:
-    list_widget.setItemDelegate(StatusBackgroundListDelegate(list_widget))
+def attach_status_row_delegate(list_view: QAbstractItemView) -> None:
+    list_view.setItemDelegate(StatusBackgroundListDelegate(list_view))

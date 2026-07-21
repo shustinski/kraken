@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from pathlib import Path
+from threading import Lock
 
 import cv2
 import numpy as np
@@ -11,10 +13,16 @@ from .domain import PolygonData
 from .i18n import tr
 
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+_CV2_DECODE_LOCK = Lock()
 
 
 def is_image_path(path: str | Path) -> bool:
     return Path(path).suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
+
+
+def is_visible_image_path(path: str | Path) -> bool:
+    normalized = Path(path)
+    return is_image_path(normalized) and not normalized.name.startswith("_")
 
 
 def scan_image_files(directory: str | Path) -> list[str]:
@@ -24,7 +32,7 @@ def scan_image_files(directory: str | Path) -> list[str]:
     return [
         str(path)
         for path in sorted(root.iterdir(), key=lambda item: item.name.lower())
-        if path.is_file() and is_image_path(path)
+        if path.is_file() and is_visible_image_path(path)
     ]
 
 
@@ -50,21 +58,23 @@ def ensure_uint8(image: np.ndarray) -> np.ndarray:
 
 
 def _imread_unicode_safe(path: str | Path, flags: int) -> np.ndarray | None:
-    normalized_path = Path(path)
-    if not normalized_path.exists():
-        raise FileNotFoundError(tr("unable_to_load_image", path=normalized_path))
-    normalized_text = str(normalized_path)
-    if normalized_text.isascii():
-        image = cv2.imread(normalized_text, flags)
-        if image is not None:
-            return image
+    if isinstance(path, str):
+        normalized_text = path
+        if not os.path.isfile(path):
+            raise FileNotFoundError(tr("unable_to_load_image", path=path))
+    else:
+        normalized_path = Path(path)
+        if not normalized_path.exists():
+            raise FileNotFoundError(tr("unable_to_load_image", path=normalized_path))
+        normalized_text = str(normalized_path)
     try:
         raw_bytes = np.fromfile(normalized_text, dtype=np.uint8)
     except OSError as exc:
-        raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_path)) from exc
+        raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_text)) from exc
     if raw_bytes.size == 0:
-        raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_path))
-    return cv2.imdecode(raw_bytes, flags)
+        raise FileNotFoundError(tr("unable_to_read_image_bytes", path=normalized_text))
+    with _CV2_DECODE_LOCK:
+        return cv2.imdecode(raw_bytes, flags)
 
 
 def imwrite_unicode_safe(path: str | Path, image: np.ndarray) -> None:
@@ -87,6 +97,40 @@ def load_image_grayscale(path: str | Path) -> np.ndarray:
     if image.ndim == 3:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     return ensure_uint8(image)
+
+
+def load_image_color_thumbnail(path: str | Path, max_width: int, max_height: int, *, cover: bool = False) -> np.ndarray:
+    """Load a color image scaled down for thumbnail grids (avoids full-resolution decode)."""
+
+    target_w = max(1, int(max_width))
+    target_h = max(1, int(max_height))
+    target_max = max(target_w, target_h)
+    if target_max <= 128:
+        flags = cv2.IMREAD_REDUCED_COLOR_8
+    elif target_max <= 512:
+        flags = cv2.IMREAD_REDUCED_COLOR_4
+    else:
+        flags = cv2.IMREAD_REDUCED_COLOR_2
+    image = _imread_unicode_safe(path, flags)
+    if image is None:
+        raise FileNotFoundError(tr("unable_to_load_image", path=path))
+    if image.ndim == 2:
+        image = cv2.cvtColor(ensure_uint8(image), cv2.COLOR_GRAY2BGR)
+    elif image.ndim == 3 and image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    else:
+        image = ensure_uint8(image)
+    h, w = image.shape[:2]
+    if w > 0 and h > 0:
+        if cover:
+            scale = max(target_w / float(w), target_h / float(h))
+        else:
+            scale = min(target_w / float(w), target_h / float(h), 1.0)
+        resized_w = max(1, round(w * scale))
+        resized_h = max(1, round(h * scale))
+        if resized_w != w or resized_h != h:
+            image = cv2.resize(image, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
+    return image
 
 
 def load_image_color(path: str | Path) -> np.ndarray:

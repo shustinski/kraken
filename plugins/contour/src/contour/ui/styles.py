@@ -12,28 +12,36 @@ COMPACT_UI_STYLE = """
     font-size: 12px;
 }
 #polygonExtractionWidget QGroupBox {
-    margin-top: 4px;
-    padding-top: 4px;
+    margin-top: 2px;
+    padding-top: 2px;
 }
 #polygonExtractionWidget QPushButton {
-    min-height: 26px;
-    padding: 3px 8px;
+    min-height: 24px;
+    padding: 2px 6px;
     font-size: 12px;
 }
 #polygonExtractionWidget QToolButton {
-    padding: 2px;
+    padding: 1px;
+}
+#polygonExtractionWidget QToolButton:checked {
+    background-color: #16A34A;
+    border: 2px solid #86EFAC;
+    border-radius: 4px;
+}
+#polygonExtractionWidget QToolButton:checked:hover {
+    background-color: #15803D;
 }
 #polygonExtractionWidget QLineEdit,
 #polygonExtractionWidget QComboBox,
 #polygonExtractionWidget QSpinBox,
 #polygonExtractionWidget QDoubleSpinBox {
-    min-height: 24px;
-    padding: 1px 4px;
+    min-height: 22px;
+    padding: 1px 3px;
     font-size: 12px;
 }
 #polygonExtractionWidget QTabBar::tab {
-    min-height: 22px;
-    padding: 3px 8px;
+    min-height: 20px;
+    padding: 2px 6px;
     font-size: 12px;
 }
 #polygonExtractionWidget QListWidget {

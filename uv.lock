@@ -496,6 +496,7 @@ name = "karakal"
 version = "0.0.0"
 source = { editable = "plugins/karakal" }
 dependencies = [
+    { name = "kraken", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "opencv-python", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pyqt6", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -504,6 +505,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "kraken", editable = "." },
     { name = "numpy", specifier = ">=1.26" },
     { name = "opencv-python", specifier = ">=4.13" },
     { name = "pyqt6", specifier = ">=6.6" },

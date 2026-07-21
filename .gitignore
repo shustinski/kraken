@@ -1,4 +1,5 @@
 __pycache__/
+.*/
 *.py[cod]
 *.pyd
 *.so
@@ -23,5 +24,8 @@ htmlcov/
 *.AppImage
 *.tar.gz
 *.exe
+*.cif
+*.jpg
+*.bmp
 plugins/*/dist/
 plugins/*/build/

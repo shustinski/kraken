@@ -62,17 +62,37 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.browse_input_button.setToolTip("Загрузить папку базового слоя")
     self.browse_input_button.setStatusTip(self.browse_input_button.toolTip())
 
-    self.control_tabs.setTabText(0, self._tr("tab_paths"))
-    self.control_tabs.setTabText(1, self._tr("tab_pipeline"))
-    self.control_tabs.setTabText(2, self._tr("tab_extraction"))
-    self.control_tabs.setTabText(3, self._tr("tab_display"))
+    for tab, key in (
+        (getattr(self, "paths_tab", None), "tab_paths"),
+        (getattr(self, "pipeline_tab", None), "tab_pipeline"),
+        (getattr(self, "extraction_tab", None), "tab_extraction"),
+        (getattr(self, "display_tab", None), "tab_display"),
+    ):
+        index = self.control_tabs.indexOf(tab) if tab is not None else -1
+        if index >= 0:
+            self.control_tabs.setTabText(index, self._tr(key))
     if hasattr(self, "right_tabs"):
-        self.right_tabs.setTabText(0, self._tr("tab_files"))
+        if self.right_tabs.count() > 0:
+            self.right_tabs.setTabText(0, self._tr("tab_files"))
+        if self.right_tabs.count() > 1:
+            self.right_tabs.setTabText(1, "Питомец" if self._ui_language == "ru" else "Pet")
 
-    if hasattr(self, "files_list_label"):
-        self.files_list_label.setText(self._tr("images_label"))
     if hasattr(self, "thumbnail_grid_label"):
         self.thumbnail_grid_label.setText("Матрица кадров" if self._ui_language == "ru" else "Frame thumbnails")
+    if hasattr(self, "asset_view_tabs"):
+        self.asset_view_tabs.setTabText(0, self._tr("asset_tab_all", "Все" if self._ui_language == "ru" else "All"))
+        self.asset_view_tabs.setTabText(
+            1,
+            self._tr("asset_tab_image_vector", "Изображение+вектор" if self._ui_language == "ru" else "Image+Vector"),
+        )
+        self.asset_view_tabs.setTabText(
+            2,
+            self._tr("asset_tab_image_only", "Только изображения" if self._ui_language == "ru" else "Image only"),
+        )
+        self.asset_view_tabs.setTabText(
+            3,
+            self._tr("asset_tab_vector_only", "Только векторы" if self._ui_language == "ru" else "Vector only"),
+        )
     if hasattr(self, "sidebar_list_mode_combo"):
         with QSignalBlocker(self.sidebar_list_mode_combo):
             self.sidebar_list_mode_combo.setItemText(0, self._tr("images_label"))
@@ -141,7 +161,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.save_current_button.setText(self._tr("save_current_button"))
     self.export_dataset_button.setText(self._tr("export_dataset_button"))
     self.dataset_mode_checkbox.setText(self._tr("dataset_mode_checkbox"))
-    self.max_workers_label.setText(self._tr("max_workers_label"))
     for widget, tooltip_key in (
         (self.image_list, "image_list"),
         (self.vector_list, "vector_list_sidebar"),
@@ -151,8 +170,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.save_current_button, "save_current"),
         (self.export_dataset_button, "export_dataset"),
         (self.dataset_mode_checkbox, "dataset_mode"),
-        (self.max_workers_label, "max_workers"),
-        (self.max_workers_spin, "max_workers"),
     ):
         self._set_common_tooltip(widget, tooltip_key)
 
@@ -300,7 +317,20 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.via_search_mode_label_widget.setText(
             self._tr("via_search_mode_label", "Режим поиска via" if self._ui_language == "ru" else "Via search mode")
         )
-    if self.via_search_mode_combo.count() >= 2:
+    if self.via_search_mode_combo.count() >= 3:
+        self.via_search_mode_combo.setItemText(
+            0,
+            self._tr("via_search_mode_universal", "Универсальный" if self._ui_language == "ru" else "Universal"),
+        )
+        self.via_search_mode_combo.setItemText(
+            1,
+            self._tr("via_search_mode_bright_sem", "Светлые точки (SEM)" if self._ui_language == "ru" else "Bright spots (SEM)"),
+        )
+        self.via_search_mode_combo.setItemText(
+            2,
+            self._tr("via_search_mode_template", "По шаблону" if self._ui_language == "ru" else "Template"),
+        )
+    elif self.via_search_mode_combo.count() >= 2:
         self.via_search_mode_combo.setItemText(
             0,
             self._tr("via_search_mode_template", "По шаблону" if self._ui_language == "ru" else "Template"),
@@ -324,10 +354,10 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             self._tr("via_polarity_label", "Полярность" if self._ui_language == "ru" else "Polarity")
         )
     self.via_white_range_checkbox.setText(
-        self._tr("via_white_range_method", "Диапазон белых" if self._ui_language == "ru" else "White range")
+        self._tr("via_white_range_method", "Распознавать светлые" if self._ui_language == "ru" else "Recognize bright")
     )
     self.via_black_range_checkbox.setText(
-        self._tr("via_black_range_method", "Диапазон черных" if self._ui_language == "ru" else "Black range")
+        self._tr("via_black_range_method", "Распознавать тёмные" if self._ui_language == "ru" else "Recognize dark")
     )
     if getattr(self, "via_min_score_label_widget", None) is not None:
         self.via_min_score_label_widget.setText(
@@ -475,9 +505,11 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     if self.max_hole_area_ratio_label_widget is not None:
         self.max_hole_area_ratio_label_widget.setText(self._tr("max_hole_area_ratio_label"))
     self.save_group.setTitle(self._tr("save_options_group"))
-    self.save_svg_checkbox.setText(self._tr("save_svg_checkbox"))
+    self.save_cif_checkbox.setText(self._tr("save_cif_checkbox"))
+    self.save_cv_checkbox.setText(self._tr("save_cv_checkbox"))
     self.save_preview_checkbox.setText(self._tr("save_preview_checkbox"))
-    self._set_common_tooltip(self.save_svg_checkbox, "save_svg")
+    self._set_common_tooltip(self.save_cif_checkbox, "save_cif")
+    self._set_common_tooltip(self.save_cv_checkbox, "save_cv")
     self._set_common_tooltip(self.save_preview_checkbox, "save_preview")
     self._apply_extraction_tooltips()
     self._renumber_fixed_via_rows()
@@ -489,6 +521,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.hole_color_label_widget.setText(self._tr("hole_contour_label"))
     if self.selected_color_label_widget is not None:
         self.selected_color_label_widget.setText(self._tr("selected_contour_label"))
+    if self.via_selection_color_label_widget is not None:
+        self.via_selection_color_label_widget.setText(self._tr("via_selection_color_label"))
     if self.conductor_hover_highlight_label_widget is not None:
         self.conductor_hover_highlight_label_widget.setText(self._tr("conductor_hover_highlight_label"))
     if self.vertex_color_label_widget is not None:
@@ -507,19 +541,42 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             "Случайные цвета объектов" if self._ui_language == "ru" else "Random object colors",
         )
     )
+    if hasattr(self, "show_frame_matrix_checkbox"):
+        self.show_frame_matrix_checkbox.setText(
+            self._tr(
+                "show_frame_matrix_checkbox",
+                "Show frame matrix",
+            )
+        )
+    if hasattr(self, "show_frame_matrix_thumbnails_checkbox"):
+        self.show_frame_matrix_thumbnails_checkbox.setText(
+            self._tr(
+                "show_frame_matrix_thumbnails_checkbox",
+                "Load frame matrix thumbnails",
+            )
+        )
     self.show_neighbor_frames_checkbox.setText(
         self._tr(
             "show_neighbor_frames_checkbox",
             "Показывать соседние кадры" if self._ui_language == "ru" else "Show neighboring frames",
         )
     )
+    if hasattr(self, "show_neighbor_vectors_checkbox"):
+        self.show_neighbor_vectors_checkbox.setText(
+            self._tr(
+                "show_neighbor_vectors_checkbox",
+                "Показывать векторы на соседних кадрах"
+                if self._ui_language == "ru"
+                else "Show vectors on neighboring frames",
+            )
+        )
     if self.neighbor_columns_label_widget is not None:
         self.neighbor_columns_label_widget.setText(
             self._tr("neighbor_columns_label", "Кадров в строке" if self._ui_language == "ru" else "Frames per row")
         )
     if self.neighbor_max_grid_label_widget is not None:
         self.neighbor_max_grid_label_widget.setText(
-            self._tr("neighbor_max_grid_label", "Макс. сетка" if self._ui_language == "ru" else "Max grid")
+            self._tr("neighbor_max_grid_label", "Макс. сетка" if self._ui_language == "ru" else "Grid size")
         )
     if self.neighbor_opacity_label_widget is not None:
         self.neighbor_opacity_label_widget.setText(
@@ -547,6 +604,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.hole_color_button, "hole_color"),
         (self.selected_color_label_widget, "selected_color"),
         (self.selected_color_button, "selected_color"),
+        (self.via_selection_color_label_widget, "via_selection_color"),
+        (self.via_selection_color_button, "via_selection_color"),
         (self.conductor_hover_highlight_label_widget, "conductor_hover_highlight"),
         (self.conductor_hover_highlight_color_button, "conductor_hover_highlight"),
         (self.vertex_color_label_widget, "vertex_color"),
@@ -575,6 +634,12 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             else "Shows neighboring images around the current frame in the background. The current frame stays centered and has a yellow border.",
         ),
         (
+            self.show_neighbor_vectors_checkbox,
+            "Показывает CIF-векторы поверх соседних кадров."
+            if self._ui_language == "ru"
+            else "Shows matching CIF vectors over neighboring frames.",
+        ),
+        (
             self.neighbor_columns_spin,
             "Сколько кадров в одной строке исходной последовательности. Это нужно, чтобы правильно найти соседей сверху, снизу и по диагонали."
             if self._ui_language == "ru"
@@ -584,7 +649,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             self.neighbor_max_grid_spin,
             "Максимальный размер фоновой матрицы: 3, 5 или 7 кадров по стороне. При уменьшении масштаба сетка раскрывается до этого значения."
             if self._ui_language == "ru"
-            else "Maximum background matrix size: 3, 5, or 7 frames per side. Zooming out expands the grid up to this value.",
+            else "Centered neighbor grid size: 3 shows one ring around the current frame, 5 shows two rings, 7 shows three rings.",
         ),
         (
             self.neighbor_opacity_spin,
@@ -614,10 +679,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         widget.setToolTip(tooltip)
         widget.setStatusTip(tooltip)
 
-    if hasattr(self, "frame_nav_prev_button"):
-        self._set_common_tooltip(self.frame_nav_prev_button, "frame_nav_previous")
-        self._set_common_tooltip(self.frame_nav_next_button, "frame_nav_next")
-        self._set_common_tooltip(self.frame_nav_spin, "frame_nav_jump")
     if hasattr(self, "autosave_on_frame_transition_checkbox"):
         self.autosave_on_frame_transition_checkbox.setText(
             self._tr(
@@ -634,6 +695,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.polygon_mode_label.setText("Полигон" if self._ui_language == "ru" else "Polygon")
     self.brush_mode_label.setText("Кисть" if self._ui_language == "ru" else "Brush")
     self.brush_size_label.setText("Толщина" if self._ui_language == "ru" else "Width")
+    if hasattr(self, "trace_width_label"):
+        self.trace_width_label.setText(self._tr("trace_width_label"))
     self.delete_vertex_mode_label.setText("Удаление" if self._ui_language == "ru" else "Delete")
     self.via_width_label.setText("Via W")
     self.via_height_label.setText("Via H")
@@ -668,3 +731,4 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             self.operation_tree.setCurrentItem(target_item)
     self._update_pipeline_help_preview(self._selected_available_operation_name())
     self._refresh_help_menu()
+

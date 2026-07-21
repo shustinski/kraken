@@ -7,10 +7,17 @@ from typing import Any
 
 import numpy as np
 
-from ..domain import PolygonData, compute_polygon_metrics
+from ..domain import PolygonData, compute_polygon_metrics, integer_points
 from .contour_extraction import SemContourConfig, SemContourExtractor
 from .io_normalize import make_image_ref, to_gray_u8
-from .schemas import AppMode, ContourExtractionOutput, HierarchicalComponent, OutputShapeKind, ViaDetectionOutput, ViaHit
+from .schemas import (
+    AppMode,
+    ContourExtractionOutput,
+    HierarchicalComponent,
+    OutputShapeKind,
+    ViaDetectionOutput,
+    ViaHit,
+)
 from .via import CompositeViaDetector, ViaRunConfig
 
 
@@ -84,17 +91,22 @@ def _run_sem_via_detection(
     from .via.orchestrator import _detection_to_hit, _result_debug
     from .via_detection.heuristic_detector import detect_vias_heuristic
     from .via_detection.result import DetectionResult, ViaDetection
-    from .via_detection.settings_bridge import heuristic_config_from_settings, template_config_from_settings
+    from .via_detection.settings_bridge import (
+        fixed_via_diameters_from_settings,
+        heuristic_config_from_settings,
+        template_config_from_settings,
+    )
     from .via_detection.template_detector import detect_vias_template
 
     image_ref = make_image_ref(image_path, gray)
     mode = normalize_via_search_mode(getattr(legacy_settings, "via_search_mode", ""))
+    fixed_output_diameters = fixed_via_diameters_from_settings(legacy_settings)
     log: list[str] = []
 
     if mode == VIA_SEARCH_MODE_TEMPLATE:
         tcfg = template_config_from_settings(legacy_settings)
         result = detect_vias_template(gray, tcfg)
-        hits = [_detection_to_hit(d, "template") for d in result.accepted]
+        hits = [_detection_to_hit(d, "legacy_template", fixed_output_diameters) for d in result.accepted]
         dbg = _result_debug(result, "template")
         return ViaDetectionOutput(
             image=image_ref,
@@ -132,7 +144,10 @@ def _run_sem_via_detection(
             debug_images=dict(bright.debug_images),
             parameters_snapshot={"config": repr(cfg)},
         )
-        hits = [_detection_to_hit(d, VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG) for d in result.accepted]
+        hits = [
+            _detection_to_hit(d, VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG, fixed_output_diameters)
+            for d in result.accepted
+        ]
         return ViaDetectionOutput(
             image=image_ref,
             mode=AppMode.VIA,
@@ -149,7 +164,7 @@ def _run_sem_via_detection(
         mode = VIA_SEARCH_MODE_HEURISTIC
     hcfg = heuristic_config_from_settings(legacy_settings)
     result = detect_vias_heuristic(gray, hcfg)
-    hits = [_detection_to_hit(d, "heuristic") for d in result.accepted]
+    hits = [_detection_to_hit(d, "sem_primary", fixed_output_diameters) for d in result.accepted]
     dbg = _result_debug(result, "heuristic")
     ad = hcfg.allowed_diameters()
     log.append(f"heuristic: polar={hcfg.polarity!r}")
@@ -168,7 +183,7 @@ def _run_sem_via_detection(
 def contour_output_to_polygons(output: ContourExtractionOutput, *, category: str = "conductor") -> list[PolygonData]:
     polygons: list[PolygonData] = []
     for index, component in enumerate(output.components, start=1):
-        points = list(component.points)
+        points = integer_points(list(component.points))
         area, perimeter, bbox = compute_polygon_metrics(points)
         polygons.append(
             PolygonData(
@@ -189,7 +204,7 @@ def contour_output_to_polygons(output: ContourExtractionOutput, *, category: str
 def via_output_to_polygons(output: ViaDetectionOutput) -> list[PolygonData]:
     polygons: list[PolygonData] = []
     for index, hit in enumerate(output.hits, start=1):
-        points = _via_hit_points(hit, output.output_kind)
+        points = integer_points(_via_hit_points(hit, output.output_kind))
         area, perimeter, bbox = compute_polygon_metrics(points)
         polygons.append(
             PolygonData(

@@ -44,7 +44,7 @@ class WorkspaceSessionTests(unittest.TestCase):
         self.assertFalse(second.prepared_image_required)
         self.assertEqual(second.state.preprocessed_image, "prepared:image.png")
 
-    def test_updating_cif_index_invalidates_cached_image_state(self) -> None:
+    def test_updating_cif_index_clears_overlays_but_keeps_source_pixels(self) -> None:
         session = WorkspaceSession()
         loader_calls: list[str] = []
 
@@ -58,23 +58,29 @@ class WorkspaceSessionTests(unittest.TestCase):
             load_cif_overlay=lambda _path: [],
         )
         session.set_cif_index({"sample": "sample.cif"})
-        session.clear_current_selection()
+        cached = session.resolve_cached_load("sample.png")
+        self.assertIsNotNone(cached)
+        assert cached is not None
+        self.assertTrue(cached.cache_hit or cached.reused_current_state)
+        self.assertEqual(cached.state.source_image, "source:sample.png")
+        self.assertEqual(cached.state.polygons, [])
+        self.assertEqual(loader_calls, ["sample.png"])
 
-        reloaded = session.load_image(
+        overlay = session.apply_frame_vectors(
             "sample.png",
-            load_source_image=load_source_image,
-            load_cif_overlay=lambda _path: [
+            polygons=[
                 PolygonData(
                     id=1,
                     points=[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)],
                 )
             ],
+            loaded_cif_path="sample.cif",
         )
-
-        self.assertFalse(reloaded.cache_hit)
-        self.assertEqual(loader_calls, ["sample.png", "sample.png"])
-        self.assertEqual(len(reloaded.state.polygons), 1)
-        self.assertEqual(reloaded.state.polygons[0].id, 1)
+        self.assertIsNotNone(overlay)
+        assert overlay is not None
+        self.assertEqual(len(overlay.state.polygons), 1)
+        self.assertEqual(overlay.state.polygons[0].id, 1)
+        self.assertEqual(loader_calls, ["sample.png"])
 
     def test_image_has_changes_compares_against_reference_polygons(self) -> None:
         session = WorkspaceSession()
@@ -174,6 +180,53 @@ class WorkspaceSessionTests(unittest.TestCase):
         session.invalidate_image_states(["a.png"])
         self.assertNotIn(key_a, session._state_cache)
         self.assertIn(key_b, session._state_cache)
+
+    def test_replace_image_selection_clears_stale_state_and_current(self) -> None:
+        session = WorkspaceSession()
+        session.replace_image_selection(["old/frame.png"], is_supported_image=lambda _p: True)
+        session.load_image(
+            "old/frame.png",
+            load_source_image=lambda path: f"src:{path}",
+            load_cif_overlay=lambda _path: [],
+        )
+
+        session.replace_image_selection(["new/frame.png"], is_supported_image=lambda _p: True)
+
+        self.assertEqual(session.image_paths, (str(Path("new/frame.png")),))
+        self.assertEqual(session.cached_states(), ())
+        self.assertIsNone(session.current_state)
+        self.assertIsNone(session.resolve_cached_load("new/frame.png"))
+
+    def test_resolve_cached_load_rejects_current_state_for_different_path(self) -> None:
+        session = WorkspaceSession()
+        session.replace_image_selection(["a.png", "b.png"], is_supported_image=lambda _p: True, clear_state_cache=False)
+        session.load_image("a.png", load_source_image=lambda path: f"src:{path}", load_cif_overlay=lambda _path: [])
+        session.load_image("b.png", load_source_image=lambda path: f"src:{path}", load_cif_overlay=lambda _path: [])
+        session._current_image_path = str(Path("a.png"))
+        session._current_state = session._state_cache[str(Path("b.png"))]
+
+        resolved = session.resolve_cached_load("a.png")
+
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertEqual(resolved.state.image_path, str(Path("a.png")))
+
+    def test_apply_loaded_frame_can_cache_superseded_result_without_selecting_it(self) -> None:
+        session = WorkspaceSession()
+        session._current_image_path = str(Path("new.png"))
+        session._current_state = None
+
+        result = session.apply_loaded_frame(
+            "old.png",
+            source_image="old pixels",
+            polygons=[],
+            make_current=False,
+        )
+
+        self.assertEqual(result.image_path, str(Path("old.png")))
+        self.assertEqual(session.current_image_path, str(Path("new.png")))
+        self.assertIsNone(session.current_state)
+        self.assertIs(session._state_cache[str(Path("old.png"))], result.state)
 
 
 if __name__ == "__main__":

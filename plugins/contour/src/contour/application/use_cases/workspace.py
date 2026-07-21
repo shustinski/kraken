@@ -5,6 +5,8 @@ from pathlib import Path
 
 from ..dto import CifDirectoryState, InputDirectoryState
 
+VECTOR_FILE_SUFFIXES = frozenset({".cif", ".cv"})
+
 
 def _normalize_path(path: str | Path) -> str:
     return str(Path(path))
@@ -39,7 +41,7 @@ def index_cif_directory(directory: str | Path) -> CifDirectoryState:
     indexed_paths = {
         path.stem.lower(): str(path)
         for path in sorted(root.iterdir(), key=lambda item: item.name.lower())
-        if path.is_file() and path.suffix.lower() == ".cif"
+        if path.is_file() and path.suffix.lower() in VECTOR_FILE_SUFFIXES
     }
     return CifDirectoryState(
         directory=normalized_directory,

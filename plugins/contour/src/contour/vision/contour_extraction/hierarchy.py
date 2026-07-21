@@ -5,6 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from ...domain import integer_points
 from ..schemas import HierarchicalComponent
 
 try:
@@ -33,7 +34,7 @@ def build_hierarchy_from_mask(
         if epsilon > 0.0:
             c = cv2.approxPolyDP(c, float(epsilon), True)
         flat = c.reshape(-1, 2)
-        points = [(float(p[0]), float(p[1])) for p in flat]
+        points = integer_points([(float(p[0]), float(p[1])) for p in flat])
         if len(points) < 3:
             continue
         parent_idx = int(h[index][3])

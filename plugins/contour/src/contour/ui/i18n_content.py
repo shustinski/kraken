@@ -112,7 +112,7 @@ EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
         "Minimum via roundness in percent: 100 is close to a circle, 0 disables the filter.",
     ),
     "via_size_mode": (
-        "РџРµСЂРµРєР»СЋС‡Р°РµС‚ РѕС‚Р±РѕСЂ via РјРµР¶РґСѓ РґРёР°РїР°Р·РѕРЅРѕРј Рё С‚РѕС‡РЅС‹РјРё Р·РЅР°С‡РµРЅРёСЏРјРё.",
+        "Переключает отбор via между диапазоном и точными значениями.",
         "Switches via filtering between a size range and exact size values.",
     ),
     "min_via_width": (
@@ -132,11 +132,11 @@ EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
         "Maximum via height in the via profile.",
     ),
     "fixed_via_widths": (
-        "РЎРїРёСЃРѕРє С€РёСЂРёРЅ via. РљР°Р¶РґР°СЏ С€РёСЂРёРЅР° СЃРІСЏР·Р°РЅР° СЃ РІС‹СЃРѕС‚РѕР№ РІ С‚РѕР№ Р¶Рµ РїРѕР·РёС†РёРё.",
+        "Список ширин via. Каждая ширина связана с высотой в той же позиции.",
         "Via widths list. Each width is paired with the height at the same position.",
     ),
     "fixed_via_heights": (
-        "РЎРїРёСЃРѕРє РІС‹СЃРѕС‚ via. РљР°Р¶РґР°СЏ РІС‹СЃРѕС‚Р° СЃРІСЏР·Р°РЅР° СЃ С€РёСЂРёРЅРѕР№ РІ С‚РѕР№ Р¶Рµ РїРѕР·РёС†РёРё.",
+        "Список высот via. Каждая высота связана с шириной в той же позиции.",
         "Via heights list. Each height is paired with the width at the same position.",
     ),
     "min_hierarchy_depth": (
@@ -144,8 +144,8 @@ EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
         "Minimum contour hierarchy depth. Zero means outer contours.",
     ),
     "min_inner_hole_area": (
-        "Минимальная площадь внутренних контуров. Внутренний контур с меньшей площадью будет удалён.",
-        "Minimum inner-contour area. Inner contours below this area are removed.",
+        "Минимальная площадь отверстия для заливки. Меньшие отверстия удаляются при извлечении проводников и ручной постобработке.",
+        "Minimum hole area to fill. Smaller holes are removed during conductor extraction and manual post-processing.",
     ),
     "max_hierarchy_depth": (
         "Максимальная глубина в иерархии контуров.",
@@ -490,8 +490,8 @@ EXTRACTION_HELP_TEXTS.update(
             "Chooses how vias are filtered by size: a width/height range or a list of exact sizes.",
         ),
         "via_search_mode": (
-            "Выбирает режим детекции via: гибрид (blob+шаблоны), только blob или только поиск по шаблонам.",
-            "Selects the via detection mode: hybrid (blob+templates), blob only, or template-only matching.",
+            "Режим поиска via: светлые точки (SEM), универсальный (полярность/кольца) или по шаблону.",
+            "Via search mode: bright SEM spots, universal polarity-aware search, or template matching.",
         ),
         "min_via_width": (
             "Минимальная ширина переходного отверстия. Более узкие объекты будут отброшены.",
@@ -522,8 +522,8 @@ EXTRACTION_HELP_TEXTS.update(
             "Minimum contour nesting depth. Zero means an outer contour; higher values select inner contours.",
         ),
         "min_inner_hole_area": (
-            "Минимальная площадь внутреннего контура. Внутренние контуры с меньшей площадью удаляются.",
-            "Minimum inner-contour area. Inner contours below this area are removed.",
+            "Минимальная площадь отверстия для заливки. Меньшие отверстия удаляются при извлечении проводников и ручной постобработке.",
+            "Minimum hole area to fill. Smaller holes are removed during conductor extraction and manual post-processing.",
         ),
         "max_hierarchy_depth": (
             "Максимальная глубина вложенности контура. Ограничивает, насколько глубоко искать внутренние контуры.",
@@ -813,13 +813,17 @@ EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
         "Рисование или стирание области кистью. Круг под курсором показывает текущую толщину кисти.",
         "Draw or erase an area with the brush. The circle under the cursor shows the current brush width.",
     ),
+    EditorTool.TRACE_PEN: (
+        "Перо дорожки: кликайте по вершинам центральной линии, затем дважды кликните или нажмите Enter. Shift привязывает сегменты к 45 градусам; цепочки правой кнопкой стирают.",
+        "Trace pen: click trace centerline vertices, then double-click or press Enter to commit. Shift snaps segments to 45 degrees; right-click chains erase.",
+    ),
     EditorTool.ADD_VIA: (
         "Поставить переходное отверстие заданной ширины и высоты в месте клика.",
         "Place a via of the configured width and height at the click position.",
     ),
     EditorTool.ADD_VERTEX: (
-        "Добавить вершину на ближайший участок границы выбранного полигона.",
-        "Add a vertex to the nearest edge of the selected polygon.",
+        "Сначала выберите полигон кликом, затем добавляйте вершины на его границу. Enter или Escape завершают работу с полигоном.",
+        "Click a polygon to select it, then add vertices along its boundary. Press Enter or Escape to finish with the current polygon.",
     ),
     EditorTool.DELETE_VERTEX: (
         "Удалить вершину выбранного полигона. Режим удаления задает, удаляется одна точка или область.",
@@ -828,6 +832,10 @@ EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
     EditorTool.MOVE_VERTEX: (
         "Переместить отдельную вершину выбранного полигона.",
         "Move a single vertex of the selected polygon.",
+    ),
+    EditorTool.ANTIALIAS: (
+        "Antialias polygon under cursor.",
+        "Shows vertices for the polygon under the cursor and reduces its vertex count on click.",
     ),
     EditorTool.DELETE_POLYGON: (
         "Удалить полигон, по которому вы кликнете.",
@@ -864,8 +872,8 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Folder with images that will appear in the file list.",
     ),
     "cif_dir": (
-        "Папка с CIF-разметкой для наложения на изображения. Можно оставить пустой, если CIF не нужен.",
-        "Folder with CIF annotations to overlay on images. Leave empty if CIF is not needed.",
+        "Папка с векторной разметкой CIF/CV для наложения на изображения. Можно оставить пустой, если разметка не нужна.",
+        "Folder with CIF/CV vector annotations to overlay on images. Leave empty if annotations are not needed.",
     ),
     "output_dir": (
         "Папка, куда сохраняются результаты обработки и векторизации.",
@@ -880,8 +888,8 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Choose the folder with source images.",
     ),
     "browse_cif": (
-        "Выбрать папку с CIF-разметкой для наложения.",
-        "Choose the folder with CIF annotations for overlay.",
+        "Выбрать папку с CIF/CV-разметкой для наложения.",
+        "Choose the folder with CIF/CV annotations for overlay.",
     ),
     "browse_output": (
         "Выбрать папку для сохранения результатов.",
@@ -900,8 +908,8 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Pick individual image files instead of scanning the entire folder.",
     ),
     "merge_cif_files": (
-        "Добавить в индекс отдельные .cif файлы (по имени сопоставляются с изображением).",
-        "Add individual .cif files to the overlay index (matched by basename to images).",
+        "Добавить в индекс отдельные .cif или .cv файлы (по имени сопоставляются с изображением).",
+        "Add individual .cif or .cv files to the overlay index (matched by basename to images).",
     ),
     "sidebar_list_mode": (
         "Переключить список справа между кадрами и векторами из папки CIF.",
@@ -951,6 +959,14 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Сохранить результат для текущего изображения в выходную папку.",
         "Save the current image result to the output folder.",
     ),
+    "save_cif": (
+        "Сохранять векторную разметку в CIF.",
+        "Save vector annotations as CIF.",
+    ),
+    "save_cv": (
+        "Сохранять векторную разметку в текстовый .cv файл",
+        "Save vector annotations as text .cv file.",
+    ),
     "export_dataset": (
         "Экспортировать текущий кадр и разметку в папку датасета.",
         "Export the current frame and annotation to the dataset folder.",
@@ -982,6 +998,10 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
     "selected_color": (
         "Цвет полигона, который сейчас выбран в редакторе.",
         "Color of the polygon currently selected in the editor.",
+    ),
+    "via_selection_color": (
+        "Цвет via, который сейчас выбран в редакторе.",
+        "Color of the via currently selected in the editor.",
     ),
     "conductor_hover_highlight": (
         "Цвет контура проводника при наведении указателя на проводник, отверстие в нём или переходное отверстие (via).",
@@ -1047,7 +1067,7 @@ PIPELINE_OPERATION_GROUPS: tuple[tuple[str, tuple[str, str], tuple[str, ...]], .
     (
         "contrast",
         ("Контраст и тон", "Contrast and tone"),
-        ("clahe", "histogram_equalization", "brightness_contrast", "gamma_correction", "sharpen"),
+        ("clahe", "histogram_equalization", "brightness", "contrast", "gamma_correction", "sharpen"),
     ),
     (
         "thresholding",
@@ -1145,6 +1165,26 @@ PIPELINE_OPERATION_HELP_TEXTS: dict[str, dict[str, tuple[str, str]]] = {
         "use": (
             "Используйте для грубой подстройки перед threshold.",
             "Use it for coarse correction before thresholding.",
+        ),
+    },
+    "brightness": {
+        "summary": (
+            "Линейно сдвигает яркость изображения без изменения множителя контраста.",
+            "Linearly shifts image brightness without changing the contrast multiplier.",
+        ),
+        "use": (
+            "Используйте, когда кадр нужно сделать светлее или темнее перед threshold.",
+            "Use when a frame needs to be brightened or darkened before thresholding.",
+        ),
+    },
+    "contrast": {
+        "summary": (
+            "Линейно усиливает или ослабляет различия яркостей без отдельного сдвига яркости.",
+            "Linearly increases or reduces tonal separation without a separate brightness shift.",
+        ),
+        "use": (
+            "Используйте, когда границы нужно сделать выразительнее без изменения базовой яркости.",
+            "Use when edges need stronger separation without changing the base brightness level.",
         ),
     },
     "gamma_correction": {

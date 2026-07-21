@@ -27,6 +27,7 @@ class BatchStartRequest:
     save_options: SaveOptions
     output_directory: str | None
     max_workers: int
+    chunk_size: int = 16
 
 
 class BatchController:
@@ -56,7 +57,13 @@ class BatchController:
             return False
         if not request.image_paths:
             return False
-        self._progress_enabled = bool(request.output_directory and request.save_options.save_cif)
+        self._progress_enabled = bool(
+            request.output_directory
+            and (
+                bool(getattr(request.save_options, "save_cif", False))
+                or bool(getattr(request.save_options, "save_cv", False))
+            )
+        )
         self._processor.start(
             image_paths=list(request.image_paths),
             pipeline_config=request.pipeline_config,
@@ -65,6 +72,7 @@ class BatchController:
             save_options=request.save_options,
             display_settings=request.display_settings,
             max_workers=request.max_workers,
+            chunk_size=request.chunk_size,
         )
         return True
 

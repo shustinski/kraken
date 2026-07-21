@@ -1,3 +1,19 @@
-from .settings_store import WidgetDisplaySettingsStore, WidgetPathSettingsStore
+from .settings_store import (
+    WidgetAppearanceSettingsStore,
+    WidgetDisplaySettingsStore,
+    WidgetGamificationProfileStore,
+    WidgetPathSettingsStore,
+    WidgetSessionSettingsStore,
+    WidgetMetalPresetSettingsStore,
+    WidgetViaPresetSettingsStore,
+)
 
-__all__ = ["WidgetDisplaySettingsStore", "WidgetPathSettingsStore"]
+__all__ = [
+    "WidgetAppearanceSettingsStore",
+    "WidgetDisplaySettingsStore",
+    "WidgetGamificationProfileStore",
+    "WidgetMetalPresetSettingsStore",
+    "WidgetPathSettingsStore",
+    "WidgetSessionSettingsStore",
+    "WidgetViaPresetSettingsStore",
+]

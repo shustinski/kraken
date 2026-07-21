@@ -5,11 +5,16 @@ from __future__ import annotations
 import unittest
 
 from contour.graphics.viewport_navigation import (
+    DEFAULT_ZOOM_STEP_FACTOR,
+    MAX_ZOOM_FACTOR,
+    MIN_ZOOM_FACTOR,
+    WHEEL_ZOOM_STEP_FACTOR,
+    clamp_zoom_factor,
     image_coordinate_under_cursor,
     pan_offset_after_zoom_to_cursor,
-    polygon_overlay_visibility_after_space_toggle,
     viewport_scroll_correction_after_scale_reanchor,
     scroll_values_after_viewport_drag,
+    zoom_factor_for_wheel_delta,
 )
 
 
@@ -22,6 +27,25 @@ class ZoomReanchorScrollTests(unittest.TestCase):
 
     def test_matches_movement_of_scene_pick_on_viewport(self) -> None:
         self.assertEqual(viewport_scroll_correction_after_scale_reanchor((100, 80), (92, 76)), (-8, -4))
+
+
+class WheelZoomFactorTests(unittest.TestCase):
+    def test_zoom_clamp_uses_global_min_and_max(self) -> None:
+        self.assertLess(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR)
+        self.assertEqual(clamp_zoom_factor(MIN_ZOOM_FACTOR / 10.0), MIN_ZOOM_FACTOR)
+        self.assertEqual(clamp_zoom_factor(MAX_ZOOM_FACTOR * 10.0), MAX_ZOOM_FACTOR)
+        self.assertEqual(clamp_zoom_factor(1.25), 1.25)
+
+    def test_one_wheel_step_uses_faster_wheel_zoom_increment(self) -> None:
+        self.assertGreater(WHEEL_ZOOM_STEP_FACTOR, DEFAULT_ZOOM_STEP_FACTOR)
+        self.assertAlmostEqual(zoom_factor_for_wheel_delta(120), WHEEL_ZOOM_STEP_FACTOR)
+        self.assertAlmostEqual(zoom_factor_for_wheel_delta(-120), 1.0 / WHEEL_ZOOM_STEP_FACTOR)
+
+    def test_fractional_wheel_delta_scales_fractionally(self) -> None:
+        factor = zoom_factor_for_wheel_delta(60)
+        self.assertGreater(factor, 1.0)
+        self.assertLess(factor, WHEEL_ZOOM_STEP_FACTOR)
+        self.assertAlmostEqual(factor * zoom_factor_for_wheel_delta(-60), 1.0)
 
 
 class ScrollPanTests(unittest.TestCase):
@@ -81,16 +105,6 @@ class ZoomToCursorCoordinateTests(unittest.TestCase):
         )
         self.assertAlmostEqual(before[0], after[0], delta=1e-6)
         self.assertAlmostEqual(before[1], after[1], delta=1e-6)
-
-
-class VectorOverlaySpaceToggleTests(unittest.TestCase):
-    def test_toggle_alternates_visibility_flag(self) -> None:
-        hidden, visible = polygon_overlay_visibility_after_space_toggle(False)
-        self.assertTrue(hidden)
-        self.assertFalse(visible)
-        hidden2, visible2 = polygon_overlay_visibility_after_space_toggle(hidden)
-        self.assertFalse(hidden2)
-        self.assertTrue(visible2)
 
 
 if __name__ == "__main__":

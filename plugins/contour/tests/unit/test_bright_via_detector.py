@@ -10,6 +10,7 @@ from contour.vision.schemas import OutputShapeKind
 from contour.vision.via.bright_tophat_dog import (
     BrightViaDetection,
     BrightViaDetectorConfig,
+    _local_maxima_points,
     bright_center_score,
     detect_bright_vias,
     edge_likeness_score,
@@ -18,6 +19,7 @@ from contour.vision.via.bright_tophat_dog import (
     radial_symmetry_score,
     suppress_close_points,
 )
+from contour.vision.via_detection import HeuristicViaDetectorConfig, detect_vias_heuristic
 
 
 def _synthetic_bright_vias() -> np.ndarray:
@@ -30,6 +32,16 @@ def _synthetic_bright_vias() -> np.ndarray:
     return np.clip(image.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
 
+def test_bright_via_local_maxima_are_not_truncated_by_count() -> None:
+    response = np.zeros((301, 301), dtype=np.uint8)
+    response[1::3, 1::3] = 255
+    support = np.full_like(response, 255)
+
+    points = _local_maxima_points(response, support)
+
+    assert len(points) == 10_000
+
+
 def _synthetic_image_detector_config(**overrides: object) -> BrightViaDetectorConfig:
     """Defaults tuned so two 4px dots + Gaussian noise stay accepted and match expected centers."""
     base: dict[str, object] = {
@@ -37,6 +49,7 @@ def _synthetic_image_detector_config(**overrides: object) -> BrightViaDetectorCo
         "threshold_percentile": 98.5,
         "min_final_score": 32.0,
         "bright_center_min_score": 3.0,
+        "min_isolation_score": 0.0,
     }
     base.update(overrides)
     return BrightViaDetectorConfig(**base).validated()
@@ -51,12 +64,12 @@ def test_detect_bright_vias_finds_synthetic_bright_spots() -> None:
     centers = [(d.center[0], d.center[1]) for d in result.detections]
     assert len(result.detections) >= 2
     tol = 4.0
-    assert any(
-        abs(x - 34) <= tol and abs(y - 34) <= tol for x, y in centers
-    ), f"expected a detection near (34,34), got {centers}"
-    assert any(
-        abs(x - 72) <= tol and abs(y - 56) <= tol for x, y in centers
-    ), f"expected a detection near (72,56), got {centers}"
+    assert any(abs(x - 34) <= tol and abs(y - 34) <= tol for x, y in centers), (
+        f"expected a detection near (34,34), got {centers}"
+    )
+    assert any(abs(x - 72) <= tol and abs(y - 56) <= tol for x, y in centers), (
+        f"expected a detection near (72,56), got {centers}"
+    )
     assert {
         "processed",
         "tophat",
@@ -123,6 +136,8 @@ def test_detect_bright_vias_rejects_bright_line_segment() -> None:
             max_line_likeness=60.0,
             max_edge_likeness=45.0,
             min_final_score=75.0,
+            hard_reject_on_asymmetry=True,
+            max_radial_asymmetry=32.0,
         ),
     )
 
@@ -154,6 +169,8 @@ def test_suppress_close_points_keeps_highest_score() -> None:
         dog_response=70.0,
         metal_fraction=1.0,
         final_score=50.0,
+        annular_contrast=20.0,
+        isolation_score=0.5,
         status="accepted",
     )
     high = BrightViaDetection(
@@ -168,6 +185,8 @@ def test_suppress_close_points_keeps_highest_score() -> None:
         dog_response=80.0,
         metal_fraction=1.0,
         final_score=70.0,
+        annular_contrast=40.0,
+        isolation_score=1.0,
         status="accepted",
     )
     far = BrightViaDetection(
@@ -182,6 +201,8 @@ def test_suppress_close_points_keeps_highest_score() -> None:
         dog_response=80.0,
         metal_fraction=1.0,
         final_score=60.0,
+        annular_contrast=35.0,
+        isolation_score=1.0,
         status="accepted",
     )
 
@@ -201,6 +222,14 @@ def test_config_validation_rejects_invalid_values() -> None:
         BrightViaDetectorConfig(threshold_percentile=89.0).validated()
     with pytest.raises(ValueError):
         BrightViaDetectorConfig(max_radial_asymmetry=-1.0).validated()
+
+
+def test_from_legacy_settings_uses_defaults_for_missing_bright_fields() -> None:
+    settings = ContourExtractionSettings(via_search_mode="bright_tophat_dog")
+    config = BrightViaDetectorConfig.from_legacy_settings(settings)
+    assert config.max_annular_contrast == 0.0
+    assert config.tiled_threshold_size == 256
+    assert config.scale_kernels_from_diameter is True
 
 
 def test_heuristic_via_mode_integrates_with_via_output() -> None:
@@ -254,3 +283,94 @@ def test_sem_backend_routes_heuristic_to_modern_detector() -> None:
     assert output.selected_strategy == "heuristic"
     assert any("heuristic: polar=" in line for line in output.attempt_log)
     assert len(output.hits) >= 1
+
+
+def test_large_image_2000x2000_detects_bright_vias() -> None:
+    image = np.full((2000, 2000), 100, dtype=np.uint8)
+    centers = [(300, 300), (900, 700), (1600, 1200), (1400, 1700)]
+    for cx, cy in centers:
+        cv2.circle(image, (cx, cy), 8, 245, thickness=-1, lineType=cv2.LINE_AA)
+    result = detect_bright_vias(
+        image,
+        BrightViaDetectorConfig(
+            use_metal_mask=False,
+            threshold_percentile=99.0,
+            min_final_score=25.0,
+            bright_center_min_score=20.0,
+            min_isolation_score=0.0,
+            diameter_min=10,
+            diameter_max=20,
+        ).validated(),
+    )
+    assert len(result.detections) >= 4
+
+
+def test_faint_candidates_rejected_by_bright_center_threshold() -> None:
+    image = np.full((120, 120), 95, dtype=np.uint8)
+    cv2.circle(image, (40, 60), 5, 150, thickness=-1, lineType=cv2.LINE_AA)
+    cv2.circle(image, (82, 60), 5, 235, thickness=-1, lineType=cv2.LINE_AA)
+    result = detect_bright_vias(
+        image,
+        BrightViaDetectorConfig(
+            use_metal_mask=False,
+            threshold_percentile=98.0,
+            min_final_score=10.0,
+            bright_center_min_score=180.0,
+            min_isolation_score=0.0,
+            diameter_min=8,
+            diameter_max=14,
+        ).validated(),
+    )
+    assert any(abs(d.center[0] - 82) < 6 for d in result.detections)
+    assert not any(abs(d.center[0] - 40) < 6 for d in result.detections)
+
+
+def test_bright_via_rejects_low_isolation_blob() -> None:
+    image = np.full((80, 120), 110, dtype=np.uint8)
+    cv2.rectangle(image, (10, 30), (110, 50), 230, thickness=-1)
+    cv2.circle(image, (60, 40), 4, 235, thickness=-1, lineType=cv2.LINE_AA)
+    result = detect_bright_vias(
+        image,
+        BrightViaDetectorConfig(
+            use_metal_mask=False,
+            threshold_percentile=97.0,
+            min_final_score=20.0,
+            min_isolation_score=0.4,
+            diameter_min=6,
+            diameter_max=10,
+        ).validated(),
+    )
+    assert result.detections
+    assert all(det.isolation_score >= 0.4 for det in result.detections)
+
+
+def test_bright_via_detection_exposes_annular_and_isolation_fields() -> None:
+    image = _synthetic_bright_vias()
+    result = detect_bright_vias(image, _synthetic_image_detector_config(min_isolation_score=0.0))
+    assert result.detections
+    sample = result.detections[0]
+    assert hasattr(sample, "annular_contrast")
+    assert hasattr(sample, "isolation_score")
+    assert sample.annular_contrast >= 0.0
+    assert 0.0 <= sample.isolation_score <= 1.0
+
+
+def test_heuristic_center_is_stable_when_one_half_is_overexposed() -> None:
+    image = np.full((96, 96), 60, dtype=np.uint8)
+    cv2.circle(image, (48, 48), 6, 180, thickness=-1)
+    yy, xx = np.ogrid[:96, :96]
+    disk = (xx - 48) ** 2 + (yy - 48) ** 2 <= 36
+    image[disk & (xx >= 48)] = 245
+
+    result = detect_vias_heuristic(
+        image,
+        HeuristicViaDetectorConfig(
+            diameter_min=10,
+            diameter_max=14,
+            polarity="bright",
+            bright_range_min=100,
+        ),
+    )
+
+    nearest = min(result.accepted, key=lambda item: np.hypot(item.x - 48, item.y - 48))
+    assert np.hypot(nearest.x - 48, nearest.y - 48) < 0.75

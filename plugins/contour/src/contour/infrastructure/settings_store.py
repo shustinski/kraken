@@ -1,13 +1,28 @@
 from __future__ import annotations
 
+import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
+from kraken_core.theme import normalize_theme
 from PyQt6.QtCore import QSettings
 
 from ..application.dto import PersistedPaths
 from ..application.processing import DisplaySettings
+from ..i18n import active_language
+
+VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
+METAL_PRESETS_SETTINGS_KEY = "metal_recovery/user_presets"
+GAMIFICATION_PROFILE_SETTINGS_KEY = "gamification/profile_v1"
+SESSION_CURRENT_IMAGE_PATH_KEY = "session/current_image_path"
+SESSION_IMAGE_PATHS_KEY = "session/image_paths"
+SESSION_VECTOR_PATHS_KEY = "session/vector_paths"
+SESSION_IMAGE_LIST_MODE_KEY = "session/image_list_mode"
+IMAGE_LIST_MODE_EXPLICIT = "explicit_files"
+IMAGE_LIST_MODE_DIRECTORY = "directory_scan"
+APPEARANCE_LANGUAGE_SETTINGS_KEY = "appearance/language"
+APPEARANCE_THEME_SETTINGS_KEY = "appearance/theme"
 
 
 def _build_contour_settings() -> QSettings:
@@ -57,13 +72,28 @@ class WidgetDisplaySettingsStore:
             "external_color": settings.value("display/external_color", defaults.external_color, type=str),
             "hole_color": settings.value("display/hole_color", defaults.hole_color, type=str),
             "selected_color": settings.value("display/selected_color", defaults.selected_color, type=str),
+            "via_selection_color": settings.value(
+                "display/via_selection_color",
+                defaults.via_selection_color,
+                type=str,
+            ),
+            "conductor_hover_highlight_color": settings.value(
+                "display/conductor_hover_highlight_color",
+                defaults.conductor_hover_highlight_color,
+                type=str,
+            ),
             "vertex_color": settings.value("display/vertex_color", defaults.vertex_color, type=str),
             "line_width": settings.value("display/line_width", defaults.line_width, type=float),
             "vertex_size": settings.value("display/vertex_size", defaults.vertex_size, type=float),
             "fill_opacity": settings.value("display/fill_opacity", defaults.fill_opacity, type=float),
             "show_vertices": settings.value("display/show_vertices", defaults.show_vertices, type=bool),
             "show_labels": settings.value("display/show_labels", defaults.show_labels, type=bool),
+            "via_display_mode": settings.value("display/via_display_mode", defaults.via_display_mode, type=str),
+            "random_object_colors": settings.value("display/random_object_colors", False, type=bool),
+            "show_frame_matrix": settings.value("display/show_frame_matrix", True, type=bool),
+            "show_frame_matrix_thumbnails": settings.value("display/show_frame_matrix_thumbnails", True, type=bool),
             "show_neighbor_frames": settings.value("display/show_neighbor_frames", False, type=bool),
+            "show_neighbor_vectors": settings.value("display/show_neighbor_vectors", False, type=bool),
             "neighbor_columns": settings.value("display/neighbor_columns", 3, type=int),
             "neighbor_max_grid": settings.value("display/neighbor_max_grid", 7, type=int),
             "neighbor_opacity": settings.value("display/neighbor_opacity", 0.35, type=float),
@@ -84,4 +114,184 @@ class WidgetDisplaySettingsStore:
         settings = self._settings_factory()
         for key, value in payload.items():
             settings.setValue(f"display/{key}", value)
+        settings.sync()
+
+
+class WidgetAppearanceSettingsStore:
+    def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
+        self._settings_factory = settings_factory or _build_contour_settings
+
+    def load_language(self, default: str = "ru") -> str:
+        settings = self._settings_factory()
+        value = settings.value(APPEARANCE_LANGUAGE_SETTINGS_KEY, default, type=str)
+        settings.sync()
+        return active_language(str(value or default))
+
+    def save_language(self, language: str | None) -> None:
+        settings = self._settings_factory()
+        settings.setValue(APPEARANCE_LANGUAGE_SETTINGS_KEY, active_language(language))
+        settings.sync()
+
+    def load_theme(self, default: str = "dark") -> str:
+        settings = self._settings_factory()
+        value = settings.value(APPEARANCE_THEME_SETTINGS_KEY, default, type=str)
+        settings.sync()
+        return normalize_theme(str(value or default))
+
+    def save_theme(self, theme: str | None) -> None:
+        settings = self._settings_factory()
+        settings.setValue(APPEARANCE_THEME_SETTINGS_KEY, normalize_theme(theme))
+        settings.sync()
+
+
+class WidgetMetalPresetSettingsStore:
+    def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
+        self._settings_factory = settings_factory or _build_contour_settings
+
+    def load(self) -> dict[str, dict[str, object]]:
+        settings = self._settings_factory()
+        raw_payload = settings.value(METAL_PRESETS_SETTINGS_KEY, "{}", type=str)
+        settings.sync()
+        try:
+            payload = json.loads(str(raw_payload or "{}"))
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {str(name): dict(value) for name, value in payload.items() if isinstance(value, dict)}
+
+    def save(self, presets: dict[str, dict[str, object]]) -> None:
+        settings = self._settings_factory()
+        settings.setValue(METAL_PRESETS_SETTINGS_KEY, json.dumps(presets, ensure_ascii=False, sort_keys=True))
+        settings.sync()
+
+
+class WidgetViaPresetSettingsStore:
+    def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
+        self._settings_factory = settings_factory or _build_contour_settings
+
+    def load(self) -> dict[str, dict[str, object]]:
+        settings = self._settings_factory()
+        raw_payload = settings.value(VIA_PRESETS_SETTINGS_KEY, "{}", type=str)
+        settings.sync()
+        try:
+            payload = json.loads(str(raw_payload or "{}"))
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {str(name): dict(value) for name, value in payload.items() if isinstance(value, dict)}
+
+    def save(self, presets: dict[str, dict[str, object]]) -> None:
+        settings = self._settings_factory()
+        settings.setValue(VIA_PRESETS_SETTINGS_KEY, json.dumps(presets, ensure_ascii=False, sort_keys=True))
+        settings.sync()
+
+
+class WidgetSessionSettingsStore:
+    def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
+        self._settings_factory = settings_factory or _build_contour_settings
+
+    def load_current_image_path(self) -> str | None:
+        settings = self._settings_factory()
+        value = settings.value(SESSION_CURRENT_IMAGE_PATH_KEY, "", type=str)
+        settings.sync()
+        text = str(value or "").strip()
+        return text or None
+
+    def save_current_image_path(self, path: str | Path | None) -> None:
+        settings = self._settings_factory()
+        if path:
+            settings.setValue(SESSION_CURRENT_IMAGE_PATH_KEY, str(Path(path)))
+        else:
+            settings.remove(SESSION_CURRENT_IMAGE_PATH_KEY)
+        settings.sync()
+
+    def load_image_paths(self) -> list[str]:
+        return self._load_path_list(SESSION_IMAGE_PATHS_KEY)
+
+    def save_image_paths(self, paths: Iterable[str | Path]) -> None:
+        self._save_path_list(SESSION_IMAGE_PATHS_KEY, paths)
+
+    def load_vector_paths(self) -> list[str]:
+        return self._load_path_list(SESSION_VECTOR_PATHS_KEY)
+
+    def save_vector_paths(self, paths: Iterable[str | Path]) -> None:
+        self._save_path_list(SESSION_VECTOR_PATHS_KEY, paths)
+
+    def load_image_list_mode(self) -> str:
+        settings = self._settings_factory()
+        value = settings.value(SESSION_IMAGE_LIST_MODE_KEY, IMAGE_LIST_MODE_DIRECTORY, type=str)
+        settings.sync()
+        text = str(value or "").strip()
+        if text == IMAGE_LIST_MODE_EXPLICIT:
+            return IMAGE_LIST_MODE_EXPLICIT
+        return IMAGE_LIST_MODE_DIRECTORY
+
+    def save_image_list_mode(self, mode: str) -> None:
+        settings = self._settings_factory()
+        normalized = IMAGE_LIST_MODE_EXPLICIT if mode == IMAGE_LIST_MODE_EXPLICIT else IMAGE_LIST_MODE_DIRECTORY
+        settings.setValue(SESSION_IMAGE_LIST_MODE_KEY, normalized)
+        settings.sync()
+
+    def _load_path_list(self, key: str) -> list[str]:
+        settings = self._settings_factory()
+        raw_payload = settings.value(key, "[]", type=str)
+        settings.sync()
+        try:
+            payload = json.loads(str(raw_payload or "[]"))
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(payload, list):
+            return []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in payload:
+            if not isinstance(value, str) or not value.strip():
+                continue
+            path = str(Path(value))
+            if path in seen:
+                continue
+            seen.add(path)
+            normalized.append(path)
+        return normalized
+
+    def _save_path_list(self, key: str, paths: Iterable[str | Path]) -> None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_path in paths:
+            path = str(Path(raw_path))
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            normalized.append(path)
+        settings = self._settings_factory()
+        if normalized:
+            settings.setValue(key, json.dumps(normalized, ensure_ascii=False))
+        else:
+            settings.remove(key)
+        settings.sync()
+
+
+class WidgetGamificationProfileStore:
+    def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
+        self._settings_factory = settings_factory or _build_contour_settings
+
+    def load_payload(self) -> dict[str, object] | None:
+        settings = self._settings_factory()
+        raw_payload = settings.value(GAMIFICATION_PROFILE_SETTINGS_KEY, "", type=str)
+        settings.sync()
+        if not raw_payload:
+            return None
+        try:
+            payload = json.loads(str(raw_payload))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def save_payload(self, payload: dict[str, object]) -> None:
+        settings = self._settings_factory()
+        settings.setValue(GAMIFICATION_PROFILE_SETTINGS_KEY, json.dumps(payload, ensure_ascii=False, sort_keys=True))
         settings.sync()

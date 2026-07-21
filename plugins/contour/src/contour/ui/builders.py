@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -42,6 +42,8 @@ from PyQt6.QtWidgets import (
 )
 
 from ..application.processing import (
+    VIA_DISPLAY_MODE_CIRCLE,
+    VIA_DISPLAY_MODE_RECTANGLE,
     VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_TEMPLATE,
@@ -49,12 +51,30 @@ from ..application.processing import (
     VIA_SIZE_MODE_RANGE,
 )
 from ..contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
+from ..gamification.ui import GamificationPanel
 from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
+from .frame_matrix_view import FrameMatrixGraphicsView
+from .frame_path_list_model import FramePathListView
 from .pipeline_list import PipelineListWidget
 from .status_list_delegate import attach_status_row_delegate
 
 if TYPE_CHECKING:
     pass
+
+USE_GAMIFICATION = False
+
+
+def _connect_line_edit_with_delay(self, line_edit: QLineEdit, slot, *, delay_ms: int = 500) -> None:
+    if not hasattr(self, "_line_edit_debounce_timers"):
+        self._line_edit_debounce_timers = []
+
+    timer = QTimer(self)
+    timer.setSingleShot(True)
+    timer.setInterval(delay_ms)
+    timer.timeout.connect(slot)
+    self._line_edit_debounce_timers.append(timer)
+
+    line_edit.textEdited.connect(lambda *_args, _timer=timer: _timer.start())
 
 
 def build_ui(self) -> None:
@@ -65,20 +85,20 @@ def build_ui(self) -> None:
     self.main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
     root_layout.addWidget(self.main_splitter, 1)
 
-    left_scroll = QScrollArea()
-    left_scroll.setWidgetResizable(True)
-    left_scroll.setFrameShape(QFrame.Shape.NoFrame)
-    left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    left_scroll.setMinimumWidth(280)
-    left_scroll.setMaximumWidth(560)
-    left_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+    self.left_controls_scroll = QScrollArea()
+    self.left_controls_scroll.setWidgetResizable(True)
+    self.left_controls_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    self.left_controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    self.left_controls_scroll.setMinimumWidth(280)
+    self.left_controls_scroll.setMaximumWidth(560)
+    self.left_controls_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
     controls_container = QWidget()
-    left_scroll.setWidget(controls_container)
+    self.left_controls_scroll.setWidget(controls_container)
     controls_layout = QVBoxLayout(controls_container)
     self.control_tabs = self._build_tabs()
     self.control_tabs.currentChanged.connect(self._on_control_tab_changed)
     controls_layout.addWidget(self.control_tabs, 1)
-    self.main_splitter.addWidget(left_scroll)
+    self.main_splitter.addWidget(self.left_controls_scroll)
     self.visual_panel = self._build_visual_panel()
     self.main_splitter.addWidget(self.visual_panel)
     self.right_tabs = QTabWidget()
@@ -88,6 +108,10 @@ def build_ui(self) -> None:
     self.right_tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
     self.files_tab = self._build_files_tab()
     self.right_tabs.addTab(self.files_tab, "Files")
+    if hasattr(self, "_gamification_profile_service") and USE_GAMIFICATION:
+        self.gamification_panel = GamificationPanel(self._gamification_profile_service, parent=self.right_tabs)
+        self.gamification_panel.messageRequested.connect(self._append_log)
+        self.right_tabs.addTab(self.gamification_panel, "Питомец")
     self.main_splitter.addWidget(self.right_tabs)
     self.main_splitter.setStretchFactor(0, 0)
     self.main_splitter.setStretchFactor(1, 1)
@@ -142,10 +166,10 @@ def build_path_panel(self) -> QWidget:
     self.merge_cif_files_button = QPushButton()
     self._configure_icon_only_button(self.merge_cif_files_button, file_pick_icon)
     self.merge_cif_files_button.clicked.connect(self._merge_cif_files_dialog)
-    self.input_dir_edit.editingFinished.connect(self._apply_input_directory_edit)
-    self.cif_dir_edit.editingFinished.connect(self._apply_cif_directory_edit)
-    self.output_dir_edit.editingFinished.connect(self._apply_output_directory_edit)
-    self.dataset_dir_edit.editingFinished.connect(self._apply_dataset_directory_edit)
+    _connect_line_edit_with_delay(self, self.input_dir_edit, self._apply_input_directory_edit)
+    _connect_line_edit_with_delay(self, self.cif_dir_edit, self._apply_cif_directory_edit)
+    _connect_line_edit_with_delay(self, self.output_dir_edit, self._apply_output_directory_edit)
+    _connect_line_edit_with_delay(self, self.dataset_dir_edit, self._apply_dataset_directory_edit)
 
     for label, edit, button in [
         (self.input_dir_label, self.input_dir_edit, self.browse_input_button),
@@ -168,8 +192,8 @@ def build_path_panel(self) -> QWidget:
     cif_row_layout.setContentsMargins(0, 0, 0, 0)
     cif_row_layout.setSpacing(6)
     cif_row_layout.addWidget(self.cif_dir_edit, 1)
-    cif_row_layout.addWidget(self.browse_cif_button)
     cif_row_layout.addWidget(self.merge_cif_files_button)
+    cif_row_layout.addWidget(self.browse_cif_button)
     layout.addWidget(self.cif_dir_label)
     layout.addWidget(cif_row)
 
@@ -222,8 +246,7 @@ def build_paths_tab(self) -> QWidget:
     vg_form.addRow(self.vector_geom_clip_checkbox)
     vg_form.addRow("Минимальная площадь внешнего объекта, px²", self.vector_geom_min_outer_spin)
     self.vector_geom_min_outer_label_widget = vg_form.labelForField(self.vector_geom_min_outer_spin)
-    vg_form.addRow("Минимальная площадь отверстия для заливки, px²", self.vector_geom_min_hole_spin)
-    self.vector_geom_min_hole_label_widget = vg_form.labelForField(self.vector_geom_min_hole_spin)
+    self.vector_geom_min_hole_label_widget = None
     vg_form.addRow(self.vector_geom_merge_checkbox)
     vg_form.addRow("Минимальный угол острого выброса, °", self.vector_geom_spike_angle_spin)
     self.vector_geom_spike_angle_label_widget = vg_form.labelForField(self.vector_geom_spike_angle_spin)
@@ -253,6 +276,7 @@ def build_paths_tab(self) -> QWidget:
     self.extra_layers_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
     self.extra_layers_list.setDefaultDropAction(Qt.DropAction.MoveAction)
     self.extra_layers_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    self.extra_layers_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.extra_layers_list.setMaximumHeight(200)
     extra_layers_layout.addWidget(self.extra_layers_list)
     self.add_extra_layers_button = QPushButton("+")
@@ -263,7 +287,9 @@ def build_paths_tab(self) -> QWidget:
     extra_layers_layout.addWidget(self.add_extra_layers_button)
 
     self.add_extra_layers_button.clicked.connect(self._load_extra_layers)
-    self.extra_layers_list.model().rowsMoved.connect(self._on_extra_layers_rows_moved)
+    extra_layers_model = self.extra_layers_list.model()
+    if extra_layers_model is not None:
+        extra_layers_model.rowsMoved.connect(self._on_extra_layers_rows_moved)
 
     self.extra_layers_form.addRow(self.extra_layers_widget)
     self.extra_layers_label_widget = None
@@ -295,24 +321,42 @@ def build_files_tab(self) -> QWidget:
     tab = QWidget()
     layout = QVBoxLayout(tab)
 
-    self.files_list_label = QLabel("Кадры")
-
     self.files_scan_progress_bar = QProgressBar()
     self.files_scan_progress_bar.setRange(0, 100)
     self.files_scan_progress_bar.setValue(0)
     self.files_scan_progress_bar.setTextVisible(True)
     self.files_scan_progress_bar.setVisible(False)
 
-    self.image_list = QListWidget()
+    self.image_list = FramePathListView()
     attach_status_row_delegate(self.image_list)
     self.image_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-    self.image_list.currentItemChanged.connect(self._on_image_item_changed)
-    self.image_list.itemSelectionChanged.connect(self._on_image_selection_changed)
+    self.image_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 
-    self.thumbnail_grid_label = QLabel("Матрица кадров")
-    self.thumbnail_grid = QListWidget()
+    self.image_vector_list = QListWidget()
+    attach_status_row_delegate(self.image_vector_list)
+    self.image_vector_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    self.image_vector_list.itemClicked.connect(self._on_asset_image_item_clicked)
+    self.image_only_list = QListWidget()
+    attach_status_row_delegate(self.image_only_list)
+    self.image_only_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    self.image_only_list.itemClicked.connect(self._on_asset_image_item_clicked)
+    self.vector_only_list = QListWidget()
+    attach_status_row_delegate(self.vector_only_list)
+    self.vector_only_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    self.vector_only_list.itemClicked.connect(self._on_asset_vector_item_clicked)
+
+    self.asset_view_tabs = QTabWidget()
+    self.asset_view_tabs.setUsesScrollButtons(True)
+    self.asset_view_tabs.addTab(self.image_list, "All")
+    self.asset_view_tabs.addTab(self.image_vector_list, "Image+Vector")
+    self.asset_view_tabs.addTab(self.image_only_list, "Image only")
+    self.asset_view_tabs.addTab(self.vector_only_list, "Vector only")
+
+    self.thumbnail_grid_label = QLabel("")
+    self.thumbnail_grid_label.setVisible(False)
+    self.thumbnail_grid = FrameMatrixGraphicsView()
     self.thumbnail_grid.setViewMode(QListWidget.ViewMode.IconMode)
-    self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Adjust)
+    self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Fixed)
     self.thumbnail_grid.setMovement(QListWidget.Movement.Static)
     self.thumbnail_grid.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     self.thumbnail_grid.setUniformItemSizes(True)
@@ -320,18 +364,35 @@ def build_files_tab(self) -> QWidget:
     self.thumbnail_grid.setSpacing(0)
     self.thumbnail_grid.setIconSize(QSize(64, 48))
     self.thumbnail_grid.setContentsMargins(0, 0, 0, 0)
+    self.thumbnail_grid.setFrameShape(QFrame.Shape.NoFrame)
+    self.thumbnail_grid.setStyleSheet(
+        "QListWidget { padding: 0px; border: 0px; }"
+        "QListWidget::item { margin: 0px; padding: 0px; border: 0px; }"
+    )
     self.thumbnail_grid.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    attach_status_row_delegate(self.thumbnail_grid)
     self.thumbnail_grid.itemClicked.connect(self._on_thumbnail_item_clicked)
-    self.thumbnail_grid_scroll_area = QScrollArea()
+    self.thumbnail_grid.frameNavigationRequested.connect(self._on_frame_navigation_requested)
+    self.thumbnail_grid.installEventFilter(self)
+    self.thumbnail_grid.viewport().installEventFilter(self)
+    self.thumbnail_grid_scroll_area = self.thumbnail_grid
     self.thumbnail_grid_scroll_area.setWidgetResizable(False)
     self.thumbnail_grid_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
     self.thumbnail_grid_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     self.thumbnail_grid_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     self.thumbnail_grid_scroll_area.setMinimumHeight(96)
-    self.thumbnail_grid_scroll_area.setMaximumHeight(220)
-    self.thumbnail_grid_scroll_area.setWidget(self.thumbnail_grid)
+    thumbnail_h_scroll = self.thumbnail_grid_scroll_area.horizontalScrollBar()
+    thumbnail_v_scroll = self.thumbnail_grid_scroll_area.verticalScrollBar()
+    if thumbnail_h_scroll is not None:
+        thumbnail_h_scroll.valueChanged.connect(self._on_thumbnail_viewport_changed)
+    if thumbnail_v_scroll is not None:
+        thumbnail_v_scroll.valueChanged.connect(self._on_thumbnail_viewport_changed)
+    self.thumbnail_grid.thumbnailLodChanged.connect(self._on_thumbnail_lod_changed)
+    self.thumbnail_matrix_panel = QWidget()
+    thumbnail_matrix_layout = QVBoxLayout(self.thumbnail_matrix_panel)
+    thumbnail_matrix_layout.setContentsMargins(0, 0, 0, 0)
+    thumbnail_matrix_layout.setSpacing(4)
+    thumbnail_matrix_layout.addWidget(self.thumbnail_grid_scroll_area, 1)
 
     # Kept as an internal CIF-status model for reload/status logic; it is no longer a visible sidebar mode.
     self.vector_list = QListWidget()
@@ -351,17 +412,15 @@ def build_files_tab(self) -> QWidget:
     overlay_buttons_layout.addWidget(self.reload_cif_for_frames_button)
     self.reload_cif_selected_button.setVisible(False)
 
-    layout.addWidget(self.files_list_label)
     layout.addWidget(self.files_scan_progress_bar)
-    layout.addWidget(self.image_list, 1)
-    layout.addWidget(self.thumbnail_grid_label)
-    layout.addWidget(self.thumbnail_grid_scroll_area, 0)
+    layout.addWidget(self.asset_view_tabs, 1)
+    layout.addWidget(self.thumbnail_matrix_panel, 0)
     layout.addWidget(overlay_buttons_row)
 
     self.run_group = QGroupBox("Run")
     run_layout = QGridLayout(self.run_group)
     self.process_current_button = QPushButton()
-    self.process_current_button.clicked.connect(self.process_current_image)
+    self.process_current_button.clicked.connect(self._process_current_image_and_save)
     self.batch_button = QPushButton()
     self.batch_button.clicked.connect(self.start_batch_processing)
     self.stop_batch_button = QPushButton()
@@ -383,10 +442,6 @@ def build_files_tab(self) -> QWidget:
     self.export_dataset_button = QPushButton("Export frame to dataset")
     self.export_dataset_button.clicked.connect(self.export_current_frame_to_dataset)
     self.dataset_mode_checkbox = QCheckBox("Dataset mode")
-    self.max_workers_spin = QSpinBox()
-    self.max_workers_spin.setRange(1, 32)
-    self.max_workers_spin.setValue(4)
-    self.max_workers_label = QLabel("Max workers")
     run_buttons_row = QWidget()
     run_buttons_layout = QHBoxLayout(run_buttons_row)
     run_buttons_layout.setContentsMargins(0, 0, 0, 0)
@@ -396,19 +451,17 @@ def build_files_tab(self) -> QWidget:
     run_buttons_layout.addWidget(self.stop_batch_button)
     run_buttons_layout.addStretch(1)
     run_layout.addWidget(run_buttons_row, 0, 0, 1, 2)
-    run_layout.addWidget(self.max_workers_label, 1, 0)
-    run_layout.addWidget(self.max_workers_spin, 1, 1)
-    run_layout.addWidget(self.save_current_button, 2, 0, 1, 2)
-    run_layout.addWidget(self.export_dataset_button, 3, 0, 1, 2)
-    run_layout.addWidget(self.dataset_mode_checkbox, 4, 0, 1, 2)
-    layout.addWidget(self.run_group)
     self.batch_progress_bar = QProgressBar()
     self.batch_progress_bar.setRange(0, 100)
     self.batch_progress_bar.setValue(0)
     self.batch_progress_bar.setFormat("%p% (%v/%m)")
     self.batch_progress_bar.setTextVisible(True)
     self.batch_progress_bar.setVisible(False)
-    layout.addWidget(self.batch_progress_bar)
+    run_layout.addWidget(self.save_current_button, 1, 0, 1, 2)
+    run_layout.addWidget(self.export_dataset_button, 2, 0, 1, 2)
+    run_layout.addWidget(self.dataset_mode_checkbox, 3, 0, 1, 2)
+    run_layout.addWidget(self.batch_progress_bar, 4, 0, 1, 2)
+    layout.addWidget(self.run_group)
     return tab
 
 
@@ -524,6 +577,7 @@ def build_extraction_tab(self) -> QWidget:
     layout.setSpacing(4)
 
     self.contour_group = QGroupBox("Contour extraction")
+    self.contour_group.setObjectName("contourExtractionGroup")
     contour_layout = QVBoxLayout(self.contour_group)
     contour_layout.setSpacing(4)
     contour_layout.setContentsMargins(8, 8, 8, 8)
@@ -655,16 +709,13 @@ def build_extraction_tab(self) -> QWidget:
     self.via_form = QFormLayout(self.via_group)
     self._configure_compact_form(self.via_form)
     self.via_size_mode_combo = QComboBox()
-    self.via_size_mode_combo.addItem("Range", VIA_SIZE_MODE_RANGE)
     self.via_size_mode_combo.addItem("Fixed values", VIA_SIZE_MODE_FIXED)
+    self.via_size_mode_combo.addItem("Range", VIA_SIZE_MODE_RANGE)
+    self.via_size_mode_combo.setCurrentIndex(0)
     self.via_search_mode_combo = QComboBox()
+    self.via_search_mode_combo.addItem("Универсальный", VIA_SEARCH_MODE_HEURISTIC)
+    self.via_search_mode_combo.addItem("Светлые точки (SEM)", VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG)
     self.via_search_mode_combo.addItem("По шаблону", VIA_SEARCH_MODE_TEMPLATE)
-    self.via_search_mode_combo.addItem("Эвристический", VIA_SEARCH_MODE_HEURISTIC)
-    self.via_search_mode_combo.setCurrentIndex(1)
-    self.via_search_mode_combo.clear()
-    self.via_search_mode_combo.addItem("Эвристический", VIA_SEARCH_MODE_HEURISTIC)
-    self.via_search_mode_combo.addItem("По шаблону", VIA_SEARCH_MODE_TEMPLATE)
-    self.via_search_mode_combo.addItem("Светлые via TopHat+DoG", VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG)
     self.via_search_mode_combo.setCurrentIndex(0)
     self.via_heuristic_polarity_combo = QComboBox()
     self.via_heuristic_polarity_combo.addItem("Светлые", "bright")
@@ -672,26 +723,31 @@ def build_extraction_tab(self) -> QWidget:
     self.via_heuristic_polarity_combo.addItem("Светлое кольцо / тёмный центр", "ring_light_ring")
     self.via_heuristic_polarity_combo.addItem("Тёмное кольцо / светлый центр", "ring_dark_ring")
     self.via_heuristic_polarity_combo.addItem("Авто", "auto")
-    self.via_fixed_diameters_edit = QLineEdit("6, 8, 10")
     self.via_diameter_size_mode_combo = QComboBox()
+    self.via_diameter_size_mode_combo.addItem("Фиксированный", VIA_SIZE_MODE_FIXED)
     self.via_diameter_size_mode_combo.addItem("Диапазон", VIA_SIZE_MODE_RANGE)
-    self.via_diameter_size_mode_combo.addItem("Фиксированные размеры", VIA_SIZE_MODE_FIXED)
+    self.via_diameter_size_mode_combo.setCurrentIndex(0)
+    self.via_mode_bright_widget = QWidget()
+    _vmb = QFormLayout(self.via_mode_bright_widget)
+    self._configure_compact_form(_vmb)
+    _vmb.addRow(
+        "",
+        QLabel("Оптимизирован для светлых круглых via на SEM-кадрах. Полярность не требуется."),
+    )
     self.via_mode_heuristic_widget = QWidget()
     _vmh = QFormLayout(self.via_mode_heuristic_widget)
     self._configure_compact_form(_vmh)
-    _vmh.addRow("Режим задания размера", self.via_diameter_size_mode_combo)
     _vmh.addRow("Полярность via", self.via_heuristic_polarity_combo)
-    _vmh.addRow("Размеры via, px", self.via_fixed_diameters_edit)
-    self.via_white_range_checkbox = QCheckBox("White range")
+    self.via_white_range_checkbox = QCheckBox("Распознавать светлые")
     self.via_white_range_checkbox.setChecked(True)
     self.via_white_range_min_spin = QSpinBox()
     self.via_white_range_min_spin.setRange(0, 255)
-    self.via_white_range_min_spin.setValue(200)
+    self.via_white_range_min_spin.setValue(140)
     self.via_white_range_max_spin = QSpinBox()
     self.via_white_range_max_spin.setRange(0, 255)
     self.via_white_range_max_spin.setValue(255)
     self.via_white_range_widget = self._build_range_row(self.via_white_range_min_spin, self.via_white_range_max_spin)
-    self.via_black_range_checkbox = QCheckBox("Black range")
+    self.via_black_range_checkbox = QCheckBox("Распознавать тёмные")
     self.via_black_range_min_spin = QSpinBox()
     self.via_black_range_min_spin.setRange(0, 255)
     self.via_black_range_min_spin.setValue(0)
@@ -782,6 +838,7 @@ def build_extraction_tab(self) -> QWidget:
     _scr.addWidget(self.via_template_scale_step_spin, 1)
     _vmt.addRow("Масштаб шаблона", sc_row)
     self.bright_via_mode_stack = QStackedWidget()
+    self.bright_via_mode_stack.addWidget(self.via_mode_bright_widget)
     self.bright_via_mode_stack.addWidget(self.via_mode_heuristic_widget)
     self.bright_via_mode_stack.addWidget(self.via_mode_template_widget)
     self.via_preset_combo = QComboBox()
@@ -815,6 +872,9 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_basics_group = QGroupBox("Основные параметры")
     self.bright_via_basics_form = QFormLayout(self.bright_via_basics_group)
     self._configure_compact_form(self.bright_via_basics_form)
+    self.bright_via_quality_group = QGroupBox("Фильтры качества")
+    self.bright_via_quality_form = QFormLayout(self.bright_via_quality_group)
+    self._configure_compact_form(self.bright_via_quality_form)
     self.bright_via_display_group = QGroupBox("Отображение")
     self.bright_via_display_form = QFormLayout(self.bright_via_display_group)
     self._configure_compact_form(self.bright_via_display_form)
@@ -834,14 +894,18 @@ def build_extraction_tab(self) -> QWidget:
     _bright_root.setContentsMargins(0, 0, 0, 0)
     _bright_root.setSpacing(8)
     _bright_root.addWidget(self.bright_via_basics_group)
+    _bright_root.addWidget(self.bright_via_quality_group)
     _bright_root.addWidget(self.bright_via_display_group)
     _bright_root.addWidget(self.bright_via_advanced_outer)
     self.bright_via_diameter_min_spin = QSpinBox()
     self.bright_via_diameter_min_spin.setRange(1, 100_000)
-    self.bright_via_diameter_min_spin.setValue(6)
+    self.bright_via_diameter_min_spin.setValue(8)
     self.bright_via_diameter_max_spin = QSpinBox()
     self.bright_via_diameter_max_spin.setRange(1, 100_000)
     self.bright_via_diameter_max_spin.setValue(8)
+    self.bright_via_diameter_fixed_spin = QSpinBox()
+    self.bright_via_diameter_fixed_spin.setRange(1, 100_000)
+    self.bright_via_diameter_fixed_spin.setValue(8)
     self.bright_via_diameter_range_widget = self._build_range_row(
         self.bright_via_diameter_min_spin, self.bright_via_diameter_max_spin
     )
@@ -908,7 +972,7 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_bright_center_score_spin.setRange(0.0, 255.0)
     self.bright_via_bright_center_score_spin.setDecimals(1)
     self.bright_via_bright_center_score_spin.setSingleStep(1.0)
-    self.bright_via_bright_center_score_spin.setValue(6.0)
+    self.bright_via_bright_center_score_spin.setValue(140.0)
     self.bright_via_metal_constraint_combo = QComboBox()
     self.bright_via_metal_constraint_combo.addItem("Отключено", "disabled")
     self.bright_via_metal_constraint_combo.addItem("Мягкая оценка", "soft")
@@ -923,7 +987,7 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_max_radial_asymmetry_spin.setRange(0.0, 255.0)
     self.bright_via_max_radial_asymmetry_spin.setDecimals(1)
     self.bright_via_max_radial_asymmetry_spin.setSingleStep(1.0)
-    self.bright_via_max_radial_asymmetry_spin.setValue(18.0)
+    self.bright_via_max_radial_asymmetry_spin.setValue(32.0)
     self.bright_via_max_edge_likeness_spin = QDoubleSpinBox()
     self.bright_via_max_edge_likeness_spin.setRange(0.0, 255.0)
     self.bright_via_max_edge_likeness_spin.setDecimals(1)
@@ -945,8 +1009,14 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_show_rejected_checkbox = QCheckBox("Показывать отклонённые кандидаты")
     self.bright_via_show_rejected_checkbox.setChecked(True)
     self.bright_via_hard_asym_checkbox = QCheckBox("Жёстко фильтровать по асимметрии")
-    self.bright_via_hard_edge_checkbox = QCheckBox("Жёстко фильтровать по краям")
-    self.bright_via_hard_line_checkbox = QCheckBox("Жёстко фильтровать по линейности")
+    self.bright_via_hard_asym_checkbox.setChecked(True)
+    self.bright_via_hard_edge_checkbox = QCheckBox("Подавление границ падов")
+    self.bright_via_hard_line_checkbox = QCheckBox("Подавление дорожек")
+    self.bright_via_min_isolation_spin = QDoubleSpinBox()
+    self.bright_via_min_isolation_spin.setRange(0.0, 1.0)
+    self.bright_via_min_isolation_spin.setDecimals(2)
+    self.bright_via_min_isolation_spin.setSingleStep(0.01)
+    self.bright_via_min_isolation_spin.setValue(0.38)
     self.heuristic_background_sigma_spin = QDoubleSpinBox()
     self.heuristic_background_sigma_spin.setRange(1.0, 200.0)
     self.heuristic_background_sigma_spin.setDecimals(1)
@@ -988,7 +1058,7 @@ def build_extraction_tab(self) -> QWidget:
     self.heuristic_min_abs_peak_spin.setDecimals(1)
     self.heuristic_min_abs_peak_spin.setValue(0.0)
     self.heuristic_use_bilateral_checkbox = QCheckBox("Bilateral вместо медианы")
-    self.preview_bright_via_mask_button = QPushButton("Предпросмотр маски")
+    self.preview_bright_via_mask_button = QPushButton("Предпросмотр маски кандидатов")
     self.reset_bright_via_button = QPushButton("Сбросить параметры")
     bright_via_buttons = QWidget()
     bright_via_buttons_layout = QHBoxLayout(bright_via_buttons)
@@ -1098,7 +1168,6 @@ def build_extraction_tab(self) -> QWidget:
     self.via_search_mode_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.via_diameter_size_mode_combo.currentIndexChanged.connect(self._sync_via_diameter_size_mode)
     self.via_heuristic_polarity_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
-    self.via_fixed_diameters_edit.textChanged.connect(self._on_extraction_settings_changed)
     self.via_template_nms_distance_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_template_scale_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_template_scale_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -1114,10 +1183,10 @@ def build_extraction_tab(self) -> QWidget:
     self.heuristic_local_binarize_percentile_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.heuristic_min_abs_peak_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.heuristic_use_bilateral_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.via_white_range_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.via_white_range_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.via_white_range_checkbox.stateChanged.connect(self._on_via_brightness_range_changed)
+    self.via_white_range_min_spin.valueChanged.connect(self._on_via_brightness_range_changed)
     self.via_white_range_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_black_range_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+    self.via_black_range_checkbox.stateChanged.connect(self._on_via_brightness_range_changed)
     self.via_black_range_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_black_range_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_min_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -1137,6 +1206,7 @@ def build_extraction_tab(self) -> QWidget:
     self.debug_candidates_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_diameter_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_diameter_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.bright_via_diameter_fixed_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_clahe_clip_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_clahe_tile_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_median_kernel_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -1159,6 +1229,7 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_nms_distance_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_min_final_score_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_show_rejected_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+    self.bright_via_min_isolation_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_hard_asym_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_hard_edge_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_hard_line_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
@@ -1173,7 +1244,7 @@ def build_extraction_tab(self) -> QWidget:
     self.min_via_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.max_via_height_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.min_hierarchy_depth_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.min_inner_hole_area_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.min_inner_hole_area_spin.valueChanged.connect(self._on_min_inner_hole_area_changed)
     self.max_hierarchy_depth_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.max_hole_area_ratio_spin.valueChanged.connect(self._on_extraction_settings_changed)
 
@@ -1253,8 +1324,23 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_viamode_label_widget = self.bright_via_basics_form.labelForField(self.via_search_mode_combo)
     self.bright_via_basics_form.addRow("Параметры режима", self.bright_via_mode_stack)
     self.bright_via_mode_stack_label_widget = self.bright_via_basics_form.labelForField(self.bright_via_mode_stack)
+    self.bright_via_basics_form.addRow("Размер via", self.via_diameter_size_mode_combo)
+    self.bright_via_diameter_mode_label_widget = self.bright_via_basics_form.labelForField(
+        self.via_diameter_size_mode_combo
+    )
+    self.bright_via_basics_form.addRow("Диаметр via, px", self.bright_via_diameter_fixed_spin)
+    self.bright_via_diameter_fixed_label_widget = self.bright_via_basics_form.labelForField(
+        self.bright_via_diameter_fixed_spin
+    )
     self.bright_via_basics_form.addRow("Минимальный / максимальный диаметр", self.bright_via_diameter_range_widget)
+    self.bright_via_diameter_range_label_widget = self.bright_via_basics_form.labelForField(
+        self.bright_via_diameter_range_widget
+    )
     self.bright_via_basics_form.addRow("Чувствительность поиска", self.via_search_sensitivity_combo)
+    self.bright_via_basics_form.addRow(self.via_white_range_checkbox, self.via_white_range_widget)
+    self.bright_via_white_range_label_widget = self.bright_via_basics_form.labelForField(self.via_white_range_widget)
+    self.bright_via_basics_form.addRow(self.via_black_range_checkbox, self.via_black_range_widget)
+    self.bright_via_black_range_label_widget = self.bright_via_basics_form.labelForField(self.via_black_range_widget)
     self.bright_via_basics_form.addRow("Минимальная итоговая оценка", self.bright_via_min_final_score_spin)
     self.bright_via_basics_form.addRow("Расстояние подавления дублей", self.bright_via_nms_distance_spin)
     self.bright_via_basics_form.addRow("Пресет поиска", self.via_preset_widget)
@@ -1273,6 +1359,11 @@ def build_extraction_tab(self) -> QWidget:
     _via_quick_layout.addWidget(self.blurred_via_preset_button)
     self.bright_via_basics_form.addRow("Быстрые пресеты", _via_quick_presets)
     self.bright_via_basics_form.addRow("Действия", bright_via_buttons)
+    self.bright_via_quality_form.addRow("Порог яркости пятна", self.bright_via_threshold_percentile_spin)
+    self.bright_via_quality_form.addRow("Мин. круглость", self.bright_via_min_circularity_spin)
+    self.bright_via_quality_form.addRow("Мин. изолированность пятна", self.bright_via_min_isolation_spin)
+    self.bright_via_quality_form.addRow("", self.bright_via_hard_line_checkbox)
+    self.bright_via_quality_form.addRow("", self.bright_via_hard_edge_checkbox)
     self.bright_via_display_form.addRow("Показывать найденные via", self.via_show_detected_checkbox)
     self.bright_via_display_form.addRow("Показывать кандидатов", self.debug_candidates_checkbox)
     self.debug_candidates_label_widget = self.bright_via_display_form.labelForField(self.debug_candidates_checkbox)
@@ -1302,17 +1393,12 @@ def build_extraction_tab(self) -> QWidget:
     self.recognition_mode_combo.addItem("Проводники", "conductors")
     self.recognition_mode_combo.addItem("Контакты / via", "via")
     self.recognition_mode_combo.setCurrentIndex(1)
-    self.recognition_status_label = QLabel("Готово")
     _rm_row = QHBoxLayout()
     _rm_row.addWidget(QLabel("Режим извлечения"))
     _rm_row.addWidget(self.recognition_mode_combo, 1)
-    _rm_row.addWidget(self.recognition_status_label)
     self.recognition_stack = QStackedWidget()
     self.recognition_page_off = QWidget()
     _off_l = QVBoxLayout(self.recognition_page_off)
-    _off_l.addWidget(
-        QLabel("Распознавание отключено: автоматическое обновление контуров и оверлеев не выполняется.")
-    )
     self.recognition_page_conductors = QWidget()
     _cond_l = QVBoxLayout(self.recognition_page_conductors)
     _cond_l.setContentsMargins(0, 0, 0, 0)
@@ -1320,23 +1406,31 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_basic_group = QGroupBox("Основные параметры")
     _metal_basic_form = QFormLayout(self.metal_basic_group)
     self.metal_preset_combo = QComboBox()
-    for _txt, _data in (
-        ("Стандартный", "standard"),
-        ("Плотная металлизация", "dense"),
-        ("Тонкие дорожки", "thin_traces"),
-        ("Шумное SEM", "noisy_sem"),
-        ("Консервативный", "conservative"),
-    ):
-        self.metal_preset_combo.addItem(_txt, _data)
-    self.metal_sensitivity_slider = QSlider(Qt.Orientation.Horizontal)
-    self.metal_sensitivity_slider.setRange(0, 100)
-    self.metal_sensitivity_slider.setValue(50)
-    self.metal_sensitivity_value_label = QLabel("50")
-    _sens_row = QWidget()
-    _sens_l = QHBoxLayout(_sens_row)
-    _sens_l.setContentsMargins(0, 0, 0, 0)
-    _sens_l.addWidget(self.metal_sensitivity_slider, 1)
-    _sens_l.addWidget(self.metal_sensitivity_value_label)
+    self.apply_metal_preset_button = QPushButton("Применить")
+    self.save_metal_preset_button = QPushButton("Сохранить")
+    self.delete_metal_preset_button = QPushButton("Удалить")
+    self.metal_preset_widget = QWidget()
+    _metal_preset_layout = QGridLayout(self.metal_preset_widget)
+    _metal_preset_layout.setContentsMargins(0, 0, 0, 0)
+    _metal_preset_layout.setHorizontalSpacing(6)
+    _metal_preset_layout.setVerticalSpacing(6)
+    _metal_preset_layout.addWidget(self.metal_preset_combo, 0, 0, 1, 3)
+    _metal_preset_layout.addWidget(self.apply_metal_preset_button, 1, 0)
+    _metal_preset_layout.addWidget(self.save_metal_preset_button, 1, 1)
+    _metal_preset_layout.addWidget(self.delete_metal_preset_button, 1, 2)
+    self._refresh_metal_preset_combo()
+
+    self.metal_contrast_bias_spin = QSpinBox()
+    self.metal_contrast_bias_spin.setRange(-50, 50)
+    self.metal_contrast_bias_spin.setValue(0)
+
+    self.metal_gap_bridge_spin = QSpinBox()
+    self.metal_gap_bridge_spin.setRange(0, 25)
+    self.metal_gap_bridge_spin.setValue(2)
+    self.metal_speckle_removal_spin = QSpinBox()
+    self.metal_speckle_removal_spin.setRange(0, 25)
+    self.metal_speckle_removal_spin.setValue(0)
+
     self.metal_min_width_spin = QDoubleSpinBox()
     self.metal_min_width_spin.setRange(0.5, 200.0)
     self.metal_min_width_spin.setDecimals(1)
@@ -1346,58 +1440,50 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_max_width_spin.setDecimals(1)
     self.metal_max_width_spin.setSpecialValueText("—")
     self.metal_max_width_spin.setValue(0.0)
-    self.metal_min_length_spin = QDoubleSpinBox()
-    self.metal_min_length_spin.setRange(1.0, 2000.0)
-    self.metal_min_length_spin.setDecimals(1)
-    self.metal_min_length_spin.setValue(8.0)
-    self.metal_use_wide_gradient_checkbox = QCheckBox("Использовать градиент широких проводников")
-    self.metal_use_wide_gradient_checkbox.setChecked(False)
-    self.metal_segmentation_method_combo = QComboBox()
-    self.metal_segmentation_method_combo.addItem("Без сегментации", "none")
-    self.metal_segmentation_method_combo.addItem("Otsu", "otsu")
-    self.metal_segmentation_method_combo.addItem("Адаптивная", "adaptive")
-    self.metal_segmentation_method_combo.addItem("Гибрид (границы + Otsu)", "hybrid")
-    self.metal_segmentation_method_combo.setCurrentIndex(self.metal_segmentation_method_combo.findData("otsu"))
-    self.metal_sensitivity_combo = QComboBox()
-    for _l, _d in (("Низкая", "low"), ("Средняя", "medium"), ("Высокая", "high")):
-        self.metal_sensitivity_combo.addItem(_l, _d)
-    self.metal_sensitivity_combo.setCurrentIndex(1)
-    _metal_basic_form.addRow("Пресет восстановления", self.metal_preset_combo)
-    _metal_basic_form.addRow("Чувствительность (0–100)", _sens_row)
-    _metal_basic_form.addRow("Мин. ширина проводника, px", self.metal_min_width_spin)
-    _metal_basic_form.addRow("Макс. ширина (0 = нет)", self.metal_max_width_spin)
-    _metal_basic_form.addRow("Мин. длина проводника, px", self.metal_min_length_spin)
-    _metal_basic_form.addRow(self.metal_use_wide_gradient_checkbox)
-    _metal_basic_form.addRow("Метод сегментации", self.metal_segmentation_method_combo)
-    _metal_basic_form.addRow("Чувствительность (уровень)", self.metal_sensitivity_combo)
+    self.metal_width_row = QWidget()
+    _metal_width_layout = QHBoxLayout(self.metal_width_row)
+    _metal_width_layout.setContentsMargins(0, 0, 0, 0)
+    _metal_width_layout.addWidget(QLabel("Мин."))
+    _metal_width_layout.addWidget(self.metal_min_width_spin, 1)
+    _metal_width_layout.addWidget(QLabel("Макс."))
+    _metal_width_layout.addWidget(self.metal_max_width_spin, 1)
+
+    self.metal_epsilon_spin = QDoubleSpinBox()
+    self.metal_epsilon_spin.setRange(0.0, 50.0)
+    self.metal_epsilon_spin.setDecimals(2)
+    self.metal_epsilon_spin.setValue(2.0)
+
+    _metal_basic_form.addRow("Пресет", self.metal_preset_widget)
+    _metal_basic_form.addRow("Контраст проводника", self.metal_contrast_bias_spin)
+    _metal_basic_form.addRow("Сшивка разрывов, px", self.metal_gap_bridge_spin)
+    _metal_basic_form.addRow("Удаление шума (opening), px", self.metal_speckle_removal_spin)
+    _metal_basic_form.addRow("Ширина проводника, px", self.metal_width_row)
+    _metal_basic_form.addRow("Epsilon (approxPolyDP)", self.metal_epsilon_spin)
 
     self.metal_display_group = QGroupBox("Отображение")
     _metal_disp_form = QFormLayout(self.metal_display_group)
     self.metal_show_conductors_checkbox = QCheckBox("Показывать проводники")
     self.metal_show_conductors_checkbox.setChecked(True)
     self.metal_show_rejected_checkbox = QCheckBox("Показывать отклонённые")
+    self.metal_show_rejected_checkbox.setChecked(True)
     self.metal_show_suspicious_checkbox = QCheckBox("Показывать подозрительные")
     self.metal_show_suspicious_checkbox.setChecked(True)
     self.metal_show_border_checkbox = QCheckBox("Подсветка у границы кадра")
-    self.metal_show_border_checkbox.setChecked(True)
+    self.metal_show_border_checkbox.setChecked(False)
     self.metal_show_mask_checkbox = QCheckBox("Наложение маски (градиент)")
     self.metal_show_mask_checkbox.setChecked(True)
     self.metal_debug_visual_combo = QComboBox()
     for _l, _d in (
         ("Итоговое наложение", "overlay"),
         ("Исходное (серое)", "metal_source_gray"),
+        ("После подготовки", "metal_preprocessed"),
+        ("Сегментация (сырая)", "metal_raw_segmentation"),
+        ("После топологии", "metal_after_topology"),
         ("Бинарная маска", "metal_binary_mask"),
-        ("Canny (grayscale)", "metal_edge_canny"),
-        ("Компонент Otsu (гибрид)", "metal_threshold_mask"),
+        ("Порог Otsu", "metal_threshold_mask"),
         ("Контуры (сырые)", "metal_contours_raw"),
         ("После фильтрации", "metal_filtered_mask"),
         ("Проверка ширины", "metal_width_check"),
-        ("Карта ярких краёв (широкие)", "metal_wide_edge_map"),
-        ("Направления внутрь (широкие)", "metal_wide_inward_dirs"),
-        ("Уверенность направления (широкие)", "metal_wide_gradient_confidence"),
-        ("Пары краёв (широкие)", "metal_wide_pair_candidates"),
-        ("Восстановленные широкие проводники", "metal_wide_recovered"),
-        ("Итоговое наложение (широкие)", "metal_wide_final_overlay"),
     ):
         self.metal_debug_visual_combo.addItem(_l, _d)
     self.metal_overlay_opacity_spin = QDoubleSpinBox()
@@ -1407,7 +1493,6 @@ def build_extraction_tab(self) -> QWidget:
     _metal_disp_form.addRow(self.metal_show_conductors_checkbox)
     _metal_disp_form.addRow(self.metal_show_rejected_checkbox)
     _metal_disp_form.addRow(self.metal_show_suspicious_checkbox)
-    _metal_disp_form.addRow(self.metal_show_border_checkbox)
     _metal_disp_form.addRow(self.metal_show_mask_checkbox)
     _metal_disp_form.addRow("Режим отладочного изображения", self.metal_debug_visual_combo)
     _metal_disp_form.addRow("Прозрачность наложения", self.metal_overlay_opacity_spin)
@@ -1435,10 +1520,10 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_max_perimeter_spin.setDecimals(1)
     self.metal_max_perimeter_spin.setSpecialValueText("—")
     self.metal_max_perimeter_spin.setValue(0.0)
-    self.metal_epsilon_spin = QDoubleSpinBox()
-    self.metal_epsilon_spin.setRange(0.0, 50.0)
-    self.metal_epsilon_spin.setDecimals(2)
-    self.metal_epsilon_spin.setValue(2.0)
+    self.metal_min_length_spin = QDoubleSpinBox()
+    self.metal_min_length_spin.setRange(1.0, 2000.0)
+    self.metal_min_length_spin.setDecimals(1)
+    self.metal_min_length_spin.setValue(8.0)
     self.metal_min_points_spin = QSpinBox()
     self.metal_min_points_spin.setRange(3, 256)
     self.metal_min_points_spin.setValue(4)
@@ -1450,82 +1535,24 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_hierarchy_combo = QComboBox()
     self.metal_hierarchy_combo.addItem("Полная иерархия", "full")
     self.metal_hierarchy_combo.addItem("Только внешние контуры", "external")
-    self.metal_allowed_angles_combo = QComboBox()
-    self.metal_allowed_angles_combo.addItem("Только 90°", "90_only")
-    self.metal_allowed_angles_combo.addItem("45° и 90°", "45_90")
-    self.metal_allowed_angles_combo.addItem("Произвольные", "free")
-    self.metal_allowed_angles_combo.setCurrentIndex(2)
-    self.metal_angle_tolerance_spin = QDoubleSpinBox()
-    self.metal_angle_tolerance_spin.setRange(0.5, 45.0)
-    self.metal_angle_tolerance_spin.setDecimals(1)
-    self.metal_angle_tolerance_spin.setValue(7.0)
-    self.metal_straightness_spin = QDoubleSpinBox()
-    self.metal_straightness_spin.setRange(0.05, 1.0)
-    self.metal_straightness_spin.setDecimals(2)
-    self.metal_straightness_spin.setSingleStep(0.05)
-    self.metal_straightness_spin.setValue(0.2)
-    self.metal_t_junction_checkbox = QCheckBox("Разрешать T-образные соединения")
-    self.metal_t_junction_checkbox.setChecked(True)
+    self.metal_hierarchy_combo.setCurrentIndex(0)
     self.metal_border_handling_combo = QComboBox()
     self.metal_border_handling_combo.addItem("Игнорировать объекты у края", "ignore")
     self.metal_border_handling_combo.addItem("Принимать как обычно", "accept")
     self.metal_border_handling_combo.addItem("Отдельно помечать", "mark")
     self.metal_border_handling_combo.setCurrentIndex(2)
-    self.metal_validity_checkbox = QCheckBox("Проверять корректность контура")
-    self.metal_validity_checkbox.setChecked(False)
-    self.metal_morph_close_spin = QSpinBox()
-    self.metal_morph_close_spin.setRange(1, 25)
-    self.metal_morph_close_spin.setValue(1)
-    self.metal_morph_open_spin = QSpinBox()
-    self.metal_morph_open_spin.setRange(0, 25)
-    self.metal_morph_open_spin.setValue(0)
-    self.metal_wide_grad_radius_spin = QSpinBox()
-    self.metal_wide_grad_radius_spin.setRange(1, 64)
-    self.metal_wide_grad_radius_spin.setValue(8)
-    self.metal_wide_grad_conf_spin = QDoubleSpinBox()
-    self.metal_wide_grad_conf_spin.setRange(0.0, 1.0)
-    self.metal_wide_grad_conf_spin.setDecimals(2)
-    self.metal_wide_grad_conf_spin.setSingleStep(0.05)
-    self.metal_wide_grad_conf_spin.setValue(0.15)
-    self.metal_wide_grad_pair_len_spin = QDoubleSpinBox()
-    self.metal_wide_grad_pair_len_spin.setRange(4.0, 2000.0)
-    self.metal_wide_grad_pair_len_spin.setDecimals(1)
-    self.metal_wide_grad_pair_len_spin.setValue(24.0)
-    self.metal_wide_grad_parallel_spin = QDoubleSpinBox()
-    self.metal_wide_grad_parallel_spin.setRange(0.5, 45.0)
-    self.metal_wide_grad_parallel_spin.setDecimals(1)
-    self.metal_wide_grad_parallel_spin.setValue(10.0)
-    self.metal_wide_grad_gap_spin = QSpinBox()
-    self.metal_wide_grad_gap_spin.setRange(0, 40)
-    self.metal_wide_grad_gap_spin.setValue(5)
-    self.metal_wide_grad_overlap_spin = QDoubleSpinBox()
-    self.metal_wide_grad_overlap_spin.setRange(0.05, 1.0)
-    self.metal_wide_grad_overlap_spin.setDecimals(2)
-    self.metal_wide_grad_overlap_spin.setSingleStep(0.05)
-    self.metal_wide_grad_overlap_spin.setValue(0.5)
     _metal_adv_form.addRow("Мин. площадь", self.metal_min_area_spin)
     _metal_adv_form.addRow("Макс. площадь (0 = нет)", self.metal_max_area_spin)
     _metal_adv_form.addRow("Мин. периметр", self.metal_min_perimeter_spin)
     _metal_adv_form.addRow("Макс. периметр (0 = нет)", self.metal_max_perimeter_spin)
-    _metal_adv_form.addRow("Epsilon сглаживания", self.metal_epsilon_spin)
+    _metal_adv_form.addRow("Мин. длина проводника, px", self.metal_min_length_spin)
     _metal_adv_form.addRow("Мин. число точек", self.metal_min_points_spin)
     _metal_adv_form.addRow("Мин. угол полигона, °", self.metal_min_angle_spin)
     _metal_adv_form.addRow(self.metal_approximation_checkbox)
     _metal_adv_form.addRow("Режим иерархии", self.metal_hierarchy_combo)
-    _metal_adv_form.addRow("Разрешённые углы трассировки", self.metal_allowed_angles_combo)
-    _metal_adv_form.addRow("Допуск угла, °", self.metal_angle_tolerance_spin)
-    _metal_adv_form.addRow("Мин. прямолинейность", self.metal_straightness_spin)
-    _metal_adv_form.addRow(self.metal_t_junction_checkbox)
+    _metal_adv_form.addRow("Мин. площадь отверстия для заливки, px²", self.min_inner_hole_area_spin)
+    self.min_inner_hole_area_label_widget = _metal_adv_form.labelForField(self.min_inner_hole_area_spin)
     _metal_adv_form.addRow("Обработка объектов на границе", self.metal_border_handling_combo)
-    _metal_adv_form.addRow(self.metal_validity_checkbox)
-    _metal_adv_form.addRow("Радиус closing (морфология)", self.metal_morph_close_spin)
-    _metal_adv_form.addRow("Радиус opening (морфология)", self.metal_morph_open_spin)
-    _metal_adv_form.addRow("Радиус анализа градиента (широкие), px", self.metal_wide_grad_radius_spin)
-    _metal_adv_form.addRow("Мин. уверенность направления (широкие)", self.metal_wide_grad_conf_spin)
-    _metal_adv_form.addRow("Мин. длина пары краёв (широкие), px", self.metal_wide_grad_pair_len_spin)
-    _metal_adv_form.addRow("Допуск параллельности краёв (широкие), °", self.metal_wide_grad_parallel_spin)
-    _metal_adv_form.addRow("Макс. разрыв края (широкие), px", self.metal_wide_grad_gap_spin)
-    _metal_adv_form.addRow("Мин. перекрытие пары краёв (широкие)", self.metal_wide_grad_overlap_spin)
     _adv_box_l = QVBoxLayout()
     _adv_box_l.setContentsMargins(8, 4, 8, 4)
     _adv_box_l.addWidget(_metal_adv_wrap)
@@ -1545,13 +1572,15 @@ def build_extraction_tab(self) -> QWidget:
     _cond_l.addLayout(_metal_actions)
 
     self.metal_preset_combo.currentIndexChanged.connect(self._on_metal_preset_changed)
-    self.metal_sensitivity_slider.valueChanged.connect(self._on_metal_sensitivity_slider_changed)
+    self.apply_metal_preset_button.clicked.connect(self._apply_selected_metal_preset)
+    self.save_metal_preset_button.clicked.connect(self._save_current_metal_preset)
+    self.delete_metal_preset_button.clicked.connect(self._delete_selected_metal_preset)
+    self.metal_contrast_bias_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.metal_gap_bridge_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.metal_speckle_removal_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.metal_epsilon_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_min_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_max_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.metal_min_length_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.metal_use_wide_gradient_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.metal_segmentation_method_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
-    self.metal_sensitivity_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     for _w in (
         self.metal_show_conductors_checkbox,
         self.metal_show_rejected_checkbox,
@@ -1559,35 +1588,22 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_show_border_checkbox,
         self.metal_show_mask_checkbox,
     ):
-        _w.stateChanged.connect(self._on_extraction_settings_changed)
-    self.metal_debug_visual_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
+        _w.stateChanged.connect(self._on_metal_display_changed)
+    self.metal_debug_visual_combo.currentIndexChanged.connect(self._on_metal_display_changed)
     self.metal_overlay_opacity_spin.valueChanged.connect(self._on_metal_overlay_opacity_changed)
     for _w in (
         self.metal_min_area_spin,
         self.metal_max_area_spin,
         self.metal_min_perimeter_spin,
         self.metal_max_perimeter_spin,
-        self.metal_epsilon_spin,
+        self.metal_min_length_spin,
         self.metal_min_points_spin,
         self.metal_min_angle_spin,
-        self.metal_angle_tolerance_spin,
-        self.metal_straightness_spin,
-        self.metal_morph_close_spin,
-        self.metal_morph_open_spin,
-        self.metal_wide_grad_radius_spin,
-        self.metal_wide_grad_conf_spin,
-        self.metal_wide_grad_pair_len_spin,
-        self.metal_wide_grad_parallel_spin,
-        self.metal_wide_grad_gap_spin,
-        self.metal_wide_grad_overlap_spin,
     ):
         _w.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_approximation_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.metal_hierarchy_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
-    self.metal_allowed_angles_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
-    self.metal_t_junction_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.metal_border_handling_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
-    self.metal_validity_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.metal_preview_mask_button.clicked.connect(self._preview_metal_mask)
     self.metal_reset_params_button.clicked.connect(self._reset_metal_parameters)
     self.recognition_stack.addWidget(self.recognition_page_off)
@@ -1613,8 +1629,6 @@ def build_extraction_tab(self) -> QWidget:
 
     self.topology_form.addRow("Min hierarchy depth", self.min_hierarchy_depth_spin)
     self.min_hierarchy_depth_label_widget = self.topology_form.labelForField(self.min_hierarchy_depth_spin)
-    self.topology_form.addRow("Min inner contour area", self.min_inner_hole_area_spin)
-    self.min_inner_hole_area_label_widget = self.topology_form.labelForField(self.min_inner_hole_area_spin)
     self.topology_form.addRow("Max hierarchy depth (0 = unlimited)", self.max_hierarchy_depth_spin)
     self.max_hierarchy_depth_label_widget = self.topology_form.labelForField(self.max_hierarchy_depth_spin)
     self.topology_form.addRow("Max hole area ratio (0 = unlimited)", self.max_hole_area_ratio_spin)
@@ -1638,16 +1652,12 @@ def build_extraction_tab(self) -> QWidget:
     save_layout = QVBoxLayout(self.save_group)
     self.save_cif_checkbox = QCheckBox("CIF")
     self.save_cif_checkbox.setChecked(True)
-    self.save_csv_checkbox = QCheckBox("CSV")
-    self.save_txt_checkbox = QCheckBox("TXT")
-    self.save_svg_checkbox = QCheckBox("SVG preview")
+    self.save_cv_checkbox = QCheckBox("CV")
     self.save_preview_checkbox = QCheckBox("Overlay preview image")
     self.save_preview_checkbox.setChecked(False)
     for checkbox in [
         self.save_cif_checkbox,
-        self.save_csv_checkbox,
-        self.save_txt_checkbox,
-        self.save_svg_checkbox,
+        self.save_cv_checkbox,
         self.save_preview_checkbox,
     ]:
         save_layout.addWidget(checkbox)
@@ -1665,6 +1675,9 @@ def build_display_tab(self) -> QWidget:
     self.hole_color_button = self._build_color_button(self._display_settings.hole_color, self._choose_hole_color)
     self.selected_color_button = self._build_color_button(
         self._display_settings.selected_color, self._choose_selected_color
+    )
+    self.via_selection_color_button = self._build_color_button(
+        self._display_settings.via_selection_color, self._choose_via_selection_color
     )
     self.conductor_hover_highlight_color_button = self._build_color_button(
         self._display_settings.conductor_hover_highlight_color,
@@ -1686,7 +1699,19 @@ def build_display_tab(self) -> QWidget:
     self.show_labels_checkbox = QCheckBox("Show polygon IDs")
     self.show_labels_checkbox.setChecked(self._display_settings.show_labels)
     self.random_object_colors_checkbox = QCheckBox("Random object colors")
+    self.via_display_mode_combo = QComboBox()
+    self.via_display_mode_combo.addItem("Circle", VIA_DISPLAY_MODE_CIRCLE)
+    self.via_display_mode_combo.addItem("Rectangle", VIA_DISPLAY_MODE_RECTANGLE)
+    via_display_index = self.via_display_mode_combo.findData(self._display_settings.via_display_mode)
+    self.via_display_mode_combo.setCurrentIndex(max(0, via_display_index))
+    self.autosave_on_frame_transition_checkbox = QCheckBox("Autosave when changing frame")
+    self.autosave_on_frame_transition_checkbox.setChecked(False)
+    self.show_frame_matrix_checkbox = QCheckBox("Show frame matrix")
+    self.show_frame_matrix_checkbox.setChecked(True)
+    self.show_frame_matrix_thumbnails_checkbox = QCheckBox("Load frame matrix thumbnails")
+    self.show_frame_matrix_thumbnails_checkbox.setChecked(True)
     self.show_neighbor_frames_checkbox = QCheckBox("Show neighboring frames")
+    self.show_neighbor_vectors_checkbox = QCheckBox("Show vectors on neighboring frames")
     self.neighbor_columns_spin = QSpinBox()
     self.neighbor_columns_spin.setRange(1, 1000)
     self.neighbor_columns_spin.setValue(3)
@@ -1709,12 +1734,18 @@ def build_display_tab(self) -> QWidget:
         self.show_vertices_checkbox,
         self.show_labels_checkbox,
         self.random_object_colors_checkbox,
+        self.via_display_mode_combo,
     ]:
         if isinstance(widget, QCheckBox):
             widget.stateChanged.connect(self._apply_display_settings)
+        elif isinstance(widget, QComboBox):
+            widget.currentIndexChanged.connect(self._apply_display_settings)
         else:
             widget.valueChanged.connect(self._apply_display_settings)
     self.show_neighbor_frames_checkbox.stateChanged.connect(self._on_neighbor_display_settings_changed)
+    self.show_neighbor_vectors_checkbox.stateChanged.connect(self._on_neighbor_display_settings_changed)
+    self.show_frame_matrix_checkbox.stateChanged.connect(self._on_frame_matrix_display_settings_changed)
+    self.show_frame_matrix_thumbnails_checkbox.stateChanged.connect(self._on_frame_matrix_thumbnail_settings_changed)
     self.neighbor_columns_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
     self.neighbor_max_grid_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
     self.neighbor_opacity_spin.valueChanged.connect(self._on_neighbor_display_settings_changed)
@@ -1726,6 +1757,8 @@ def build_display_tab(self) -> QWidget:
     self.hole_color_label_widget = self.display_form.labelForField(self.hole_color_button)
     self.display_form.addRow("Selected contour", self.selected_color_button)
     self.selected_color_label_widget = self.display_form.labelForField(self.selected_color_button)
+    self.display_form.addRow("Selected via", self.via_selection_color_button)
+    self.via_selection_color_label_widget = self.display_form.labelForField(self.via_selection_color_button)
     self.display_form.addRow("Conductor hover", self.conductor_hover_highlight_color_button)
     self.conductor_hover_highlight_label_widget = self.display_form.labelForField(
         self.conductor_hover_highlight_color_button
@@ -1741,10 +1774,16 @@ def build_display_tab(self) -> QWidget:
     self.display_form.addRow(self.show_vertices_checkbox)
     self.display_form.addRow(self.show_labels_checkbox)
     self.display_form.addRow(self.random_object_colors_checkbox)
+    self.display_form.addRow("Via display", self.via_display_mode_combo)
+    self.via_display_mode_label_widget = self.display_form.labelForField(self.via_display_mode_combo)
+    self.display_form.addRow(self.autosave_on_frame_transition_checkbox)
+    self.display_form.addRow(self.show_frame_matrix_checkbox)
+    self.display_form.addRow(self.show_frame_matrix_thumbnails_checkbox)
     self.display_form.addRow(self.show_neighbor_frames_checkbox)
+    self.display_form.addRow(self.show_neighbor_vectors_checkbox)
     self.display_form.addRow("Frames per row", self.neighbor_columns_spin)
     self.neighbor_columns_label_widget = self.display_form.labelForField(self.neighbor_columns_spin)
-    self.display_form.addRow("Max neighbor grid", self.neighbor_max_grid_spin)
+    self.display_form.addRow("Neighbor grid size", self.neighbor_max_grid_spin)
     self.neighbor_max_grid_label_widget = self.display_form.labelForField(self.neighbor_max_grid_spin)
     self.display_form.addRow("Neighbor opacity", self.neighbor_opacity_spin)
     self.neighbor_opacity_label_widget = self.display_form.labelForField(self.neighbor_opacity_spin)
@@ -1774,18 +1813,26 @@ def build_visual_panel(self) -> QWidget:
     self.editor_group = QGroupBox("Image / polygon editor")
     editor_layout = QVBoxLayout(self.editor_group)
     self.polygon_editor = PolygonEditorView()
+    self.polygon_editor.installEventFilter(self)
+    self.polygon_editor.viewport().installEventFilter(self)
+    self.polygon_editor.set_frame_navigation_guard(self.confirm_ok_to_leave_current_vectors)
     self.polygon_editor.polygonsEdited.connect(self._on_polygons_edited)
     self.polygon_editor.logRequested.connect(self._append_log)
     self.polygon_editor.imageClicked.connect(self._on_editor_image_clicked)
     self.polygon_editor.imageRegionSelected.connect(self._on_editor_image_region_selected)
     self.polygon_editor.rulerMeasurementChanged.connect(self._update_ruler_status)
     self.polygon_editor.toolChanged.connect(self._on_editor_tool_changed)
-    self.polygon_editor.zoomChanged.connect(lambda _zoom: self._sync_neighbor_frames())
     self.polygon_editor.neighborFrameActivated.connect(self._on_neighbor_frame_activated)
+    self.polygon_editor.frameNavigationRequested.connect(self._on_frame_navigation_requested)
+    self.polygon_editor.currentFrameChanged.connect(self._on_editor_current_frame_changed)
     self.polygon_editor.viaDebugRequested.connect(self._on_via_debug_requested)
     self.polygon_editor.metalOverlayDetailRequested.connect(self._on_metal_overlay_detail_requested)
     self.polygon_editor.middlePreviewHoldChanged.connect(self._on_middle_preview_hold_changed)
+    self.polygon_editor.filterPreviewHoldChanged.connect(self._on_filter_preview_hold_changed)
     self.polygon_editor.effectivePolygonCreateModeChanged.connect(self._on_effective_polygon_create_mode_changed)
+    self.polygon_editor.polygonCreateModeChanged.connect(self._sync_polygon_mode_combo)
+    self.polygon_editor.brushModeChanged.connect(self._sync_brush_mode_combo)
+    self.polygon_editor.deleteVertexModeChanged.connect(self._sync_delete_vertex_mode_combo)
     self.editor_toolbar = self._build_editor_toolbar()
     self.editor_toolbar_scroll = QScrollArea()
     self.editor_toolbar_scroll.setObjectName("editorToolbarScroll")
@@ -1794,42 +1841,14 @@ def build_visual_panel(self) -> QWidget:
     self.editor_toolbar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     self.editor_toolbar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.editor_toolbar_scroll.setFrameShape(QFrame.Shape.NoFrame)
-    self.editor_toolbar_scroll.setMinimumWidth(max(180, self.editor_toolbar.sizeHint().width()))
+    self.editor_toolbar_scroll.setMinimumWidth(min(760, max(180, self.editor_toolbar.sizeHint().width())))
     self.editor_toolbar_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    toolbar_height = (
-        self.editor_toolbar.sizeHint().height()
-        + self.editor_toolbar_scroll.horizontalScrollBar().sizeHint().height()
-        + 2
-    )
+    toolbar_scrollbar = self.editor_toolbar_scroll.horizontalScrollBar()
+    toolbar_scrollbar_height = toolbar_scrollbar.sizeHint().height() if toolbar_scrollbar is not None else 0
+    toolbar_height = self.editor_toolbar.sizeHint().height() + toolbar_scrollbar_height + 2
     self.editor_toolbar_scroll.setMinimumHeight(toolbar_height)
     self.editor_toolbar_scroll.setMaximumHeight(toolbar_height)
     editor_layout.addWidget(self.editor_toolbar_scroll)
-    self.visual_frame_nav_widget = QWidget()
-    visual_nav_layout = QHBoxLayout(self.visual_frame_nav_widget)
-    visual_nav_layout.setContentsMargins(0, 4, 0, 4)
-    visual_nav_layout.setSpacing(10)
-    self.frame_nav_prev_button = QToolButton()
-    self.frame_nav_next_button = QToolButton()
-    prev_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
-    next_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
-    self._configure_toolbar_button(self.frame_nav_prev_button, prev_icon, "", checkable=False)
-    self._configure_toolbar_button(self.frame_nav_next_button, next_icon, "", checkable=False)
-    self.frame_nav_prev_button.clicked.connect(self._frame_nav_previous)
-    self.frame_nav_next_button.clicked.connect(self._frame_nav_next)
-    self.frame_nav_spin = QSpinBox()
-    self.frame_nav_spin.setMinimum(1)
-    self.frame_nav_spin.setMaximum(1)
-    self.frame_nav_spin.valueChanged.connect(self._on_frame_nav_spin_changed)
-    self.frame_nav_total_label = QLabel("/ 0")
-    visual_nav_layout.addWidget(self.frame_nav_prev_button)
-    visual_nav_layout.addWidget(self.frame_nav_next_button)
-    visual_nav_layout.addWidget(self.frame_nav_spin)
-    visual_nav_layout.addWidget(self.frame_nav_total_label)
-    self.autosave_on_frame_transition_checkbox = QCheckBox("Autosave when changing frame")
-    self.autosave_on_frame_transition_checkbox.setChecked(False)
-    visual_nav_layout.addWidget(self.autosave_on_frame_transition_checkbox)
-    visual_nav_layout.addStretch(1)
-    self.visual_frame_nav_widget.setVisible(False)
     editor_layout.addWidget(self.polygon_editor, 1)
 
     layout.addWidget(self.editor_group, 1)
@@ -1845,22 +1864,23 @@ def build_editor_toolbar(self) -> QWidget:
 
     self._tool_button_group = QButtonGroup(self)
     self._tool_button_group.setExclusive(True)
-    self._tool_buttons: dict[EditorTool, QToolButton] = {}
+    self._tool_buttons = {}
     for text, tool in [
         ("Select", EditorTool.SELECT),
         ("Pan", EditorTool.PAN),
         ("Ruler", EditorTool.RULER),
         ("Add Polygon", EditorTool.ADD_POLYGON),
         ("Brush", EditorTool.BRUSH),
+        ("Trace Pen", EditorTool.TRACE_PEN),
         ("Via", EditorTool.ADD_VIA),
         ("Add Vertex", EditorTool.ADD_VERTEX),
         ("Delete Vertex", EditorTool.DELETE_VERTEX),
         ("Move Vertex", EditorTool.MOVE_VERTEX),
-        ("Delete Polygon", EditorTool.DELETE_POLYGON),
+        ("Antialias", EditorTool.ANTIALIAS),
     ]:
         button = QToolButton()
         self._configure_toolbar_button(button, self._create_editor_tool_icon(tool), text, checkable=True)
-        button.clicked.connect(lambda checked=False, tool_value=tool: self.polygon_editor.set_tool(tool_value))
+        button.clicked.connect(lambda checked=False, tool_value=tool: self._on_editor_tool_button_clicked(tool_value))
         self._tool_button_group.addButton(button)
         self._tool_buttons[tool] = button
         layout.addWidget(button)
@@ -1883,7 +1903,6 @@ def build_editor_toolbar(self) -> QWidget:
     _polygon_blk.addWidget(self.polygon_mode_label)
     _polygon_blk.addWidget(self.polygon_mode_combo)
     _polygon_blk.addWidget(self.polygon_draw_mode_indicator)
-    layout.addWidget(self._polygon_toolbar_block)
 
     self._brush_toolbar_block = QWidget()
     _brush_blk = QHBoxLayout(self._brush_toolbar_block)
@@ -1905,7 +1924,18 @@ def build_editor_toolbar(self) -> QWidget:
     _brush_blk.addWidget(self.brush_mode_combo)
     _brush_blk.addWidget(self.brush_size_label)
     _brush_blk.addWidget(self.brush_size_spin)
-    layout.addWidget(self._brush_toolbar_block)
+
+    self._trace_toolbar_block = QWidget()
+    _trace_blk = QHBoxLayout(self._trace_toolbar_block)
+    _trace_blk.setContentsMargins(0, 0, 0, 0)
+    _trace_blk.setSpacing(6)
+    self.trace_width_label = QLabel("Ширина" if self._ui_language == "ru" else "Width")
+    self.trace_width_spin = QSpinBox()
+    self.trace_width_spin.setRange(1, 256)
+    self.trace_width_spin.setValue(12)
+    self.trace_width_spin.valueChanged.connect(lambda value: self.polygon_editor.set_trace_width(float(value)))
+    _trace_blk.addWidget(self.trace_width_label)
+    _trace_blk.addWidget(self.trace_width_spin)
 
     self._via_toolbar_block = QWidget()
     _via_blk = QHBoxLayout(self._via_toolbar_block)
@@ -1925,7 +1955,6 @@ def build_editor_toolbar(self) -> QWidget:
     _via_blk.addWidget(self.via_width_spin)
     _via_blk.addWidget(self.via_height_label)
     _via_blk.addWidget(self.via_height_spin)
-    layout.addWidget(self._via_toolbar_block)
 
     self._delete_vertex_toolbar_block = QWidget()
     _dv_blk = QHBoxLayout(self._delete_vertex_toolbar_block)
@@ -1940,12 +1969,41 @@ def build_editor_toolbar(self) -> QWidget:
     )
     _dv_blk.addWidget(self.delete_vertex_mode_label)
     _dv_blk.addWidget(self.delete_vertex_mode_combo)
-    layout.addWidget(self._delete_vertex_toolbar_block)
+
+    self._antialias_toolbar_block = QWidget()
+    _aa_blk = QHBoxLayout(self._antialias_toolbar_block)
+    _aa_blk.setContentsMargins(0, 0, 0, 0)
+    _aa_blk.setSpacing(6)
+    self.antialias_grade_label = QLabel("AA")
+    self.antialias_grade_spin = QSpinBox()
+    self.antialias_grade_spin.setRange(1, 5)
+    self.antialias_grade_spin.setValue(1)
+    self.antialias_grade_spin.valueChanged.connect(lambda value: self.polygon_editor.set_antialias_grade(value))
+    _aa_blk.addWidget(self.antialias_grade_label)
+    _aa_blk.addWidget(self.antialias_grade_spin)
+
+    self.tool_settings_strip = QWidget()
+    self.tool_settings_strip.setObjectName("toolSettingsStrip")
+    self.tool_settings_layout = QHBoxLayout(self.tool_settings_strip)
+    self.tool_settings_layout.setContentsMargins(0, 0, 0, 0)
+    self.tool_settings_layout.setSpacing(6)
+    for block in (
+        self._polygon_toolbar_block,
+        self._brush_toolbar_block,
+        self._trace_toolbar_block,
+        self._via_toolbar_block,
+        self._delete_vertex_toolbar_block,
+        self._antialias_toolbar_block,
+    ):
+        self.tool_settings_layout.addWidget(block)
+    layout.addWidget(self.tool_settings_strip)
     self._tool_parameter_blocks = {
         EditorTool.ADD_POLYGON: self._polygon_toolbar_block,
         EditorTool.BRUSH: self._brush_toolbar_block,
+        EditorTool.TRACE_PEN: self._trace_toolbar_block,
         EditorTool.ADD_VIA: self._via_toolbar_block,
         EditorTool.DELETE_VERTEX: self._delete_vertex_toolbar_block,
+        EditorTool.ANTIALIAS: self._antialias_toolbar_block,
     }
 
     self.ruler_status_label = QLabel("")
@@ -1967,6 +2025,13 @@ def build_editor_toolbar(self) -> QWidget:
     self.fit_button = QToolButton()
     self._configure_toolbar_button(self.fit_button, self._create_editor_action_icon("fit"), "Fit")
     self.fit_button.clicked.connect(self.polygon_editor.fit_to_view)
+    self.antialias_opened_cif_button = QToolButton()
+    self._configure_toolbar_button(
+        self.antialias_opened_cif_button,
+        self._create_editor_action_icon("antialias_all"),
+        self._tr("antialias_opened_cif_button", "Antialias all opened CIF files"),
+    )
+    self.antialias_opened_cif_button.clicked.connect(self._antialias_opened_cif_files)
 
     for button in [
         self.undo_button,
@@ -1976,16 +2041,24 @@ def build_editor_toolbar(self) -> QWidget:
         self.fit_button,
     ]:
         layout.addWidget(button)
+    layout.addWidget(self.antialias_opened_cif_button)
 
     self.vector_edit_status_label = QLabel("")
     self.vector_edit_status_label.setMinimumWidth(88)
     layout.addWidget(self.vector_edit_status_label)
 
     self.preview_busy_label = QLabel(self._busy_indicator_text())
+    self.preview_busy_label.setMinimumWidth(0)
+    self.preview_busy_label.setMaximumWidth(150)
+    self.preview_busy_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
     self.preview_busy_progress = QProgressBar()
-    self.preview_busy_progress.setRange(0, 0)
-    self.preview_busy_progress.setTextVisible(False)
-    self.preview_busy_progress.setFixedWidth(88)
+    self.preview_busy_progress.setRange(0, 100)
+    self.preview_busy_progress.setValue(0)
+    self.preview_busy_progress.setFormat("%p%")
+    self.preview_busy_progress.setTextVisible(True)
+    self.preview_busy_progress.setMinimumWidth(72)
+    self.preview_busy_progress.setMaximumWidth(120)
+    self.preview_busy_progress.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
     self.preview_busy_label.setVisible(False)
     self.preview_busy_progress.setVisible(False)
     layout.addWidget(self.preview_busy_label)
@@ -1996,6 +2069,8 @@ def build_editor_toolbar(self) -> QWidget:
         self._brush_toolbar_block,
         self._via_toolbar_block,
         self._delete_vertex_toolbar_block,
+        self._antialias_toolbar_block,
+        self.tool_settings_strip,
         self.polygon_mode_combo,
         self.polygon_draw_mode_indicator,
         self.brush_mode_combo,
@@ -2004,6 +2079,9 @@ def build_editor_toolbar(self) -> QWidget:
         self.via_height_spin,
         self.delete_vertex_mode_combo,
         self.ruler_status_label,
+        self.antialias_grade_label,
+        self.antialias_grade_spin,
+        self.antialias_opened_cif_button,
     ):
         _apply_size_hint_geometry(widget, width=True, height=True)
         widget.setMinimumHeight(max(30, widget.minimumHeight()))
@@ -2013,5 +2091,15 @@ def build_editor_toolbar(self) -> QWidget:
     self.polygon_editor.set_brush_thickness(float(self.brush_size_spin.value()))
     self._sync_editor_via_size()
     self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
+    self.polygon_editor.set_antialias_grade(int(self.antialias_grade_spin.value()))
+    self.tool_settings_strip.setMinimumWidth(
+        max(
+            self._polygon_toolbar_block.sizeHint().width(),
+            self._brush_toolbar_block.sizeHint().width(),
+            self._via_toolbar_block.sizeHint().width(),
+            self._delete_vertex_toolbar_block.sizeHint().width(),
+            self._antialias_toolbar_block.sizeHint().width(),
+        )
+    )
     self._on_editor_tool_changed(self.polygon_editor.current_tool)
     return toolbar

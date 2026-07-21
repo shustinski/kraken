@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 import cv2
@@ -44,6 +45,7 @@ class OperationDescriptor:
     display_name: str
     parameters: tuple[OperationParameterSpec, ...]
     handler: OperationCallable
+    public: bool = True
 
     def default_parameters(self) -> dict[str, Any]:
         return {spec.name: spec.default for spec in self.parameters}
@@ -64,7 +66,7 @@ def get_operation_descriptor(operation_name: str) -> OperationDescriptor:
 
 
 def available_operations() -> list[OperationDescriptor]:
-    return list(_OPERATIONS.values())
+    return [descriptor for descriptor in _OPERATIONS.values() if descriptor.public]
 
 
 def get_operation_display_name(operation_key: str, language: str | None = None) -> str:
@@ -105,6 +107,36 @@ class PreprocessingPipeline:
             raise_if_preview_cancelled()
         return result
 
+    def apply_with_timing(self, image: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
+        """Apply the same configured steps while aggregating coarse timing buckets.
+
+        This is intentionally a thin measurement wrapper over the existing
+        handlers so UI-configured processing semantics remain unchanged.
+        """
+        result = ensure_uint8(image)
+        timings = {"threshold_ms": 0.0, "morphology_ms": 0.0, "postprocessing_ms": 0.0}
+        for index, step in enumerate(self.steps):
+            if not step.enabled:
+                continue
+            descriptor = get_operation_descriptor(step.operation)
+            bucket = _operation_timing_bucket(step.operation)
+            started = perf_counter()
+            try:
+                result = descriptor.handler(result, dict(step.parameters))
+                result = ensure_uint8(result)
+            except Exception as exc:
+                raise RuntimeError(
+                    tr(
+                        "pipeline_step_failed",
+                        index=index + 1,
+                        step=operation_name(descriptor.type_name, default=step.name, language=None),
+                        error=exc,
+                    )
+                ) from exc
+            timings[bucket] = timings.get(bucket, 0.0) + (perf_counter() - started) * 1000.0
+            raise_if_preview_cancelled()
+        return result, timings
+
     def to_dict(self) -> dict[str, Any]:
         return {"steps": [step.to_dict() for step in self.steps]}
 
@@ -128,6 +160,14 @@ class PreprocessingPipeline:
 def _odd(value: int, minimum: int = 1) -> int:
     value = max(minimum, int(value))
     return value if value % 2 == 1 else value + 1
+
+
+def _operation_timing_bucket(operation: str) -> str:
+    if operation in {"threshold", "adaptive_threshold", "otsu_threshold", "edge_guided_threshold", "color_binarize"}:
+        return "threshold_ms"
+    if operation in {"morph_open", "morph_close", "erode", "dilate", "gradient", "tophat", "blackhat"}:
+        return "morphology_ms"
+    return "postprocessing_ms"
 
 
 def _threshold_mode(name: str) -> int:
@@ -353,6 +393,22 @@ def _brightness_contrast(image: np.ndarray, parameters: dict[str, Any]) -> np.nd
         image,
         alpha=float(parameters.get("alpha", 1.0)),
         beta=float(parameters.get("beta", 0.0)),
+    )
+
+
+def _brightness(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    return cv2.convertScaleAbs(
+        image,
+        alpha=1.0,
+        beta=float(parameters.get("brightness", 0.0)),
+    )
+
+
+def _contrast(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
+    return cv2.convertScaleAbs(
+        image,
+        alpha=float(parameters.get("contrast", 1.0)),
+        beta=0.0,
     )
 
 
@@ -766,6 +822,39 @@ def _register_builtin_operations() -> None:
                 OperationParameterSpec("beta", "Brightness", "float", 0.0, minimum=-255.0, maximum=255.0, step=1.0),
             ),
             _brightness_contrast,
+            public=False,
+        ),
+        OperationDescriptor(
+            "brightness",
+            "Brightness",
+            (
+                OperationParameterSpec(
+                    "brightness",
+                    "Brightness",
+                    "float",
+                    0.0,
+                    minimum=-255.0,
+                    maximum=255.0,
+                    step=1.0,
+                ),
+            ),
+            _brightness,
+        ),
+        OperationDescriptor(
+            "contrast",
+            "Contrast",
+            (
+                OperationParameterSpec(
+                    "contrast",
+                    "Contrast",
+                    "float",
+                    1.0,
+                    minimum=0.1,
+                    maximum=4.0,
+                    step=0.05,
+                ),
+            ),
+            _contrast,
         ),
         OperationDescriptor(
             "gamma_correction",

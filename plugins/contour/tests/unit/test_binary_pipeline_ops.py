@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from contour.application.processing import PipelineStepConfig
-from contour.pipeline import PreprocessingPipeline
+from contour.pipeline import PreprocessingPipeline, available_operations
 
 
 def _mask_iou(first_mask: np.ndarray, second_mask: np.ndarray) -> float:
@@ -19,6 +19,38 @@ def _mask_iou(first_mask: np.ndarray, second_mask: np.ndarray) -> float:
 
 
 class BinaryPipelineOperationTests(unittest.TestCase):
+    def test_brightness_and_contrast_are_separate_public_operations_with_legacy_support(self) -> None:
+        image = np.array([[10, 80], [120, 150]], dtype=np.uint8)
+        split_pipeline = PreprocessingPipeline(
+            [
+                PipelineStepConfig(
+                    operation="contrast",
+                    name="Contrast",
+                    parameters={"contrast": 1.5},
+                ),
+                PipelineStepConfig(
+                    operation="brightness",
+                    name="Brightness",
+                    parameters={"brightness": -20.0},
+                ),
+            ]
+        )
+        legacy_pipeline = PreprocessingPipeline(
+            [
+                PipelineStepConfig(
+                    operation="brightness_contrast",
+                    name="Brightness / Contrast",
+                    parameters={"alpha": 1.5, "beta": -20.0},
+                )
+            ]
+        )
+
+        np.testing.assert_array_equal(split_pipeline.apply(image), legacy_pipeline.apply(image))
+        public_operations = {descriptor.type_name for descriptor in available_operations()}
+        self.assertIn("brightness", public_operations)
+        self.assertIn("contrast", public_operations)
+        self.assertNotIn("brightness_contrast", public_operations)
+
     def test_color_binarize_selects_pixels_within_delta(self) -> None:
         image = np.zeros((4, 4, 3), dtype=np.uint8)
         image[1, 1] = (16, 16, 16)

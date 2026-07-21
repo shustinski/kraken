@@ -25,22 +25,57 @@ def _norm_polarity(v: Any) -> str:
     return str(ViaPolarity.AUTO)
 
 
-def heuristic_config_from_settings(settings: ContourExtractionSettings) -> HeuristicViaDetectorConfig:
-    from ...application.processing import VIA_SIZE_MODE_FIXED, normalize_via_size_mode, normalize_via_search_sensitivity
+def _heuristic_polarity_from_brightness_settings(settings: ContourExtractionSettings) -> str:
+    """Map «Распознавать светлые/тёмные» checkboxes to heuristic polarity."""
+    explicit = _norm_polarity(getattr(settings, "via_heuristic_polarity", "auto"))
+    if explicit in (str(ViaPolarity.RING_LIGHT_RING), str(ViaPolarity.RING_DARK_RING)):
+        return explicit
+    white = bool(getattr(settings, "via_white_range_enabled", True))
+    black = bool(getattr(settings, "via_black_range_enabled", False))
+    if white and not black:
+        return str(ViaPolarity.BRIGHT)
+    if black and not white:
+        return str(ViaPolarity.DARK)
+    if white and black:
+        return str(ViaPolarity.AUTO)
+    return str(ViaPolarity.BRIGHT)
 
-    mode = normalize_via_size_mode(getattr(settings, "via_size_mode", "range") or "range")
+
+def fixed_via_diameters_from_settings(settings: ContourExtractionSettings) -> list[int]:
+    """Return the exact output diameters selected for fixed-size mode."""
+
+    from ...application.processing import VIA_SIZE_MODE_FIXED, normalize_via_size_mode
+
+    if normalize_via_size_mode(getattr(settings, "via_size_mode", "fixed") or "fixed") != VIA_SIZE_MODE_FIXED:
+        return []
+    dmin = max(1, int(getattr(settings, "bright_via_diameter_min", 6) or 6))
+    dmax = max(dmin, int(getattr(settings, "bright_via_diameter_max", dmin) or dmin))
+    # The current UI exposes one fixed diameter and stores it as equal bounds.
+    # Do not let the legacy comma-separated field override that selection.
+    if dmin == dmax:
+        return [dmin]
+    text = str(getattr(settings, "via_fixed_diameters_text", "") or "").strip()
+    return parse_diameter_list(text) or sorted({dmin, dmax})
+
+
+def heuristic_config_from_settings(settings: ContourExtractionSettings) -> HeuristicViaDetectorConfig:
+    from ...application.processing import VIA_SIZE_MODE_FIXED, normalize_via_search_sensitivity, normalize_via_size_mode
+
+    sensitivity = normalize_via_search_sensitivity(getattr(settings, "via_search_sensitivity", "medium"))
+    mode = normalize_via_size_mode(getattr(settings, "via_size_mode", "fixed") or "fixed")
     dmin = max(1, int(getattr(settings, "bright_via_diameter_min", 6) or 6))
     dmax = max(dmin, int(getattr(settings, "bright_via_diameter_max", 8) or 8))
-    text = str(getattr(settings, "via_fixed_diameters_text", "") or "").strip() or f"{dmin}, {dmax}"
-    fixed = parse_diameter_list(text) or [dmin, dmax]
+    fixed = fixed_via_diameters_from_settings(settings)
+    if not fixed:
+        fixed = [dmin, dmax]
 
     return HeuristicViaDetectorConfig(
         diameter_mode="fixed" if mode == VIA_SIZE_MODE_FIXED else "range",
         diameter_min=dmin,
         diameter_max=dmax,
         fixed_diameters=fixed,
-        polarity=_norm_polarity(getattr(settings, "via_heuristic_polarity", "auto")),
-        sensitivity=normalize_via_search_sensitivity(getattr(settings, "via_search_sensitivity", "medium")),
+        polarity=_heuristic_polarity_from_brightness_settings(settings),
+        sensitivity=sensitivity,
         nms_distance=max(0, int(getattr(settings, "bright_via_nms_distance", 5) or 0)),
         min_final_score=float(getattr(settings, "bright_via_min_final_score", 38.0) or 0.0),
         min_distance_between_peaks=0,
@@ -59,6 +94,12 @@ def heuristic_config_from_settings(settings: ContourExtractionSettings) -> Heuri
         size_tolerance_ratio=float(getattr(settings, "heuristic_size_tolerance_range", 0.36) or 0.36),
         size_tolerance_ratio_fixed=float(getattr(settings, "heuristic_size_tolerance_fixed", 0.26) or 0.26),
         max_center_drift_ratio=float(getattr(settings, "heuristic_max_center_drift_ratio", 0.72) or 0.72),
+        bright_range_enabled=bool(getattr(settings, "via_white_range_enabled", True)),
+        bright_range_min=float(getattr(settings, "via_white_range_min", 140) or 0),
+        bright_range_max=float(getattr(settings, "via_white_range_max", 255) or 255),
+        dark_range_enabled=bool(getattr(settings, "via_black_range_enabled", False)),
+        dark_range_min=float(getattr(settings, "via_black_range_min", 0) or 0),
+        dark_range_max=float(getattr(settings, "via_black_range_max", 30) or 255),
     )
 
 

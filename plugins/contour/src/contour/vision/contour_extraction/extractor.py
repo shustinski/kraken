@@ -26,6 +26,7 @@ from ..schemas import (
     SemPolarity,
 )
 from ...contour_extractor import estimate_effective_polygon_width_px
+from ...domain import integer_points
 from .hierarchy import build_hierarchy_from_mask
 from .sem_filled_mask import FilledMaskResult, FilledMaskSegmentationConfig, extract_filled_mask
 
@@ -224,7 +225,7 @@ class SemContourExtractor:
         arr = np.array(component.points, dtype=np.float32).reshape(-1, 1, 2)
         (cx, cy), (width, height), angle = cv2.minAreaRect(arr)
         box = cv2.boxPoints(((cx, cy), (width, height), angle))
-        points = [(float(x), float(y)) for x, y in box]
+        points = integer_points([(float(x), float(y)) for x, y in box])
         return replace(
             component,
             is_hole=False,

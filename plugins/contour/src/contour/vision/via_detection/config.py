@@ -93,6 +93,14 @@ class HeuristicViaDetectorConfig:
     # Reject if |centroid - seed| exceeds this fraction of d_est (wrong CC)
     max_center_drift_ratio: float = 0.72
 
+    # Brightness range gates (0-255 on preprocessed gray).
+    bright_range_enabled: bool = True
+    bright_range_min: float = 140.0
+    bright_range_max: float = 255.0
+    dark_range_enabled: bool = False
+    dark_range_min: float = 0.0
+    dark_range_max: float = 60.0
+
     def effective_size_tolerance(self) -> float:
         return float(
             self.size_tolerance_ratio_fixed if self.diameter_mode == "fixed" else self.size_tolerance_ratio
@@ -121,6 +129,12 @@ class HeuristicViaDetectorConfig:
             "min_compactness": self.min_compactness,
             "max_elongation": self.max_elongation,
             "local_binarize_percentile": self.local_binarize_percentile,
+            "bright_range_enabled": self.bright_range_enabled,
+            "bright_range_min": self.bright_range_min,
+            "bright_range_max": self.bright_range_max,
+            "dark_range_enabled": self.dark_range_enabled,
+            "dark_range_min": self.dark_range_min,
+            "dark_range_max": self.dark_range_max,
         }
 
 

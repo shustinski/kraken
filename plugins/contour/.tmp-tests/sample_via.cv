@@ -1,0 +1,14 @@
+{
+  "format": "contour-vector",
+  "version": 2,
+  "image": {"path": "sample.png", "size": [64, 48]},
+  "objects": [
+    {
+      "type": "Point",
+      "id": 1,
+      "shape": "ellipse",
+      "center": [16, 20],
+      "diagonals": [12, 16]
+    }
+  ]
+}

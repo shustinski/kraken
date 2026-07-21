@@ -21,7 +21,7 @@ from contour.graphics.brush_vector import (
 )
 
 
-def test_capsule_between_two_centers_positive_area() -> None:
+def test_octagonal_cap_stroke_between_two_centers_positive_area() -> None:
     g = brush_stroke_geometry([(0.0, 0.0), (40.0, 0.0)], 16.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
     assert getattr(g, "area", 0) > 1.0
 
@@ -45,11 +45,52 @@ def test_freehand_stroke_not_collapsed_to_start_end_line() -> None:
     assert float(freehand.area) > float(straight.area) * 1.10
 
 
-def test_sparse_points_stroke_fills_gap_with_capsule_geometry() -> None:
+def test_sparse_points_stroke_fills_gap_with_swept_geometry() -> None:
     sparse = brush_stroke_geometry([(0.0, 0.0), (300.0, 0.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
 
-    # Midpoint must be inside the swept capsule footprint.
+    # Midpoint must be inside the swept stroke footprint.
     assert sparse.buffer(1e-7).contains(Point(150.0, 0.0))
+
+
+def test_straight_brush_stroke_does_not_emit_collinear_side_vertices() -> None:
+    stroke = brush_stroke_geometry([(0.0, 0.0), (300.0, 0.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    polys = shapely_to_polygon_data_list(stroke)
+    assert len(polys) == 1
+
+    top_side = [point for point in polys[0].points if abs(point[1] - 10.0) < 1e-6 and 0.0 <= point[0] <= 300.0]
+    bottom_side = [point for point in polys[0].points if abs(point[1] + 10.0) < 1e-6 and 0.0 <= point[0] <= 300.0]
+
+    assert len(top_side) == 2
+    assert len(bottom_side) == 2
+
+
+def test_straight_brush_stroke_uses_half_octagon_end_caps() -> None:
+    stroke = brush_stroke_geometry([(0.0, 0.0), (40.0, 0.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    polys = shapely_to_polygon_data_list(stroke)
+    assert len(polys) == 1
+
+    points = {(round(x_coord), round(y_coord)) for x_coord, y_coord in polys[0].points}
+
+    assert (-10, 0) in points
+    assert (-7, -7) in points
+    assert (-7, 7) in points
+    assert (50, 0) in points
+    assert (47, -7) in points
+    assert (47, 7) in points
+    assert not any(abs(y_coord) not in {0, 7, 10} for _, y_coord in points)
+
+
+def test_bent_trace_join_does_not_extend_past_previous_segment_end() -> None:
+    stroke = brush_stroke_geometry([(0.0, 0.0), (40.0, 0.0), (40.0, 40.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    polys = shapely_to_polygon_data_list(stroke)
+    assert len(polys) == 1
+
+    points = {(round(x_coord), round(y_coord)) for x_coord, y_coord in polys[0].points}
+
+    assert (40, -10) in points
+    assert (50, 0) in points
+    assert (50, -10) not in points
+    assert not any(point[0] > 40 and point[1] < 0 for point in points)
 
 
 def test_densify_chain_keeps_initial_point_for_short_first_move() -> None:
@@ -61,16 +102,19 @@ def test_densify_chain_keeps_initial_point_for_short_first_move() -> None:
     assert out[-1] == (40.05, 40.0)
 
 
-def test_add_circle_one_point_equals_disk() -> None:
+def test_add_one_point_equals_octagon() -> None:
     blob = brush_stroke_geometry([(50.0, 50.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
 
-    circle_two = brush_stroke_geometry([(50.0, 50.0), (50.0, 50.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
-    symmetric = unary_union(blob.symmetric_difference(circle_two)).area
+    octagon_two = brush_stroke_geometry([(50.0, 50.0), (50.0, 50.0)], 20.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    symmetric = unary_union(blob.symmetric_difference(octagon_two)).area
+    polys = shapely_to_polygon_data_list(blob)
 
     assert symmetric <= 1e-6
+    assert len(polys) == 1
+    assert len(polys[0].points) == 8
 
 
-def test_erase_circle_difference_smaller_than_frame() -> None:
+def test_erase_octagon_difference_smaller_than_frame() -> None:
     sq = [(0.0, 0.0), (200.0, 0.0), (200.0, 200.0), (0.0, 200.0)]
     outline = filled_polygon_geometry(sq)
     hole_tool = brush_stroke_geometry([(100.0, 100.0)], 36.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
@@ -175,6 +219,88 @@ def test_nested_subtree_difference_does_not_raise() -> None:
     assert glitch is None
     assert cut_out is not None
     assert not cut_out.is_empty
+
+
+def test_region_geometry_ignores_collapsed_polygon_ring() -> None:
+    area_value, perimeter_value, bbox_value = compute_polygon_metrics([(20.0, 20.0), (20.0, 20.0), (20.0, 20.0)])
+    collection = {
+        1: PolygonData(
+            id=1,
+            points=[(20.0, 20.0), (20.0, 20.0), (20.0, 20.0)],
+            area=area_value,
+            perimeter=perimeter_value,
+            bbox=bbox_value,
+            parent_id=None,
+            is_hole=False,
+        )
+    }
+
+    fused = region_geometry(collection, [1])
+
+    assert fused.is_empty
+
+
+def test_region_geometry_skips_collapsed_hole_ring() -> None:
+    outer_points = [(10.0, 10.0), (90.0, 10.0), (90.0, 90.0), (10.0, 90.0)]
+    outer_area, outer_perimeter, outer_bbox = compute_polygon_metrics(outer_points)
+    hole_area, hole_perimeter, hole_bbox = compute_polygon_metrics([(30.0, 30.0), (30.0, 30.0), (30.0, 30.0)])
+    collection = {
+        1: PolygonData(
+            id=1,
+            points=outer_points,
+            area=outer_area,
+            perimeter=outer_perimeter,
+            bbox=outer_bbox,
+            parent_id=None,
+            is_hole=False,
+        ),
+        2: PolygonData(
+            id=2,
+            points=[(30.0, 30.0), (30.0, 30.0), (30.0, 30.0)],
+            area=hole_area,
+            perimeter=hole_perimeter,
+            bbox=hole_bbox,
+            parent_id=1,
+            is_hole=True,
+        ),
+    }
+
+    fused = region_geometry(collection, [1, 2])
+
+    assert not fused.is_empty
+    assert float(fused.area) == float(outer_area)
+
+
+def test_region_geometry_skips_two_vertex_hole_ring() -> None:
+    outer_points = [(10.0, 10.0), (90.0, 10.0), (90.0, 90.0), (10.0, 90.0)]
+    outer_area, outer_perimeter, outer_bbox = compute_polygon_metrics(outer_points)
+    hole_points = [(30.0, 30.0), (30.0, 30.0), (70.0, 30.0)]
+    hole_area, hole_perimeter, hole_bbox = compute_polygon_metrics(hole_points)
+    collection = {
+        1: PolygonData(
+            id=1,
+            points=outer_points,
+            area=outer_area,
+            perimeter=outer_perimeter,
+            bbox=outer_bbox,
+            parent_id=None,
+            is_hole=False,
+        ),
+        2: PolygonData(
+            id=2,
+            points=hole_points,
+            area=hole_area,
+            perimeter=hole_perimeter,
+            bbox=hole_bbox,
+            parent_id=1,
+            is_hole=True,
+        ),
+    }
+
+    fused = region_geometry(collection, [1, 2])
+
+    assert not fused.is_empty
+    assert float(fused.area) == float(outer_area)
 
 
 def test_preserved_overlap_flags_symmetric_difference_tiny() -> None:

@@ -12,11 +12,13 @@ import numpy as np
 from contour.application.services import (
     BatchController,
     BatchStartRequest,
+    PathSettingsController,
     PreviewOrchestrator,
     export_frame_to_dataset,
     load_pipeline_config_from_path,
     save_pipeline_config_to_path,
 )
+from contour.application.dto import PersistedPaths
 
 
 class PipelineControllerTests(unittest.TestCase):
@@ -61,6 +63,33 @@ class DatasetExporterTests(unittest.TestCase):
 
         self.assertEqual(result.saved_files, {})
         self.assertEqual(result.message_key, "dataset_export_failed_log")
+
+
+class PathSettingsControllerTests(unittest.TestCase):
+    def test_save_and_load_roundtrip_through_store(self) -> None:
+        store = _FakePathStore()
+        controller = PathSettingsController(store)
+        paths = PersistedPaths(input_directory="in", output_directory="out")
+
+        controller.save(paths)
+
+        self.assertEqual(controller.load(), paths)
+
+    def test_validate_input_directory_normalizes_and_reports_availability(self) -> None:
+        with TemporaryDirectory() as tmp:
+            controller = PathSettingsController(_FakePathStore())
+
+            result = controller.validate_input_directory(Path(tmp))
+
+        self.assertTrue(result.available)
+        self.assertTrue(result.is_directory)
+
+    def test_validate_input_directory_rejects_missing_path(self) -> None:
+        controller = PathSettingsController(_FakePathStore())
+
+        result = controller.validate_input_directory("definitely-missing-directory")
+
+        self.assertFalse(result.available)
 
 
 class PreviewOrchestratorTests(unittest.TestCase):
@@ -115,6 +144,17 @@ class _FakeProcessor:
 
     def stop(self) -> None:
         self.stop_calls += 1
+
+
+class _FakePathStore:
+    def __init__(self) -> None:
+        self.paths = PersistedPaths()
+
+    def load(self) -> PersistedPaths:
+        return self.paths
+
+    def save(self, paths: PersistedPaths) -> None:
+        self.paths = paths
 
 
 def _batch_request(paths: list[str], *, output_directory: str, save_cif: bool) -> BatchStartRequest:

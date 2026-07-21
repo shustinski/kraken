@@ -27,7 +27,7 @@ kraken-hub = "kraken_hub.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["kraken_core*", "kraken_hub*"]
+include = ["kraken_core*", "kraken_hub*", "updater*"]
 
 [tool.setuptools.package-data]
 kraken_hub = ["resources/*.json"]

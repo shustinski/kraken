@@ -5,6 +5,32 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from neuralimage.active_learning.config import ActiveLearningConfig, build_active_learning_config
+from neuralimage.augmentations.sem_config import SemAugmentationConfig, build_sem_augmentation_config
+from neuralimage.preprocessing.config import PreprocessingConfig, build_preprocessing_config
+from neuralimage.targets.config import SupervisionTargetsParameters, build_supervision_targets_parameters
+from neuralimage.uncertainty.config import UncertaintyConfig, build_uncertainty_config
+
+
+def _default_supervision_targets() -> SupervisionTargetsParameters:
+    return SupervisionTargetsParameters()
+
+
+def _default_preprocessing_config() -> PreprocessingConfig:
+    return PreprocessingConfig()
+
+
+def _default_sem_augmentation_config() -> SemAugmentationConfig:
+    return SemAugmentationConfig()
+
+
+def _default_uncertainty_config() -> UncertaintyConfig:
+    return UncertaintyConfig()
+
+
+def _default_active_learning_config() -> ActiveLearningConfig:
+    return ActiveLearningConfig()
+
 
 class WorkMode(enum.Enum):
     train_only = 'train_only'
@@ -1384,6 +1410,12 @@ class TrainingParameters:
     synthetic_defect_generator: SyntheticDefectGeneratorParameters = field(
         default_factory=SyntheticDefectGeneratorParameters
     )
+    supervision_targets: SupervisionTargetsParameters = field(default_factory=_default_supervision_targets)
+    preprocessing: PreprocessingConfig = field(default_factory=_default_preprocessing_config)
+    sem_augmentation: SemAugmentationConfig = field(default_factory=_default_sem_augmentation_config)
+    uncertainty: UncertaintyConfig = field(default_factory=_default_uncertainty_config)
+    active_learning: ActiveLearningConfig = field(default_factory=_default_active_learning_config)
+    advanced_validation: bool = True
 
 @dataclass
 class RecognitionParameters:
@@ -1412,6 +1444,9 @@ class RecognitionParameters:
     context_input_size: tuple[int, int] | None = None
     recursive_file_search: bool = False
     compression_factor: int = 1
+    preprocessing: PreprocessingConfig = field(default_factory=_default_preprocessing_config)
+    uncertainty: UncertaintyConfig = field(default_factory=_default_uncertainty_config)
+    active_learning: ActiveLearningConfig = field(default_factory=_default_active_learning_config)
 
 
 @dataclass

@@ -70,6 +70,8 @@ Required inputs:
 
 This mode does not train anything. It simply loads an existing `.pth` file and runs inference on the source images.
 
+Recognition masks, probability maps, and confidence/uncertainty maps are saved as lossless PNG by default. JPEG remains available only for compatibility with the legacy inference pipeline.
+
 It is suitable for production runs, repeated processing, or comparing multiple trained models.
 
 ### Training only

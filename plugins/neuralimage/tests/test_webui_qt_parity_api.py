@@ -286,7 +286,7 @@ class TestWebuiQtParityApis(TestCase):
                     Path(self._parameters.result_folder, 'mask.png').write_bytes(b'mask')
 
             with override_settings(WEBUI_UPLOAD_ROOT=Path(temp_root) / 'uploads'), patch(
-                'model.NeuralNetwork.model_train_and_recognition.NeuralRecognizer',
+                'neuralimage.model.NeuralNetwork.model_train_and_recognition.NeuralRecognizer',
                 FakeRecognizer,
             ):
                 response = self.client.post(

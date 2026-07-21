@@ -22,7 +22,10 @@
     ],
     "batch_size": 8,
     "overlap": 16,
-    "jpeg_quality": 95
+    "jpeg_quality": 95,
+    "output_format": "png",
+    "inference_pipeline_version": "v2",
+    "multi_scale_values": [1.0]
   },
   "tranining_parameters": {
     "image_path": "D:/data/train/images",

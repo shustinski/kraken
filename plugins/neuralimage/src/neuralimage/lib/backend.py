@@ -2,8 +2,6 @@ import io
 import json
 import os
 from pathlib import Path
-from typing import Iterable
-
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -61,6 +59,27 @@ def cif_to_jpg(cif_file) -> Image.Image | tuple[int, str]:
             draw.ellipse(ellipse, outline=1, fill=1)
 
     return image
+
+
+def save_binary_cif_png(image: Image.Image, output_path: str | Path) -> Path:
+    """Atomically save a CIF-derived mask as a true 1-bit grayscale PNG."""
+
+    path = Path(output_path)
+    if path.suffix.lower() != '.png':
+        raise ValueError(f'Binary CIF output must use the .png extension, got {path}.')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    grayscale = image.convert('L')
+    binary = grayscale.point(lambda value: 255 if value > 0 else 0, mode='1')
+    temporary_path = path.with_name(f'.{path.name}.tmp')
+    binary.save(temporary_path, format='PNG', compress_level=6)
+    os.replace(temporary_path, path)
+
+    # Remove generated cache files from older versions only after the PNG is safe.
+    for legacy_suffix in ('.jpg', '.jpeg'):
+        legacy_path = path.with_suffix(legacy_suffix)
+        if legacy_path.exists():
+            legacy_path.unlink()
+    return path
 
 
 def check_and_get_size(cif_line: list[str]) -> tuple[bool, tuple[int, int] | list[int]]:

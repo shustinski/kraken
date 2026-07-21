@@ -240,7 +240,7 @@ def test_no_cut_dataset_set_epoch_rebuilds_lookup_after_frame_shuffle(monkeypatc
     def reverse_in_place(items):
         items.reverse()
 
-    monkeypatch.setattr('model.NeuralNetwork.dataset.random.shuffle', reverse_in_place)
+    monkeypatch.setattr('neuralimage.model.NeuralNetwork.dataset.random.shuffle', reverse_in_place)
     monkeypatch.setattr(
         dataset,
         '_build_frame_cutter',

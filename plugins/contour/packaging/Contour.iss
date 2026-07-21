@@ -1,18 +1,18 @@
 #define MyAppName "Contour"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.8.0"
+  #define MyAppVersion "0.8.5"
 #endif
 #define MyAppPublisher "Contour"
 #define MyAppExeName "Contour.exe"
-#define MyAppDistDir "..\\dist\\Contour"
-#define MyAppIcon "..\\resources\\icons\\contour.ico"
+#define MyAppDistDir "D:\\code\\kraken\\plugins\\contour\\dist\\Contour"
+#define MyAppIcon "..\\resources\\\icons\\contour.ico"
 
 [Setup]
 AppId={{3D57BB57-5DD3-40F8-8521-0FC09E6EF8B5}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\Contour\Polygon Widget
+DefaultDirName={autopf}\Contour
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 ArchitecturesAllowed=x64compatible

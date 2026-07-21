@@ -1,37 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-
-@dataclass(frozen=True)
-class PatchWindow:
-    """Patch window in source-image coordinates."""
-
-    left: int
-    top: int
-    width: int
-    height: int
-
-    @property
-    def right(self) -> int:
-        return int(self.left + self.width)
-
-    @property
-    def bottom(self) -> int:
-        return int(self.top + self.height)
-
-    @property
-    def center_x(self) -> float:
-        return float(self.left + (self.width / 2.0))
-
-    @property
-    def center_y(self) -> float:
-        return float(self.top + (self.height / 2.0))
+from neuralimage.lib.tiling import PatchWindow, TilePlan, build_tile_plan
 
 
 def normalize_size_pair(
@@ -100,36 +75,9 @@ def resolve_sliding_windows(
     patch_size_xy: tuple[int, int],
     overlap: int,
 ) -> list[PatchWindow]:
-    """Return patch windows in the same order as the existing cut/sew pipeline."""
+    """Return unique patch windows in deterministic row-major order."""
 
-    base_height, base_width = int(base_shape_hw[0]), int(base_shape_hw[1])
-    patch_width, patch_height = int(patch_size_xy[0]), int(patch_size_xy[1])
-    stride_height = max(1, int(patch_height - overlap))
-    stride_width = max(1, int(patch_width - overlap))
-    row_steps = int(base_height / stride_height) + 1
-    column_steps = int(base_width / stride_width) + 1
-
-    windows: list[PatchWindow] = []
-    for row in range(row_steps):
-        for col in range(column_steps):
-            left = col * stride_width
-            top = row * stride_height
-            right = left + patch_width
-            bottom = top + patch_height
-
-            src_top = top if bottom <= base_height else max(0, base_height - patch_height)
-            src_left = left if right <= base_width else max(0, base_width - patch_width)
-            src_bottom = min(base_height, src_top + patch_height)
-            src_right = min(base_width, src_left + patch_width)
-            windows.append(
-                PatchWindow(
-                    left=int(src_left),
-                    top=int(src_top),
-                    width=max(1, int(src_right - src_left)),
-                    height=max(1, int(src_bottom - src_top)),
-                )
-            )
-    return windows
+    return list(build_tile_plan(base_shape_hw, patch_size_xy, overlap).windows)
 
 
 def build_patch_coordinate_batch(
@@ -137,14 +85,12 @@ def build_patch_coordinate_batch(
     *,
     local_patch_size_xy: tuple[int, int],
     overlap: int,
+    tile_plan: TilePlan | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return pixel and normalized coordinates aligned with ``cut_image`` order."""
 
-    windows = resolve_sliding_windows(
-        base_shape_hw=base_shape_hw,
-        patch_size_xy=local_patch_size_xy,
-        overlap=overlap,
-    )
+    plan = tile_plan or build_tile_plan(base_shape_hw, local_patch_size_xy, overlap)
+    windows = plan.windows
     coords_px = np.asarray(
         [
             [window.left, window.top, window.right, window.bottom]
@@ -266,14 +212,16 @@ def build_context_batch(
     overlap: int,
     context_crop_size_xy: tuple[int, int],
     context_input_size_xy: tuple[int, int],
+    tile_plan: TilePlan | None = None,
 ) -> np.ndarray:
     """Build context inputs aligned with sliding-window local patches."""
 
-    windows = resolve_sliding_windows(
-        base_shape_hw=(int(image_chw.shape[1]), int(image_chw.shape[2])),
-        patch_size_xy=local_patch_size_xy,
-        overlap=overlap,
+    plan = tile_plan or build_tile_plan(
+        (int(image_chw.shape[1]), int(image_chw.shape[2])),
+        local_patch_size_xy,
+        overlap,
     )
+    windows = plan.windows
     context_batch = [
         extract_centered_crop(
             image_chw,

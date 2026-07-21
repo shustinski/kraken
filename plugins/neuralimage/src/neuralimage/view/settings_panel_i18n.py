@@ -54,6 +54,7 @@ def apply_settings_panel_texts(panel: Any) -> None:
     descriptions = _copy_text_dict(t.get('field_descriptions', {}))
     log_update_key = TEXT_FIELD_LOG_UPDATE_FREQUENCY
     jpeg_quality_key = TEXT_FIELD_RECOGNITION_JPEG_QUALITY
+    output_format_key = 'recognition_output_format'
     dataloader_workers_key = 'dataloader_num_workers'
     scheduler_name_key = 'scheduler_name'
     scheduler_plateau_factor_key = 'scheduler_plateau_factor'
@@ -270,6 +271,15 @@ def apply_settings_panel_texts(panel: Any) -> None:
     if jpeg_quality_key not in descriptions:
         descriptions[jpeg_quality_key] = str(
             t.get('recognition_jpeg_quality_tip', 'JPEG quality for recognition output (1..100).')
+        )
+    if output_format_key not in labels_map:
+        labels_map[output_format_key] = str(t.get('recognition_output_format', 'Output format'))
+    if output_format_key not in descriptions:
+        descriptions[output_format_key] = str(
+            t.get(
+                'recognition_output_format_tip',
+                'Lossless PNG is recommended for masks and probability maps; JPEG is a legacy option.',
+            )
         )
     if deprecated_models_key not in labels_map:
         labels_map[deprecated_models_key] = str(t.get('deprecated_models', 'Deprecated models'))

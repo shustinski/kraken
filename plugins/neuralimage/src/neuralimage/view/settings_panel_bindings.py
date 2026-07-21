@@ -99,6 +99,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.dataloader_num_workers_spinbox.valueChanged,
             panel.recognition_batch_spinbox.valueChanged,
             panel.recognition_jpeg_quality_spinbox.valueChanged,
+            panel.recognition_output_format_combo.currentIndexChanged,
             panel.recognition_multiprocessing_check_box.toggled,
             panel.recognition_binarize_output_check_box.toggled,
             panel.recognition_use_auto_threshold_check_box.toggled,

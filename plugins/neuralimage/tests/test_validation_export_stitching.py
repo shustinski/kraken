@@ -1,7 +1,9 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import torch
+from PIL import Image
 
 import neuralimage.model.NeuralNetwork.model_train_and_recognition as target
 from neuralimage.model.NeuralNetwork.dataset import NoCutDataset
@@ -143,3 +145,41 @@ def test_validation_binary_export_uses_cached_predictions_without_second_inferen
     assert all(call[0].name == 'epoch_0002' for call in sew_calls)
     assert sorted(call[1]['name'] for call in sew_calls) == ['frame_a.jpg', 'frame_b.jpg']
     assert all(call[2] == 0.65 for call in sew_calls)
+
+
+def test_full_frame_threshold_metrics_use_stitched_probabilities():
+    root = make_test_dir('validation_full_frame_threshold')
+    image_path = root / 'frame.png'
+    label_path = root / 'frame_mask.png'
+    Image.fromarray(np.zeros((8, 12), dtype=np.uint8), mode='L').save(image_path)
+    Image.fromarray(np.full((8, 12), 255, dtype=np.uint8), mode='L').save(label_path)
+
+    dataset = NoCutDataset.__new__(NoCutDataset)
+    dataset.samples = [(image_path, label_path)]
+    dataset._prep_settings = None
+    frame = target._ValidationNoCutFrameExportCache(
+        frame_index=0,
+        image_path=image_path,
+        baseim_size=(12, 8),
+        overlap=4,
+        parts_count=2,
+        part_lookup=None,
+        patches={
+            0: np.full((1, 8, 8), 0.6, dtype=np.float16),
+            1: np.full((1, 8, 8), 0.6, dtype=np.float16),
+        },
+    )
+    cache = target._ValidationExportCache(
+        mode='no_cut',
+        dataset=dataset,
+        frame_predictions={0: frame},
+    )
+    trainer = target.TrainerProcess.__new__(target.TrainerProcess)
+    trainer._bus = _Bus()
+
+    metrics = trainer._full_frame_threshold_metrics(cache)
+
+    assert metrics is not None
+    assert metrics[0.5]['dice'] == 1.0
+    assert metrics[0.7]['dice'] == 0.0
+    assert any('stitched full frame' in str(message[1]) for message in trainer._bus.messages)

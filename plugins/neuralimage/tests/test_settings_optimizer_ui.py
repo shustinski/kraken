@@ -358,6 +358,13 @@ def test_settings_panel_syncs_tech_aug_controls(qapp):
 def test_settings_panel_syncs_recognition_output_controls(qapp):
     panel = SettingsPanel()
 
+    assert panel.recognition_output_format_combo.currentData() == 'png'
+    assert panel._field_rows[panel.recognition_jpeg_quality_spinbox].isEnabled() is False
+    panel.recognition_output_format_combo.setCurrentIndex(
+        panel.recognition_output_format_combo.findData('jpeg')
+    )
+    assert panel._field_rows[panel.recognition_jpeg_quality_spinbox].isEnabled() is True
+
     panel.recognition_binarize_output_check_box.setChecked(True)
     panel.recognition_use_auto_threshold_check_box.setChecked(True)
     assert panel._field_rows[panel.recognition_threshold_spinbox].isEnabled() is False

@@ -261,6 +261,9 @@ def _build_recognition_parameters(raw: dict[str, Any]) -> RecognitionParameters:
         batch_size=int(raw.get('batch_size', 16)),
         overlap=int(raw.get('overlap', 8)),
         jpeg_quality=int(raw.get('jpeg_quality', 95)),
+        output_format=str(raw.get('output_format', 'png') or 'png'),
+        inference_pipeline_version=str(raw.get('inference_pipeline_version', 'v2') or 'v2'),
+        multi_scale_values=tuple(float(value) for value in raw.get('multi_scale_values', [1.0])) or (1.0,),
         use_context_branch=(
             bool(raw.get('use_context_branch'))
             if 'use_context_branch' in raw
@@ -311,6 +314,9 @@ def _config_template() -> dict[str, Any]:
             'batch_size': 8,
             'overlap': 16,
             'jpeg_quality': 95,
+            'output_format': 'png',
+            'inference_pipeline_version': 'v2',
+            'multi_scale_values': [1.0],
         },
         'tranining_parameters': {
             'image_path': 'D:/data/train/images',

@@ -219,6 +219,14 @@ def _build_settings_state(
         patch_batch_sync_mode=patch_batch_sync_mode,
         overlap=read_int('overlap', defaults.overlap),
         recognition_jpeg_quality=read_int('recognition_jpeg_quality', defaults.recognition_jpeg_quality),
+        recognition_output_format=read_str(
+            'recognition_output_format',
+            getattr(defaults, 'recognition_output_format', 'png'),
+        ),
+        inference_pipeline_version=read_str(
+            'inference_pipeline_version',
+            getattr(defaults, 'inference_pipeline_version', 'v2'),
+        ),
         recognition_multiprocessing_enabled=read_bool(
             'recognition_multiprocessing_enabled',
             getattr(defaults, 'recognition_multiprocessing_enabled', True),
@@ -535,6 +543,8 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'patch_batch_sync_mode': patch_batch_sync_mode,
         'overlap': int(state.overlap),
         'recognition_jpeg_quality': int(getattr(state, 'recognition_jpeg_quality', 95)),
+        'recognition_output_format': str(getattr(state, 'recognition_output_format', 'png') or 'png'),
+        'inference_pipeline_version': str(getattr(state, 'inference_pipeline_version', 'v2') or 'v2'),
         'recognition_multiprocessing_enabled': bool(
             getattr(state, 'recognition_multiprocessing_enabled', True)
         ),

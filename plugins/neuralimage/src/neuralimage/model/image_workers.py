@@ -61,8 +61,8 @@ class ConvertCifThread(threading.Thread):
                     relative_parent = Path()
             output_dir = self.savepath / relative_parent
             output_dir.mkdir(parents=True, exist_ok=True)
-            save_path = output_dir / f'{file.stem}.jpg'
-            converted.save(save_path)
+            save_path = output_dir / f'{file.stem}.png'
+            backend.save_binary_cif_png(converted, save_path)
 
         if self.callback is not None:
             self.callback()

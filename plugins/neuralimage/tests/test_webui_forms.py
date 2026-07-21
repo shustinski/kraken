@@ -66,6 +66,7 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
         "batch_size": "8",
         "dataloader_num_workers": "6",
         "overlap": "16",
+        "recognition_output_format": "jpeg",
         "recognition_tta_enabled": "on",
         "confidence_tta_enabled": "on",
         "confidence_save_mode": "separate_grayscale",
@@ -132,6 +133,7 @@ def test_settings_form_to_state_maps_new_processing_and_augmentation_fields():
     assert state.crop_enabled is True
     assert state.resize_enabled is True
     assert state.recognition_tta_enabled is True
+    assert state.recognition_output_format == "jpeg"
     assert state.confidence_tta_enabled is True
     assert state.confidence_save_mode == "separate_grayscale"
     assert state.log_update_frequency == 40

@@ -52,6 +52,7 @@ def test_gpu_predict_sanitizes_non_finite_outputs():
     assert confidence.shape == (2, 1, 8, 8)
     assert np.allclose(output, 0.5, atol=1e-6)
     assert np.allclose(confidence, 1.0, atol=1e-6)
+    assert predicted['confidence_kind'] == 'uncertainty'
 
     stats = predicted.get('_prediction_stats')
     assert isinstance(stats, dict)
@@ -86,6 +87,7 @@ def test_gpu_predict_applies_tta_independently_for_mask_and_confidence():
     assert np.allclose(recognition_tta['confidence_image'], base['confidence_image'])
     assert np.allclose(confidence_tta['predicted_image'], base['predicted_image'])
     assert not np.allclose(confidence_tta['confidence_image'], base['confidence_image'])
+    assert base['confidence_kind'] == 'confidence'
 
 
 def test_shared_memory_payload_roundtrip_for_cut_batches():
@@ -148,6 +150,23 @@ def test_cut_image_prepare_uses_relative_name_when_source_root_is_provided(tmp_p
     assert payload['name'] == 'nested/frame.png'
 
 
+def test_cut_image_prepare_legacy_v1_preserves_duplicate_edge_tiles(tmp_path):
+    source_path = tmp_path / 'frame.png'
+    Image.fromarray(np.zeros((12, 12), dtype=np.uint8), mode='L').save(source_path)
+
+    v2_payload = cut_image_prepare(source_path, (1, 4, 4), overlap=0)
+    legacy_payload = cut_image_prepare(
+        source_path,
+        (1, 4, 4),
+        overlap=0,
+        inference_pipeline_version='legacy_v1',
+    )
+
+    assert v2_payload['tile_plan'].tile_count == 9
+    assert legacy_payload['tile_plan'].tile_count == 16
+    assert len(set(legacy_payload['tile_plan'].windows)) == 9
+
+
 def test_sew_preserves_relative_output_directories(tmp_path, monkeypatch):
     monkeypatch.setattr(
         recognition_pipeline_module,
@@ -163,7 +182,7 @@ def test_sew_preserves_relative_output_directories(tmp_path, monkeypatch):
 
     output_path = sew(tmp_path, payload)
 
-    assert output_path == tmp_path / 'nested' / 'frame.jpg'
+    assert output_path == tmp_path / 'nested' / 'frame.png'
     assert output_path.exists()
 
 
@@ -183,11 +202,11 @@ def test_sew_writes_confidence_map_to_named_confidence_result_directory(tmp_path
 
     output_path = sew(tmp_path, payload, confidence_save_mode='separate_grayscale')
 
-    assert output_path == tmp_path / 'nested' / 'frame.jpg'
+    assert output_path == tmp_path / 'nested' / 'frame.png'
     assert output_path.exists()
-    assert (tmp_path.parent / f'confidence_{tmp_path.name}' / 'nested' / 'frame.jpg').exists()
-    assert not (tmp_path / 'confidence' / 'nested' / 'frame.jpg').exists()
-    assert not (tmp_path / 'nested' / 'frame_confidence.jpg').exists()
+    assert (tmp_path.parent / f'confidence_{tmp_path.name}' / 'nested' / 'frame.png').exists()
+    assert not (tmp_path / 'confidence' / 'nested' / 'frame.png').exists()
+    assert not (tmp_path / 'nested' / 'frame_confidence.png').exists()
 
 
 def test_single_thread_recognition_passes_compression_factor_to_cut(tmp_path, monkeypatch):
@@ -258,8 +277,55 @@ def test_single_thread_recognition_creates_output_subdirectories_from_source_roo
         source_root=source_dir,
     )
 
-    assert (result_dir / 'metal' / 'layer_1' / 'frame.jpg').exists()
-    assert not (result_dir / 'frame.jpg').exists()
+    assert (result_dir / 'metal' / 'layer_1' / 'frame.png').exists()
+    assert not (result_dir / 'frame.png').exists()
+
+
+def test_sew_legacy_v1_preserves_jpeg_path(tmp_path):
+    payload = {
+        'name': 'frame.png',
+        'baseim_size': (8, 8),
+        'predicted_image': np.ones((4, 1, 8, 8), dtype=np.float32),
+        'overlap': 0,
+    }
+
+    output_path = sew(tmp_path, payload, inference_pipeline_version='legacy_v1')
+
+    assert output_path == tmp_path / 'frame.jpg'
+    assert output_path.exists()
+
+
+def test_sew_binary_png_is_lossless(tmp_path):
+    probabilities = np.array(
+        [[[[0.1, 0.9], [0.7, 0.2]]]],
+        dtype=np.float32,
+    )
+    payload = {
+        'name': 'frame.jpg',
+        'baseim_size': (2, 2),
+        'predicted_image': probabilities,
+        'overlap': 0,
+    }
+
+    output_path = sew(tmp_path, payload, threshold=0.5)
+
+    assert output_path.suffix == '.png'
+    assert set(np.unique(np.asarray(Image.open(output_path))).tolist()) == {0, 255}
+
+
+def test_sew_labels_fallback_uncertainty_output_directory(tmp_path):
+    payload = {
+        'name': 'frame.jpg',
+        'baseim_size': (2, 2),
+        'predicted_image': np.zeros((1, 1, 2, 2), dtype=np.float32),
+        'confidence_image': np.ones((1, 1, 2, 2), dtype=np.float32),
+        'confidence_kind': 'uncertainty',
+        'overlap': 0,
+    }
+
+    sew(tmp_path, payload, confidence_save_mode='separate_grayscale')
+
+    assert (tmp_path.parent / f'uncertainty_{tmp_path.name}' / 'frame.png').exists()
 
 
 class _StubQueue:

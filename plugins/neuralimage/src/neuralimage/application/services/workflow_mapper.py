@@ -282,6 +282,13 @@ def build_workflow_parameters(
         part_size=recognition_patch_size,
         overlap=settings.overlap,
         jpeg_quality=int(getattr(settings, 'recognition_jpeg_quality', 95)),
+        output_format=str(getattr(settings, 'recognition_output_format', 'png') or 'png'),
+        inference_pipeline_version=str(getattr(settings, 'inference_pipeline_version', 'v2') or 'v2'),
+        multi_scale_values=tuple(
+            float(value)
+            for value in (getattr(settings, 'recognition_multi_scale_values', (1.0,)) or (1.0,))
+            if float(value) > 0.0
+        ) or (1.0,),
         recognition_multiprocessing_enabled=bool(
             getattr(settings, 'recognition_multiprocessing_enabled', True)
         ),

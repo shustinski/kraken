@@ -57,7 +57,12 @@ def test_prepare_label_folder_for_rare_patch_editor_converts_cif_to_binary_cif()
 
     assert error_message is None
     assert resolved_label_dir == root / 'binary_cif'
-    assert (resolved_label_dir / 'frame.jpg').exists()
+    output_path = resolved_label_dir / 'frame.png'
+    assert output_path.exists()
+    with Image.open(output_path) as binary_mask:
+        assert binary_mask.mode == '1'
+        assert binary_mask.getextrema() == (0, 255)
+    assert output_path.read_bytes()[24] == 1
     assert pair_error is None
     assert len(pairs) == 1
 

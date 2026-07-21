@@ -1395,6 +1395,9 @@ class RecognitionParameters:
     overlap: int
     source_folder: Path | None = None
     jpeg_quality: int = 95
+    output_format: str = 'png'
+    inference_pipeline_version: str = 'v2'
+    multi_scale_values: tuple[float, ...] = (1.0,)
     recognition_multiprocessing_enabled: bool = True
     binarize_output: bool = True
     use_auto_threshold: bool = True

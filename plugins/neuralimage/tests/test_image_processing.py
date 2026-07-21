@@ -5,7 +5,15 @@ pytest.importorskip('PIL')
 
 from PIL import Image
 
-from neuralimage.lib.image_processing import get_names_from_file, reshape_imgs, cut_image, img_crop_border, sew_image
+from neuralimage.lib.image_processing import (
+    cut_image,
+    get_names_from_file,
+    img_crop_border,
+    reshape_imgs,
+    sew_image,
+    stitch_probability_map,
+)
+from neuralimage.lib.tiling import build_tile_plan
 from tests.helpers import make_test_dir
 
 
@@ -93,4 +101,82 @@ def test_img_crop_border_crops_to_black_frame():
     arr = np.array(cropped)
     assert arr[0, 0] == 0
     assert arr[2, 2] == 255
+
+
+@pytest.mark.parametrize(
+    ('base_size', 'tile_size', 'overlap'),
+    [
+        ((128, 128), (64, 64), 1),
+        ((101, 79), (32, 24), 7),
+        ((40, 40), (16, 16), 15),
+        ((17, 19), (64, 32), 3),
+        ((128, 64), (64, 32), 0),
+    ],
+)
+def test_tile_plan_roundtrip_has_complete_coverage(base_size, tile_size, overlap):
+    width, height = base_size
+    tile_width, tile_height = tile_size
+    base = np.full((1, height, width), 255, dtype=np.float32)
+    plan = build_tile_plan((height, width), (tile_width, tile_height), overlap)
+
+    parts = cut_image(base, (1, tile_width, tile_height), overlap, tile_plan=plan)
+    stitched = stitch_probability_map(base_size, parts, overlap, tile_plan=plan)
+
+    assert plan.tile_count == len(set((window.left, window.top) for window in plan.windows))
+    assert stitched.tile_count == plan.tile_count
+    assert stitched.min_weight > 0.0
+    assert np.isfinite(stitched.probabilities).all()
+    assert np.allclose(stitched.probabilities, 1.0, atol=1e-6)
+
+
+def test_tile_plan_roundtrip_preserves_coordinate_gradient():
+    width, height = 101, 79
+    x = np.linspace(0.0, 255.0, width, dtype=np.float32)
+    y = np.linspace(0.0, 255.0, height, dtype=np.float32)[:, None]
+    base = ((x[None, :] + y) * 0.5)[None, :, :]
+    plan = build_tile_plan((height, width), (32, 24), overlap=7)
+
+    parts = cut_image(base, (1, 32, 24), 7, tile_plan=plan)
+    stitched = stitch_probability_map((width, height), parts, 7, tile_plan=plan)
+
+    assert np.allclose(stitched.probabilities, base[0] / 255.0, atol=1e-6)
+
+
+def test_stitch_probability_map_blends_conflicting_tiles_smoothly():
+    plan = build_tile_plan((8, 12), (8, 8), overlap=4)
+    predictions = np.zeros((2, 1, 8, 8), dtype=np.float32)
+    predictions[1] = 1.0
+
+    stitched = stitch_probability_map((12, 8), predictions, 4, tile_plan=plan).probabilities
+    overlap_profile = stitched[4, 4:8]
+
+    assert np.all(np.diff(overlap_profile) > 0.0)
+    assert np.all(stitched[:, :4] == 0.0)
+    assert np.all(stitched[:, 8:] == 1.0)
+
+
+def test_stitch_probability_map_uses_actual_overlap_for_edge_aligned_tile():
+    plan = build_tile_plan((4, 10), (4, 4), overlap=0)
+    predictions = np.zeros((3, 1, 4, 4), dtype=np.float32)
+    predictions[1] = 0.5
+    predictions[2] = 1.0
+
+    stitched = stitch_probability_map((10, 4), predictions, 0, tile_plan=plan)
+
+    assert stitched.min_overlap == 2
+    assert stitched.max_overlap == 2
+    assert np.all(np.diff(stitched.probabilities[2, 5:9]) > 0.0)
+
+
+def test_stitch_probability_map_rejects_prediction_count_mismatch():
+    plan = build_tile_plan((32, 32), (16, 16), overlap=3)
+    predictions = np.zeros((plan.tile_count - 1, 1, 16, 16), dtype=np.float32)
+
+    with pytest.raises(ValueError, match='Prediction count'):
+        stitch_probability_map((32, 32), predictions, 3, tile_plan=plan)
+
+
+def test_tile_plan_rejects_invalid_overlap():
+    with pytest.raises(ValueError, match='overlap must satisfy'):
+        build_tile_plan((32, 32), (16, 16), overlap=16)
 

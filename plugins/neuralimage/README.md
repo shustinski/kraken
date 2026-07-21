@@ -6,7 +6,11 @@ or as a Kraken-managed plugin.
 
 ## Run
 
+From a source checkout, open `run_neuralimage.py` in VS Code and press `F5`.
+The launcher configures the local `src` package automatically.
+
 ```powershell
+python run_neuralimage.py
 python -m neuralimage --help
 python -m neuralimage --ui-only
 ```

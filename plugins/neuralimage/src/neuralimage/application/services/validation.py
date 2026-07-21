@@ -132,6 +132,14 @@ def get_processing_start_blockers(
     if settings_state is None:
         return blockers
 
+    recognition_patch = (
+        getattr(settings_state, 'recognition_patch_size', None)
+        or getattr(settings_state, 'sample_size', (256, 256))
+    )
+    overlap = int(getattr(settings_state, 'overlap', 0))
+    if overlap < 0 or overlap >= min(int(recognition_patch[0]), int(recognition_patch[1])):
+        blockers.append('Перекрытие должно быть меньше обеих сторон патча распознавания.')
+
     if (
         training_mode
         and str(getattr(settings_state, 'optimizer_name', '')).strip().lower() == 'adamw_muon'

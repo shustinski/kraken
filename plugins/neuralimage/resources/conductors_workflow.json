@@ -46,6 +46,8 @@
     "patch_batch_sync_mode": "patch_and_batch",
     "overlap": 32,
     "recognition_jpeg_quality": 95,
+    "recognition_output_format": "png",
+    "inference_pipeline_version": "v2",
     "recognition_multiprocessing_enabled": true,
     "recognition_binarize_output": false,
     "recognition_use_auto_threshold": true,

@@ -480,6 +480,9 @@ class MainPresenter(QObject):
         s.recognition_batch_spinbox.setValue(recognition_batch_size)
         s.overlap_spinbox.setValue(state.overlap)
         s.recognition_jpeg_quality_spinbox.setValue(int(getattr(state, 'recognition_jpeg_quality', 95)))
+        output_format = str(getattr(state, 'recognition_output_format', 'png') or 'png').lower()
+        output_index = s.recognition_output_format_combo.findData(output_format)
+        s.recognition_output_format_combo.setCurrentIndex(max(0, output_index))
         s.recognition_multiprocessing_check_box.setChecked(
             bool(getattr(state, 'recognition_multiprocessing_enabled', True))
         )
@@ -660,6 +663,7 @@ class MainPresenter(QObject):
             recognition_patch_size = train_patch_size
         overlap = s.overlap_spinbox.value()
         recognition_jpeg_quality = s.recognition_jpeg_quality_spinbox.value()
+        recognition_output_format = str(s.recognition_output_format_combo.currentData() or 'png')
         recognition_multiprocessing_enabled = s.recognition_multiprocessing_check_box.isChecked()
         recognition_binarize_output = s.recognition_binarize_output_check_box.isChecked()
         recognition_use_auto_threshold = s.recognition_use_auto_threshold_check_box.isChecked()
@@ -799,6 +803,7 @@ class MainPresenter(QObject):
                               patch_batch_sync_mode='patch' if sync_patch_sizes else 'off',
                               overlap=overlap,
                               recognition_jpeg_quality=recognition_jpeg_quality,
+                              recognition_output_format=recognition_output_format,
                               recognition_multiprocessing_enabled=recognition_multiprocessing_enabled,
                               recognition_binarize_output=recognition_binarize_output,
                               recognition_use_auto_threshold=recognition_use_auto_threshold,

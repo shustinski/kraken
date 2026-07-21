@@ -57,6 +57,8 @@ from neuralimage.lib.images import ImagePreparator, SampleCalculator
 from neuralimage.lib.images import _build_enabled_transform_variants
 from neuralimage.lib.loss_config import format_loss_formula, resolve_loss_term_weights, sanitize_loss_term_weights
 from neuralimage.lib.message_bus import AbstractMessageBus
+from neuralimage.lib.image_processing import stitch_probability_map
+from neuralimage.lib.tiling import build_tile_plan
 from neuralimage.lib.optimizer_availability import MUON_UNAVAILABLE_MESSAGE, resolve_muon_optimizer_class
 from neuralimage.lib.random_artifacts import generate_random_artifact_patch
 from neuralimage.model.NeuralNetwork.blocks import extract_confidence_output, extract_mask_outputs
@@ -928,6 +930,7 @@ class ModelTrainer(threading.Thread):
         self.succeeded = False
         self.error_message: str | None = None
         self._recommended_inference_threshold = 0.5
+        self._threshold_calibration_scope = 'patch'
 
 
     def _validate_training_inputs(self) -> bool:
@@ -1202,9 +1205,24 @@ class TrainerProcess(mp.Process):
 
     def _resolve_artifact_runtime_metadata(self) -> dict[str, Any]:
         threshold = float(min(max(getattr(self, '_recommended_inference_threshold', 0.5), 0.0), 1.0))
+        export_items = self._resolve_validation_export_items()
+        first_item = export_items[0] if export_items else {}
+        segment_shape = tuple(first_item.get('segment_shape', ()))
+        patch_size = (
+            [int(segment_shape[1]), int(segment_shape[2])]
+            if len(segment_shape) == 3
+            else None
+        )
         return {
             'inference': {
                 'recommended_threshold': threshold,
+                'pipeline_version': 'v2',
+                'calibration_scope': str(getattr(self, '_threshold_calibration_scope', 'patch')),
+                'blending': 'raised_cosine',
+                'patch_size': patch_size,
+                'overlap': int(first_item.get('overlap', 0)) if first_item else None,
+                'tta_transforms': ['identity', 'horizontal_flip'],
+                'multi_scale_values': [1.0],
             },
         }
 
@@ -2766,7 +2784,7 @@ class TrainerProcess(mp.Process):
         return [int(item) for item in parts]
 
     def _create_validation_export_cache(self) -> _ValidationExportCache | None:
-        if (not self._save_validation_binary_images) or self._val_dataloader is None:
+        if self._val_dataloader is None:
             return None
 
         dataset = self._resolve_validation_dataset()
@@ -2910,6 +2928,170 @@ class TrainerProcess(mp.Process):
                 continue
             frame_cache.patches[int(location)] = np.ascontiguousarray(cpu_probs[batch_offset])
 
+    @staticmethod
+    def _accumulate_threshold_counts(
+        threshold_counts: dict[float, dict[str, float | int]],
+        probabilities: np.ndarray,
+        label: np.ndarray,
+    ) -> None:
+        label_bin = np.asarray(label) >= 0.5
+        for threshold, counts in threshold_counts.items():
+            prediction = np.asarray(probabilities) >= float(threshold)
+            prediction_f = prediction.astype(np.float32, copy=False)
+            label_f = label_bin.astype(np.float32, copy=False)
+            counts['correct'] += int(np.count_nonzero(prediction == label_bin))
+            counts['total'] += int(label_bin.size)
+            counts['tp'] += float(np.sum(prediction_f * label_f))
+            counts['fp'] += float(np.sum(prediction_f * (1.0 - label_f)))
+            counts['fn'] += float(np.sum((1.0 - prediction_f) * label_f))
+
+    @staticmethod
+    def _load_validation_label(
+        label_path: Path,
+        *,
+        target_size: tuple[int, int],
+        prep_settings: Any = None,
+    ) -> np.ndarray:
+        if prep_settings is not None:
+            label_image = ImagePreparator(Path(label_path), prep_settings).image.convert('L')
+        else:
+            with retry_file_read(lambda: Image.open(label_path), path=label_path) as opened:
+                label_image = opened.convert('L').copy()
+        if label_image.size != target_size:
+            label_image = label_image.resize(target_size, resample=Image.Resampling.NEAREST)
+        return np.asarray(label_image, dtype=np.float32) / 255.0
+
+    def _full_frame_threshold_metrics(
+        self,
+        export_cache: _ValidationExportCache | None,
+    ) -> dict[float, dict[str, float]] | None:
+        if export_cache is None:
+            return None
+        counts: dict[float, dict[str, float | int]] = {
+            float(threshold): {'correct': 0, 'total': 0, 'tp': 0.0, 'fp': 0.0, 'fn': 0.0}
+            for threshold in VALIDATION_THRESHOLD_CANDIDATES
+        }
+        calibrated_frames = 0
+        base_dataset = self._unwrap_validation_dataset(export_cache.dataset)
+
+        if export_cache.mode == 'no_cut' and isinstance(base_dataset, NoCutDataset):
+            samples = list(getattr(base_dataset, 'samples', ()))
+            prep_settings = getattr(base_dataset, '_prep_settings', None)
+            for frame_cache in (export_cache.frame_predictions or {}).values():
+                if len(frame_cache.patches) != int(frame_cache.parts_count):
+                    continue
+                sample_patch = next(iter(frame_cache.patches.values()), None)
+                if sample_patch is None:
+                    continue
+                tile_height, tile_width = int(sample_patch.shape[-2]), int(sample_patch.shape[-1])
+                plan = build_tile_plan(
+                    (int(frame_cache.baseim_size[1]), int(frame_cache.baseim_size[0])),
+                    (tile_width, tile_height),
+                    int(frame_cache.overlap),
+                )
+                if plan.tile_count != int(frame_cache.parts_count):
+                    continue
+                predicted = np.stack(
+                    [np.asarray(frame_cache.patches[index], dtype=np.float32) for index in range(plan.tile_count)],
+                    axis=0,
+                )
+                stitched = stitch_probability_map(
+                    frame_cache.baseim_size,
+                    predicted,
+                    int(frame_cache.overlap),
+                    tile_plan=plan,
+                ).probabilities
+                if frame_cache.frame_index >= len(samples):
+                    continue
+                label = self._load_validation_label(
+                    Path(samples[frame_cache.frame_index][1]),
+                    target_size=frame_cache.baseim_size,
+                    prep_settings=prep_settings,
+                )
+                self._accumulate_threshold_counts(counts, stitched, label)
+                calibrated_frames += 1
+
+        if calibrated_frames <= 0:
+            return None
+        self._bus.put([
+            'logging',
+            f'Validation threshold calibrated on {calibrated_frames} stitched full frame(s) with pipeline v2.',
+        ])
+        return {
+            float(threshold): self._compute_binary_metrics(
+                true_positive=float(value['tp']),
+                false_positive=float(value['fp']),
+                false_negative=float(value['fn']),
+                correct=int(value['correct']),
+                total=int(value['total']),
+            )
+            for threshold, value in counts.items()
+        }
+
+    def _infer_full_frame_threshold_metrics(
+        self,
+        *,
+        device: torch.device,
+    ) -> dict[float, dict[str, float]] | None:
+        export_items = self._resolve_validation_export_items()
+        base_dataset = self._unwrap_validation_dataset(self._resolve_validation_dataset())
+        if not export_items or base_dataset is None:
+            return None
+        samples = list(getattr(base_dataset, 'samples', ()))
+        labels_by_image = {Path(image_path): Path(label_path) for image_path, label_path in samples}
+        prep_settings = getattr(base_dataset, '_prep_settings', None)
+        counts: dict[float, dict[str, float | int]] = {
+            float(threshold): {'correct': 0, 'total': 0, 'tp': 0.0, 'fp': 0.0, 'fn': 0.0}
+            for threshold in VALIDATION_THRESHOLD_CANDIDATES
+        }
+        batch_size = max(1, int(getattr(self._val_dataloader, 'batch_size', 1) or 1))
+        calibrated_frames = 0
+        with torch.inference_mode():
+            for export_item in export_items:
+                image_path = Path(export_item['image_path'])
+                label_path = labels_by_image.get(image_path)
+                if label_path is None:
+                    continue
+                prepared = _cut_image_prepare(
+                    image_path,
+                    tuple(export_item['segment_shape']),
+                    int(export_item['overlap']),
+                    use_context_branch=bool(export_item.get('use_context_branch', False)),
+                    use_cross_attention=bool(export_item.get('use_cross_attention', True)),
+                    context_crop_size=export_item.get('context_crop_size'),
+                    context_input_size=export_item.get('context_input_size'),
+                )
+                predicted = _gpu_predict(prepared, self._base_model, device, batch_size)
+                stitched = stitch_probability_map(
+                    predicted['baseim_size'],
+                    predicted['predicted_image'],
+                    int(predicted['overlap']),
+                    tile_plan=predicted.get('tile_plan'),
+                ).probabilities
+                label = self._load_validation_label(
+                    label_path,
+                    target_size=tuple(predicted['baseim_size']),
+                    prep_settings=prep_settings,
+                )
+                self._accumulate_threshold_counts(counts, stitched, label)
+                calibrated_frames += 1
+        if calibrated_frames <= 0:
+            return None
+        self._bus.put([
+            'logging',
+            f'Validation threshold calibrated by v2 full-frame inference on {calibrated_frames} frame(s).',
+        ])
+        return {
+            float(threshold): self._compute_binary_metrics(
+                true_positive=float(value['tp']),
+                false_positive=float(value['fp']),
+                false_negative=float(value['fn']),
+                correct=int(value['correct']),
+                total=int(value['total']),
+            )
+            for threshold, value in counts.items()
+        }
+
     def _save_validation_binary_predictions_from_cache(
         self,
         *,
@@ -2949,6 +3131,16 @@ class TrainerProcess(mp.Process):
         for frame_cache in frame_predictions.values():
             if len(frame_cache.patches) < int(frame_cache.parts_count):
                 return None
+            sample_patch = next(iter(frame_cache.patches.values()), None)
+            if sample_patch is None:
+                return None
+            plan = build_tile_plan(
+                (int(frame_cache.baseim_size[1]), int(frame_cache.baseim_size[0])),
+                (int(sample_patch.shape[-1]), int(sample_patch.shape[-2])),
+                int(frame_cache.overlap),
+            )
+            if plan.tile_count != int(frame_cache.parts_count):
+                return None
 
         saved_images = 0
         for frame_cache in frame_predictions.values():
@@ -2966,6 +3158,11 @@ class TrainerProcess(mp.Process):
             )
             for location, patch in frame_cache.patches.items():
                 predicted[int(location)] = np.asarray(patch, dtype=np.float32)
+            tile_plan = build_tile_plan(
+                (int(frame_cache.baseim_size[1]), int(frame_cache.baseim_size[0])),
+                (int(sample_patch.shape[-1]), int(sample_patch.shape[-2])),
+                int(frame_cache.overlap),
+            )
             _sew(
                 epoch_dir,
                 {
@@ -2973,6 +3170,7 @@ class TrainerProcess(mp.Process):
                     'baseim_size': frame_cache.baseim_size,
                     'overlap': int(frame_cache.overlap),
                     'predicted_image': predicted,
+                    'tile_plan': tile_plan,
                 },
                 jpeg_quality=95,
                 threshold=float(threshold),
@@ -3283,6 +3481,20 @@ class TrainerProcess(mp.Process):
             )
             for threshold, counts in threshold_counts.items()
         }
+        full_frame_metrics = self._full_frame_threshold_metrics(validation_export_cache)
+        if full_frame_metrics is None:
+            try:
+                full_frame_metrics = self._infer_full_frame_threshold_metrics(device=device)
+            except Exception as error:
+                self._bus.put([
+                    'logging',
+                    f'Full-frame threshold calibration unavailable; using patch metrics: {error}',
+                ])
+        if full_frame_metrics is not None:
+            threshold_metrics = full_frame_metrics
+            self._threshold_calibration_scope = 'full_frame'
+        else:
+            self._threshold_calibration_scope = 'patch'
         best_threshold, best_threshold_metrics = self._pick_best_validation_threshold(threshold_metrics)
         self._recommended_inference_threshold = float(best_threshold)
         self._save_validation_binary_predictions(
@@ -6024,10 +6236,32 @@ class NeuralRecognizer(threading.Thread):
         inference = metadata.get('inference')
         if not isinstance(inference, dict):
             return None
+        pipeline_version = str(inference.get('pipeline_version', '')).strip().lower()
+        calibration_scope = str(inference.get('calibration_scope', '')).strip().lower()
+        if pipeline_version not in {'v2', '2'} or calibration_scope != 'full_frame':
+            return None
         threshold = inference.get('recommended_threshold')
         if threshold is None:
             return None
         return NeuralRecognizer._normalize_output_threshold(threshold, fallback=0.5)
+
+    def _is_threshold_metadata_compatible(self, model: nn.Module) -> bool:
+        metadata = getattr(model, '_neuralimage_artifact_metadata', None)
+        inference = metadata.get('inference') if isinstance(metadata, dict) else None
+        if not isinstance(inference, dict):
+            return False
+        expected_patch = tuple(int(value) for value in getattr(self._parameters, 'part_size', ()))
+        stored_patch_raw = inference.get('patch_size')
+        if stored_patch_raw is not None:
+            try:
+                if tuple(int(value) for value in stored_patch_raw) != expected_patch:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        stored_overlap = inference.get('overlap')
+        if stored_overlap is not None and int(stored_overlap) != int(getattr(self._parameters, 'overlap', 0)):
+            return False
+        return True
 
     def _resolve_output_threshold(self, model: nn.Module) -> None:
         manual_threshold = self._normalize_output_threshold(
@@ -6044,7 +6278,7 @@ class NeuralRecognizer(threading.Thread):
 
         if bool(getattr(self._parameters, 'use_auto_threshold', True)):
             recommended_threshold = self._extract_recommended_threshold(model)
-            if recommended_threshold is not None:
+            if recommended_threshold is not None and self._is_threshold_metadata_compatible(model):
                 self._resolved_output_threshold = recommended_threshold
                 self._bus.publish(
                     'logging',
@@ -6054,8 +6288,8 @@ class NeuralRecognizer(threading.Thread):
             self._bus.publish(
                 'logging',
                 (
-                    'Recognition threshold: model metadata does not contain a recommended '
-                    f'threshold, using fallback {manual_threshold:.2f}.'
+                    'Recognition threshold: no compatible v2 full-frame calibration was found; '
+                    f'using fallback {manual_threshold:.2f}.'
                 ),
             )
         else:
@@ -6188,6 +6422,15 @@ class NeuralRecognizer(threading.Thread):
             batch_size=self._parameters.batch_size,
             colors=self.colors,
             jpeg_quality=int(getattr(self._parameters, 'jpeg_quality', 95)),
+            output_format=str(getattr(self._parameters, 'output_format', 'png') or 'png'),
+            inference_pipeline_version=str(
+                getattr(self._parameters, 'inference_pipeline_version', 'v2') or 'v2'
+            ),
+            multi_scale_values=tuple(
+                float(value)
+                for value in (getattr(self._parameters, 'multi_scale_values', (1.0,)) or (1.0,))
+                if float(value) > 0.0
+            ) or (1.0,),
             binarize_output=bool(getattr(self._parameters, 'binarize_output', True)),
             threshold=self._resolved_output_threshold,
             postprocess_enabled=bool(getattr(self._parameters, 'postprocess_enabled', False)),
@@ -6241,6 +6484,15 @@ class NeuralRecognizer(threading.Thread):
             publish=self._bus.publish,
             collect_memory_metrics=_collect_memory_metrics,
             jpeg_quality=int(getattr(self._parameters, 'jpeg_quality', 95)),
+            output_format=str(getattr(self._parameters, 'output_format', 'png') or 'png'),
+            inference_pipeline_version=str(
+                getattr(self._parameters, 'inference_pipeline_version', 'v2') or 'v2'
+            ),
+            multi_scale_values=tuple(
+                float(value)
+                for value in (getattr(self._parameters, 'multi_scale_values', (1.0,)) or (1.0,))
+                if float(value) > 0.0
+            ) or (1.0,),
             binarize_output=bool(getattr(self._parameters, 'binarize_output', True)),
             threshold=self._resolved_output_threshold,
             postprocess_enabled=bool(getattr(self._parameters, 'postprocess_enabled', False)),
@@ -6504,6 +6756,7 @@ def cut_image_process(
     context_input_size: tuple[int, int] | None = None,
     compression_factor: int = 1,
     source_root: Path | None = None,
+    inference_pipeline_version: str = 'v2',
 ):
     return _cut_image_process(
         cut_queue,
@@ -6517,6 +6770,7 @@ def cut_image_process(
         context_input_size=context_input_size,
         compression_factor=compression_factor,
         source_root=source_root,
+        inference_pipeline_version=inference_pipeline_version,
         stop_token=STOP_TOKEN,
     )
 
@@ -6532,6 +6786,7 @@ def cut_image_prepare(
     context_input_size: tuple[int, int] | None = None,
     compression_factor: int = 1,
     source_root: Path | None = None,
+    inference_pipeline_version: str = 'v2',
 ):
     return _cut_image_prepare(
         img_path,
@@ -6543,6 +6798,7 @@ def cut_image_prepare(
         context_input_size=context_input_size,
         compression_factor=compression_factor,
         source_root=source_root,
+        inference_pipeline_version=inference_pipeline_version,
     )
 
 
@@ -6559,6 +6815,7 @@ def imgpredict(
     stop_event,
     recognition_tta_enabled=False,
     confidence_tta_enabled=False,
+    multi_scale_values=(1.0,),
 ):
     return _imgpredict(
         prediction_queue,
@@ -6569,6 +6826,7 @@ def imgpredict(
         stop_event,
         recognition_tta_enabled=recognition_tta_enabled,
         confidence_tta_enabled=confidence_tta_enabled,
+        multi_scale_values=multi_scale_values,
         stop_token=STOP_TOKEN,
     )
 
@@ -6581,6 +6839,7 @@ def gpu_predict(
     *,
     recognition_tta_enabled=False,
     confidence_tta_enabled=False,
+    multi_scale_values=(1.0,),
 ):
     return _gpu_predict(
         img,
@@ -6589,6 +6848,7 @@ def gpu_predict(
         batch_size,
         recognition_tta_enabled=recognition_tta_enabled,
         confidence_tta_enabled=confidence_tta_enabled,
+        multi_scale_values=multi_scale_values,
     )
 
 
@@ -6605,6 +6865,8 @@ def imgsew(
     threshold=None,
     postprocess_kernel_size=0,
     confidence_save_mode='off',
+    output_format='png',
+    inference_pipeline_version='v2',
 ):
     return _imgsew(
         outputDir,
@@ -6615,6 +6877,8 @@ def imgsew(
         threshold=threshold,
         postprocess_kernel_size=postprocess_kernel_size,
         confidence_save_mode=confidence_save_mode,
+        output_format=output_format,
+        inference_pipeline_version=inference_pipeline_version,
         stop_token=STOP_TOKEN,
     )
 
@@ -6627,6 +6891,8 @@ def sew_from_queue(
     threshold=None,
     postprocess_kernel_size=0,
     confidence_save_mode='off',
+    output_format='png',
+    inference_pipeline_version='v2',
 ):
     return _sew_from_queue(
         output_dir,
@@ -6636,10 +6902,22 @@ def sew_from_queue(
         threshold=threshold,
         postprocess_kernel_size=postprocess_kernel_size,
         confidence_save_mode=confidence_save_mode,
+        output_format=output_format,
+        inference_pipeline_version=inference_pipeline_version,
     )
 
 
-def sew(save_dir, item, jpeg_quality=95, *, threshold=None, postprocess_kernel_size=0, confidence_save_mode='off'):
+def sew(
+    save_dir,
+    item,
+    jpeg_quality=95,
+    *,
+    threshold=None,
+    postprocess_kernel_size=0,
+    confidence_save_mode='off',
+    output_format='png',
+    inference_pipeline_version='v2',
+):
     return _sew(
         save_dir,
         item,
@@ -6647,4 +6925,6 @@ def sew(save_dir, item, jpeg_quality=95, *, threshold=None, postprocess_kernel_s
         threshold=threshold,
         postprocess_kernel_size=postprocess_kernel_size,
         confidence_save_mode=confidence_save_mode,
+        output_format=output_format,
+        inference_pipeline_version=inference_pipeline_version,
     )

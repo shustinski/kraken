@@ -998,6 +998,7 @@ class SettingsPanel(QDockWidget):
                 self.recognition_batch_spinbox,
                 self.overlap_spinbox,
                 self.recognition_jpeg_quality_spinbox,
+                self.recognition_output_format_combo,
             ),
             recognition_applicable,
         )
@@ -1250,6 +1251,9 @@ class SettingsPanel(QDockWidget):
             step=1,
             default_value=95,
         )
+        self.recognition_output_format_combo = NoWheelComboBox()
+        self.recognition_output_format_combo.addItem('PNG (lossless)', 'png')
+        self.recognition_output_format_combo.addItem('JPEG (legacy)', 'jpeg')
         self.recognition_multiprocessing_check_box = QCheckBox('')
         self.recognition_multiprocessing_check_box.setChecked(True)
         self.recognition_binarize_output_check_box = QCheckBox('')
@@ -1441,6 +1445,7 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.recognition_form, self.recognition_batch_spinbox, 'recognition_batch_size')
         self._add_labeled_row(self.recognition_form, self.overlap_spinbox, 'overlap')
         self._add_labeled_row(self.recognition_form, self.recognition_jpeg_quality_spinbox, 'recognition_jpeg_quality')
+        self._add_labeled_row(self.recognition_form, self.recognition_output_format_combo, 'recognition_output_format')
         self.recognition_form.addRow(self.recognition_multiprocessing_check_box)
         self.recognition_form.addRow(self.recognition_binarize_output_check_box)
         self.recognition_form.addRow(self.recognition_use_auto_threshold_check_box)
@@ -1536,6 +1541,7 @@ class SettingsPanel(QDockWidget):
         self.recognition_binarize_output_check_box.toggled.connect(self._sync_recognition_output_controls)
         self.recognition_use_auto_threshold_check_box.toggled.connect(self._sync_recognition_output_controls)
         self.recognition_postprocess_check_box.toggled.connect(self._sync_recognition_output_controls)
+        self.recognition_output_format_combo.currentIndexChanged.connect(self._sync_recognition_output_controls)
         self._sync_warmup_controls(self.warmup_check_box.isChecked())
         self._sync_scheduler_controls()
         self._sync_loss_controls()
@@ -2932,9 +2938,15 @@ class SettingsPanel(QDockWidget):
         binarize_output = recognition_enabled and bool(self.recognition_binarize_output_check_box.isChecked())
         auto_threshold = binarize_output and bool(self.recognition_use_auto_threshold_check_box.isChecked())
         postprocess_enabled = binarize_output and bool(self.recognition_postprocess_check_box.isChecked())
+        output_format = str(self.recognition_output_format_combo.currentData() or 'png')
 
         self.recognition_multiprocessing_check_box.setEnabled(recognition_enabled)
         self.recognition_binarize_output_check_box.setEnabled(recognition_enabled)
+        self._set_field_enabled(self.recognition_output_format_combo, recognition_enabled)
+        self._set_field_enabled(
+            self.recognition_jpeg_quality_spinbox,
+            recognition_enabled and output_format == 'jpeg',
+        )
         self.recognition_use_auto_threshold_check_box.setEnabled(binarize_output)
         self._set_field_enabled(self.recognition_threshold_spinbox, binarize_output and not auto_threshold)
         self.recognition_tta_check_box.setEnabled(recognition_enabled)

@@ -523,6 +523,9 @@
                                 <label>{{ settings_form.overlap.label }}</label>
                                 {{ settings_form.overlap }}
                                 {% if settings_form.overlap.errors %}<div class="field-error">{{ settings_form.overlap.errors|striptags }}</div>{% endif %}
+                                <label>{{ settings_form.recognition_output_format.label }}</label>
+                                {{ settings_form.recognition_output_format }}
+                                {% if settings_form.recognition_output_format.errors %}<div class="field-error">{{ settings_form.recognition_output_format.errors|striptags }}</div>{% endif %}
                             </div>
                             <div class="field compact">
                                 <label>{{ settings_form.log_update_frequency.label }}</label>

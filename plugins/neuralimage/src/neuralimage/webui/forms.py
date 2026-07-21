@@ -308,6 +308,11 @@ class SettingsForm(forms.Form):
     batch_size = forms.IntegerField(label='Batch size', min_value=1, max_value=512)
     dataloader_num_workers = forms.IntegerField(label='DataLoader workers', min_value=-1, max_value=64, required=False)
     overlap = forms.IntegerField(label='Overlap', min_value=0, max_value=256)
+    recognition_output_format = forms.ChoiceField(
+        label='Recognition output format',
+        choices=[('png', 'PNG (lossless)'), ('jpeg', 'JPEG (legacy)')],
+        required=False,
+    )
     recognition_tta_enabled = forms.BooleanField(label='Use TTA for recognition', required=False)
     confidence_tta_enabled = forms.BooleanField(label='Use TTA for confidence map', required=False)
     confidence_save_mode = forms.ChoiceField(
@@ -633,6 +638,12 @@ class SettingsForm(forms.Form):
         cleaned['validation_image_folder'] = validation_image_folder
         cleaned['validation_label_folder'] = validation_label_folder
 
+        recognition_width = int(cleaned.get('recognition_sample_x') or cleaned.get('sample_x') or 0)
+        recognition_height = int(cleaned.get('recognition_sample_y') or cleaned.get('sample_y') or 0)
+        overlap = int(cleaned.get('overlap') or 0)
+        if recognition_width > 0 and recognition_height > 0 and overlap >= min(recognition_width, recognition_height):
+            self.add_error('overlap', 'Overlap must be smaller than both recognition tile dimensions.')
+
         if cleaned.get('random_patch_size_enabled') and cleaned.get('sample_cut_mode') == SampleCutMode.online.value:
             ranges = (
                 ('random_patch_min_x', 'random_patch_max_x', 'width'),
@@ -723,6 +734,7 @@ class SettingsForm(forms.Form):
             dataloader_num_workers=_with_default('dataloader_num_workers'),
             sync_patch_sizes=cleaned.get('sync_patch_sizes', False),
             overlap=cleaned['overlap'],
+            recognition_output_format=str(cleaned.get('recognition_output_format') or 'png'),
             recognition_tta_enabled=cleaned.get('recognition_tta_enabled', False),
             confidence_tta_enabled=cleaned.get('confidence_tta_enabled', False),
             confidence_save_mode=normalize_confidence_save_mode(cleaned.get('confidence_save_mode')),
@@ -878,6 +890,7 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'batch_size': state.batch_size,
         'dataloader_num_workers': getattr(state, 'dataloader_num_workers', -1),
         'overlap': state.overlap,
+        'recognition_output_format': getattr(state, 'recognition_output_format', 'png'),
         'recognition_tta_enabled': getattr(state, 'recognition_tta_enabled', False),
         'confidence_tta_enabled': getattr(state, 'confidence_tta_enabled', False),
         'confidence_save_mode': getattr(state, 'confidence_save_mode', ConfidenceSaveMode.off.value),

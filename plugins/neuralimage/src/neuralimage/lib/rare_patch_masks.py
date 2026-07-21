@@ -39,17 +39,17 @@ def prepare_label_folder_for_rare_patch_editor(
     binary_label_root.mkdir(parents=True, exist_ok=True)
 
     if log_callback is not None:
-        log_callback('Обнаружены CIF-метки. Начинаю преобразование в JPG для редактора редких областей.')
+        log_callback('Обнаружены CIF-метки. Начинаю преобразование в 1-bit PNG для редактора редких областей.')
 
     for cif_path in cif_files:
         if log_callback is not None:
-            log_callback(f'Преобразую в jpg файл {cif_path.stem}')
+            log_callback(f'Преобразую в 1-bit PNG файл {cif_path.stem}')
 
         converted = backend.cif_to_jpg(cif_path)
         if isinstance(converted, tuple) and converted[0] == 0:
             return binary_label_root, f'Ошибка в {cif_path.name}: {converted[1]}'
 
-        converted.save(binary_label_root / f'{cif_path.stem}.jpg')
+        backend.save_binary_cif_png(converted, binary_label_root / f'{cif_path.stem}.png')
 
     return binary_label_root, None
 

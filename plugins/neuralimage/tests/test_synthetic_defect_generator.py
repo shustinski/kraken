@@ -189,7 +189,7 @@ def test_synthetic_defect_dataset_skip_uniform_labels_filters_patches_before_bat
         return image, label
 
     monkeypatch.setattr(
-        'model.NeuralNetwork.dataset.SyntheticTopologyGenerator.generate',
+        'neuralimage.model.NeuralNetwork.dataset.SyntheticTopologyGenerator.generate',
         _fake_generate,
     )
 

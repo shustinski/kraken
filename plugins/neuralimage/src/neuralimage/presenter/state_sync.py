@@ -261,6 +261,9 @@ def apply_settings_to_panel(presenter) -> None:
     panel.recognition_batch_spinbox.setValue(recognition_batch_size)
     panel.overlap_spinbox.setValue(state.overlap)
     panel.recognition_jpeg_quality_spinbox.setValue(int(getattr(state, 'recognition_jpeg_quality', 95)))
+    output_format = str(getattr(state, 'recognition_output_format', 'png') or 'png').lower()
+    output_index = panel.recognition_output_format_combo.findData(output_format)
+    panel.recognition_output_format_combo.setCurrentIndex(max(0, output_index))
     panel.recognition_multiprocessing_check_box.setChecked(
         bool(getattr(state, 'recognition_multiprocessing_enabled', True))
     )
@@ -476,6 +479,7 @@ def update_settings_window_state(presenter) -> None:
         recognition_patch_size = train_patch_size
     overlap = panel.overlap_spinbox.value()
     recognition_jpeg_quality = panel.recognition_jpeg_quality_spinbox.value()
+    recognition_output_format = str(panel.recognition_output_format_combo.currentData() or 'png')
     recognition_multiprocessing_enabled = panel.recognition_multiprocessing_check_box.isChecked()
     recognition_binarize_output = panel.recognition_binarize_output_check_box.isChecked()
     recognition_use_auto_threshold = panel.recognition_use_auto_threshold_check_box.isChecked()
@@ -617,6 +621,7 @@ def update_settings_window_state(presenter) -> None:
         patch_batch_sync_mode='patch' if sync_patch_sizes else 'off',
         overlap=overlap,
         recognition_jpeg_quality=recognition_jpeg_quality,
+        recognition_output_format=recognition_output_format,
         recognition_multiprocessing_enabled=recognition_multiprocessing_enabled,
         recognition_binarize_output=recognition_binarize_output,
         recognition_use_auto_threshold=recognition_use_auto_threshold,

@@ -193,7 +193,7 @@ def test_gpu_predict_uses_context_batch_when_present():
     assert payload['patch_coords_norm'] is not None
     assert payload['context_image'].shape == payload['cutted_image'].shape
     assert tuple(payload['global_image'].shape) == (1, 4, 4)
-    assert tuple(payload['patch_coords_norm'].shape) == (16, 4)
+    assert tuple(payload['patch_coords_norm'].shape) == (9, 4)
     assert predicted['predicted_image'].shape == payload['cutted_image'].shape
     assert predicted['confidence_image'].shape == payload['cutted_image'].shape
     assert model.seen_batches

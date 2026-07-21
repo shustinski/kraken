@@ -59,6 +59,9 @@ class SettingsState:
     patch_batch_sync_mode: str = 'patch_and_batch'
     overlap: int = 8
     recognition_jpeg_quality: int = 95
+    recognition_output_format: str = 'png'
+    inference_pipeline_version: str = 'v2'
+    recognition_multi_scale_values: tuple[float, ...] = (1.0,)
     recognition_multiprocessing_enabled: bool = True
     recognition_binarize_output: bool = True
     recognition_use_auto_threshold: bool = True

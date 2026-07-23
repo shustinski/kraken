@@ -13,9 +13,7 @@ class WidgetDebugMixin:
         _show_source_while_filter_hotkey_held: bool
 
         control_tabs: QTabWidget
-        gradient_overlay_checkbox: QCheckBox
         gradient_overlay_mode_combo: QComboBox
-        gradient_overlay_opacity_spin: QDoubleSpinBox
         metal_debug_visual_combo: QComboBox
         metal_overlay_opacity_spin: QDoubleSpinBox
         metal_show_mask_checkbox: QCheckBox
@@ -307,17 +305,6 @@ class WidgetDebugMixin:
             pass
         return maps
 
-    def _on_gradient_overlay_toggled(self, _checked: bool = False) -> None:
-        if not self.gradient_overlay_checkbox.isChecked():
-            if hasattr(self, "polygon_editor"):
-                self.polygon_editor.clear_gradient_overlay()
-            return
-        self._refresh_gradient_overlay()
-
-    def _on_gradient_overlay_opacity_changed(self, value: float) -> None:
-        if hasattr(self, "polygon_editor"):
-            self.polygon_editor.set_gradient_overlay_opacity(float(value))
-
     def _refresh_gradient_overlay(self) -> None:
         if not hasattr(self, "polygon_editor"):
             return
@@ -336,10 +323,7 @@ class WidgetDebugMixin:
             if any(k in _maps for k in ("metal_filtered_mask", "metal_binary_mask", "metal_mask")):
                 self._apply_metal_visual_overlay()
                 return
-        if not hasattr(self, "gradient_overlay_checkbox"):
-            self.polygon_editor.clear_gradient_overlay()
-            return
-        if not self.gradient_overlay_checkbox.isChecked():
+        if not hasattr(self, "gradient_overlay_mode_combo"):
             self.polygon_editor.clear_gradient_overlay()
             return
         display_image = self._workspace.current_display_image()
@@ -354,7 +338,7 @@ class WidgetDebugMixin:
         if overlay is None:
             self.polygon_editor.clear_gradient_overlay()
             return
-        self.polygon_editor.set_gradient_overlay(overlay, float(self.gradient_overlay_opacity_spin.value()))
+        self.polygon_editor.set_gradient_overlay(overlay, 1.0)
 
     def _apply_metal_visual_overlay(self) -> None:
         if not hasattr(self, "polygon_editor"):
@@ -460,7 +444,18 @@ class WidgetDebugMixin:
         gray = _via_grayscale(source_image)
         if gray.size == 0:
             return None
-        mode = str(self.gradient_overlay_mode_combo.currentData() or "heatmap")
+        mode = str(self.gradient_overlay_mode_combo.currentData() or "source")
+        if mode == "source":
+            current_state = self._workspace.current_state
+            original = (
+                current_state.source_image
+                if current_state is not None and current_state.source_image is not None
+                else source_image
+            )
+            data = np.asarray(original)
+            if data.ndim == 2:
+                return cv2.cvtColor(data, cv2.COLOR_GRAY2BGR)
+            return np.ascontiguousarray(data[..., :3])
         if mode not in {"heatmap", "threshold", "elevation"}:
             current_state = self._workspace.current_state
             maps = (

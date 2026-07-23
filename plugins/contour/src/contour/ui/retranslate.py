@@ -466,15 +466,13 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     )
     if getattr(self, "gradient_overlay_label_widget", None) is not None:
         self.gradient_overlay_label_widget.setText(
-            self._tr("gradient_overlay_label", "Слой градиента" if self._ui_language == "ru" else "Gradient overlay")
+            self._tr(
+                "gradient_overlay_label",
+                "Вид" if self._ui_language == "ru" else "View",
+            )
         )
-    self.gradient_overlay_checkbox.setText(
-        self._tr(
-            "gradient_overlay_checkbox",
-            "Показывать на изображении" if self._ui_language == "ru" else "Overlay on image",
-        )
-    )
     _overlay_names = {
+        "source": ("Исходное изображение", "Source image"),
         "heatmap": ("Тепловая карта", "Heatmap"),
         "threshold": ("Маска по порогу", "Threshold mask"),
         "elevation": ("Серый градиент", "Raw elevation"),

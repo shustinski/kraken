@@ -147,24 +147,22 @@ class GradientOverlayWidgetTests(unittest.TestCase):
         self.widget.deleteLater()
         self._app.processEvents()
 
-    def test_toggle_gradient_overlay_updates_editor_layer(self) -> None:
-        self.widget.gradient_overlay_checkbox.setChecked(True)
-        self._app.processEvents()
+    def test_source_image_is_the_default_opaque_view(self) -> None:
+        self.assertEqual(self.widget.gradient_overlay_mode_combo.currentData(), "source")
+        self.widget._refresh_gradient_overlay()
 
         overlay_item = self.widget.polygon_editor._editor_scene._gradient_overlay_item
         self.assertTrue(overlay_item.isVisible())
         self.assertFalse(overlay_item.pixmap().isNull())
-
-        self.widget.gradient_overlay_checkbox.setChecked(False)
-        self._app.processEvents()
-        self.assertFalse(overlay_item.isVisible())
+        self.assertAlmostEqual(overlay_item.opacity(), 1.0, places=3)
 
     def test_threshold_mode_honours_via_min_contrast(self) -> None:
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))
         self._app.processEvents()
         self.widget.via_min_contrast_spin.setValue(10.0)
-        self.widget.gradient_overlay_mode_combo.setCurrentIndex(1)
-        self.widget.gradient_overlay_checkbox.setChecked(True)
+        self.widget.gradient_overlay_mode_combo.setCurrentIndex(
+            self.widget.gradient_overlay_mode_combo.findData("threshold")
+        )
         self._app.processEvents()
 
         overlay_low = self.widget._build_gradient_overlay_image(self.widget._workspace.current_state.source_image)
@@ -178,6 +176,7 @@ class GradientOverlayWidgetTests(unittest.TestCase):
 
     def test_contact_debug_masks_are_available_in_display_combo(self) -> None:
         expected_modes = {
+            "source",
             "heatmap",
             "threshold",
             "elevation",
@@ -210,13 +209,16 @@ class GradientOverlayWidgetTests(unittest.TestCase):
         self.assertGreater(int(overlay[12, 17].sum()), 0)
         self.assertEqual(int(overlay[0, 0].sum()), 0)
 
-    def test_overlay_opacity_control_propagates_to_scene(self) -> None:
-        self.widget.gradient_overlay_checkbox.setChecked(True)
-        self.widget.gradient_overlay_opacity_spin.setValue(0.8)
+    def test_display_modes_are_always_fully_opaque(self) -> None:
+        self.assertFalse(hasattr(self.widget, "gradient_overlay_checkbox"))
+        self.assertFalse(hasattr(self.widget, "gradient_overlay_opacity_spin"))
+        self.widget.gradient_overlay_mode_combo.setCurrentIndex(
+            self.widget.gradient_overlay_mode_combo.findData("heatmap")
+        )
         self._app.processEvents()
 
         overlay_item = self.widget.polygon_editor._editor_scene._gradient_overlay_item
-        self.assertAlmostEqual(overlay_item.opacity(), 0.8, places=3)
+        self.assertAlmostEqual(overlay_item.opacity(), 1.0, places=3)
 
     def test_refresh_gradient_overlay_uses_preprocessed_image(self) -> None:
         preprocessed = np.full((40, 50), 128, dtype=np.uint8)
@@ -229,7 +231,9 @@ class GradientOverlayWidgetTests(unittest.TestCase):
             return original(image)
 
         self.widget._build_gradient_overlay_image = _spy  # type: ignore[method-assign]
-        self.widget.gradient_overlay_checkbox.setChecked(True)
+        self.widget.gradient_overlay_mode_combo.setCurrentIndex(
+            self.widget.gradient_overlay_mode_combo.findData("heatmap")
+        )
         self._app.processEvents()
 
         self.assertIs(captured.get("image"), preprocessed)

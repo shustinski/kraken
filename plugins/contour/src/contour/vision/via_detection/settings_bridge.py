@@ -26,9 +26,9 @@ def _norm_polarity(v: Any) -> str:
 
 
 def _heuristic_polarity_from_brightness_settings(settings: ContourExtractionSettings) -> str:
-    """Map «Распознавать светлые/тёмные» checkboxes to heuristic polarity."""
+    """Keep an explicit polarity authoritative; ranges only constrain candidates."""
     explicit = _norm_polarity(getattr(settings, "via_heuristic_polarity", "auto"))
-    if explicit in (str(ViaPolarity.RING_LIGHT_RING), str(ViaPolarity.RING_DARK_RING)):
+    if explicit != str(ViaPolarity.AUTO):
         return explicit
     white = bool(getattr(settings, "via_white_range_enabled", True))
     black = bool(getattr(settings, "via_black_range_enabled", False))
@@ -48,6 +48,21 @@ def fixed_via_diameters_from_settings(settings: ContourExtractionSettings) -> li
 
     if normalize_via_size_mode(getattr(settings, "via_size_mode", "fixed") or "fixed") != VIA_SIZE_MODE_FIXED:
         return []
+    from ...application.processing import ALGORITHM_BACKEND_SEM, normalize_algorithm_backend
+
+    if normalize_algorithm_backend(getattr(settings, "algorithm_backend", "")) != ALGORITHM_BACKEND_SEM:
+        legacy_widths = [int(value) for value in (getattr(settings, "fixed_via_widths", None) or []) if int(value) > 0]
+        legacy_heights = [
+            int(value) for value in (getattr(settings, "fixed_via_heights", None) or []) if int(value) > 0
+        ]
+        migrated = sorted(
+            {
+                max(1, int(round((width + height) * 0.5)))
+                for width, height in zip(legacy_widths, legacy_heights, strict=False)
+            }
+        )
+        if migrated:
+            return migrated
     dmin = max(1, int(getattr(settings, "bright_via_diameter_min", 6) or 6))
     dmax = max(dmin, int(getattr(settings, "bright_via_diameter_max", dmin) or dmin))
     # The current UI exposes one fixed diameter and stores it as equal bounds.
@@ -59,15 +74,24 @@ def fixed_via_diameters_from_settings(settings: ContourExtractionSettings) -> li
 
 
 def heuristic_config_from_settings(settings: ContourExtractionSettings) -> HeuristicViaDetectorConfig:
-    from ...application.processing import VIA_SIZE_MODE_FIXED, normalize_via_search_sensitivity, normalize_via_size_mode
+    from ...application.processing import (
+        ALGORITHM_BACKEND_SEM,
+        VIA_SIZE_MODE_FIXED,
+        normalize_algorithm_backend,
+        normalize_via_size_mode,
+    )
 
-    sensitivity = normalize_via_search_sensitivity(getattr(settings, "via_search_sensitivity", "medium"))
     mode = normalize_via_size_mode(getattr(settings, "via_size_mode", "fixed") or "fixed")
     dmin = max(1, int(getattr(settings, "bright_via_diameter_min", 6) or 6))
     dmax = max(dmin, int(getattr(settings, "bright_via_diameter_max", 8) or 8))
     fixed = fixed_via_diameters_from_settings(settings)
     if not fixed:
         fixed = [dmin, dmax]
+    migrated_legacy_settings = (
+        normalize_algorithm_backend(getattr(settings, "algorithm_backend", "")) != ALGORITHM_BACKEND_SEM
+    )
+    if migrated_legacy_settings and mode == VIA_SIZE_MODE_FIXED and fixed:
+        dmin, dmax = min(fixed), max(fixed)
 
     return HeuristicViaDetectorConfig(
         diameter_mode="fixed" if mode == VIA_SIZE_MODE_FIXED else "range",
@@ -75,7 +99,6 @@ def heuristic_config_from_settings(settings: ContourExtractionSettings) -> Heuri
         diameter_max=dmax,
         fixed_diameters=fixed,
         polarity=_heuristic_polarity_from_brightness_settings(settings),
-        sensitivity=sensitivity,
         nms_distance=max(0, int(getattr(settings, "bright_via_nms_distance", 5) or 0)),
         min_final_score=float(getattr(settings, "bright_via_min_final_score", 38.0) or 0.0),
         min_distance_between_peaks=0,
@@ -84,16 +107,40 @@ def heuristic_config_from_settings(settings: ContourExtractionSettings) -> Heuri
         analysis_window_scale=float(getattr(settings, "heuristic_analysis_window_scale", 3.0) or 3.0),
         min_analyze_size=24,
         use_bilateral=bool(getattr(settings, "heuristic_use_bilateral", False)),
-        min_center_contrast=float(getattr(settings, "heuristic_min_center_contrast", 4.0) or 0.0),
-        min_peak_prominence=float(getattr(settings, "heuristic_min_peak_prominence", 2.0) or 0.0),
-        min_compactness=float(getattr(settings, "heuristic_min_compactness", 0.12) or 0.0),
-        max_elongation=float(getattr(settings, "heuristic_max_elongation", 3.2) or 3.2),
-        line_penalty_scale=float(getattr(settings, "heuristic_line_penalty_scale", 1.0) or 1.0),
+        min_center_brightness=float(
+            getattr(settings, "heuristic_min_center_brightness", 0.0) or 0.0
+        ),
+        min_center_contrast=float(getattr(settings, "heuristic_min_center_contrast", 50.0) or 0.0),
+        min_peak_prominence=float(getattr(settings, "heuristic_min_peak_prominence", 50.0) or 0.0),
+        min_compactness=float(getattr(settings, "heuristic_min_compactness", 0.9) or 0.0),
+        min_circularity=float(getattr(settings, "heuristic_min_circularity", 0.40)),
+        max_elongation=float(getattr(settings, "heuristic_max_elongation", 2.5) or 2.5),
+        line_penalty_scale=float(getattr(settings, "heuristic_line_penalty_scale", 3.0) or 3.0),
         border_penalty_scale=float(getattr(settings, "heuristic_border_penalty_scale", 1.0) or 1.0),
         local_binarize_percentile=float(getattr(settings, "heuristic_local_binarize_percentile", 88.0) or 88.0),
         size_tolerance_ratio=float(getattr(settings, "heuristic_size_tolerance_range", 0.36) or 0.36),
         size_tolerance_ratio_fixed=float(getattr(settings, "heuristic_size_tolerance_fixed", 0.26) or 0.26),
         max_center_drift_ratio=float(getattr(settings, "heuristic_max_center_drift_ratio", 0.72) or 0.72),
+        max_line_coherence=float(getattr(settings, "heuristic_max_line_coherence", 0.82)),
+        min_edge_sharpness=float(getattr(settings, "heuristic_min_edge_sharpness", 0.20)),
+        contrast_score_min=float(getattr(settings, "heuristic_contrast_score_min", 3.0)),
+        contrast_score_max=float(getattr(settings, "heuristic_contrast_score_max", 20.0)),
+        prominence_score_min=float(getattr(settings, "heuristic_prominence_score_min", 2.0)),
+        prominence_score_max=float(getattr(settings, "heuristic_prominence_score_max", 25.0)),
+        edge_snr_score_min=float(getattr(settings, "heuristic_edge_snr_score_min", 0.70)),
+        edge_snr_score_max=float(getattr(settings, "heuristic_edge_snr_score_max", 2.80)),
+        edge_quality_floor=float(getattr(settings, "heuristic_edge_quality_floor", 0.55)),
+        border_balance_scale=float(getattr(settings, "heuristic_border_balance_scale", 2.0)),
+        seed_percentile=float(getattr(settings, "heuristic_seed_percentile", 90.0)),
+        use_intensity_range_seeds=migrated_legacy_settings,
+        w_contrast=float(getattr(settings, "heuristic_w_contrast", 25.0)),
+        w_prominence=float(getattr(settings, "heuristic_w_prominence", 20.0)),
+        w_size=float(getattr(settings, "heuristic_w_size", 20.0)),
+        w_compact=float(getattr(settings, "heuristic_w_compact", 15.0)),
+        w_round=float(getattr(settings, "heuristic_w_round", 10.0)),
+        w_balance=float(getattr(settings, "heuristic_w_balance", 10.0)),
+        w_line=float(getattr(settings, "heuristic_w_line", 20.0)),
+        w_border=float(getattr(settings, "heuristic_w_border", 20.0)),
         bright_range_enabled=bool(getattr(settings, "via_white_range_enabled", True)),
         bright_range_min=float(getattr(settings, "via_white_range_min", 140) or 0),
         bright_range_max=float(getattr(settings, "via_white_range_max", 255) or 255),
@@ -105,20 +152,35 @@ def heuristic_config_from_settings(settings: ContourExtractionSettings) -> Heuri
 
 def template_config_from_settings(settings: ContourExtractionSettings) -> TemplateViaDetectorConfig:
     raw = list(getattr(settings, "via_template_images", None) or [])
+    raw_scores = list(getattr(settings, "via_template_min_scores", None) or [])
+    raw_diameters = list(getattr(settings, "via_template_diameters", None) or [])
     templates: list[Any] = []
-    for im in raw:
+    min_correlations: list[float] = []
+    output_diameters: list[int] = []
+    suppression_distance = 0
+    fallback_score = max(0.0, min(1.0, float(getattr(settings, "via_template_min_score", 0.35))))
+    for source_index, im in enumerate(raw):
         try:
             import numpy as _np
 
             t = _np.array(im, dtype=_np.uint8)
             if t.size:
                 templates.append(t)
+                suppression_distance = max(suppression_distance, int(max(t.shape[:2])) + 2)
+                score = raw_scores[source_index] if source_index < len(raw_scores) else fallback_score
+                min_correlations.append(max(0.0, min(1.0, float(score))))
+                fallback_diameter = max(1, round((int(t.shape[0]) + int(t.shape[1])) * 0.5))
+                diameter = raw_diameters[source_index] if source_index < len(raw_diameters) else fallback_diameter
+                output_diameters.append(max(1, int(diameter)))
         except Exception:
             continue
     return TemplateViaDetectorConfig(
         templates=templates,
-        min_correlation=float(getattr(settings, "via_template_min_score", 0.35) or 0.35),
-        nms_distance=max(0, int(getattr(settings, "via_template_nms_distance", 4) or 0)),
+        min_correlation=fallback_score,
+        min_correlations=min_correlations,
+        output_diameters=output_diameters,
+        # This value is intentionally automatic and absent from the UI.
+        nms_distance=suppression_distance,
         scale_min=float(getattr(settings, "via_template_scale_min", 0.9) or 0.9),
         scale_max=float(getattr(settings, "via_template_scale_max", 1.1) or 1.1),
         scale_step=float(getattr(settings, "via_template_scale_step", 0.1) or 0.1),

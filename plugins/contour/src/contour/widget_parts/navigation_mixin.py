@@ -244,24 +244,51 @@ class WidgetNavigationMixin:
         return panel
 
     def _take_paths_panel(self: Any) -> QWidget:
-        return self._take_control_tab(self.paths_tab)
+        return self._take_scrollable_control_panel(
+            self.paths_tab,
+            object_name="pathsPanelScroll",
+            attribute_name="paths_panel_scroll",
+        )
 
     def _take_pipeline_panel(self: Any) -> QWidget:
-        return self._take_control_tab(self.pipeline_tab)
+        return self._take_scrollable_control_panel(
+            self.pipeline_tab,
+            object_name="pipelinePanelScroll",
+            attribute_name="pipeline_panel_scroll",
+        )
 
     def _take_display_panel(self: Any) -> QWidget:
-        return self._take_control_tab(self.display_tab)
+        return self._take_scrollable_control_panel(
+            self.display_tab,
+            object_name="displayPanelScroll",
+            attribute_name="display_panel_scroll",
+        )
 
     def _take_recognition_panel(self: Any) -> QWidget:
-        panel = self._take_control_tab(self.extraction_tab)
+        return self._take_scrollable_control_panel(
+            self.extraction_tab,
+            object_name="recognitionPanelScroll",
+            attribute_name="recognition_panel_scroll",
+        )
+
+    def _take_scrollable_control_panel(
+        self: Any,
+        panel: QWidget,
+        *,
+        object_name: str,
+        attribute_name: str,
+    ) -> QWidget:
+        panel = self._take_control_tab(panel)
         scroll = QScrollArea()
-        scroll.setObjectName("recognitionPanelScroll")
+        scroll.setObjectName(object_name)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setMinimumHeight(0)
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         scroll.setWidget(panel)
-        self.recognition_panel_scroll = scroll
+        setattr(self, attribute_name, scroll)
         return scroll
 
     def _take_control_tab(self: Any, panel: QWidget) -> QWidget:

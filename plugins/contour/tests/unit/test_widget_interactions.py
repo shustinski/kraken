@@ -4,7 +4,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import call, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
 
 import cv2
 import numpy as np
@@ -12,7 +13,7 @@ import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer
-from PyQt6.QtGui import QImage, QPainter, QWheelEvent
+from PyQt6.QtGui import QColor, QImage, QPainter, QRegion, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
@@ -27,7 +28,12 @@ from PyQt6.QtWidgets import (
 
 import contour.widget as widget_module
 import contour.widget_parts.processing_mixin as processing_mixin_module
-from contour.application.processing import BatchImageResult, DisplaySettings, ImageProcessingState
+from contour.application.processing import (
+    BatchImageResult,
+    ContourDebugCandidate,
+    DisplaySettings,
+    ImageProcessingState,
+)
 from contour.application.services.workspace_session import WorkspaceLoadResult
 from contour.application.vector_geometry_postprocess import VectorGeometrySettings
 from contour.domain import PolygonData, compute_polygon_metrics
@@ -42,6 +48,89 @@ from contour.graphics_view import (
 )
 from contour.utils import draw_polygon_overlay
 from contour.widget import PolygonExtractionWidget
+
+
+class ViaCandidateOverlayTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = _app()
+
+    def test_rejected_candidate_is_drawn_and_can_be_cleared(self) -> None:
+        scene = PolygonEditorScene()
+        candidate = ContourDebugCandidate(
+            contour_index=1,
+            bbox=(10, 12, 8, 8),
+            accepted=False,
+            reason="rejected:hard:circularity",
+            score=24.0,
+        )
+
+        scene.set_debug_candidates([candidate])
+
+        self.assertEqual(len(scene._debug_candidate_items), 1)
+        self.assertEqual(
+            scene._debug_candidate_items[0].pen().color(),
+            QColor("#EF4444"),
+        )
+        scene.set_debug_candidates([])
+        self.assertEqual(scene._debug_candidate_items, [])
+
+    def test_via_color_changes_from_red_to_green_with_score(self) -> None:
+        scene = PolygonEditorScene()
+        low = _rectangle_polygon(2, 2, 10, 10)
+        low.id = 1
+        low.category = "via"
+        low.recognition_score = 0.0
+        high = _rectangle_polygon(14, 2, 22, 10)
+        high.id = 2
+        high.category = "via"
+        high.recognition_score = 100.0
+
+        scene.set_polygons([low, high])
+
+        low_color = scene._polygon_items[1].pen().color()
+        high_color = scene._polygon_items[2].pen().color()
+        self.assertGreater(low_color.red(), low_color.green())
+        self.assertGreater(high_color.green(), high_color.red())
+
+    def test_show_rejected_checkbox_controls_candidate_overlay(self) -> None:
+        editor = MagicMock()
+        rejected = ContourDebugCandidate(
+            contour_index=1,
+            bbox=(10, 12, 8, 8),
+            accepted=False,
+            reason="rejected:hard:circularity",
+        )
+        show_rejected = QCheckBox()
+        show_rejected.setChecked(True)
+        owner = SimpleNamespace(
+            polygon_editor=editor,
+            debug_candidates_checkbox=QCheckBox(),
+            bright_via_show_rejected_checkbox=show_rejected,
+            _sync_polygons_to_editor=MagicMock(),
+            _via_debug_inspection_enabled=lambda: True,
+        )
+        owner.debug_candidates_checkbox.setChecked(True)
+        state = SimpleNamespace(debug_candidates=[rejected])
+
+        processing_mixin_module.WidgetProcessingMixin._apply_editor_vectors_for_frame(
+            owner,
+            "sample.png",
+            state,
+            [],
+            defer_heavy_overlays=False,
+        )
+        editor.set_debug_candidates.assert_called_with([rejected])
+
+        show_rejected.setChecked(False)
+        processing_mixin_module.WidgetProcessingMixin._apply_editor_vectors_for_frame(
+            owner,
+            "sample.png",
+            state,
+            [],
+            defer_heavy_overlays=False,
+        )
+        editor.set_debug_candidates.assert_called_with([])
 
 
 def _app() -> QApplication:
@@ -199,7 +288,9 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
             self.widget.input_dir_edit.setText(str(file_path))
 
-            self.assertEqual(self.widget._dialog_start_directory_from_line_edit(self.widget.input_dir_edit), str(folder))
+            self.assertEqual(
+                self.widget._dialog_start_directory_from_line_edit(self.widget.input_dir_edit), str(folder)
+            )
 
     def test_extraction_change_does_not_process_when_auto_apply_disabled(self) -> None:
         process_calls: list[bool] = []
@@ -213,7 +304,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
     def test_extraction_mode_defaults_to_no_extraction(self) -> None:
         self.assertEqual(self.widget.recognition_mode_combo.currentData(), "disabled")
-        self.assertEqual(self.widget.recognition_mode_combo.currentText(), "Без извлечения")
+        self.assertEqual(self.widget.recognition_mode_combo.currentText(), "Отключено")
 
     def test_process_selected_button_requests_processing_and_save(self) -> None:
         queued: list[dict[str, bool]] = []
@@ -301,9 +392,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget.polygon_editor.centerOn(QPointF(48.0, 64.0))
         self._app.processEvents()
         before_transform = self.widget.polygon_editor.transform()
-        before_center = self.widget.polygon_editor.mapToScene(
-            self.widget.polygon_editor.viewport().rect().center()
-        )
+        before_center = self.widget.polygon_editor.mapToScene(self.widget.polygon_editor.viewport().rect().center())
         neighbor_sync_calls: list[int] = []
         self.widget._request_neighbor_frame_sync = lambda *, delay_ms=0: neighbor_sync_calls.append(delay_ms)  # type: ignore[method-assign]
         self.widget._preview_running_request_id = 7
@@ -320,9 +409,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             ),
         )
 
-        after_center = self.widget.polygon_editor.mapToScene(
-            self.widget.polygon_editor.viewport().rect().center()
-        )
+        after_center = self.widget.polygon_editor.mapToScene(self.widget.polygon_editor.viewport().rect().center())
         self.assertEqual(neighbor_sync_calls, [])
         self.assertAlmostEqual(self.widget.polygon_editor.transform().m11(), before_transform.m11())
         self.assertAlmostEqual(after_center.x(), before_center.x(), delta=1.0)
@@ -340,7 +427,9 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget._workspace._state_cache = {"sample.png": state}
         self.widget.get_pipeline = lambda: {"steps": [{"operation": "threshold", "parameters": {"threshold": 160}}]}  # type: ignore[method-assign]
         prepared_calls: list[tuple[str, object]] = []
-        self.widget._queue_prepared_image_update = lambda image_path, source_image: prepared_calls.append((image_path, source_image))  # type: ignore[method-assign]
+        self.widget._queue_prepared_image_update = lambda image_path, source_image: prepared_calls.append(
+            (image_path, source_image)
+        )  # type: ignore[method-assign]
         self.widget._request_neighbor_frame_sync = lambda *, delay_ms=0: None  # type: ignore[method-assign]
 
         self.widget._finish_frame_load_ui(
@@ -363,6 +452,38 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self._app.processEvents()
 
         self.assertEqual(process_calls[-1], False)
+
+    def test_every_heuristic_expert_parameter_schedules_via_rerecognition(self) -> None:
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))
+        self.widget.auto_apply_checkbox.setChecked(True)
+        self.widget._on_extraction_settings_changed()
+        self.widget._extraction_settings_debounce.stop()
+
+        controls = self.widget._heuristic_expert_parameter_widgets
+        self.assertGreater(len(controls), 20)
+        for control in controls:
+            self.widget._extraction_settings_debounce.stop()
+            if isinstance(control, QCheckBox):
+                control.setChecked(not control.isChecked())
+            else:
+                step = control.singleStep()
+                new_value = control.value() + step
+                if new_value > control.maximum():
+                    new_value = control.value() - step
+                control.setValue(new_value)
+            self.assertTrue(
+                self.widget._extraction_settings_debounce.isActive(),
+                f"{control.objectName() or type(control).__name__} did not schedule recognition",
+            )
+
+        self.widget._extraction_settings_debounce.stop()
+        process_calls: list[bool] = []
+        self.widget.process_current_image = lambda *_args, debounced=False: process_calls.append(debounced)  # type: ignore[method-assign]
+        self.widget.heuristic_w_contrast_spin.setValue(self.widget.heuristic_w_contrast_spin.value() + 1.0)
+        QTest.qWait(200)
+        self._app.processEvents()
+
+        self.assertEqual(process_calls, [False])
 
     def test_via_roundness_is_included_in_current_settings(self) -> None:
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))
@@ -710,9 +831,13 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             scans: list[tuple[str, bool]] = []
 
             self.widget.load_images([first])
-            self.widget._begin_async_directory_scan = lambda directory, *, append=False: scans.append((str(Path(directory)), bool(append)))  # type: ignore[method-assign]
+            self.widget._begin_async_directory_scan = lambda directory, *, append=False: scans.append(
+                (str(Path(directory)), bool(append))
+            )  # type: ignore[method-assign]
 
-            with patch("contour.widget_parts.navigation_mixin.QFileDialog.getExistingDirectory", return_value=second_dir):
+            with patch(
+                "contour.widget_parts.navigation_mixin.QFileDialog.getExistingDirectory", return_value=second_dir
+            ):
                 self.widget._select_input_directory()
 
             self.assertEqual(scans, [(str(Path(second_dir)), False)])
@@ -934,6 +1059,27 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertIn("QToolButton:checked", stylesheet)
         self.assertIn("#16A34A", stylesheet)
 
+    def test_toolbar_icons_use_the_complete_button_area(self) -> None:
+        buttons = [
+            *self.widget._tool_buttons.values(),
+            self.widget.undo_button,
+            self.widget.redo_button,
+            self.widget.zoom_in_button,
+            self.widget.zoom_out_button,
+            self.widget.fit_button,
+            self.widget.antialias_opened_cif_button,
+        ]
+
+        for button in buttons:
+            self.assertEqual(button.iconSize().width(), button.maximumWidth())
+            self.assertEqual(button.iconSize().height(), button.maximumHeight())
+            self.assertIn("padding: 0", button.styleSheet())
+            self.assertTrue(button.toolTip())
+            pixmap = button.icon().pixmap(button.iconSize())
+            visible_rect = QRegion(pixmap.mask()).boundingRect()
+            self.assertGreaterEqual(visible_rect.width(), pixmap.width() * 0.9)
+            self.assertGreaterEqual(visible_rect.height(), pixmap.height() * 0.9)
+
     def test_hotkey_tool_switch_updates_toolbar_checked_state(self) -> None:
         self.widget.polygon_editor.set_tool(EditorTool.BRUSH)
         self._app.processEvents()
@@ -1051,13 +1197,19 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.widget._configure_thumbnail_grid_geometry()
 
             frame = 2 * self.widget.thumbnail_grid.frameWidth()
-            overlap_x, overlap_y = self.widget._thumbnail_overlap_pixels_for_full_frame_overlap(12, self.widget._thumbnail_icon_size)
+            overlap_x, overlap_y = self.widget._thumbnail_overlap_pixels_for_full_frame_overlap(
+                12, self.widget._thumbnail_icon_size
+            )
             self.assertEqual(self.widget.thumbnail_grid.width(), 4 * 64 - 3 * overlap_x + 1 + frame)
-            self.assertEqual(self.widget.thumbnail_grid.visualItemRect(self.widget.thumbnail_grid.item(1)).x(), 64 - overlap_x)
-            self.assertEqual(self.widget.thumbnail_grid.visualItemRect(self.widget.thumbnail_grid.item(4)).y(), 48 - overlap_y)
+            self.assertEqual(
+                self.widget.thumbnail_grid.visualItemRect(self.widget.thumbnail_grid.item(1)).x(), 64 - overlap_x
+            )
+            self.assertEqual(
+                self.widget.thumbnail_grid.visualItemRect(self.widget.thumbnail_grid.item(4)).y(), 48 - overlap_y
+            )
 
     def test_large_thumbnail_matrix_keeps_all_frames(self) -> None:
-        paths = [fr"d:\frames\frame_{index:05d}.png" for index in range(10_000)]
+        paths = [rf"d:\frames\frame_{index:05d}.png" for index in range(10_000)]
         self.widget._workspace._image_paths = [str(Path(path)) for path in paths]
         self.widget.show_frame_matrix_checkbox.setChecked(True)
         self.widget.neighbor_columns_spin.setValue(10)
@@ -1076,7 +1228,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget._workspace._current_image_path = "sample.png"
 
     def test_large_frame_matrix_count_matches_images_tab_count(self) -> None:
-        paths = [fr"d:\frames\frame_{index:05d}.png" for index in range(1_200)]
+        paths = [rf"d:\frames\frame_{index:05d}.png" for index in range(1_200)]
         normalized = [str(Path(path)) for path in paths]
         self.widget._workspace._image_paths = normalized
         self.widget._set_image_list_paths(normalized)
@@ -1091,7 +1243,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(self.widget.thumbnail_grid.count(), len(normalized))
 
     def test_thumbnail_lod_change_does_not_cancel_large_matrix_build(self) -> None:
-        paths = [str(Path(fr"d:\frames\frame_{index:04d}.png")) for index in range(350)]
+        paths = [str(Path(rf"d:\frames\frame_{index:04d}.png")) for index in range(350)]
         self.widget._workspace._image_paths = paths
         self.widget.show_frame_matrix_checkbox.setChecked(True)
         self.widget.show_frame_matrix_thumbnails_checkbox.setChecked(False)
@@ -1105,7 +1257,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertFalse(self.widget._thumbnail_rebuild_in_progress)
 
     def test_frame_matrix_rebuild_yields_before_adding_items(self) -> None:
-        paths = [fr"d:\frames\frame_{index:05d}.png" for index in range(300)]
+        paths = [rf"d:\frames\frame_{index:05d}.png" for index in range(300)]
         self.widget._workspace._image_paths = [str(Path(path)) for path in paths]
         self.widget.show_frame_matrix_checkbox.setChecked(True)
         self.widget.show_frame_matrix_thumbnails_checkbox.setChecked(False)
@@ -1118,7 +1270,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self._wait_for_thumbnail_grid_count(300)
 
     def test_disabling_frame_matrix_clears_and_skips_matrix_work(self) -> None:
-        paths = [fr"d:\frames\frame_{index:03d}.png" for index in range(20)]
+        paths = [rf"d:\frames\frame_{index:03d}.png" for index in range(20)]
         self.widget._workspace._image_paths = [str(Path(path)) for path in paths]
         self.widget.show_frame_matrix_checkbox.setChecked(True)
         self.widget._thumbnail_build_chunk_size = 100
@@ -1135,7 +1287,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertFalse(self.widget.thumbnail_matrix_panel.isVisible())
 
     def test_disabling_frame_matrix_thumbnails_keeps_items_without_queueing_loads(self) -> None:
-        paths = [fr"d:\frames\frame_{index:03d}.png" for index in range(12)]
+        paths = [rf"d:\frames\frame_{index:03d}.png" for index in range(12)]
         self.widget._workspace._image_paths = [str(Path(path)) for path in paths]
         self.widget.show_frame_matrix_checkbox.setChecked(True)
         self.widget._thumbnail_build_chunk_size = 100
@@ -1151,7 +1303,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(queued, [])
 
     def test_enabling_frame_matrix_thumbnails_restarts_loading_existing_items(self) -> None:
-        paths = [fr"d:\frames\frame_{index:03d}.png" for index in range(12)]
+        paths = [rf"d:\frames\frame_{index:03d}.png" for index in range(12)]
         self.widget._workspace._image_paths = [str(Path(path)) for path in paths]
         self.widget.show_frame_matrix_checkbox.setChecked(True)
         self.widget.show_frame_matrix_thumbnails_checkbox.setChecked(False)
@@ -1166,7 +1318,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(resumed, [True])
 
     def test_visible_thumbnail_scheduler_prioritizes_viewport_and_current_frame(self) -> None:
-        paths = [fr"d:\frames\frame_{index:03d}.png" for index in range(200)]
+        paths = [rf"d:\frames\frame_{index:03d}.png" for index in range(200)]
         self.widget._workspace._image_paths = [str(Path(path)) for path in paths]
         self.widget.show_frame_matrix_checkbox.setChecked(True)
         self.widget.show_frame_matrix_thumbnails_checkbox.setChecked(True)
@@ -1186,7 +1338,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget._workspace._current_image_path = "sample.png"
 
     def test_radial_thumbnail_fill_keeps_visible_thumbnail_queue(self) -> None:
-        paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(20)]
+        paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(20)]
         self.widget._workspace._image_paths = paths
         self.widget._workspace._current_image_path = paths[10]
         self.widget.show_frame_matrix_checkbox.setChecked(True)
@@ -1247,7 +1399,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertNotEqual(group[3].pixmap().cacheKey(), before)
 
     def test_frame_matrix_navigation_loads_main_editor_frame(self) -> None:
-        paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]
+        paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(3)]
         self.widget._workspace._image_paths = paths
         loaded: list[tuple[str, bool]] = []
         self.widget.load_image = lambda path, **kwargs: loaded.append(  # type: ignore[method-assign]
@@ -1260,7 +1412,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(str(Path(self.widget._workspace.current_image_path or "")), paths[2])
 
     def test_frame_matrix_navigation_does_not_center_editor_scene(self) -> None:
-        paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]
+        paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(3)]
         self.widget._workspace._image_paths = paths
         self.widget.load_image = lambda _path, **_kwargs: None  # type: ignore[method-assign]
 
@@ -1270,7 +1422,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         set_frame_mock.assert_called_once_with(2, center=False, emit_signal=False)
 
     def test_frame_matrix_navigation_cancel_keeps_current_frame(self) -> None:
-        paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]
+        paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(3)]
         self.widget._workspace._image_paths = paths
         self.widget._workspace._current_image_path = paths[0]
         self.widget._set_image_list_paths(paths)
@@ -1297,7 +1449,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         )
 
     def test_neighbor_overlay_navigation_loads_main_editor_frame(self) -> None:
-        paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]
+        paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(3)]
         self.widget._workspace._image_paths = paths
         loaded: list[str] = []
         self.widget.load_image = lambda path, **_kwargs: loaded.append(str(Path(path)))  # type: ignore[method-assign]
@@ -1308,7 +1460,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(str(Path(self.widget._workspace.current_image_path or "")), paths[1])
 
     def test_ctrl_arrow_navigates_selected_frame_when_frame_matrix_enabled(self) -> None:
-        paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(9)]
+        paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(9)]
         self.widget._workspace._image_paths = paths
         self.widget._workspace._current_image_path = paths[4]
         self.widget.show_frame_matrix_checkbox.setChecked(True)
@@ -1328,7 +1480,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(self.widget.thumbnail_grid.currentRow(), 8)
 
     def test_ctrl_arrow_does_not_navigate_when_frame_matrix_disabled(self) -> None:
-        paths = [str(Path(fr"d:\frames\frame_{index:03d}.png")) for index in range(3)]
+        paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(3)]
         self.widget._workspace._image_paths = paths
         self.widget._workspace._current_image_path = paths[1]
         self.widget.show_frame_matrix_checkbox.setChecked(False)
@@ -1690,7 +1842,9 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         menu = QMenu()
         self.widget.attach_help_menu(menu)
 
-        action = next((action for action in menu.actions() if action.objectName() == "manualToolPostprocessAction"), None)
+        action = next(
+            (action for action in menu.actions() if action.objectName() == "manualToolPostprocessAction"), None
+        )
 
         self.assertIsNotNone(action)
         self.assertEqual(action.text(), "Постобработка ручных инструментов")
@@ -1878,7 +2032,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.view.deleteLater()
         self._app.processEvents()
 
-    def test_middle_button_pans_without_hiding_polygon_overlays_or_changing_polygons(self) -> None:
+    def test_middle_button_temporarily_hides_vectors_while_panning(self) -> None:
         self.view.set_tool(EditorTool.ADD_POLYGON)
         origin = self.view.mapFromScene(QPointF(50.0, 50.0))
         h_before = self.view.horizontalScrollBar().value()
@@ -1890,7 +2044,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
             origin,
         )
         self._app.processEvents()
-        self.assertTrue(self.view._editor_scene.polygon_overlays_visible())
+        self.assertFalse(self.view._editor_scene.polygon_overlays_visible())
 
         QTest.mouseMove(self.view.viewport(), origin + QPoint(30, -12), delay=10)
         self._app.processEvents()
@@ -1908,8 +2062,21 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.assertEqual(self.view.current_tool, EditorTool.ADD_POLYGON)
         self.assertLessEqual(self.view.horizontalScrollBar().value(), h_before - 25)
 
+    def test_f_key_fits_main_image_to_view(self) -> None:
+        self.view.resetTransform()
+        self.view.scale(4.0, 4.0)
+        zoom_before = self.view.zoom_factor()
+
+        QTest.keyClick(self.view, Qt.Key.Key_F)
+        self._app.processEvents()
+
+        self.assertLess(self.view.zoom_factor(), zoom_before)
+        self.assertGreater(self.view.main_image_visible_fraction(), 0.99)
+
     def test_space_hold_hides_vectors_without_mutating_polygon_data(self) -> None:
-        QTest.mouseClick(self.view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(40, 40))
+        QTest.mouseClick(
+            self.view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(40, 40)
+        )
         before = [(p.points[0], p.points[2]) for p in self.view.get_polygons()]
         QTest.keyPress(self.view, Qt.Key.Key_Space)
 
@@ -2290,9 +2457,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
     def test_closed_brush_contour_fills_center_below_manual_min_hole_area(self) -> None:
         self.view.set_polygons([])
-        self.view._editor_scene.set_vector_geometry_settings(
-            VectorGeometrySettings(min_hole_area_to_remove_px2=150.0)
-        )
+        self.view._editor_scene.set_vector_geometry_settings(VectorGeometrySettings(min_hole_area_to_remove_px2=150.0))
         points = [
             (30.0, 30.0),
             (50.0, 30.0),
@@ -2348,9 +2513,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
     def test_small_rectangle_fully_inside_existing_contour_is_not_drawn(self) -> None:
         self.view.set_polygons([_rectangle_polygon(20, 20, 80, 80)])
-        self.view._editor_scene.set_vector_geometry_settings(
-            VectorGeometrySettings(min_hole_area_to_remove_px2=11.0)
-        )
+        self.view._editor_scene.set_vector_geometry_settings(VectorGeometrySettings(min_hole_area_to_remove_px2=11.0))
 
         added = self.view._editor_scene.add_rectangle_polygon(QPointF(44.0, 44.0), QPointF(46.0, 46.0))
         self._app.processEvents()
@@ -2360,9 +2523,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
     def test_small_rectangle_fully_inside_existing_cutout_is_not_drawn(self) -> None:
         self.view.set_polygons([])
-        self.view._editor_scene.set_vector_geometry_settings(
-            VectorGeometrySettings(min_hole_area_to_remove_px2=11.0)
-        )
+        self.view._editor_scene.set_vector_geometry_settings(VectorGeometrySettings(min_hole_area_to_remove_px2=11.0))
         ring_points = [
             (30.0, 30.0),
             (70.0, 30.0),
@@ -3014,7 +3175,9 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
             )
             self.widget.load_image = lambda path: None  # type: ignore[method-assign]
 
-            with patch.object(widget_module.QMessageBox, "exec", return_value=widget_module.QMessageBox.StandardButton.Discard):
+            with patch.object(
+                widget_module.QMessageBox, "exec", return_value=widget_module.QMessageBox.StandardButton.Discard
+            ):
                 self.widget._on_image_item_changed(second_item, first_item)
         finally:
             processing_mixin_module.save_polygons_vector = original_save_polygons_vector
@@ -3138,7 +3301,9 @@ class PolygonExtractionWidgetBrushModeUiTests(unittest.TestCase):
         self._app.processEvents()
 
     def test_brush_mode_combo_exposes_all_brush_modes(self) -> None:
-        modes = [str(self.widget.brush_mode_combo.itemData(index)) for index in range(self.widget.brush_mode_combo.count())]
+        modes = [
+            str(self.widget.brush_mode_combo.itemData(index)) for index in range(self.widget.brush_mode_combo.count())
+        ]
         self.assertEqual(self.widget.brush_mode_combo.count(), 2)
         self.assertEqual(modes, ["freeform", "angled"])
 
@@ -3149,9 +3314,24 @@ class PolygonExtractionWidgetBrushModeUiTests(unittest.TestCase):
 
         self.assertEqual(self.widget.polygon_editor._trace_width, 24.0)
 
+    def test_contact_tool_uses_plain_width_and_height_labels(self) -> None:
+        self.widget.polygon_editor.set_tool(EditorTool.ADD_VIA)
+        self._app.processEvents()
+
+        self.assertEqual(self.widget.via_width_label.text(), "Ширина")
+        self.assertEqual(self.widget.via_height_label.text(), "Высота")
+
+        self.widget.via_width_spin.setValue(13)
+        self.widget.via_height_spin.setValue(21)
+        self._app.processEvents()
+        self.assertEqual(self.widget.polygon_editor._via_width, 13.0)
+        self.assertEqual(self.widget.polygon_editor._via_height, 21.0)
+
     def test_polygon_mode_indicator_is_hidden_but_mode_switch_stays_operational(self) -> None:
         self.widget.polygon_editor.set_tool(EditorTool.ADD_POLYGON)
-        self.widget.polygon_mode_combo.setCurrentIndex(self.widget.polygon_mode_combo.findData(PolygonCreateMode.RECTANGLE))
+        self.widget.polygon_mode_combo.setCurrentIndex(
+            self.widget.polygon_mode_combo.findData(PolygonCreateMode.RECTANGLE)
+        )
         self._app.processEvents()
 
         self.assertFalse(self.widget.polygon_draw_mode_indicator.isVisible())

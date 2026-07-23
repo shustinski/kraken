@@ -8,7 +8,7 @@ class focused on orchestration rather than low-level painting.
 from __future__ import annotations
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRegion
 
 from ..graphics.tools import EditorTool
 
@@ -261,6 +261,22 @@ def _new_painter() -> tuple[QPixmap, QPainter]:
     return pixmap, painter
 
 
+def _finish_icon(pixmap: QPixmap, painter: QPainter) -> QIcon:
+    """Return an icon without the transparent canvas around its artwork."""
+
+    painter.end()
+    artwork_rect = QRegion(pixmap.mask()).boundingRect()
+    if artwork_rect.isEmpty():
+        return QIcon(pixmap)
+
+    # Keep a tiny antialiasing safety margin, but remove the large design
+    # canvas margin so the visible artwork can fill an icon-only button.
+    margin = max(1, round(pixmap.width() / TOOLBAR_ICON_CANVAS_SIZE_PX))
+    artwork_rect.adjust(-margin, -margin, margin, margin)
+    artwork_rect = artwork_rect.intersected(pixmap.rect())
+    return QIcon(pixmap.copy(artwork_rect))
+
+
 def create_editor_tool_icon(tool: EditorTool) -> QIcon:
     pixmap, painter = _new_painter()
     stroke = QColor("#FFFFFF")
@@ -296,8 +312,7 @@ def create_editor_tool_icon(tool: EditorTool) -> QIcon:
         _paint_polygon_badge_icon(painter, stroke, accent, "~")
     elif tool == EditorTool.DELETE_POLYGON:
         _paint_polygon_badge_icon(painter, stroke, danger, "x")
-    painter.end()
-    return QIcon(pixmap)
+    return _finish_icon(pixmap, painter)
 
 
 def create_editor_action_icon(action: str) -> QIcon:
@@ -329,8 +344,7 @@ def create_editor_action_icon(action: str) -> QIcon:
         painter.drawArc(QRectF(7.0, 7.0, 16.0, 15.0), 200 * 16, -245 * 16)
     else:
         _paint_fit_icon(painter, stroke, accent)
-    painter.end()
-    return QIcon(pixmap)
+    return _finish_icon(pixmap, painter)
 
 
 __all__ = [

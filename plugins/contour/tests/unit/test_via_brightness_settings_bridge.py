@@ -13,7 +13,6 @@ from contour.vision.via_detection.config import ViaPolarity
 from contour.vision.via_detection.heuristic_detector import detect_vias_heuristic
 from contour.vision.via_detection.result import ViaDetection
 from contour.vision.via_detection.settings_bridge import heuristic_config_from_settings
-from contour.vision.via.primary_sem import SemPrimaryViaConfig
 
 
 def test_heuristic_config_uses_white_range_for_bright_only() -> None:
@@ -29,7 +28,6 @@ def test_heuristic_config_uses_white_range_for_bright_only() -> None:
     assert cfg.bright_range_min == 150.0
     assert cfg.dark_range_enabled is False
     assert not hasattr(cfg, "max_seed_count")
-    assert not hasattr(SemPrimaryViaConfig(), "max_candidates")
 
 
 def test_heuristic_config_uses_both_ranges_when_enabled() -> None:
@@ -112,6 +110,8 @@ def test_local_contrast_recovers_subtle_via_within_absolute_brightness_range() -
         bright_via_diameter_max=10,
         via_white_range_enabled=True,
         via_white_range_min=140,
+        heuristic_min_center_contrast=1.0,
+        heuristic_min_peak_prominence=1.0,
     )
 
     result = detect_vias_heuristic(image, heuristic_config_from_settings(settings))
@@ -172,6 +172,9 @@ def test_line_and_diffuse_bright_spot_are_not_accepted_as_vias() -> None:
         bright_via_diameter_max=10,
         via_white_range_enabled=True,
         via_white_range_min=140,
+        # This test exercises rejection of diffuse spots specifically.
+        # The product default is intentionally more permissive (0.2).
+        heuristic_min_edge_sharpness=0.4,
     )
     config = heuristic_config_from_settings(settings)
 

@@ -23,7 +23,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     selected_operation = self._selected_available_operation_name()
     selected_pipeline_row = self.pipeline_list.currentRow() if hasattr(self, "pipeline_list") else -1
 
-    self.path_group.setTitle(self._tr("path_panel_title"))
+    if hasattr(self.path_group, "setTitle"):
+        self.path_group.setTitle(self._tr("path_panel_title"))
     self.input_dir_label.setText(self._tr("input_directory_label"))
     self.cif_dir_label.setText(self._tr("cif_overlay_directory_label"))
     self.output_dir_label.setText(self._tr("output_directory_label"))
@@ -104,7 +105,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self._set_common_tooltip(self.reload_cif_selected_button, "reload_selected_cif_overlays")
         self._set_common_tooltip(self.reload_cif_for_frames_button, "reload_cif_for_selected_frames")
 
-    self.run_group.setTitle(self._tr("run_group_title"))
+    if hasattr(self.run_group, "setTitle"):
+        self.run_group.setTitle(self._tr("run_group_title"))
     if hasattr(self, "extra_layers_group"):
         self.extra_layers_group.setTitle(
             self._tr(
@@ -142,9 +144,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         )
         if getattr(self, "vector_geom_spike_angle_label_widget", None) is not None:
             self.vector_geom_spike_angle_label_widget.setText(
-                "Минимальный угол острого выброса, °"
-                if self._ui_language == "ru"
-                else "Minimum spike angle, °"
+                "Минимальный угол острого выброса, °" if self._ui_language == "ru" else "Minimum spike angle, °"
             )
         self.vector_geom_drop_triangle_checkbox.setText(
             "Удалять внешние треугольники из 3 вершин как артефакты"
@@ -175,7 +175,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
 
     self.available_filters_group.setTitle(
         self._tr(
-            "available_filters_group_title", "Фильтры pipeline" if self._ui_language == "ru" else "Pipeline filters"
+            "available_filters_group_title",
+            "Доступные фильтры" if self._ui_language == "ru" else "Available filters",
         )
     )
     self.pipeline_steps_group.setTitle(
@@ -239,15 +240,20 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self._tr("geometry_filters_group_title", "Геометрия" if self._ui_language == "ru" else "Geometry")
     )
     self.via_group.setTitle(
-        self._tr("via_constraints_group_title", "Ограничения via" if self._ui_language == "ru" else "Via constraints")
+        self._tr(
+            "via_constraints_group_title",
+            "Ограничения контактов" if self._ui_language == "ru" else "Contact constraints",
+        )
     )
     self.topology_group.setTitle(
         self._tr("topology_group_title", "Иерархия и отверстия" if self._ui_language == "ru" else "Hierarchy and holes")
     )
     if hasattr(self, "recognition_mode_combo"):
-        self.recognition_mode_combo.setItemText(0, self._tr("recognition_mode_disabled"))
-        self.recognition_mode_combo.setItemText(1, self._tr("recognition_mode_conductors"))
-        self.recognition_mode_combo.setItemText(2, self._tr("extraction_profile_vias"))
+        self.recognition_mode_combo.setItemText(0, "Отключено" if self._ui_language == "ru" else "Disabled")
+        self.recognition_mode_combo.setItemText(1, "Проводники" if self._ui_language == "ru" else "Conductors")
+        self.recognition_mode_combo.setItemText(2, "Контакты" if self._ui_language == "ru" else "Contacts")
+    if hasattr(self, "recognition_mode_label"):
+        self.recognition_mode_label.setText("Распознавание" if self._ui_language == "ru" else "Recognition")
     if self.retrieval_mode_label_widget is not None:
         self.retrieval_mode_label_widget.setText(self._tr("retrieval_mode_label"))
     if self.approximation_mode_label_widget is not None:
@@ -303,7 +309,10 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.min_extent_label_widget.setText(self._tr("min_extent_label"))
     if self.via_size_mode_label_widget is not None:
         self.via_size_mode_label_widget.setText(
-            self._tr("via_size_mode_label", "Режим размеров via" if self._ui_language == "ru" else "Via size mode")
+            self._tr(
+                "via_size_mode_label",
+                "Режим размеров контактов" if self._ui_language == "ru" else "Contact size mode",
+            )
         )
     self.via_size_mode_combo.setItemText(
         0,
@@ -315,20 +324,39 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     )
     if getattr(self, "via_search_mode_label_widget", None) is not None:
         self.via_search_mode_label_widget.setText(
-            self._tr("via_search_mode_label", "Режим поиска via" if self._ui_language == "ru" else "Via search mode")
+            self._tr(
+                "via_search_mode_label",
+                "Режим поиска контактов" if self._ui_language == "ru" else "Contact search mode",
+            )
         )
     if self.via_search_mode_combo.count() >= 3:
         self.via_search_mode_combo.setItemText(
             0,
-            self._tr("via_search_mode_universal", "Универсальный" if self._ui_language == "ru" else "Universal"),
+            self._tr("via_search_mode_heuristic", "Эвристический" if self._ui_language == "ru" else "Heuristic"),
         )
+    if getattr(self, "bright_via_viamode_label_widget", None) is not None:
+        self.bright_via_viamode_label_widget.setText(
+            "Метод поиска контактов" if self._ui_language == "ru" else "Contact search method"
+        )
+        if getattr(self, "bright_via_polarity_label_widget", None) is not None:
+            self.bright_via_polarity_label_widget.setText(
+                "Полярность контакта" if self._ui_language == "ru" else "Contact polarity"
+            )
+        if getattr(self, "bright_via_diameter_mode_label_widget", None) is not None:
+            self.bright_via_diameter_mode_label_widget.setText(
+                "Размер контакта" if self._ui_language == "ru" else "Contact size"
+            )
+        if getattr(self, "bright_via_diameter_fixed_label_widget", None) is not None:
+            self.bright_via_diameter_fixed_label_widget.setText(
+                "Диаметр контакта, px" if self._ui_language == "ru" else "Contact diameter, px"
+            )
         self.via_search_mode_combo.setItemText(
             1,
-            self._tr("via_search_mode_bright_sem", "Светлые точки (SEM)" if self._ui_language == "ru" else "Bright spots (SEM)"),
+            self._tr("via_search_mode_template", "По шаблону" if self._ui_language == "ru" else "Template"),
         )
         self.via_search_mode_combo.setItemText(
             2,
-            self._tr("via_search_mode_template", "По шаблону" if self._ui_language == "ru" else "Template"),
+            self._tr("via_search_mode_hybrid", "Смешанный" if self._ui_language == "ru" else "Mixed"),
         )
     elif self.via_search_mode_combo.count() >= 2:
         self.via_search_mode_combo.setItemText(
@@ -394,20 +422,21 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.via_templates_label_widget.setText(
             self._tr("via_templates_label", "Шаблоны" if self._ui_language == "ru" else "Templates")
         )
-    self.add_via_template_button.setText(
-        self._tr("add_via_template_button", "Выделить шаблон" if self._ui_language == "ru" else "Pick template")
-    )
-    self.remove_via_template_button.setText(
-        self._tr("remove_via_template_button", "Удалить выбранный" if self._ui_language == "ru" else "Remove selected")
-    )
-    self.clear_via_templates_button.setText(
-        self._tr("clear_via_templates_button", "Удалить все" if self._ui_language == "ru" else "Clear all")
-    )
+    if hasattr(self, "via_template_table"):
+        self.via_template_table.setHorizontalHeaderLabels(
+            ["№", "Вид", "Похожесть", "Размер", "Удалить"]
+            if self._ui_language == "ru"
+            else ["No.", "Preview", "Similarity", "Size", "Delete"]
+        )
+        self._refresh_via_template_list()
     if getattr(self, "noisy_traces_via_preset_label_widget", None) is not None:
         self.noisy_traces_via_preset_label_widget.setText("")
     if self.via_preset_label_widget is not None:
         self.via_preset_label_widget.setText(
-            self._tr("via_preset_label", "Пресеты поиска via" if self._ui_language == "ru" else "Via search presets")
+            self._tr(
+                "via_preset_label",
+                "Пресеты поиска контактов" if self._ui_language == "ru" else "Contact search presets",
+            )
         )
     self.apply_via_preset_button.setText(
         self._tr("apply_via_preset_button", "Применить" if self._ui_language == "ru" else "Apply")
@@ -418,42 +447,22 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.delete_via_preset_button.setText(
         self._tr("delete_via_preset_button", "Удалить" if self._ui_language == "ru" else "Delete")
     )
-    self.noisy_traces_via_preset_button.setText(
-        self._tr(
-            "noisy_traces_via_preset_button",
-            "Пресет: яркие via на дорожках" if self._ui_language == "ru" else "Preset: bright vias on traces",
-        )
-    )
-    if getattr(self, "blurred_via_preset_label_widget", None) is not None:
-        self.blurred_via_preset_label_widget.setText("")
-    self.blurred_via_preset_button.setText(
-        self._tr(
-            "blurred_via_preset_button",
-            "Пресет: слабые/размытые via" if self._ui_language == "ru" else "Preset: weak/blurred vias",
-        )
-    )
     self._refresh_via_preset_combo()
     if self.reset_via_search_label_widget is not None:
         self.reset_via_search_label_widget.setText("")
     self.reset_via_search_button.setText(
         self._tr(
             "reset_via_search_button",
-            "Сбросить параметры поиска via" if self._ui_language == "ru" else "Reset via search parameters",
+            "Сбросить параметры поиска контактов"
+            if self._ui_language == "ru"
+            else "Reset contact search parameters",
         )
     )
-    if self.debug_candidates_label_widget is not None:
-        self.debug_candidates_label_widget.setText(
-            self._tr("debug_candidates_label", "Отладка via" if self._ui_language == "ru" else "Via debug")
-        )
     self.debug_candidates_checkbox.setText(
         self._tr("debug_candidates_checkbox", "Проверять по клику" if self._ui_language == "ru" else "Inspect by click")
     )
-    if getattr(self, "show_gradient_debug_label_widget", None) is not None:
-        self.show_gradient_debug_label_widget.setText(
-            self._tr("gradient_debug_label", "Карта градиента" if self._ui_language == "ru" else "Gradient map")
-        )
-    self.show_gradient_debug_button.setText(
-        self._tr("gradient_debug_button", "Открыть карту" if self._ui_language == "ru" else "Show gradient map")
+    self.via_show_detected_checkbox.setText(
+        "Показывать найденные контакты" if self._ui_language == "ru" else "Show detected contacts"
     )
     if getattr(self, "gradient_overlay_label_widget", None) is not None:
         self.gradient_overlay_label_widget.setText(
@@ -465,36 +474,75 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             "Показывать на изображении" if self._ui_language == "ru" else "Overlay on image",
         )
     )
-    self.gradient_overlay_mode_combo.setItemText(
-        0, self._tr("gradient_overlay_mode_heatmap", "Тепловая карта" if self._ui_language == "ru" else "Heatmap")
-    )
-    self.gradient_overlay_mode_combo.setItemText(
-        1,
-        self._tr(
-            "gradient_overlay_mode_threshold", "Маска по порогу" if self._ui_language == "ru" else "Threshold mask"
-        ),
-    )
-    self.gradient_overlay_mode_combo.setItemText(
-        2,
-        self._tr("gradient_overlay_mode_elevation", "Серый градиент" if self._ui_language == "ru" else "Raw elevation"),
-    )
+    _overlay_names = {
+        "heatmap": ("Тепловая карта", "Heatmap"),
+        "threshold": ("Маска по порогу", "Threshold mask"),
+        "elevation": ("Серый градиент", "Raw elevation"),
+        "mask": ("Итоговая маска", "Final mask"),
+        "candidate_mask": ("Маска кандидатов", "Candidate mask"),
+        "via_mask": ("Маска контактов", "Contact mask"),
+        "metal_mask": ("Маска металла", "Metal mask"),
+        "metal_binary_mask": ("Бинарная маска металла", "Metal binary mask"),
+        "metal_filtered_mask": ("Отфильтрованная маска металла", "Filtered metal mask"),
+        "tophat_mask": ("Маска Top-hat", "Top-hat mask"),
+        "dog_mask": ("Маска DoG", "DoG mask"),
+        "spot_response": ("Отклик светлых пятен", "Bright-spot response"),
+        "spot_response_dark": ("Отклик тёмных пятен", "Dark-spot response"),
+        "ring_response": ("Отклик колец", "Ring response"),
+        "background_corrected": ("Скорректированный фон", "Background corrected"),
+        "local_max_bright": ("Локальные светлые максимумы", "Local bright maxima"),
+        "local_max_dark": ("Локальные тёмные максимумы", "Local dark maxima"),
+        "binary_mask": ("Бинарная маска", "Binary mask"),
+        "tophat": ("Top-hat", "Top-hat"),
+        "dog": ("DoG", "DoG"),
+        "radial_symmetry": ("Радиальная симметрия", "Radial symmetry"),
+        "edge_likeness": ("Похожесть на край", "Edge likeness"),
+        "line_likeness": ("Похожесть на линию", "Line likeness"),
+        "distance_to_edge": ("Расстояние до края", "Distance to edge"),
+        "scharr": ("Scharr", "Scharr"),
+        "phase_congruency": ("Фазовая согласованность", "Phase congruency"),
+        "structured": ("Структурные границы", "Structured edges"),
+        "ridge": ("Гребни", "Ridges"),
+        "processed": ("Обработанное изображение", "Processed image"),
+        "raw_gray": ("Исходное изображение детектора", "Detector source image"),
+        "source_gray": ("Исходное серое изображение", "Source grayscale"),
+        "conductor_gradient_elevation": ("Градиент границ проводников", "Conductor edge gradient"),
+        "template_count": ("Количество совпадений шаблонов", "Template match count"),
+        "overlay": ("Наложение детектора", "Detector overlay"),
+        "final_overlay": ("Итоговое наложение", "Final overlay"),
+    }
+    for _index in range(self.gradient_overlay_mode_combo.count()):
+        _mode = str(self.gradient_overlay_mode_combo.itemData(_index) or "")
+        _names = _overlay_names.get(_mode)
+        if _names is not None:
+            self.gradient_overlay_mode_combo.setItemText(
+                _index,
+                _names[0] if self._ui_language == "ru" else _names[1],
+            )
     if self.via_roundness_label_widget is not None:
         self.via_roundness_label_widget.setText(
             self._tr("via_roundness_label", "Округлость" if self._ui_language == "ru" else "Roundness")
         )
     if self.min_via_width_label_widget is not None:
         self.min_via_width_label_widget.setText(
-            self._tr("via_width_range_label", "Диапазон ширины via" if self._ui_language == "ru" else "Via width range")
+            self._tr(
+                "via_width_range_label",
+                "Диапазон ширины контакта" if self._ui_language == "ru" else "Contact width range",
+            )
         )
     if self.min_via_height_label_widget is not None:
         self.min_via_height_label_widget.setText(
             self._tr(
-                "via_height_range_label", "Диапазон высоты via" if self._ui_language == "ru" else "Via height range"
+                "via_height_range_label",
+                "Диапазон высоты контакта" if self._ui_language == "ru" else "Contact height range",
             )
         )
     if self.fixed_vias_label_widget is not None:
         self.fixed_vias_label_widget.setText(
-            self._tr("fixed_vias_label", "Фиксированные via" if self._ui_language == "ru" else "Fixed vias")
+            self._tr(
+                "fixed_vias_label",
+                "Фиксированные контакты" if self._ui_language == "ru" else "Fixed contacts",
+            )
         )
     if self.min_hierarchy_depth_label_widget is not None:
         self.min_hierarchy_depth_label_widget.setText(self._tr("min_hierarchy_depth_label"))
@@ -689,7 +737,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             )
         )
 
-    self.editor_group.setTitle(self._tr("editor_group_title"))
+    if hasattr(self.editor_group, "setTitle"):
+        self.editor_group.setTitle(self._tr("editor_group_title"))
     self._update_tool_button_texts()
     self._update_action_button_texts()
     self.polygon_mode_label.setText("Полигон" if self._ui_language == "ru" else "Polygon")
@@ -698,8 +747,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     if hasattr(self, "trace_width_label"):
         self.trace_width_label.setText(self._tr("trace_width_label"))
     self.delete_vertex_mode_label.setText("Удаление" if self._ui_language == "ru" else "Delete")
-    self.via_width_label.setText("Via W")
-    self.via_height_label.setText("Via H")
+    self.via_width_label.setText("Ширина" if self._ui_language == "ru" else "Width")
+    self.via_height_label.setText("Высота" if self._ui_language == "ru" else "Height")
     for widget, tooltip_key in (
         (self.polygon_mode_label, "polygon_mode"),
         (self.polygon_mode_combo, "polygon_mode"),
@@ -731,4 +780,3 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             self.operation_tree.setCurrentItem(target_item)
     self._update_pipeline_help_preview(self._selected_available_operation_name())
     self._refresh_help_menu()
-

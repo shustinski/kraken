@@ -21,7 +21,7 @@ COMPACT_UI_STYLE = """
     font-size: 12px;
 }
 #polygonExtractionWidget QToolButton {
-    padding: 1px;
+    padding: 0;
 }
 #polygonExtractionWidget QToolButton:checked {
     background-color: #16A34A;

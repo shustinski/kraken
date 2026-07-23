@@ -150,12 +150,14 @@ class PolygonEditorView(QGraphicsView):
         self._pending_polygon_erases: bool | None = None
         self._middle_pan_active = False
         self._middle_pan_last_viewport: QPointF | None = None
-        self._polygon_overlays_visible_before_space_hold: bool | None = None
+        self._polygon_overlay_hide_holds: set[str] = set()
+        self._polygon_overlays_visible_before_holds: bool | None = None
         self._gradient_overlay_visible_before_space_hold: bool | None = None
         self._filter_preview_hold_active = False
         self._last_pointer_viewport_pos: QPointF | None = None
         self._image_click_mode = False
         self._image_region_selection_mode = False
+        self._ctrl_image_region_selection_enabled = False
         self._via_debug_inspection_enabled = False
         self._clipboard_polygons: list[PolygonData] = []
         self._clipboard_anchor = QPointF(0.0, 0.0)
@@ -738,6 +740,9 @@ class PolygonEditorView(QGraphicsView):
         if not enabled:
             self._editor_scene.clear_preview_rect()
 
+    def set_ctrl_image_region_selection_enabled(self, enabled: bool) -> None:
+        self._ctrl_image_region_selection_enabled = bool(enabled)
+
     def fit_to_view(self) -> None:
         rect = self._editor_scene.main_image_rect()
         if rect.width() > 0 and rect.height() > 0:
@@ -746,6 +751,24 @@ class PolygonEditorView(QGraphicsView):
             self._clamp_current_zoom_at_viewport_pixel(self._require_viewport().rect().center())
             self._update_navigation_scene_rect()
             self.zoomChanged.emit(self.zoom_factor())
+
+    def _set_polygon_overlay_hide_hold(self, source: str, active: bool) -> None:
+        if active:
+            if source in self._polygon_overlay_hide_holds:
+                return
+            if not self._polygon_overlay_hide_holds:
+                self._polygon_overlays_visible_before_holds = self._editor_scene.polygon_overlays_visible()
+            self._polygon_overlay_hide_holds.add(source)
+            self._editor_scene.set_polygon_overlays_visible(False)
+            return
+        if source not in self._polygon_overlay_hide_holds:
+            return
+        self._polygon_overlay_hide_holds.discard(source)
+        if self._polygon_overlay_hide_holds:
+            return
+        if self._polygon_overlays_visible_before_holds is not None:
+            self._editor_scene.set_polygon_overlays_visible(self._polygon_overlays_visible_before_holds)
+        self._polygon_overlays_visible_before_holds = None
 
     def center_main_image(self) -> None:
         rect = self._editor_scene.main_image_rect()
@@ -892,6 +915,7 @@ class PolygonEditorView(QGraphicsView):
                 self._brush_pan_guard = True
             self._middle_pan_active = True
             self._middle_pan_last_viewport = QPointF(viewport_pixel)
+            self._set_polygon_overlay_hide_hold("middle", True)
             self.middlePreviewHoldChanged.emit(True)
             event.accept()
             return
@@ -902,7 +926,10 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
 
-        if self._image_region_selection_mode and event.button() == Qt.MouseButton.LeftButton:
+        ctrl_region_selection = self._ctrl_image_region_selection_enabled and bool(
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        )
+        if (self._image_region_selection_mode or ctrl_region_selection) and event.button() == Qt.MouseButton.LeftButton:
             self._drag_kind = "image_region"
             self._drag_start_scene_pos = scene_pos
             self._editor_scene.set_preview_rect(scene_pos, scene_pos)
@@ -1263,6 +1290,7 @@ class PolygonEditorView(QGraphicsView):
         if event.button() == Qt.MouseButton.MiddleButton and self._middle_pan_active:
             self._middle_pan_active = False
             self._middle_pan_last_viewport = None
+            self._set_polygon_overlay_hide_hold("middle", False)
             self.middlePreviewHoldChanged.emit(False)
             event.accept()
             return
@@ -1543,6 +1571,15 @@ class PolygonEditorView(QGraphicsView):
         if event is None:
             return
         if (
+            event.key() == Qt.Key.Key_F
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and self.isEnabled()
+        ):
+            if not event.isAutoRepeat():
+                self.fit_to_view()
+            event.accept()
+            return
+        if (
             event.key() == Qt.Key.Key_Space
             and event.modifiers() == Qt.KeyboardModifier.NoModifier
             and self.isEnabled()
@@ -1551,12 +1588,11 @@ class PolygonEditorView(QGraphicsView):
             if event.isAutoRepeat():
                 event.accept()
                 return
-            if self._polygon_overlays_visible_before_space_hold is None:
-                self._polygon_overlays_visible_before_space_hold = self._editor_scene.polygon_overlays_visible()
+            if "space" not in self._polygon_overlay_hide_holds:
                 self._gradient_overlay_visible_before_space_hold = (
                     self._editor_scene.gradient_overlay_user_visible()
                 )
-                self._editor_scene.set_polygon_overlays_visible(False)
+                self._set_polygon_overlay_hide_hold("space", True)
                 self._editor_scene.set_gradient_overlay_visible(False)
             event.accept()
             return
@@ -1639,13 +1675,12 @@ class PolygonEditorView(QGraphicsView):
             event.key() == Qt.Key.Key_Space
             and event.modifiers() == Qt.KeyboardModifier.NoModifier
             and not event.isAutoRepeat()
-            and self._polygon_overlays_visible_before_space_hold is not None
+            and "space" in self._polygon_overlay_hide_holds
         ):
-            self._editor_scene.set_polygon_overlays_visible(self._polygon_overlays_visible_before_space_hold)
+            self._set_polygon_overlay_hide_hold("space", False)
             if self._gradient_overlay_visible_before_space_hold is not None:
                 self._editor_scene.set_gradient_overlay_visible(self._gradient_overlay_visible_before_space_hold)
                 self._gradient_overlay_visible_before_space_hold = None
-            self._polygon_overlays_visible_before_space_hold = None
             event.accept()
             return
         if (

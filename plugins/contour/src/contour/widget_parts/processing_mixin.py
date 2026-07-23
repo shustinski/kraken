@@ -710,7 +710,22 @@ class WidgetProcessingMixin:
         self._sync_polygons_to_editor(image_path, polygons)
         if defer_heavy_overlays:
             return
-        self.polygon_editor.set_debug_candidates(list(state.debug_candidates))
+        debug_candidates = list(state.debug_candidates)
+        if (
+            not hasattr(self, "debug_candidates_checkbox")
+            or not self.debug_candidates_checkbox.isChecked()
+        ):
+            debug_candidates = []
+        elif (
+            hasattr(self, "bright_via_show_rejected_checkbox")
+            and not self.bright_via_show_rejected_checkbox.isChecked()
+        ):
+            debug_candidates = [
+                candidate
+                for candidate in debug_candidates
+                if bool(getattr(candidate, "accepted", False))
+            ]
+        self.polygon_editor.set_debug_candidates(debug_candidates)
         self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
         if hasattr(self, "via_show_detected_checkbox"):
             self.polygon_editor.set_polygon_category_visible(
@@ -876,7 +891,12 @@ class WidgetProcessingMixin:
         )
 
     def _via_debug_inspection_enabled(self: Any) -> bool:
-        return bool(hasattr(self, "debug_candidates_checkbox") and self.debug_candidates_checkbox.isChecked())
+        return bool(
+            hasattr(self, "debug_candidates_checkbox")
+            and self.debug_candidates_checkbox.isChecked()
+            and hasattr(self, "recognition_mode_combo")
+            and str(self.recognition_mode_combo.currentData() or "") == "via"
+        )
 
     def _neighbor_preview_max_dimension(self: Any) -> int:
         state = self._workspace.current_state

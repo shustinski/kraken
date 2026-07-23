@@ -1,59 +1,81 @@
-"""Built-in via-detection preset payloads.
-
-Pure data — no widget state required.
-"""
+"""Built-in presets for expert heuristic via-recognition parameters."""
 
 from __future__ import annotations
 
+from ..application.processing import ContourExtractionSettings
+
+
+def _expert_defaults(**overrides: object) -> dict[str, object]:
+    payload = {
+        key: value
+        for key, value in ContourExtractionSettings().to_dict().items()
+        if key.startswith("heuristic_")
+    }
+    payload.update(overrides)
+    return payload
+
 
 def noisy_traces_via_preset_payload() -> dict[str, object]:
-    return {
-        "via_search_mode": "template",
-        "via_white_range_enabled": True,
-        "via_white_range_min": 180,
-        "via_white_range_max": 255,
-        "via_black_range_enabled": False,
-        "via_black_range_min": 0,
-        "via_black_range_max": 30,
-        "via_min_score": 0.50,
-        "via_min_contrast": 30.0,
-        "via_min_edge_coverage": 0.50,
-        "via_spot_line_suppression": 0.85,
-        "via_template_min_score": 0.35,
-        "via_min_roundness": 50.0,
-        "debug_enabled": True,
-    }
+    return _expert_defaults(
+        heuristic_min_center_contrast=55.0,
+        heuristic_min_compactness=0.16,
+        heuristic_min_circularity=0.20,
+        heuristic_max_elongation=1.35,
+        heuristic_max_line_coherence=0.68,
+        heuristic_min_edge_sharpness=0.48,
+        heuristic_w_line=30.0,
+        heuristic_line_penalty_scale=4.0,
+    )
 
 
 def blurred_via_preset_payload() -> dict[str, object]:
-    return {
-        "via_search_mode": "template",
-        "via_white_range_enabled": True,
-        "via_white_range_min": 135,
-        "via_white_range_max": 255,
-        "via_black_range_enabled": False,
-        "via_black_range_min": 0,
-        "via_black_range_max": 45,
-        "via_min_score": 0.30,
-        "via_min_contrast": 10.0,
-        "via_min_edge_coverage": 0.30,
-        "via_spot_line_suppression": 0.55,
-        "via_template_min_score": 0.30,
-        "via_min_roundness": 25.0,
-        "debug_enabled": True,
-    }
+    return _expert_defaults(
+        heuristic_min_center_contrast=35.0,
+        heuristic_min_peak_prominence=1.0,
+        heuristic_min_compactness=0.08,
+        heuristic_max_elongation=1.80,
+        heuristic_min_edge_sharpness=0.22,
+        heuristic_edge_quality_floor=0.35,
+        heuristic_seed_percentile=86.0,
+    )
 
 
-def _legacy_via_presets(language: str) -> dict[str, dict[str, object]]:
-    """Return the built-in preset name → payload mapping for *language* (``"ru"`` or ``"en"``)."""
+def built_in_via_presets(language: str) -> dict[str, dict[str, object]]:
+    standard = _expert_defaults()
+    strict = _expert_defaults(
+        heuristic_min_center_contrast=60.0,
+        heuristic_min_peak_prominence=3.0,
+        heuristic_min_compactness=0.18,
+        heuristic_min_circularity=0.25,
+        heuristic_max_elongation=1.35,
+        heuristic_max_line_coherence=0.72,
+        heuristic_min_edge_sharpness=0.50,
+        heuristic_seed_percentile=96.0,
+    )
+    sensitive = _expert_defaults(
+        heuristic_min_center_contrast=35.0,
+        heuristic_min_peak_prominence=1.0,
+        heuristic_min_compactness=0.08,
+        heuristic_max_elongation=1.80,
+        heuristic_min_edge_sharpness=0.25,
+        heuristic_seed_percentile=84.0,
+    )
+    noisy = noisy_traces_via_preset_payload()
+    blurred = blurred_via_preset_payload()
     if language == "ru":
         return {
-            "Яркие via на дорожках": noisy_traces_via_preset_payload(),
-            "Слабые/размытые via": blurred_via_preset_payload(),
+            "Стандартный": standard,
+            "Строгий": strict,
+            "Чувствительный": sensitive,
+            "Шумное изображение": noisy,
+            "Размытые контакты": blurred,
         }
     return {
-        "Bright vias on traces": noisy_traces_via_preset_payload(),
-        "Weak/blurred vias": blurred_via_preset_payload(),
+        "Standard": standard,
+        "Strict": strict,
+        "Sensitive": sensitive,
+        "Noisy image": noisy,
+        "Blurred contacts": blurred,
     }
 
 
@@ -62,86 +84,3 @@ __all__ = [
     "built_in_via_presets",
     "noisy_traces_via_preset_payload",
 ]
-
-
-def _standard_via_preset_payload() -> dict[str, object]:
-    return {
-        "via_search_mode": "heuristic",
-        "via_size_mode": "fixed",
-        "bright_via_diameter_min": 8,
-        "bright_via_diameter_max": 8,
-        "via_search_sensitivity": "medium",
-        "via_heuristic_polarity": "bright",
-        "via_min_roundness": 40.0,
-        "bright_via_min_final_score": 42.0,
-        "bright_via_min_isolation_score": 0.38,
-        "bright_via_hard_reject_on_asymmetry": True,
-        "bright_via_max_radial_asymmetry": 32.0,
-        "via_white_range_enabled": True,
-        "via_white_range_min": 140,
-        "via_white_range_max": 255,
-        "bright_via_bright_center_min_score": 140.0,
-    }
-
-
-def _bright_via_preset_payload() -> dict[str, object]:
-    return {
-        **_standard_via_preset_payload(),
-        "via_search_mode": "bright_tophat_dog",
-        "via_heuristic_polarity": "bright",
-        "bright_via_min_final_score": 42.0,
-        "bright_via_nms_distance": 10,
-        "bright_via_threshold_percentile": 99.0,
-        "bright_via_min_isolation_score": 0.38,
-        "bright_via_min_annular_contrast": 6.0,
-        "via_white_range_enabled": True,
-        "via_white_range_min": 140,
-        "via_white_range_max": 255,
-        "bright_via_bright_center_min_score": 140.0,
-        "bright_via_use_metal_mask": False,
-    }
-
-
-def built_in_via_presets(language: str) -> dict[str, dict[str, object]]:
-    standard = _standard_via_preset_payload()
-    small = {**standard, "bright_via_diameter_min": 5, "bright_via_diameter_max": 5, "bright_via_nms_distance": 4}
-    large = {**standard, "bright_via_diameter_min": 14, "bright_via_diameter_max": 14, "bright_via_nms_distance": 10}
-    bright = _bright_via_preset_payload()
-    dark = {**standard, "via_search_mode": "heuristic", "via_heuristic_polarity": "dark"}
-    ring = {
-        **bright,
-        "bright_via_diameter_min": 8,
-        "bright_via_diameter_max": 8,
-        "bright_via_min_isolation_score": 0.32,
-        "bright_via_min_annular_contrast": 5.0,
-        "via_min_roundness": 35.0,
-    }
-    weak = {
-        **bright,
-        "via_search_sensitivity": "high",
-        "bright_via_min_final_score": 28.0,
-        "bright_via_min_isolation_score": 0.28,
-        "bright_via_threshold_percentile": 98.0,
-        "bright_via_max_radial_asymmetry": 40.0,
-        "via_white_range_min": 110,
-        "bright_via_bright_center_min_score": 110.0,
-    }
-    if language == "ru":
-        return {
-            "Стандартный": standard,
-            "Малые via": small,
-            "Крупные via": large,
-            "Светлые via": bright,
-            "Тёмные via": dark,
-            "Via с кольцом": ring,
-            "Слабый контраст": weak,
-        }
-    return {
-        "Standard": standard,
-        "Small vias": small,
-        "Large vias": large,
-        "Bright vias": bright,
-        "Dark vias": dark,
-        "Ring vias": ring,
-        "Weak contrast": weak,
-    }

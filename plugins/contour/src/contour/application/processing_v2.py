@@ -47,8 +47,8 @@ class MetalRecoverySettings:
 @dataclass(slots=True)
 class ViaDetectionSettings:
     kind: Literal["via"] = "via"
-    search_mode: Literal["heuristic", "bright_tophat_dog", "template"] = "heuristic"
-    polarity: Literal["auto", "bright", "dark"] = "auto"
+    search_mode: Literal["heuristic", "bright_tophat_dog", "template", "hybrid"] = "heuristic"
+    polarity: Literal["auto", "bright", "dark", "ring_light_ring", "ring_dark_ring"] = "auto"
     size_mode: Literal["range", "fixed"] = "range"
     min_width: int = 3
     max_width: int = 80
@@ -61,6 +61,7 @@ class ViaDetectionSettings:
     min_score: float = 0.0
     nms_iou: float = 0.35
     template_boost: float = 0.15
+    heuristic_parameters: dict[str, float | bool] = field(default_factory=dict)
 
 
 RecognitionSettingsV2 = MetalRecoverySettings | ViaDetectionSettings
@@ -174,6 +175,7 @@ class ProcessingRequestV2:
                 via_white_range_max=via_mode.white_range[1],
                 via_black_range_min=via_mode.black_range[0],
                 via_black_range_max=via_mode.black_range[1],
+                **dict(via_mode.heuristic_parameters),
             )
         return ContourExtractionSettings.from_dict(payload)
 
@@ -201,9 +203,7 @@ class ProcessingRequestV2:
             else:
                 report.dropped_fields[key] = value
         if report.dropped_fields:
-            report.warnings.append(
-                "Dropped unsupported legacy fields: " + ", ".join(sorted(report.dropped_fields))
-            )
+            report.warnings.append("Dropped unsupported legacy fields: " + ", ".join(sorted(report.dropped_fields)))
         common = CommonContourSettings(
             **{item.name: getattr(legacy, item.name) for item in fields(CommonContourSettings)}
         )
@@ -220,6 +220,11 @@ class ProcessingRequestV2:
                 fixed_heights=list(legacy.fixed_via_heights),
                 white_range=(legacy.via_white_range_min, legacy.via_white_range_max),
                 black_range=(legacy.via_black_range_min, legacy.via_black_range_max),
+                heuristic_parameters={
+                    item.name: getattr(legacy, item.name)
+                    for item in fields(ContourExtractionSettings)
+                    if item.name.startswith("heuristic_")
+                },
             )
         else:
             recognition = MetalRecoverySettings(
@@ -271,7 +276,9 @@ class ProcessingResultV2:
             raise ValueError("ProcessingResultV2 requires schema_version=2")
         return cls(
             polygons=[PolygonData.from_dict(item) for item in payload.get("polygons", [])],
-            hierarchy={int(root): [int(child) for child in children] for root, children in payload.get("hierarchy", {}).items()},
+            hierarchy={
+                int(root): [int(child) for child in children] for root, children in payload.get("hierarchy", {}).items()
+            },
             warnings=[str(item) for item in payload.get("warnings", [])],
             stage_timings_ms={str(key): float(value) for key, value in payload.get("stage_timings_ms", {}).items()},
             provenance=dict(payload.get("provenance") or {}),

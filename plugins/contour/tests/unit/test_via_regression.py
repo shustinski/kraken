@@ -87,7 +87,7 @@ def _heuristic_via_preset_config() -> HeuristicViaDetectorConfig:
         diameter_min=6,
         diameter_max=12,
         polarity="bright",
-        sensitivity="medium",
+        seed_percentile=90.0,
         nms_distance=5,
         bright_range_enabled=True,
         bright_range_min=100.0,
@@ -166,7 +166,6 @@ def test_heuristic_real_frame_quality(
             bright_via_diameter_max=12,
             via_white_range_enabled=True,
             via_white_range_min=100,
-            via_search_sensitivity="medium",
         ),
     )
     detected = [(item.center_x, item.center_y) for item in result.hits]

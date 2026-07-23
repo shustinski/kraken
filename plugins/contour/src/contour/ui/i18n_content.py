@@ -14,7 +14,7 @@ LocalizedTextMap = dict[str, tuple[str, str]]
 EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
     "extraction_profile": (
         "Выбирает независимый набор настроек для проводников или переходных отверстий.",
-        "Selects an independent settings profile for conductors or vias.",
+        "Selects an independent settings profile for conductors or contacts.",
     ),
     "retrieval_mode": (
         "Определяет, искать ли только внешние контуры или всю иерархию вложенных контуров.",
@@ -108,36 +108,36 @@ EXTRACTION_HELP_TEXTS: LocalizedTextMap = {
         "Adds pixels inside the selected intensity range to the mask.",
     ),
     "via_min_roundness": (
-        "Минимальная округлость via в процентах: 100 близко к окружности, 0 отключает фильтр.",
-        "Minimum via roundness in percent: 100 is close to a circle, 0 disables the filter.",
+        "Минимальная округлость контакта в процентах: 100 близко к окружности, 0 отключает фильтр.",
+        "Minimum contact roundness in percent: 100 is close to a circle, 0 disables the filter.",
     ),
     "via_size_mode": (
-        "Переключает отбор via между диапазоном и точными значениями.",
-        "Switches via filtering between a size range and exact size values.",
+        "Переключает отбор контактов между диапазоном и точными значениями.",
+        "Switches contact filtering between a size range and exact size values.",
     ),
     "min_via_width": (
-        "Минимальная ширина переходного отверстия в via-профиле.",
-        "Minimum via width in the via profile.",
+        "Минимальная ширина контакта в профиле контактов.",
+        "Minimum contact width in the contact profile.",
     ),
     "max_via_width": (
-        "Максимальная ширина переходного отверстия в via-профиле.",
-        "Maximum via width in the via profile.",
+        "Максимальная ширина контакта в профиле контактов.",
+        "Maximum contact width in the contact profile.",
     ),
     "min_via_height": (
-        "Минимальная высота переходного отверстия в via-профиле.",
-        "Minimum via height in the via profile.",
+        "Минимальная высота контакта в профиле контактов.",
+        "Minimum contact height in the contact profile.",
     ),
     "max_via_height": (
-        "Максимальная высота переходного отверстия в via-профиле.",
-        "Maximum via height in the via profile.",
+        "Максимальная высота контакта в профиле контактов.",
+        "Maximum contact height in the contact profile.",
     ),
     "fixed_via_widths": (
-        "Список ширин via. Каждая ширина связана с высотой в той же позиции.",
-        "Via widths list. Each width is paired with the height at the same position.",
+        "Список ширин контактов. Каждая ширина связана с высотой в той же позиции.",
+        "Contact widths list. Each width is paired with the height at the same position.",
     ),
     "fixed_via_heights": (
-        "Список высот via. Каждая высота связана с шириной в той же позиции.",
-        "Via heights list. Each height is paired with the width at the same position.",
+        "Список высот контактов. Каждая высота связана с шириной в той же позиции.",
+        "Contact heights list. Each height is paired with the width at the same position.",
     ),
     "min_hierarchy_depth": (
         "Минимальная глубина в иерархии контуров. Ноль означает внешние контуры.",
@@ -336,7 +336,7 @@ EXTRACTION_HELP_TEXTS.update(
     {
         "extraction_profile": (
             "Выбирает, что сейчас настраивается: проводники или переходные отверстия. У каждого профиля свои фильтры и свой результат векторизации.",
-            "Selects what is being configured now: conductors or vias. Each profile has its own filters and vectorization result.",
+            "Selects what is being configured now: conductors or contacts. Each profile has its own filters and vectorization result.",
         ),
         "retrieval_mode": (
             "Определяет, искать только внешние границы объектов или также вложенные контуры и отверстия внутри них.",
@@ -418,104 +418,104 @@ EXTRACTION_HELP_TEXTS.update(
             "Minimum allowed polygon width in pixels; 0 disables the filter. Uses a robust local-thickness estimate.",
         ),
         "via_white_threshold": (
-            "Добавляет в маску via пиксели светлее заданного порога. Включайте для поиска светлых переходных отверстий.",
-            "Adds pixels brighter than the threshold to the via mask. Enable it to detect bright vias.",
+            "Добавляет в маску контактов пиксели светлее заданного порога. Включайте для поиска светлых контактов.",
+            "Adds pixels brighter than the threshold to the contact mask. Enable it to detect bright contacts.",
         ),
         "via_white_range": (
-            "Добавляет в маску via пиксели, яркость которых попадает в диапазон для белых переходных отверстий.",
-            "Adds pixels whose brightness falls inside the white-via range to the via mask.",
+            "Добавляет в маску контактов пиксели, яркость которых попадает в диапазон светлых контактов.",
+            "Adds pixels whose brightness falls inside the bright-contact range to the contact mask.",
         ),
         "via_black_threshold": (
-            "Добавляет в маску via пиксели темнее заданного порога. Включайте для поиска темных переходных отверстий.",
-            "Adds pixels darker than the threshold to the via mask. Enable it to detect dark vias.",
+            "Добавляет в маску контактов пиксели темнее заданного порога. Включайте для поиска тёмных контактов.",
+            "Adds pixels darker than the threshold to the contact mask. Enable it to detect dark contacts.",
         ),
         "via_black_range": (
-            "Добавляет в маску via пиксели, яркость которых попадает в диапазон для черных переходных отверстий.",
-            "Adds pixels whose brightness falls inside the black-via range to the via mask.",
+            "Добавляет в маску контактов пиксели, яркость которых попадает в диапазон тёмных контактов.",
+            "Adds pixels whose brightness falls inside the dark-contact range to the contact mask.",
         ),
         "via_min_score": (
-            "Единый итоговый порог для via от 0 до 1. Комбинирует отклик, радиальный контраст и покрытие кромки. Увеличьте, чтобы оставить только самые уверенные кандидаты.",
-            "Unified final via score threshold from 0 to 1. Combines response, radial contrast and edge coverage. Increase to keep only the most confident candidates.",
+            "Единый итоговый порог для контактов от 0 до 1. Комбинирует отклик, радиальный контраст и покрытие кромки. Увеличьте, чтобы оставить только самые уверенные кандидаты.",
+            "Unified final contact score threshold from 0 to 1. Combines response, radial contrast and edge coverage. Increase to keep only the most confident candidates.",
         ),
         "via_min_contrast": (
-            "Минимальный радиальный контраст центра via относительно кольца вокруг него (в уровнях 0-255). Увеличьте, чтобы отсечь слабые пятна.",
-            "Minimum radial contrast of the via center vs the surrounding ring (0-255 levels). Increase to reject weak spots.",
+            "Минимальный радиальный контраст центра контакта относительно кольца вокруг него (в уровнях 0-255). Увеличьте, чтобы отсечь слабые пятна.",
+            "Minimum radial contrast of the contact center vs the surrounding ring (0-255 levels). Increase to reject weak spots.",
         ),
         "via_min_edge_coverage": (
             "Минимальная доля окружности, на которой есть заметная кромка. Увеличьте, чтобы требовать более замкнутую круглую границу.",
             "Minimum fraction of the circle that must show a visible edge. Increase to require a more complete round boundary.",
         ),
         "via_spot_line_suppression": (
-            "\u041f\u043e\u0434\u0430\u0432\u043b\u044f\u0435\u0442 \u0434\u043b\u0438\u043d\u043d\u044b\u0435 \u0433\u043e\u0440\u0438\u0437\u043e\u043d\u0442\u0430\u043b\u044c\u043d\u044b\u0435 \u0438 \u0432\u0435\u0440\u0442\u0438\u043a\u0430\u043b\u044c\u043d\u044b\u0435 \u0434\u043e\u0440\u043e\u0436\u043a\u0438 \u043f\u0435\u0440\u0435\u0434 \u043f\u043e\u0438\u0441\u043a\u043e\u043c \u043a\u0440\u0443\u0433\u043b\u044b\u0445 \u0442\u043e\u0447\u0435\u043a. \u0423\u0432\u0435\u043b\u0438\u0447\u044c\u0442\u0435, \u0435\u0441\u043b\u0438 \u043d\u0430 \u0434\u043e\u0440\u043e\u0436\u043a\u0430\u0445 \u043f\u043e\u044f\u0432\u043b\u044f\u044e\u0442\u0441\u044f \u043b\u043e\u0436\u043d\u044b\u0435 via; \u0443\u043c\u0435\u043d\u044c\u0448\u0438\u0442\u0435, \u0435\u0441\u043b\u0438 via \u0441\u043b\u0438\u0448\u043a\u043e\u043c \u0432\u044b\u0442\u0435\u0440\u043b\u0438\u0441\u044c.",
-            "Suppresses long horizontal and vertical traces before round-dot detection. Increase it when traces create false vias; decrease it if real vias are erased.",
+            "Подавляет длинные горизонтальные и вертикальные дорожки перед поиском круглых точек. Увеличьте, если на дорожках появляются ложные контакты; уменьшите, если реальные контакты слишком сильно стираются.",
+            "Suppresses long horizontal and vertical traces before round-dot detection. Increase it when traces create false contacts; decrease it if real contacts are erased.",
         ),
         "via_template_min_score": (
             "Минимальное совпадение с круглым шаблоном. Больше значение требует более похожую на круг область.",
             "Minimum circular-template match. Higher values require an area that looks more like a circle.",
         ),
         "via_templates": (
-            "Список шаблонов via. Нажмите выбор шаблона и протяните рамку по переходному отверстию на изображении; все шаблоны используются при поиске.",
-            "List of via templates. Click pick template and drag a rectangle over a via in the image; all templates are used during detection.",
+            "Список шаблонов контактов. Удерживайте Ctrl и протяните рамку по контакту на изображении; все шаблоны используются при поиске.",
+            "List of contact templates. Hold Ctrl and drag a rectangle over a contact; all templates are used during detection.",
         ),
         "reset_via_search": (
-            "Возвращает методы поиска via и их параметры к значениям по умолчанию. Сохраненные шаблоны не удаляются.",
-            "Restores via search methods and their parameters to defaults. Saved templates are not removed.",
+            "Возвращает методы поиска контактов и их параметры к значениям по умолчанию. Сохранённые шаблоны не удаляются.",
+            "Restores contact search methods and their parameters to defaults. Saved templates are not removed.",
         ),
         "via_noisy_traces_preset": (
-            "Быстро настраивает поиск для кадров, где яркие круглые via находятся на фоне длинных дорожек и шума. Включает методы Точки и Градиент, усиливает подавление дорожек и отключает методы, которые часто дают лишние срабатывания.",
-            "Quick setup for frames where bright round vias sit on long traces and noisy background. Enables Spots and Gradient, increases trace suppression, and disables methods that often create extra false hits.",
+            "Быстро настраивает поиск для кадров, где яркие круглые контакты находятся на фоне длинных дорожек и шума.",
+            "Quick setup for frames where bright round contacts sit on long traces and noisy background.",
         ),
         "via_blurred_preset": (
-            "Быстро настраивает поиск для слабых или размытых via. Понижает пороги, допускает менее компактную форму и оставляет инспектор включенным, чтобы можно было проверить найденные точки кликом.",
-            "Quick setup for weak or blurred vias. Lowers thresholds, allows less compact spots, and keeps the inspector enabled so found points can be checked by click.",
+            "Быстро настраивает поиск для слабых или размытых контактов.",
+            "Quick setup for weak or blurred contacts.",
         ),
         "via_preset_selector": (
-            "Список встроенных и сохраненных пользователем пресетов поиска via. Пресет меняет только параметры распознавания, шаблоны и размеры via остаются на месте.",
-            "List of built-in and user-saved via search presets. A preset changes recognition parameters only; templates and via sizes stay unchanged.",
+            "Список встроенных и сохранённых пользователем пресетов поиска контактов. Пресет меняет только экспертные параметры; шаблоны и размеры контактов остаются на месте.",
+            "List of built-in and user-saved contact search presets. A preset changes expert parameters only; templates and contact sizes stay unchanged.",
         ),
         "debug_candidates": (
-            "Включает инспектор распознавания via. После обработки кликните по найденной via, чтобы увидеть метод поиска, причину принятия и основные численные признаки.",
-            "Enables the via recognition inspector. After processing, click a detected via to see the search method, acceptance reason, and main numeric features.",
+            "Включает инспектор распознавания контактов. После обработки кликните по найденному контакту, чтобы увидеть метод поиска, причину принятия и основные численные признаки.",
+            "Enables the contact recognition inspector. After processing, click a detected contact to see the search method, acceptance reason, and main numeric features.",
         ),
         "via_threshold_range": (
-            "Добавляет в маску via пиксели, яркость которых попадает в заданный диапазон. Удобно, когда via имеет средний тон.",
-            "Adds pixels whose intensity falls inside the selected range to the via mask. Useful for mid-tone vias.",
+            "Добавляет в маску контактов пиксели, яркость которых попадает в заданный диапазон. Удобно для контактов среднего тона.",
+            "Adds pixels whose intensity falls inside the selected range to the contact mask. Useful for mid-tone contacts.",
         ),
         "via_min_roundness": (
-            "Минимальная похожесть via на круг в процентах. Увеличьте, чтобы убрать вытянутые пятна; 0 отключает фильтр.",
-            "Minimum via circularity in percent. Increase it to reject elongated spots; 0 disables the filter.",
+            "Минимальная похожесть контакта на круг в процентах. Увеличьте, чтобы убрать вытянутые пятна; 0 отключает фильтр.",
+            "Minimum contact circularity in percent. Increase it to reject elongated spots; 0 disables the filter.",
         ),
         "via_size_mode": (
-            "Выбирает способ отбора via по размеру: общий диапазон ширины/высоты или список точных размеров.",
-            "Chooses how vias are filtered by size: a width/height range or a list of exact sizes.",
+            "Выбирает способ отбора контактов по размеру: общий диапазон ширины/высоты или список точных размеров.",
+            "Chooses how contacts are filtered by size: a width/height range or a list of exact sizes.",
         ),
         "via_search_mode": (
-            "Режим поиска via: светлые точки (SEM), универсальный (полярность/кольца) или по шаблону.",
-            "Via search mode: bright SEM spots, universal polarity-aware search, or template matching.",
+            "Метод поиска контактов: эвристический, по шаблону или смешанный.",
+            "Contact search method: heuristic, template, or mixed.",
         ),
         "min_via_width": (
             "Минимальная ширина переходного отверстия. Более узкие объекты будут отброшены.",
-            "Minimum via width. Narrower objects are rejected.",
+            "Minimum contact width. Narrower objects are rejected.",
         ),
         "max_via_width": (
             "Максимальная ширина переходного отверстия. Ноль означает без верхнего ограничения.",
-            "Maximum via width. Zero means no upper limit.",
+            "Maximum contact width. Zero means no upper limit.",
         ),
         "min_via_height": (
             "Минимальная высота переходного отверстия. Более низкие объекты будут отброшены.",
-            "Minimum via height. Shorter objects are rejected.",
+            "Minimum contact height. Shorter objects are rejected.",
         ),
         "max_via_height": (
             "Максимальная высота переходного отверстия. Ноль означает без верхнего ограничения.",
-            "Maximum via height. Zero means no upper limit.",
+            "Maximum contact height. Zero means no upper limit.",
         ),
         "fixed_via_widths": (
-            "Ширина via из списка точных размеров. Пара X/Y в одной строке описывает один допустимый размер.",
-            "Via width in the exact-size list. The X/Y pair in one row describes one allowed size.",
+            "Ширина контакта из списка точных размеров. Пара X/Y в одной строке описывает один допустимый размер.",
+            "Contact width in the exact-size list. The X/Y pair in one row describes one allowed size.",
         ),
         "fixed_via_heights": (
-            "Высота via из списка точных размеров. Пара X/Y в одной строке описывает один допустимый размер.",
-            "Via height in the exact-size list. The X/Y pair in one row describes one allowed size.",
+            "Высота контакта из списка точных размеров. Пара X/Y в одной строке описывает один допустимый размер.",
+            "Contact height in the exact-size list. The X/Y pair in one row describes one allowed size.",
         ),
         "min_hierarchy_depth": (
             "Минимальная глубина вложенности контура. Ноль означает внешний контур; большие значения выбирают внутренние контуры.",
@@ -818,8 +818,8 @@ EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
         "Trace pen: click trace centerline vertices, then double-click or press Enter to commit. Shift snaps segments to 45 degrees; right-click chains erase.",
     ),
     EditorTool.ADD_VIA: (
-        "Поставить переходное отверстие заданной ширины и высоты в месте клика.",
-        "Place a via of the configured width and height at the click position.",
+        "Поставить контакт заданной ширины и высоты в месте клика.",
+        "Place a contact of the configured width and height at the click position.",
     ),
     EditorTool.ADD_VERTEX: (
         "Сначала выберите полигон кликом, затем добавляйте вершины на его границу. Enter или Escape завершают работу с полигоном.",
@@ -1000,12 +1000,12 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Color of the polygon currently selected in the editor.",
     ),
     "via_selection_color": (
-        "Цвет via, который сейчас выбран в редакторе.",
-        "Color of the via currently selected in the editor.",
+        "Цвет контакта, который сейчас выбран в редакторе.",
+        "Color of the contact currently selected in the editor.",
     ),
     "conductor_hover_highlight": (
-        "Цвет контура проводника при наведении указателя на проводник, отверстие в нём или переходное отверстие (via).",
-        "Outline color used for the trace when the pointer hovers the trace, a hole inside it, or a via.",
+        "Цвет контура проводника при наведении указателя на проводник, отверстие в нём или контакт.",
+        "Outline color used for the trace when the pointer hovers the trace, a hole inside it, or a contact.",
     ),
     "vertex_color": (
         "Цвет точек-вершин, которые показываются на полигонах.",
@@ -1048,12 +1048,12 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "How vertices are deleted: one nearest point or all points inside an area.",
     ),
     "editor_via_width": (
-        "Ширина via, которое ставится инструментом Via при клике по изображению.",
-        "Width of the via placed by the Via tool when clicking the image.",
+        "Ширина контакта, который ставится инструментом «Контакт» при клике по изображению.",
+        "Width of the contact placed by the Contact tool when clicking the image.",
     ),
     "editor_via_height": (
-        "Высота via, которое ставится инструментом Via при клике по изображению.",
-        "Height of the via placed by the Via tool when clicking the image.",
+        "Высота контакта, который ставится инструментом «Контакт» при клике по изображению.",
+        "Height of the contact placed by the Contact tool when clicking the image.",
     ),
 }
 
@@ -1284,7 +1284,7 @@ PIPELINE_OPERATION_HELP_TEXTS: dict[str, dict[str, tuple[str, str]]] = {
         ),
         "use": (
             "Полезен для поиска мелких светлых отверстий или точек.",
-            "Useful for finding small bright vias or spots.",
+            "Useful for finding small bright contacts or spots.",
         ),
     },
     "blackhat": {
@@ -1294,7 +1294,7 @@ PIPELINE_OPERATION_HELP_TEXTS: dict[str, dict[str, tuple[str, str]]] = {
         ),
         "use": (
             "Полезен для тёмных отверстий или канавок на светлом поле.",
-            "Useful for dark vias or grooves on a bright field.",
+            "Useful for dark contacts or grooves on a bright field.",
         ),
     },
     "canny": {
@@ -1393,8 +1393,8 @@ PIPELINE_OPERATION_HELP_TEXTS: dict[str, dict[str, tuple[str, str]]] = {
             "Multi-scale Laplacian of Gaussian — highly responsive to blobs and spots.",
         ),
         "use": (
-            "Лучший выбор, когда важны переходные отверстия (via) и круглые контакты.",
-            "Best choice when the goal is vias / round contacts (blob-like features).",
+            "Лучший выбор, когда важны круглые контакты.",
+            "Best choice when the goal is round contacts (blob-like features).",
         ),
     },
     "ridge_edges": {

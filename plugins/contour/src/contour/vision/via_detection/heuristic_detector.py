@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import math
+import time
+from collections import Counter
+from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
 
 import cv2
@@ -11,6 +15,68 @@ import numpy as np
 from .binary_mask import detect_binary_components, looks_like_binary_mask
 from .config import HeuristicViaDetectorConfig, ViaPolarity
 from .result import DetectionResult, ViaDetection
+
+
+class ViaRejectCode(StrEnum):
+    BRIGHTNESS_RANGE = "brightness_range"
+    LOW_CENTER_BRIGHTNESS = "low_center_brightness"
+    LOW_CONTRAST = "low_contrast"
+    LOW_PROMINENCE = "low_prominence"
+    NO_COMPONENT = "no_component"
+    SIZE_MISMATCH = "size_mismatch"
+    CENTER_DRIFT = "center_drift"
+    LOW_COMPACTNESS = "compact"
+    LOW_CIRCULARITY = "circularity"
+    ELONGATION = "elongation"
+    LINE_COHERENCE = "line_coherence"
+    DIFFUSE_SPOT = "diffuse_spot"
+
+
+@dataclass(frozen=True)
+class PreparedHeuristicFrame:
+    gray: np.ndarray
+    gray_f32: np.ndarray
+    corrected_u8: np.ndarray
+    gradient_x: np.ndarray
+    gradient_y: np.ndarray
+    gradient_magnitude: np.ndarray
+
+
+@dataclass(frozen=True)
+class CandidateFeatures:
+    center_x: float
+    center_y: float
+    diameter: float
+    contrast: float
+    prominence: float
+    compactness: float
+    circularity: float
+    aspect: float
+    line_coherence: float
+    edge_snr: float
+    edge_sharpness: float
+    border_imbalance: float
+    center_brightness: float = 0.0
+    equivalent_diameter: float = 0.0
+    center_drift: float = 0.0
+    binarization_threshold: float = 0.0
+
+
+@dataclass(frozen=True)
+class SegmentedCandidate:
+    gray: np.ndarray
+    median: float
+    contrast: float
+    prominence: float
+    area: float
+    component_mask: np.ndarray
+    contour: np.ndarray
+    component_stats: np.ndarray
+    binarization_threshold: float
+
+
+def _hard_reason(code: ViaRejectCode, detail: str = "") -> str:
+    return f"hard:{code.value}{detail}"
 
 
 def _det_better(candidate: ViaDetection, current: ViaDetection | None) -> bool:
@@ -26,6 +92,8 @@ def _det_better(candidate: ViaDetection, current: ViaDetection | None) -> bool:
 
 
 def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig) -> DetectionResult:
+    started_at = time.perf_counter()
+    config.validate()
     g = _to_gray_u8(image)
     h, w = g.shape[:2]
     snap0 = dict(config.snapshot())
@@ -69,11 +137,24 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
             parameters_snapshot={**snap0, "binary_mask": True, "accepted_count": len(accepted)},
         )
 
-    sens = _sensitivity_map(config.sensitivity)
+    prepare_started = time.perf_counter()
+    seed_threshold = {"percentile": float(config.seed_percentile)}
     g_pre = _preprocess_denoise(g, config)
     bg = cv2.GaussianBlur(g_pre, (0, 0), float(config.background_sigma))
-    corr = g_pre.astype(np.float32) - bg.astype(np.float32)
+    gray_f32 = g_pre.astype(np.float32)
+    corr = gray_f32 - bg.astype(np.float32)
     corr_u8 = _normalize01_to_u8(corr)
+    gradient_x = cv2.Sobel(gray_f32, cv2.CV_32F, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(gray_f32, cv2.CV_32F, 0, 1, ksize=3)
+    frame = PreparedHeuristicFrame(
+        gray=g_pre,
+        gray_f32=gray_f32,
+        corrected_u8=corr_u8,
+        gradient_x=gradient_x,
+        gradient_y=gradient_y,
+        gradient_magnitude=cv2.magnitude(gradient_x, gradient_y),
+    )
+    prepare_seconds = time.perf_counter() - prepare_started
 
     bright_map = corr_u8
     dark_map = 255 - corr_u8
@@ -84,20 +165,22 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
     seeds_b, mask_b = _local_extrema_seeds(
         bright_map,
         ker,
-        sens["percentile"],
+        seed_threshold["percentile"],
         float(config.min_peak_grey),
     )
     seeds_d, mask_d = _local_extrema_seeds(
         dark_map,
         ker,
-        sens["percentile"],
+        seed_threshold["percentile"],
         float(config.min_peak_grey),
     )
 
     # An explicitly enabled intensity range is a candidate-generation rule, not
     # merely a late validation gate. Otherwise dense frames keep only the top
     # response percentile and valid, slightly weaker vias never get scored.
-    if config.bright_range_enabled and float(config.bright_range_min) >= 128.0:
+    if config.bright_range_enabled and (
+        float(config.bright_range_min) >= 128.0 or config.use_intensity_range_seeds
+    ):
         range_seeds, range_mask = _intensity_range_seeds(
             g_pre,
             ker,
@@ -109,7 +192,9 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
         )
         seeds_b.extend(range_seeds)
         mask_b = cv2.bitwise_or(mask_b, range_mask)
-    if config.dark_range_enabled and float(config.dark_range_max) <= 127.0:
+    if config.dark_range_enabled and (
+        float(config.dark_range_max) <= 127.0 or config.use_intensity_range_seeds
+    ):
         range_seeds, range_mask = _intensity_range_seeds(
             g_pre,
             ker,
@@ -149,42 +234,12 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
     else:
         hyps = [polar]
 
-    dets: list[ViaDetection] = []
-    patch_scale = max(1.0, float(config.analysis_window_scale))
-    min_ps = int(config.min_analyze_size)
-
-    for cy, cx in raw_seeds:
-        best: ViaDetection | None = None
-        for d_est in allowed:
-            psize = int(max(min_ps, round(patch_scale * float(d_est))))
-            half = psize // 2
-            y0, y1 = max(0, cy - half), min(h, cy + half + 1)
-            x0, x1 = max(0, cx - half), min(w, cx + half + 1)
-            patch = g_pre[y0:y1, x0:x1]
-            if patch.size == 0:
-                continue
-            pcx, pcy = cx - x0, cy - y0
-            for hyp in hyps:
-                if hyp in {
-                    str(ViaPolarity.AUTO),
-                    "auto",
-                }:
-                    continue
-                det = _score_one(
-                    patch,
-                    pcx,
-                    pcy,
-                    d_est,
-                    (x0, y0),
-                    hyp,
-                    config,
-                )
-                if det is None:
-                    continue
-                if _det_better(det, best):
-                    best = det
-        if best is not None:
-            dets.append(best)
+    score_started = time.perf_counter()
+    dets = [
+        item
+        for seed in raw_seeds
+        if (item := _score_seed(frame, seed, allowed, hyps, config)) is not None
+    ]
 
     scored_count = len(dets)
     dets = [d for d in dets if d.reject_reason is None or (d.reject_reason and "hard" in d.reject_reason)]
@@ -201,6 +256,7 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
     ]
     hard = [d for d in after if d.reject_reason and "hard" in d.reject_reason]
 
+    scoring_seconds = time.perf_counter() - score_started
     dbg = _debug_viz(
         g_pre,
         corr_u8,
@@ -212,6 +268,10 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
         d_max,
     )
 
+    reject_counts = Counter(
+        str(item.reject_reason).split("(", 1)[0].removeprefix("hard:") for item in hard if item.reject_reason
+    )
+    total_seconds = time.perf_counter() - started_at
     return DetectionResult(
         method="heuristic",
         accepted=accepted,
@@ -228,9 +288,60 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
             "accepted_count": len(accepted),
             "below_threshold_count": len(below),
             "hard_rejected_count": len(hard),
-            "sensitivity": sens,
+            "reject_counts": dict(sorted(reject_counts.items())),
+            "seed_threshold": seed_threshold,
+            "timings_seconds": {
+                "prepare": prepare_seconds,
+                "score": scoring_seconds,
+                "total": total_seconds,
+            },
+            "scoring_workers": 1,
         },
     )
+
+
+def _score_seed(
+    frame: PreparedHeuristicFrame,
+    seed: tuple[int, int],
+    allowed_diameters: list[int],
+    hypotheses: list[str],
+    config: HeuristicViaDetectorConfig,
+) -> ViaDetection | None:
+    """Score every allowed diameter for one seed and return its best candidate."""
+
+    cy, cx = seed
+    height, width = frame.gray.shape[:2]
+    patch_scale = max(1.0, float(config.analysis_window_scale))
+    min_patch_size = int(config.min_analyze_size)
+    best: ViaDetection | None = None
+    for diameter in allowed_diameters:
+        patch_size = int(max(min_patch_size, round(patch_scale * float(diameter))))
+        half = patch_size // 2
+        y0, y1 = max(0, cy - half), min(height, cy + half + 1)
+        x0, x1 = max(0, cx - half), min(width, cx + half + 1)
+        patch = frame.gray[y0:y1, x0:x1]
+        if patch.size == 0:
+            continue
+        patch_x, patch_y = cx - x0, cy - y0
+        for hypothesis in hypotheses:
+            if hypothesis in {str(ViaPolarity.AUTO), "auto"}:
+                continue
+            detection = _score_one(
+                patch,
+                patch_x,
+                patch_y,
+                diameter,
+                (x0, y0),
+                hypothesis,
+                config,
+                frame.gradient_x[y0:y1, x0:x1],
+                frame.gradient_y[y0:y1, x0:x1],
+                frame.gradient_magnitude[y0:y1, x0:x1],
+                allowed_diameters,
+            )
+            if detection is not None and _det_better(detection, best):
+                best = detection
+    return best
 
 
 def _to_gray_u8(image: np.ndarray) -> np.ndarray:
@@ -258,13 +369,20 @@ def _normalize01_to_u8(a: np.ndarray) -> np.ndarray:
     return u.astype(np.uint8)
 
 
-def _sensitivity_map(s: str) -> dict[str, float]:
-    t = (s or "medium").strip().lower()
-    if t in {"low", "низ", "низкая"}:
-        return {"percentile": 99.2}
-    if t in {"high", "выс", "высокая"}:
-        return {"percentile": 96.8}
-    return {"percentile": 98.3}
+def _fast_percentile_u8(values: np.ndarray, percentile: float) -> float:
+    """Linear percentile for uint8 patches without NumPy's generic quantile setup."""
+
+    flat = values.reshape(-1)
+    if flat.size == 0:
+        return 0.0
+    rank = (flat.size - 1) * max(0.0, min(100.0, float(percentile))) / 100.0
+    lower = int(math.floor(rank))
+    upper = int(math.ceil(rank))
+    selected = np.partition(flat, (lower, upper))
+    if lower == upper:
+        return float(selected[lower])
+    fraction = rank - lower
+    return float(selected[lower]) * (1.0 - fraction) + float(selected[upper]) * fraction
 
 
 def _local_extrema_seeds(
@@ -304,7 +422,7 @@ def _local_extrema_seeds(
 
 def _intensity_range_seeds(
     gray: np.ndarray,
-    _kernel: np.ndarray,
+    kernel: np.ndarray,
     value_min: float,
     value_max: float,
     diameter_min: int,
@@ -315,7 +433,9 @@ def _intensity_range_seeds(
     lo = min(float(value_min), float(value_max))
     hi = max(float(value_min), float(value_max))
     gray_f32 = gray.astype(np.float32)
-    support = ((gray_f32 >= lo) & (gray_f32 <= hi)).astype(np.uint8)
+    in_range = (gray_f32 >= lo) & (gray_f32 <= hi)
+    extreme = gray == (cv2.dilate(gray, kernel) if bright else cv2.erode(gray, kernel))
+    support = (in_range & extreme).astype(np.uint8)
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(support, connectivity=8)
     min_area = max(2.0, math.pi * (max(1, diameter_min) * 0.5) ** 2 * 0.15)
     max_area = math.pi * (max(1, diameter_max) * 0.5) ** 2 * 2.2
@@ -483,8 +603,8 @@ def _component_geometry_center(
     rect_center = tuple(float(value) for value in cv2.minAreaRect(contour)[0])
     circle_center_raw, _radius = cv2.minEnclosingCircle(contour)
     circle_center = tuple(float(value) for value in circle_center_raw)
-    geometry_x = float(np.median([bbox_center[0], rect_center[0], circle_center[0]]))
-    geometry_y = float(np.median([bbox_center[1], rect_center[1], circle_center[1]]))
+    geometry_x = float(sorted((bbox_center[0], rect_center[0], circle_center[0]))[1])
+    geometry_y = float(sorted((bbox_center[1], rect_center[1], circle_center[1]))[1])
     correction = math.hypot(geometry_x - weighted_center[0], geometry_y - weighted_center[1])
     if correction < 0.5:
         return weighted_center
@@ -573,7 +693,9 @@ def _local_background_masks(
 
 
 def _local_structure_metrics(
-    gray: np.ndarray,
+    gradient_x: np.ndarray,
+    gradient_y: np.ndarray,
+    gradient_magnitude: np.ndarray,
     cx: float,
     cy: float,
     d: float,
@@ -582,15 +704,12 @@ def _local_structure_metrics(
     """Return line coherence, closed-edge SNR and normalized edge sharpness."""
 
     radius = max(1.0, float(d) * 0.5)
-    yy, xx = _coordinate_grids(gray.shape[:2])
+    yy, xx = _coordinate_grids(gradient_magnitude.shape[:2])
     distance = np.sqrt((xx - float(cx)) ** 2 + (yy - float(cy)) ** 2)
-    gx = cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3)
-    magnitude = np.hypot(gx, gy)
 
     structure_mask = (distance >= 0.70 * radius) & (distance <= 2.20 * radius)
-    sx = gx[structure_mask]
-    sy = gy[structure_mask]
+    sx = gradient_x[structure_mask]
+    sy = gradient_y[structure_mask]
     if sx.size:
         jxx = float(np.sum(sx * sx))
         jxy = float(np.sum(sx * sy))
@@ -600,8 +719,8 @@ def _local_structure_metrics(
     else:
         coherence = 0.0
 
-    edge_ring = magnitude[(distance >= 0.65 * radius) & (distance <= 1.35 * radius)]
-    far_ring = magnitude[(distance >= 1.60 * radius) & (distance <= 2.80 * radius)]
+    edge_ring = gradient_magnitude[(distance >= 0.65 * radius) & (distance <= 1.35 * radius)]
+    far_ring = gradient_magnitude[(distance >= 1.60 * radius) & (distance <= 2.80 * radius)]
     edge_level = float(np.percentile(edge_ring, 60.0)) if edge_ring.size else 0.0
     noise_level = float(np.median(far_ring)) if far_ring.size else 0.0
     edge_snr = edge_level / (noise_level + 2.0)
@@ -612,6 +731,186 @@ def _local_structure_metrics(
     return float(coherence), float(edge_snr), float(edge_sharpness)
 
 
+def _candidate_bbox(
+    center_x: float,
+    center_y: float,
+    diameter: float,
+) -> tuple[int, int, int, int]:
+    """Return a visible global bounding box for accepted and rejected candidates."""
+
+    size = max(1, round(float(diameter)))
+    return (
+        round(float(center_x) - size * 0.5),
+        round(float(center_y) - size * 0.5),
+        size,
+        size,
+    )
+
+
+def _segment_candidate(
+    patch: np.ndarray,
+    pcx: int,
+    pcy: int,
+    diameter: int,
+    offset: tuple[int, int],
+    hypothesis: str,
+    config: HeuristicViaDetectorConfig,
+) -> tuple[SegmentedCandidate | None, ViaDetection | None]:
+    """Build the local component and return either its data or a typed rejection."""
+
+    height, width = patch.shape[:2]
+    center_mask, inner_mask, outer_mask = _annulus_masks(
+        (height, width), pcx, pcy, float(diameter)
+    )
+    center_grey = float(patch[pcy, pcx])
+
+    def rejected(code: ViaRejectCode, *, contrast: float = 0.0, prominence: float = 0.0) -> ViaDetection:
+        return ViaDetection(
+            float(offset[0] + pcx),
+            float(offset[1] + pcy),
+            _candidate_bbox(offset[0] + pcx, offset[1] + pcy, diameter),
+            0.0,
+            float(diameter),
+            float(contrast),
+            float(prominence),
+            0.0,
+            0.0,
+            hypothesis,
+            _hard_reason(code),
+        )
+
+    if not _center_in_brightness_range(center_grey, hypothesis, config):
+        return None, rejected(ViaRejectCode.BRIGHTNESS_RANGE)
+    if center_grey < float(config.min_center_brightness):
+        return None, rejected(ViaRejectCode.LOW_CENTER_BRIGHTNESS)
+    annular_contrast = _contrast_for_polarity(
+        patch, center_mask, inner_mask, outer_mask, hypothesis
+    )
+    background_contrast = _local_center_background_contrast(
+        patch, pcx, pcy, float(diameter), hypothesis
+    )
+    contrast = max(float(annular_contrast), float(background_contrast))
+    if contrast < float(config.min_center_contrast):
+        return None, rejected(ViaRejectCode.LOW_CONTRAST, contrast=contrast)
+
+    median = _fast_percentile_u8(patch, 50.0)
+    peak_radius = min(4, max(1, max(height, width) // 6))
+    y0, y1 = max(0, pcy - peak_radius), min(height, pcy + peak_radius + 1)
+    x0, x1 = max(0, pcx - peak_radius), min(width, pcx + peak_radius + 1)
+    neighbourhood = patch[y0:y1, x0:x1].ravel()
+    prominence = float(np.max(np.abs(neighbourhood - median))) if neighbourhood.size else 0.0
+    if prominence < float(config.min_peak_prominence):
+        return None, rejected(
+            ViaRejectCode.LOW_PROMINENCE,
+            contrast=contrast,
+            prominence=prominence,
+        )
+
+    percentile = float(config.local_binarize_percentile)
+    delta = max(float(config.min_center_contrast), abs(contrast) * 0.30, 2.0)
+    dark_component = hypothesis in (
+        str(ViaPolarity.DARK),
+        "dark",
+        str(ViaPolarity.RING_DARK_RING),
+        "ring_dark_ring",
+    )
+    ring_component = hypothesis in (
+        str(ViaPolarity.RING_LIGHT_RING),
+        "ring_light_ring",
+        str(ViaPolarity.RING_DARK_RING),
+        "ring_dark_ring",
+    )
+    clamp_dark_seed = config.use_intensity_range_seeds or float(config.dark_range_max) <= 127.0
+    clamp_bright_seed = config.use_intensity_range_seeds or float(config.bright_range_min) >= 128.0
+    if dark_component:
+        threshold = min(
+            _fast_percentile_u8(patch, max(1.0, 100.0 - percentile)),
+            median - delta,
+        )
+        if config.dark_range_enabled and clamp_dark_seed:
+            threshold = min(threshold, float(config.dark_range_max))
+            if not ring_component and clamp_dark_seed:
+                threshold = max(center_grey, threshold)
+                if center_grey < threshold:
+                    threshold = max(center_grey, math.ceil(threshold) - 1.0)
+            binary = (
+                (patch >= float(config.dark_range_min)) & (patch <= threshold)
+            ).astype(np.uint8) * 255
+        else:
+            if not ring_component and clamp_dark_seed:
+                threshold = max(center_grey, threshold)
+                if center_grey < threshold:
+                    threshold = max(center_grey, math.ceil(threshold) - 1.0)
+            binary = (patch <= threshold).astype(np.uint8) * 255
+    else:
+        threshold = max(_fast_percentile_u8(patch, percentile), median + delta)
+        if (
+            hypothesis in (str(ViaPolarity.BRIGHT), "bright")
+            and config.bright_range_enabled
+            and clamp_bright_seed
+        ):
+            threshold = max(threshold, float(config.bright_range_min))
+            if not ring_component and clamp_bright_seed:
+                threshold = min(center_grey, threshold)
+                if center_grey > threshold:
+                    threshold = min(center_grey, math.floor(threshold) + 1.0)
+            binary = (
+                (patch >= threshold) & (patch <= float(config.bright_range_max))
+            ).astype(np.uint8) * 255
+        else:
+            if not ring_component and clamp_bright_seed:
+                threshold = min(center_grey, threshold)
+                if center_grey > threshold:
+                    threshold = min(center_grey, math.floor(threshold) + 1.0)
+            binary = (patch >= threshold).astype(np.uint8) * 255
+
+    _count, labels, stats, _centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if hypothesis in (
+        str(ViaPolarity.RING_LIGHT_RING),
+        "ring_light_ring",
+        str(ViaPolarity.RING_DARK_RING),
+        "ring_dark_ring",
+    ):
+        ring_labels = labels[inner_mask]
+        ring_labels = ring_labels[ring_labels > 0]
+        if ring_labels.size:
+            label = int(np.bincount(ring_labels).argmax())
+        else:
+            label = 0
+    else:
+        label = int(labels[pcy, pcx])
+    if label <= 0:
+        return None, rejected(
+            ViaRejectCode.NO_COMPONENT,
+            contrast=contrast,
+            prominence=prominence,
+        )
+    area = float(stats[label, cv2.CC_STAT_AREA])
+    if area < 1.0:
+        return None, None
+    component_bool = labels == label
+    component_mask = component_bool.astype(np.uint8) * 255
+    contours, _hierarchy = cv2.findContours(
+        component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return None, None
+    return (
+        SegmentedCandidate(
+            gray=patch,
+            median=median,
+            contrast=contrast,
+            prominence=prominence,
+            area=area,
+            component_mask=component_bool,
+            contour=max(contours, key=cv2.contourArea),
+            component_stats=stats[label],
+            binarization_threshold=float(threshold),
+        ),
+        None,
+    )
+
+
 def _score_one(
     patch: np.ndarray,
     pcx: int,
@@ -620,115 +919,45 @@ def _score_one(
     offset: tuple[int, int],
     hyp: str,
     config: HeuristicViaDetectorConfig,
+    gradient_x: np.ndarray,
+    gradient_y: np.ndarray,
+    gradient_magnitude: np.ndarray,
+    allowed_diameters: list[int],
 ) -> ViaDetection | None:
     h, w = patch.shape[:2]
     if pcx < 0 or pcy < 0 or pcx >= w or pcy >= h:
         return None
     ph, pw = h, w
-    center_m, inner_m, outer_m = _annulus_masks((ph, pw), pcx, pcy, float(d_est))
-    gpatch = patch.astype(np.float32)
-    center_grey = float(gpatch[pcy, pcx])
-    if not _center_in_brightness_range(center_grey, hyp, config):
-        return ViaDetection(
-            float(offset[0] + pcx),
-            float(offset[1] + pcy),
-            (0, 0, 0, 0),
-            0.0,
-            float(d_est),
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            hyp,
-            "hard:brightness_range",
-        )
-    annular_contrast = _contrast_for_polarity(gpatch, center_m, inner_m, outer_m, hyp)
-    background_contrast = _local_center_background_contrast(gpatch, pcx, pcy, float(d_est), hyp)
-    contrast = max(float(annular_contrast), float(background_contrast))
-    if contrast < float(config.min_center_contrast):
-        return ViaDetection(
-            float(offset[0] + pcx),
-            float(offset[1] + pcy),
-            (0, 0, 0, 0),
-            0.0,
-            float(d_est),
-            float(contrast),
-            0.0,
-            0.0,
-            0.0,
-            hyp,
-            "hard:low_contrast",
-        )
-    med = float(np.median(gpatch))
-    pr = min(4, max(1, max(h, w) // 6))
-    ny0, ny1 = max(0, pcy - pr), min(h, pcy + pr + 1)
-    nx0, nx1 = max(0, pcx - pr), min(w, pcx + pr + 1)
-    nh = gpatch[ny0:ny1, nx0:nx1].astype(np.float32).ravel()
-    prom = float(np.max(np.abs(nh - med))) if nh.size else 0.0
-    if prom < float(config.min_peak_prominence):
+    segmented, rejection = _segment_candidate(
+        patch, pcx, pcy, d_est, offset, hyp, config
+    )
+    if rejection is not None:
+        return rejection
+    if segmented is None:
         return None
-
-    p = float(config.local_binarize_percentile)
-    delta = max(float(config.min_center_contrast), abs(float(contrast)) * 0.30, 2.0)
-    if hyp in (str(ViaPolarity.DARK), "dark"):
-        thr2 = min(float(np.percentile(gpatch, max(1.0, 100.0 - p))), med - delta)
-        if config.dark_range_enabled and float(config.dark_range_max) <= 127.0:
-            thr2 = max(thr2, min(float(config.dark_range_max), center_grey + delta))
-            binm = (
-                (gpatch >= float(config.dark_range_min))
-                & (gpatch <= thr2)
-            ).astype(np.uint8) * 255
-        else:
-            binm = (gpatch <= thr2).astype(np.uint8) * 255
-    elif hyp in (str(ViaPolarity.RING_DARK_RING), "ring_dark_ring") and gpatch[pcy, pcx] < med:
-        thr2 = min(float(np.percentile(gpatch, max(1.0, 100.0 - p))), med - delta)
-        binm = (gpatch <= thr2).astype(np.uint8) * 255
+    gpatch = segmented.gray
+    med = segmented.median
+    contrast = segmented.contrast
+    prom = segmented.prominence
+    area = segmented.area
+    cnt0 = segmented.contour
+    if hyp in (
+        str(ViaPolarity.RING_LIGHT_RING),
+        "ring_light_ring",
+        str(ViaPolarity.RING_DARK_RING),
+        "ring_dark_ring",
+    ):
+        _ring_center, ring_radius = cv2.minEnclosingCircle(cnt0)
+        eq_diam = 2.0 * float(ring_radius)
     else:
-        thr = max(float(np.percentile(gpatch, p)), med + delta)
-        if (
-            hyp in (str(ViaPolarity.BRIGHT), "bright")
-            and config.bright_range_enabled
-            and float(config.bright_range_min) >= 128.0
-        ):
-            thr = min(thr, max(float(config.bright_range_min), center_grey - delta))
-            binm = (
-                (gpatch >= thr)
-                & (gpatch <= float(config.bright_range_max))
-            ).astype(np.uint8) * 255
-        else:
-            binm = (gpatch >= thr).astype(np.uint8) * 255
-    nlab, lab, stat, _ = cv2.connectedComponentsWithStats(binm, connectivity=8)
-    lab_at = int(lab[pcy, pcx])
-    if lab_at <= 0:
-        return ViaDetection(
-            float(offset[0] + pcx),
-            float(offset[1] + pcy),
-            (0, 0, 0, 0),
-            0.0,
-            float(d_est),
-            float(contrast),
-            float(prom),
-            0.0,
-            0.0,
-            hyp,
-            "hard:no_component",
-        )
-    area = float(stat[lab_at, cv2.CC_STAT_AREA])
-    if area < 1.0:
-        return None
-    comp = (lab == lab_at).astype(np.uint8) * 255
-    cnts, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        return None
-    cnt0 = max(cnts, key=cv2.contourArea)
-    eq_diam = 2.0 * math.sqrt(max(area, 1.0) / math.pi)
+        eq_diam = 2.0 * math.sqrt(max(area, 1.0) / math.pi)
     tol = config.effective_size_tolerance()
     re = max(float(d_est), 1.0)
     if abs(eq_diam - float(d_est)) / re > tol:
         return ViaDetection(
             float(offset[0] + pcx),
             float(offset[1] + pcy),
-            (0, 0, 0, 0),
+            _candidate_bbox(offset[0] + pcx, offset[1] + pcy, d_est),
             0.0,
             float(d_est),
             float(contrast),
@@ -736,24 +965,24 @@ def _score_one(
             0.0,
             0.0,
             hyp,
-            f"hard:size_mismatch(eq={eq_diam:.1f},d={d_est})",
+            _hard_reason(ViaRejectCode.SIZE_MISMATCH, f"(eq={eq_diam:.1f},d={d_est})"),
         )
     weighted_center = _refine_center_xy(
         gpatch,
-        (lab == lab_at),
+        segmented.component_mask,
         seed_x=float(pcx),
         seed_y=float(pcy),
         med=med,
         hyp=hyp,
     )
-    fcx, fcy = _component_geometry_center(cnt0, stat[lab_at], weighted_center)
+    fcx, fcy = _component_geometry_center(cnt0, segmented.component_stats, weighted_center)
     drift = math.hypot(fcx - float(pcx), fcy - float(pcy))
     max_drift = float(config.max_center_drift_ratio) * re
     if drift > max_drift:
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),
-            (0, 0, 0, 0),
+            _candidate_bbox(offset[0] + fcx, offset[1] + fcy, d_est),
             0.0,
             float(d_est),
             float(contrast),
@@ -761,7 +990,7 @@ def _score_one(
             0.0,
             0.0,
             hyp,
-            f"hard:center_drift({drift:.1f}>{max_drift:.1f})",
+            _hard_reason(ViaRejectCode.CENTER_DRIFT, f"({drift:.1f}>{max_drift:.1f})"),
         )
     r_rect = cv2.minAreaRect(cnt0)
     w_r, h_r = float(r_rect[1][0]), float(r_rect[1][1])
@@ -771,14 +1000,18 @@ def _score_one(
         aspect = max(w_r, h_r) / (min(w_r, h_r) + 1e-6)
     r_expect = d_est * 0.5
     perim = float(cv2.arcLength(cnt0, True)) + 1e-3
-    circ2 = 4.0 * math.pi * max(area, 1.0) / (perim * perim) if perim > 0 else 0.0
+    circ2 = (
+        min(1.0, max(0.0, 4.0 * math.pi * max(area, 1.0) / (perim * perim)))
+        if perim > 0
+        else 0.0
+    )
     fill = 4.0 * area / (w_r * h_r + 1e-6) if w_r * h_r > 1e-6 else 0.0
     compact2 = 0.5 * min(1.0, min(fill, 1.0)) + 0.5 * min(1.0, area / (math.pi * r_expect**2 + 1e-3))
     if compact2 < float(config.min_compactness):
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),
-            (0, 0, 0, 0),
+            _candidate_bbox(offset[0] + fcx, offset[1] + fcy, d_est),
             0.0,
             float(d_est),
             float(contrast),
@@ -786,13 +1019,27 @@ def _score_one(
             float(compact2),
             float(aspect),
             hyp,
-            "hard:compact",
+            _hard_reason(ViaRejectCode.LOW_COMPACTNESS),
+        )
+    if circ2 < float(config.min_circularity):
+        return ViaDetection(
+            float(offset[0] + fcx),
+            float(offset[1] + fcy),
+            _candidate_bbox(offset[0] + fcx, offset[1] + fcy, d_est),
+            0.0,
+            float(d_est),
+            float(contrast),
+            float(prom),
+            float(compact2),
+            float(aspect),
+            hyp,
+            _hard_reason(ViaRejectCode.LOW_CIRCULARITY),
         )
     if aspect > float(config.max_elongation):
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),
-            (0, 0, 0, 0),
+            _candidate_bbox(offset[0] + fcx, offset[1] + fcy, d_est),
             0.0,
             float(d_est),
             float(contrast),
@@ -800,21 +1047,23 @@ def _score_one(
             float(compact2),
             float(aspect),
             hyp,
-            "hard:elongation",
+            _hard_reason(ViaRejectCode.ELONGATION),
         )
 
     structure_coherence, edge_snr, edge_sharpness = _local_structure_metrics(
-        gpatch,
+        gradient_x,
+        gradient_y,
+        gradient_magnitude,
         fcx,
         fcy,
         float(d_est),
         float(contrast),
     )
-    if structure_coherence > 0.82:
+    if structure_coherence > float(config.max_line_coherence):
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),
-            (0, 0, 0, 0),
+            _candidate_bbox(offset[0] + fcx, offset[1] + fcy, d_est),
             0.0,
             float(d_est),
             float(contrast),
@@ -822,13 +1071,13 @@ def _score_one(
             float(compact2),
             float(aspect),
             hyp,
-            f"hard:line_coherence({structure_coherence:.2f})",
+            _hard_reason(ViaRejectCode.LINE_COHERENCE, f"({structure_coherence:.2f})"),
         )
-    if edge_sharpness < 0.37:
+    if edge_sharpness < float(config.min_edge_sharpness):
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),
-            (0, 0, 0, 0),
+            _candidate_bbox(offset[0] + fcx, offset[1] + fcy, d_est),
             0.0,
             float(d_est),
             float(contrast),
@@ -836,7 +1085,7 @@ def _score_one(
             float(compact2),
             float(aspect),
             hyp,
-            f"hard:diffuse_spot({edge_sharpness:.2f})",
+            _hard_reason(ViaRejectCode.DIFFUSE_SPOT, f"({edge_sharpness:.2f})"),
         )
 
     icx, icy = int(round(fcx)), int(round(fcy))
@@ -857,28 +1106,26 @@ def _score_one(
     coherence_line_n = _scale01(structure_coherence, 0.30, 0.80)
     line_n = max(aspect_line_n, coherence_line_n)
 
-    sc_c = _scale01(contrast, 3.0, 20.0)
-    edge_quality = 0.55 + 0.45 * _scale01(edge_snr, 0.70, 2.80)
-    sc_p = _scale01(prom, 2.0, 25.0) * edge_quality
-    d_lo = float(min(config.allowed_diameters()))
-    d_hi = float(max(config.allowed_diameters()))
-    sc_z = 1.0 - min(1.0, abs(d_est - 0.5 * (d_lo + d_hi)) / (d_hi - d_lo + 1.0) * 0.4)
-    sc_k = min(1.0, max(0.0, float(compact2)))
-    sc_r = min(1.0, max(0.0, min(circ2, 1.0)))
-    sc_b = 1.0 - min(1.0, border_n * 1.2)
-
-    W = config
-    raw = (
-        W.w_contrast * sc_c
-        + W.w_prominence * sc_p
-        + W.w_size * sc_z
-        + W.w_compact * sc_k
-        + W.w_round * sc_r
-        + W.w_balance * sc_b
-        - W.w_line * line_n * float(W.line_penalty_scale)
-        - W.w_border * border_n * float(W.border_penalty_scale)
+    features = CandidateFeatures(
+        center_x=fcx,
+        center_y=fcy,
+        diameter=float(d_est),
+        contrast=float(contrast),
+        prominence=float(prom),
+        compactness=float(compact2),
+        circularity=float(circ2),
+        aspect=float(aspect),
+        line_coherence=float(structure_coherence),
+        edge_snr=float(edge_snr),
+        edge_sharpness=float(edge_sharpness),
+        border_imbalance=float(border_n),
+        center_brightness=float(gpatch[icy, icx]),
+        equivalent_diameter=float(eq_diam),
+        center_drift=float(drift),
+        binarization_threshold=float(segmented.binarization_threshold),
     )
-    final = max(0.0, min(100.0, raw))
+    score_metrics = _candidate_score_metrics(features, config, allowed_diameters, line_n)
+    final = score_metrics["final_score"]
 
     gx = float(offset[0]) + fcx
     gy = float(offset[1]) + fcy
@@ -887,18 +1134,119 @@ def _score_one(
     oy = int(round(gy - half))
     bbox = (ox, oy, int(d_est), int(d_est))
     return ViaDetection(
-        gx,
-        gy,
-        bbox,
-        float(final),
-        float(d_est),
-        float(contrast),
-        float(prom),
-        float(compact2),
-        float(aspect),
-        hyp,
-        None,
+        x=gx,
+        y=gy,
+        bbox=bbox,
+        score=float(final),
+        diameter_estimate=float(d_est),
+        contrast=float(contrast),
+        prominence=float(prom),
+        compactness=float(compact2),
+        aspect=float(aspect),
+        polarity_hypothesis=hyp,
+        reject_reason=None,
+        features={
+            "center_brightness": features.center_brightness,
+            "contrast": features.contrast,
+            "prominence": features.prominence,
+            "diameter": features.diameter,
+            "equivalent_diameter": features.equivalent_diameter,
+            "center_drift": features.center_drift,
+            "compactness": features.compactness,
+            "circularity": features.circularity,
+            "aspect": features.aspect,
+            "line_coherence": features.line_coherence,
+            "edge_snr": features.edge_snr,
+            "edge_sharpness": features.edge_sharpness,
+            "border_imbalance": features.border_imbalance,
+            "line_likeness": float(line_n),
+            "binarization_threshold": features.binarization_threshold,
+            **score_metrics,
+        },
     )
+
+
+def _candidate_score_metrics(
+    features: CandidateFeatures,
+    config: HeuristicViaDetectorConfig,
+    allowed_diameters: list[int],
+    line_likeness: float,
+) -> dict[str, float]:
+    """Return the normalized features and weighted contributions used by the score."""
+
+    sc_contrast = _scale01(features.contrast, config.contrast_score_min, config.contrast_score_max)
+    edge_span = 1.0 - float(config.edge_quality_floor)
+    edge_quality = float(config.edge_quality_floor) + edge_span * _scale01(
+        features.edge_snr,
+        config.edge_snr_score_min,
+        config.edge_snr_score_max,
+    )
+    sc_prominence = _scale01(
+        features.prominence,
+        config.prominence_score_min,
+        config.prominence_score_max,
+    ) * edge_quality
+    diameter_min = float(min(allowed_diameters))
+    diameter_max = float(max(allowed_diameters))
+    sc_size = 1.0 - min(
+        1.0,
+        abs(features.diameter - 0.5 * (diameter_min + diameter_max))
+        / (diameter_max - diameter_min + 1.0)
+        * 0.4,
+    )
+    sc_compact = min(1.0, max(0.0, features.compactness))
+    sc_round = min(1.0, max(0.0, min(features.circularity, 1.0)))
+    sc_balance = 1.0 - min(1.0, features.border_imbalance * float(config.border_balance_scale))
+    contribution_contrast = float(config.w_contrast) * sc_contrast
+    contribution_prominence = float(config.w_prominence) * sc_prominence
+    contribution_size = float(config.w_size) * sc_size
+    contribution_compact = float(config.w_compact) * sc_compact
+    contribution_round = float(config.w_round) * sc_round
+    contribution_balance = float(config.w_balance) * sc_balance
+    penalty_line = float(config.w_line) * line_likeness * float(config.line_penalty_scale)
+    penalty_border = (
+        float(config.w_border) * features.border_imbalance * float(config.border_penalty_scale)
+    )
+    raw = (
+        contribution_contrast
+        + contribution_prominence
+        + contribution_size
+        + contribution_compact
+        + contribution_round
+        + contribution_balance
+        - penalty_line
+        - penalty_border
+    )
+    return {
+        "normalized_contrast": float(sc_contrast),
+        "normalized_prominence": float(sc_prominence),
+        "normalized_size": float(sc_size),
+        "normalized_compactness": float(sc_compact),
+        "normalized_roundness": float(sc_round),
+        "normalized_balance": float(sc_balance),
+        "edge_quality": float(edge_quality),
+        "contribution_contrast": float(contribution_contrast),
+        "contribution_prominence": float(contribution_prominence),
+        "contribution_size": float(contribution_size),
+        "contribution_compactness": float(contribution_compact),
+        "contribution_roundness": float(contribution_round),
+        "contribution_balance": float(contribution_balance),
+        "penalty_line": float(penalty_line),
+        "penalty_border": float(penalty_border),
+        "raw_score": float(raw),
+        "final_score": max(0.0, min(100.0, float(raw))),
+    }
+
+
+def _final_candidate_score(
+    features: CandidateFeatures,
+    config: HeuristicViaDetectorConfig,
+    allowed_diameters: list[int],
+    line_likeness: float,
+) -> float:
+    """Combine normalized features; all calibration constants live in config."""
+
+    return _candidate_score_metrics(features, config, allowed_diameters, line_likeness)["final_score"]
 
 
 def _scale01(x: float, lo: float, hi: float) -> float:

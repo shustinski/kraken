@@ -24,6 +24,8 @@ class ProcessingUseCasesTests(unittest.TestCase):
 
         self.assertEqual(settings.via_channel_mode, "grayscale")
         self.assertEqual(loaded.via_channel_mode, "grayscale")
+        self.assertTrue(settings.debug_enabled)
+        self.assertTrue(loaded.debug_enabled)
 
     def test_contour_settings_round_trip_unified_via_controls(self) -> None:
         settings = ContourExtractionSettings(
@@ -268,6 +270,9 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_white_range_max=255,
                 via_black_range_enabled=False,
                 via_min_roundness=70.0,
+                heuristic_min_center_contrast=1.0,
+                heuristic_min_peak_prominence=1.0,
+                heuristic_min_compactness=0.01,
             ),
             source_image=source_image,
         )
@@ -293,6 +298,9 @@ class ProcessingUseCasesTests(unittest.TestCase):
             via_white_range_max=255,
             via_black_range_enabled=False,
             via_min_roundness=60.0,
+            heuristic_min_center_contrast=1.0,
+            heuristic_min_peak_prominence=1.0,
+            heuristic_min_compactness=0.01,
         )
         strict_result = process_image_path(
             image_path="sample.png",
@@ -387,6 +395,9 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_min_score=0.25,
                 via_min_roundness=40.0,
                 debug_enabled=True,
+                heuristic_min_peak_prominence=1.0,
+                heuristic_min_compactness=0.01,
+                heuristic_min_edge_sharpness=0.0,
             ),
             source_image=source_image,
         )
@@ -418,6 +429,8 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_min_score=0.25,
                 via_min_roundness=40.0,
                 debug_enabled=True,
+                heuristic_min_peak_prominence=1.0,
+                heuristic_min_compactness=0.01,
             ),
             source_image=source_image,
         )
@@ -456,6 +469,9 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_min_roundness=40.0,
                 via_spot_line_suppression=0.9,
                 debug_enabled=True,
+                heuristic_min_peak_prominence=1.0,
+                heuristic_min_compactness=0.01,
+                heuristic_min_edge_sharpness=0.0,
             ),
             source_image=source_image,
         )
@@ -519,6 +535,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 extraction_profile="vias",
                 object_type="via",
                 output_mode="box",
+                via_search_mode="template",
                 via_size_mode="fixed",
                 fixed_via_widths=[15],
                 fixed_via_heights=[15],
@@ -542,6 +559,14 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertTrue(
             any(candidate.source == "template" for candidate in result.debug_candidates if candidate.accepted)
         )
+        accepted = [
+            candidate
+            for candidate in result.debug_candidates
+            if candidate.accepted and candidate.source == "template"
+        ]
+        self.assertTrue(accepted)
+        self.assertTrue(all(candidate.template_index == 0 for candidate in accepted))
+        self.assertTrue(all(0.0 <= candidate.score <= 100.0 for candidate in accepted))
 
     def test_bright_tophat_dog_mode_works_without_templates(self) -> None:
         source_image = np.full((96, 96), 100, dtype=np.uint8)
@@ -666,6 +691,11 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_min_edge_coverage=0.55,
                 via_spot_line_suppression=0.85,
                 via_min_roundness=50.0,
+                heuristic_min_peak_prominence=1.0,
+                heuristic_min_compactness=0.01,
+                heuristic_min_edge_sharpness=0.0,
+                heuristic_size_tolerance_fixed=0.36,
+                heuristic_max_line_coherence=1.0,
             ),
             source_image=source_image,
         )
@@ -681,6 +711,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
             image_path="sample.png",
             pipeline_config={"steps": []},
             contour_settings=ContourExtractionSettings(
+                algorithm_backend="sem",
                 extraction_profile="vias",
                 object_type="via",
                 output_mode="box",
@@ -697,6 +728,12 @@ class ProcessingUseCasesTests(unittest.TestCase):
 
         self.assertTrue(result.debug_candidates)
         self.assertTrue(any(candidate.accepted for candidate in result.debug_candidates))
+        self.assertTrue(all(polygon.recognition_score is not None for polygon in result.polygons))
+        accepted = next(candidate for candidate in result.debug_candidates if candidate.accepted)
+        self.assertEqual(accepted.source, "heuristic")
+        self.assertIn("center_brightness", accepted.metrics)
+        self.assertIn("compactness", accepted.metrics)
+        self.assertIn("contribution_contrast", accepted.metrics)
 
     def test_build_detection_debug_maps_populates_expected_layers_for_vias(self) -> None:
         source_image = np.zeros((40, 40), dtype=np.uint8)
@@ -839,6 +876,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_min_contrast=10.0,
                 via_min_edge_coverage=0.0,
                 via_min_roundness=30.0,
+                heuristic_min_edge_sharpness=0.0,
             ),
             source_image=source_image,
         )
@@ -871,6 +909,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_min_contrast=10.0,
                 via_min_edge_coverage=0.0,
                 via_min_roundness=30.0,
+                heuristic_min_edge_sharpness=0.0,
             ),
             source_image=source_image,
         )
@@ -910,7 +949,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
 
         self.assertEqual(len(result.polygons), 0)
 
-    def test_via_detector_template_boosts_score(self) -> None:
+    def test_heuristic_mode_does_not_implicitly_use_templates(self) -> None:
         rng = np.random.default_rng(7)
         source_image = np.full((80, 80), 90, dtype=np.uint8)
         source_image = np.clip(source_image + rng.normal(0, 4, source_image.shape), 0, 255).astype(np.uint8)
@@ -948,8 +987,11 @@ class ProcessingUseCasesTests(unittest.TestCase):
             source_image=source_image,
         )
 
-        self.assertEqual(len(without_template.polygons), 0)
-        self.assertGreaterEqual(len(with_template.polygons), 1)
+        self.assertEqual(len(with_template.polygons), len(without_template.polygons))
+        self.assertEqual(
+            [(candidate.bbox, candidate.accepted) for candidate in with_template.debug_candidates],
+            [(candidate.bbox, candidate.accepted) for candidate in without_template.debug_candidates],
+        )
 
     def test_conductor_flow_can_merge_template_vias_in_sem_mode(self) -> None:
         source_image = np.zeros((96, 96), dtype=np.uint8)
@@ -1013,9 +1055,9 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertEqual(len(result.polygons), 1)
         self.assertEqual(result.polygons[0].category, "via")
         self.assertEqual(result.polygons[0].shape_hint, "box")
-        self.assertTrue(any(candidate.source == "sem_primary" for candidate in result.debug_candidates))
+        self.assertTrue(any(candidate.source == "heuristic" for candidate in result.debug_candidates))
 
-    def test_sem_backend_keeps_legacy_template_strategy_selectable(self) -> None:
+    def test_sem_backend_keeps_template_strategy_selectable(self) -> None:
         source_image = np.full((80, 120), 60, dtype=np.uint8)
         for x_coord in (30, 70):
             cv2.circle(source_image, (x_coord, 40), 7, 210, thickness=-1)
@@ -1039,6 +1081,8 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_black_range_enabled=False,
                 via_template_images=[template],
                 via_template_min_score=0.5,
+                via_template_min_scores=[0.5],
+                via_template_diameters=[23],
                 via_min_score=0.95,
                 via_min_contrast=0.0,
                 via_min_edge_coverage=0.0,
@@ -1049,7 +1093,13 @@ class ProcessingUseCasesTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result.polygons), 2)
-        self.assertTrue(any(candidate.source == "legacy_template" for candidate in result.debug_candidates))
+        self.assertTrue(
+            all(
+                max(point[0] for point in polygon.points) - min(point[0] for point in polygon.points) == 23
+                for polygon in result.polygons
+            )
+        )
+        self.assertTrue(any(candidate.source == "template" for candidate in result.debug_candidates))
 
     def test_sem_backend_conductor_can_return_boxes(self) -> None:
         source_image = np.full((128, 128), 180, dtype=np.uint8)

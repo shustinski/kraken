@@ -1,11 +1,11 @@
 #define MyAppName "Contour"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.5.0"
+  #define MyAppVersion "0.9.0"
 #endif
 #define MyAppPublisher "Contour"
 #define MyAppExeName "Contour.exe"
 #define MyAppDistDir "..\\dist\\Contour"
-#define MyAppIcon "...\\resources\\\icons\\contour.ico"
+#define MyAppIcon "...\\resources\\icons\\contour.ico"
 
 [Setup]
 AppId={{3D57BB57-5DD3-40F8-8521-0FC09E6EF8B5}

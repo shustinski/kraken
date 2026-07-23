@@ -117,7 +117,7 @@ class WidgetPipelineActionsMixin:
         if not hasattr(self, "bright_via_mode_stack"):
             return
         mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
-        if mode == VIA_SEARCH_MODE_TEMPLATE:
+        if mode in (VIA_SEARCH_MODE_TEMPLATE, VIA_SEARCH_MODE_HYBRID):
             index = 2
         elif mode == VIA_SEARCH_MODE_HEURISTIC:
             index = 1
@@ -143,7 +143,12 @@ class WidgetPipelineActionsMixin:
             else:
                 with QSignalBlocker(self.bright_via_diameter_fixed_spin):
                     self.bright_via_diameter_fixed_spin.setValue(
-                        int(round((self.bright_via_diameter_min_spin.value() + self.bright_via_diameter_max_spin.value()) * 0.5))
+                        int(
+                            round(
+                                (self.bright_via_diameter_min_spin.value() + self.bright_via_diameter_max_spin.value())
+                                * 0.5
+                            )
+                        )
                     )
         self._on_via_size_mode_changed()
 
@@ -183,7 +188,28 @@ class WidgetPipelineActionsMixin:
         )
         if not path:
             return
-        save_pipeline_config_to_path(path, self.get_pipeline())
+        selected_preset = self.via_preset_combo.currentData() if hasattr(self, "via_preset_combo") else None
+        preset_type = None
+        preset_name = None
+        if isinstance(selected_preset, tuple) and len(selected_preset) == 2:
+            preset_type, preset_name = str(selected_preset[0]), str(selected_preset[1])
+        payload = {
+            "format": "contour-recognition-settings",
+            "version": 2,
+            "pipeline": self.get_pipeline(),
+            # ContourExtractionSettings serializes every recognition field,
+            # including template images and all heuristic expert parameters.
+            "recognition_settings": self._current_contour_settings().to_dict(),
+            "via_expert_presets": {
+                "selected": {
+                    "type": preset_type,
+                    "name": preset_name,
+                },
+                "current_values": self._current_via_preset_payload(),
+                "user": dict(self._user_via_presets),
+            },
+        }
+        save_pipeline_config_to_path(path, payload)
         self._append_log(self._tr("pipeline_saved_log", path=path))
 
     def _load_pipeline_json(self) -> None:
@@ -196,7 +222,52 @@ class WidgetPipelineActionsMixin:
         if not path:
             return
         payload = load_pipeline_config_from_path(path)
-        self.set_pipeline(payload)
+        if payload.get("format") == "contour-via-expert-preset":
+            expert_payload = payload.get("expert_settings")
+            if isinstance(expert_payload, dict):
+                self._apply_via_preset_payload(dict(expert_payload))
+                preset_name = str(payload.get("name") or Path(path).stem)
+                self._user_via_presets[preset_name] = {
+                    str(key): value
+                    for key, value in expert_payload.items()
+                    if str(key).startswith("heuristic_")
+                }
+                self._save_user_via_presets()
+                self._refresh_via_preset_combo()
+                selected_index = self.via_preset_combo.findText(preset_name)
+                if selected_index >= 0:
+                    self.via_preset_combo.setCurrentIndex(selected_index)
+        elif isinstance(payload.get("pipeline"), dict):
+            self.set_pipeline(dict(payload["pipeline"]))
+            recognition_payload = payload.get("recognition_settings")
+            if isinstance(recognition_payload, dict):
+                self._set_extraction_settings(
+                    ContourExtractionSettings.from_dict(dict(recognition_payload))
+                )
+            presets_payload = payload.get("via_expert_presets")
+            if isinstance(presets_payload, dict):
+                raw_user_presets = presets_payload.get("user")
+                if isinstance(raw_user_presets, dict):
+                    self._user_via_presets = {
+                        str(name): {
+                            str(key): value
+                            for key, value in preset.items()
+                            if str(key).startswith("heuristic_")
+                        }
+                        for name, preset in raw_user_presets.items()
+                        if isinstance(preset, dict)
+                    }
+                    self._save_user_via_presets()
+                    self._refresh_via_preset_combo()
+                selected = presets_payload.get("selected")
+                if isinstance(selected, dict):
+                    selected_name = str(selected.get("name") or "")
+                    selected_index = self.via_preset_combo.findText(selected_name)
+                    if selected_index >= 0:
+                        self.via_preset_combo.setCurrentIndex(selected_index)
+        else:
+            # Backward compatibility with the old pipeline-only JSON format.
+            self.set_pipeline(payload)
         self._append_log(self._tr("pipeline_loaded_log", path=path))
 
     def _on_image_list_current_changed(self, current: QModelIndex, previous: QModelIndex) -> None:
@@ -478,11 +549,11 @@ class WidgetPipelineActionsMixin:
         self._append_log(
             self._tr(
                 "cif_index_failed_log",
-                "Не удалось индексировать векторы: {error}" if self._ui_language == "ru" else "Failed to index vectors: {error}",
+                "Не удалось индексировать векторы: {error}"
+                if self._ui_language == "ru"
+                else "Failed to index vectors: {error}",
                 error=message,
             )
         )
         if not bool(getattr(self, "_image_list_rebuild_in_progress", False)):
             self._rebuild_thumbnail_grid()
-
-

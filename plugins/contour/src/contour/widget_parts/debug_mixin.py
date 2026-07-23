@@ -44,30 +44,45 @@ class WidgetDebugMixin:
         title = self._tr("debug.via_title" if is_via_like else "debug.polygon_title")
         if not candidates:
             message = self._tr("debug.no_current_frame_data")
-            QMessageBox.information(self._debug_parent_widget(), title, message)
+            self._show_nonblocking_via_debug_message(title, message)
             return
         candidate = self._best_debug_candidate_for_polygon(polygon, candidates)
         if candidate is None:
             message = self._tr("debug.no_source_candidate")
-            QMessageBox.information(self._debug_parent_widget(), title, message)
+            self._show_nonblocking_via_debug_message(title, message)
             return
         source = self._debug_candidate_source(candidate)
         reason = str(getattr(candidate, "reason", "") or "")
         accepted = bool(getattr(candidate, "accepted", False))
         bbox = getattr(candidate, "bbox", (0, 0, 0, 0))
+        template_index = getattr(candidate, "template_index", None)
+        is_template_match = is_via_like and template_index is not None
         status = self._tr("debug.status_accepted" if accepted else "debug.status_rejected")
         lines = [
             f"{self._tr('debug.field_status')}: {status}",
             f"{self._tr('debug.field_method')}: {self._debug_method_text(source)}",
             f"{self._tr('debug.field_criterion')}: {self._debug_criterion_text(source, reason, accepted)}",
-            f"{self._tr('debug.field_reason')}: {reason or '-'}",
         ]
-        if is_via_like:
+        if is_template_match:
+            similarity = max(0.0, min(1.0, float(getattr(candidate, "score", 0.0)) / 100.0))
+            similarity_text = f"{similarity:.3f}"
+            if self._ui_language == "ru":
+                similarity_text = similarity_text.replace(".", ",")
             lines += [
-                f"{self._tr('debug.field_score')}: {float(getattr(candidate, 'score', 0.0)):.1f}",
-                f"{self._tr('debug.field_roundness')}: {float(getattr(candidate, 'roundness', 0.0)):.1f}",
+                f"{self._tr('debug.field_template_number')}: {int(template_index) + 1}",
+                f"{self._tr('debug.field_similarity')}: {similarity_text}",
             ]
+        elif is_via_like:
+            lines.append(f"{self._tr('debug.field_reason')}: {reason or '-'}")
+            metric_lines = self._heuristic_via_diagnostic_lines(candidate)
+            if metric_lines:
+                lines.extend(metric_lines)
+            else:
+                lines.append(
+                    f"{self._tr('debug.field_score')}: {float(getattr(candidate, 'score', 0.0)):.1f}"
+                )
         else:
+            lines.append(f"{self._tr('debug.field_reason')}: {reason or '-'}")
             area_v = float(getattr(candidate, "area", 0.0) or 0.0)
             per_v = float(getattr(candidate, "perimeter", 0.0) or 0.0)
             ew = float(getattr(candidate, "effective_width", 0.0) or 0.0)
@@ -86,7 +101,150 @@ class WidgetDebugMixin:
         ]
         message = "\n".join(lines)
         self._append_log(message.replace("\n", " | "))
-        QMessageBox.information(self._debug_parent_widget(), title, message)
+        self._show_nonblocking_via_debug_message(title, message)
+
+    def _show_nonblocking_via_debug_message(self, title: str, message: str) -> QMessageBox:
+        dialog = QMessageBox(self._debug_parent_widget())
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.setWindowTitle(title)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setText(message)
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        dialog.setModal(False)
+
+        dialogs = getattr(self, "_open_via_debug_dialogs", None)
+        if dialogs is None:
+            dialogs = []
+            self._open_via_debug_dialogs = dialogs
+        dialogs.append(dialog)
+
+        def release_dialog(_result: int, *, finished_dialog: QMessageBox = dialog) -> None:
+            open_dialogs = getattr(self, "_open_via_debug_dialogs", [])
+            if finished_dialog in open_dialogs:
+                open_dialogs.remove(finished_dialog)
+
+        dialog.finished.connect(release_dialog)
+        dialog.show()
+        offset = 28 * ((len(dialogs) - 1) % 8)
+        parent_top_left = self._debug_parent_widget().mapToGlobal(QPoint(24, 48))
+        dialog.move(parent_top_left.x() + offset, parent_top_left.y() + offset)
+        return dialog
+
+    def _heuristic_via_diagnostic_lines(self, candidate: object) -> list[str]:
+        metrics = dict(getattr(candidate, "metrics", {}) or {})
+        if not metrics:
+            return []
+        settings = self._current_contour_settings()
+
+        def number(value: object, decimals: int = 3) -> str:
+            text = f"{float(value):.{decimals}f}"
+            return text.replace(".", ",") if self._ui_language == "ru" else text
+
+        def setting(name: str, default: float = 0.0) -> float:
+            return float(getattr(settings, f"heuristic_{name}", default))
+
+        diameter = max(1e-9, float(metrics.get("diameter", 0.0)))
+        drift = float(metrics.get("center_drift", 0.0))
+        drift_ratio = drift / diameter
+        polarity = str(getattr(settings, "via_heuristic_polarity", "") or "")
+        bilateral = bool(getattr(settings, "heuristic_use_bilateral", False))
+        score = float(metrics.get("final_score", getattr(candidate, "score", 0.0)))
+
+        if self._ui_language != "ru":
+            return [
+                "",
+                "Measured contact parameters:",
+                f"Center brightness: {number(metrics.get('center_brightness', 0.0), 1)} / 255",
+                f"Minimum center brightness: {number(setting('min_center_brightness'), 1)} / 255",
+                f"Local binarization threshold: {number(metrics.get('binarization_threshold', 0.0), 1)}",
+                f"Center contrast: {number(metrics.get('contrast', 0.0), 2)} (minimum {number(setting('min_center_contrast'), 2)})",
+                f"Peak prominence: {number(metrics.get('prominence', 0.0), 2)} (minimum {number(setting('min_peak_prominence'), 2)})",
+                f"Diameter: {number(diameter, 2)} px; equivalent diameter: {number(metrics.get('equivalent_diameter', 0.0), 2)} px",
+                f"Center drift: {number(drift, 2)} px = {number(drift_ratio, 3)} of diameter (maximum {number(setting('max_center_drift_ratio'), 3)})",
+                f"Compactness: {number(metrics.get('compactness', 0.0))} (minimum {number(setting('min_compactness'))})",
+                f"Circularity: {number(metrics.get('circularity', 0.0))} (minimum {number(setting('min_circularity'))})",
+                f"Elongation: {number(metrics.get('aspect', 0.0))} (maximum {number(setting('max_elongation'))})",
+                f"Edge direction coherence: {number(metrics.get('line_coherence', 0.0))} (maximum {number(setting('max_line_coherence'))})",
+                f"Edge-to-noise ratio: {number(metrics.get('edge_snr', 0.0))} (normalization {number(setting('edge_snr_score_min'))}..{number(setting('edge_snr_score_max'))})",
+                f"Edge sharpness: {number(metrics.get('edge_sharpness', 0.0))} (minimum {number(setting('min_edge_sharpness'))})",
+                f"Border imbalance: {number(metrics.get('border_imbalance', 0.0))}; line likeness: {number(metrics.get('line_likeness', 0.0))}",
+                f"Polarity used: {polarity or '-'}",
+                f"Final score: {number(score, 2)}",
+                *self._heuristic_score_and_settings_lines(metrics, settings, number, english=True),
+            ]
+
+        return [
+            "",
+            "Измеренные параметры контакта:",
+            f"Яркость центра: {number(metrics.get('center_brightness', 0.0), 1)} из 255",
+            f"Минимальная яркость центра: {number(setting('min_center_brightness'), 1)} из 255",
+            f"Локальный порог бинаризации: {number(metrics.get('binarization_threshold', 0.0), 1)}",
+            f"Контраст центра: {number(metrics.get('contrast', 0.0), 2)} (минимум {number(setting('min_center_contrast'), 2)})",
+            f"Выраженность пика: {number(metrics.get('prominence', 0.0), 2)} (минимум {number(setting('min_peak_prominence'), 2)})",
+            f"Диаметр: {number(diameter, 2)} px; эквивалентный диаметр: {number(metrics.get('equivalent_diameter', 0.0), 2)} px",
+            f"Смещение центра: {number(drift, 2)} px = {number(drift_ratio, 3)} диаметра (максимум {number(setting('max_center_drift_ratio'), 3)})",
+            f"Компактность: {number(metrics.get('compactness', 0.0))} (минимум {number(setting('min_compactness'))})",
+            f"Округлость формы: {number(metrics.get('circularity', 0.0))} (минимум {number(setting('min_circularity'))})",
+            f"Вытянутость: {number(metrics.get('aspect', 0.0))} (максимум {number(setting('max_elongation'))})",
+            f"Направленность границ: {number(metrics.get('line_coherence', 0.0))} (максимум {number(setting('max_line_coherence'))})",
+            f"Отношение края к шуму: {number(metrics.get('edge_snr', 0.0))} (нормализация {number(setting('edge_snr_score_min'))}…{number(setting('edge_snr_score_max'))})",
+            f"Резкость края: {number(metrics.get('edge_sharpness', 0.0))} (минимум {number(setting('min_edge_sharpness'))})",
+            f"Дисбаланс границы: {number(metrics.get('border_imbalance', 0.0))}; сходство с линией: {number(metrics.get('line_likeness', 0.0))}",
+            f"Применённая полярность: {polarity or '-'}",
+            f"Итоговая оценка: {number(score, 2)}",
+            *self._heuristic_score_and_settings_lines(metrics, settings, number, english=False),
+        ]
+
+    @staticmethod
+    def _heuristic_score_and_settings_lines(metrics, settings, number, *, english: bool) -> list[str]:
+        def setting(name: str, default: float = 0.0) -> float:
+            return float(getattr(settings, f"heuristic_{name}", default))
+
+        contributions = (
+            ("Contrast", "Контраст", "contribution_contrast", "w_contrast"),
+            ("Peak prominence", "Выраженность пика", "contribution_prominence", "w_prominence"),
+            ("Size match", "Соответствие размеру", "contribution_size", "w_size"),
+            ("Compactness", "Компактность", "contribution_compactness", "w_compact"),
+            ("Circularity", "Округлость", "contribution_roundness", "w_round"),
+            ("Balance", "Баланс", "contribution_balance", "w_balance"),
+        )
+        lines = ["", "Score contributions:" if english else "Вклад в итоговую оценку:"]
+        for en_label, ru_label, metric_name, weight_name in contributions:
+            label = en_label if english else ru_label
+            lines.append(
+                f"{label}: +{number(metrics.get(metric_name, 0.0), 2)} "
+                f"({'weight' if english else 'вес'} {number(setting(weight_name), 1)})"
+            )
+        lines.extend(
+            [
+                f"{'Line penalty' if english else 'Штраф линии'}: -{number(metrics.get('penalty_line', 0.0), 2)} "
+                f"({'weight' if english else 'вес'} {number(setting('w_line'), 1)}; "
+                f"{'scale' if english else 'множитель'} {number(setting('line_penalty_scale'), 2)})",
+                f"{'Border penalty' if english else 'Штраф границы'}: -{number(metrics.get('penalty_border', 0.0), 2)} "
+                f"({'weight' if english else 'вес'} {number(setting('w_border'), 1)}; "
+                f"{'scale' if english else 'множитель'} {number(setting('border_penalty_scale'), 2)})",
+                "",
+                "Applied candidate-generation settings:" if english else "Применённые настройки генерации кандидатов:",
+                f"{'Background correction radius' if english else 'Радиус коррекции фона'}: {number(setting('background_sigma'), 1)} px",
+                f"{'Analysis window scale' if english else 'Множитель окна анализа'}: {number(setting('analysis_window_scale'), 2)}",
+                f"{'Local binarization percentile' if english else 'Процентиль локальной бинаризации'}: {number(setting('local_binarize_percentile'), 1)} %",
+                f"{'Minimum response peak' if english else 'Минимальная яркость пика отклика'}: {number(setting('min_abs_peak'), 1)}",
+                f"{'Seed percentiles (low/medium/high)' if english else 'Процентили пиков (низкая/средняя/высокая чувствительность)'}: "
+                f"{number(setting('seed_percentile'), 1)} %",
+                f"{'Edge quality minimum contribution' if english else 'Минимальный вклад качества края'}: {number(setting('edge_quality_floor'), 3)}",
+                f"{'Border imbalance sensitivity' if english else 'Чувствительность к дисбалансу границы'}: {number(setting('border_balance_scale'), 3)}",
+                f"{'Size tolerance (range/fixed)' if english else 'Допуск размера (диапазон/фиксированный)'}: "
+                f"{number(setting('size_tolerance_range'), 3)} / {number(setting('size_tolerance_fixed'), 3)}",
+                f"{'Contrast normalization' if english else 'Нормализация контраста'}: "
+                f"{number(setting('contrast_score_min'), 1)}…{number(setting('contrast_score_max'), 1)}",
+                f"{'Peak prominence normalization' if english else 'Нормализация выраженности пика'}: "
+                f"{number(setting('prominence_score_min'), 1)}…{number(setting('prominence_score_max'), 1)}",
+                f"{'Denoising' if english else 'Шумоподавление'}: "
+                f"{'bilateral' if bool(getattr(settings, 'heuristic_use_bilateral', False)) else ('median' if english else 'медианное')}",
+            ]
+        )
+        return lines
 
     def _on_metal_overlay_detail_requested(self, layer_key: str, reason: str) -> None:
         titles = {
@@ -131,122 +289,6 @@ class WidgetDebugMixin:
             return
         self._show_source_while_middle_held = False
         self._refresh_current_display_image_only(preserve_view=True)
-
-    def _show_gradient_debug_window(self) -> None:
-        title = self._tr("debug.gradient_title")
-        current_state = self._workspace.current_state
-        maps: dict[str, object] = {}
-        if current_state is not None:
-            maps = dict(getattr(current_state, "debug_gradient_maps", {}) or {})
-        if not maps:
-            try:
-                maps = self._compute_gradient_debug_maps_on_demand()
-            except Exception as exc:  # pragma: no cover - defensive UI path
-                QMessageBox.warning(
-                    self._debug_parent_widget(),
-                    title,
-                    self._tr("debug.gradient_build_failed", error=exc),
-                )
-                return
-        if not maps:
-            message = self._tr("debug.gradient_no_maps")
-            QMessageBox.information(self._debug_parent_widget(), title, message)
-            return
-
-        dialog = QDialog(self._debug_parent_widget())
-        dialog.setWindowTitle(title)
-        dialog.resize(1100, 780)
-        layout = QVBoxLayout(dialog)
-        tabs = QTabWidget(dialog)
-        layout.addWidget(tabs, 1)
-        ordering = [
-            "source_gray",
-            "gradient_elevation",
-            "gradient_color",
-            "scharr",
-            "phase_congruency",
-            "structured",
-            "ridge",
-            "conductor_gradient_elevation",
-            "spot_response",
-            "spot_response_dark",
-            "raw_gray",
-            "processed",
-            "tophat",
-            "dog",
-            "tophat_mask",
-            "dog_mask",
-            "via_mask",
-            "candidate_mask",
-            "metal_mask",
-            "radial_symmetry",
-            "edge_likeness",
-            "line_likeness",
-            "distance_to_edge",
-            "final_overlay",
-            "mask",
-        ]
-        pretty_names = {
-            "source_gray": self._tr("debug.gradient_map.source_gray"),
-            "gradient_elevation": self._tr("debug.gradient_map.gradient_elevation"),
-            "gradient_color": self._tr("debug.gradient_map.gradient_color"),
-            "scharr": "Scharr",
-            "phase_congruency": "Phase congruency",
-            "structured": self._tr("debug.gradient_map.structured"),
-            "ridge": self._tr("debug.gradient_map.ridge"),
-            "conductor_gradient_elevation": self._tr("debug.gradient_map.conductor_gradient_elevation"),
-            "spot_response": self._tr("debug.gradient_map.spot_response"),
-            "spot_response_dark": self._tr("debug.gradient_map.spot_response_dark"),
-            "raw_gray": self._tr("debug.gradient_map.raw_gray"),
-            "processed": self._tr("debug.gradient_map.processed"),
-            "tophat": self._tr("debug.gradient_map.tophat"),
-            "dog": self._tr("debug.gradient_map.dog"),
-            "tophat_mask": self._tr("debug.gradient_map.tophat_mask"),
-            "dog_mask": self._tr("debug.gradient_map.dog_mask"),
-            "via_mask": self._tr("debug.gradient_map.via_mask"),
-            "candidate_mask": self._tr("debug.gradient_map.candidate_mask"),
-            "metal_mask": self._tr("debug.gradient_map.metal_mask"),
-            "radial_symmetry": self._tr("debug.gradient_map.radial_symmetry"),
-            "edge_likeness": self._tr("debug.gradient_map.edge_likeness"),
-            "line_likeness": self._tr("debug.gradient_map.line_likeness"),
-            "distance_to_edge": self._tr("debug.gradient_map.distance_to_edge"),
-            "final_overlay": self._tr("debug.gradient_map.final_overlay"),
-            "mask": self._tr("debug.gradient_map.mask"),
-        }
-        seen: set[str] = set()
-        for key in ordering + sorted(maps.keys()):
-            if key in seen or key not in maps:
-                continue
-            seen.add(key)
-            array = maps.get(key)
-            if array is None:
-                continue
-            try:
-                image = np.asarray(array)
-            except Exception:  # pragma: no cover - defensive
-                continue
-            if image.size == 0:
-                continue
-            pixmap = self._gradient_debug_pixmap(image)
-            if pixmap is None:
-                continue
-            page = QWidget()
-            page_layout = QVBoxLayout(page)
-            page_layout.setContentsMargins(4, 4, 4, 4)
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            label = QLabel()
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setPixmap(pixmap)
-            scroll.setWidget(label)
-            page_layout.addWidget(scroll, 1)
-            info = QLabel(f"{image.shape[1]} x {image.shape[0]} px" + (f" · dtype={image.dtype}" if hasattr(image, "dtype") else ""))
-            page_layout.addWidget(info)
-            tabs.addTab(page, pretty_names.get(key, key))
-        close_button = QPushButton(self._tr("debug.close_button"))
-        close_button.clicked.connect(dialog.accept)
-        layout.addWidget(close_button)
-        dialog.exec()
 
     def _compute_gradient_debug_maps_on_demand(self) -> dict[str, object]:
         current_state = self._workspace.current_state
@@ -418,8 +460,22 @@ class WidgetDebugMixin:
         gray = _via_grayscale(source_image)
         if gray.size == 0:
             return None
-        elevation = build_gradient_elevation(gray, method)
         mode = str(self.gradient_overlay_mode_combo.currentData() or "heatmap")
+        if mode not in {"heatmap", "threshold", "elevation"}:
+            current_state = self._workspace.current_state
+            maps = (
+                dict(getattr(current_state, "debug_gradient_maps", {}) or {})
+                if current_state is not None
+                else {}
+            )
+            if mode not in maps:
+                maps = self._compute_gradient_debug_maps_on_demand()
+            debug_image = maps.get(mode)
+            if debug_image is None:
+                return None
+            return self._debug_map_overlay_image(np.asarray(debug_image))
+
+        elevation = build_gradient_elevation(gray, method)
         if mode == "elevation":
             return cv2.cvtColor(elevation, cv2.COLOR_GRAY2BGR)
         if mode == "threshold":
@@ -439,6 +495,34 @@ class WidgetDebugMixin:
                 heatmap = heatmap * (1 - below3) + (dimmed // 3) * below3
                 heatmap = heatmap.astype(np.uint8)
         return heatmap
+
+    @staticmethod
+    def _debug_map_overlay_image(image: np.ndarray) -> np.ndarray | None:
+        data = np.asarray(image)
+        if data.size == 0:
+            return None
+        if data.dtype == bool:
+            data = data.astype(np.uint8) * 255
+        elif data.dtype != np.uint8:
+            values = data.astype(np.float32)
+            finite = np.isfinite(values)
+            if not finite.any():
+                return None
+            minimum = float(values[finite].min())
+            maximum = float(values[finite].max())
+            if minimum >= 0.0 and maximum <= 1.0001:
+                data = np.clip(values * 255.0, 0.0, 255.0).astype(np.uint8)
+            elif maximum - minimum > 1e-6:
+                data = np.clip((values - minimum) / (maximum - minimum) * 255.0, 0.0, 255.0).astype(np.uint8)
+            else:
+                data = np.clip(values, 0.0, 255.0).astype(np.uint8)
+        if data.ndim == 2:
+            return cv2.cvtColor(data, cv2.COLOR_GRAY2BGR)
+        if data.ndim == 3 and data.shape[2] == 4:
+            return cv2.cvtColor(data, cv2.COLOR_BGRA2BGR)
+        if data.ndim == 3 and data.shape[2] == 3:
+            return np.ascontiguousarray(data)
+        return None
 
     def _gradient_debug_pixmap(self, image: np.ndarray) -> QPixmap | None:
         data = np.asarray(image)
@@ -527,6 +611,8 @@ class WidgetDebugMixin:
 
     def _debug_method_text(self, source: str) -> str:
         source = source.lower()
+        if "template" in source:
+            source = "template"
         labels = {
             "range-components": "debug.method.range_components",
             "range-contours": "debug.method.range_contours",
@@ -547,6 +633,8 @@ class WidgetDebugMixin:
         return source or self._tr("debug.method.unknown")
 
     def _debug_criterion_text(self, source: str, reason: str, accepted: bool) -> str:
+        if "template" in source.lower():
+            source = "template"
         if not accepted:
             rejection_labels = {
                 "duplicate": "debug.rejection.duplicate",

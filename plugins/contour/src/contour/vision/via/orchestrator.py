@@ -42,7 +42,6 @@ class ViaStrategyName(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ViaRunConfig:
-    use_legacy_core: bool = False
     prefer_template_when_available: bool = True
 
 
@@ -135,7 +134,9 @@ def _detection_to_hit(
     d_est = float(getattr(detection, "diameter_estimate", 0.0) or 0.0)
     observed_diameter = d_est if d_est > 0.0 else 0.5 * (bw + bh)
     configured_diameters = [float(value) for value in fixed_output_diameters if int(value) > 0]
-    if configured_diameters:
+    if "template" in strategy and d_est > 0.0:
+        w = h = d_est
+    elif configured_diameters:
         output_diameter = min(configured_diameters, key=lambda value: abs(value - observed_diameter))
         w = h = output_diameter
     elif bw > 0.0 and bh > 0.0:
@@ -149,7 +150,7 @@ def _detection_to_hit(
     # coordinates where a pixel occupies [x, x + 1).  Convert sample centers to
     # that coordinate system. Template matching already adds half the template
     # width/height and therefore already contains this half-pixel correction.
-    pixel_center_offset = 0.0 if strategy == str(ViaStrategyName.TEMPLATE) else 0.5
+    pixel_center_offset = 0.0 if "template" in strategy else 0.5
     return ViaHit(
         center_x=float(detection.x) + pixel_center_offset,
         center_y=float(detection.y) + pixel_center_offset,
@@ -165,6 +166,8 @@ def _detection_to_hit(
             "aspect": float(getattr(detection, "aspect", 0.0)),
             "polarity_hypothesis": str(getattr(detection, "polarity_hypothesis", "")),
             "final_score": float(getattr(detection, "score", 0.0)),
+            "template_index": getattr(detection, "template_index", None),
+            "features": dict(getattr(detection, "features", {}) or {}),
         },
     )
 

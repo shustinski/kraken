@@ -8,7 +8,7 @@ class WidgetExtractionControlsMixin:
         for index, row in enumerate(self._fixed_via_rows, start=1):
             label = row["label"]
             if isinstance(label, QLabel):
-                label.setText(f"via{index}")
+                label.setText(f"Контакт {index}" if self._ui_language == "ru" else f"Contact {index}")
 
     def _clear_fixed_via_rows(self) -> None:
         while self._fixed_via_rows:
@@ -87,9 +87,9 @@ class WidgetExtractionControlsMixin:
         width_spin.setToolTip(_localized_text(EXTRACTION_HELP_TEXTS, "fixed_via_widths", self._ui_language))
         height_spin.setToolTip(_localized_text(EXTRACTION_HELP_TEXTS, "fixed_via_heights", self._ui_language))
         remove_button.setToolTip(
-            "Удаляет эту строку с допустимым размером via из списка."
+            "Удаляет эту строку с допустимым размером контакта из списка."
             if self._ui_language == "ru"
-            else "Removes this allowed via-size row from the list."
+            else "Removes this allowed contact-size row from the list."
         )
 
         if not self._suspend_fixed_via_updates:
@@ -111,9 +111,7 @@ class WidgetExtractionControlsMixin:
         self._set_field_tooltip(self.min_perimeter_label_widget, self.min_perimeter_spin, "min_perimeter")
         self._set_field_tooltip(self.max_perimeter_label_widget, self.max_perimeter_spin, "max_perimeter")
         self._set_field_tooltip(self.min_point_count_label_widget, self.min_points_spin, "min_points")
-        self._set_field_tooltip(
-            self.min_polygon_width_label_widget, self.min_polygon_width_spin, "min_polygon_width"
-        )
+        self._set_field_tooltip(self.min_polygon_width_label_widget, self.min_polygon_width_spin, "min_polygon_width")
         self._set_field_tooltip(self.min_bbox_width_label_widget, self.min_bbox_width_spin, "min_bbox_width")
         self._set_field_tooltip(self.max_bbox_width_label_widget, self.max_bbox_width_spin, "max_bbox_width")
         self._set_field_tooltip(self.min_bbox_height_label_widget, self.min_bbox_height_spin, "min_bbox_height")
@@ -130,6 +128,12 @@ class WidgetExtractionControlsMixin:
             self._set_field_tooltip(self.via_search_mode_label_widget, self.via_search_mode_combo, "via_search_mode")
         if hasattr(self, "bright_via_viamode_label_widget"):
             self._set_field_tooltip(self.bright_via_viamode_label_widget, self.via_search_mode_combo, "via_search_mode")
+        if hasattr(self, "bright_via_polarity_label_widget"):
+            self._set_field_tooltip(
+                self.bright_via_polarity_label_widget,
+                self.via_heuristic_polarity_combo,
+                "via_polarity",
+            )
         self._set_field_tooltip(self.via_white_range_label_widget, self.via_white_range_widget, "via_white_range")
         self._set_field_tooltip(self.via_black_range_label_widget, self.via_black_range_widget, "via_black_range")
         self._set_field_tooltip(self.via_min_score_label_widget, self.via_min_score_spin, "via_min_score")
@@ -149,40 +153,7 @@ class WidgetExtractionControlsMixin:
         )
         self._set_field_tooltip(self.via_templates_label_widget, self.via_templates_widget, "via_templates")
         self._set_field_tooltip(self.via_preset_label_widget, self.via_preset_widget, "via_preset_selector")
-        if getattr(self, "noisy_traces_via_preset_label_widget", None) is not None:
-            self._set_field_tooltip(
-                self.noisy_traces_via_preset_label_widget,
-                self.noisy_traces_via_preset_button,
-                "via_noisy_traces_preset",
-            )
-        else:
-            self.noisy_traces_via_preset_button.setToolTip(
-                _localized_text(EXTRACTION_HELP_TEXTS, "via_noisy_traces_preset", self._ui_language)
-            )
-        if getattr(self, "blurred_via_preset_label_widget", None) is not None:
-            self._set_field_tooltip(
-                self.blurred_via_preset_label_widget,
-                self.blurred_via_preset_button,
-                "via_blurred_preset",
-            )
-        else:
-            self.blurred_via_preset_button.setToolTip(
-                _localized_text(EXTRACTION_HELP_TEXTS, "via_blurred_preset", self._ui_language)
-            )
         self._set_field_tooltip(self.reset_via_search_label_widget, self.reset_via_search_button, "reset_via_search")
-        self.add_via_template_button.setToolTip(
-            _localized_text(EXTRACTION_HELP_TEXTS, "via_templates", self._ui_language)
-        )
-        self.remove_via_template_button.setToolTip(
-            "Удаляет выбранный шаблон via из списка."
-            if self._ui_language == "ru"
-            else "Removes the selected via template from the list."
-        )
-        self.clear_via_templates_button.setToolTip(
-            "Удаляет все сохраненные шаблоны via из списка."
-            if self._ui_language == "ru"
-            else "Removes all saved via templates from the list."
-        )
         for checkbox, tooltip_key in (
             (self.via_white_range_checkbox, "via_white_range"),
             (self.via_black_range_checkbox, "via_black_range"),
@@ -198,9 +169,9 @@ class WidgetExtractionControlsMixin:
         self._set_field_tooltip(self.max_via_height_label_widget, self.max_via_height_spin, "max_via_height")
         self._set_field_tooltip(self.fixed_vias_label_widget, self.fixed_vias_widget, "fixed_via_widths")
         self.fixed_via_add_button.setToolTip(
-            "Добавляет еще одну допустимую пару ширины и высоты via."
+            "Добавляет ещё одну допустимую пару ширины и высоты контакта."
             if self._ui_language == "ru"
-            else "Adds another allowed via width and height pair."
+            else "Adds another allowed contact width and height pair."
         )
         for row in self._fixed_via_rows:
             width_spin = row["width_spin"]
@@ -212,9 +183,9 @@ class WidgetExtractionControlsMixin:
                 height_spin.setToolTip(_localized_text(EXTRACTION_HELP_TEXTS, "fixed_via_heights", self._ui_language))
             if isinstance(remove_button, QPushButton):
                 remove_button.setToolTip(
-                    "Удаляет эту строку с допустимым размером via из списка."
+                    "Удаляет эту строку с допустимым размером контакта из списка."
                     if self._ui_language == "ru"
-                    else "Removes this allowed via-size row from the list."
+                    else "Removes this allowed contact-size row from the list."
                 )
         self._set_field_tooltip(
             self.min_hierarchy_depth_label_widget, self.min_hierarchy_depth_spin, "min_hierarchy_depth"
@@ -241,35 +212,35 @@ class WidgetExtractionControlsMixin:
         self.bright_via_diameter_min_spin.setToolTip(
             tt(
                 "Минимальный допустимый размер переходного отверстия в пикселях.\n"
-                "Если значение слишком большое — маленькие via будут пропущены.\n"
+                "Если значение слишком большое — маленькие контакты будут пропущены.\n"
                 "Если слишком маленькое — появится больше ложных срабатываний на шуме.\n"
                 "Обычно: 5–8 px.",
-                "Minimum via diameter in pixels (typ. 5–8).",
+                "Minimum contact diameter in pixels (typ. 5–8).",
             )
         )
         self.bright_via_diameter_max_spin.setToolTip(
             tt(
-                "Максимальный допустимый размер via.\n"
-                "Если слишком маленькое — крупные via будут пропущены.\n"
+                "Максимальный допустимый размер контакта.\n"
+                "Если слишком маленькое — крупные контакты будут пропущены.\n"
                 "Если слишком большое — алгоритм начнёт принимать яркие фрагменты дорожек.\n"
                 "Обычно: 8–14 px.",
-                "Maximum via diameter in pixels (typ. 8–14).",
+                "Maximum contact diameter in pixels (typ. 8–14).",
             )
         )
         if hasattr(self, "bright_via_diameter_fixed_spin"):
             self.bright_via_diameter_fixed_spin.setToolTip(
                 tt(
-                    "Ожидаемый диаметр via в пикселях (фиксированный размер).\n"
-                    "Используйте, когда все via на кадре примерно одного размера.\n"
+                    "Ожидаемый диаметр контакта в пикселях (фиксированный размер).\n"
+                    "Используйте, когда все контакты на кадре примерно одного размера.\n"
                     "Обычно: 6–12 px.",
-                    "Expected via diameter in pixels when size is fixed (typ. 6–12).",
+                    "Expected contact diameter in pixels when size is fixed (typ. 6–12).",
                 )
             )
         if hasattr(self, "via_diameter_size_mode_combo"):
             self.via_diameter_size_mode_combo.setToolTip(
                 tt(
-                    "Фиксированный — один диаметр для всех via.\n"
-                    "Диапазон — поиск via между минимальным и максимальным размером.",
+                    "Фиксированный — один диаметр для всех контактов.\n"
+                    "Диапазон — поиск контактов между минимальным и максимальным размером.",
                     "Fixed: single diameter. Range: search between min and max.",
                 )
             )
@@ -277,7 +248,7 @@ class WidgetExtractionControlsMixin:
             tt(
                 "Предел усиления локального контраста (CLAHE).\n"
                 "Больше значение — сильнее вытягиваются слабые детали, но растёт шум.\n"
-                "Меньше — картинка ровнее, но слабые via могут стать незаметнее.\n"
+                "Меньше — картинка ровнее, но слабые контакты могут стать незаметнее.\n"
                 "Типично 1.5–3.5.",
                 "CLAHE clip limit; higher emphasizes weak details and noise.",
             )
@@ -294,8 +265,8 @@ class WidgetExtractionControlsMixin:
         self.bright_via_median_kernel_spin.setToolTip(
             tt(
                 "Размер медианного фильтра (нечётное число; 1 = отключено по смыслу).\n"
-                "Больше — сильнее подавление шума SEM, но мягче края via.\n"
-                "Меньше — лучше сохраняются острые via, выше риск ложных точек.\n"
+                "Больше — сильнее подавление шума SEM, но мягче края контактов.\n"
+                "Меньше — лучше сохраняются острые контакты, выше риск ложных точек.\n"
                 "Типично 3.",
                 "Median blur kernel (odd); larger removes more noise and softens edges.",
             )
@@ -305,8 +276,8 @@ class WidgetExtractionControlsMixin:
                 "Размер структурного элемента для белого top-hat (нечётное).\n"
                 "Больше — подчёркиваются более крупные яркие вкрапления, фон на большей шкале.\n"
                 "Меньше — чувствительнее к мелким пятнам и зерну.\n"
-                "Сопоставляйте с ожидаемым диаметром via.",
-                "White top-hat structuring size; match expected via scale.",
+                "Сопоставляйте с ожидаемым диаметром контакта.",
+                "White top-hat structuring size; match expected contact scale.",
             )
         )
         self.bright_via_dog_small_spin.setToolTip(
@@ -323,8 +294,8 @@ class WidgetExtractionControlsMixin:
                 "Большая сигма Гаусса в DoG.\n"
                 "Больше значение — сильнее сглаживание «крупного» масштаба, иначе выделяется фон.\n"
                 "Меньше — остаётся больше мелких деталей в отклике.\n"
-                "Подбирайте пару с малой сигмой под размер via.",
-                "DoG large sigma; tune with small sigma for via size.",
+                "Подбирайте пару с малой сигмой под размер контакта.",
+                "DoG large sigma; tune with small sigma for contact size.",
             )
         )
         self.bright_via_threshold_percentile_spin.setToolTip(
@@ -349,7 +320,7 @@ class WidgetExtractionControlsMixin:
                 "Нижняя граница площади кандидата относительно площади идеального круга минимального диаметра.\n"
                 "Больше — отсекаются слишком маленькие пятна (часто шум).\n"
                 "Меньше — допускаются более мелкие объекты.\n"
-                "Меняйте, если стабильно теряются мелкие via или наоборот много «крошек».",
+                "Меняйте, если стабильно теряются мелкие контакты или, наоборот, много «крошек».",
                 "Min area as a factor of π·(d_min/2)².",
             )
         )
@@ -358,7 +329,7 @@ class WidgetExtractionControlsMixin:
                 "Верхняя граница площади кандидата относительно площади круга максимального диаметра.\n"
                 "Меньше — жёстче отсекаются крупные пятна (часто куски дорожек).\n"
                 "Больше — допускаются более крупные отклики.\n"
-                "Согласуйте с реальным размером via на SEM.",
+                "Согласуйте с реальным размером контакта на SEM.",
                 "Max area factor relative to max diameter.",
             )
         )
@@ -366,7 +337,7 @@ class WidgetExtractionControlsMixin:
             tt(
                 "Ожидаемая «круглость» контура (4π·area/perimeter²).\n"
                 "Низкие значения допускают вытянутые пятна (часто артефакты дорожек).\n"
-                "Высокие — ближе к диску, но реальные размытые via могут получать меньший балл.\n"
+                "Высокие — ближе к диску, но реальные размытые контакты могут получать меньший балл.\n"
                 "Обычно 0.15–0.45 в зависимости от качества изображения.",
                 "Circularity expectation for blob shape (0–1).",
             )
@@ -374,9 +345,9 @@ class WidgetExtractionControlsMixin:
         self.bright_via_min_aspect_spin.setToolTip(
             tt(
                 "Минимальное отношение ширины bounding box к высоте.\n"
-                "Слишком большое — отсекаются слегка вытянутые via.\n"
+                "Слишком большое — отсекаются слегка вытянутые контакты.\n"
                 "Слишком маленькое — пропускаются сильно вытянутые ложные объекты реже.\n"
-                "Для via обычно около 0.4–0.6.",
+                "Для контактов обычно около 0.4–0.6.",
                 "Min aspect ratio w/h of bbox.",
             )
         )
@@ -391,19 +362,19 @@ class WidgetExtractionControlsMixin:
         )
         self.bright_via_bright_center_score_spin.setToolTip(
             tt(
-                "Минимальная абсолютная яркость ядра via (среднее по диску, шкала 0-255).\n"
+                "Минимальная абсолютная яркость ядра контакта (среднее по диску, шкала 0-255).\n"
                 "Отсекает тусклые ложные срабатывания на текстуре металла и шуме,\n"
-                "где настоящей via нет. Настоящие via обычно яркие (≈180-250).\n"
-                "Увеличение убирает тусклые ложные пятна, но может пропустить слабые via.\n"
+                "где настоящего контакта нет. Настоящие контакты обычно яркие (≈180-250).\n"
+                "Увеличение убирает тусклые ложные пятна, но может пропустить слабые контакты.\n"
                 "Это жёсткий порог: ниже — кандидат отбрасывается сразу.",
-                "Hard minimum absolute via-core brightness (0-255).",
+                "Hard minimum absolute contact-core brightness (0-255).",
             )
         )
         self.bright_via_max_radial_asymmetry_spin.setToolTip(
             tt(
-                "Проверяет симметричность яркости вокруг via (СКО по 8 направлениям).\n"
-                "Настоящее via обычно симметрично, край дорожки — нет.\n"
-                "Порог задаёт, насколько большой разброс ещё считается «похожим на via» в мягком режиме.\n"
+                "Проверяет симметричность яркости вокруг контакта (СКО по 8 направлениям).\n"
+                "Настоящий контакт обычно симметричен, край дорожки — нет.\n"
+                "Порог задаёт, насколько большой разброс ещё считается «похожим на контакт» в мягком режиме.\n"
                 "Меньше значение в мягком режиме сильнее снижает итоговую оценку при асимметрии.\n"
                 "Слишком жёсткий ручной отбор (если включить жёсткий режим) ведёт к пропускам на шуме.",
                 "Reference level for radial brightness asymmetry (std).",
@@ -413,7 +384,7 @@ class WidgetExtractionControlsMixin:
             tt(
                 "Ограничивает срабатывания на краях металлизации.\n"
                 "Меньше значение — сильнее штраф в мягком режиме за «краевой» профиль.\n"
-                "Больше — терпимее к via у границы дорожки.\n"
+                "Больше — терпимее к контактам у границы дорожки.\n"
                 "С жёстким режимом (если включён) пары с метрикой выше порога отбрасываются сразу.",
                 "Edge-likeness cap / soft scale.",
             )
@@ -422,7 +393,7 @@ class WidgetExtractionControlsMixin:
             tt(
                 "Отсекает объекты, похожие на куски дорожек (анизотропия градиентов в окне).\n"
                 "Большее значение — мягче к вытянутым откликам, выше риск ложных срабатываний на трассы.\n"
-                "Меньшее — жёстче к линиям, но больше риск пропуска via, слитых с трассой.\n"
+                "Меньшее — жёстче к линиям, но больше риск пропуска контактов, слитых с трассой.\n"
                 "В мягком режиме влияет на итоговый балл; в жёстком — и на немедленный отказ.",
                 "Line-likeness (structure tensor) cap / scale.",
             )
@@ -440,7 +411,7 @@ class WidgetExtractionControlsMixin:
         self.bright_via_metal_fraction_spin.setToolTip(
             tt(
                 "Минимальная доля пикселей металла в окне вокруг кандидата для режима «Жёсткий фильтр».\n"
-                "Выше — принимаются только via, лежащие на металлизации по маске.\n"
+                "Выше — принимаются только контакты, лежащие на металлизации по маске.\n"
                 "Ниже — больше кандидатов проходят, но растут ложные вне металла.\n"
                 "В мягком режиме на порог ориентироваться не обязательно: используется непрерывный бонус.",
                 "Min metal fraction for strict mode (0–1).",
@@ -448,19 +419,19 @@ class WidgetExtractionControlsMixin:
         )
         self.bright_via_min_final_score_spin.setToolTip(
             tt(
-                "Главный параметр отбора итоговых via по суммарной оценке 0…100 (форма + локальные метрики).\n"
+                "Главный параметр отбора итоговых контактов по суммарной оценке 0…100 (форма + локальные метрики).\n"
                 "Увеличение → меньше ложных срабатываний, но больше пропусков.\n"
-                "Уменьшение → больше найденных via, но больше кандидатов ниже порога (жёлтые на отладке).\n"
+                "Уменьшение → больше найденных контактов, но больше кандидатов ниже порога (жёлтые на отладке).\n"
                 "Обычно это один из самых важных параметров настройки.",
-                "Minimum composite score (0–100) to accept a via.",
+                "Minimum composite score (0–100) to accept a contact.",
             )
         )
         self.bright_via_nms_distance_spin.setToolTip(
             tt(
                 "Минимальное расстояние между двумя кандидатами после этапа слияния и подавления дублей.\n"
-                "Если слишком маленькое — одно via может быть найдено несколько раз с разных откликов.\n"
-                "Если слишком большое — соседние реальные via могут сливаться.\n"
-                "Связывайте с ожидаемым шагом растра via.",
+                "Если слишком маленькое — один контакт может быть найден несколько раз с разных откликов.\n"
+                "Если слишком большое — соседние реальные контакты могут сливаться.\n"
+                "Связывайте с ожидаемым шагом растра контактов.",
                 "Non-maximum suppression distance in pixels.",
             )
         )
@@ -496,17 +467,10 @@ class WidgetExtractionControlsMixin:
                 "Hard-reject when line-likeness exceeds cap.",
             )
         )
-        self.preview_bright_via_mask_button.setToolTip(
-            tt(
-                "Переключает профиль на поиск via, режим «яркий top-hat/DoG», "
-                "включает отладочные слои и открывает окно с картами (исходник, top-hat, DoG, маски, итог).",
-                "Switch to bright via mode and open debug map window.",
-            )
-        )
         self.reset_bright_via_button.setToolTip(
             tt(
                 "Сбрасывает параметры детектора к заводским значениям и запускает пересчёт (как при изменении настроек).",
-                "Reset bright via parameters to defaults and re-run.",
+                "Reset bright contact parameters to defaults and re-run.",
             )
         )
         for w in (self.bright_via_diameter_range_widget,):
@@ -524,99 +488,97 @@ class WidgetExtractionControlsMixin:
                     "Extraction mode. Defaults to No extraction; processing runs only after an explicit mode choice.",
                 )
             )
-        if hasattr(self, "via_search_sensitivity_combo"):
-            self.via_search_sensitivity_combo.setToolTip(
-                tt(
-                    "Общий уровень агрессии поиска: «Низкая» — меньше ложных, больше пропусков; "
-                    "«Средняя» — баланс; «Высокая» — больше срабатываний и кандидатов.\n"
-                    "Меняет пороги и фильтры; в «Дополнительно» значения можно подправить вручную.",
-                    "Coarse sensitivity for via search; adjust advanced fields manually if needed.",
-                )
-            )
         if hasattr(self, "via_show_detected_checkbox"):
             self.via_show_detected_checkbox.setToolTip(
                 tt(
-                    "Показывать на изображении полигоны via, найденные автоматически.",
-                    "Show auto-detected via polygons on the image.",
-                )
-            )
-        if hasattr(self, "via_debug_gradient_map_checkbox"):
-            self.via_debug_gradient_map_checkbox.setToolTip(
-                tt(
-                    "Сохранять и показывать отладочные карты (градиент, маски) в окне «карта градиента» и при клике по отладке.",
-                    "Enable extra debug image maps in the gradient / inspect views.",
+                "Показывать на изображении автоматически найденные контакты.",
+                "Show auto-detected contacts on the image.",
                 )
             )
         via_help: list[tuple[str, str, str]] = [
             (
                 "heuristic_background_sigma_spin",
                 "Размер размытия для оценки фона перед поиском локальных пиков.\n"
-                "Увеличение убирает крупный фон и помогает на плавной засветке, но может ослабить близкие via.\n"
+                "Увеличение убирает крупный фон и помогает на плавной засветке, но может ослабить близкие контакты.\n"
                 "Уменьшение делает поиск локальнее и быстрее реагирует на мелкие перепады, но чаще принимает шум.",
                 "Background blur sigma. Higher removes broad illumination; lower is more local and noisier.",
             ),
             (
                 "heuristic_analysis_window_scale_spin",
-                "Размер окна анализа вокруг найденного пика в долях диаметра via.\n"
+                "Размер окна анализа вокруг найденного пика в долях диаметра контакта.\n"
                 "Увеличение даёт больше контекста для формы и кольца, но медленнее и может захватить соседние дорожки.\n"
-                "Уменьшение ускоряет проверку и лучше для плотных via, но хуже оценивает окружение.",
-                "Analysis window in via diameters. Higher = more context/slower; lower = faster/tighter.",
+                "Уменьшение ускоряет проверку и лучше для плотных контактов, но хуже оценивает окружение.",
+                "Analysis window in contact diameters. Higher = more context/slower; lower = faster/tighter.",
+            ),
+            (
+                "heuristic_min_center_brightness_spin",
+                "Минимальная допустимая яркость пикселя в центре контакта по шкале от 0 до 255.\n"
+                "Кандидат с яркостью центра ниже порога отклоняется. Увеличение оставляет только более светлые центры, "
+                "уменьшение допускает более тёмные. Значение 0 отключает этот фильтр.",
+                "Minimum allowed center-pixel brightness from 0 to 255. Candidates below it are rejected; zero disables the filter.",
             ),
             (
                 "heuristic_min_center_contrast_spin",
                 "Минимальная разница яркости центра и окружения.\n"
-                "Увеличение уменьшает ложные срабатывания на слабой текстуре, но пропускает тусклые via.\n"
+                "Увеличение уменьшает ложные срабатывания на слабой текстуре, но пропускает тусклые контакты.\n"
                 "Уменьшение повышает полноту, но добавляет шумовые кандидаты.",
                 "Minimum center-vs-surround contrast. Higher = cleaner; lower = more recall.",
             ),
             (
                 "heuristic_min_peak_prominence_spin",
                 "Насколько пик должен выделяться внутри локального окна.\n"
-                "Увеличение отсекает плоские пятна и шум, но может потерять размытые via.\n"
+                "Увеличение отсекает плоские пятна и шум, но может потерять размытые контакты.\n"
                 "Уменьшение принимает слабые пики и увеличивает число проверяемых кандидатов.",
                 "Minimum local peak prominence. Higher = fewer candidates; lower = more recall/slower.",
             ),
             (
                 "heuristic_min_compactness_spin",
                 "Минимальная компактность локального компонента.\n"
-                "Увеличение строже требует круглую/плотную форму via и режет вытянутые артефакты.\n"
-                "Уменьшение допускает деформированные via, но чаще пропускает куски дорожек.",
+                "Увеличение строже требует круглую/плотную форму контакта и режет вытянутые артефакты.\n"
+                "Уменьшение допускает деформированные контакты, но чаще пропускает куски дорожек.",
                 "Minimum component compactness. Higher = rounder; lower = more tolerant.",
+            ),
+            (
+                "heuristic_min_circularity_spin",
+                "Минимальная округлость контура от 0 до 1: 1 соответствует идеальной окружности, 0 — сильно неровной или вытянутой форме.\n"
+                "Кандидат со значением ниже порога отклоняется. Увеличение оставляет только более круглые контакты, уменьшение допускает повреждённые и размытые края.\n"
+                "Значение 0 отключает обязательную фильтрацию, но округлость продолжает участвовать в итоговой оценке через параметр «Вес округлости».",
+                "Minimum contour circularity from 0 to 1. Values below it are rejected; 0 disables the hard filter.",
             ),
             (
                 "heuristic_max_elongation_spin",
                 "Максимальная вытянутость компонента.\n"
                 "Уменьшение сильнее отбрасывает линии и края дорожек.\n"
-                "Увеличение допускает вытянутые/размытые via, но растит ложные на трассах.",
+                "Увеличение допускает вытянутые/размытые контакты, но растит ложные на трассах.",
                 "Maximum elongation. Lower rejects lines; higher tolerates stretched candidates.",
             ),
             (
                 "heuristic_line_penalty_spin",
                 "Штраф за похожесть на линию.\n"
                 "Увеличение сильнее снижает балл кандидатов на дорожках.\n"
-                "Уменьшение помогает via, слитым с проводником, но добавляет ложные вдоль линий.",
+                "Уменьшение помогает контактам, слитым с проводником, но добавляет ложные вдоль линий.",
                 "Line penalty. Higher suppresses trace-like detections; lower is more permissive.",
             ),
             (
                 "heuristic_border_penalty_spin",
                 "Штраф для кандидатов у края окна/кадра.\n"
                 "Увеличение убирает неполные объекты у границ.\n"
-                "Уменьшение сохраняет via около края, но может принять обрезанные артефакты.",
-                "Border penalty. Higher rejects edge candidates; lower keeps edge vias.",
+                "Уменьшение сохраняет контакты около края, но может принять обрезанные артефакты.",
+                "Border penalty. Higher rejects edge candidates; lower keeps edge contacts.",
             ),
             (
                 "heuristic_local_binarize_percentile_spin",
                 "Процентиль локальной бинаризации компонента.\n"
                 "Увеличение делает компонент меньше и строже по яркости.\n"
-                "Уменьшение расширяет компонент и помогает слабым via, но может слить его с дорожкой.",
+                "Уменьшение расширяет компонент и помогает слабым контактам, но может слить его с дорожкой.",
                 "Local binarization percentile. Higher = stricter/smaller; lower = larger/more tolerant.",
             ),
             (
                 "heuristic_min_abs_peak_spin",
                 "Абсолютный минимум отклика пика до детальной проверки.\n"
                 "Увеличение ускоряет поиск на шумных кадрах, потому что проверяется меньше seed-пиков.\n"
-                "Уменьшение ищет слабые via, но может сильно замедлить обработку.",
-                "Absolute seed floor. Higher is faster/stricter; lower finds weak vias but can be slower.",
+                "Уменьшение ищет слабые контакты, но может сильно замедлить обработку.",
+                "Absolute seed floor. Higher is faster/stricter; lower finds weak contacts but can be slower.",
             ),
             (
                 "heuristic_use_bilateral_checkbox",
@@ -628,7 +590,7 @@ class WidgetExtractionControlsMixin:
             (
                 "via_template_min_score_spin",
                 "Минимальная корреляция с шаблоном.\n"
-                "Увеличение уменьшает ложные совпадения, но пропускает отличающиеся via.\n"
+                "Увеличение уменьшает ложные совпадения, но пропускает отличающиеся контакты.\n"
                 "Уменьшение повышает полноту и число кандидатов.",
                 "Template correlation threshold. Higher = cleaner; lower = more matches.",
             ),
@@ -636,22 +598,22 @@ class WidgetExtractionControlsMixin:
                 "via_template_nms_distance_spin",
                 "Расстояние подавления дублей для шаблонного поиска.\n"
                 "Увеличение сильнее сливает близкие совпадения.\n"
-                "Уменьшение сохраняет соседние via, но может давать дубли одного отверстия.",
+                "Уменьшение сохраняет соседние контакты, но может давать дубли одного контакта.",
                 "Template NMS distance. Higher merges duplicates; lower keeps close matches.",
             ),
             (
                 "via_template_scale_min_spin",
                 "Минимальный масштаб шаблона.\n"
-                "Уменьшение позволяет находить via меньше сохранённого шаблона, но добавляет лишние масштабы и замедляет поиск.\n"
-                "Увеличение сужает поиск и ускоряет, но может пропустить маленькие via.",
-                "Minimum template scale. Lower finds smaller vias but is slower.",
+                "Уменьшение позволяет находить контакты меньше сохранённого шаблона, но добавляет лишние масштабы и замедляет поиск.\n"
+                "Увеличение сужает поиск и ускоряет, но может пропустить маленькие контакты.",
+                "Minimum template scale. Lower finds smaller contacts but is slower.",
             ),
             (
                 "via_template_scale_max_spin",
                 "Максимальный масштаб шаблона.\n"
-                "Увеличение позволяет находить via крупнее шаблона, но добавляет вычисления и ложные совпадения.\n"
-                "Уменьшение ускоряет и делает поиск строже, но может пропустить крупные via.",
-                "Maximum template scale. Higher finds larger vias but is slower/noisier.",
+                "Увеличение позволяет находить контакты крупнее шаблона, но добавляет вычисления и ложные совпадения.\n"
+                "Уменьшение ускоряет и делает поиск строже, но может пропустить крупные контакты.",
+                "Maximum template scale. Higher finds larger contacts but is slower/noisier.",
             ),
             (
                 "via_template_scale_step_spin",
@@ -661,10 +623,44 @@ class WidgetExtractionControlsMixin:
                 "Template scale step. Higher is faster; lower is more accurate but slower.",
             ),
         ]
+        via_help.extend(
+            [
+                ("heuristic_size_tolerance_range_spin", "Допустимое относительное отличие найденного диаметра от проверяемого при поиске в диапазоне. 0,36 означает 36 %. Большее значение сохраняет сильнее искажённые контакты, но чаще принимает объекты неверного размера; меньшее — строже фильтрует размер.", "Allowed relative diameter error in range mode. Higher is more tolerant; lower is stricter."),
+                ("heuristic_size_tolerance_fixed_spin", "Допустимое относительное отличие найденного диаметра от заданного фиксированного размера. 0,26 означает 26 %. Кандидат принимается, пока ошибка не превышает порог. Увеличение добавляет допуск, уменьшение требует точного размера.", "Allowed relative diameter error in fixed mode. Candidates above the threshold are rejected."),
+                ("heuristic_max_center_drift_ratio_spin", "Максимальное смещение уточнённого центра от исходного пика, в долях диаметра. Смещение выше порога отклоняет кандидата. Большее значение терпимее к асимметрии, меньшее лучше отсекает соседние компоненты.", "Maximum center drift as a diameter fraction. Candidates above it are rejected."),
+                ("heuristic_max_line_coherence_spin", "Максимальная направленность градиентов от 0 до 1: 0 — направления распределены равномерно, 1 — почти одна прямая линия. Значение выше порога отклоняется. Уменьшение сильнее подавляет дорожки, увеличение сохраняет контакты на линиях.", "Maximum gradient direction coherence, 0..1. Values above it are rejected."),
+                ("heuristic_min_edge_sharpness_spin", "Минимальная резкость границы контакта относительно его контраста. Значение ниже порога отклоняется как размытое пятно. Увеличение требует резкой кромки, уменьшение помогает размытым контактам.", "Minimum edge sharpness. Values below it are rejected as diffuse spots."),
+                ("heuristic_contrast_score_min_spin", "Контраст, соответствующий нулевому вкладу контраста в оценку, в уровнях яркости 0–255. Вместе с верхней границей задаёт шкалу. Увеличение делает слабые контакты менее значимыми.", "Contrast mapped to zero score contribution; must not exceed the upper bound."),
+                ("heuristic_contrast_score_max_spin", "Контраст, после которого вклад контраста считается максимальным, в уровнях яркости 0–255. Должен быть не меньше нижней границы. Уменьшение быстрее насыщает оценку, увеличение лучше различает очень контрастные контакты.", "Contrast mapped to full score contribution; must be at least the lower bound."),
+                ("heuristic_prominence_score_min_spin", "Минимальная выраженность локального пика для начала роста её вклада в оценку, в уровнях яркости. Это отличие пика от типичного значения в окне. Увеличение снижает балл слабых пиков.", "Local peak prominence mapped to zero contribution; must not exceed the upper bound."),
+                ("heuristic_prominence_score_max_spin", "Выраженность локального пика, дающая максимальный вклад в оценку, в уровнях яркости. Должна быть не меньше нижней границы. Уменьшение быстрее насыщает вклад.", "Local peak prominence mapped to full contribution; must be at least the lower bound."),
+                ("heuristic_edge_snr_score_min_spin", "Нижняя граница отношения силы края к фоновому шуму. На ней качество края даёт только минимальный вклад. Увеличение сильнее наказывает шумные и слабые границы.", "Lower edge-to-noise ratio used for score normalization."),
+                ("heuristic_edge_snr_score_max_spin", "Верхняя граница отношения силы края к фоновому шуму, после которой качество края считается максимальным. Должна быть не меньше нижней границы.", "Upper edge-to-noise ratio used for score normalization."),
+                ("heuristic_edge_quality_floor_spin", "Минимальная доля от 0 до 1, сохраняемая у вклада выраженности пика даже при шумном крае. Увеличение меньше учитывает качество края, уменьшение сильнее штрафует шум.", "Minimum retained peak contribution when edge quality is poor, 0..1."),
+                ("heuristic_border_balance_scale_spin", "Чувствительность оценки к разнице яркости слева/справа и сверху/снизу. Увеличение сильнее снижает балл асимметричных кандидатов; уменьшение терпимее к неравномерному фону.", "Sensitivity to left/right and top/bottom intensity imbalance."),
+                ("heuristic_seed_percentile_spin", "Порог отбора локальных пиков как процентиль карты отклика, 0–100 %. Принимаются пики не ниже выбранного процентиля. Увеличение оставляет меньше сильных кандидатов и ускоряет поиск, но повышает риск пропусков; уменьшение добавляет слабые кандидаты, ложные срабатывания и увеличивает время обработки.", "Response-map percentile for candidate peaks, 0..100%. Higher is stricter and faster; lower finds more weak candidates and costs more time."),
+                ("heuristic_w_contrast_spin", "Вес контраста в итоговой оценке 0–100. Большее значение усиливает влияние отличия центра от окружения; меньшее делает контраст менее важным.", "Final-score contrast weight. Higher increases its influence."),
+                ("heuristic_w_prominence_spin", "Вес выраженности локального пика в итоговой оценке 0–100. Большее значение усиливает влияние отчётливых пиков.", "Final-score peak prominence weight. Higher increases its influence."),
+                ("heuristic_w_size_spin", "Вес соответствия найденного диаметра ожидаемому в итоговой оценке 0–100. Большее значение сильнее предпочитает заданный размер.", "Final-score expected-size weight. Higher increases its influence."),
+                ("heuristic_w_compact_spin", "Вес плотности и заполненности формы в итоговой оценке 0–100. Большее значение усиливает влияние компактности.", "Final-score compactness weight. Higher increases its influence."),
+                ("heuristic_w_round_spin", "Вес округлости контура в итоговой оценке 0–100. Большее значение сильнее предпочитает круглые контакты.", "Final-score roundness weight. Higher increases its influence."),
+                ("heuristic_w_balance_spin", "Вес симметрии яркости вокруг центра в итоговой оценке 0–100. Большее значение усиливает влияние баланса.", "Final-score intensity-balance weight. Higher increases its influence."),
+                ("heuristic_w_line_spin", "Вес вычитаемого штрафа за похожесть на прямую линию, 0–100. Большее значение сильнее подавляет кандидаты на дорожках; 0 отключает этот штраф.", "Line-penalty weight. Higher subtracts more; zero disables it."),
+                ("heuristic_w_border_spin", "Вес вычитаемого штрафа за дисбаланс границы, 0–100. Большее значение сильнее снижает оценку неполных и асимметричных кандидатов; 0 отключает штраф.", "Border-imbalance penalty weight. Higher subtracts more; zero disables it."),
+            ]
+        )
         for attr, ru_text, en_text in via_help:
             widget = getattr(self, attr, None)
             if widget is not None:
-                widget.setToolTip(tt(ru_text, en_text))
+                tooltip = tt(ru_text, en_text)
+                widget.setToolTip(tooltip)
+                for form_name in ("bright_via_form", "bright_via_basics_form", "bright_via_quality_form"):
+                    form = getattr(self, form_name, None)
+                    if form is None:
+                        continue
+                    label = form.labelForField(widget)
+                    if label is not None:
+                        label.setToolTip(tooltip)
         if getattr(self, "metal_preset_combo", None) is not None:
             self.metal_preset_combo.setToolTip(
                 tt(
@@ -859,11 +855,17 @@ class WidgetExtractionControlsMixin:
             )
         if getattr(self, "metal_min_perimeter_spin", None) is not None:
             self.metal_min_perimeter_spin.setToolTip(
-                tt("Минимальный периметр контура; дополнительный отсев «крошки» вокруг реальных трасс.", "Minimum perimeter.")
+                tt(
+                    "Минимальный периметр контура; дополнительный отсев «крошки» вокруг реальных трасс.",
+                    "Minimum perimeter.",
+                )
             )
         if getattr(self, "metal_max_perimeter_spin", None) is not None:
             self.metal_max_perimeter_spin.setToolTip(
-                tt("Максимальный периметр (0 = нет); для отсечения огромных некорректных компонентов.", "Maximum perimeter.")
+                tt(
+                    "Максимальный периметр (0 = нет); для отсечения огромных некорректных компонентов.",
+                    "Maximum perimeter.",
+                )
             )
         if getattr(self, "metal_epsilon_spin", None) is not None:
             self.metal_epsilon_spin.setToolTip(
@@ -886,7 +888,10 @@ class WidgetExtractionControlsMixin:
             )
         if getattr(self, "metal_approximation_checkbox", None) is not None:
             self.metal_approximation_checkbox.setToolTip(
-                tt("Включить упрощение контура (approxPolyDP); выключите только для отладки сырой цепочки.", "Enable DP simplify.")
+                tt(
+                    "Включить упрощение контура (approxPolyDP); выключите только для отладки сырой цепочки.",
+                    "Enable DP simplify.",
+                )
             )
         if getattr(self, "metal_hierarchy_combo", None) is not None:
             self.metal_hierarchy_combo.setToolTip(
@@ -987,9 +992,7 @@ class WidgetExtractionControlsMixin:
     def _update_bright_via_diameter_controls_state(self) -> None:
         if not hasattr(self, "via_diameter_size_mode_combo"):
             return
-        fixed_mode = (
-            normalize_via_size_mode(self.via_diameter_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
-        )
+        fixed_mode = normalize_via_size_mode(self.via_diameter_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
         if hasattr(self, "bright_via_diameter_fixed_spin"):
             self.bright_via_diameter_fixed_spin.setVisible(fixed_mode)
         if getattr(self, "bright_via_diameter_fixed_label_widget", None) is not None:
@@ -1003,9 +1006,17 @@ class WidgetExtractionControlsMixin:
         mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
         advanced = self._advanced_extraction_enabled()
         bright_enabled = mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
-        heuristic_mode = mode == VIA_SEARCH_MODE_HEURISTIC
+        heuristic_mode = mode in (VIA_SEARCH_MODE_HEURISTIC, VIA_SEARCH_MODE_HYBRID)
         blob_enabled = False
-        template_enabled = mode == VIA_SEARCH_MODE_TEMPLATE
+        template_enabled = mode in (VIA_SEARCH_MODE_TEMPLATE, VIA_SEARCH_MODE_HYBRID)
+        in_via_recognition = (
+            hasattr(self, "recognition_mode_combo")
+            and str(self.recognition_mode_combo.currentData() or "") == "via"
+        )
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_ctrl_image_region_selection_enabled(
+                in_via_recognition and template_enabled
+            )
         for label_widget, field_widget in (
             (self.via_min_score_label_widget, self.via_min_score_spin),
             (self.via_min_contrast_label_widget, self.via_min_contrast_spin),
@@ -1032,11 +1043,29 @@ class WidgetExtractionControlsMixin:
                 self._active_extraction_profile == "vias"
                 and str(self.recognition_mode_combo.currentData() or "") == "via"
             )
+        template_only = mode == VIA_SEARCH_MODE_TEMPLATE
+        if hasattr(self, "bright_via_basics_form"):
+            for row in range(self.bright_via_basics_form.rowCount()):
+                self.bright_via_basics_form.setRowVisible(row, row < 2 or not template_only)
+            if hasattr(self, "bright_via_mode_stack"):
+                self.bright_via_basics_form.setRowVisible(self.bright_via_mode_stack, template_enabled)
+        # The generic row visibility above must not re-open the diameter range
+        # that is irrelevant in fixed-size mode.
+        if not template_only:
+            self._update_bright_via_diameter_controls_state()
+        if hasattr(self, "via_heuristic_polarity_combo"):
+            self.via_heuristic_polarity_combo.setVisible(heuristic_mode)
+        if getattr(self, "bright_via_polarity_label_widget", None) is not None:
+            self.bright_via_polarity_label_widget.setVisible(heuristic_mode)
+        if getattr(self, "bright_via_mode_stack_label_widget", None) is not None:
+            self.bright_via_mode_stack_label_widget.setVisible(not template_only)
         sem_mode = mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
         if hasattr(self, "bright_via_quality_group"):
-            self.bright_via_quality_group.setVisible(sem_mode)
+            self.bright_via_quality_group.setVisible(sem_mode and not template_only)
+        if hasattr(self, "bright_via_display_group"):
+            self.bright_via_display_group.setVisible(not template_only)
         if hasattr(self, "bright_via_advanced_outer"):
-            self.bright_via_advanced_outer.setVisible(heuristic_mode and advanced)
+            self.bright_via_advanced_outer.setVisible(heuristic_mode and not template_only)
         if sem_mode:
             self._update_bright_via_diameter_controls_state()
 
@@ -1052,8 +1081,7 @@ class WidgetExtractionControlsMixin:
         self.via_black_range_max_spin.setEnabled(black_checked)
 
         in_via_recognition = (
-            hasattr(self, "recognition_mode_combo")
-            and str(self.recognition_mode_combo.currentData() or "") == "via"
+            hasattr(self, "recognition_mode_combo") and str(self.recognition_mode_combo.currentData() or "") == "via"
         )
         show_in_basics = in_via_recognition
         self.via_white_range_checkbox.setVisible(show_in_basics)
@@ -1067,9 +1095,7 @@ class WidgetExtractionControlsMixin:
 
         # Legacy via panel duplicates (recognition disabled).
         legacy_visible = (
-            not in_via_recognition
-            and self._advanced_extraction_enabled()
-            and self._active_extraction_profile == "vias"
+            not in_via_recognition and self._advanced_extraction_enabled() and self._active_extraction_profile == "vias"
         )
         if self.via_white_range_label_widget is not None:
             self.via_white_range_label_widget.setVisible(legacy_visible and white_checked)
@@ -1077,10 +1103,14 @@ class WidgetExtractionControlsMixin:
             self.via_black_range_label_widget.setVisible(legacy_visible and black_checked)
 
     def _update_extraction_profile_controls_state(self) -> None:
-        rec = str(self.recognition_mode_combo.currentData() or "conductors") if hasattr(self, "recognition_mode_combo") else "conductors"
+        rec = (
+            str(self.recognition_mode_combo.currentData() or "conductors")
+            if hasattr(self, "recognition_mode_combo")
+            else "conductors"
+        )
         is_via_profile = self._active_extraction_profile == "vias"
         advanced = self._advanced_extraction_enabled()
-        show_legacy_via = is_via_profile and rec == "disabled"
+        show_manual_via_filters = is_via_profile and rec == "disabled"
         conductors_recognition = rec == "conductors"
         if hasattr(self, "advanced_extraction_checkbox"):
             self.advanced_extraction_checkbox.setVisible(rec not in ("via", "conductors"))
@@ -1094,8 +1124,8 @@ class WidgetExtractionControlsMixin:
             self.topology_group.setVisible(advanced and (not is_via_profile or rec == "conductors"))
         self.conductor_group.setEnabled(False)
         self.conductor_group.setVisible(False)
-        self.via_group.setEnabled(show_legacy_via)
-        self.via_group.setVisible(show_legacy_via)
+        self.via_group.setEnabled(show_manual_via_filters)
+        self.via_group.setVisible(show_manual_via_filters)
         advanced_via_widgets = [
             (self.via_range_checkboxes_label_widget, self.via_range_checkboxes_widget),
             (self.via_min_score_label_widget, self.via_min_score_spin),
@@ -1136,5 +1166,3 @@ class WidgetExtractionControlsMixin:
 
     def _on_advanced_extraction_toggled(self, *_args) -> None:
         self._update_extraction_profile_controls_state()
-
-

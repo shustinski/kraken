@@ -392,7 +392,37 @@ class PolygonEditorScene(QGraphicsScene):
         for item in self._debug_candidate_items:
             self.removeItem(item)
         self._debug_candidate_items.clear()
-        _ = candidates
+        for candidate in candidates:
+            if bool(getattr(candidate, "accepted", False)):
+                continue
+            bbox = getattr(candidate, "bbox", (0, 0, 0, 0))
+            if not isinstance(bbox, (tuple, list)) or len(bbox) < 4:
+                continue
+            x_coord, y_coord, width, height = (float(value) for value in bbox[:4])
+            if width <= 0.0 or height <= 0.0:
+                continue
+
+            reason = str(getattr(candidate, "reason", "") or "")
+            score = max(0.0, min(100.0, float(getattr(candidate, "score", 0.0) or 0.0)))
+            below_threshold = "below_threshold" in reason
+            color = QColor("#F59E0B" if below_threshold else "#EF4444")
+            rect = QRectF(x_coord, y_coord, width, height)
+            path = QPainterPath()
+            path.addEllipse(rect)
+            path_item = QGraphicsPathItem(path)
+            path_item.setZValue(4.5)
+            pen = QPen(color, 2.0, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            path_item.setPen(pen)
+            fill = QColor(color)
+            fill.setAlpha(36)
+            path_item.setBrush(QBrush(fill))
+            status = "Ниже порога" if below_threshold else "Отклонён"
+            if self._ui_language != "ru":
+                status = "Below threshold" if below_threshold else "Rejected"
+            path_item.setToolTip(f"{status}\n{reason or '-'}\nScore: {score:.1f}")
+            self.addItem(path_item)
+            self._debug_candidate_items.append(path_item)
 
     def set_metal_overlays(
         self,
@@ -1900,13 +1930,24 @@ class PolygonEditorScene(QGraphicsScene):
             self._display_settings,
             selected=polygon_id in self._selected_polygon_ids,
             cutout_polygons=self._cutout_polygons_for(polygon_id),
-            custom_color=self._object_color_for(polygon_id),
+            custom_color=self._via_score_color(polygon) or self._object_color_for(polygon_id),
             conductor_hover_highlight=conductor_hover_highlight,
             preview_vertices=polygon_id in self._editable_vertex_polygon_ids(),
         )
         cat = str(getattr(polygon, "category", "") or "")
         vis = self._polygon_category_visible.get(cat, True)
         item.setVisible(bool(vis) and self._polygon_overlays_visible)
+
+    @staticmethod
+    def _via_score_color(polygon: PolygonData) -> str | None:
+        if str(getattr(polygon, "category", "") or "") != "via":
+            return None
+        score = getattr(polygon, "recognition_score", None)
+        if score is None:
+            return None
+        normalized = max(0.0, min(1.0, float(score) / 100.0))
+        # HSL hue 0° is red, 60° yellow and 120° green.
+        return QColor.fromHslF(normalized / 3.0, 0.82, 0.50).name()
 
     def set_polygon_category_visible(self, category: str, visible: bool) -> None:
         self._polygon_category_visible[str(category)] = bool(visible)

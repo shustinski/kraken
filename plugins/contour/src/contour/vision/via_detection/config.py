@@ -52,13 +52,12 @@ class ViaPolarity(StrEnum):
 
 @dataclass
 class HeuristicViaDetectorConfig:
+    profile_version: int = 2
     diameter_mode: str = "range"  # "range" | "fixed"
     diameter_min: int = 6
     diameter_max: int = 12
     fixed_diameters: list[int] = field(default_factory=lambda: [6, 8, 10])
     polarity: str = ViaPolarity.AUTO
-    """Sensitivity: higher recall vs precision via threshold mapping."""
-    sensitivity: str = "medium"
     nms_distance: int = 5
     min_final_score: float = 38.0
     min_distance_between_peaks: int = 0  # 0 = derive from min diameter
@@ -71,11 +70,13 @@ class HeuristicViaDetectorConfig:
     bilateral_sigma_color: float = 32.0
     bilateral_sigma_space: float = 32.0
     # Hard reject / score gates
-    min_center_contrast: float = 4.0
-    min_peak_prominence: float = 2.0
-    min_compactness: float = 0.12
-    max_elongation: float = 3.2
-    line_penalty_scale: float = 1.0
+    min_center_brightness: float = 0.0
+    min_center_contrast: float = 50.0
+    min_peak_prominence: float = 50.0
+    min_compactness: float = 0.9
+    min_circularity: float = 0.40
+    max_elongation: float = 2.5
+    line_penalty_scale: float = 3.0
     border_penalty_scale: float = 1.0
     local_binarize_percentile: float = 88.0
     # Weights for final 0..100
@@ -87,6 +88,21 @@ class HeuristicViaDetectorConfig:
     w_balance: float = 10.0
     w_line: float = 20.0
     w_border: float = 20.0
+    # Hard structure gates.
+    max_line_coherence: float = 0.82
+    min_edge_sharpness: float = 0.20
+    # Feature normalization used by the final score.
+    contrast_score_min: float = 3.0
+    contrast_score_max: float = 20.0
+    prominence_score_min: float = 2.0
+    prominence_score_max: float = 25.0
+    edge_snr_score_min: float = 0.70
+    edge_snr_score_max: float = 2.80
+    edge_quality_floor: float = 0.55
+    border_balance_scale: float = 2.0
+    # Candidate-generation response percentile.
+    seed_percentile: float = 90.0
+    use_intensity_range_seeds: bool = False
     # |D_eq - d_est| / d_est; D_eq = 2*sqrt(area/pi). Stricter when diameter_mode == "fixed".
     size_tolerance_ratio: float = 0.36
     size_tolerance_ratio_fixed: float = 0.26
@@ -101,10 +117,32 @@ class HeuristicViaDetectorConfig:
     dark_range_min: float = 0.0
     dark_range_max: float = 60.0
 
-    def effective_size_tolerance(self) -> float:
-        return float(
-            self.size_tolerance_ratio_fixed if self.diameter_mode == "fixed" else self.size_tolerance_ratio
+    def validate(self) -> None:
+        """Reject inconsistent expert settings before expensive image work starts."""
+
+        pairs = (
+            ("contrast score", self.contrast_score_min, self.contrast_score_max),
+            ("prominence score", self.prominence_score_min, self.prominence_score_max),
+            ("edge SNR score", self.edge_snr_score_min, self.edge_snr_score_max),
+            ("bright range", self.bright_range_min, self.bright_range_max),
+            ("dark range", self.dark_range_min, self.dark_range_max),
         )
+        for name, lower, upper in pairs:
+            if float(lower) > float(upper):
+                raise ValueError(f"{name}: minimum must not exceed maximum")
+        if not 0.0 <= float(self.max_line_coherence) <= 1.0:
+            raise ValueError("max_line_coherence must be in range 0..1")
+        if not 0.0 <= float(self.edge_quality_floor) <= 1.0:
+            raise ValueError("edge_quality_floor must be in range 0..1")
+        if not 0.0 <= float(self.min_circularity) <= 1.0:
+            raise ValueError("min_circularity must be in range 0..1")
+        if not 0.0 <= float(self.seed_percentile) <= 100.0:
+            raise ValueError("seed_percentile must be in range 0..100")
+        if not 0.0 <= float(self.min_center_brightness) <= 255.0:
+            raise ValueError("min_center_brightness must be in range 0..255")
+
+    def effective_size_tolerance(self) -> float:
+        return float(self.size_tolerance_ratio_fixed if self.diameter_mode == "fixed" else self.size_tolerance_ratio)
 
     def allowed_diameters(self) -> list[int]:
         if self.diameter_mode == "fixed" and self.fixed_diameters:
@@ -114,34 +152,18 @@ class HeuristicViaDetectorConfig:
         return list(range(d0, d1 + 1))
 
     def snapshot(self) -> dict[str, Any]:
-        return {
-            "diameter_mode": self.diameter_mode,
-            "diameter_min": self.diameter_min,
-            "diameter_max": self.diameter_max,
-            "fixed_diameters": list(self.fixed_diameters),
-            "polarity": self.polarity,
-            "sensitivity": self.sensitivity,
-            "nms_distance": self.nms_distance,
-            "min_final_score": self.min_final_score,
-            "background_sigma": self.background_sigma,
-            "min_center_contrast": self.min_center_contrast,
-            "min_peak_prominence": self.min_peak_prominence,
-            "min_compactness": self.min_compactness,
-            "max_elongation": self.max_elongation,
-            "local_binarize_percentile": self.local_binarize_percentile,
-            "bright_range_enabled": self.bright_range_enabled,
-            "bright_range_min": self.bright_range_min,
-            "bright_range_max": self.bright_range_max,
-            "dark_range_enabled": self.dark_range_enabled,
-            "dark_range_min": self.dark_range_min,
-            "dark_range_max": self.dark_range_max,
-        }
+        values = dict(vars(self))
+        values["fixed_diameters"] = list(self.fixed_diameters)
+        values["polarity"] = str(self.polarity)
+        return values
 
 
 @dataclass
 class TemplateViaDetectorConfig:
     templates: list[Any]  # list of HxW uint8 grayscale
     min_correlation: float = 0.35
+    min_correlations: list[float] = field(default_factory=list)
+    output_diameters: list[int] = field(default_factory=list)
     nms_distance: int = 4
     scale_min: float = 1.0
     scale_max: float = 1.0
@@ -156,6 +178,8 @@ class TemplateViaDetectorConfig:
         return {
             "num_templates": n,
             "min_correlation": self.min_correlation,
+            "min_correlations": list(self.min_correlations),
+            "output_diameters": list(self.output_diameters),
             "nms_distance": self.nms_distance,
             "scale_min": self.scale_min,
             "scale_max": self.scale_max,

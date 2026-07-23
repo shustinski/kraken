@@ -40,6 +40,7 @@ from ...processing import (
     RECOGNITION_MODE_VIA,
     VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
     VIA_SEARCH_MODE_HEURISTIC,
+    VIA_SEARCH_MODE_HYBRID,
     VIA_SEARCH_MODE_TEMPLATE,
     BatchImageResult,
     BatchFrameTiming,
@@ -181,17 +182,6 @@ def build_via_vectorization_mask(
     if gray.size == 0:
         return ensure_binary_mask(image), []
 
-    selected_mode = normalize_via_search_mode(settings.via_search_mode)
-    if (
-        normalize_algorithm_backend(settings.algorithm_backend) == ALGORITHM_BACKEND_LEGACY
-        and selected_mode == VIA_SEARCH_MODE_HEURISTIC
-    ):
-        accepted, rejected = _detect_via_candidates(gray, settings)
-        accepted, duplicates = _iou_nms(accepted, iou_threshold=0.35)
-        debug = _debug_candidates_from_via_candidates(accepted, accepted=True)
-        debug.extend(_debug_candidates_from_via_candidates(rejected, accepted=False))
-        debug.extend(_debug_candidates_from_via_candidates(duplicates, accepted=False, reason="duplicate_iou"))
-        return _render_via_candidates_mask(gray.shape, accepted, settings), debug
     return _build_modern_via_vectorization_mask(gray, settings)
 
 
@@ -213,9 +203,9 @@ def _build_modern_via_vectorization_mask(
 
     mode = normalize_via_search_mode(settings.via_search_mode)
     image_sig = _make_image_signature(gray)
-    if mode == VIA_SEARCH_MODE_TEMPLATE:
+    if mode in (VIA_SEARCH_MODE_TEMPLATE, VIA_SEARCH_MODE_HYBRID):
         tcfg = template_config_from_settings(settings)
-        if not tcfg.templates:
+        if not tcfg.templates and mode == VIA_SEARCH_MODE_TEMPLATE:
             empty = np.zeros(gray.shape[:2], dtype=np.uint8)
             debug_candidates = [
                 ContourDebugCandidate(
@@ -228,26 +218,53 @@ def _build_modern_via_vectorization_mask(
                 )
             ]
             return empty, debug_candidates
-        heavy_key = (
-            VIA_SEARCH_MODE_TEMPLATE,
-            image_sig,
-            json.dumps(
-                {
-                    "via_search_mode": mode,
-                    "via_template_images": len(tcfg.templates),
-                    "via_template_scale_min": float(tcfg.scale_min),
-                    "via_template_scale_max": float(tcfg.scale_max),
-                    "via_template_scale_step": float(tcfg.scale_step),
-                },
-                sort_keys=True,
-            ),
-        )
-        raw_payload = _VIA_DETECTION_CACHE.get(heavy_key)
-        if raw_payload is None:
-            raw_payload = detect_vias_template_raw(gray, tcfg)
-            _bounded_cache_set(heavy_key, raw_payload)
-        raw_matches, shape = raw_payload
-        result = score_vias_template_raw(raw_matches, shape, tcfg)
+        if tcfg.templates:
+            heavy_key = (
+                VIA_SEARCH_MODE_TEMPLATE,
+                image_sig,
+                json.dumps(
+                    {
+                        "via_template_images": len(tcfg.templates),
+                        "via_template_scale_min": float(tcfg.scale_min),
+                        "via_template_scale_max": float(tcfg.scale_max),
+                        "via_template_scale_step": float(tcfg.scale_step),
+                    },
+                    sort_keys=True,
+                ),
+            )
+            raw_payload = _VIA_DETECTION_CACHE.get(heavy_key)
+            if raw_payload is None:
+                raw_payload = detect_vias_template_raw(gray, tcfg)
+                _bounded_cache_set(heavy_key, raw_payload)
+            raw_matches, shape = raw_payload
+            template_result = score_vias_template_raw(raw_matches, shape, tcfg)
+        else:
+            template_result = DetectionResult(method=VIA_SEARCH_MODE_TEMPLATE, accepted=[])
+        if mode == VIA_SEARCH_MODE_HYBRID:
+            heuristic_result = detect_vias_heuristic(gray, heuristic_config_from_settings(settings))
+            combined = sorted(
+                [*template_result.accepted, *heuristic_result.accepted],
+                key=lambda detection: float(detection.score),
+                reverse=True,
+            )
+            accepted: list[ViaDetection] = []
+            for detection in combined:
+                distance = max(detection.bbox[2], detection.bbox[3]) + 2
+                if any(
+                    (detection.x - other.x) ** 2 + (detection.y - other.y) ** 2
+                    <= max(distance, max(other.bbox[2], other.bbox[3]) + 2) ** 2
+                    for other in accepted
+                ):
+                    continue
+                accepted.append(detection)
+            result = DetectionResult(
+                method=VIA_SEARCH_MODE_HYBRID,
+                accepted=accepted,
+                rejected=[*template_result.rejected, *heuristic_result.rejected],
+                below_threshold=[*template_result.below_threshold, *heuristic_result.below_threshold],
+            )
+        else:
+            result = template_result
     elif mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
         bright_config = BrightViaDetectorConfig.from_legacy_settings(settings)
         heavy_key = (
@@ -344,6 +361,8 @@ def _build_modern_via_vectorization_mask(
                 reason=f"accepted:{mode}",
                 source=mode,
                 score=float(det.score),
+                template_index=getattr(det, "template_index", None),
+                metrics=dict(getattr(det, "features", {}) or {}),
             )
         )
         idx += 1
@@ -434,7 +453,10 @@ def build_detection_debug_maps(
     ):
         from ....vision.via.bright_tophat_dog import BrightViaDetectorConfig, detect_bright_vias
         from ....vision.via_detection.heuristic_detector import detect_vias_heuristic
-        from ....vision.via_detection.settings_bridge import heuristic_config_from_settings, template_config_from_settings
+        from ....vision.via_detection.settings_bridge import (
+            heuristic_config_from_settings,
+            template_config_from_settings,
+        )
         from ....vision.via_detection.template_detector import detect_vias_template
 
         try:
@@ -625,83 +647,6 @@ def _normalize_columns(gray: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Via detection pipeline
 # ---------------------------------------------------------------------------
-
-
-def _detect_via_candidates(
-    gray: np.ndarray, settings: ContourExtractionSettings
-) -> tuple[list[_ViaCandidate], list[_ViaCandidate]]:
-    expected_span = _expected_via_span(settings)
-    radii = _via_candidate_radii(settings, expected_span)
-    if not radii:
-        return [], []
-
-    enhanced = _clahe_gray(gray) if min(gray.shape[:2]) >= 8 else ensure_uint8(gray)
-    polarity_scans = _via_polarity_scans(settings)
-    line_suppression = max(0.0, min(1.0, float(settings.via_spot_line_suppression)))
-    search_mode = normalize_via_search_mode(settings.via_search_mode)
-    run_blob = search_mode == VIA_SEARCH_MODE_HEURISTIC
-    run_template = search_mode == VIA_SEARCH_MODE_TEMPLATE or bool(settings.via_template_images)
-    edge_method = _resolve_via_edge_method(settings)
-    gradient = build_gradient_elevation(enhanced, edge_method)
-    if gradient.size == 0:
-        gradient = np.zeros_like(gray, dtype=np.uint8)
-
-    raw_candidates: list[_ViaCandidate] = []
-    if run_blob:
-        for low, high, bright in polarity_scans:
-            intensity_mask = _intensity_mask([gray, enhanced], low, high)
-            gate = _intensity_gate(intensity_mask, expected_span)
-
-            blob = _multiscale_blob_response(enhanced, expected_span, bright=bright, line_suppression=line_suppression)
-            ring = _ring_template_response(gradient, radii)
-            combined = cv2.max(blob, ring)
-            gated_combined = cv2.bitwise_and(combined, gate) if cv2.countNonZero(gate) > 0 else combined
-
-            isolation = _build_isolation_context(intensity_mask, gray, bright=bright)
-
-            min_distance = max(2, round(expected_span * 0.85))
-            peaks = _extract_response_peaks(gated_combined, min_distance=min_distance)
-            for cy, cx in peaks:
-                candidate = _verify_peak(
-                    gray=gray,
-                    gradient=gradient,
-                    blob_response=blob,
-                    ring_response=ring,
-                    cx=cx,
-                    cy=cy,
-                    radii=radii,
-                    bright=bright,
-                    isolation=isolation,
-                )
-                if candidate is not None:
-                    raw_candidates.append(candidate)
-
-    template_arrays = _via_saved_template_arrays(settings)
-    if run_template and template_arrays:
-        for low, high, bright in polarity_scans:
-            intensity_mask = _intensity_mask([gray, enhanced], low, high)
-            gate = _intensity_gate(intensity_mask, expected_span)
-            tmpl_candidates = _template_match_candidates(
-                gray=gray,
-                gradient=gradient,
-                templates=template_arrays,
-                gate=gate,
-                radii=radii,
-                expected_span=expected_span,
-                settings=settings,
-                bright=bright,
-            )
-            raw_candidates.extend(tmpl_candidates)
-
-    accepted: list[_ViaCandidate] = []
-    rejected: list[_ViaCandidate] = []
-    for candidate in raw_candidates:
-        normalized = _apply_via_filters(candidate, settings, expected_span)
-        if normalized.reason:
-            rejected.append(normalized)
-        else:
-            accepted.append(normalized)
-    return accepted, rejected
 
 
 def _via_polarity_scans(settings: ContourExtractionSettings) -> list[tuple[int, int, bool]]:
@@ -2085,6 +2030,7 @@ def _debug_candidates_from_via_hits(hits: list[Any]) -> list[ContourDebugCandida
     debug: list[ContourDebugCandidate] = []
     for index, hit in enumerate(hits):
         x_coord, y_coord, width, height = hit.to_axis_aligned_box()
+        extra = dict(getattr(hit, "extra", {}) or {})
         debug.append(
             ContourDebugCandidate(
                 contour_index=index,
@@ -2093,9 +2039,11 @@ def _debug_candidates_from_via_hits(hits: list[Any]) -> list[ContourDebugCandida
                 perimeter=float(2 * (width + height)),
                 roundness=float(getattr(hit, "annulus_coverage", 0.0) * 100.0),
                 accepted=True,
-                reason=f"accepted:{getattr(hit, 'strategy', 'sem_primary')}",
-                source=str(getattr(hit, "strategy", "sem_primary")),
+                reason=f"accepted:{getattr(hit, 'strategy', 'heuristic')}",
+                source=str(getattr(hit, "strategy", "heuristic")),
                 score=float(getattr(hit, "score", 0.0)),
+                template_index=extra.get("template_index"),
+                metrics=dict(extra.get("features", {}) or {}),
             )
         )
     return debug
@@ -2105,31 +2053,44 @@ def _debug_candidates_from_via_debug(debug_payload: Any) -> list[ContourDebugCan
     payload = dict(debug_payload or {}) if isinstance(debug_payload, dict) else {}
     out: list[ContourDebugCandidate] = []
     index = 10_000
-    for group_name, accepted in (("below_threshold", False), ("rejected", False)):
-        items = payload.get(group_name, [])
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict):
+    payloads = [payload]
+    payloads.extend(
+        nested
+        for key in ("template", "heuristic")
+        if isinstance((nested := payload.get(key)), dict)
+    )
+    for candidate_payload in payloads:
+        for group_name, accepted in (("below_threshold", False), ("rejected", False)):
+            items = candidate_payload.get(group_name, [])
+            if not isinstance(items, list):
                 continue
-            bbox_raw = item.get("bbox", [0, 0, 0, 0])
-            if not isinstance(bbox_raw, (list, tuple)) or len(bbox_raw) < 4:
-                bbox = (0, 0, 0, 0)
-            else:
-                bbox = tuple(int(round(float(v))) for v in bbox_raw[:4])
-            reason = str(item.get("reject_reason") or group_name)
-            out.append(
-                ContourDebugCandidate(
-                    contour_index=index,
-                    bbox=bbox,  # type: ignore[arg-type]
-                    area=float(max(0, bbox[2]) * max(0, bbox[3])),
-                    perimeter=float(2 * (max(0, bbox[2]) + max(0, bbox[3]))),
-                    roundness=float(item.get("compactness", 0.0) or 0.0) * 100.0,
-                    accepted=accepted,
-                    reason=f"{group_name}:{reason}",
-                    source=str(item.get("polarity_hypothesis") or payload.get("strategy") or "via"),
-                    score=float(item.get("score", 0.0) or 0.0),
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                bbox_raw = item.get("bbox", [0, 0, 0, 0])
+                if not isinstance(bbox_raw, (list, tuple)) or len(bbox_raw) < 4:
+                    bbox = (0, 0, 0, 0)
+                else:
+                    bbox = tuple(round(float(v)) for v in bbox_raw[:4])
+                reason = str(item.get("reject_reason") or group_name)
+                out.append(
+                    ContourDebugCandidate(
+                        contour_index=index,
+                        bbox=bbox,  # type: ignore[arg-type]
+                        area=float(max(0, bbox[2]) * max(0, bbox[3])),
+                        perimeter=float(2 * (max(0, bbox[2]) + max(0, bbox[3]))),
+                        roundness=float(item.get("compactness", 0.0) or 0.0) * 100.0,
+                        accepted=accepted,
+                        reason=f"{group_name}:{reason}",
+                        source=str(
+                            item.get("polarity_hypothesis")
+                            or candidate_payload.get("strategy")
+                            or "via"
+                        ),
+                        score=float(item.get("score", 0.0) or 0.0),
+                        template_index=item.get("template_index"),
+                        metrics=dict(item.get("features", {}) or {}),
+                    )
                 )
-            )
-            index += 1
+                index += 1
     return out

@@ -40,6 +40,8 @@ def normalize_via_search_mode(value: Any) -> str:
         return VIA_SEARCH_MODE_HEURISTIC
     if text == VIA_SEARCH_MODE_TEMPLATE:
         return VIA_SEARCH_MODE_TEMPLATE
+    if text == VIA_SEARCH_MODE_HYBRID:
+        return VIA_SEARCH_MODE_HYBRID
     if text == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
         return VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
     return VIA_SEARCH_MODE_HEURISTIC
@@ -84,10 +86,8 @@ def _odd_positive(value: Any, *, minimum: int) -> int:
 
 def normalize_algorithm_backend(value: Any) -> str:
     text = str(value or "").strip().lower()
-    if text in {ALGORITHM_BACKEND_SEM, "new", "sem_auto", "auto_sem"}:
+    if text in {ALGORITHM_BACKEND_SEM, "new", "sem_auto", "auto_sem", "legacy_via"}:
         return ALGORITHM_BACKEND_SEM
-    if text == "legacy_via":
-        return "legacy_via"
     return ALGORITHM_BACKEND_LEGACY
 
 
@@ -110,15 +110,6 @@ def normalize_recognition_mode(value: Any) -> str:
     return RECOGNITION_MODE_CONDUCTORS
 
 
-def normalize_via_search_sensitivity(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    if text in {"low", "низкая", "низк"}:
-        return "low"
-    if text in {"high", "высокая", "высок"}:
-        return "high"
-    return "medium"
-
-
 def normalize_metal_segmentation_strategy(value: Any) -> str:
     from ..vision.metal_recovery.segmentation import normalize_metal_segmentation_strategy as _norm
 
@@ -131,7 +122,12 @@ def normalize_metal_segmentation_method(value: Any) -> str:
 
 
 def normalize_metal_sensitivity(value: Any) -> str:
-    return normalize_via_search_sensitivity(value)
+    text = str(value or "").strip().lower()
+    if text in {"low", "низкая", "низк"}:
+        return "low"
+    if text in {"high", "высокая", "высок"}:
+        return "high"
+    return "medium"
 
 
 def parse_integer_value_list(payload: Any) -> list[int]:
@@ -238,6 +234,8 @@ class ContourDebugCandidate:
     score: float = 0.0
     effective_width: float = 0.0
     width_metric: str = ""
+    template_index: int | None = None
+    metrics: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -292,6 +290,8 @@ class ContourExtractionSettings:
     via_spot_line_suppression: float = 0.65
     via_template_min_score: float = 0.35
     via_template_images: list[Any] = field(default_factory=list)
+    via_template_min_scores: list[float] = field(default_factory=list)
+    via_template_diameters: list[int] = field(default_factory=list)
     via_template_nms_distance: int = 4
     via_template_scale_min: float = 0.9
     via_template_scale_max: float = 1.1
@@ -300,11 +300,13 @@ class ContourExtractionSettings:
     via_fixed_diameters_text: str = "6, 8, 10"
     heuristic_background_sigma: float = 25.0
     heuristic_analysis_window_scale: float = 3.0
-    heuristic_min_center_contrast: float = 4.0
-    heuristic_min_peak_prominence: float = 2.0
-    heuristic_min_compactness: float = 0.12
-    heuristic_max_elongation: float = 3.2
-    heuristic_line_penalty_scale: float = 1.0
+    heuristic_min_center_brightness: float = 0.0
+    heuristic_min_center_contrast: float = 50.0
+    heuristic_min_peak_prominence: float = 50.0
+    heuristic_min_compactness: float = 0.9
+    heuristic_min_circularity: float = 0.40
+    heuristic_max_elongation: float = 2.5
+    heuristic_line_penalty_scale: float = 3.0
     heuristic_border_penalty_scale: float = 1.0
     heuristic_local_binarize_percentile: float = 88.0
     heuristic_min_abs_peak: float = 0.0
@@ -312,6 +314,25 @@ class ContourExtractionSettings:
     heuristic_size_tolerance_range: float = 0.36
     heuristic_size_tolerance_fixed: float = 0.26
     heuristic_max_center_drift_ratio: float = 0.72
+    heuristic_max_line_coherence: float = 0.82
+    heuristic_min_edge_sharpness: float = 0.20
+    heuristic_contrast_score_min: float = 3.0
+    heuristic_contrast_score_max: float = 20.0
+    heuristic_prominence_score_min: float = 2.0
+    heuristic_prominence_score_max: float = 25.0
+    heuristic_edge_snr_score_min: float = 0.70
+    heuristic_edge_snr_score_max: float = 2.80
+    heuristic_edge_quality_floor: float = 0.55
+    heuristic_border_balance_scale: float = 2.0
+    heuristic_seed_percentile: float = 90.0
+    heuristic_w_contrast: float = 25.0
+    heuristic_w_prominence: float = 20.0
+    heuristic_w_size: float = 20.0
+    heuristic_w_compact: float = 15.0
+    heuristic_w_round: float = 10.0
+    heuristic_w_balance: float = 10.0
+    heuristic_w_line: float = 20.0
+    heuristic_w_border: float = 20.0
     bright_via_diameter_min: int = 8
     bright_via_diameter_max: int = 8
     bright_via_clahe_clip_limit: float = 2.0
@@ -345,7 +366,7 @@ class ContourExtractionSettings:
     bright_via_max_annular_contrast: float = 0.0
     bright_via_tiled_threshold_size: int = 256
     bright_via_scale_kernels_from_diameter: bool = True
-    debug_enabled: bool = False
+    debug_enabled: bool = True
     debug_gradient_map_enabled: bool = False
     min_hierarchy_depth: int = 0
     max_hierarchy_depth: int | None = None
@@ -358,7 +379,6 @@ class ContourExtractionSettings:
     via_gradient_edge_method: str = ""
     conductor_gradient_edge_method: str = ""
     recognition_mode: str = RECOGNITION_MODE_CONDUCTORS
-    via_search_sensitivity: str = "medium"
     via_display_show_detected: bool = True
     via_display_show_candidates: bool = True
     metal_structural_pipeline: bool = False
@@ -461,6 +481,8 @@ class ContourExtractionSettings:
             "via_spot_line_suppression": self.via_spot_line_suppression,
             "via_template_min_score": self.via_template_min_score,
             "via_template_images": _serialize_template_images(self.via_template_images),
+            "via_template_min_scores": [max(0.0, min(1.0, float(value))) for value in self.via_template_min_scores],
+            "via_template_diameters": [max(1, int(value)) for value in self.via_template_diameters],
             "via_template_nms_distance": self.via_template_nms_distance,
             "via_template_scale_min": self.via_template_scale_min,
             "via_template_scale_max": self.via_template_scale_max,
@@ -469,9 +491,11 @@ class ContourExtractionSettings:
             "via_fixed_diameters_text": self.via_fixed_diameters_text,
             "heuristic_background_sigma": self.heuristic_background_sigma,
             "heuristic_analysis_window_scale": self.heuristic_analysis_window_scale,
+            "heuristic_min_center_brightness": self.heuristic_min_center_brightness,
             "heuristic_min_center_contrast": self.heuristic_min_center_contrast,
             "heuristic_min_peak_prominence": self.heuristic_min_peak_prominence,
             "heuristic_min_compactness": self.heuristic_min_compactness,
+            "heuristic_min_circularity": self.heuristic_min_circularity,
             "heuristic_max_elongation": self.heuristic_max_elongation,
             "heuristic_line_penalty_scale": self.heuristic_line_penalty_scale,
             "heuristic_border_penalty_scale": self.heuristic_border_penalty_scale,
@@ -481,6 +505,25 @@ class ContourExtractionSettings:
             "heuristic_size_tolerance_range": self.heuristic_size_tolerance_range,
             "heuristic_size_tolerance_fixed": self.heuristic_size_tolerance_fixed,
             "heuristic_max_center_drift_ratio": self.heuristic_max_center_drift_ratio,
+            "heuristic_max_line_coherence": self.heuristic_max_line_coherence,
+            "heuristic_min_edge_sharpness": self.heuristic_min_edge_sharpness,
+            "heuristic_contrast_score_min": self.heuristic_contrast_score_min,
+            "heuristic_contrast_score_max": self.heuristic_contrast_score_max,
+            "heuristic_prominence_score_min": self.heuristic_prominence_score_min,
+            "heuristic_prominence_score_max": self.heuristic_prominence_score_max,
+            "heuristic_edge_snr_score_min": self.heuristic_edge_snr_score_min,
+            "heuristic_edge_snr_score_max": self.heuristic_edge_snr_score_max,
+            "heuristic_edge_quality_floor": self.heuristic_edge_quality_floor,
+            "heuristic_border_balance_scale": self.heuristic_border_balance_scale,
+            "heuristic_seed_percentile": self.heuristic_seed_percentile,
+            "heuristic_w_contrast": self.heuristic_w_contrast,
+            "heuristic_w_prominence": self.heuristic_w_prominence,
+            "heuristic_w_size": self.heuristic_w_size,
+            "heuristic_w_compact": self.heuristic_w_compact,
+            "heuristic_w_round": self.heuristic_w_round,
+            "heuristic_w_balance": self.heuristic_w_balance,
+            "heuristic_w_line": self.heuristic_w_line,
+            "heuristic_w_border": self.heuristic_w_border,
             "bright_via_diameter_min": self.bright_via_diameter_min,
             "bright_via_diameter_max": self.bright_via_diameter_max,
             "bright_via_clahe_clip_limit": self.bright_via_clahe_clip_limit,
@@ -527,7 +570,6 @@ class ContourExtractionSettings:
             "via_gradient_edge_method": self.via_gradient_edge_method,
             "conductor_gradient_edge_method": self.conductor_gradient_edge_method,
             "recognition_mode": normalize_recognition_mode(self.recognition_mode),
-            "via_search_sensitivity": normalize_via_search_sensitivity(self.via_search_sensitivity),
             "via_display_show_detected": self.via_display_show_detected,
             "via_display_show_candidates": self.via_display_show_candidates,
             "metal_structural_pipeline": self.metal_structural_pipeline,
@@ -659,6 +701,10 @@ class ContourExtractionSettings:
             via_min_edge_coverage=max(0.0, min(1.0, float(payload.get("via_min_edge_coverage", 0.45)))),
             via_template_min_score=max(0.0, min(1.0, float(payload.get("via_template_min_score", 0.35)))),
             via_template_images=_parse_template_images(payload.get("via_template_images", [])),
+            via_template_min_scores=[
+                max(0.0, min(1.0, float(value))) for value in (payload.get("via_template_min_scores", []) or [])
+            ],
+            via_template_diameters=[max(1, int(value)) for value in (payload.get("via_template_diameters", []) or [])],
             via_template_nms_distance=max(0, int(payload.get("via_template_nms_distance", 4))),
             via_template_scale_min=max(0.1, float(payload.get("via_template_scale_min", 0.9))),
             via_template_scale_max=max(0.1, float(payload.get("via_template_scale_max", 1.1))),
@@ -667,11 +713,17 @@ class ContourExtractionSettings:
             via_fixed_diameters_text=str(payload.get("via_fixed_diameters_text", "6, 8, 10") or "6, 8, 10"),
             heuristic_background_sigma=max(0.1, float(payload.get("heuristic_background_sigma", 25.0))),
             heuristic_analysis_window_scale=max(1.0, float(payload.get("heuristic_analysis_window_scale", 3.0))),
-            heuristic_min_center_contrast=max(0.0, float(payload.get("heuristic_min_center_contrast", 4.0))),
-            heuristic_min_peak_prominence=max(0.0, float(payload.get("heuristic_min_peak_prominence", 2.0))),
-            heuristic_min_compactness=max(0.0, float(payload.get("heuristic_min_compactness", 0.12))),
-            heuristic_max_elongation=max(1.0, float(payload.get("heuristic_max_elongation", 3.2))),
-            heuristic_line_penalty_scale=max(0.0, float(payload.get("heuristic_line_penalty_scale", 1.0))),
+            heuristic_min_center_brightness=max(
+                0.0, min(255.0, float(payload.get("heuristic_min_center_brightness", 0.0)))
+            ),
+            heuristic_min_center_contrast=max(0.0, float(payload.get("heuristic_min_center_contrast", 50.0))),
+            heuristic_min_peak_prominence=max(0.0, float(payload.get("heuristic_min_peak_prominence", 50.0))),
+            heuristic_min_compactness=max(0.0, float(payload.get("heuristic_min_compactness", 0.9))),
+            heuristic_min_circularity=max(
+                0.0, min(1.0, float(payload.get("heuristic_min_circularity", 0.40)))
+            ),
+            heuristic_max_elongation=max(1.0, float(payload.get("heuristic_max_elongation", 2.5))),
+            heuristic_line_penalty_scale=max(0.0, float(payload.get("heuristic_line_penalty_scale", 3.0))),
             heuristic_border_penalty_scale=max(0.0, float(payload.get("heuristic_border_penalty_scale", 1.0))),
             heuristic_local_binarize_percentile=max(
                 1.0, min(99.0, float(payload.get("heuristic_local_binarize_percentile", 88.0)))
@@ -687,6 +739,46 @@ class ContourExtractionSettings:
             heuristic_max_center_drift_ratio=max(
                 0.1, min(1.5, float(payload.get("heuristic_max_center_drift_ratio", 0.72)))
             ),
+            heuristic_max_line_coherence=max(
+                0.0, min(1.0, float(payload.get("heuristic_max_line_coherence", 0.82)))
+            ),
+            heuristic_min_edge_sharpness=max(0.0, float(payload.get("heuristic_min_edge_sharpness", 0.20))),
+            heuristic_contrast_score_min=max(0.0, float(payload.get("heuristic_contrast_score_min", 3.0))),
+            heuristic_contrast_score_max=max(0.0, float(payload.get("heuristic_contrast_score_max", 20.0))),
+            heuristic_prominence_score_min=max(
+                0.0, float(payload.get("heuristic_prominence_score_min", 2.0))
+            ),
+            heuristic_prominence_score_max=max(
+                0.0, float(payload.get("heuristic_prominence_score_max", 25.0))
+            ),
+            heuristic_edge_snr_score_min=max(0.0, float(payload.get("heuristic_edge_snr_score_min", 0.70))),
+            heuristic_edge_snr_score_max=max(0.0, float(payload.get("heuristic_edge_snr_score_max", 2.80))),
+            heuristic_edge_quality_floor=max(
+                0.0, min(1.0, float(payload.get("heuristic_edge_quality_floor", 0.55)))
+            ),
+            heuristic_border_balance_scale=max(
+                0.0, float(payload.get("heuristic_border_balance_scale", 2.0))
+            ),
+            heuristic_seed_percentile=max(
+                0.0,
+                min(
+                    100.0,
+                    float(
+                        payload.get(
+                            "heuristic_seed_percentile",
+                            payload.get("heuristic_seed_percentile_medium", 90.0),
+                        )
+                    ),
+                ),
+            ),
+            heuristic_w_contrast=max(0.0, float(payload.get("heuristic_w_contrast", 25.0))),
+            heuristic_w_prominence=max(0.0, float(payload.get("heuristic_w_prominence", 20.0))),
+            heuristic_w_size=max(0.0, float(payload.get("heuristic_w_size", 20.0))),
+            heuristic_w_compact=max(0.0, float(payload.get("heuristic_w_compact", 15.0))),
+            heuristic_w_round=max(0.0, float(payload.get("heuristic_w_round", 10.0))),
+            heuristic_w_balance=max(0.0, float(payload.get("heuristic_w_balance", 10.0))),
+            heuristic_w_line=max(0.0, float(payload.get("heuristic_w_line", 20.0))),
+            heuristic_w_border=max(0.0, float(payload.get("heuristic_w_border", 20.0))),
             via_spot_line_suppression=max(0.0, min(1.0, float(payload.get("via_spot_line_suppression", 0.65)))),
             bright_via_diameter_min=max(1, int(payload.get("bright_via_diameter_min", 6))),
             bright_via_diameter_max=max(1, int(payload.get("bright_via_diameter_max", 8))),
@@ -717,34 +809,22 @@ class ContourExtractionSettings:
                 )
             ),
             bright_via_use_metal_mask=bool(payload.get("bright_via_use_metal_mask", True)),
-            bright_via_metal_fraction_min=max(
-                0.0, min(1.0, float(payload.get("bright_via_metal_fraction_min", 0.3)))
-            ),
-            bright_via_max_radial_asymmetry=max(
-                0.0, float(payload.get("bright_via_max_radial_asymmetry", 32.0))
-            ),
+            bright_via_metal_fraction_min=max(0.0, min(1.0, float(payload.get("bright_via_metal_fraction_min", 0.3)))),
+            bright_via_max_radial_asymmetry=max(0.0, float(payload.get("bright_via_max_radial_asymmetry", 32.0))),
             bright_via_max_edge_likeness=max(0.0, float(payload.get("bright_via_max_edge_likeness", 35.0))),
             bright_via_max_line_likeness=max(0.0, float(payload.get("bright_via_max_line_likeness", 65.0))),
             bright_via_nms_distance=max(0, int(payload.get("bright_via_nms_distance", 5))),
-            bright_via_min_final_score=max(
-                0.0, min(100.0, float(payload.get("bright_via_min_final_score", 38.0)))
-            ),
+            bright_via_min_final_score=max(0.0, min(100.0, float(payload.get("bright_via_min_final_score", 38.0)))),
             bright_via_show_rejected=bool(payload.get("bright_via_show_rejected", True)),
-            bright_via_hard_reject_on_asymmetry=bool(
-                payload.get("bright_via_hard_reject_on_asymmetry", True)
-            ),
+            bright_via_hard_reject_on_asymmetry=bool(payload.get("bright_via_hard_reject_on_asymmetry", True)),
             bright_via_hard_reject_on_edge=bool(payload.get("bright_via_hard_reject_on_edge", False)),
             bright_via_hard_reject_on_line=bool(payload.get("bright_via_hard_reject_on_line", False)),
             bright_via_min_isolation_score=float(payload.get("bright_via_min_isolation_score", 0.38)),
             bright_via_min_annular_contrast=float(payload.get("bright_via_min_annular_contrast", 6.0)),
             bright_via_max_annular_contrast=float(payload.get("bright_via_max_annular_contrast", 0.0)),
-            bright_via_tiled_threshold_size=max(
-                32, int(payload.get("bright_via_tiled_threshold_size", 256))
-            ),
-            bright_via_scale_kernels_from_diameter=bool(
-                payload.get("bright_via_scale_kernels_from_diameter", True)
-            ),
-            debug_enabled=bool(payload.get("debug_enabled", False)),
+            bright_via_tiled_threshold_size=max(32, int(payload.get("bright_via_tiled_threshold_size", 256))),
+            bright_via_scale_kernels_from_diameter=bool(payload.get("bright_via_scale_kernels_from_diameter", True)),
+            debug_enabled=bool(payload.get("debug_enabled", True)),
             debug_gradient_map_enabled=bool(payload.get("debug_gradient_map_enabled", False)),
             min_hierarchy_depth=max(0, int(payload.get("min_hierarchy_depth", 0))),
             max_hierarchy_depth=None if max_hierarchy_depth in (None, "", 0, 0.0) else max(0, int(max_hierarchy_depth)),
@@ -763,12 +843,7 @@ class ContourExtractionSettings:
             edge_method=str(payload.get("edge_method", "sobel") or "sobel"),
             via_gradient_edge_method=str(payload.get("via_gradient_edge_method", "") or ""),
             conductor_gradient_edge_method=str(payload.get("conductor_gradient_edge_method", "") or ""),
-            recognition_mode=normalize_recognition_mode(
-                payload.get("recognition_mode", RECOGNITION_MODE_CONDUCTORS)
-            ),
-            via_search_sensitivity=normalize_via_search_sensitivity(
-                payload.get("via_search_sensitivity", "medium")
-            ),
+            recognition_mode=normalize_recognition_mode(payload.get("recognition_mode", RECOGNITION_MODE_CONDUCTORS)),
             via_display_show_detected=bool(payload.get("via_display_show_detected", True)),
             via_display_show_candidates=bool(payload.get("via_display_show_candidates", True)),
             metal_structural_pipeline=bool(payload.get("metal_structural_pipeline", False)),
@@ -778,7 +853,9 @@ class ContourExtractionSettings:
             metal_segmentation_strategy=normalize_metal_segmentation_strategy(
                 payload.get("metal_segmentation_strategy", "legacy_otsu")
             ),
-            metal_gap_bridge_px=max(0, int(payload.get("metal_gap_bridge_px", payload.get("metal_morph_close_radius", 2)) or 0)),
+            metal_gap_bridge_px=max(
+                0, int(payload.get("metal_gap_bridge_px", payload.get("metal_morph_close_radius", 2)) or 0)
+            ),
             metal_speckle_removal_px=max(
                 0, int(payload.get("metal_speckle_removal_px", payload.get("metal_morph_open_radius", 0)) or 0)
             ),
@@ -792,9 +869,7 @@ class ContourExtractionSettings:
             metal_min_trace_length_px=max(1.0, float(payload.get("metal_min_trace_length_px", 8.0) or 8.0)),
             metal_allowed_angles=str(payload.get("metal_allowed_angles", "free") or "free"),
             metal_angle_tolerance_deg=max(0.5, float(payload.get("metal_angle_tolerance_deg", 7.0) or 7.0)),
-            metal_min_straightness=max(
-                0.05, min(1.0, float(payload.get("metal_min_straightness", 0.2) or 0.2))
-            ),
+            metal_min_straightness=max(0.05, min(1.0, float(payload.get("metal_min_straightness", 0.2) or 0.2))),
             metal_allow_t_junction=bool(payload.get("metal_allow_t_junction", True)),
             metal_border_handling=str(payload.get("metal_border_handling", "mark") or "mark"),
             metal_check_contour_validity=bool(payload.get("metal_check_contour_validity", True)),
@@ -810,9 +885,7 @@ class ContourExtractionSettings:
             ),
             metal_max_area=None if metal_max_area in (None, "", 0, 0.0) else float(metal_max_area),
             metal_min_perimeter=max(0.0, float(payload.get("metal_min_perimeter", 32.0) or 32.0)),
-            metal_max_perimeter=None
-            if metal_max_perimeter in (None, "", 0, 0.0)
-            else float(metal_max_perimeter),
+            metal_max_perimeter=None if metal_max_perimeter in (None, "", 0, 0.0) else float(metal_max_perimeter),
             metal_approximation_enabled=bool(payload.get("metal_approximation_enabled", True)),
             metal_morph_close_radius=max(1, int(payload.get("metal_morph_close_radius", 1) or 1)),
             metal_morph_open_radius=max(0, int(payload.get("metal_morph_open_radius", 0) or 0)),
@@ -821,13 +894,9 @@ class ContourExtractionSettings:
             metal_display_show_contours=bool(payload.get("metal_display_show_contours", True)),
             metal_display_show_rejected=bool(payload.get("metal_display_show_rejected", True)),
             metal_display_show_suspicious=bool(payload.get("metal_display_show_suspicious", True)),
-            metal_display_show_border_highlight=bool(
-                payload.get("metal_display_show_border_highlight", False)
-            ),
+            metal_display_show_border_highlight=bool(payload.get("metal_display_show_border_highlight", False)),
             metal_debug_visual=str(payload.get("metal_debug_visual", "overlay") or "overlay"),
-            metal_overlay_opacity=max(
-                0.05, min(1.0, float(payload.get("metal_overlay_opacity", 0.45) or 0.45))
-            ),
+            metal_overlay_opacity=max(0.05, min(1.0, float(payload.get("metal_overlay_opacity", 0.45) or 0.45))),
             metal_use_wide_conductor_gradient=bool(payload.get("metal_use_wide_conductor_gradient", False)),
             metal_wide_gradient_profile_radius_px=max(
                 1, int(payload.get("metal_wide_gradient_profile_radius_px", 8) or 8)
@@ -846,24 +915,18 @@ class ContourExtractionSettings:
                 0.5,
                 float(payload.get("metal_wide_gradient_parallel_tolerance_deg", 10.0) or 10.0),
             ),
-            metal_wide_gradient_max_edge_gap_px=max(
-                0, int(payload.get("metal_wide_gradient_max_edge_gap_px", 5) or 5)
-            ),
+            metal_wide_gradient_max_edge_gap_px=max(0, int(payload.get("metal_wide_gradient_max_edge_gap_px", 5) or 5)),
             metal_wide_gradient_min_overlap_ratio=max(
                 0.05,
                 min(1.0, float(payload.get("metal_wide_gradient_min_overlap_ratio", 0.5) or 0.5)),
             ),
-            metal_edge_close_cap_px=max(
-                5, min(21, int(payload.get("metal_edge_close_cap_px", 9) or 9) | 1)
-            ),
+            metal_edge_close_cap_px=max(5, min(21, int(payload.get("metal_edge_close_cap_px", 9) or 9) | 1)),
             metal_edge_watershed_split=bool(payload.get("metal_edge_watershed_split", True)),
             metal_edge_watershed_dist_peak_frac=max(
                 0.22,
                 min(0.55, float(payload.get("metal_edge_watershed_dist_peak_frac", 0.38) or 0.38)),
             ),
-            metal_edge_watershed_max_pixels=int(
-                payload.get("metal_edge_watershed_max_pixels", 3_000_000) or 3_000_000
-            ),
+            metal_edge_watershed_max_pixels=int(payload.get("metal_edge_watershed_max_pixels", 3_000_000) or 3_000_000),
         )
 
 

@@ -18,7 +18,6 @@ from .schemas import (
     ViaDetectionOutput,
     ViaHit,
 )
-from .via import CompositeViaDetector, ViaRunConfig
 
 
 def output_kind_from_text(value: Any) -> OutputShapeKind:
@@ -57,19 +56,7 @@ def run_via_detection(
     legacy_settings: Any,
 ) -> ViaDetectionOutput:
     gray = to_gray_u8(image)
-    from ..application.processing import ALGORITHM_BACKEND_SEM
-
-    if str(getattr(legacy_settings, "algorithm_backend", "")).lower() == ALGORITHM_BACKEND_SEM:
-        return _run_sem_via_detection(gray, image, image_path, output_kind, legacy_settings)
-
-    detector = CompositeViaDetector(
-        make_image_ref(image_path, gray),
-        ViaRunConfig(
-            use_legacy_core=str(getattr(legacy_settings, "algorithm_backend", "")).lower() == "legacy_via",
-            prefer_template_when_available=True,
-        ),
-    )
-    return detector.run(gray, shape=output_kind, legacy_settings=legacy_settings)
+    return _run_sem_via_detection(gray, image, image_path, output_kind, legacy_settings)
 
 
 def _run_sem_via_detection(
@@ -84,6 +71,7 @@ def _run_sem_via_detection(
     from ..application.processing import (
         VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
         VIA_SEARCH_MODE_HEURISTIC,
+        VIA_SEARCH_MODE_HYBRID,
         VIA_SEARCH_MODE_TEMPLATE,
         normalize_via_search_mode,
     )
@@ -103,19 +91,39 @@ def _run_sem_via_detection(
     fixed_output_diameters = fixed_via_diameters_from_settings(legacy_settings)
     log: list[str] = []
 
-    if mode == VIA_SEARCH_MODE_TEMPLATE:
+    if mode in (VIA_SEARCH_MODE_TEMPLATE, VIA_SEARCH_MODE_HYBRID):
         tcfg = template_config_from_settings(legacy_settings)
-        result = detect_vias_template(gray, tcfg)
-        hits = [_detection_to_hit(d, "legacy_template", fixed_output_diameters) for d in result.accepted]
-        dbg = _result_debug(result, "template")
+        template_result = detect_vias_template(gray, tcfg)
+        template_hits = [_detection_to_hit(d, "template", ()) for d in template_result.accepted]
+        template_log = f"template: n_templates={len(tcfg.templates)} min_corr={tcfg.min_correlation:.3f}"
+        if mode == VIA_SEARCH_MODE_TEMPLATE:
+            return ViaDetectionOutput(
+                image=image_ref,
+                mode=AppMode.VIA,
+                output_kind=output_kind,
+                hits=template_hits,
+                selected_strategy="template",
+                attempt_log=[template_log],
+                debug=_result_debug(template_result, "template"),
+            )
+
+        hcfg = heuristic_config_from_settings(legacy_settings)
+        heuristic_result = detect_vias_heuristic(gray, hcfg)
+        heuristic_hits = [
+            _detection_to_hit(d, "heuristic", fixed_output_diameters) for d in heuristic_result.accepted
+        ]
+        hits = _dedupe_via_hits([*template_hits, *heuristic_hits])
         return ViaDetectionOutput(
             image=image_ref,
             mode=AppMode.VIA,
             output_kind=output_kind,
             hits=hits,
-            selected_strategy="template",
-            attempt_log=[f"template: n_templates={len(tcfg.templates)} min_corr={tcfg.min_correlation:.3f}"],
-            debug=dbg,
+            selected_strategy=VIA_SEARCH_MODE_HYBRID,
+            attempt_log=[template_log, f"heuristic: polar={hcfg.polarity!r}"],
+            debug={
+                "template": _result_debug(template_result, "template"),
+                "heuristic": _result_debug(heuristic_result, "heuristic"),
+            },
         )
 
     if mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG:
@@ -145,8 +153,7 @@ def _run_sem_via_detection(
             parameters_snapshot={"config": repr(cfg)},
         )
         hits = [
-            _detection_to_hit(d, VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG, fixed_output_diameters)
-            for d in result.accepted
+            _detection_to_hit(d, VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG, fixed_output_diameters) for d in result.accepted
         ]
         return ViaDetectionOutput(
             image=image_ref,
@@ -164,7 +171,7 @@ def _run_sem_via_detection(
         mode = VIA_SEARCH_MODE_HEURISTIC
     hcfg = heuristic_config_from_settings(legacy_settings)
     result = detect_vias_heuristic(gray, hcfg)
-    hits = [_detection_to_hit(d, "sem_primary", fixed_output_diameters) for d in result.accepted]
+    hits = [_detection_to_hit(d, "heuristic", fixed_output_diameters) for d in result.accepted]
     dbg = _result_debug(result, "heuristic")
     ad = hcfg.allowed_diameters()
     log.append(f"heuristic: polar={hcfg.polarity!r}")
@@ -201,6 +208,20 @@ def contour_output_to_polygons(output: ContourExtractionOutput, *, category: str
     return polygons
 
 
+def _dedupe_via_hits(hits: list[ViaHit]) -> list[ViaHit]:
+    kept: list[ViaHit] = []
+    for hit in sorted(hits, key=lambda item: float(item.score), reverse=True):
+        distance = max(float(hit.width), float(hit.height)) + 2.0
+        if any(
+            (hit.center_x - other.center_x) ** 2 + (hit.center_y - other.center_y) ** 2
+            <= max(distance, max(float(other.width), float(other.height)) + 2.0) ** 2
+            for other in kept
+        ):
+            continue
+        kept.append(hit)
+    return kept
+
+
 def via_output_to_polygons(output: ViaDetectionOutput) -> list[PolygonData]:
     polygons: list[PolygonData] = []
     for index, hit in enumerate(output.hits, start=1):
@@ -217,6 +238,7 @@ def via_output_to_polygons(output: ViaDetectionOutput) -> list[PolygonData]:
                 area=area,
                 perimeter=perimeter,
                 bbox=bbox,
+                recognition_score=max(0.0, min(100.0, float(hit.score))),
             )
         )
     return polygons

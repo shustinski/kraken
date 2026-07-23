@@ -49,6 +49,8 @@ class PolygonData:
     area: float = 0.0
     perimeter: float = 0.0
     bbox: tuple[int, int, int, int] = (0, 0, 0, 0)
+    #: Recognition confidence for detected objects, normally 0..100.
+    recognition_score: float | None = None
     #: Metal recovery / debug only; not written to CIF by default.
     reject_reason: str = ""
     _points_normalized: InitVar[bool] = False
@@ -70,6 +72,9 @@ class PolygonData:
             area=float(self.area),
             perimeter=float(self.perimeter),
             bbox=(int(self.bbox[0]), int(self.bbox[1]), int(self.bbox[2]), int(self.bbox[3])),
+            recognition_score=(
+                None if self.recognition_score is None else float(self.recognition_score)
+            ),
             reject_reason=str(self.reject_reason),
             _points_normalized=True,
         )
@@ -85,6 +90,11 @@ class PolygonData:
             "area": float(self.area),
             "perimeter": float(self.perimeter),
             "bbox": [int(value) for value in self.bbox],
+            **(
+                {"recognition_score": float(self.recognition_score)}
+                if self.recognition_score is not None
+                else {}
+            ),
             **({"reject_reason": self.reject_reason} if str(self.reject_reason).strip() else {}),
         }
 
@@ -105,6 +115,11 @@ class PolygonData:
             area=float(payload.get("area", 0.0)),
             perimeter=float(payload.get("perimeter", 0.0)),
             bbox=bbox,
+            recognition_score=(
+                float(payload["recognition_score"])
+                if payload.get("recognition_score") is not None
+                else None
+            ),
             reject_reason=str(payload.get("reject_reason", "") or ""),
             _points_normalized=True,
         )

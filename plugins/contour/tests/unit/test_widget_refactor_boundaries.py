@@ -40,11 +40,16 @@ def test_via_preset_store_round_trips_payload(tmp_path) -> None:
         return QSettings(str(settings_path), QSettings.Format.IniFormat)
 
     store = WidgetViaPresetSettingsStore(settings_factory)
-    store.save({"fast vias": {"via_search_mode": "bright_tophat_dog", "debug_enabled": True}})
+    store.save({"fast vias": {"heuristic_w_contrast": 31.0, "heuristic_min_compactness": 0.14}})
 
-    assert store.load() == {"fast vias": {"via_search_mode": "bright_tophat_dog", "debug_enabled": True}}
+    assert store.load() == {
+        "fast vias": {
+            "heuristic_w_contrast": 31.0,
+            "heuristic_min_compactness": 0.14,
+        }
+    }
     raw = settings_factory().value("via_search/user_presets", "", type=str)
-    assert json.loads(raw)["fast vias"]["via_search_mode"] == "bright_tophat_dog"
+    assert json.loads(raw)["fast vias"]["heuristic_w_contrast"] == 31.0
 
 
 def test_paint_image_row_item_sets_status_and_text() -> None:

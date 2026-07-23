@@ -4,8 +4,9 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QDockWidget, QTabBar
+from PyQt6.QtWidgets import QApplication, QDockWidget, QGroupBox, QTabBar, QToolBar
 
 from contour.application.model import ContourApplicationModel
 from contour.application.view import (
@@ -61,6 +62,26 @@ def test_initial_window_size_can_fit_very_small_screens() -> None:
     assert size.height() == 328
 
 
+def test_main_view_dock_contents_do_not_force_excessive_minimum_height() -> None:
+    app = _app()
+    view = ContourMainView()
+    try:
+        view.show()
+        app.processEvents()
+
+        assert view.minimumSizeHint().height() <= 420
+        assert view._pipeline_dock.widget() is view.widget.pipeline_panel_scroll
+        assert view._display_dock.widget() is view.widget.display_panel_scroll
+        assert view._paths_dock.widget() is view.widget.paths_panel_scroll
+
+        view.resize(800, 420)
+        app.processEvents()
+        assert view.height() <= 420
+    finally:
+        view.close()
+        view.deleteLater()
+
+
 def test_main_view_exposes_file_menu_new_project_action() -> None:
     _app()
     view = ContourMainView()
@@ -93,6 +114,41 @@ def test_main_view_docks_thumbnail_matrix_and_keeps_file_menu_first() -> None:
         assert dock.widget() is view.widget.thumbnail_matrix_panel
         assert view.widget.thumbnail_grid_scroll_area.widget() is view.widget.thumbnail_grid
         assert not view.widget.thumbnail_grid_label.isVisible()
+    finally:
+        view.close()
+        view.deleteLater()
+
+
+def test_main_view_uses_flat_dock_roots_and_full_width_editor_toolbar() -> None:
+    app = _app()
+    view = ContourMainView()
+    try:
+        widget = view.widget
+        widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("via"))
+        widget.via_search_mode_combo.setCurrentIndex(widget.via_search_mode_combo.findData("template"))
+        widget._via_template_images = [np.zeros((11, 11), dtype=np.uint8)]
+        widget._via_template_min_scores = [0.35]
+        widget._via_template_diameters = [11]
+        widget._refresh_via_template_list()
+        view.resize(1400, 900)
+        view.show()
+        view._recognition_dock.raise_()
+        app.processEvents()
+
+        toolbar = view.findChild(QToolBar, "editorToolsToolbar")
+        assert toolbar is not None
+        assert toolbar.width() >= view.width() - 4
+        assert toolbar.isAncestorOf(widget.editor_toolbar_scroll)
+        assert not isinstance(widget.editor_group, QGroupBox)
+
+        assert not isinstance(widget.path_group, QGroupBox)
+        assert not isinstance(widget.run_group, QGroupBox)
+        assert view._run_dock.isAncestorOf(widget.save_group)
+        assert not widget.extraction_tab.isAncestorOf(widget.save_group)
+
+        assert not widget.recognition_panel_scroll.horizontalScrollBar().isVisible()
+        assert not widget.via_template_table.horizontalScrollBar().isVisible()
+        assert widget.via_template_table.height() < 120
     finally:
         view.close()
         view.deleteLater()

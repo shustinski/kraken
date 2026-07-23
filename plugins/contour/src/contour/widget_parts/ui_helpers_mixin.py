@@ -22,15 +22,22 @@ class WidgetUiHelpersMixin:
         *,
         checkable: bool = False,
     ) -> None:
+        button_size = self._toolbar_button_size_px()
         button.setIcon(icon)
-        button.setIconSize(QSize(self._toolbar_icon_size_px(), self._toolbar_icon_size_px()))
+        # The toolbar contains icon-only buttons, so let the image use the
+        # complete button area instead of leaving an artificial inner margin.
+        button.setIconSize(QSize(button_size, button_size))
+        # The shared Kraken theme adds 5x10 px padding to every QToolButton.
+        # Set this directly on editor buttons so the application stylesheet
+        # cannot shrink their icons back to the platform small-icon size.
+        button.setStyleSheet("QToolButton { padding: 0; margin: 0; }")
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         button.setToolTip(text)
         button.setStatusTip(text)
         button.setAccessibleName(text)
         button.setAutoRaise(False)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        button.setFixedSize(self._toolbar_button_size_px(), self._toolbar_button_size_px())
+        button.setFixedSize(button_size, button_size)
         button.setCheckable(checkable)
 
     def _on_editor_tool_button_clicked(self, tool: EditorTool) -> None:
@@ -133,10 +140,10 @@ class WidgetUiHelpersMixin:
             if getattr(settings, "object_type", "") == "via" or getattr(settings, "output_mode", "") == "box":
                 return [
                     (12, "Подготовка изображения" if ru else "Preparing image"),
-                    (32, "Поиск ярких/тёмных пиков via" if ru else "Finding via peaks"),
+                    (32, "Поиск ярких/тёмных пиков контактов" if ru else "Finding contact peaks"),
                     (58, "Проверка размера, формы и контраста" if ru else "Checking size, shape and contrast"),
                     (78, "Подавление дублей" if ru else "Merging duplicate candidates"),
-                    (92, "Построение контуров via" if ru else "Building via contours"),
+                    (92, "Построение контуров контактов" if ru else "Building contact contours"),
                 ]
         return [
             (18, "Подготовка изображения" if ru else "Preparing image"),
@@ -194,7 +201,7 @@ class WidgetUiHelpersMixin:
     def _update_tool_button_texts(self) -> None:
         texts = {
             EditorTool.RULER: self._tr("tool_ruler", "Ruler"),
-            EditorTool.ADD_VIA: self._tr("tool_add_via", "Via"),
+            EditorTool.ADD_VIA: self._tr("tool_add_via", "Contact"),
             EditorTool.SELECT: self._tr("tool_select", "Выбор" if self._ui_language == "ru" else "Select"),
             EditorTool.PAN: self._tr("tool_pan", "Панорамирование" if self._ui_language == "ru" else "Pan"),
             EditorTool.ADD_POLYGON: self._tr(

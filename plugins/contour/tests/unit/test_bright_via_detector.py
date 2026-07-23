@@ -259,7 +259,7 @@ def test_heuristic_via_mode_integrates_with_via_output() -> None:
 
 
 def test_sem_backend_routes_heuristic_to_modern_detector() -> None:
-    """GUI via mode uses algorithm_backend=sem; heuristic must not fall back to sem_primary."""
+    """GUI via mode uses the single heuristic detector."""
     image = _synthetic_bright_vias()
     settings = ContourExtractionSettings(
         algorithm_backend=ALGORITHM_BACKEND_SEM,

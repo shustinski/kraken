@@ -162,13 +162,13 @@ def built_in_pipeline_presets(language: str) -> dict[str, dict[str, object]]:
         return {
             "SEM clean metal": _low_noise_contrast_payload(),
             "SEM noisy grain": _noisy_texture_payload(),
-            "SEM weak vias on traces": _weak_blurred_payload(),
+            "SEM weak contacts on traces": _weak_blurred_payload(),
             "SEM uneven illumination": _uneven_illumination_payload(),
         }
     return {
         "SEM clean metal": _low_noise_contrast_payload(),
         "SEM noisy grain": _noisy_texture_payload(),
-        "SEM weak vias on traces": _weak_blurred_payload(),
+        "SEM weak contacts on traces": _weak_blurred_payload(),
         "SEM uneven illumination": _uneven_illumination_payload(),
     }
 

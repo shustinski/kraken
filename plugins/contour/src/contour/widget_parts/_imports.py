@@ -10,6 +10,7 @@ import numpy as np
 from PyQt6.QtCore import (
     QEvent,
     QModelIndex,
+    QPoint,
     QPointF,
     QRectF,
     QSignalBlocker,
@@ -43,6 +44,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QTextEdit,
@@ -75,6 +77,7 @@ from ..application.polygon_antialiasing import antialias_polygons
 from ..application.processing import (
     VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
     VIA_SEARCH_MODE_HEURISTIC,
+    VIA_SEARCH_MODE_HYBRID,
     VIA_SEARCH_MODE_TEMPLATE,
     VIA_SIZE_MODE_FIXED,
     ContourExtractionSettings,
@@ -211,5 +214,3 @@ from ..utils import (
 )
 
 __all__ = [name for name in globals() if not name.startswith("__")]
-
-

@@ -97,7 +97,6 @@ from .application.transition_save_guard import (
     TransitionPromptChoice,
     navigation_allowed_after_autosave_attempt,
     navigation_allowed_after_prompt,
-
 )
 from .application.use_cases import (
     AutoTuneResult,
@@ -286,6 +285,8 @@ class PolygonExtractionWidget(
         self._help_menu: QMenu | None = None
         self._color_pick_pipeline_row: int | None = None
         self._via_template_images: list[np.ndarray] = []
+        self._via_template_min_scores: list[float] = []
+        self._via_template_diameters: list[int] = []
         self._viewed_image_paths: set[str] = set()
         self._user_via_presets: dict[str, dict[str, object]] = self._load_user_via_presets()
         self._user_metal_presets: dict[str, dict[str, object]] = self._load_user_metal_presets()

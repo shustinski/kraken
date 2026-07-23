@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from .processing import ContourExtractionSettings
-from .via_sensitivity import via_sensitivity_settings_patch
 
 
 def default_contour_settings_profiles() -> dict[str, ContourExtractionSettings]:
@@ -43,6 +42,5 @@ def default_contour_settings_profiles() -> dict[str, ContourExtractionSettings]:
             min_extent=0.5,
             min_aspect_ratio=0.5,
             max_aspect_ratio=2.0,
-            **via_sensitivity_settings_patch("medium"),
         ),
     }

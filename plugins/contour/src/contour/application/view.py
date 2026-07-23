@@ -6,7 +6,7 @@ from typing import Any
 from kraken_core.theme import apply_app_theme, normalize_theme
 from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QIcon
-from PyQt6.QtWidgets import QDockWidget, QMainWindow, QMenu, QMenuBar, QSizePolicy, QStatusBar, QWidget
+from PyQt6.QtWidgets import QDockWidget, QMainWindow, QMenu, QMenuBar, QSizePolicy, QStatusBar, QToolBar, QWidget
 
 from ..__version__ import __version__
 from ..infrastructure import WidgetAppearanceSettingsStore
@@ -86,6 +86,8 @@ class ContourMainView(QMainWindow):
         self._widget = PolygonExtractionWidget(self)
         self._widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCentralWidget(self._widget)
+        self._editor_tools_toolbar = self._create_editor_tools_toolbar()
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._editor_tools_toolbar)
         menu_bar = _main_menu_bar(self)
         self._file_menu = _add_menu(menu_bar, "")
         self._new_project_action = _add_action(self._file_menu, "")
@@ -183,8 +185,26 @@ class ContourMainView(QMainWindow):
         dock.setWidget(panel)
         return dock
 
+    def _create_editor_tools_toolbar(self) -> QToolBar:
+        toolbar = QToolBar("Инструменты", self)
+        toolbar.setObjectName("editorToolsToolbar")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.setAllowedAreas(Qt.ToolBarArea.TopToolBarArea)
+        toolbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        tools_widget = self._widget.editor_toolbar_scroll
+        if self._widget.visual_panel.layout() is not None:
+            self._widget.visual_panel.layout().removeWidget(tools_widget)
+        tools_widget.setMinimumWidth(0)
+        tools_widget.setMaximumWidth(16_777_215)
+        tools_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        toolbar.addWidget(tools_widget)
+        return toolbar
+
     @staticmethod
     def _minimum_width_for_panel_dock(object_name: str) -> int:
+        if object_name == "recognitionDock":
+            return 420
         if object_name in {"filesDock", "thumbnailMatrixDock", "runDock"}:
             return DEFAULT_RIGHT_DOCK_MIN_WIDTH
         return DEFAULT_PANEL_DOCK_MIN_WIDTH
@@ -374,6 +394,7 @@ class ContourMainView(QMainWindow):
         self._recognition_toggle_action.setText("Распознавание" if language == "ru" else "Recognition")
         self._run_dock.setWindowTitle("Обработка" if language == "ru" else "Run")
         self._run_toggle_action.setText("Обработка" if language == "ru" else "Run")
+        self._editor_tools_toolbar.setWindowTitle("Инструменты" if language == "ru" else "Tools")
         self._thumbnail_matrix_dock.setWindowTitle("Матрица кадров" if language == "ru" else "Frame matrix")
         self._thumbnail_matrix_toggle_action.setText("Матрица кадров" if language == "ru" else "Frame matrix")
         self._theme_menu.setTitle("Тема" if language == "ru" else "Theme")

@@ -323,25 +323,127 @@ class WidgetPipelineMixin:
             self.polygon_editor.set_image_region_selection_mode(enabled)
 
     def _refresh_via_template_list(self) -> None:
-        if not hasattr(self, "via_template_list"):
+        if not hasattr(self, "via_template_table"):
             return
-        self.via_template_list.clear()
+        self._ensure_via_template_metadata()
+        table = self.via_template_table
+        table.clearSpans()
+        table.setRowCount(0)
+        if not self._via_template_images:
+            table.insertRow(0)
+            table.setRowHeight(0, 52)
+            table.setSpan(0, 0, 1, 5)
+            empty_label = QLabel(
+                "Чтобы добавить шаблон удерживайте Ctrl и выделите область"
+                if self._ui_language == "ru"
+                else "Hold Ctrl and select an area to add a template"
+            )
+            empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_label.setWordWrap(True)
+            table.setCellWidget(0, 0, empty_label)
         for index, template in enumerate(self._via_template_images, start=1):
-            height, width = template.shape[:2]
-            item = QListWidgetItem(f"{index}: {width}x{height}")
+            row = index - 1
+            table.insertRow(row)
+            table.setRowHeight(row, 64)
+
+            order_spin = QSpinBox()
+            order_spin.setRange(1, len(self._via_template_images))
+            order_spin.setValue(index)
+            order_spin.setMinimumWidth(0)
+            order_spin.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            order_spin.valueChanged.connect(
+                lambda value, source_row=row: self._move_via_template(source_row, int(value) - 1)
+            )
+            table.setCellWidget(row, 0, order_spin)
+
             preview_pixmap = QPixmap.fromImage(cv_to_qimage(template)).scaled(
                 56,
                 56,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            item.setIcon(QIcon(preview_pixmap))
-            item.setToolTip(
-                f"Шаблон via #{index}: {width}x{height} пикс."
-                if self._ui_language == "ru"
-                else f"Via template #{index}: {width}x{height} px"
+            preview_label = QLabel()
+            preview_label.setPixmap(preview_pixmap)
+            preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            preview_label.setFixedSize(60, 60)
+            table.setCellWidget(row, 1, preview_label)
+
+            similarity_spin = QDoubleSpinBox()
+            similarity_spin.setRange(0.0, 1.0)
+            similarity_spin.setDecimals(3)
+            similarity_spin.setSingleStep(0.01)
+            similarity_spin.setValue(self._via_template_min_scores[row])
+            similarity_spin.setMinimumWidth(0)
+            similarity_spin.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            similarity_spin.valueChanged.connect(
+                lambda value, template_row=row: self._set_via_template_similarity(template_row, float(value))
             )
-            self.via_template_list.addItem(item)
+            table.setCellWidget(row, 2, similarity_spin)
+
+            diameter_spin = QSpinBox()
+            diameter_spin.setRange(1, 10_000)
+            diameter_spin.setSuffix(" px")
+            diameter_spin.setValue(self._via_template_diameters[row])
+            diameter_spin.setMinimumWidth(0)
+            diameter_spin.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            diameter_spin.valueChanged.connect(
+                lambda value, template_row=row: self._set_via_template_diameter(template_row, int(value))
+            )
+            table.setCellWidget(row, 3, diameter_spin)
+
+            remove_button = QPushButton("-")
+            remove_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            remove_button.setMinimumSize(0, 0)
+            remove_button.setStyleSheet(
+                "QPushButton { background-color: #DC2626; color: white; font-weight: 700; "
+                "border-radius: 0; padding: 0; }"
+            )
+            remove_button.setToolTip("Удалить шаблон" if self._ui_language == "ru" else "Remove template")
+            remove_button.clicked.connect(
+                lambda _checked=False, template_row=row: self._remove_via_template(template_row)
+            )
+            table.setCellWidget(row, 4, remove_button)
+        table.setColumnWidth(1, 64)
+        visible_rows = max(1, min(5, len(self._via_template_images)))
+        row_height = 64 if self._via_template_images else 52
+        header_height = max(24, table.horizontalHeader().sizeHint().height())
+        table_height = header_height + visible_rows * row_height + table.frameWidth() * 2 + 2
+        table.setMinimumHeight(table_height)
+        table.setMaximumHeight(table_height)
+
+    def _ensure_via_template_metadata(self) -> None:
+        count = len(self._via_template_images)
+        while len(self._via_template_min_scores) < count:
+            fallback_score = self._via_template_min_scores[-1] if self._via_template_min_scores else 0.6
+            self._via_template_min_scores.append(float(fallback_score))
+        while len(self._via_template_diameters) < count:
+            fallback_diameter = self._via_template_diameters[-1] if self._via_template_diameters else 8
+            self._via_template_diameters.append(max(1, int(fallback_diameter)))
+        del self._via_template_min_scores[count:]
+        del self._via_template_diameters[count:]
+
+    def _move_via_template(self, source_row: int, target_row: int) -> None:
+        count = len(self._via_template_images)
+        if source_row < 0 or source_row >= count:
+            return
+        target_row = max(0, min(count - 1, int(target_row)))
+        if source_row == target_row:
+            return
+        self._ensure_via_template_metadata()
+        for values in (self._via_template_images, self._via_template_min_scores, self._via_template_diameters):
+            values.insert(target_row, values.pop(source_row))
+        self._refresh_via_template_list()
+        self._on_extraction_settings_changed()
+
+    def _set_via_template_similarity(self, row: int, value: float) -> None:
+        if 0 <= row < len(self._via_template_min_scores):
+            self._via_template_min_scores[row] = max(0.0, min(1.0, float(value)))
+            self._on_extraction_settings_changed()
+
+    def _set_via_template_diameter(self, row: int, value: int) -> None:
+        if 0 <= row < len(self._via_template_diameters):
+            self._via_template_diameters[row] = max(1, int(value))
+            self._on_extraction_settings_changed()
 
     def _normalize_via_template_images(self, payload: list[object]) -> list[np.ndarray]:
         templates: list[np.ndarray] = []
@@ -361,8 +463,6 @@ class WidgetPipelineMixin:
         return templates
 
     def _on_editor_image_region_selected(self, x_coord: float, y_coord: float, width: float, height: float) -> None:
-        if hasattr(self, "add_via_template_button"):
-            self.add_via_template_button.setChecked(False)
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_image_region_selection_mode(False)
         image = self._workspace.current_display_image()
@@ -383,15 +483,20 @@ class WidgetPipelineMixin:
                 template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
             else:
                 template = template[:, :, 0]
+        self._ensure_via_template_metadata()
+        similarity = self._via_template_min_scores[-1] if self._via_template_min_scores else 0.6
+        diameter = self._via_template_diameters[-1] if self._via_template_diameters else 8
         self._via_template_images.append(template.astype(np.uint8, copy=False))
+        self._via_template_min_scores.append(float(similarity))
+        self._via_template_diameters.append(max(1, int(diameter)))
         self._refresh_via_template_list()
         self._on_extraction_settings_changed()
         self._append_log(
             self._tr(
                 "via_template_added_log",
-                "Добавлен шаблон via {width}x{height}. Всего шаблонов: {count}."
+                "Добавлен шаблон контакта {width}x{height}. Всего шаблонов: {count}."
                 if self._ui_language == "ru"
-                else "Added via template {width}x{height}. Total templates: {count}.",
+                else "Added contact template {width}x{height}. Total templates: {count}.",
                 width=right - left,
                 height=bottom - top,
                 count=len(self._via_template_images),
@@ -400,18 +505,24 @@ class WidgetPipelineMixin:
 
     def _clear_via_templates(self, *_args) -> None:
         self._via_template_images.clear()
+        self._via_template_min_scores.clear()
+        self._via_template_diameters.clear()
+        self._refresh_via_template_list()
+        self._on_extraction_settings_changed()
+
+    def _remove_via_template(self, row: int) -> None:
+        if row < 0 or row >= len(self._via_template_images):
+            return
+        self._ensure_via_template_metadata()
+        self._via_template_images.pop(row)
+        self._via_template_min_scores.pop(row)
+        self._via_template_diameters.pop(row)
         self._refresh_via_template_list()
         self._on_extraction_settings_changed()
 
     def _remove_selected_via_template(self, *_args) -> None:
-        row = self.via_template_list.currentRow() if hasattr(self, "via_template_list") else -1
-        if row < 0 or row >= len(self._via_template_images):
-            return
-        self._via_template_images.pop(row)
-        self._refresh_via_template_list()
-        if self._via_template_images:
-            self.via_template_list.setCurrentRow(min(row, len(self._via_template_images) - 1))
-        self._on_extraction_settings_changed()
+        row = self.via_template_table.currentRow() if hasattr(self, "via_template_table") else -1
+        self._remove_via_template(row)
 
     def _built_in_via_presets(self) -> dict[str, dict[str, object]]:
         return built_in_via_presets(self._ui_language)
@@ -423,7 +534,14 @@ class WidgetPipelineMixin:
         return blurred_via_preset_payload()
 
     def _load_user_via_presets(self) -> dict[str, dict[str, object]]:
-        return self._via_preset_settings_store.load()
+        return {
+            name: {
+                str(key): value
+                for key, value in payload.items()
+                if str(key).startswith("heuristic_")
+            }
+            for name, payload in self._via_preset_settings_store.load().items()
+        }
 
     def _save_user_via_presets(self) -> None:
         self._via_preset_settings_store.save(self._user_via_presets)
@@ -443,25 +561,56 @@ class WidgetPipelineMixin:
 
     def _current_via_preset_payload(self) -> dict[str, object]:
         payload = self._current_contour_settings().to_dict()
-        excluded_keys = {
-            "via_template_images",
-            "fixed_via_widths",
-            "fixed_via_heights",
-            "min_via_width",
-            "max_via_width",
-            "min_via_height",
-            "max_via_height",
-            "via_size_mode",
-        }
         return {
             key: value
             for key, value in payload.items()
-            if (key.startswith("via_") or key.startswith("bright_via_")) and key not in excluded_keys
-        } | {
-            "debug_enabled": self.debug_candidates_checkbox.isChecked()
+            if key.startswith("heuristic_")
         }
 
     def _apply_via_preset_payload(self, payload: dict[str, object]) -> None:
+        # A via preset is deliberately limited to the expert detector
+        # parameters. Method, polarity, sizes, sensitivity, templates and
+        # display controls belong to the recognition configuration itself.
+        payload = {
+            key: value
+            for key, value in payload.items()
+            if str(key).startswith("heuristic_")
+        }
+        if not payload:
+            return
+        widget_names = {
+            "heuristic_line_penalty_scale": "heuristic_line_penalty_spin",
+            "heuristic_border_penalty_scale": "heuristic_border_penalty_spin",
+            "heuristic_use_bilateral": "heuristic_use_bilateral_checkbox",
+        }
+        preset_widgets = {
+            key: getattr(
+                self,
+                widget_names.get(key, f"{key}_spin"),
+                None,
+            )
+            for key in payload
+        }
+        preset_widgets = {
+            key: widget
+            for key, widget in preset_widgets.items()
+            if widget is not None
+        }
+        preset_blockers = [QSignalBlocker(widget) for widget in preset_widgets.values()]
+        try:
+            for key, widget in preset_widgets.items():
+                value = payload[key]
+                if isinstance(widget, QCheckBox):
+                    widget.setChecked(bool(value))
+                else:
+                    widget.setValue(float(value))
+        finally:
+            del preset_blockers
+        if hasattr(self, "bright_via_advanced_outer"):
+            self.bright_via_advanced_outer.setChecked(True)
+        self._on_extraction_settings_changed()
+        return
+
         blockers = [
             QSignalBlocker(self.via_search_mode_combo),
             QSignalBlocker(self.via_white_range_checkbox),
@@ -505,6 +654,30 @@ class WidgetPipelineMixin:
             QSignalBlocker(self.debug_candidates_checkbox),
             QSignalBlocker(self.via_roundness_spin),
         ]
+        heuristic_widgets = {
+            "heuristic_background_sigma": "heuristic_background_sigma_spin",
+            "heuristic_analysis_window_scale": "heuristic_analysis_window_scale_spin",
+            "heuristic_min_center_brightness": "heuristic_min_center_brightness_spin",
+            "heuristic_min_center_contrast": "heuristic_min_center_contrast_spin",
+            "heuristic_min_peak_prominence": "heuristic_min_peak_prominence_spin",
+            "heuristic_min_compactness": "heuristic_min_compactness_spin",
+            "heuristic_min_circularity": "heuristic_min_circularity_spin",
+            "heuristic_max_elongation": "heuristic_max_elongation_spin",
+            "heuristic_line_penalty_scale": "heuristic_line_penalty_spin",
+            "heuristic_border_penalty_scale": "heuristic_border_penalty_spin",
+            "heuristic_local_binarize_percentile": "heuristic_local_binarize_percentile_spin",
+            "heuristic_min_abs_peak": "heuristic_min_abs_peak_spin",
+            **{
+                name: f"{name}_spin"
+                for name in payload
+                if name.startswith("heuristic_") and hasattr(self, f"{name}_spin")
+            },
+        }
+        blockers.extend(
+            QSignalBlocker(widget)
+            for widget_name in heuristic_widgets.values()
+            if (widget := getattr(self, widget_name, None)) is not None
+        )
         try:
             mode_index = self.via_search_mode_combo.findData(
                 normalize_via_search_mode(payload.get("via_search_mode", self.via_search_mode_combo.currentData()))
@@ -580,11 +753,7 @@ class WidgetPipelineMixin:
                 float(payload.get("bright_via_dog_sigma_large", self.bright_via_dog_large_spin.value()))
             )
             self.bright_via_threshold_percentile_spin.setValue(
-                float(
-                    payload.get(
-                        "bright_via_threshold_percentile", self.bright_via_threshold_percentile_spin.value()
-                    )
-                )
+                float(payload.get("bright_via_threshold_percentile", self.bright_via_threshold_percentile_spin.value()))
             )
             combine_index = self.bright_via_mask_combine_combo.findData(
                 str(payload.get("bright_via_mask_combine_mode", self.bright_via_mask_combine_combo.currentData()))
@@ -647,11 +816,7 @@ class WidgetPipelineMixin:
                 bool(payload.get("bright_via_show_rejected", self.bright_via_show_rejected_checkbox.isChecked()))
             )
             self.bright_via_hard_asym_checkbox.setChecked(
-                bool(
-                    payload.get(
-                        "bright_via_hard_reject_on_asymmetry", self.bright_via_hard_asym_checkbox.isChecked()
-                    )
-                )
+                bool(payload.get("bright_via_hard_reject_on_asymmetry", self.bright_via_hard_asym_checkbox.isChecked()))
             )
             self.bright_via_hard_edge_checkbox.setChecked(
                 bool(payload.get("bright_via_hard_reject_on_edge", self.bright_via_hard_edge_checkbox.isChecked()))
@@ -662,8 +827,20 @@ class WidgetPipelineMixin:
             self.debug_candidates_checkbox.setChecked(
                 bool(payload.get("debug_enabled", self.debug_candidates_checkbox.isChecked()))
             )
+            if hasattr(self, "via_heuristic_polarity_combo") and "via_heuristic_polarity" in payload:
+                polarity_index = self.via_heuristic_polarity_combo.findData(str(payload["via_heuristic_polarity"]))
+                if polarity_index >= 0:
+                    self.via_heuristic_polarity_combo.setCurrentIndex(polarity_index)
+            for setting_name, widget_name in heuristic_widgets.items():
+                widget = getattr(self, widget_name, None)
+                if widget is not None and setting_name in payload:
+                    widget.setValue(float(payload[setting_name]))
+            if hasattr(self, "heuristic_use_bilateral_checkbox") and "heuristic_use_bilateral" in payload:
+                self.heuristic_use_bilateral_checkbox.setChecked(bool(payload["heuristic_use_bilateral"]))
         finally:
             del blockers
+        if hasattr(self, "bright_via_advanced_outer"):
+            self.bright_via_advanced_outer.setChecked(True)
         self._update_bright_via_diameter_controls_state()
         self._update_via_threshold_controls_state()
         self._on_extraction_settings_changed()
@@ -690,7 +867,34 @@ class WidgetPipelineMixin:
         name = str(name).strip()
         if not ok or not name:
             return
-        self._user_via_presets[name] = self._current_via_preset_payload()
+        expert_payload = self._current_via_preset_payload()
+        safe_name = "".join(
+            character if character not in '<>:"/\\|?*' else "_"
+            for character in name
+        ).strip(" .") or "via_expert_preset"
+        start_directory = self._dialog_start_directory_from_line_edit(self.output_dir_edit)
+        suggested_path = str(Path(start_directory) / f"{safe_name}.json")
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить пресет контактов" if self._ui_language == "ru" else "Save contact preset",
+            suggested_path,
+            self._tr("json_file_filter"),
+        )
+        if not path:
+            return
+        save_pipeline_config_to_path(
+            path,
+            {
+                "format": "contour-via-expert-preset",
+                "version": 1,
+                "name": name,
+                "expert_settings": expert_payload,
+                # Kept as a complete snapshot for audit/reproducibility. Loading
+                # this preset applies expert_settings only.
+                "recognition_settings": self._current_contour_settings().to_dict(),
+            },
+        )
+        self._user_via_presets[name] = expert_payload
         self._save_user_via_presets()
         self._refresh_via_preset_combo()
         index = self.via_preset_combo.findText(name)
@@ -751,9 +955,7 @@ class WidgetPipelineMixin:
         return {key: payload[key] for key in keys if key in payload}
 
     def _apply_metal_preset_payload(self, payload: dict[str, object]) -> None:
-        merged = ContourExtractionSettings.from_dict(
-            self._current_contour_settings().to_dict() | dict(payload)
-        )
+        merged = ContourExtractionSettings.from_dict(self._current_contour_settings().to_dict() | dict(payload))
         self._set_extraction_settings(merged)
         self._on_extraction_settings_changed()
 
@@ -825,20 +1027,67 @@ class WidgetPipelineMixin:
         self._update_via_threshold_controls_state()
         self._on_extraction_settings_changed()
 
-    def _select_bright_via_mode(self) -> None:
-        ridx = self.recognition_mode_combo.findData("via")
-        if ridx >= 0 and self.recognition_mode_combo.currentIndex() != ridx:
-            self.recognition_mode_combo.setCurrentIndex(ridx)
-        mode_index = self.via_search_mode_combo.findData(VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG)
-        if mode_index >= 0 and self.via_search_mode_combo.currentIndex() != mode_index:
-            self.via_search_mode_combo.setCurrentIndex(mode_index)
+    @staticmethod
+    def _heuristic_default_values() -> dict[str, float]:
+        return {
+            "heuristic_background_sigma_spin": 25.0,
+            "heuristic_analysis_window_scale_spin": 3.0,
+            "heuristic_min_center_brightness_spin": 0.0,
+            "heuristic_min_center_contrast_spin": 50.0,
+            "heuristic_min_peak_prominence_spin": 50.0,
+            "heuristic_min_compactness_spin": 0.9,
+            "heuristic_min_circularity_spin": 0.40,
+            "heuristic_max_elongation_spin": 2.5,
+            "heuristic_line_penalty_spin": 3.0,
+            "heuristic_border_penalty_spin": 1.0,
+            "heuristic_local_binarize_percentile_spin": 88.0,
+            "heuristic_min_abs_peak_spin": 0.0,
+            "heuristic_size_tolerance_range_spin": 0.36,
+            "heuristic_size_tolerance_fixed_spin": 0.26,
+            "heuristic_max_center_drift_ratio_spin": 0.72,
+            "heuristic_max_line_coherence_spin": 0.82,
+            "heuristic_min_edge_sharpness_spin": 0.20,
+            "heuristic_contrast_score_min_spin": 3.0,
+            "heuristic_contrast_score_max_spin": 20.0,
+            "heuristic_prominence_score_min_spin": 2.0,
+            "heuristic_prominence_score_max_spin": 25.0,
+            "heuristic_edge_snr_score_min_spin": 0.70,
+            "heuristic_edge_snr_score_max_spin": 2.80,
+            "heuristic_edge_quality_floor_spin": 0.55,
+            "heuristic_border_balance_scale_spin": 2.0,
+            "heuristic_seed_percentile_spin": 90.0,
+            "heuristic_w_contrast_spin": 25.0,
+            "heuristic_w_prominence_spin": 20.0,
+            "heuristic_w_size_spin": 20.0,
+            "heuristic_w_compact_spin": 15.0,
+            "heuristic_w_round_spin": 10.0,
+            "heuristic_w_balance_spin": 10.0,
+            "heuristic_w_line_spin": 20.0,
+            "heuristic_w_border_spin": 20.0,
+        }
 
-    def _preview_bright_via_mask(self, *_args) -> None:
-        self._select_bright_via_mode()
-        self.debug_candidates_checkbox.setChecked(True)
-        self._show_gradient_debug_window()
+    def _reset_heuristic_parameters(self, *_args) -> None:
+        defaults = self._heuristic_default_values()
+        blockers = [
+            QSignalBlocker(widget)
+            for name in defaults
+            if (widget := getattr(self, name, None)) is not None
+        ]
+        if hasattr(self, "heuristic_use_bilateral_checkbox"):
+            blockers.append(QSignalBlocker(self.heuristic_use_bilateral_checkbox))
+        try:
+            for name, value in defaults.items():
+                widget = getattr(self, name, None)
+                if widget is not None:
+                    widget.setValue(value)
+            if hasattr(self, "heuristic_use_bilateral_checkbox"):
+                self.heuristic_use_bilateral_checkbox.setChecked(False)
+        finally:
+            del blockers
+        self._on_extraction_settings_changed()
 
     def _reset_bright_via_parameters(self, *_args) -> None:
+        heuristic_defaults = self._heuristic_default_values()
         blockers = [
             QSignalBlocker(self.bright_via_diameter_min_spin),
             QSignalBlocker(self.bright_via_diameter_max_spin),
@@ -868,6 +1117,11 @@ class WidgetPipelineMixin:
             QSignalBlocker(self.bright_via_hard_edge_checkbox),
             QSignalBlocker(self.bright_via_hard_line_checkbox),
         ]
+        blockers.extend(
+            QSignalBlocker(widget)
+            for name in heuristic_defaults
+            if (widget := getattr(self, name, None)) is not None
+        )
         try:
             if hasattr(self, "via_diameter_size_mode_combo"):
                 fixed_index = self.via_diameter_size_mode_combo.findData(VIA_SIZE_MODE_FIXED)
@@ -910,6 +1164,12 @@ class WidgetPipelineMixin:
             self.bright_via_hard_asym_checkbox.setChecked(True)
             self.bright_via_hard_edge_checkbox.setChecked(False)
             self.bright_via_hard_line_checkbox.setChecked(False)
+            for name, value in heuristic_defaults.items():
+                widget = getattr(self, name, None)
+                if widget is not None:
+                    widget.setValue(value)
+            if hasattr(self, "heuristic_use_bilateral_checkbox"):
+                self.heuristic_use_bilateral_checkbox.setChecked(False)
         finally:
             del blockers
         self._on_extraction_settings_changed()
@@ -958,5 +1218,3 @@ class WidgetPipelineMixin:
                 color=f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}",
             )
         )
-
-

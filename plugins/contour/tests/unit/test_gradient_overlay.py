@@ -176,6 +176,40 @@ class GradientOverlayWidgetTests(unittest.TestCase):
         high_active = int(overlay_high[..., 1].sum())
         self.assertGreater(low_active, high_active)
 
+    def test_contact_debug_masks_are_available_in_display_combo(self) -> None:
+        expected_modes = {
+            "heatmap",
+            "threshold",
+            "elevation",
+            "mask",
+            "candidate_mask",
+            "via_mask",
+            "tophat_mask",
+            "dog_mask",
+            "spot_response",
+            "ring_response",
+        }
+        actual_modes = {
+            str(self.widget.gradient_overlay_mode_combo.itemData(index))
+            for index in range(self.widget.gradient_overlay_mode_combo.count())
+        }
+        self.assertTrue(expected_modes.issubset(actual_modes))
+
+        candidate_mask = np.zeros((40, 50), dtype=np.uint8)
+        candidate_mask[10:20, 15:25] = 255
+        self.widget._workspace.current_state.debug_gradient_maps = {"candidate_mask": candidate_mask}
+        index = self.widget.gradient_overlay_mode_combo.findData("candidate_mask")
+        self.assertGreaterEqual(index, 0)
+        self.widget.gradient_overlay_mode_combo.setCurrentIndex(index)
+
+        overlay = self.widget._build_gradient_overlay_image(self.widget._workspace.current_state.source_image)
+
+        self.assertIsNotNone(overlay)
+        assert overlay is not None
+        self.assertEqual(overlay.shape, (40, 50, 3))
+        self.assertGreater(int(overlay[12, 17].sum()), 0)
+        self.assertEqual(int(overlay[0, 0].sum()), 0)
+
     def test_overlay_opacity_control_propagates_to_scene(self) -> None:
         self.widget.gradient_overlay_checkbox.setChecked(True)
         self.widget.gradient_overlay_opacity_spin.setValue(0.8)

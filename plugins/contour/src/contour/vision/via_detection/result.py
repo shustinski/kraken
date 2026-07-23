@@ -21,6 +21,8 @@ class ViaDetection:
     aspect: float
     polarity_hypothesis: str = ""
     reject_reason: str | None = None
+    template_index: int | None = None
+    features: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -55,4 +57,6 @@ class DetectionResult:
             "aspect": d.aspect,
             "polarity_hypothesis": d.polarity_hypothesis,
             "reject_reason": d.reject_reason,
+            "template_index": d.template_index,
+            "features": dict(d.features),
         }

@@ -172,12 +172,8 @@ class WidgetExtractionSettingsMixin:
                 blockers.append(QSignalBlocker(_w))
         if hasattr(self, "recognition_mode_combo"):
             blockers.append(QSignalBlocker(self.recognition_mode_combo))
-        if hasattr(self, "via_search_sensitivity_combo"):
-            blockers.append(QSignalBlocker(self.via_search_sensitivity_combo))
         if hasattr(self, "via_show_detected_checkbox"):
             blockers.append(QSignalBlocker(self.via_show_detected_checkbox))
-        if hasattr(self, "via_debug_gradient_map_checkbox"):
-            blockers.append(QSignalBlocker(self.via_debug_gradient_map_checkbox))
         try:
             prof = str(getattr(settings, "extraction_profile", "conductors") or "conductors")
             rm = normalize_recognition_mode(getattr(settings, "recognition_mode", "conductors"))
@@ -274,25 +270,33 @@ class WidgetExtractionSettingsMixin:
                 self.heuristic_analysis_window_scale_spin.setValue(
                     float(getattr(settings, "heuristic_analysis_window_scale", 3.0) or 3.0)
                 )
+            if hasattr(self, "heuristic_min_center_brightness_spin"):
+                self.heuristic_min_center_brightness_spin.setValue(
+                    float(getattr(settings, "heuristic_min_center_brightness", 0.0) or 0.0)
+                )
             if hasattr(self, "heuristic_min_center_contrast_spin"):
                 self.heuristic_min_center_contrast_spin.setValue(
-                    float(getattr(settings, "heuristic_min_center_contrast", 6.0) or 0.0)
+                    float(getattr(settings, "heuristic_min_center_contrast", 50.0) or 0.0)
                 )
             if hasattr(self, "heuristic_min_peak_prominence_spin"):
                 self.heuristic_min_peak_prominence_spin.setValue(
-                    float(getattr(settings, "heuristic_min_peak_prominence", 4.0) or 0.0)
+                    float(getattr(settings, "heuristic_min_peak_prominence", 50.0) or 0.0)
                 )
             if hasattr(self, "heuristic_min_compactness_spin"):
                 self.heuristic_min_compactness_spin.setValue(
-                    float(getattr(settings, "heuristic_min_compactness", 0.12) or 0.0)
+                    float(getattr(settings, "heuristic_min_compactness", 0.9) or 0.0)
+                )
+            if hasattr(self, "heuristic_min_circularity_spin"):
+                self.heuristic_min_circularity_spin.setValue(
+                    float(getattr(settings, "heuristic_min_circularity", 0.40))
                 )
             if hasattr(self, "heuristic_max_elongation_spin"):
                 self.heuristic_max_elongation_spin.setValue(
-                    float(getattr(settings, "heuristic_max_elongation", 3.2) or 3.2)
+                    float(getattr(settings, "heuristic_max_elongation", 2.5) or 2.5)
                 )
             if hasattr(self, "heuristic_line_penalty_spin"):
                 self.heuristic_line_penalty_spin.setValue(
-                    float(getattr(settings, "heuristic_line_penalty_scale", 1.0) or 1.0)
+                    float(getattr(settings, "heuristic_line_penalty_scale", 3.0) or 3.0)
                 )
             if hasattr(self, "heuristic_border_penalty_spin"):
                 self.heuristic_border_penalty_spin.setValue(
@@ -310,9 +314,38 @@ class WidgetExtractionSettingsMixin:
                 self.heuristic_use_bilateral_checkbox.setChecked(
                     bool(getattr(settings, "heuristic_use_bilateral", False))
                 )
+            for setting_name, widget_name, default_value in (
+                ("heuristic_size_tolerance_range", "heuristic_size_tolerance_range_spin", 0.36),
+                ("heuristic_size_tolerance_fixed", "heuristic_size_tolerance_fixed_spin", 0.26),
+                ("heuristic_max_center_drift_ratio", "heuristic_max_center_drift_ratio_spin", 0.72),
+                ("heuristic_max_line_coherence", "heuristic_max_line_coherence_spin", 0.82),
+                ("heuristic_min_edge_sharpness", "heuristic_min_edge_sharpness_spin", 0.20),
+                ("heuristic_contrast_score_min", "heuristic_contrast_score_min_spin", 3.0),
+                ("heuristic_contrast_score_max", "heuristic_contrast_score_max_spin", 20.0),
+                ("heuristic_prominence_score_min", "heuristic_prominence_score_min_spin", 2.0),
+                ("heuristic_prominence_score_max", "heuristic_prominence_score_max_spin", 25.0),
+                ("heuristic_edge_snr_score_min", "heuristic_edge_snr_score_min_spin", 0.70),
+                ("heuristic_edge_snr_score_max", "heuristic_edge_snr_score_max_spin", 2.80),
+                ("heuristic_edge_quality_floor", "heuristic_edge_quality_floor_spin", 0.55),
+                ("heuristic_border_balance_scale", "heuristic_border_balance_scale_spin", 2.0),
+                ("heuristic_seed_percentile", "heuristic_seed_percentile_spin", 90.0),
+                ("heuristic_w_contrast", "heuristic_w_contrast_spin", 25.0),
+                ("heuristic_w_prominence", "heuristic_w_prominence_spin", 20.0),
+                ("heuristic_w_size", "heuristic_w_size_spin", 20.0),
+                ("heuristic_w_compact", "heuristic_w_compact_spin", 15.0),
+                ("heuristic_w_round", "heuristic_w_round_spin", 10.0),
+                ("heuristic_w_balance", "heuristic_w_balance_spin", 10.0),
+                ("heuristic_w_line", "heuristic_w_line_spin", 20.0),
+                ("heuristic_w_border", "heuristic_w_border_spin", 20.0),
+            ):
+                widget = getattr(self, widget_name, None)
+                if widget is not None:
+                    widget.setValue(float(getattr(settings, setting_name, default_value)))
             if hasattr(self, "bright_via_mode_stack") and hasattr(self, "via_search_mode_combo"):
-                _ist = self.via_search_mode_combo.currentData() == VIA_SEARCH_MODE_TEMPLATE
-                self.bright_via_mode_stack.setCurrentIndex(1 if _ist else 0)
+                mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
+                self.bright_via_mode_stack.setCurrentIndex(
+                    2 if mode in (VIA_SEARCH_MODE_TEMPLATE, VIA_SEARCH_MODE_HYBRID) else 1
+                )
             self.via_white_range_checkbox.setChecked(bool(settings.via_white_range_enabled))
             self.via_white_range_min_spin.setValue(int(settings.via_white_range_min))
             self.via_white_range_max_spin.setValue(int(settings.via_white_range_max))
@@ -337,7 +370,9 @@ class WidgetExtractionSettingsMixin:
                     self.bright_via_diameter_fixed_spin.setValue(int(settings.bright_via_diameter_min))
                 else:
                     self.bright_via_diameter_fixed_spin.setValue(
-                        int(round((int(settings.bright_via_diameter_min) + int(settings.bright_via_diameter_max)) * 0.5))
+                        int(
+                            round((int(settings.bright_via_diameter_min) + int(settings.bright_via_diameter_max)) * 0.5)
+                        )
                     )
             self.bright_via_clahe_clip_spin.setValue(float(settings.bright_via_clahe_clip_limit))
             self.bright_via_clahe_tile_spin.setValue(int(settings.bright_via_clahe_tile_grid_size))
@@ -373,17 +408,14 @@ class WidgetExtractionSettingsMixin:
             if hasattr(self, "bright_via_min_isolation_spin"):
                 self.bright_via_min_isolation_spin.setValue(float(settings.bright_via_min_isolation_score))
             self._via_template_images = self._normalize_via_template_images(settings.via_template_images)
+            self._via_template_min_scores = [
+                max(0.0, min(1.0, float(value))) for value in settings.via_template_min_scores
+            ]
+            self._via_template_diameters = [max(1, int(value)) for value in settings.via_template_diameters]
             self._refresh_via_template_list()
             self.debug_candidates_checkbox.setChecked(bool(settings.debug_enabled))
-            if hasattr(self, "via_debug_gradient_map_checkbox"):
-                self.via_debug_gradient_map_checkbox.setChecked(bool(settings.debug_gradient_map_enabled))
             if hasattr(self, "via_show_detected_checkbox"):
                 self.via_show_detected_checkbox.setChecked(bool(getattr(settings, "via_display_show_detected", True)))
-            if hasattr(self, "via_search_sensitivity_combo"):
-                vs = str(getattr(settings, "via_search_sensitivity", "medium") or "medium")
-                vs_idx = self.via_search_sensitivity_combo.findData(vs)
-                if vs_idx >= 0:
-                    self.via_search_sensitivity_combo.setCurrentIndex(vs_idx)
             self.via_roundness_spin.setValue(float(settings.via_min_roundness))
             self.min_via_width_spin.setValue(int(settings.min_via_width))
             self.max_via_width_spin.setValue(0 if settings.max_via_width is None else int(settings.max_via_width))
@@ -421,13 +453,9 @@ class WidgetExtractionSettingsMixin:
                         int(round(float(getattr(settings, "metal_contrast_bias", 0.0))))
                     )
                 if hasattr(self, "metal_gap_bridge_spin"):
-                    self.metal_gap_bridge_spin.setValue(
-                        int(getattr(settings, "metal_gap_bridge_px", 2) or 2)
-                    )
+                    self.metal_gap_bridge_spin.setValue(int(getattr(settings, "metal_gap_bridge_px", 2) or 2))
                 if hasattr(self, "metal_speckle_removal_spin"):
-                    self.metal_speckle_removal_spin.setValue(
-                        int(getattr(settings, "metal_speckle_removal_px", 0) or 0)
-                    )
+                    self.metal_speckle_removal_spin.setValue(int(getattr(settings, "metal_speckle_removal_px", 0) or 0))
                 if hasattr(self, "metal_epsilon_spin"):
                     self.metal_epsilon_spin.setValue(float(settings.epsilon))
                 self.metal_min_width_spin.setValue(float(getattr(settings, "metal_min_trace_width_px", 8.0) or 8.0))
@@ -436,14 +464,10 @@ class WidgetExtractionSettingsMixin:
                 self.metal_min_area_spin.setValue(float(getattr(settings, "metal_min_area", 60.0) or 60.0))
                 ma = getattr(settings, "metal_max_area", None)
                 self.metal_max_area_spin.setValue(0.0 if ma is None else float(ma))
-                self.metal_min_perimeter_spin.setValue(
-                    float(getattr(settings, "metal_min_perimeter", 32.0) or 32.0)
-                )
+                self.metal_min_perimeter_spin.setValue(float(getattr(settings, "metal_min_perimeter", 32.0) or 32.0))
                 mp2 = getattr(settings, "metal_max_perimeter", None)
                 self.metal_max_perimeter_spin.setValue(0.0 if mp2 is None else float(mp2))
-                self.metal_min_length_spin.setValue(
-                    float(getattr(settings, "metal_min_trace_length_px", 8.0) or 8.0)
-                )
+                self.metal_min_length_spin.setValue(float(getattr(settings, "metal_min_trace_length_px", 8.0) or 8.0))
                 self.metal_min_points_spin.setValue(int(settings.min_points))
                 self.metal_min_angle_spin.setValue(float(settings.min_polygon_angle))
                 self.metal_approximation_checkbox.setChecked(
@@ -497,6 +521,8 @@ class WidgetExtractionSettingsMixin:
         return int(self.bright_via_diameter_min_spin.value()), int(self.bright_via_diameter_max_spin.value())
 
     def _current_contour_settings(self) -> ContourExtractionSettings:
+        if hasattr(self, "_ensure_via_template_metadata"):
+            self._ensure_via_template_metadata()
         max_area = self.max_area_spin.value()
         max_perimeter = self.max_perimeter_spin.value()
         max_bbox_width = self.max_bbox_width_spin.value()
@@ -625,9 +651,12 @@ class WidgetExtractionSettingsMixin:
             if hasattr(self, "bright_via_min_isolation_spin")
             else 0.38,
             via_template_images=[template.copy() for template in self._via_template_images],
-            via_template_nms_distance=self.via_template_nms_distance_spin.value()
-            if hasattr(self, "via_template_nms_distance_spin")
-            else 4,
+            via_template_min_scores=list(self._via_template_min_scores),
+            via_template_diameters=list(self._via_template_diameters),
+            via_template_nms_distance=max(
+                (int(max(template.shape[:2])) + 2 for template in self._via_template_images),
+                default=0,
+            ),
             via_template_scale_min=self.via_template_scale_min_spin.value()
             if hasattr(self, "via_template_scale_min_spin")
             else 0.9,
@@ -637,9 +666,7 @@ class WidgetExtractionSettingsMixin:
             via_template_scale_step=self.via_template_scale_step_spin.value()
             if hasattr(self, "via_template_scale_step_spin")
             else 0.1,
-            via_heuristic_polarity=str(
-                self.via_heuristic_polarity_combo.currentData() or "auto"
-            )
+            via_heuristic_polarity=str(self.via_heuristic_polarity_combo.currentData() or "auto")
             if hasattr(self, "via_heuristic_polarity_combo")
             else "auto",
             via_fixed_diameters_text=str(self.via_fixed_diameters_edit.text() or "6, 8, 10")
@@ -651,15 +678,21 @@ class WidgetExtractionSettingsMixin:
             heuristic_analysis_window_scale=self.heuristic_analysis_window_scale_spin.value()
             if hasattr(self, "heuristic_analysis_window_scale_spin")
             else 3.0,
+            heuristic_min_center_brightness=self.heuristic_min_center_brightness_spin.value()
+            if hasattr(self, "heuristic_min_center_brightness_spin")
+            else 0.0,
             heuristic_min_center_contrast=self.heuristic_min_center_contrast_spin.value()
             if hasattr(self, "heuristic_min_center_contrast_spin")
             else 6.0,
             heuristic_min_peak_prominence=self.heuristic_min_peak_prominence_spin.value()
             if hasattr(self, "heuristic_min_peak_prominence_spin")
-            else 4.0,
+            else 50.0,
             heuristic_min_compactness=self.heuristic_min_compactness_spin.value()
             if hasattr(self, "heuristic_min_compactness_spin")
             else 0.12,
+            heuristic_min_circularity=self.heuristic_min_circularity_spin.value()
+            if hasattr(self, "heuristic_min_circularity_spin")
+            else 0.0,
             heuristic_max_elongation=self.heuristic_max_elongation_spin.value()
             if hasattr(self, "heuristic_max_elongation_spin")
             else 3.2,
@@ -678,28 +711,39 @@ class WidgetExtractionSettingsMixin:
             heuristic_use_bilateral=self.heuristic_use_bilateral_checkbox.isChecked()
             if hasattr(self, "heuristic_use_bilateral_checkbox")
             else False,
+            heuristic_size_tolerance_range=self.heuristic_size_tolerance_range_spin.value(),
+            heuristic_size_tolerance_fixed=self.heuristic_size_tolerance_fixed_spin.value(),
+            heuristic_max_center_drift_ratio=self.heuristic_max_center_drift_ratio_spin.value(),
+            heuristic_max_line_coherence=self.heuristic_max_line_coherence_spin.value(),
+            heuristic_min_edge_sharpness=self.heuristic_min_edge_sharpness_spin.value(),
+            heuristic_contrast_score_min=self.heuristic_contrast_score_min_spin.value(),
+            heuristic_contrast_score_max=self.heuristic_contrast_score_max_spin.value(),
+            heuristic_prominence_score_min=self.heuristic_prominence_score_min_spin.value(),
+            heuristic_prominence_score_max=self.heuristic_prominence_score_max_spin.value(),
+            heuristic_edge_snr_score_min=self.heuristic_edge_snr_score_min_spin.value(),
+            heuristic_edge_snr_score_max=self.heuristic_edge_snr_score_max_spin.value(),
+            heuristic_edge_quality_floor=self.heuristic_edge_quality_floor_spin.value(),
+            heuristic_border_balance_scale=self.heuristic_border_balance_scale_spin.value(),
+            heuristic_seed_percentile=self.heuristic_seed_percentile_spin.value(),
+            heuristic_w_contrast=self.heuristic_w_contrast_spin.value(),
+            heuristic_w_prominence=self.heuristic_w_prominence_spin.value(),
+            heuristic_w_size=self.heuristic_w_size_spin.value(),
+            heuristic_w_compact=self.heuristic_w_compact_spin.value(),
+            heuristic_w_round=self.heuristic_w_round_spin.value(),
+            heuristic_w_balance=self.heuristic_w_balance_spin.value(),
+            heuristic_w_line=self.heuristic_w_line_spin.value(),
+            heuristic_w_border=self.heuristic_w_border_spin.value(),
             debug_enabled=self.debug_candidates_checkbox.isChecked(),
-            debug_gradient_map_enabled=(
-                self.via_debug_gradient_map_checkbox.isChecked()
-                if hasattr(self, "via_debug_gradient_map_checkbox")
-                else self.debug_candidates_checkbox.isChecked()
-            ),
+            # Diagnostic layers are built lazily when selected in the
+            # display combo; there is no separate debug-image mode.
+            debug_gradient_map_enabled=False,
             recognition_mode=raw_rec,
-            via_search_sensitivity=str(
-                self.via_search_sensitivity_combo.currentData() or "medium"
-            )
-            if hasattr(self, "via_search_sensitivity_combo")
-            else "medium",
             via_display_show_detected=(
-                self.via_show_detected_checkbox.isChecked()
-                if hasattr(self, "via_show_detected_checkbox")
-                else True
+                self.via_show_detected_checkbox.isChecked() if hasattr(self, "via_show_detected_checkbox") else True
             ),
             via_display_show_candidates=self.debug_candidates_checkbox.isChecked(),
             metal_structural_pipeline=(raw_rec == "conductors"),
-            metal_preset=self._current_metal_preset_key()
-            if hasattr(self, "metal_preset_combo")
-            else "standard",
+            metal_preset=self._current_metal_preset_key() if hasattr(self, "metal_preset_combo") else "standard",
             metal_contrast_bias=float(self.metal_contrast_bias_spin.value())
             if hasattr(self, "metal_contrast_bias_spin")
             else 0.0,
@@ -710,9 +754,7 @@ class WidgetExtractionSettingsMixin:
             metal_speckle_removal_px=int(self.metal_speckle_removal_spin.value())
             if hasattr(self, "metal_speckle_removal_spin")
             else 0,
-            metal_min_object_area=self.metal_min_area_spin.value()
-            if hasattr(self, "metal_min_area_spin")
-            else 60.0,
+            metal_min_object_area=self.metal_min_area_spin.value() if hasattr(self, "metal_min_area_spin") else 60.0,
             metal_min_trace_width_px=float(self.metal_min_width_spin.value())
             if hasattr(self, "metal_min_width_spin")
             else 8.0,
@@ -743,14 +785,10 @@ class WidgetExtractionSettingsMixin:
             else True,
             metal_morph_close_radius=int(self.metal_gap_bridge_spin.value())
             if hasattr(self, "metal_gap_bridge_spin")
-            else (
-                int(self.metal_morph_close_spin.value()) if hasattr(self, "metal_morph_close_spin") else 2
-            ),
+            else (int(self.metal_morph_close_spin.value()) if hasattr(self, "metal_morph_close_spin") else 2),
             metal_morph_open_radius=int(self.metal_speckle_removal_spin.value())
             if hasattr(self, "metal_speckle_removal_spin")
-            else (
-                int(self.metal_morph_open_spin.value()) if hasattr(self, "metal_morph_open_spin") else 0
-            ),
+            else (int(self.metal_morph_open_spin.value()) if hasattr(self, "metal_morph_open_spin") else 0),
             metal_display_show_conductors=self.metal_show_conductors_checkbox.isChecked()
             if hasattr(self, "metal_show_conductors_checkbox")
             else True,
@@ -814,10 +852,6 @@ class WidgetExtractionSettingsMixin:
             self._update_extraction_profile_controls_state()
         self._on_extraction_settings_changed()
 
-    def _on_via_search_sensitivity_changed(self, *_args) -> None:
-        self._apply_via_search_sensitivity_profile()
-        self._on_extraction_settings_changed()
-
     def _on_via_brightness_range_changed(self, *_args) -> None:
         if (
             hasattr(self, "via_white_range_checkbox")
@@ -829,47 +863,6 @@ class WidgetExtractionSettingsMixin:
         if hasattr(self, "_update_via_brightness_range_controls_state"):
             self._update_via_brightness_range_controls_state()
         self._on_extraction_settings_changed()
-
-    def _apply_via_search_sensitivity_profile(self) -> None:
-        if not hasattr(self, "via_search_sensitivity_combo"):
-            return
-        from ..application.via_sensitivity import via_sensitivity_profile
-
-        level = str(self.via_search_sensitivity_combo.currentData() or "medium")
-        profile = via_sensitivity_profile(level)
-        blockers = [
-            QSignalBlocker(self.bright_via_threshold_percentile_spin),
-            QSignalBlocker(self.bright_via_bright_center_score_spin),
-            QSignalBlocker(self.bright_via_min_final_score_spin),
-            QSignalBlocker(self.bright_via_min_circularity_spin),
-            QSignalBlocker(self.bright_via_hard_asym_checkbox),
-            QSignalBlocker(self.bright_via_hard_edge_checkbox),
-            QSignalBlocker(self.bright_via_hard_line_checkbox),
-            QSignalBlocker(self.via_white_range_checkbox),
-            QSignalBlocker(self.via_white_range_min_spin),
-            QSignalBlocker(self.via_white_range_max_spin),
-            QSignalBlocker(self.bright_via_max_radial_asymmetry_spin),
-        ]
-        if hasattr(self, "bright_via_min_isolation_spin"):
-            blockers.append(QSignalBlocker(self.bright_via_min_isolation_spin))
-        try:
-            self.bright_via_threshold_percentile_spin.setValue(profile.bright_via_threshold_percentile)
-            self.via_white_range_checkbox.setChecked(True)
-            self.via_white_range_min_spin.setValue(int(profile.via_white_range_min))
-            self.via_white_range_max_spin.setValue(255)
-            self.bright_via_bright_center_score_spin.setValue(float(profile.via_white_range_min))
-            self.bright_via_min_final_score_spin.setValue(profile.bright_via_min_final_score)
-            self.bright_via_min_circularity_spin.setValue(profile.bright_via_min_circularity)
-            if hasattr(self, "bright_via_min_isolation_spin"):
-                self.bright_via_min_isolation_spin.setValue(profile.bright_via_min_isolation_score)
-            self.bright_via_hard_asym_checkbox.setChecked(profile.bright_via_hard_reject_on_asymmetry)
-            self.bright_via_hard_edge_checkbox.setChecked(profile.bright_via_hard_reject_on_edge)
-            self.bright_via_hard_line_checkbox.setChecked(profile.bright_via_hard_reject_on_line)
-            self.bright_via_max_radial_asymmetry_spin.setValue(profile.bright_via_max_radial_asymmetry)
-        finally:
-            del blockers
-        if hasattr(self, "_update_via_brightness_range_controls_state"):
-            self._update_via_brightness_range_controls_state()
 
     def _on_via_display_settings_changed(self, *_args) -> None:
         if hasattr(self, "polygon_editor") and hasattr(self, "via_show_detected_checkbox"):
@@ -1013,5 +1006,3 @@ class WidgetExtractionSettingsMixin:
             }
         text = message or texts.get(kind, texts["idle"])
         self.recognition_status_label.setText(text)
-
-

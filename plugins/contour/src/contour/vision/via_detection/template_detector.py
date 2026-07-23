@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import numpy as np
-import cv2
 from dataclasses import dataclass
+
+import cv2
+import numpy as np
 
 from .config import TemplateViaDetectorConfig
 from .result import DetectionResult, ViaDetection
@@ -17,6 +18,7 @@ class TemplateRawMatch:
     bbox: tuple[int, int, int, int]
     score: float
     diameter_estimate: float
+    template_index: int = 0
 
 
 def detect_vias_template(image: np.ndarray, config: TemplateViaDetectorConfig) -> DetectionResult:
@@ -24,7 +26,9 @@ def detect_vias_template(image: np.ndarray, config: TemplateViaDetectorConfig) -
     return score_vias_template_raw(raw, shape, config)
 
 
-def detect_vias_template_raw(image: np.ndarray, config: TemplateViaDetectorConfig) -> tuple[list[TemplateRawMatch], tuple[int, int]]:
+def detect_vias_template_raw(
+    image: np.ndarray, config: TemplateViaDetectorConfig
+) -> tuple[list[TemplateRawMatch], tuple[int, int]]:
     g = _to_gray_u8(image)
     h, w = g.shape[:2]
     if h < 3 or w < 3 or not config.templates:
@@ -34,7 +38,7 @@ def detect_vias_template_raw(image: np.ndarray, config: TemplateViaDetectorConfi
     all_dets: list[TemplateRawMatch] = []
     scales = _iter_scales(float(config.scale_min), float(config.scale_max), float(config.scale_step))
 
-    for tmpl in config.templates:
+    for template_index, tmpl in enumerate(config.templates):
         t0 = np.asarray(tmpl, dtype=np.uint8)
         if t0.ndim > 2:
             t0 = cv2.cvtColor(t0, cv2.COLOR_BGR2GRAY)
@@ -42,13 +46,13 @@ def detect_vias_template_raw(image: np.ndarray, config: TemplateViaDetectorConfi
         if th0 < 2 or tw0 < 2 or th0 >= h or tw0 >= w:
             continue
         for sc in scales:
-            th, tw = max(2, int(round(th0 * sc))), max(2, int(round(tw0 * sc)))
+            th, tw = max(2, round(th0 * sc)), max(2, round(tw0 * sc))
             if th >= h or tw >= w:
                 continue
             t = cv2.resize(t0, (tw, th), interpolation=cv2.INTER_AREA if sc < 1.0 else cv2.INTER_LINEAR)
             res = cv2.matchTemplate(g, t, method)
-            floor = 0.1
-            _collect_peaks(res, t, floor, all_dets)
+            floor = 0.0
+            _collect_peaks(res, t, floor, all_dets, template_index=template_index)
     return all_dets, (h, w)
 
 
@@ -63,29 +67,45 @@ def score_vias_template_raw(
             d.y,
             d.bbox,
             d.score,
-            d.diameter_estimate,
+            float(config.output_diameters[d.template_index])
+            if d.template_index < len(config.output_diameters)
+            else d.diameter_estimate,
             d.score * 0.32,
             d.score * 0.20,
             0.5,
             float(max(d.bbox[2], d.bbox[3]) / (min(d.bbox[2], d.bbox[3]) + 1e-6)),
             "template",
             None,
+            d.template_index,
         )
         for d in raw_matches
     ]
-    nmsd = max(0, int(config.nms_distance))
-    d2 = float(nmsd * nmsd) if nmsd else 0.0
-    all_dets.sort(key=lambda d: d.score, reverse=True)
-    kept: list[ViaDetection] = []
-    for d in all_dets:
-        if d2 == 0:
-            kept.append(d)
-        elif not any((d.x - k.x) ** 2 + (d.y - k.y) ** 2 <= d2 for k in kept):
-            kept.append(d)
+    indexed_dets = list(zip(raw_matches, all_dets, strict=True))
+    indexed_dets.sort(key=lambda pair: pair[1].score, reverse=True)
 
-    thr = float(config.min_correlation) * 100.0
-    acc = [d for d in kept if d.score >= thr]
-    below = [d for d in kept if d.score < thr]
+    def threshold(raw: TemplateRawMatch) -> float:
+        value = (
+            config.min_correlations[raw.template_index]
+            if raw.template_index < len(config.min_correlations)
+            else config.min_correlation
+        )
+        return max(0.0, min(1.0, float(value))) * 100.0
+
+    eligible = [(raw, detection) for raw, detection in indexed_dets if detection.score >= threshold(raw)]
+    below = [detection for raw, detection in indexed_dets if detection.score < threshold(raw)]
+    kept: list[tuple[TemplateRawMatch, ViaDetection]] = []
+    for raw, detection in eligible:
+        # Duplicate suppression is automatic: the matched template span plus
+        # two pixels. For two different templates the larger distance wins.
+        distance = max(raw.bbox[2], raw.bbox[3]) + 2
+        duplicate = any(
+            (detection.x - other.x) ** 2 + (detection.y - other.y) ** 2
+            <= float(max(distance, max(other_raw.bbox[2], other_raw.bbox[3]) + 2) ** 2)
+            for other_raw, other in kept
+        )
+        if not duplicate:
+            kept.append((raw, detection))
+    acc = [detection for _raw, detection in kept]
 
     dbg = {
         "source_gray": np.zeros((h, w, 3), np.uint8),
@@ -123,11 +143,15 @@ def _iter_scales(smin: float, smax: float, step: float) -> list[float]:
 
 
 def _collect_peaks(
-    res: np.ndarray, tmpl: np.ndarray, thr: float, out: list[TemplateRawMatch]
+    res: np.ndarray,
+    tmpl: np.ndarray,
+    thr: float,
+    out: list[TemplateRawMatch],
+    *,
+    template_index: int,
 ) -> None:
     if res.size == 0:
         return
-    rh, rw = res.shape[:2]
     th, tw = tmpl.shape[:2]
     # Non-max: dilate
     k = max(3, min(th, tw) // 2 | 1)
@@ -148,5 +172,6 @@ def _collect_peaks(
                 bbox=(int(x), int(y), int(tw), int(th)),
                 score=v * 100.0,
                 diameter_estimate=float((tw + th) * 0.5),
+                template_index=template_index,
             )
         )

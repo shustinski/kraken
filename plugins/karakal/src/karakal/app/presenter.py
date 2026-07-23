@@ -1,23 +1,27 @@
 """Presenter for Karakal."""
 from __future__ import annotations
 
+import json
 import re
+import shutil
 from bisect import bisect_right
 from dataclasses import replace
 from datetime import datetime
+from heapq import heappush, heapreplace
 from math import isfinite
 from pathlib import Path
 from time import perf_counter
 
 import numpy as np
 from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, Qt
-from PyQt6.QtGui import QBrush, QColor, QImageReader
+from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
     QApplication,
     QColorDialog,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QListWidget,
@@ -25,7 +29,10 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QProgressDialog,
+    QPushButton,
+    QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from ..core.analysis_modes import (
@@ -49,7 +56,8 @@ from ..core.analysis_modes import (
 from ..core.backend_constants import (
     BCE_SCORE_CAP,
 )
-from ..core.domain import BuildOptions, BuildResult, FolderSpec, FrameIdentity, FrameRecord, ModelSpec
+from ..core.domain import BuildOptions, BuildResult, ComparisonPairSelection, ComparisonTarget, FolderSpec, FrameIdentity, FrameRecord, ModelSpec
+from ..core.grid_anomaly import GridCellReferenceProfile, GridDamageAnalysisConfig, build_grid_cell_reference_profile_path
 from ..core.pipeline import recommend_corrective_candidates
 from ..manager.primary_labeling_selector import (
     PrimaryLabelingConfig,
@@ -60,15 +68,19 @@ from ..core.repository import (
     available_result_layer_exports,
     compute_metric_percentiles,
     export_record_assets,
+    export_grid_cell_defect_bmps,
     export_result_layer_jpgs,
     export_result_layers_jpgs,
-    load_grayscale_image,
     metric_higher_is_better,
     metric_value_for_record,
+    combined_pair_metric_key,
+    confidence_pair_metric_key,
+    pair_metric_key,
+    parse_combined_pair_metric_key,
+    parse_confidence_pair_metric_key,
+    parse_pair_metric_key,
 )
-from ..core.subpixel_grid import SubpixelGridSpec, subpixel_spec_from_options
-from ..core.tile_grid import TileGridPlan, plan_tile_grid
-from ..core.workers import AnalyticsWorker, FrameIndexWorker
+from ..core.workers import AnalyticsWorker, FrameIndexWorker, GridInspectionWorker
 from ..infra.services import KarakalSettingsService
 from ..ui.details_dialog import ExtendFrameDetailsDialog
 from ..ui.matrix_view import MatrixLayoutConfig, build_matrix_layout
@@ -76,6 +88,7 @@ from ..ui.ui_components import FolderRowWidget
 from ..ui.ui_constants import (
     DEFAULT_CELL_SIZE,
     DEFAULT_BOUNDARY_RADIUS,
+    DEFAULT_COMPARISON_TARGET,
     DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA,
     DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE,
     DEFAULT_FRAMES_PER_ROW,
@@ -87,19 +100,13 @@ from ..ui.ui_constants import (
     DEFAULT_MATRIX_METRIC_KEY,
     DEFAULT_MASK_THRESHOLD,
     DEFAULT_MATRIX_ROWS,
-    DEFAULT_SUBPIXEL_AGGREGATION,
-    DEFAULT_SUBPIXEL_COLUMNS,
-    DEFAULT_SUBPIXEL_ROWS,
-    DEFAULT_SUBPIXEL_VIEW_MODE,
+    GRID_INSPECTION_DEFAULT_ERROR_TYPES,
+    GRID_INSPECTION_DAMAGE_METRIC_KEY,
+    GRID_INSPECTION_ERROR_TYPE_OPTIONS,
     DEFAULT_POINT_CONFIDENCE_RADIUS,
     DEFAULT_POINT_EXTRACTION_MODE,
     DEFAULT_POLYGON_CONFIDENCE_SUMMARY,
     DEFAULT_POLYGON_COMPARE_PROFILE,
-    DEFAULT_TILE_HEIGHT,
-    DEFAULT_TILE_MODE,
-    DEFAULT_TILE_OVERLAP,
-    DEFAULT_TILE_OVERLAP_MODE,
-    DEFAULT_TILE_WIDTH,
     DEFAULT_TOTAL_FRAMES,
     FOLDER_CHECKED_ROLE,
     FOLDER_CONFIDENCE_ROLE,
@@ -108,6 +115,7 @@ from ..ui.ui_constants import (
     FOLDER_ROW_MIN_HEIGHT,
     MATRIX_METRIC_OPTIONS,
     PERCENTILE_BAND_BOUNDS,
+    PERCENTILE_BAND_TITLES,
     CONFIDENCE_UNCERTAINTY_PROFILE_VALUES,
     POLYGON_COMPARE_PROFILE_VALUES,
 )
@@ -118,6 +126,11 @@ MGMT_ROLE_TASK_ID = int(Qt.ItemDataRole.UserRole) + 21
 MGMT_ROLE_FRAME_KEY = int(Qt.ItemDataRole.UserRole) + 22
 MGMT_ROLE_BATCH_ID = int(Qt.ItemDataRole.UserRole) + 23
 MGMT_ROLE_GROUP_KEY = int(Qt.ItemDataRole.UserRole) + 24
+PAIR_ROLE_MODEL_IDS = int(Qt.ItemDataRole.UserRole) + 40
+PAIR_OPERATION_ORDER = ("xor", "iou", "dice")
+PAIR_OPERATION_LABELS = {"xor": "XOR", "iou": "IoU", "dice": "Dice"}
+PAIR_OPERATION_SHORT_LABELS = {"xor": "X", "iou": "I", "dice": "D"}
+GRID_INSPECTION_ERROR_LIST_LIMIT = 1000
 
 
 class KarakalPresenter(QObject):
@@ -136,6 +149,10 @@ class KarakalPresenter(QObject):
         self._export_folder: Path | None = None
         self._saved_validation_mask_payload: dict[str, object] = self._settings_service.load_validation_mask_payload() or {}
         self._folder_check_guard = False
+        self._pair_matrix_guard = False
+        self._pair_defaults_initialized = False
+        self._comparison_pair_operations: dict[tuple[str, str], set[str]] = {}
+        self._pair_operation_buttons: dict[tuple[str, str, str], QPushButton] = {}
         self._tab_states: dict[object, ExtendMatrixTabState] = {}
         self._pending_build_snapshot: dict[str, object] | None = None
         self._details_dialogs: list[ExtendFrameDetailsDialog] = []
@@ -143,6 +160,8 @@ class KarakalPresenter(QObject):
         self._request_generation = 0
         self._active_request_generation: int | None = None
         self._active_processing_keys: set[str] = set()
+        self._active_grid_inspection_partial_keys: set[str] | None = None
+        self._app_mode_refresh_generation = 0
         self._active_progress_current = 0
         self._active_progress_total = 0
         self._active_progress_key = ""
@@ -182,6 +201,144 @@ class KarakalPresenter(QObject):
 
     def _selected_analysis_mode(self) -> str:
         return str(self.analysis_mode_combo.currentData() or INTER_MODEL_ANALYSIS_MODE)
+
+    @staticmethod
+    def _slider_host_value(slider_host: object, default: int) -> int:
+        slider = getattr(slider_host, "_slider", None)
+        if slider is None:
+            return int(default)
+        try:
+            return int(slider.value())
+        except Exception:
+            return int(default)
+
+    def _selected_grid_error_types(self) -> tuple[str, ...]:
+        checks = getattr(self, "grid_error_type_checks", {}) or {}
+        selected: list[str] = []
+        for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
+            checkbox = checks.get(str(error_type)) if isinstance(checks, dict) else None
+            if checkbox is None:
+                selected.append(str(error_type))
+                continue
+            try:
+                if checkbox.isChecked():
+                    selected.append(str(error_type))
+            except Exception:
+                selected.append(str(error_type))
+        return tuple(selected)
+
+    @staticmethod
+    def _normalize_grid_error_types(value: object) -> tuple[str, ...]:
+        allowed = tuple(str(error_type) for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS)
+        allowed_set = set(allowed)
+        if value is None:
+            return tuple(GRID_INSPECTION_DEFAULT_ERROR_TYPES)
+        if isinstance(value, str):
+            raw_values = (value,)
+        else:
+            try:
+                raw_values = tuple(value)  # type: ignore[arg-type]
+            except Exception:
+                return tuple(GRID_INSPECTION_DEFAULT_ERROR_TYPES)
+        return tuple(error_type for error_type in allowed if error_type in {str(item) for item in raw_values} and error_type in allowed_set)
+
+    def _grid_inspection_config_payload(self) -> dict[str, object]:
+        return {
+            "strictness": self._slider_host_value(getattr(self, "grid_strictness_slider", None), 50),
+            "defect_threshold": self._slider_host_value(getattr(self, "grid_defect_threshold_slider", None), 72),
+            "fill_sensitivity": self._slider_host_value(getattr(self, "grid_fill_sensitivity_slider", None), 50),
+            "merge_sensitivity": self._slider_host_value(getattr(self, "grid_merge_sensitivity_slider", None), 50),
+            "noise_filter": self._slider_host_value(getattr(self, "grid_noise_filter_slider", None), 40),
+            "enabled_error_types": list(self._selected_grid_error_types()),
+        }
+
+    def _set_grid_inspection_config_controls(self, payload: dict[str, object] | None) -> None:
+        values = dict(payload or {})
+        targets = {
+            "strictness": (getattr(self, "grid_strictness_slider", None), 50),
+            "defect_threshold": (getattr(self, "grid_defect_threshold_slider", None), 72),
+            "fill_sensitivity": (getattr(self, "grid_fill_sensitivity_slider", None), 50),
+            "merge_sensitivity": (getattr(self, "grid_merge_sensitivity_slider", None), 50),
+            "noise_filter": (getattr(self, "grid_noise_filter_slider", None), 40),
+        }
+        for key, (slider_host, default) in targets.items():
+            slider = getattr(slider_host, "_slider", None)
+            if slider is None:
+                continue
+            try:
+                value = int(values.get(key, default))
+            except Exception:
+                value = int(default)
+            blocker = QSignalBlocker(slider)
+            normalized_value = max(slider.minimum(), min(slider.maximum(), value))
+            slider.setValue(normalized_value)
+            del blocker
+            value_label = getattr(slider_host, "_value_label", None)
+            if value_label is not None:
+                value_label.setText(str(int(normalized_value)))
+            spinbox = getattr(slider_host, "_spinbox", None)
+            if spinbox is not None and hasattr(spinbox, "setValue"):
+                spinbox_blocker = QSignalBlocker(spinbox)
+                spinbox.setValue(int(normalized_value))
+                del spinbox_blocker
+        enabled_error_types = self._normalize_grid_error_types(values.get("enabled_error_types"))
+        checks = getattr(self, "grid_error_type_checks", {}) or {}
+        if isinstance(checks, dict):
+            for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
+                checkbox = checks.get(str(error_type))
+                if checkbox is None:
+                    continue
+                blocker = QSignalBlocker(checkbox)
+                checkbox.setChecked(str(error_type) in enabled_error_types)
+                del blocker
+
+    @staticmethod
+    def _grid_damage_config_from_payload(payload: dict[str, object] | None) -> GridDamageAnalysisConfig:
+        values = dict(payload or {})
+
+        def ratio(key: str, default: int) -> float:
+            try:
+                return max(0.0, min(1.0, float(values.get(key, default)) / 100.0))
+            except Exception:
+                return float(default) / 100.0
+
+        strictness = ratio("strictness", 50)
+        fill = ratio("fill_sensitivity", 50)
+        merge = ratio("merge_sensitivity", 50)
+        noise = ratio("noise_filter", 40)
+        threshold = ratio("defect_threshold", 72)
+        enabled_error_types = KarakalPresenter._normalize_grid_error_types(values.get("enabled_error_types"))
+        strict_boost = strictness - 0.5
+        return GridDamageAnalysisConfig(
+            include_debug_payload=False,
+            debug=False,
+            min_contour_area=4.0 + 20.0 * noise,
+            min_cell_size=max(2, int(round(2.0 + 5.0 * noise))),
+            filled_ratio_delta=max(0.04, 0.35 - 0.26 * fill - 0.08 * strict_boost),
+            bad_score_threshold=max(0.30, min(0.98, threshold - 0.10 * strict_boost)),
+            merged_size_ratio=max(1.10, 1.87 - 0.58 * merge - 0.14 * strict_boost),
+            merged_area_ratio=max(1.10, 1.86 - 0.62 * merge - 0.14 * strict_boost),
+            enabled_reason_types=enabled_error_types,
+        ).normalized()
+
+    def _selected_grid_damage_config(self) -> GridDamageAnalysisConfig:
+        return self._grid_damage_config_from_payload(self._grid_inspection_config_payload())
+
+    def _selected_comparison_target(self) -> ComparisonTarget:
+        value = str(self.comparison_target_combo.currentData() or DEFAULT_COMPARISON_TARGET)
+        try:
+            return ComparisonTarget(value)
+        except Exception:
+            return ComparisonTarget.OUTPUTS
+
+    @staticmethod
+    def _is_dynamic_pair_metric_key(metric_key: str | None) -> bool:
+        text = str(metric_key or "")
+        return (
+            parse_pair_metric_key(text) is not None
+            or parse_confidence_pair_metric_key(text) is not None
+            or parse_combined_pair_metric_key(text) is not None
+        )
 
     def _required_model_count_for_active_mode(self, analysis_mode: str | None = None) -> int:
         mode = str(analysis_mode or self._selected_analysis_mode() or INTER_MODEL_ANALYSIS_MODE)
@@ -239,19 +396,47 @@ class KarakalPresenter(QObject):
             return tuple(display_metric_keys(context))
         if not available:
             return ()
-        return tuple(key for key in display_metric_keys(context) if key in available)
+        keys = [key for key in display_metric_keys(context) if key in available]
+        if context.analysis_mode == INTER_MODEL_ANALYSIS_MODE:
+            for key in getattr(build_result, "available_metric_keys", ()) or ():
+                key_text = str(key)
+                if (
+                    parse_pair_metric_key(key_text) is not None
+                    or parse_confidence_pair_metric_key(key_text) is not None
+                    or parse_combined_pair_metric_key(key_text) is not None
+                ) and key_text in available and key_text not in keys:
+                    keys.append(key_text)
+        return tuple(keys)
 
     def _percentile_basis_keys_for_state(self, state: ExtendMatrixTabState | None, build_result: BuildResult | None = None) -> tuple[str, ...]:
+        if self._current_app_mode() == "grid_inspection":
+            if state is not None and bool(getattr(state, "grid_inspection_payload_by_key", {}) or {}):
+                return (GRID_INSPECTION_DAMAGE_METRIC_KEY,)
+            return ()
         context = self._analysis_context_for_state(state, build_result)
         available = self._available_metric_keys_for_state(state, build_result)
         if build_result is None:
             return tuple(percentile_basis_keys(context))
         if not available:
             return ()
-        return tuple(key for key in percentile_basis_keys(context) if key in available)
+        keys = [key for key in percentile_basis_keys(context) if key in available]
+        if context.analysis_mode == INTER_MODEL_ANALYSIS_MODE:
+            for key in getattr(build_result, "available_metric_keys", ()) or ():
+                key_text = str(key)
+                if (
+                    parse_pair_metric_key(key_text) is not None
+                    or parse_confidence_pair_metric_key(key_text) is not None
+                    or parse_combined_pair_metric_key(key_text) is not None
+                ) and key_text in available and key_text not in keys:
+                    keys.append(key_text)
+        return tuple(keys)
 
     def _default_metric_key_for_state(self, state: ExtendMatrixTabState | None, build_result: BuildResult | None = None) -> str:
         context = self._analysis_context_for_state(state, build_result)
+        if context.analysis_mode == INTER_MODEL_ANALYSIS_MODE:
+            target_metric = self._default_metric_key_for_comparison_target(build_result)
+            if target_metric is not None:
+                return target_metric
         key = default_metric_key(context)
         available = self._available_metric_keys_for_state(state, build_result)
         if not available or key in available:
@@ -263,6 +448,35 @@ class KarakalPresenter(QObject):
             if candidate in available:
                 return candidate
         return next(iter(sorted(available)), "overall_frame_score")
+
+    def _default_metric_key_for_comparison_target(self, build_result: BuildResult | None) -> str | None:
+        pairs = self._selected_comparison_pairs()
+        pair = pairs[0] if pairs else None
+        if pair is None and build_result is not None:
+            option_pairs = tuple(getattr(build_result.options, "comparison_pairs", ()) or ())
+            pair = option_pairs[0] if option_pairs else None
+        if pair is None:
+            return None
+        available = set(getattr(build_result, "available_metric_keys", ()) or ())
+        target = self._selected_comparison_target()
+        if target == ComparisonTarget.CONFIDENCE:
+            if build_result is not None and not self._pair_has_output_confidence(pair.model_a_id, pair.model_b_id, build_result):
+                return None
+            key = confidence_pair_metric_key(pair.model_a_id, pair.model_b_id, "mae")
+        elif target == ComparisonTarget.BOTH:
+            if build_result is not None and not self._pair_has_output_confidence(pair.model_a_id, pair.model_b_id, build_result):
+                return None
+            key = combined_pair_metric_key(pair.model_a_id, pair.model_b_id)
+        else:
+            operation = next((candidate for candidate in ("dice", "iou", "xor") if candidate in pair.operations), str(pair.operations[0]))
+            key = pair_metric_key(pair.model_a_id, pair.model_b_id, operation)
+        if (
+            not available
+            or key in available
+            or bool(getattr(build_result, "scores_computed", False))
+        ):
+            return key
+        return None
 
     @staticmethod
     def _is_base_only_build_result(build_result: BuildResult | None) -> bool:
@@ -307,6 +521,24 @@ class KarakalPresenter(QObject):
             return len(model_ids) >= 2
         return sum(1 for spec in self._checked_model_specs() if spec.prob_folder is not None) >= 2
 
+    def _model_has_output_confidence(self, model_id: str, build_result: BuildResult | None = None) -> bool:
+        model_id = str(model_id)
+        if build_result is not None:
+            for spec in getattr(build_result, "model_specs", ()) or ():
+                if str(spec.model_id) == model_id and spec.prob_folder is not None:
+                    return True
+            return any(bool((record.model_prob_paths or {}).get(model_id)) for record in build_result.records)
+        for spec in self._checked_model_specs():
+            if str(spec.model_id) == model_id:
+                return spec.prob_folder is not None
+        return False
+
+    def _pair_has_output_confidence(self, model_a: str, model_b: str, build_result: BuildResult | None = None) -> bool:
+        return self._model_has_output_confidence(model_a, build_result) and self._model_has_output_confidence(model_b, build_result)
+
+    def _selected_target_requires_pair_confidence(self) -> bool:
+        return self._selected_comparison_target() in {ComparisonTarget.CONFIDENCE, ComparisonTarget.BOTH}
+
     def _set_analysis_mode_option_enabled(self, mode_key: str, enabled: bool, tooltip: str = "") -> None:
         index = self.analysis_mode_combo.findData(str(mode_key))
         if index < 0:
@@ -326,6 +558,28 @@ class KarakalPresenter(QObject):
             font.setItalic(not bool(enabled))
             item.setFont(font)
 
+    def _set_comparison_target_option_enabled(self, target: ComparisonTarget, enabled: bool, tooltip: str = "") -> None:
+        if not hasattr(self, "comparison_target_combo"):
+            return
+        index = self.comparison_target_combo.findData(target.value)
+        if index < 0:
+            return
+        item = self.comparison_target_combo.model().item(index)
+        if item is None:
+            return
+        label_key = {
+            ComparisonTarget.OUTPUTS: "comparison_target.outputs",
+            ComparisonTarget.CONFIDENCE: "comparison_target.confidence",
+            ComparisonTarget.BOTH: "comparison_target.both",
+        }[target]
+        item.setText(self._t(label_key))
+        item.setEnabled(bool(enabled))
+        item.setToolTip(str(tooltip or ""))
+        item.setForeground(QBrush(QColor("#edf3fb" if enabled else "#6f7a86")))
+        font = item.font()
+        font.setItalic(not bool(enabled))
+        item.setFont(font)
+
     def _sync_confidence_map_function_state(self, build_result: BuildResult | None = None, *, allow_fallback: bool = True) -> bool:
         available = self._has_model_output_confidence_maps(build_result)
         pair_available = self._has_model_output_confidence_pair(build_result)
@@ -333,36 +587,50 @@ class KarakalPresenter(QObject):
         self._set_analysis_mode_option_enabled(MODEL_OUTPUT_CONFIDENCE_MODE, available, tooltip)
         pair_tooltip = "" if pair_available else self._t("hint.confidence_comparison_unavailable")
         self._set_analysis_mode_option_enabled(CONFIDENCE_COMPARISON_MODE, pair_available, pair_tooltip)
+        self._set_comparison_target_option_enabled(ComparisonTarget.OUTPUTS, True, "")
+        self._set_comparison_target_option_enabled(ComparisonTarget.CONFIDENCE, pair_available, pair_tooltip)
+        self._set_comparison_target_option_enabled(ComparisonTarget.BOTH, pair_available, pair_tooltip)
         if allow_fallback and (
             (not available and self._selected_analysis_mode() == MODEL_OUTPUT_CONFIDENCE_MODE)
             or (not pair_available and self._selected_analysis_mode() == CONFIDENCE_COMPARISON_MODE)
+            or (not pair_available and self._selected_comparison_target() in {ComparisonTarget.CONFIDENCE, ComparisonTarget.BOTH})
         ):
-            blocker = QSignalBlocker(self.analysis_mode_combo)
-            fallback_index = self.analysis_mode_combo.findData(INTER_MODEL_ANALYSIS_MODE)
-            self.analysis_mode_combo.setCurrentIndex(fallback_index if fallback_index >= 0 else 0)
-            del blocker
+            if self._selected_analysis_mode() in {MODEL_OUTPUT_CONFIDENCE_MODE, CONFIDENCE_COMPARISON_MODE}:
+                blocker = QSignalBlocker(self.analysis_mode_combo)
+                fallback_index = self.analysis_mode_combo.findData(INTER_MODEL_ANALYSIS_MODE)
+                self.analysis_mode_combo.setCurrentIndex(fallback_index if fallback_index >= 0 else 0)
+                del blocker
+            if self._selected_comparison_target() in {ComparisonTarget.CONFIDENCE, ComparisonTarget.BOTH}:
+                blocker = QSignalBlocker(self.comparison_target_combo)
+                fallback_index = self.comparison_target_combo.findData(ComparisonTarget.OUTPUTS.value)
+                self.comparison_target_combo.setCurrentIndex(fallback_index if fallback_index >= 0 else 0)
+                del blocker
+                self._apply_comparison_target_to_states()
             self._apply_global_analysis_context_to_all_states()
         return available
 
     def _sync_mode_controls(self, state: ExtendMatrixTabState | None = None, build_result: BuildResult | None = None) -> None:
         self._sync_confidence_map_function_state(build_result)
         context = self._analysis_context_for_state(state, build_result)
+        is_grid_inspection_mode = self._current_app_mode() == "grid_inspection"
         is_confidence_mode = context.analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}
         is_confidence_comparison = context.analysis_mode == CONFIDENCE_COMPARISON_MODE
         has_scope_choices = bool(getattr(build_result, "model_specs", ()) if build_result is not None else ())
         is_confidence = self._confidence_context_available(context, build_result)
         is_point = context.object_type == POINT_OBJECT_TYPE
-        tile_mode_enabled = self._selected_subpixel_view_mode() == "tile"
+        if hasattr(self, "metric_settings_group"):
+            self.metric_settings_group.setVisible(not is_grid_inspection_mode)
         self._set_row_visible(getattr(self, "_matrix_pixel_size_row", None), False)
         self._set_row_visible(getattr(self, "_matrix_layout_row", None), False)
         self._set_row_visible(getattr(self, "_matrix_total_frames_row", None), False)
         self._set_row_visible(getattr(self, "_matrix_rows_row", None), False)
         self._set_row_visible(getattr(self, "_matrix_columns_row", None), False)
+        self._set_row_visible(getattr(self, "_matrix_comparison_target_row", None), context.analysis_mode == INTER_MODEL_ANALYSIS_MODE)
         self._set_row_enabled(getattr(self, "_matrix_frames_per_row_row", None), True)
         self._set_row_visible(getattr(self, "_matrix_frames_per_row_row", None), True)
-        self._set_row_visible(getattr(self, "_metric_scope_row", None), not is_confidence_comparison)
-        self._set_row_enabled(getattr(self, "_metric_scope_row", None), has_scope_choices and not is_confidence_comparison)
-        self._set_row_visible(getattr(self, "_metric_select_row", None), not is_confidence_mode)
+        self._set_row_visible(getattr(self, "_metric_scope_row", None), (not is_grid_inspection_mode) and (not is_confidence_comparison))
+        self._set_row_enabled(getattr(self, "_metric_scope_row", None), has_scope_choices and (not is_grid_inspection_mode) and (not is_confidence_comparison))
+        self._set_row_visible(getattr(self, "_metric_select_row", None), (not is_grid_inspection_mode) and (not is_confidence_mode))
         self._set_row_visible(getattr(self, "_matrix_confidence_delta_row", None), is_confidence)
         self._set_row_visible(getattr(self, "_matrix_polygon_confidence_summary_row", None), is_confidence and not is_point)
         self._set_row_visible(getattr(self, "_matrix_polygon_compare_profile_row", None), not is_confidence and not is_confidence_comparison and not is_point)
@@ -370,13 +638,12 @@ class KarakalPresenter(QObject):
         self._set_row_visible(getattr(self, "_matrix_point_confidence_radius_row", None), is_confidence and is_point)
         self._set_row_visible(getattr(self, "_matrix_point_mode_row", None), is_point)
         self._set_row_visible(getattr(self, "_matrix_frame_type_filter_row", None), False)
-        self._set_row_visible(getattr(self, "_subpixel_rows_row", None), False)
-        self._set_row_visible(getattr(self, "_subpixel_columns_row", None), False)
-        self._set_row_visible(getattr(self, "_tile_width_row", None), tile_mode_enabled)
-        self._set_row_visible(getattr(self, "_tile_height_row", None), tile_mode_enabled)
-        self._set_row_visible(getattr(self, "_tile_overlap_row", None), tile_mode_enabled)
-        self._set_row_visible(getattr(self, "_subpixel_aggregation_row", None), tile_mode_enabled)
-        self._set_row_enabled(getattr(self, "_subpixel_aggregation_row", None), tile_mode_enabled)
+        if hasattr(self, "_grid_inspection_tuning_group"):
+            self._grid_inspection_tuning_group.setVisible(self._current_app_mode() == "grid_inspection")
+        self._sync_grid_reference_controls(state if is_grid_inspection_mode else None)
+        if hasattr(self, "pair_matrix_group"):
+            self.pair_matrix_group.setVisible(context.analysis_mode == INTER_MODEL_ANALYSIS_MODE)
+            self._refresh_pair_matrix()
 
     def _checked_model_specs(self) -> tuple[ModelSpec, ...]:
         specs: list[ModelSpec] = []
@@ -398,6 +665,278 @@ class KarakalPresenter(QObject):
                 threshold=threshold,
             ))
         return tuple(specs)
+
+    def _active_pair_model_specs(self) -> tuple[ModelSpec, ...]:
+        return tuple(spec for spec in self._checked_model_specs() if str(spec.model_id))
+
+    def _ensure_default_pair_selection(self, specs: tuple[ModelSpec, ...]) -> None:
+        id_order = {str(spec.model_id): index for index, spec in enumerate(specs)}
+        normalized_operations: dict[tuple[str, str], set[str]] = {}
+        for (model_a, model_b), operations in self._comparison_pair_operations.items():
+            model_a = str(model_a)
+            model_b = str(model_b)
+            if model_a not in id_order or model_b not in id_order or model_a == model_b:
+                continue
+            if id_order[model_a] > id_order[model_b]:
+                model_a, model_b = model_b, model_a
+            valid_operations = {operation for operation in operations if operation in PAIR_OPERATION_ORDER}
+            if valid_operations:
+                normalized_operations.setdefault((model_a, model_b), set()).update(valid_operations)
+        self._comparison_pair_operations = normalized_operations
+        if self._comparison_pair_operations or len(specs) < 2 or self._pair_defaults_initialized:
+            return
+        self._comparison_pair_operations[(str(specs[0].model_id), str(specs[1].model_id))] = set(PAIR_OPERATION_ORDER)
+        self._pair_defaults_initialized = True
+
+    def _on_pair_operation_toggled(self, model_a: str, model_b: str, operation: str, checked: bool) -> None:
+        if self._pair_matrix_guard:
+            return
+        key = (str(model_a), str(model_b))
+        operations = self._comparison_pair_operations.setdefault(key, set())
+        if checked:
+            operations.add(str(operation))
+        else:
+            operations.discard(str(operation))
+            if not operations:
+                self._comparison_pair_operations.pop(key, None)
+        self._refresh_active_pair_list()
+        self._apply_pair_options_to_states()
+        self._persist_state()
+        self._sync_action_buttons()
+
+    def _refresh_pair_matrix(self) -> None:
+        if not hasattr(self, "pair_matrix_table"):
+            return
+        specs = self._active_pair_model_specs()
+        self._ensure_default_pair_selection(specs)
+        if hasattr(self, "pair_matrix_group"):
+            self.pair_matrix_group.setTitle(self._pair_matrix_title())
+        table = self.pair_matrix_table
+        self._pair_matrix_guard = True
+        try:
+            self._pair_operation_buttons.clear()
+            table.clear()
+            row_specs = specs[:-1]
+            column_specs = specs[1:]
+            table.setRowCount(len(row_specs))
+            table.setColumnCount(len(column_specs))
+            table.setHorizontalHeaderLabels([self._pair_header_label(index + 1, spec) for index, spec in enumerate(column_specs)])
+            table.setVerticalHeaderLabels([self._pair_header_label(index, spec) for index, spec in enumerate(row_specs)])
+            for index, spec in enumerate(column_specs):
+                header_tooltip = str(spec.display_name or spec.model_id)
+                horizontal = table.horizontalHeaderItem(index)
+                if horizontal is not None:
+                    horizontal.setToolTip(header_tooltip)
+            for index, spec in enumerate(row_specs):
+                header_tooltip = str(spec.display_name or spec.model_id)
+                vertical = table.verticalHeaderItem(index)
+                if vertical is not None:
+                    vertical.setToolTip(header_tooltip)
+            for row, spec_a in enumerate(row_specs):
+                for column, spec_b in enumerate(column_specs):
+                    source_index = row
+                    target_index = column + 1
+                    if target_index < source_index:
+                        item = QTableWidgetItem("")
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                        table.setItem(row, column, item)
+                        continue
+                    if target_index == source_index:
+                        item = QTableWidgetItem("-")
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                        table.setItem(row, column, item)
+                        continue
+                    model_a = str(spec_a.model_id)
+                    model_b = str(spec_b.model_id)
+                    if self._selected_target_requires_pair_confidence() and not self._pair_has_output_confidence(model_a, model_b):
+                        item = QTableWidgetItem("N/A")
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        item.setToolTip(self._t("hint.confidence_comparison_unavailable"))
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                        item.setForeground(QBrush(QColor("#6f7a86")))
+                        table.setItem(row, column, item)
+                        continue
+                    operations = self._comparison_pair_operations.get((model_a, model_b), set())
+                    cell = QWidget(table)
+                    cell_layout = QHBoxLayout(cell)
+                    cell_layout.setContentsMargins(1, 1, 1, 1)
+                    cell_layout.setSpacing(1)
+                    for operation in PAIR_OPERATION_ORDER:
+                        button = QPushButton(PAIR_OPERATION_SHORT_LABELS[operation], cell)
+                        button.setCheckable(True)
+                        button.setChecked(operation in operations)
+                        button.setFixedSize(26, 22)
+                        button.setToolTip(f"{spec_a.display_name} -> {spec_b.display_name}: {PAIR_OPERATION_LABELS[operation]}")
+                        button.toggled.connect(
+                            lambda checked, a=model_a, b=model_b, op=operation: self._on_pair_operation_toggled(a, b, op, bool(checked))
+                        )
+                        self._pair_operation_buttons[(model_a, model_b, operation)] = button
+                        cell_layout.addWidget(button)
+                    table.setCellWidget(row, column, cell)
+            table.resizeRowsToContents()
+            row_height = 28
+            header_height = max(28, table.horizontalHeader().height())
+            table.setMinimumHeight(min(520, max(100, header_height + row_height * max(1, len(row_specs)) + 34)))
+        finally:
+            self._pair_matrix_guard = False
+        self._refresh_active_pair_list()
+
+    @staticmethod
+    def _pair_header_label(index: int, spec: ModelSpec) -> str:
+        text = str(spec.display_name or spec.model_id)
+        compact = text
+        if len(compact) > 14:
+            compact = f"{compact[:6]}...{compact[-5:]}"
+        return f"{index + 1}. {compact}"
+
+    def _pair_target_metric_label(self) -> str:
+        target = self._selected_comparison_target()
+        if target == ComparisonTarget.CONFIDENCE:
+            return "MAE"
+        if target == ComparisonTarget.BOTH:
+            return "Combined Risk"
+        return "Dice"
+
+    def _pair_matrix_title(self) -> str:
+        target = self._selected_comparison_target()
+        target_label = {
+            ComparisonTarget.OUTPUTS: self._t("comparison_target.outputs"),
+            ComparisonTarget.CONFIDENCE: self._t("comparison_target.confidence"),
+            ComparisonTarget.BOTH: self._t("comparison_target.both"),
+        }.get(target, self._t("comparison_target.outputs"))
+        return f"{self._t('pairs.group')} - {target_label} / {self._pair_target_metric_label()}"
+
+    def _selected_comparison_pairs(self) -> tuple[ComparisonPairSelection, ...]:
+        specs = self._active_pair_model_specs()
+        self._ensure_default_pair_selection(specs)
+        specs_by_id = {str(spec.model_id): spec for spec in specs}
+        pairs: list[ComparisonPairSelection] = []
+        for (model_a, model_b), operations in self._comparison_pair_operations.items():
+            if model_a not in specs_by_id or model_b not in specs_by_id or model_a == model_b:
+                continue
+            ordered_operations = tuple(operation for operation in PAIR_OPERATION_ORDER if operation in operations)
+            if ordered_operations:
+                pairs.append(ComparisonPairSelection(model_a, model_b, ordered_operations))
+        return tuple(pairs)
+
+    def _pair_display_name(self, model_id: str) -> str:
+        for spec in self._active_pair_model_specs():
+            if str(spec.model_id) == str(model_id):
+                return str(spec.display_name or spec.model_id)
+        state = self._current_tab_state()
+        if state is not None:
+            for spec in state.build_result.model_specs:
+                if str(spec.model_id) == str(model_id):
+                    return str(spec.display_name or spec.model_id)
+        return str(model_id)
+
+    def _pair_default_metric_key(self, pair: ComparisonPairSelection) -> str:
+        target = self._selected_comparison_target()
+        if target == ComparisonTarget.CONFIDENCE:
+            return confidence_pair_metric_key(pair.model_a_id, pair.model_b_id, "mae")
+        if target == ComparisonTarget.BOTH:
+            return combined_pair_metric_key(pair.model_a_id, pair.model_b_id)
+        operation = next((candidate for candidate in ("dice", "iou", "xor") if candidate in pair.operations), str(pair.operations[0]))
+        return pair_metric_key(pair.model_a_id, pair.model_b_id, operation)
+
+    def _refresh_active_pair_list(self) -> None:
+        if not hasattr(self, "active_pair_list"):
+            return
+        current_key = str(self.active_pair_list.currentItem().data(Qt.ItemDataRole.UserRole)) if self.active_pair_list.currentItem() is not None else ""
+        current_pair = self.active_pair_list.currentItem().data(PAIR_ROLE_MODEL_IDS) if self.active_pair_list.currentItem() is not None else None
+        self.active_pair_list.blockSignals(True)
+        try:
+            self.active_pair_list.clear()
+            pairs = self._selected_comparison_pairs()
+            if not pairs:
+                item = QListWidgetItem(self._t("pairs.none"))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                self.active_pair_list.addItem(item)
+                return
+            for pair in pairs:
+                operation_text = ", ".join(PAIR_OPERATION_LABELS[operation] for operation in pair.operations)
+                target_metric = self._pair_target_metric_label()
+                text = f"{self._pair_display_name(pair.model_a_id)} -> {self._pair_display_name(pair.model_b_id)}    {target_metric} ({operation_text})"
+                item = QListWidgetItem(text)
+                metric_key = self._pair_default_metric_key(pair)
+                item.setData(Qt.ItemDataRole.UserRole, metric_key)
+                item.setData(PAIR_ROLE_MODEL_IDS, (pair.model_a_id, pair.model_b_id))
+                item.setToolTip(metric_key)
+                if self._selected_target_requires_pair_confidence() and not self._pair_has_output_confidence(pair.model_a_id, pair.model_b_id):
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                    item.setToolTip(self._t("hint.confidence_comparison_unavailable"))
+                    item.setForeground(QBrush(QColor("#6f7a86")))
+                self.active_pair_list.addItem(item)
+                if metric_key == current_key or current_pair == (pair.model_a_id, pair.model_b_id):
+                    self.active_pair_list.setCurrentItem(item)
+        finally:
+            self.active_pair_list.blockSignals(False)
+
+    def _apply_comparison_target_to_states(self) -> None:
+        target = self._selected_comparison_target()
+        for state in tuple(self._tab_states.values()):
+            updated_options = replace(state.build_result.options, comparison_target=target)
+            if updated_options != state.build_result.options:
+                state.build_result = replace(state.build_result, options=updated_options)
+                self._invalidate_state_runtime_caches(state, clear_metric_results=True)
+                state.last_analytics_request_signature = None
+
+    def _apply_pair_options_to_states(self) -> None:
+        comparison_pairs = self._selected_comparison_pairs()
+        target = self._selected_comparison_target()
+        for state in tuple(self._tab_states.values()):
+            updated_options = replace(state.build_result.options, comparison_pairs=comparison_pairs, comparison_target=target)
+            if updated_options != state.build_result.options:
+                state.build_result = replace(state.build_result, options=updated_options)
+                self._invalidate_state_runtime_caches(state, clear_metric_results=True)
+                state.last_analytics_request_signature = None
+
+    def _on_active_pair_item_clicked(self, item: QListWidgetItem) -> None:
+        if not bool(item.flags() & Qt.ItemFlag.ItemIsEnabled):
+            return
+        metric_key = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not metric_key:
+            return
+        state = self._current_tab_state()
+        if state is None:
+            return
+        if metric_key not in set(state.build_result.available_metric_keys or ()):
+            self._apply_pair_options_to_states()
+            state.metric_key = metric_key
+            if self._worker is None and bool(getattr(state.build_result, "scores_computed", False)):
+                self._start_compute_analytics(state=state, sync_context=False)
+            return
+        self._sync_metric_controls(state.build_result, preferred_metric_key=metric_key, context_state=state)
+        state.metric_key = metric_key
+        self._apply_metric_to_state(state, metric_key)
+        self._sync_action_buttons()
+
+    def _delete_comparison_pair(self, model_a: str, model_b: str) -> None:
+        key = (str(model_a), str(model_b))
+        if key not in self._comparison_pair_operations:
+            return
+        self._comparison_pair_operations.pop(key, None)
+        self._refresh_pair_matrix()
+        self._apply_pair_options_to_states()
+        self._persist_state()
+        self._sync_action_buttons()
+
+    def _on_active_pair_context_menu(self, pos) -> None:
+        if not hasattr(self, "active_pair_list"):
+            return
+        item = self.active_pair_list.itemAt(pos)
+        if item is None:
+            return
+        self.active_pair_list.setCurrentItem(item)
+        pair_data = item.data(PAIR_ROLE_MODEL_IDS)
+        if not isinstance(pair_data, tuple) or len(pair_data) != 2:
+            return
+        menu = QMenu(self._view)
+        delete_action = menu.addAction(self._t("pairs.delete"))
+        selected_action = menu.exec(self.active_pair_list.mapToGlobal(pos))
+        if selected_action is delete_action:
+            self._delete_comparison_pair(str(pair_data[0]), str(pair_data[1]))
 
     def _model_spec_for_folder_item(self, item: QListWidgetItem, build_result: BuildResult | None = None) -> ModelSpec | None:
         path_text = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
@@ -609,134 +1148,10 @@ class KarakalPresenter(QObject):
             return float(DEFAULT_MASK_THRESHOLD), int(DEFAULT_BOUNDARY_RADIUS)
         return values
 
-    def _selected_tile_mode(self) -> str:
-        return "tile" if self._selected_subpixel_view_mode() == "tile" else "pixel"
-
-    def _selected_subpixel_view_mode(self) -> str:
-        value = str(self.subpixel_view_mode_combo.currentData() or DEFAULT_SUBPIXEL_VIEW_MODE)
-        if value == "tile":
-            return "tile"
-        return "pixel"
-
-    def _selected_subpixel_rows(self) -> int:
-        return int(self.subpixel_rows_spin.value())
-
-    def _selected_subpixel_columns(self) -> int:
-        return int(self.subpixel_columns_spin.value())
-
-    def _selected_subpixel_aggregation(self) -> str:
-        return str(self.subpixel_aggregation_combo.currentData() or DEFAULT_SUBPIXEL_AGGREGATION)
-
-    def _selected_tile_width(self) -> int:
-        return int(self.tile_width_spin.value())
-
-    def _selected_tile_height(self) -> int:
-        return int(self.tile_height_spin.value())
-
-    def _selected_tile_overlap_mode(self) -> str:
-        return str(self.tile_overlap_mode_combo.currentData() or DEFAULT_TILE_OVERLAP_MODE)
-
-    def _selected_tile_overlap(self) -> int:
-        return int(self.tile_overlap_spin.value())
-
-    def _sync_tile_overlap_bounds(self) -> None:
-        maximum = max(0, min(self._selected_tile_width(), self._selected_tile_height()) - 1)
-        self.tile_overlap_spin.setMaximum(int(maximum))
-        if int(self.tile_overlap_spin.value()) > maximum:
-            self.tile_overlap_spin.setValue(int(maximum))
-
     @staticmethod
     def _set_row_enabled(row: object | None, enabled: bool) -> None:
         if row is not None and hasattr(row, "setEnabled"):
             row.setEnabled(bool(enabled))
-
-    @staticmethod
-    def _image_shape(path: Path) -> tuple[int, int] | None:
-        try:
-            reader = QImageReader(str(path))
-            size = reader.size()
-            if size.isValid() and size.width() > 0 and size.height() > 0:
-                return int(size.height()), int(size.width())
-        except Exception:
-            pass
-        try:
-            return tuple(int(v) for v in load_grayscale_image(path).shape)
-        except Exception:
-            return None
-
-    @staticmethod
-    def _first_image_shape(folder_path: Path) -> tuple[int, int] | None:
-        allowed = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
-        try:
-            if folder_path.is_file() and folder_path.suffix.lower() in allowed:
-                return KarakalPresenter._image_shape(folder_path)
-            for image_path in Path(folder_path).rglob("*"):
-                if not image_path.is_file() or image_path.suffix.lower() not in allowed:
-                    continue
-                shape = KarakalPresenter._image_shape(image_path)
-                if shape is not None:
-                    return shape
-        except Exception:
-            return None
-        return None
-
-    def _tile_source_shape_for_result(self, build_result: BuildResult | None) -> tuple[int, int] | None:
-        if build_result is None or not build_result.records:
-            return None
-        for record in build_result.records:
-            candidate_path = record.original_path or record.base_path
-            if not candidate_path and record.model_mask_paths:
-                candidate_path = next(iter(record.model_mask_paths.values()), None)
-            if not candidate_path:
-                continue
-            shape = self._image_shape(Path(candidate_path))
-            if shape is not None:
-                return shape
-        original_folder = getattr(build_result, "original_folder", None)
-        if original_folder is not None:
-            shape = self._first_image_shape(Path(original_folder.path))
-            if shape is not None:
-                return shape
-        return None
-
-    def _tile_grid_plan_for_result(self, build_result: BuildResult | None) -> TileGridPlan | None:
-        if self._selected_tile_mode() != "tile":
-            return None
-        source_shape = self._tile_source_shape_for_result(build_result)
-        if source_shape is None:
-            return None
-        return plan_tile_grid(
-            source_shape,
-            self._selected_tile_width(),
-            self._selected_tile_height(),
-            self._selected_tile_overlap(),
-        )
-
-    def _tile_grid_layout_config_for_result(self, build_result: BuildResult | None) -> MatrixLayoutConfig | None:
-        plan = self._tile_grid_plan_for_result(build_result)
-        if plan is None or not plan.applied_exact:
-            return None
-        return MatrixLayoutConfig(
-            mode="manual_grid",
-            total_frames=max(1, int(plan.rows * plan.columns)),
-            frames_per_row=max(1, int(plan.columns)),
-            rows=max(1, int(plan.rows)),
-            columns=max(1, int(plan.columns)),
-        )
-
-    def _subpixel_grid_spec(self, build_result: BuildResult | None = None) -> SubpixelGridSpec | None:
-        if self._selected_subpixel_view_mode() != "tile":
-            return None
-        source_shape = self._tile_source_shape_for_result(build_result)
-        options = BuildOptions(
-            subpixel_view_mode="tile",
-            subpixel_rows=max(1, self._selected_subpixel_rows()),
-            subpixel_columns=max(1, self._selected_subpixel_columns()),
-            tile_width=self._selected_tile_width(),
-            tile_height=self._selected_tile_height(),
-            tile_overlap=self._selected_tile_overlap(),
-        )
-        return subpixel_spec_from_options(options, source_shape)
 
     def _apply_polygon_compare_profile(self, profile_key: str | None) -> None:
         profile = str(profile_key or DEFAULT_POLYGON_COMPARE_PROFILE)
@@ -785,7 +1200,7 @@ class KarakalPresenter(QObject):
             return False
         allowed = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
         try:
-            for image_path in folder_path.rglob("*"):
+            for image_path in folder_path.glob("*"):
                 if image_path.is_file() and image_path.suffix.lower() in allowed:
                     return True
         except Exception:
@@ -843,12 +1258,14 @@ class KarakalPresenter(QObject):
         item.setData(FOLDER_CHECKED_ROLE, bool(checked))
         self._folder_check_guard = False
         self._refresh_folder_rows()
+        self._refresh_pair_matrix()
         self._sync_action_buttons()
 
     def _set_folder_item_label(self, item: QListWidgetItem, text: str) -> None:
         folder_path = Path(item.data(Qt.ItemDataRole.UserRole))
         item.setData(FOLDER_LABEL_ROLE, text or folder_path.name)
         self._refresh_folder_rows()
+        self._refresh_pair_matrix()
 
     def _set_folder_item_confidence_folder(self, item: QListWidgetItem) -> None:
         if self._worker_thread is not None:
@@ -883,6 +1300,7 @@ class KarakalPresenter(QObject):
             return
         self.folder_list.takeItem(row)
         self._refresh_folder_rows()
+        self._refresh_pair_matrix()
         self._sync_action_buttons()
 
     def _move_folder_item(self, item: QListWidgetItem, delta: int) -> None:
@@ -894,6 +1312,7 @@ class KarakalPresenter(QObject):
         self.folder_list.insertItem(target_row, moved_item)
         self.folder_list.setCurrentRow(target_row)
         self._refresh_folder_rows()
+        self._refresh_pair_matrix()
 
     def _build_layout_config(self) -> MatrixLayoutConfig:
         return MatrixLayoutConfig(
@@ -913,6 +1332,8 @@ class KarakalPresenter(QObject):
         low_bound, high_bound = self._percentile_bin_bounds(bin_index)
         selected: list[FrameRecord] = []
         for record in records:
+            if record.key not in percentile_map:
+                continue
             percentile = float(percentile_map.get(record.key, 0.0))
             if bin_index >= len(PERCENTILE_BAND_BOUNDS) - 1:
                 matches = low_bound <= percentile <= high_bound
@@ -921,6 +1342,102 @@ class KarakalPresenter(QObject):
             if matches:
                 selected.append(record)
         return tuple(selected)
+
+    def _records_for_percentile_bin(self, state: ExtendMatrixTabState, metric_key: str, bin_index: int) -> tuple[FrameRecord, ...]:
+        available_keys = set(self._percentile_basis_keys_for_state(state, state.build_result))
+        if str(metric_key) not in available_keys:
+            return tuple()
+        percentile_map = self._percentile_map_for_metric(state, str(metric_key))
+        return self._records_in_percentile_bin(self._base_records_for_state(state), percentile_map, int(bin_index))
+
+    @staticmethod
+    def _selected_percentile_bin_for_metric(state: ExtendMatrixTabState, metric_key: str) -> int | None:
+        if state.selected_percentile_metric_key == metric_key and state.selected_percentile_bin_index is not None:
+            return int(state.selected_percentile_bin_index)
+        if state.percentile_filter_metric_key == metric_key and state.percentile_filter_bin_index is not None:
+            return int(state.percentile_filter_bin_index)
+        return None
+
+    @staticmethod
+    def _safe_export_fragment(value: object, *, fallback: str) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"[^\w.\-]+", "_", text, flags=re.UNICODE).strip("._-")
+        return text[:80] or str(fallback)
+
+    @staticmethod
+    def _percentile_filter_active(state: ExtendMatrixTabState) -> bool:
+        return bool(state.percentile_filter_metric_key is not None and state.percentile_filter_bin_index is not None)
+
+    def _percentile_filter_uses_full_matrix(self, state: ExtendMatrixTabState) -> bool:
+        return bool(getattr(state, "percentile_filter_full_matrix", True))
+
+    @staticmethod
+    def _correlation_filter_active(state: ExtendMatrixTabState) -> bool:
+        return str(getattr(state, "correlation_filter_band", "") or "") in {"bad", "good"}
+
+    @staticmethod
+    def _selected_correlation_band_for_state(state: ExtendMatrixTabState) -> str | None:
+        selected = str(getattr(state, "selected_correlation_band", "") or "")
+        if selected in {"bad", "good"}:
+            return selected
+        active = str(getattr(state, "correlation_filter_band", "") or "")
+        return active if active in {"bad", "good"} else None
+
+    def _max_correlation_limit_for_state(self, state: ExtendMatrixTabState) -> int:
+        try:
+            frame_count = int(self._percentile_base_record_count(state))
+        except Exception:
+            frame_count = int(len(getattr(state.build_result, "records", ()) or ()))
+        return max(1, frame_count // 2)
+
+    def _correlation_limit_for_state(self, state: ExtendMatrixTabState) -> int:
+        max_limit = self._max_correlation_limit_for_state(state)
+        spinbox = getattr(state, "correlation_limit_spin", None)
+        if spinbox is not None:
+            try:
+                return max(1, min(max_limit, int(spinbox.value())))
+            except Exception:
+                pass
+        try:
+            return max(1, min(max_limit, int(getattr(state, "correlation_limit", 25))))
+        except Exception:
+            return min(max_limit, 25)
+
+    def _sync_correlation_limit_bounds(self, state: ExtendMatrixTabState) -> int:
+        max_limit = self._max_correlation_limit_for_state(state)
+        value = self._correlation_limit_for_state(state)
+        spinbox = getattr(state, "correlation_limit_spin", None)
+        if spinbox is not None:
+            blocker = QSignalBlocker(spinbox)
+            spinbox.setRange(1, max_limit)
+            spinbox.setValue(value)
+            spinbox.setToolTip(self._t("hist.correlation_limit_hint", count=max_limit))
+            del blocker
+        state.correlation_limit = value
+        return value
+
+    def _percentile_highlight_keys_for_state(self, state: ExtendMatrixTabState) -> set[str]:
+        if not self._percentile_filter_active(state) or not self._percentile_filter_uses_full_matrix(state):
+            return set()
+        percentile_map = self._percentile_map_for_metric(state, str(state.percentile_filter_metric_key))
+        records = self._records_in_percentile_bin(
+            self._base_records_for_state(state),
+            percentile_map,
+            int(state.percentile_filter_bin_index),
+        )
+        return {str(record.key) for record in records if str(record.key)}
+
+    def _correlation_records_for_state(self, state: ExtendMatrixTabState, band: str) -> tuple[FrameRecord, ...]:
+        if str(band) not in {"bad", "good"}:
+            return tuple()
+        limit = self._correlation_limit_for_state(state)
+        return tuple(record for record, _count, _avg, _labels in self._repeated_percentile_entries(state, band=str(band))[:limit])
+
+    def _matrix_highlight_keys_for_state(self, state: ExtendMatrixTabState) -> set[str]:
+        percentile_keys = self._percentile_highlight_keys_for_state(state)
+        if self._correlation_filter_active(state) and self._percentile_filter_uses_full_matrix(state):
+            return {str(record.key) for record in self._correlation_records_for_state(state, str(state.correlation_filter_band)) if str(record.key)}
+        return percentile_keys
 
     def _base_records_for_state(self, state: ExtendMatrixTabState) -> tuple[FrameRecord, ...]:
         cache_key = (str(getattr(state, 'object_type', POLYGON_OBJECT_TYPE) or POLYGON_OBJECT_TYPE), id(state.build_result.records))
@@ -944,11 +1461,14 @@ class KarakalPresenter(QObject):
         if state.percentile_filter_metric_key not in available_keys:
             state.percentile_filter_metric_key = None
             state.percentile_filter_bin_index = None
-        if state.percentile_filter_metric_key is not None and state.percentile_filter_bin_index is not None:
+        if state.selected_percentile_metric_key not in available_keys:
+            state.selected_percentile_metric_key = None
+            state.selected_percentile_bin_index = None
+        if self._percentile_filter_active(state) and not self._percentile_filter_uses_full_matrix(state):
             percentile_map = self._percentile_map_for_metric(state, state.percentile_filter_metric_key)
             records = self._records_in_percentile_bin(records, percentile_map, state.percentile_filter_bin_index)
-        if state.correlation_filter_band in {'bad', 'good'}:
-            allowed_keys = {record.key for record, _count, _avg, _labels in self._repeated_percentile_entries(state, band=str(state.correlation_filter_band))[:25]}
+        if self._correlation_filter_active(state) and not self._percentile_filter_uses_full_matrix(state):
+            allowed_keys = {record.key for record in self._correlation_records_for_state(state, str(state.correlation_filter_band))}
             records = tuple(record for record in records if record.key in allowed_keys)
         return tuple(records)
 
@@ -961,6 +1481,7 @@ class KarakalPresenter(QObject):
             "layout_config": self._build_layout_config(),
             "matrix_score_view_mode": str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE),
             "analysis_mode": self._selected_analysis_mode(),
+            "comparison_target": self._selected_comparison_target().value,
             "object_type": self._selected_object_type(),
             "geometry_mode": str(self.geometry_mode_combo.currentData() or DEFAULT_GEOMETRY_MODE),
             "polygon_compare_profile": self._selected_polygon_compare_profile(),
@@ -972,15 +1493,6 @@ class KarakalPresenter(QObject):
             "point_confidence_radius": int(self.point_confidence_radius_spin.value()),
             "point_extraction_mode": str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
             "polygon_confidence_summary": str(self.polygon_confidence_summary_combo.currentData() or DEFAULT_POLYGON_CONFIDENCE_SUMMARY),
-            "tile_mode": self._selected_tile_mode(),
-            "tile_width": int(self.tile_width_spin.value()),
-            "tile_height": int(self.tile_height_spin.value()),
-            "tile_overlap_mode": self._selected_tile_overlap_mode(),
-            "tile_overlap": int(self.tile_overlap_spin.value()),
-            "subpixel_view_mode": self._selected_subpixel_view_mode(),
-            "subpixel_rows": self._selected_subpixel_rows(),
-            "subpixel_columns": self._selected_subpixel_columns(),
-            "subpixel_aggregation": self._selected_subpixel_aggregation(),
             "metric_key": str(self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY),
             "metric_scope": str(confidence_model_id or ""),
             "confidence_model_id": confidence_model_id,
@@ -1019,6 +1531,8 @@ class KarakalPresenter(QObject):
         frame_type_filter_index = self.frame_type_filter_combo.findData(str(state.frame_type_filter or 'all'))
         self.frame_type_filter_combo.setCurrentIndex(frame_type_filter_index if frame_type_filter_index >= 0 else 0)
         del frame_type_filter_blocker
+
+        self._set_grid_inspection_config_controls(getattr(state, "grid_inspection_config_payload", {}) or self._grid_inspection_config_payload())
 
     def _apply_global_analysis_context_to_state(self, state: ExtendMatrixTabState, *, update_frame_filter: bool = False) -> bool:
         selected_analysis_mode = self._selected_analysis_mode()
@@ -1060,15 +1574,6 @@ class KarakalPresenter(QObject):
         return replace(
             state.build_result.options,
             geometry_mode=geometry_mode_for_object_type(object_type),
-            tile_mode=self._selected_tile_mode(),
-            tile_width=int(self.tile_width_spin.value()),
-            tile_height=int(self.tile_height_spin.value()),
-            tile_overlap_mode=self._selected_tile_overlap_mode(),
-            tile_overlap=int(self.tile_overlap_spin.value()),
-            subpixel_view_mode=self._selected_subpixel_view_mode(),
-            subpixel_rows=self._selected_subpixel_rows(),
-            subpixel_columns=self._selected_subpixel_columns(),
-            subpixel_aggregation=self._selected_subpixel_aggregation(),
             mask_threshold=float(self.mask_threshold_spin.value()),
             boundary_radius=int(self.boundary_radius_spin.value()),
             confidence_uncertainty_delta=self._selected_confidence_uncertainty_delta(),
@@ -1076,6 +1581,8 @@ class KarakalPresenter(QObject):
             point_confidence_radius=int(self.point_confidence_radius_spin.value()),
             point_extraction_mode=str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
             polygon_confidence_summary=str(self.polygon_confidence_summary_combo.currentData() or DEFAULT_POLYGON_CONFIDENCE_SUMMARY),
+            comparison_pairs=self._selected_comparison_pairs(),
+            comparison_target=self._selected_comparison_target(),
         )
 
     def _invalidate_state_runtime_caches(self, state: ExtendMatrixTabState, *, clear_metric_results: bool = False) -> None:
@@ -1116,6 +1623,8 @@ class KarakalPresenter(QObject):
         if state is None:
             return
         state.matrix_view.set_processing_keys(set(self._active_processing_keys))
+        if self._worker_kind == "grid_inspection" and hasattr(self, "grid_inspection_matrix_view"):
+            self.grid_inspection_matrix_view.set_processing_keys(set(self._active_processing_keys))
 
     def _progress_format_text(self, current: int, total: int, key: str) -> str:
         frame_label = Path(key).name if key else ""
@@ -1147,6 +1656,24 @@ class KarakalPresenter(QObject):
         self._update_processing_visuals(state)
         if self.build_progress.isVisible():
             self.build_progress.setFormat(self._progress_format_text(self._active_progress_current, self._active_progress_total, self._active_progress_key))
+
+    def _on_frame_states_changed(self, keys: object, status: str, *, generation: int | None = None) -> None:
+        if not self._is_active_request_generation(generation):
+            return
+        state = self._active_compute_state
+        if state is None:
+            return
+        normalized_status = str(status or "running").lower()
+        normalized_keys = {str(key) for key in (keys or ()) if str(key)} if isinstance(keys, (list, tuple, set)) else set()
+        if not normalized_keys:
+            return
+        for key in normalized_keys:
+            state.processing_state_by_key[key] = normalized_status
+        if normalized_status == "running":
+            self._active_processing_keys.update(normalized_keys)
+        else:
+            self._active_processing_keys.difference_update(normalized_keys)
+        self._update_processing_visuals(state)
 
     def _sync_current_analysis_context(self, state: ExtendMatrixTabState, *, auto_recompute: bool) -> None:
         options_changed = self._apply_global_analysis_context_to_state(state, update_frame_filter=True)
@@ -1206,7 +1733,10 @@ class KarakalPresenter(QObject):
                 context.object_type,
                 confidence_model_id=selected_confidence_model_id,
             )
-        basis_keys = [str(key) for key in percentile_basis_keys(context) if build_result is None or key in set(build_result.available_metric_keys)]
+        available = set(getattr(build_result, "available_metric_keys", ()) or ())
+        basis_keys = [str(key) for key in percentile_basis_keys(context) if build_result is None or key in available]
+        if build_result is not None and self._is_dynamic_pair_metric_key(metric_key) and metric_key not in basis_keys:
+            basis_keys.append(metric_key)
         if build_result is not None and not basis_keys:
             basis_keys = self._fallback_metric_keys_for_build_result(build_result)
         if metric_key not in basis_keys:
@@ -1264,16 +1794,6 @@ class KarakalPresenter(QObject):
             state.matrix_view.set_gradient_preset(DEFAULT_GRADIENT_NAME)
             state.matrix_view.set_cell_size(int(state.cell_size))
             state.matrix_view.set_layout_config(state.layout_config)
-            state.matrix_view.set_subpixel_comparison_mode(getattr(state.build_result.options, "comparison_mode", None))
-            options = state.build_result.options
-            if str(getattr(options, "subpixel_view_mode", "pixel") or "pixel") == "tile":
-                subpixel_spec = subpixel_spec_from_options(options, self._tile_source_shape_for_result(state.build_result))
-            else:
-                subpixel_spec = None
-            state.matrix_view.set_subpixel_grid_spec(
-                subpixel_spec,
-                aggregation=str(getattr(options, "subpixel_aggregation", DEFAULT_SUBPIXEL_AGGREGATION) or DEFAULT_SUBPIXEL_AGGREGATION),
-            )
             state.matrix_view.set_score_view_mode(str(state.matrix_score_view_mode or DEFAULT_MATRIX_SCORE_VIEW_MODE))
             state.matrix_view.set_metric_context(
                 state.metric_key,
@@ -1282,10 +1802,13 @@ class KarakalPresenter(QObject):
             )
             state.matrix_view.set_reference_key(state.build_result.best_match_key)
             sort_mode = "input_order" if str(state.layout_config.mode or "indexed_grid") == "manual_grid" else "name"
+            percentile_filters_records = self._percentile_filter_active(state) and not self._percentile_filter_uses_full_matrix(state)
+            correlation_filters_records = self._correlation_filter_active(state) and not self._percentile_filter_uses_full_matrix(state)
             filtered_view = (
-                state.percentile_filter_metric_key is not None
-                and state.percentile_filter_bin_index is not None
-            ) or state.correlation_filter_band in {"bad", "good"}
+                percentile_filters_records
+                or correlation_filters_records
+            )
+            state.matrix_view.set_highlighted_record_keys(self._matrix_highlight_keys_for_state(state))
             state.matrix_view.set_records(
                 list(display_records),
                 sort_mode=sort_mode,
@@ -1523,6 +2046,22 @@ class KarakalPresenter(QObject):
                 if metric_key in getattr(summary, 'metric_values', {}):
                     return False
             return True
+        if parse_pair_metric_key(metric_key) is not None:
+            for record in build_result.records:
+                summary = record.summary
+                if summary is None:
+                    continue
+                if metric_key in getattr(summary, 'metric_values', {}):
+                    return False
+            return True
+        if parse_confidence_pair_metric_key(metric_key) is not None or parse_combined_pair_metric_key(metric_key) is not None:
+            for record in build_result.records:
+                summary = record.summary
+                if summary is None:
+                    continue
+                if metric_key in getattr(summary, 'metric_values', {}):
+                    return False
+            return True
         parsed = _parse_model_metric_key(metric_key)
         if parsed is None:
             return False
@@ -1547,6 +2086,8 @@ class KarakalPresenter(QObject):
 
 
     def _metric_higher_is_better(self, metric_key: str) -> bool:
+        if str(metric_key) == GRID_INSPECTION_DAMAGE_METRIC_KEY:
+            return False
         return metric_higher_is_better(metric_key)
 
     def _metric_score_style(self, value: float | None, metric_key: str) -> str:
@@ -1636,9 +2177,49 @@ class KarakalPresenter(QObject):
 
     def _metric_label(self, metric_key: str, build_result: BuildResult | None = None) -> str:
         metric_key_text = str(metric_key)
+        if metric_key_text == GRID_INSPECTION_DAMAGE_METRIC_KEY:
+            return self._t("metric.grid_inspection_damage_score")
         for label_key, key, _group in MATRIX_METRIC_OPTIONS:
             if str(key) == metric_key_text:
                 return self._t(str(label_key))
+        parsed_pair = parse_pair_metric_key(metric_key_text)
+        if parsed_pair is not None:
+            model_a, model_b, operation = parsed_pair
+            display_names = {
+                str(spec.model_id): str(spec.display_name or spec.model_id)
+                for spec in tuple(getattr(build_result, "model_specs", ()) or ())
+            }
+            left = display_names.get(model_a, self._pair_display_name(model_a))
+            right = display_names.get(model_b, self._pair_display_name(model_b))
+            return f"{left} -> {right} [{PAIR_OPERATION_LABELS.get(operation, operation)}]"
+        parsed_confidence_pair = parse_confidence_pair_metric_key(metric_key_text)
+        if parsed_confidence_pair is not None:
+            model_a, model_b, operation = parsed_confidence_pair
+            display_names = {
+                str(spec.model_id): str(spec.display_name or spec.model_id)
+                for spec in tuple(getattr(build_result, "model_specs", ()) or ())
+            }
+            left = display_names.get(model_a, self._pair_display_name(model_a))
+            right = display_names.get(model_b, self._pair_display_name(model_b))
+            operation_label = {
+                "mae": "MAE",
+                "rmse": "RMSE",
+                "mean_delta": "mean delta",
+                "correlation": "correlation",
+                "low_iou": "low-confidence IoU",
+                "disagreement": "confidence disagreement",
+            }.get(operation, operation)
+            return f"{left} -> {right} [{operation_label}]"
+        parsed_combined_pair = parse_combined_pair_metric_key(metric_key_text)
+        if parsed_combined_pair is not None:
+            model_a, model_b, _operation = parsed_combined_pair
+            display_names = {
+                str(spec.model_id): str(spec.display_name or spec.model_id)
+                for spec in tuple(getattr(build_result, "model_specs", ()) or ())
+            }
+            left = display_names.get(model_a, self._pair_display_name(model_a))
+            right = display_names.get(model_b, self._pair_display_name(model_b))
+            return f"{left} -> {right} [combined risk]"
         translated = self._t(f"metric.{metric_key_text}")
         if translated != f"metric.{metric_key_text}":
             return translated
@@ -1662,6 +2243,14 @@ class KarakalPresenter(QObject):
 
     def _metric_hint(self, metric_key: str, summary) -> str | None:
         metric_key_text = str(metric_key)
+        if metric_key_text == GRID_INSPECTION_DAMAGE_METRIC_KEY:
+            return self._t("hint.grid_inspection_percentiles")
+        if (
+            parse_pair_metric_key(metric_key_text) is not None
+            or parse_confidence_pair_metric_key(metric_key_text) is not None
+            or parse_combined_pair_metric_key(metric_key_text) is not None
+        ):
+            return self._t('hint.inter_model_polygon') if summary.frame_type != 'point' else self._t('hint.inter_model_point')
         if '::' in metric_key_text:
             family, _model_id = metric_key_text.split('::', 1)
             if family == 'model_output_confidence':
@@ -1697,7 +2286,10 @@ class KarakalPresenter(QObject):
             if hint:
                 return hint
         family = metric_key_text.split('::', 1)[0]
+        if self._is_dynamic_pair_metric_key(metric_key_text):
+            return self._metric_label(metric_key_text, build_result)
         defaults = {
+            GRID_INSPECTION_DAMAGE_METRIC_KEY: self._t("hint.grid_inspection_percentiles"),
             'overall_frame_score': self._t('hint.overall_unlabeled'),
             'model_model_score': self._t('hint.model_model_polygon'),
             'model_labeled_score': self._t('hint.model_labeled_polygon'),
@@ -1738,6 +2330,12 @@ class KarakalPresenter(QObject):
             return self._t('metric.model_labeled_score') if summary.is_labeled else self._t('metric.disagreement_score')
         if family in {'overall_polygon_score', 'iou_score', 'dice_score', 'polygon_bce_score', 'iou', 'dice', 'bce'}:
             return 'iou + dice + bce score'
+        if parse_pair_metric_key(metric_key_text) is not None:
+            return 'pair XOR + IoU + Dice'
+        if parse_confidence_pair_metric_key(metric_key_text) is not None:
+            return 'confidence MAE + RMSE + correlation + low-confidence overlap'
+        if parse_combined_pair_metric_key(metric_key_text) is not None:
+            return 'output disagreement + confidence disagreement'
         if family in {'confidence_model_score', 'confidence_difference_score', 'confidence_bce_score', 'confidence_threshold_crossing_score'}:
             return 'confidence difference + confidence BCE + threshold crossing'
         if family in {'overall_point_score', 'precision_score', 'recall_score', 'f1_score', 'localization_score', 'precision', 'recall', 'f1', 'mean_localization_distance'}:
@@ -1944,7 +2542,49 @@ class KarakalPresenter(QObject):
             return "-"
         return f"P{float(percentile):.1f}"
 
+    def _grid_inspection_percentile_map_for_state(self, state: ExtendMatrixTabState) -> dict[str, float]:
+        excluded_keys = self._excluded_record_keys_for_state(state)
+        payloads = dict(getattr(state, "grid_inspection_payload_by_key", {}) or {})
+        cache_key = (
+            GRID_INSPECTION_DAMAGE_METRIC_KEY,
+            id(getattr(state, "grid_inspection_payload_by_key", None)),
+            tuple(sorted(excluded_keys)),
+        )
+        cached = state.percentile_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        scored: list[tuple[float, str]] = []
+        for record in getattr(state.build_result, "records", ()) or ():
+            key = str(record.key)
+            if key in excluded_keys:
+                continue
+            result = payloads.get(key)
+            if result is None:
+                continue
+            try:
+                score = float(getattr(result, "damage_score", getattr(result, "score", 0.0)) or 0.0)
+            except Exception:
+                continue
+            if not isfinite(score):
+                continue
+            scored.append((max(0.0, min(1.0, score)), key))
+        ranked_keys = [key for _score, key in sorted(scored, key=lambda item: (item[0], item[1]))]
+        if not ranked_keys:
+            percentile_map: dict[str, float] = {}
+        elif len(ranked_keys) == 1:
+            percentile_map = {ranked_keys[0]: 100.0}
+        else:
+            denominator = max(1, len(ranked_keys) - 1)
+            percentile_map = {
+                key: float(100.0 * (denominator - index) / denominator)
+                for index, key in enumerate(ranked_keys)
+            }
+        state.percentile_cache[cache_key] = percentile_map
+        return percentile_map
+
     def _percentile_map_for_metric(self, state: ExtendMatrixTabState, metric_key: str) -> dict[str, float]:
+        if str(metric_key) == GRID_INSPECTION_DAMAGE_METRIC_KEY:
+            return self._grid_inspection_percentile_map_for_state(state)
         base_records = self._base_records_for_state(state)
         cache_key = (str(metric_key), id(base_records))
         cached = state.percentile_cache.get(cache_key)
@@ -1966,7 +2606,8 @@ class KarakalPresenter(QObject):
 
     def _repeated_percentile_entries(self, state: ExtendMatrixTabState, *, band: str) -> list[tuple[FrameRecord, int, float, list[str]]]:
         available_keys = list(self._percentile_basis_keys_for_state(state, state.build_result))
-        cache_key = (str(band), tuple(str(key) for key in available_keys), id(state.build_result.records))
+        source_identity = id(getattr(state, "grid_inspection_payload_by_key", None)) if self._current_app_mode() == "grid_inspection" else id(state.build_result.records)
+        cache_key = (str(band), tuple(str(key) for key in available_keys), source_identity)
         cached = state.repeated_percentile_cache.get(cache_key)
         if cached is not None:
             return list(cached)
@@ -1997,9 +2638,28 @@ class KarakalPresenter(QObject):
         state.repeated_percentile_cache[cache_key] = tuple(entries)
         return entries
 
+    def _percentile_widgets_for_state(self, state: ExtendMatrixTabState) -> tuple[dict[str, object], object | None, object | None]:
+        if self._current_app_mode() == "grid_inspection":
+            return (
+                dict(getattr(self, "grid_inspection_histogram_cards", {}) or {}),
+                getattr(self, "grid_inspection_repeated_bad_column", None),
+                getattr(self, "grid_inspection_repeated_good_column", None),
+            )
+        preview = state.preview
+        if preview is None:
+            return {}, None, None
+        return dict(preview.histogram_cards), state.repeated_bad_column, state.repeated_good_column
+
+    def _percentile_base_record_count(self, state: ExtendMatrixTabState) -> int:
+        if self._current_app_mode() == "grid_inspection":
+            return len(self._grid_inspection_percentile_map_for_state(state))
+        return len(self._base_records_for_state(state))
+
     def _update_repeated_percentile_lists(self, state: ExtendMatrixTabState) -> None:
+        self._sync_correlation_limit_bounds(state)
+
         def summary(entries: list[tuple[FrameRecord, int, float, list[str]]]) -> tuple[int, float, int]:
-            visible_entries = entries[:25]
+            visible_entries = entries[: self._correlation_limit_for_state(state)]
             if not visible_entries:
                 return 0, 0.0, 0
             frame_count = len(visible_entries)
@@ -2009,29 +2669,33 @@ class KarakalPresenter(QObject):
 
         bad_entries = self._repeated_percentile_entries(state, band='bad')
         good_entries = self._repeated_percentile_entries(state, band='good')
-        if state.repeated_bad_column is not None and hasattr(state.repeated_bad_column, 'set_payload'):
+        _cards, repeated_bad_column, repeated_good_column = self._percentile_widgets_for_state(state)
+        if repeated_bad_column is not None and hasattr(repeated_bad_column, 'set_payload'):
             frame_count, mean_hits, max_hits = summary(bad_entries)
-            state.repeated_bad_column.set_payload(frame_count, mean_hits, max_hits, active=state.correlation_filter_band == 'bad')
-        if state.repeated_good_column is not None and hasattr(state.repeated_good_column, 'set_payload'):
+            repeated_bad_column.set_payload(frame_count, mean_hits, max_hits, active=self._selected_correlation_band_for_state(state) == 'bad')
+        if repeated_good_column is not None and hasattr(repeated_good_column, 'set_payload'):
             frame_count, mean_hits, max_hits = summary(good_entries)
-            state.repeated_good_column.set_payload(frame_count, mean_hits, max_hits, active=state.correlation_filter_band == 'good')
+            repeated_good_column.set_payload(frame_count, mean_hits, max_hits, active=self._selected_correlation_band_for_state(state) == 'good')
 
     def _update_metric_histograms(self, state: ExtendMatrixTabState) -> None:
-        preview = state.preview
-        if preview is None:
+        histogram_cards, _bad_column, _good_column = self._percentile_widgets_for_state(state)
+        if not histogram_cards:
             return
-        base_record_count = len(self._base_records_for_state(state))
+        base_record_count = self._percentile_base_record_count(state)
         available_keys = set(self._percentile_basis_keys_for_state(state, state.build_result))
         if state.percentile_filter_metric_key not in available_keys:
             state.percentile_filter_metric_key = None
             state.percentile_filter_bin_index = None
-        for metric_key, card in preview.histogram_cards.items():
+        if state.selected_percentile_metric_key not in available_keys:
+            state.selected_percentile_metric_key = None
+            state.selected_percentile_bin_index = None
+        for metric_key, card in histogram_cards.items():
             visible = metric_key in available_keys
             if not visible:
                 card.setVisible(False)
                 continue
             counts = self._percentile_histogram_counts(state, metric_key)
-            active_bin = state.percentile_filter_bin_index if state.percentile_filter_metric_key == metric_key else None
+            active_bin = self._selected_percentile_bin_for_metric(state, metric_key)
             tooltip = self._metric_hint_fallback(metric_key, state.build_result)
             card.set_payload(self._metric_label(metric_key, state.build_result), counts, base_record_count, visible=True, active_bin=active_bin, tooltip=tooltip)
         self._update_repeated_percentile_lists(state)
@@ -2044,15 +2708,18 @@ class KarakalPresenter(QObject):
     def _update_metric_histograms_chunked(self, state: ExtendMatrixTabState, generation: int, index: int) -> None:
         if generation != self._histogram_update_generation or state.widget not in self._tab_states:
             return
-        preview = state.preview
-        if preview is None:
+        histogram_cards, _bad_column, _good_column = self._percentile_widgets_for_state(state)
+        if not histogram_cards:
             return
-        base_record_count = len(self._base_records_for_state(state))
+        base_record_count = self._percentile_base_record_count(state)
         available_keys = set(self._percentile_basis_keys_for_state(state, state.build_result))
         if state.percentile_filter_metric_key not in available_keys:
             state.percentile_filter_metric_key = None
             state.percentile_filter_bin_index = None
-        histogram_items = list(preview.histogram_cards.items())
+        if state.selected_percentile_metric_key not in available_keys:
+            state.selected_percentile_metric_key = None
+            state.selected_percentile_bin_index = None
+        histogram_items = list(histogram_cards.items())
         if index >= len(histogram_items):
             QTimer.singleShot(0, lambda s=state, g=generation: self._update_repeated_percentile_lists(s) if g == self._histogram_update_generation and s.widget in self._tab_states else None)
             return
@@ -2061,7 +2728,7 @@ class KarakalPresenter(QObject):
             card.setVisible(False)
         else:
             counts = self._percentile_histogram_counts(state, metric_key)
-            active_bin = state.percentile_filter_bin_index if state.percentile_filter_metric_key == metric_key else None
+            active_bin = self._selected_percentile_bin_for_metric(state, metric_key)
             tooltip = self._metric_hint_fallback(metric_key, state.build_result)
             card.set_payload(self._metric_label(metric_key, state.build_result), counts, base_record_count, visible=True, active_bin=active_bin, tooltip=tooltip)
         QTimer.singleShot(0, lambda s=state, g=generation, i=index + 1: self._update_metric_histograms_chunked(s, g, i))
@@ -2072,13 +2739,49 @@ class KarakalPresenter(QObject):
             return
         for metric_key, card in preview.histogram_cards.items():
             if hasattr(card, 'binClicked'):
-                card.binClicked.connect(lambda clicked_metric_key, bin_index, s=state: self._on_histogram_bin_clicked(s, str(clicked_metric_key), int(bin_index)))
+                card.binClicked.connect(lambda clicked_metric_key, bin_index, s=state: self._on_histogram_bin_selected(s, str(clicked_metric_key), int(bin_index)))
+            if hasattr(card, "binDoubleClicked"):
+                card.binDoubleClicked.connect(lambda clicked_metric_key, bin_index, s=state: self._on_histogram_bin_clicked(s, str(clicked_metric_key), int(bin_index)))
+            if hasattr(card, "binContextMenuRequested"):
+                card.binContextMenuRequested.connect(
+                    lambda clicked_metric_key, bin_index, global_pos, s=state: self._on_histogram_bin_context_menu(
+                        s,
+                        str(clicked_metric_key),
+                        int(bin_index),
+                        global_pos,
+                    )
+                )
+        if state.percentile_full_matrix_check is not None:
+            state.percentile_full_matrix_check.toggled.connect(
+                lambda checked, s=state: self._on_percentile_display_mode_changed(s, bool(checked))
+            )
+        if state.correlation_limit_spin is not None:
+            state.correlation_limit_spin.valueChanged.connect(
+                lambda value, s=state: self._on_correlation_limit_changed(s, int(value))
+            )
         if state.repeated_bad_column is not None:
-            state.repeated_bad_column.columnClicked.connect(lambda band, s=state: self._on_correlation_column_clicked(s, str(band)))
+            state.repeated_bad_column.columnClicked.connect(lambda band, s=state: self._on_correlation_column_selected(s, str(band)))
+            if hasattr(state.repeated_bad_column, "columnDoubleClicked"):
+                state.repeated_bad_column.columnDoubleClicked.connect(lambda band, s=state: self._on_correlation_column_clicked(s, str(band)))
         if state.repeated_good_column is not None:
-            state.repeated_good_column.columnClicked.connect(lambda band, s=state: self._on_correlation_column_clicked(s, str(band)))
+            state.repeated_good_column.columnClicked.connect(lambda band, s=state: self._on_correlation_column_selected(s, str(band)))
+            if hasattr(state.repeated_good_column, "columnDoubleClicked"):
+                state.repeated_good_column.columnDoubleClicked.connect(lambda band, s=state: self._on_correlation_column_clicked(s, str(band)))
+
+    def _on_correlation_column_selected(self, state: ExtendMatrixTabState, band: str) -> None:
+        if str(band) not in {"bad", "good"}:
+            return
+        state.selected_percentile_metric_key = None
+        state.selected_percentile_bin_index = None
+        state.selected_correlation_band = str(band)
+        self._update_repeated_percentile_lists(state)
 
     def _on_correlation_column_clicked(self, state: ExtendMatrixTabState, band: str) -> None:
+        if str(band) not in {"bad", "good"}:
+            return
+        state.selected_percentile_metric_key = None
+        state.selected_percentile_bin_index = None
+        state.selected_correlation_band = str(band)
         state.percentile_filter_metric_key = None
         state.percentile_filter_bin_index = None
         state.correlation_filter_band = None if state.correlation_filter_band == band else str(band)
@@ -2086,7 +2789,44 @@ class KarakalPresenter(QObject):
         if state.content_tabs is not None:
             state.content_tabs.setCurrentIndex(0)
 
+    def _on_correlation_limit_changed(self, state: ExtendMatrixTabState, value: int) -> None:
+        state.correlation_limit = max(1, int(value))
+        if self._correlation_filter_active(state):
+            if self._current_app_mode() == "grid_inspection":
+                self._refresh_grid_inspection_mode_view()
+            else:
+                self._apply_tab_visual_settings(state, reset_view=True)
+        else:
+            self._update_repeated_percentile_lists(state)
+
+    def _on_histogram_bin_selected(self, state: ExtendMatrixTabState, metric_key: str, bin_index: int) -> None:
+        state.selected_percentile_metric_key = str(metric_key)
+        state.selected_percentile_bin_index = int(bin_index)
+        state.selected_correlation_band = None
+        histogram_cards, _bad_column, _good_column = self._percentile_widgets_for_state(state)
+        base_record_count = self._percentile_base_record_count(state)
+        available_keys = set(self._percentile_basis_keys_for_state(state, state.build_result))
+        for card_metric_key, card in histogram_cards.items():
+            if card_metric_key not in available_keys:
+                card.setVisible(False)
+                continue
+            counts = self._percentile_histogram_counts(state, card_metric_key)
+            active_bin = self._selected_percentile_bin_for_metric(state, card_metric_key)
+            tooltip = self._metric_hint_fallback(card_metric_key, state.build_result)
+            card.set_payload(
+                self._metric_label(card_metric_key, state.build_result),
+                counts,
+                base_record_count,
+                visible=True,
+                active_bin=active_bin,
+                tooltip=tooltip,
+            )
+        self._update_repeated_percentile_lists(state)
+
     def _on_histogram_bin_clicked(self, state: ExtendMatrixTabState, metric_key: str, bin_index: int) -> None:
+        state.selected_percentile_metric_key = str(metric_key)
+        state.selected_percentile_bin_index = int(bin_index)
+        state.selected_correlation_band = None
         same_filter = state.percentile_filter_metric_key == metric_key and state.percentile_filter_bin_index == int(bin_index)
         state.correlation_filter_band = None
         if same_filter:
@@ -2098,6 +2838,93 @@ class KarakalPresenter(QObject):
         self._apply_tab_visual_settings(state, reset_view=True)
         if state.content_tabs is not None:
             state.content_tabs.setCurrentIndex(0)
+
+    def _on_histogram_bin_context_menu(self, state: ExtendMatrixTabState, metric_key: str, bin_index: int, global_pos) -> None:
+        records = self._records_for_percentile_bin(state, metric_key, bin_index)
+        menu = QMenu(self._view)
+        export_action = menu.addAction(self._t("context.export_percentile_frame_assets", count=len(records)))
+        export_action.setEnabled(bool(records))
+        selected_action = menu.exec(global_pos)
+        if selected_action is export_action and records:
+            self._export_percentile_records_assets(state, records, metric_key, bin_index)
+
+    def _on_percentile_display_mode_changed(self, state: ExtendMatrixTabState, checked: bool) -> None:
+        state.percentile_filter_full_matrix = bool(checked)
+        self._apply_tab_visual_settings(state, reset_view=True)
+        if state.content_tabs is not None:
+            state.content_tabs.setCurrentIndex(0)
+
+    def _on_grid_inspection_histogram_bin_clicked(self, metric_key: str, bin_index: int) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        state.selected_percentile_metric_key = str(metric_key)
+        state.selected_percentile_bin_index = int(bin_index)
+        state.selected_correlation_band = None
+        same_filter = state.percentile_filter_metric_key == metric_key and state.percentile_filter_bin_index == int(bin_index)
+        state.correlation_filter_band = None
+        if same_filter:
+            state.percentile_filter_metric_key = None
+            state.percentile_filter_bin_index = None
+        else:
+            state.percentile_filter_metric_key = str(metric_key)
+            state.percentile_filter_bin_index = int(bin_index)
+        self._refresh_grid_inspection_mode_view()
+        if hasattr(self, "grid_inspection_content_tabs"):
+            self.grid_inspection_content_tabs.setCurrentIndex(0)
+
+    def _on_grid_inspection_histogram_bin_selected(self, metric_key: str, bin_index: int) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        self._on_histogram_bin_selected(state, metric_key, bin_index)
+
+    def _on_grid_inspection_histogram_bin_context_menu(self, metric_key: str, bin_index: int, global_pos) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        self._on_histogram_bin_context_menu(state, metric_key, bin_index, global_pos)
+
+    def _on_grid_inspection_percentile_display_mode_changed(self, checked: bool) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        state.percentile_filter_full_matrix = bool(checked)
+        self._refresh_grid_inspection_mode_view()
+        if hasattr(self, "grid_inspection_content_tabs"):
+            self.grid_inspection_content_tabs.setCurrentIndex(0)
+
+    def _on_grid_inspection_correlation_column_clicked(self, band: str) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        if str(band) not in {"bad", "good"}:
+            return
+        state.selected_percentile_metric_key = None
+        state.selected_percentile_bin_index = None
+        state.selected_correlation_band = str(band)
+        state.percentile_filter_metric_key = None
+        state.percentile_filter_bin_index = None
+        state.correlation_filter_band = None if state.correlation_filter_band == band else str(band)
+        self._refresh_grid_inspection_mode_view()
+        if hasattr(self, "grid_inspection_content_tabs"):
+            self.grid_inspection_content_tabs.setCurrentIndex(0)
+
+    def _on_grid_inspection_correlation_column_selected(self, band: str) -> None:
+        state = self._current_tab_state()
+        if state is None or str(band) not in {"bad", "good"}:
+            return
+        state.selected_percentile_metric_key = None
+        state.selected_percentile_bin_index = None
+        state.selected_correlation_band = str(band)
+        self._update_repeated_percentile_lists(state)
+
+    def _on_grid_inspection_correlation_limit_changed(self, value: int) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        state.correlation_limit_spin = getattr(self, "grid_inspection_correlation_limit_spin", None)
+        self._on_correlation_limit_changed(state, int(value))
 
     def _model_display_name(self, state: ExtendMatrixTabState, model_id: str) -> str:
         for spec in state.build_result.model_specs:
@@ -2116,6 +2943,28 @@ class KarakalPresenter(QObject):
         summary = record.summary
         if summary is None:
             return []
+        parsed_pair = parse_pair_metric_key(metric_key)
+        if parsed_pair is not None:
+            model_a, model_b, operation = parsed_pair
+            left = self._model_display_name(state, model_a)
+            right = self._model_display_name(state, model_b)
+            pair_row = None
+            for row in summary.pairwise_metrics:
+                row_a = str(row.get("model_a", ""))
+                row_b = str(row.get("model_b", ""))
+                if {row_a, row_b} == {model_a, model_b}:
+                    pair_row = row
+                    break
+            lines = [
+                f"pair: {left} -> {right}",
+                f"operation: {PAIR_OPERATION_LABELS.get(operation, operation)}",
+                f"value: {self._format_component_value(summary.metric_values.get(metric_key))}",
+            ]
+            if pair_row is not None:
+                for key in ("iou", "dice", "agreement_score", "soft_iou", "soft_dice"):
+                    if key in pair_row:
+                        lines.append(f"{key}: {self._format_component_value(pair_row.get(key))}")
+            return lines
         if metric_key in {"overall_frame_score", "export_priority_score"}:
             if summary.labeled_best_quality is not None:
                 return [
@@ -2382,11 +3231,15 @@ class KarakalPresenter(QObject):
         item = self._append_folder_item(folder_path, checked=True)
         self.folder_list.setCurrentItem(item)
         self._refresh_folder_rows()
+        self._refresh_pair_matrix()
         self._sync_action_buttons()
 
     def _clear_folders(self) -> None:
         self.folder_list.clear()
+        self._comparison_pair_operations.clear()
+        self._pair_defaults_initialized = False
         self._refresh_folder_rows()
+        self._refresh_pair_matrix()
         self._sync_action_buttons()
 
     def _set_original_folder(self) -> None:
@@ -2667,13 +3520,23 @@ class KarakalPresenter(QObject):
 
     def _on_app_mode_changed(self) -> None:
         mode = self._current_app_mode()
+        self._app_mode_refresh_generation += 1
+        refresh_generation = int(self._app_mode_refresh_generation)
         if hasattr(self._view, "_set_app_mode"):
             self._view._set_app_mode(mode)
         if mode == "management":
             self._refresh_management_mode_view()
         if mode == "grid_inspection":
-            self._refresh_grid_inspection_mode_view()
+            QTimer.singleShot(0, lambda g=refresh_generation: self._refresh_grid_inspection_mode_view_deferred(g))
         self._sync_action_buttons()
+
+    def _refresh_grid_inspection_mode_view_deferred(self, generation: int) -> None:
+        if generation != self._app_mode_refresh_generation or self._current_app_mode() != "grid_inspection":
+            return
+        try:
+            self._refresh_grid_inspection_mode_view()
+        except Exception as error:
+            QMessageBox.critical(self._view, self._t("dialog.warning_title"), str(error))
 
     def _refresh_management_mode_view(self) -> None:
         if not hasattr(self, "management_matrix_view"):
@@ -2696,13 +3559,166 @@ class KarakalPresenter(QObject):
             return
         state = self._current_tab_state()
         if state is None or not getattr(state.build_result, "records", None):
+            self.grid_inspection_matrix_view.set_grid_inspection_payloads({}, enabled=False)
+            self.grid_inspection_matrix_view.set_highlighted_record_keys(set())
             self.grid_inspection_matrix_view.set_records([], sort_mode="name", reset_view=True)
+            self._sync_grid_reference_controls(None)
+            self._refresh_grid_inspection_errors_panel(None)
             return
         self.grid_inspection_matrix_view.set_layout_config(state.layout_config)
         self.grid_inspection_matrix_view.set_excluded_record_keys(set(state.excluded_record_keys))
         self.grid_inspection_matrix_view.set_grid_inspection_visual_mode(True)
-        self.grid_inspection_matrix_view.set_cell_size(128)
-        self.grid_inspection_matrix_view.set_records(list(state.build_result.records), sort_mode="name", reset_view=True)
+        self.grid_inspection_matrix_view.set_score_view_mode(str(state.matrix_score_view_mode or self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE))
+        self.grid_inspection_matrix_view.set_cell_size(int(getattr(state, "cell_size", DEFAULT_CELL_SIZE)))
+        grid_full_matrix_check = getattr(self, "grid_inspection_percentile_full_matrix_check", None)
+        if grid_full_matrix_check is not None:
+            state.percentile_filter_full_matrix = bool(grid_full_matrix_check.isChecked())
+        grid_correlation_limit_spin = getattr(self, "grid_inspection_correlation_limit_spin", None)
+        if grid_correlation_limit_spin is not None:
+            state.correlation_limit_spin = grid_correlation_limit_spin
+            state.correlation_limit = self._correlation_limit_for_state(state)
+        payloads = dict(getattr(state, "grid_inspection_payload_by_key", {}) or {}) if bool(getattr(state, "grid_inspection_results_ready", False)) else {}
+        self.grid_inspection_matrix_view.set_grid_inspection_payloads(payloads, enabled=True)
+        self.grid_inspection_matrix_view.set_highlighted_record_keys(self._matrix_highlight_keys_for_state(state))
+        self.grid_inspection_matrix_view.set_records(list(self._display_records_for_state(state)), sort_mode="name", reset_view=True)
+        self._sync_grid_reference_controls(state)
+        QTimer.singleShot(50, lambda s=state: self._finish_grid_inspection_summary_refresh(s))
+
+    def _grid_inspection_error_type(self, status: str, reasons: tuple[str, ...]) -> str:
+        reason_set = {str(reason) for reason in reasons}
+        for _label_key, reason in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
+            if reason in reason_set:
+                return reason
+        return str(status or "broken")
+
+    def _grid_inspection_error_type_label(self, error_type: str) -> str:
+        labels = {str(value): self._t(label_key) for label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS}
+        labels.update(
+            {
+                "broken": self._t("grid_status.broken"),
+                "suspicious": self._t("grid_status.suspicious"),
+                "artifact": self._t("grid_status.artifact"),
+            }
+        )
+        return labels.get(str(error_type), str(error_type or self._t("grid_error.defect")))
+
+    def _grid_inspection_error_filter(self) -> str:
+        combo = getattr(self, "grid_inspection_error_filter", None)
+        if combo is None:
+            return "all"
+        return str(combo.currentData() or "all")
+
+    def _grid_inspection_error_filter_matches(self, payload: dict[str, object], filter_key: str) -> bool:
+        if str(filter_key or "all") == "all":
+            return True
+        error_type = str(payload.get("error_type") or "")
+        reasons = {str(reason) for reason in payload.get("reasons", ()) or ()}
+        return error_type == filter_key or str(filter_key) in reasons
+
+    def _iter_grid_inspection_error_payloads(self, state: ExtendMatrixTabState | None):
+        if state is None or not bool(getattr(state, "grid_inspection_results_ready", False)):
+            return
+        excluded_keys = self._excluded_record_keys_for_state(state)
+        records_by_key = {str(record.key): record for record in state.build_result.records}
+        visible_keys: set[str] | None = None
+        if (
+            state.percentile_filter_metric_key is not None
+            and state.percentile_filter_bin_index is not None
+        ) or state.correlation_filter_band in {"bad", "good"}:
+            visible_keys = {str(record.key) for record in self._display_records_for_state(state)}
+        for record_key, result in sorted((getattr(state, "grid_inspection_payload_by_key", {}) or {}).items(), key=lambda item: str(item[0])):
+            if str(record_key) in excluded_keys:
+                continue
+            if visible_keys is not None and str(record_key) not in visible_keys:
+                continue
+            record = records_by_key.get(str(record_key))
+            if record is None:
+                continue
+            for index, cell in enumerate(getattr(result, "per_cell_results", getattr(result, "cells", ())) or ()):
+                status = str(getattr(cell, "status", "") or "")
+                if status == "normal":
+                    continue
+                reasons = tuple(str(reason) for reason in (getattr(cell, "reasons", ()) or ()))
+                error_type = self._grid_inspection_error_type(status, reasons)
+                bbox = tuple(int(value) for value in (getattr(cell, "bbox", (0, 0, 1, 1)) or (0, 0, 1, 1))[:4])
+                yield {
+                    "record_key": str(record_key),
+                    "record_name": str(getattr(record, "display_name", "") or record_key),
+                    "cell_index": int(index),
+                    "row": int(getattr(cell, "row", -1)),
+                    "col": int(getattr(cell, "col", getattr(cell, "column", -1))),
+                    "bbox": bbox,
+                    "score": float(getattr(cell, "score", 0.0)),
+                    "status": status,
+                    "reasons": reasons,
+                    "error_type": error_type,
+                }
+
+    def _grid_inspection_error_payloads(self, state: ExtendMatrixTabState | None) -> list[dict[str, object]]:
+        items = list(self._iter_grid_inspection_error_payloads(state))
+        return sorted(items, key=lambda item: (-float(item.get("score", 0.0)), str(item.get("record_name", "")), int(item.get("cell_index", 0))))
+
+    def _refresh_grid_inspection_errors_panel(self, state: ExtendMatrixTabState | None = None) -> None:
+        error_list = getattr(self, "grid_inspection_error_list", None)
+        counter = getattr(self, "grid_inspection_error_counter", None)
+        if error_list is None or counter is None:
+            return
+        if state is None:
+            state = self._current_tab_state()
+        filter_key = self._grid_inspection_error_filter()
+        total_count = 0
+        ranked: list[tuple[float, int, dict[str, object]]] = []
+        for index, payload in enumerate(self._iter_grid_inspection_error_payloads(state)):
+            total_count += 1
+            if not self._grid_inspection_error_filter_matches(payload, filter_key):
+                continue
+            entry = (float(payload.get("score", 0.0)), -index, payload)
+            if len(ranked) < GRID_INSPECTION_ERROR_LIST_LIMIT:
+                heappush(ranked, entry)
+            elif entry[:2] > ranked[0][:2]:
+                heapreplace(ranked, entry)
+        visible_items = [entry[2] for entry in sorted(ranked, key=lambda entry: (-entry[0], -entry[1]))]
+        error_list.blockSignals(True)
+        try:
+            error_list.clear()
+            for payload in visible_items:
+                bbox = tuple(payload.get("bbox", (0, 0, 1, 1)) or (0, 0, 1, 1))
+                label = self._grid_inspection_error_type_label(str(payload.get("error_type") or ""))
+                text = (
+                    f"{payload.get('record_name', '-')}\n"
+                    f"{label} | score {float(payload.get('score', 0.0)):.2f} | "
+                    f"r{int(payload.get('row', -1))} c{int(payload.get('col', -1))} | "
+                    f"bbox {bbox}"
+                )
+                item = QListWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, dict(payload))
+                item.setToolTip(", ".join(str(reason) for reason in payload.get("reasons", ()) or ()) or label)
+                error_list.addItem(item)
+        finally:
+            error_list.blockSignals(False)
+        counter.setText(self._t("grid_errors.counter", visible=len(visible_items), total=total_count))
+
+    def _on_grid_inspection_error_filter_changed(self, *_args) -> None:
+        self._refresh_grid_inspection_errors_panel(self._current_tab_state())
+
+    def _on_grid_inspection_error_item_clicked(self, item: QListWidgetItem | None) -> None:
+        if item is None:
+            return
+        payload = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(payload, dict):
+            return
+        state = self._current_tab_state()
+        if state is None:
+            return
+        record_key = str(payload.get("record_key") or "")
+        record = next((entry for entry in state.build_result.records if str(entry.key) == record_key), None)
+        if record is None:
+            return
+        try:
+            self.grid_inspection_matrix_view.select_record_by_key(record.key, ensure_visible=True)
+        except Exception:
+            pass
+        self._open_record_details(record, state, grid_focus=dict(payload))
 
     def _management_group_row_values(self, tasks: list, batch, is_batch_group: bool) -> list[str]:
         if not tasks:
@@ -2764,9 +3780,6 @@ class KarakalPresenter(QObject):
         if state is not None:
             self._update_matrix_preview(state, record)
 
-    def _on_management_matrix_tile_selected(self, selection: object | None) -> None:
-        return
-
     def _on_management_matrix_record_activated(self, record: FrameRecord | None) -> None:
         if record is None:
             return
@@ -2783,15 +3796,6 @@ class KarakalPresenter(QObject):
             return
         self._open_record_details(record, state)
 
-    def _on_management_matrix_tile_activated(self, selection: object | None) -> None:
-        record = getattr(selection, "record", None)
-        if not isinstance(record, FrameRecord):
-            return
-        state = self._current_tab_state()
-        if state is None:
-            return
-        self._open_record_details(record, state, tile_selection=selection)
-
     def _management_matrix_selected_records(self, fallback_record: FrameRecord | None = None) -> tuple[FrameRecord, ...]:
         if not hasattr(self, "management_matrix_view"):
             return (fallback_record,) if fallback_record is not None else ()
@@ -2805,6 +3809,252 @@ class KarakalPresenter(QObject):
         if fallback_record is not None:
             return (fallback_record,)
         return tuple()
+
+    def _grid_inspection_selected_records(self, fallback_record: FrameRecord | None = None) -> tuple[FrameRecord, ...]:
+        if not hasattr(self, "grid_inspection_matrix_view"):
+            return (fallback_record,) if fallback_record is not None else ()
+        selected: tuple[FrameRecord, ...] = tuple()
+        try:
+            selected = tuple(self.grid_inspection_matrix_view.selected_records())
+        except Exception:
+            selected = tuple()
+        if selected:
+            return selected
+        if fallback_record is not None:
+            return (fallback_record,)
+        return tuple()
+
+    def _grid_inspection_export_selected_records(self, state: ExtendMatrixTabState) -> tuple[FrameRecord, ...]:
+        selected_by_key: dict[str, FrameRecord] = {}
+        state_selected_records: tuple[FrameRecord, ...] = tuple()
+        try:
+            state_selected_records = tuple(state.matrix_view.selected_records()) if state is not None else tuple()
+        except Exception:
+            state_selected_records = tuple()
+        for source_records in (self._grid_inspection_selected_records(), state_selected_records):
+            for record in source_records:
+                key = str(getattr(record, "key", "") or "")
+                if key and key not in selected_by_key:
+                    selected_by_key[key] = record
+        return tuple(selected_by_key.values())
+
+    def _grid_inspection_record_by_key(self, state: ExtendMatrixTabState | None, key: str | None) -> FrameRecord | None:
+        if state is None or not key:
+            return None
+        target_key = str(key)
+        for record in getattr(state.build_result, "records", ()) or ():
+            if str(getattr(record, "key", "") or "") == target_key:
+                return record
+        return None
+
+    def _grid_inspection_reference_record(self, state: ExtendMatrixTabState | None) -> FrameRecord | None:
+        return self._grid_inspection_record_by_key(
+            state,
+            getattr(state, "grid_inspection_reference_record_key", None) if state is not None else None,
+        )
+
+    def _grid_inspection_reference_display_name(self, record: FrameRecord | None) -> str:
+        if record is None:
+            return ""
+        return str(getattr(record, "display_name", "") or getattr(record, "key", "") or "")
+
+    def _sync_grid_reference_controls(self, state: ExtendMatrixTabState | None = None) -> None:
+        record = self._grid_inspection_reference_record(state)
+        key = str(getattr(record, "key", "") or "")
+        stale_key = str(getattr(state, "grid_inspection_reference_record_key", "") or "") if state is not None else ""
+        label = getattr(self, "grid_reference_frame_label", None)
+        if label is not None:
+            if record is not None:
+                label.setText(self._t("grid_reference.selected", name=self._grid_inspection_reference_display_name(record)))
+            elif stale_key:
+                label.setText(self._t("grid_reference.missing", key=stale_key))
+            else:
+                label.setText(self._t("grid_reference.none"))
+        clear_button = getattr(self, "grid_reference_frame_clear_button", None)
+        if clear_button is not None:
+            clear_button.setEnabled(bool(stale_key))
+        for view_name in ("grid_inspection_matrix_view",):
+            view = getattr(self, view_name, None)
+            if view is not None and hasattr(view, "set_reference_key"):
+                view.set_reference_key(key or None)
+
+    def _on_grid_reference_select_requested(self) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        record = None
+        for view in (getattr(self, "grid_inspection_matrix_view", None), getattr(state, "matrix_view", None)):
+            if view is None or not hasattr(view, "current_record"):
+                continue
+            try:
+                record = view.current_record()
+            except Exception:
+                record = None
+            if record is not None:
+                break
+        if record is None:
+            selected_records = self._grid_inspection_export_selected_records(state)
+            record = selected_records[0] if len(selected_records) == 1 else None
+        if record is None:
+            QMessageBox.information(
+                self._view,
+                self._t("dialog.info_title"),
+                self._t("grid_reference.select_one"),
+            )
+            return
+        state.grid_inspection_reference_record_key = str(getattr(record, "key", "") or "") or None
+        self._sync_grid_reference_controls(state)
+
+    def _on_grid_reference_clear_requested(self) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        state.grid_inspection_reference_record_key = None
+        self._sync_grid_reference_controls(state)
+
+    def _grid_inspection_reference_profile_for_state(
+        self,
+        state: ExtendMatrixTabState,
+        config: GridDamageAnalysisConfig,
+    ) -> GridCellReferenceProfile | None:
+        record = self._grid_inspection_reference_record(state)
+        if record is None:
+            stale_key = str(getattr(state, "grid_inspection_reference_record_key", "") or "")
+            if stale_key:
+                QMessageBox.warning(
+                    self._view,
+                    self._t("dialog.warning_title"),
+                    self._t("grid_reference.record_missing", key=stale_key),
+                )
+            return None
+        path_text = self._grid_inspection_source_path_for_record(record)
+        if not path_text or not Path(path_text).is_file():
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                self._t("grid_reference.file_missing", name=self._grid_inspection_reference_display_name(record)),
+            )
+            return None
+        profile = build_grid_cell_reference_profile_path(path_text, frame_id=str(record.key), config=config)
+        if profile is None:
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                self._t("grid_reference.profile_failed", name=self._grid_inspection_reference_display_name(record)),
+            )
+            return None
+        return profile
+
+    def _current_matrix_selected_records(self) -> tuple[FrameRecord, ...]:
+        if self._current_app_mode() == "grid_inspection":
+            return self._grid_inspection_selected_records()
+        if self._current_app_mode() == "management":
+            return self._management_matrix_selected_records()
+        state = self._current_tab_state()
+        if state is None:
+            return tuple()
+        try:
+            return tuple(state.matrix_view.selected_records())
+        except Exception:
+            return tuple()
+
+    def _grid_inspection_calculation_scope_records(self, state: ExtendMatrixTabState) -> tuple[FrameRecord, ...]:
+        scope_keys = {str(key) for key in getattr(state, "grid_inspection_calculation_record_keys", set()) if str(key)}
+        if not scope_keys:
+            return tuple()
+        return tuple(record for record in getattr(state.build_result, "records", ()) if str(record.key) in scope_keys)
+
+    @staticmethod
+    def _frame_search_number_groups(record: FrameRecord) -> tuple[int, ...]:
+        values: list[int] = []
+        identity = getattr(record, "identity", None)
+        for value in (
+            getattr(identity, "frame_id", None) if identity is not None else None,
+            getattr(identity, "base_id", None) if identity is not None else None,
+        ):
+            try:
+                if value is not None:
+                    values.append(int(value))
+            except Exception:
+                pass
+        for text in (getattr(record, "key", ""), getattr(record, "display_name", "")):
+            for group in re.findall(r"\d+", str(text or "")):
+                try:
+                    values.append(int(group))
+                except Exception:
+                    continue
+        return tuple(values)
+
+    @staticmethod
+    def _frame_search_match_rank(record: FrameRecord, query: str, query_number: int | None) -> int | None:
+        query_text = str(query or "").strip().lower()
+        if not query_text:
+            return None
+        identity = getattr(record, "identity", None)
+        if query_number is not None:
+            for value in (
+                getattr(identity, "frame_id", None) if identity is not None else None,
+                getattr(identity, "base_id", None) if identity is not None else None,
+            ):
+                try:
+                    if value is not None and int(value) == int(query_number):
+                        return 0
+                except Exception:
+                    pass
+            if int(query_number) in KarakalPresenter._frame_search_number_groups(record):
+                return 1
+        texts = (
+            str(getattr(record, "key", "") or "").lower(),
+            str(getattr(record, "display_name", "") or "").lower(),
+        )
+        if query_text in texts:
+            return 2
+        if any(query_text in text for text in texts):
+            return 3
+        return None
+
+    def _frame_search_view_and_records(self, state: ExtendMatrixTabState):
+        mode = self._current_app_mode()
+        if mode == "grid_inspection" and hasattr(self, "grid_inspection_matrix_view"):
+            return self.grid_inspection_matrix_view, tuple(self._display_records_for_state(state))
+        if mode == "management" and hasattr(self, "management_matrix_view"):
+            return self.management_matrix_view, tuple(getattr(state.build_result, "records", ()) or ())
+        return state.matrix_view, tuple(self._display_records_for_state(state))
+
+    def _on_frame_search_requested(self) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        query = str(getattr(self, "frame_search_input", None).text() if hasattr(self, "frame_search_input") else "").strip()
+        if not query:
+            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("frame_search.empty"))
+            return
+        query_number = None
+        digits = re.sub(r"\D+", "", query)
+        if digits:
+            try:
+                query_number = int(digits)
+            except Exception:
+                query_number = None
+        view, records = self._frame_search_view_and_records(state)
+        matches: list[tuple[int, int, FrameRecord]] = []
+        for index, record in enumerate(records):
+            rank = self._frame_search_match_rank(record, query, query_number)
+            if rank is not None:
+                matches.append((int(rank), int(index), record))
+        if not matches:
+            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("frame_search.not_found", query=query))
+            return
+        _rank, _index, record = min(matches, key=lambda item: (item[0], item[1]))
+        selected = None
+        if hasattr(view, "select_record_by_key"):
+            selected = view.select_record_by_key(str(record.key), ensure_visible=True)
+        if selected is None and view is not state.matrix_view and hasattr(state.matrix_view, "select_record_by_key"):
+            state.matrix_view.select_record_by_key(str(record.key), ensure_visible=True)
+
+    def _set_grid_inspection_calculation_scope(self, state: ExtendMatrixTabState, records: tuple[FrameRecord, ...]) -> None:
+        state.grid_inspection_calculation_record_keys = {str(record.key) for record in records if record is not None and str(record.key)}
+        self._sync_action_buttons()
 
     def _start_build(self) -> None:
         explicit_model_specs = self._checked_model_specs()
@@ -2825,16 +4075,7 @@ class KarakalPresenter(QObject):
         mask_threshold, boundary_radius = self._selected_polygon_compare_values()
         options = BuildOptions(
             thumbnail_size=int(DEFAULT_CELL_SIZE),
-            recursive=True,
-            tile_mode=self._selected_tile_mode(),
-            tile_width=int(self.tile_width_spin.value()),
-            tile_height=int(self.tile_height_spin.value()),
-            tile_overlap_mode=self._selected_tile_overlap_mode(),
-            tile_overlap=int(self.tile_overlap_spin.value()),
-            subpixel_view_mode=self._selected_subpixel_view_mode(),
-            subpixel_rows=self._selected_subpixel_rows(),
-            subpixel_columns=self._selected_subpixel_columns(),
-            subpixel_aggregation=self._selected_subpixel_aggregation(),
+            recursive=False,
             geometry_mode=geometry_mode,
             mask_threshold=float(mask_threshold),
             boundary_radius=int(boundary_radius),
@@ -2843,6 +4084,7 @@ class KarakalPresenter(QObject):
             point_confidence_radius=int(self.point_confidence_radius_spin.value()),
             point_extraction_mode=str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
             polygon_confidence_summary=str(self.polygon_confidence_summary_combo.currentData() or DEFAULT_POLYGON_CONFIDENCE_SUMMARY),
+            comparison_pairs=self._selected_comparison_pairs(),
         )
         self._pending_build_snapshot = self._capture_view_snapshot()
         self._worker_kind = "build"
@@ -2875,7 +4117,7 @@ class KarakalPresenter(QObject):
             self._sync_current_analysis_context(state, auto_recompute=False)
         if apply_pending_controls:
             self._apply_pending_display_controls(state)
-        metric_key = str(self.metric_combo.currentData() or state.metric_key or DEFAULT_MATRIX_METRIC_KEY)
+        metric_key = str(state.metric_key or self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY)
         request_signature = self._analytics_request_signature(state, metric_key)
         self._worker_kind = "analytics"
         self._active_compute_state = state
@@ -2903,6 +4145,10 @@ class KarakalPresenter(QObject):
         state = self._current_tab_state()
         if state is None:
             return
+        if self._current_app_mode() == "grid_inspection":
+            scope_records = self._grid_inspection_calculation_scope_records(state)
+            self._start_compute_grid_inspection(state, selected_records=scope_records if scope_records else None)
+            return
         if self._is_base_only_build_result(state.build_result):
             QMessageBox.information(
                 self._view,
@@ -2915,6 +4161,24 @@ class KarakalPresenter(QObject):
         self._apply_pending_display_controls(state)
         self._start_compute_analytics(state=state, sync_context=False, apply_pending_controls=False)
 
+    def _on_export_result_layer_requested(self) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        self._export_result_layer_jpgs(state, records=self._current_matrix_selected_records() or None)
+
+    def _on_export_grid_check_bmps_requested(self) -> None:
+        state = self._current_tab_state()
+        if state is None or self._current_app_mode() != "grid_inspection":
+            return
+        selected_records = self._grid_inspection_export_selected_records(state)
+        records_with_results = self._grid_inspection_records_with_results(state)
+        self._export_grid_inspection_bmps(
+            state,
+            records_with_results,
+            render_records=selected_records if selected_records else None,
+        )
+
     def _request_cancel_build(self) -> None:
         if self._worker is None:
             return
@@ -2922,6 +4186,67 @@ class KarakalPresenter(QObject):
         if callable(request_cancel):
             request_cancel()
         self._show_progress_bar(visible=True, format_text="Cancelling...")
+
+    def _start_compute_grid_inspection(
+        self,
+        state: ExtendMatrixTabState,
+        *,
+        selected_records: tuple[FrameRecord, ...] | None = None,
+    ) -> None:
+        if not hasattr(self, "grid_inspection_matrix_view"):
+            return
+        excluded_keys = self._excluded_record_keys_for_state(state)
+        partial_keys = {str(record.key) for record in (selected_records or ()) if record is not None and str(record.key)}
+        source_records = tuple(selected_records) if selected_records is not None else tuple(state.build_result.records or ())
+        records = tuple(
+            record
+            for record in source_records
+            if str(getattr(record, "key", "") or "") not in excluded_keys
+        )
+        if selected_records is not None and not records:
+            return
+        state.matrix_score_view_mode = str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE)
+        next_config = self._grid_inspection_config_payload()
+        grid_config = self._grid_damage_config_from_payload(next_config)
+        reference_selected = bool(str(getattr(state, "grid_inspection_reference_record_key", "") or ""))
+        reference_profile = self._grid_inspection_reference_profile_for_state(state, grid_config)
+        if reference_selected and reference_profile is None:
+            self._sync_action_buttons()
+            return
+        state.grid_inspection_config_payload = next_config
+        state.grid_inspection_results_ready = False
+        state.grid_inspection_payload_by_key = {}
+        self.grid_inspection_matrix_view.set_grid_inspection_payloads(dict(state.grid_inspection_payload_by_key), enabled=True)
+        self._refresh_grid_inspection_errors_panel(state)
+        self._worker_kind = "grid_inspection"
+        self._active_compute_state = state
+        self._active_processing_keys = set()
+        self._active_grid_inspection_partial_keys = set(partial_keys) if selected_records is not None else None
+        state.processing_state_by_key.clear()
+        state.matrix_view.set_processing_keys(set())
+        self.grid_inspection_matrix_view.set_processing_keys(set())
+        self._worker_thread = QThread(self._view)
+        self._worker = GridInspectionWorker(records, grid_config, reference_profile=reference_profile)
+        generation = self._begin_worker_request(state=state)
+        self._worker.moveToThread(self._worker_thread)
+        self._worker_thread.started.connect(self._worker.run)
+        self._worker.progress.connect(lambda current, total, key, g=generation: self._on_build_progress(current, total, key, generation=g))
+        if hasattr(self._worker, "frameStateChanged"):
+            self._worker.frameStateChanged.connect(lambda key, status, g=generation: self._on_frame_state_changed(key, status, generation=g))
+        if hasattr(self._worker, "frameStatesChanged"):
+            self._worker.frameStatesChanged.connect(lambda keys, status, g=generation: self._on_frame_states_changed(keys, status, generation=g))
+        if hasattr(self._worker, "partialResultsReady"):
+            self._worker.partialResultsReady.connect(lambda payloads, g=generation: self._on_grid_inspection_batch(payloads, generation=g))
+        self._worker.finished.connect(lambda payloads, g=generation: self._on_grid_inspection_finished(payloads, generation=g))
+        self._worker.failed.connect(lambda message, g=generation: self._on_worker_failed(message, generation=g))
+        self._worker.cancelled.connect(lambda g=generation: self._on_grid_inspection_cancelled(generation=g))
+        self._worker.finished.connect(self._worker_thread.quit)
+        self._worker.failed.connect(self._worker_thread.quit)
+        self._worker.cancelled.connect(self._worker_thread.quit)
+        self._worker_thread.finished.connect(self._cleanup_worker)
+        self._show_progress_bar(visible=True, format_text="Computing cell defects...")
+        self._worker_thread.start()
+        self._sync_action_buttons()
 
     def _cleanup_worker(self) -> None:
         active_state = self._active_compute_state
@@ -2932,12 +4257,15 @@ class KarakalPresenter(QObject):
         if active_state is not None:
             active_state.matrix_view.set_processing_keys(set())
             active_state.processing_state_by_key.clear()
+        if hasattr(self, "grid_inspection_matrix_view"):
+            self.grid_inspection_matrix_view.set_processing_keys(set())
         self._worker = None
         self._worker_thread = None
         self._worker_kind = None
         self._active_compute_state = None
         self._active_request_generation = None
         self._active_processing_keys = set()
+        self._active_grid_inspection_partial_keys = None
         self._active_progress_current = 0
         self._active_progress_total = 0
         self._active_progress_key = ""
@@ -2950,6 +4278,77 @@ class KarakalPresenter(QObject):
             if restart_state.widget in self._tab_states:
                 self._start_compute_analytics(state=restart_state, sync_context=sync_context)
 
+    def _on_grid_inspection_finished(self, payloads: object, *, generation: int | None = None) -> None:
+        if not self._is_active_request_generation(generation):
+            return
+        self._show_progress_bar(visible=False)
+        state = self._active_compute_state or self._current_tab_state()
+        if state is None or not hasattr(self, "grid_inspection_matrix_view"):
+            return
+        payload_map: dict[str, object] = {}
+        if isinstance(payloads, dict):
+            payload_map = {str(key): value for key, value in payloads.items()}
+        streamed_keys = set((getattr(state, "grid_inspection_payload_by_key", {}) or {}).keys())
+        if self._active_grid_inspection_partial_keys is not None:
+            merged_payloads = dict(getattr(state, "grid_inspection_payload_by_key", {}) or {})
+            for key in self._active_grid_inspection_partial_keys:
+                merged_payloads.pop(str(key), None)
+            merged_payloads.update(payload_map)
+            payload_map = merged_payloads
+        state.grid_inspection_results_ready = True
+        state.grid_inspection_payload_by_key = dict(payload_map)
+        state.percentile_cache.clear()
+        state.repeated_percentile_cache.clear()
+        self._active_processing_keys = set()
+        state.processing_state_by_key.clear()
+        state.matrix_view.set_processing_keys(set())
+        self.grid_inspection_matrix_view.set_processing_keys(set())
+        missing_payloads = {key: value for key, value in payload_map.items() if key not in streamed_keys}
+        if missing_payloads:
+            self.grid_inspection_matrix_view.update_grid_inspection_payloads(missing_payloads)
+        self.grid_inspection_matrix_view.finalize_grid_inspection_payloads()
+        if self._current_app_mode() == "grid_inspection":
+            self.grid_inspection_matrix_view.viewport().update()
+            QTimer.singleShot(50, lambda s=state: self._finish_grid_inspection_summary_refresh(s))
+        self._sync_action_buttons()
+
+    def _finish_grid_inspection_summary_refresh(self, state: ExtendMatrixTabState) -> None:
+        if (
+            state.widget not in self._tab_states
+            or self._current_tab_state() is not state
+            or self._current_app_mode() != "grid_inspection"
+        ):
+            return
+        self._refresh_grid_inspection_errors_panel(state)
+        self._schedule_metric_histogram_update(state)
+
+    def _on_grid_inspection_batch(self, payloads: object, *, generation: int | None = None) -> None:
+        if not self._is_active_request_generation(generation) or not isinstance(payloads, dict):
+            return
+        state = self._active_compute_state
+        if state is None or not hasattr(self, "grid_inspection_matrix_view"):
+            return
+        batch = {str(key): value for key, value in payloads.items()}
+        if not batch:
+            return
+        state.grid_inspection_payload_by_key.update(batch)
+        state.grid_inspection_results_ready = True
+        self.grid_inspection_matrix_view.update_grid_inspection_payloads(batch)
+
+    def _on_grid_inspection_cancelled(self, *, generation: int | None = None) -> None:
+        if not self._is_active_request_generation(generation):
+            return
+        self._show_progress_bar(visible=False)
+        state = self._active_compute_state
+        if state is not None:
+            state.grid_inspection_results_ready = bool(state.grid_inspection_payload_by_key)
+            state.processing_state_by_key.clear()
+            state.matrix_view.set_processing_keys(set())
+        self._active_processing_keys = set()
+        if hasattr(self, "grid_inspection_matrix_view"):
+            self.grid_inspection_matrix_view.set_processing_keys(set())
+        self._sync_action_buttons()
+
     def _on_build_progress(self, current: int, total: int, key: str, *, generation: int | None = None) -> None:
         if not self._is_active_request_generation(generation):
             return
@@ -2957,7 +4356,10 @@ class KarakalPresenter(QObject):
         self._active_progress_total = int(total)
         self._active_progress_key = str(key or "")
         if self._active_compute_state is not None and not self._active_processing_keys:
-            self._active_compute_state.matrix_view.set_processing_keys({str(key)} if key else set())
+            fallback_keys = {str(key)} if key else set()
+            self._active_compute_state.matrix_view.set_processing_keys(fallback_keys)
+            if self._worker_kind == "grid_inspection" and hasattr(self, "grid_inspection_matrix_view"):
+                self.grid_inspection_matrix_view.set_processing_keys(fallback_keys)
         format_text = self._progress_format_text(current, total, str(key or ""))
         self._show_progress_bar(visible=True, current=current, total=total, key=key, format_text=format_text)
 
@@ -3008,6 +4410,8 @@ class KarakalPresenter(QObject):
         state.processing_state_by_key.clear()
         state.build_result = result
         state.last_analytics_request_signature = request_signature or self._analytics_request_signature(state, state.metric_key)
+        state.grid_inspection_results_ready = False
+        state.grid_inspection_payload_by_key = {}
         self._invalidate_state_runtime_caches(state, clear_metric_results=True)
         self._sync_metric_controls(
             result,
@@ -3037,7 +4441,8 @@ class KarakalPresenter(QObject):
 
     def _apply_metric_to_state(self, state: ExtendMatrixTabState, metric_key: str) -> None:
         available = set(state.build_result.available_metric_keys or ())
-        if available and metric_key not in available:
+        can_request_dynamic_metric = self._is_dynamic_pair_metric_key(metric_key) and bool(getattr(state.build_result, "scores_computed", False))
+        if available and metric_key not in available and not can_request_dynamic_metric:
             metric_key = self._default_metric_key_for_state(state, state.build_result)
         state.metric_key = metric_key
         self._invalidate_state_runtime_caches(state, clear_metric_results=False)
@@ -3072,6 +4477,8 @@ class KarakalPresenter(QObject):
         state.build_result = replace(state.build_result, records=tuple(updated_records), min_score=min((record.score for record in updated_records), default=0.0), max_score=max((record.score for record in updated_records), default=0.0), min_absolute_score=min_absolute, max_absolute_score=max_absolute, selected_metric_key=metric_key)
         state.metric_result_cache[metric_key] = state.build_result
         self._apply_tab_visual_settings(state, reset_view=False)
+        state.grid_inspection_results_ready = False
+        state.grid_inspection_payload_by_key = {}
 
     def _on_metric_scope_changed(self, *_args) -> None:
         state = self._current_tab_state()
@@ -3096,6 +4503,25 @@ class KarakalPresenter(QObject):
             )
         self._sync_action_buttons()
 
+    def _on_comparison_target_changed(self, *_args) -> None:
+        state = self._current_tab_state()
+        self._sync_mode_controls(state, None if state is None else state.build_result)
+        self._refresh_pair_matrix()
+        if state is None:
+            self._sync_action_buttons()
+            return
+        self._apply_comparison_target_to_states()
+        preferred_metric = self._default_metric_key_for_comparison_target(state.build_result) or state.metric_key
+        self._sync_metric_controls(
+            state.build_result,
+            preferred_metric_key=preferred_metric,
+            preferred_scope_key=state.confidence_model_id or state.metric_scope,
+            context_state=state,
+        )
+        metric_key = str(self.metric_combo.currentData() or preferred_metric or DEFAULT_MATRIX_METRIC_KEY)
+        self._apply_metric_to_state(state, metric_key)
+        self._sync_action_buttons()
+
     def _on_object_type_changed(self, *_args) -> None:
         state = self._current_tab_state()
         self._apply_global_analysis_context_to_all_states()
@@ -3113,28 +4539,6 @@ class KarakalPresenter(QObject):
         self._apply_polygon_compare_profile(self._selected_polygon_compare_profile())
         self._sync_action_buttons()
 
-    def _on_subpixel_view_mode_changed(self, *_args) -> None:
-        state = self._current_tab_state()
-        self._sync_tile_overlap_bounds()
-        self._sync_mode_controls(state, None if state is None else state.build_result)
-        self._sync_action_buttons()
-
-    def _on_subpixel_grid_parameter_changed(self, *_args) -> None:
-        state = self._current_tab_state()
-        self._sync_tile_overlap_bounds()
-        self._sync_mode_controls(state, None if state is None else state.build_result)
-        self._sync_action_buttons()
-
-    def _on_tile_mode_changed(self, *_args) -> None:  # pragma: no cover - compatibility shim
-        self._on_subpixel_view_mode_changed()
-
-    def _on_tile_overlap_mode_changed(self, *_args) -> None:  # pragma: no cover - compatibility shim
-        self._sync_action_buttons()
-
-    def _on_tile_grid_parameter_changed(self, *_args) -> None:
-        self._sync_tile_overlap_bounds()
-        self._on_subpixel_grid_parameter_changed()
-
     def _on_metric_changed(self, *_args) -> None:
         state = self._current_tab_state()
         if state is None:
@@ -3147,6 +4551,16 @@ class KarakalPresenter(QObject):
         self._sync_action_buttons()
 
     def _on_matrix_score_view_changed(self, *_args) -> None:
+        state = self._current_tab_state()
+        if state is not None:
+            state.matrix_score_view_mode = str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE)
+            if self._current_app_mode() == "grid_inspection":
+                self._refresh_grid_inspection_mode_view()
+        self._sync_action_buttons()
+
+    def _on_grid_inspection_tuning_changed(self, *_args) -> None:
+        # Tuning controls are staged values. They are applied only when the user starts
+        # the next grid-inspection calculation.
         self._sync_action_buttons()
 
     def _on_matrix_visual_parameter_changed(self, *_args) -> None:
@@ -3228,12 +4642,6 @@ class KarakalPresenter(QObject):
             self._update_matrix_preview(state, record)
             self._sync_action_buttons()
 
-    def _on_tile_selected(self, state: ExtendMatrixTabState, selection: object | None) -> None:
-        if self._current_tab_state() is state:
-            record = getattr(selection, "record", None)
-            self._update_matrix_preview(state, record if isinstance(record, FrameRecord) else None)
-            self._sync_action_buttons()
-
     def _forget_details_dialog(self, dialog: ExtendFrameDetailsDialog) -> None:
         self._details_dialogs = [opened for opened in self._details_dialogs if opened is not dialog]
 
@@ -3245,7 +4653,21 @@ class KarakalPresenter(QObject):
                 pass
         self._details_dialogs.clear()
 
-    def _open_record_details(self, record: FrameRecord, state: ExtendMatrixTabState, tile_selection: object | None = None) -> None:
+    @staticmethod
+    def _grid_inspection_source_path_for_record(record: FrameRecord) -> str:
+        model_masks = getattr(record, "model_mask_paths", {}) or {}
+        if model_masks:
+            return str(next(iter(model_masks.values())) or "")
+        return str(getattr(record, "first_path", "") or getattr(record, "base_path", "") or getattr(record, "original_path", "") or "")
+
+    @staticmethod
+    def _grid_inspection_display_source_path_for_record(record: FrameRecord) -> str:
+        source_path = str(getattr(record, "original_path", "") or getattr(record, "base_path", "") or "")
+        if source_path:
+            return source_path
+        return KarakalPresenter._grid_inspection_source_path_for_record(record)
+
+    def _open_record_details(self, record: FrameRecord, state: ExtendMatrixTabState, grid_focus: dict[str, object] | None = None) -> None:
         session_view_state = dict(self._details_view_payload)
         is_grid_inspection_details = self._current_app_mode() == "grid_inspection"
         preferred_model_id = self._preferred_details_model_id_for_state(state, session_view_state=session_view_state)
@@ -3255,32 +4677,15 @@ class KarakalPresenter(QObject):
         session_view_state["layer_view"] = self._default_details_layer_view_for_state(state)
         session_view_state["comparison_mode"] = self._default_details_comparison_mode_for_state(state)
         session_view_state["grayscale_diff"] = self._default_details_grayscale_diff_for_state(state)
-        if tile_selection is not None:
-            parent_row = int(getattr(tile_selection, "matrix_row", getattr(tile_selection, "row", 0)))
-            parent_column = int(getattr(tile_selection, "matrix_column", getattr(tile_selection, "column", 0)))
-            sub_row = int(getattr(tile_selection, "sub_row", getattr(tile_selection, "tile_row", getattr(tile_selection, "row", 0))))
-            sub_column = int(getattr(tile_selection, "sub_column", getattr(tile_selection, "tile_column", getattr(tile_selection, "column", 0))))
-            spec = getattr(tile_selection, "spec", None)
-            session_view_state["subpixel_selection"] = {
-                "parent_row": parent_row,
-                "parent_column": parent_column,
-                "sub_row": sub_row,
-                "sub_column": sub_column,
-                "parent_value": float(getattr(tile_selection, "parent_value", getattr(record, "score", 0.0))),
-                "subpixel_value": float(getattr(tile_selection, "subpixel_value", getattr(record, "score", 0.0))),
-                "subpixel_confidence": None if getattr(tile_selection, "subpixel_confidence", None) is None else float(getattr(tile_selection, "subpixel_confidence")),
-                "aggregation": str(getattr(tile_selection, "aggregation", "mean")),
-                "metric_key": str(getattr(tile_selection, "metric_key", state.metric_key or DEFAULT_MATRIX_METRIC_KEY)),
-                "spec_rows": int(getattr(spec, "rows", 0) or 0),
-                "spec_columns": int(getattr(spec, "columns", 0) or 0),
-            }
-            session_view_state["tile_selection"] = {
-                "row": sub_row,
-                "column": sub_column,
-            }
-        else:
-            session_view_state.pop("tile_selection", None)
-            session_view_state.pop("subpixel_selection", None)
+        if is_grid_inspection_details:
+            session_view_state["grid_damage_config"] = dict(getattr(state, "grid_inspection_config_payload", {}) or self._grid_inspection_config_payload())
+        grid_inspection_result = None
+        grid_inspection_source_path = None
+        if is_grid_inspection_details and bool(getattr(state, "grid_inspection_results_ready", False)):
+            grid_inspection_result = (getattr(state, "grid_inspection_payload_by_key", {}) or {}).get(
+                str(getattr(record, "key", "") or "")
+            )
+            grid_inspection_source_path = self._grid_inspection_display_source_path_for_record(record)
         dialog = ExtendFrameDetailsDialog(
             record=record,
             build_result=state.build_result,
@@ -3289,6 +4694,8 @@ class KarakalPresenter(QObject):
             on_view_state_changed=self._store_details_view_payload,
             export_folder=self._export_folder,
             allowed_result_kinds=("grid_cell_defects",) if is_grid_inspection_details else None,
+            grid_inspection_result=grid_inspection_result,
+            grid_inspection_source_path=grid_inspection_source_path,
             parent=None,
         )
         dialog.setModal(False)
@@ -3297,14 +4704,19 @@ class KarakalPresenter(QObject):
         dialog.destroyed.connect(lambda *_args, dialog=dialog: self._forget_details_dialog(dialog))
         self._details_dialogs.append(dialog)
         dialog.show()
+        if grid_focus:
+            focus = getattr(dialog, "focus_grid_cell_defect", None)
+            if callable(focus):
+                focus(grid_focus)
         dialog.raise_()
         dialog.activateWindow()
 
-    def _on_matrix_context_menu(self, state: ExtendMatrixTabState, record: FrameRecord | None, global_pos) -> None:
+    def _on_matrix_context_menu(self, state: ExtendMatrixTabState, record: FrameRecord | None, global_pos, matrix_view=None) -> None:
+        source_view = matrix_view or state.matrix_view
         selected_records = tuple()
-        if hasattr(state.matrix_view, "selected_records"):
+        if hasattr(source_view, "selected_records"):
             try:
-                selected_records = tuple(state.matrix_view.selected_records())
+                selected_records = tuple(source_view.selected_records())
             except Exception:
                 selected_records = tuple()
         menu = QMenu(self._view)
@@ -3314,6 +4726,7 @@ class KarakalPresenter(QObject):
             open_action = menu.addAction(self._t("context.open_details"))
         exclude_source = tuple(selected_records) if selected_records else ((record,) if record is not None else tuple())
         saved_validation_mask = self._saved_validation_mask_record_keys()
+        is_grid_inspection_context = source_view is getattr(self, "grid_inspection_matrix_view", None)
         export_menu = menu.addMenu(self._t("context.export_menu"))
         export_action = export_menu.addAction(self._t("context.export_frame_assets"))
         export_action.setEnabled(record is not None)
@@ -3321,17 +4734,54 @@ class KarakalPresenter(QObject):
         export_selected_action.setEnabled(bool(selected_records))
         export_layer_action = export_menu.addAction(self._t("context.export_result_layer_jpgs"))
         export_layer_action.setEnabled(bool(getattr(state.build_result, "records", ())))
-        validation_menu = menu.addMenu(self._t("context.validation_menu"))
-        exclude_action = validation_menu.addAction(self._t("context.exclude_selected_from_validation", count=len(exclude_source)))
+        export_grid_bmp_selected_action = None
+        export_grid_bmp_all_action = None
+        if is_grid_inspection_context:
+            export_menu.addSeparator()
+            payload_keys = {str(key) for key in (getattr(state, "grid_inspection_payload_by_key", {}) or {}).keys()}
+            selected_result_keys = {str(getattr(item, "key", "") or "") for item in exclude_source if item is not None}
+            export_grid_bmp_selected_action = export_menu.addAction(
+                self._t("context.export_selected_grid_check_bmps", count=len(exclude_source))
+            )
+            export_grid_bmp_selected_action.setEnabled(bool(selected_result_keys & payload_keys))
+            export_grid_bmp_all_action = export_menu.addAction(self._t("context.export_all_grid_check_bmps"))
+            export_grid_bmp_all_action.setEnabled(bool(payload_keys))
+        validation_menu = menu.addMenu(
+            self._t("context.grid_inspection_menu") if is_grid_inspection_context else self._t("context.validation_menu")
+        )
+        exclude_action = validation_menu.addAction(
+            self._t("context.exclude_selected_from_grid_inspection", count=len(exclude_source))
+            if is_grid_inspection_context
+            else self._t("context.exclude_selected_from_validation", count=len(exclude_source))
+        )
         exclude_action.setEnabled(bool(exclude_source))
-        restore_action = validation_menu.addAction(self._t("context.restore_selected_validation", count=len(exclude_source)))
+        restore_action = validation_menu.addAction(
+            self._t("context.restore_selected_grid_inspection", count=len(exclude_source))
+            if is_grid_inspection_context
+            else self._t("context.restore_selected_validation", count=len(exclude_source))
+        )
         restore_action.setEnabled(bool(exclude_source))
+        compute_selected_action = None
+        clear_calculation_scope_action = None
+        if is_grid_inspection_context:
+            compute_selected_action = validation_menu.addAction(
+                self._t("context.compute_selected_grid_inspection", count=len(exclude_source))
+            )
+            compute_selected_action.setEnabled(bool(exclude_source))
+            clear_calculation_scope_action = validation_menu.addAction(self._t("context.compute_all_grid_inspection"))
+            clear_calculation_scope_action.setEnabled(
+                bool(getattr(state, "grid_inspection_calculation_record_keys", set()))
+            )
         validation_menu.addSeparator()
         save_mask_action = validation_menu.addAction(self._t("context.save_validation_mask"))
         save_mask_action.setEnabled(bool(state.excluded_record_keys))
         apply_mask_action = validation_menu.addAction(self._t("context.apply_validation_mask"))
         apply_mask_action.setEnabled(bool(saved_validation_mask))
-        clear_all_exclusions_action = validation_menu.addAction(self._t("context.clear_all_validation_exclusions"))
+        clear_all_exclusions_action = validation_menu.addAction(
+            self._t("context.clear_all_grid_inspection_exclusions")
+            if is_grid_inspection_context
+            else self._t("context.clear_all_validation_exclusions")
+        )
         clear_all_exclusions_action.setEnabled(bool(state.excluded_record_keys))
         selected_action = menu.exec(global_pos)
         if selected_action is None:
@@ -3348,11 +4798,27 @@ class KarakalPresenter(QObject):
         if selected_action is export_layer_action:
             self._export_result_layer_jpgs(state)
             return
+        if export_grid_bmp_selected_action is not None and selected_action is export_grid_bmp_selected_action:
+            self._export_grid_inspection_bmps(
+                state,
+                self._grid_inspection_records_with_results(state),
+                render_records=tuple(exclude_source),
+            )
+            return
+        if export_grid_bmp_all_action is not None and selected_action is export_grid_bmp_all_action:
+            self._export_grid_inspection_bmps(state, self._grid_inspection_records_with_results(state))
+            return
         if selected_action is exclude_action and exclude_source:
             self._set_validation_exclusions(state, exclude_source, exclude=True)
             return
         if selected_action is restore_action and exclude_source:
             self._set_validation_exclusions(state, exclude_source, exclude=False)
+            return
+        if compute_selected_action is not None and selected_action is compute_selected_action and exclude_source:
+            self._set_grid_inspection_calculation_scope(state, tuple(exclude_source))
+            return
+        if clear_calculation_scope_action is not None and selected_action is clear_calculation_scope_action:
+            self._set_grid_inspection_calculation_scope(state, tuple())
             return
         if selected_action is save_mask_action:
             self._save_validation_mask(state)
@@ -3362,6 +4828,12 @@ class KarakalPresenter(QObject):
             return
         if selected_action is clear_all_exclusions_action:
             self._set_validation_exclusions(state, tuple(), clear_all=True)
+
+    def _on_grid_inspection_context_menu(self, record: FrameRecord | None, global_pos) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        self._on_matrix_context_menu(state, record, global_pos, matrix_view=getattr(self, "grid_inspection_matrix_view", None))
 
     def _set_validation_exclusions(
         self,
@@ -3387,10 +4859,23 @@ class KarakalPresenter(QObject):
             state.matrix_view.set_excluded_record_keys(set(current))
         except Exception:
             pass
+        if hasattr(self, "grid_inspection_matrix_view"):
+            try:
+                self.grid_inspection_matrix_view.set_excluded_record_keys(set(current))
+            except Exception:
+                pass
         if current != previous:
             self._invalidate_state_runtime_caches(state, clear_metric_results=True)
             state.last_analytics_request_signature = None
             state.build_result = replace(state.build_result, scores_computed=False)
+            state.grid_inspection_results_ready = False
+            state.grid_inspection_payload_by_key = {}
+            if hasattr(self, "grid_inspection_matrix_view"):
+                try:
+                    self.grid_inspection_matrix_view.set_grid_inspection_payloads({}, enabled=True)
+                except Exception:
+                    pass
+            self._refresh_grid_inspection_errors_panel(state)
         self._update_matrix_preview(state, state.matrix_view.current_record())
         self._sync_action_buttons()
 
@@ -3484,6 +4969,149 @@ class KarakalPresenter(QObject):
             self._t("message.export_frames_done", frame_count=exported_records, file_count=exported_files, folder=str(export_folder)),
         )
 
+    @staticmethod
+    def _record_source_asset_path(record: FrameRecord) -> Path | None:
+        for value in (
+            getattr(record, "original_path", ""),
+            getattr(record, "base_path", ""),
+            getattr(record, "first_path", ""),
+        ):
+            if not value:
+                continue
+            path = Path(str(value))
+            if path.is_file():
+                return path
+        return None
+
+    def _copy_percentile_source_asset(
+        self,
+        record: FrameRecord,
+        sources_dir: Path,
+        used_names: set[str],
+    ) -> dict[str, str] | None:
+        source_path = self._record_source_asset_path(record)
+        if source_path is None:
+            return None
+        sources_dir.mkdir(parents=True, exist_ok=True)
+        candidate_name = source_path.name
+        if candidate_name in used_names:
+            key_fragment = self._safe_export_fragment(getattr(record, "key", ""), fallback="frame")
+            candidate_name = f"{source_path.stem}_{key_fragment}{source_path.suffix}"
+        base_name = candidate_name
+        counter = 2
+        while candidate_name in used_names:
+            candidate_name = f"{Path(base_name).stem}_{counter}{source_path.suffix}"
+            counter += 1
+        used_names.add(candidate_name)
+        target_path = sources_dir / candidate_name
+        shutil.copy2(source_path, target_path)
+        return {
+            "record_key": str(getattr(record, "key", "")),
+            "source": str(source_path),
+            "destination": str(target_path),
+        }
+
+    def _percentile_export_folder(self, state: ExtendMatrixTabState, metric_key: str, bin_index: int, export_root: Path) -> Path:
+        labels = PERCENTILE_BAND_TITLES
+        band_label = labels[int(bin_index)] if 0 <= int(bin_index) < len(labels) else f"P{int(bin_index)}"
+        metric_label = self._metric_label(str(metric_key), state.build_result)
+        metric_fragment = self._safe_export_fragment(metric_label, fallback="metric")
+        band_fragment = self._safe_export_fragment(band_label, fallback="percentile")
+        return export_root / f"percentile_{metric_fragment}_{band_fragment}"
+
+    def _export_percentile_records_assets(
+        self,
+        state: ExtendMatrixTabState,
+        records: tuple[FrameRecord, ...],
+        metric_key: str,
+        bin_index: int,
+    ) -> None:
+        export_root = self._ensure_export_folder()
+        if export_root is None:
+            return
+        destination = self._percentile_export_folder(state, metric_key, bin_index, export_root)
+        destination.mkdir(parents=True, exist_ok=True)
+        sources_dir = destination / "sources"
+        used_source_names: set[str] = set()
+        exported_files = 0
+        exported_records = 0
+        asset_exports: list[dict[str, str]] = []
+        source_exports: list[dict[str, str]] = []
+        errors: list[str] = []
+        total = len(records)
+        progress = QProgressDialog(
+            self._t("message.export_percentile_progress", current=0, total=total, frame=""),
+            self._t("common.cancel"),
+            0,
+            max(1, total),
+            self._view,
+        )
+        progress.setWindowTitle(self._t("dialog.info_title"))
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(300)
+        progress.setValue(0)
+        QApplication.processEvents()
+        for index, record in enumerate(records, start=1):
+            progress.setLabelText(
+                self._t(
+                    "message.export_percentile_progress",
+                    current=index,
+                    total=total,
+                    frame=str(getattr(record, "display_name", "") or getattr(record, "key", "")),
+                )
+            )
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                break
+            try:
+                result = export_record_assets(state.build_result, record, destination, write_manifest=False)
+                source_result = self._copy_percentile_source_asset(record, sources_dir, used_source_names)
+            except Exception as error:
+                errors.append(f"{getattr(record, 'display_name', record.key)}: {error}")
+                continue
+            exported_files += int(result.get("exported_count", 0))
+            exported_records += 1
+            for file_entry in result.get("files", ()) or ():
+                if isinstance(file_entry, dict):
+                    normalized_entry = {str(key): str(value) for key, value in file_entry.items()}
+                    normalized_entry.setdefault("record_key", str(getattr(record, "key", "")))
+                    asset_exports.append(normalized_entry)
+            if source_result is not None:
+                source_exports.append(source_result)
+            progress.setValue(index)
+        progress.close()
+        low_bound, high_bound = self._percentile_bin_bounds(int(bin_index))
+        manifest = {
+            "metric_key": str(metric_key),
+            "metric_label": self._metric_label(str(metric_key), state.build_result),
+            "percentile_bin_index": int(bin_index),
+            "percentile_range": [float(low_bound), float(high_bound)],
+            "record_count": int(exported_records),
+            "records": [str(getattr(record, "key", "")) for record in records],
+            "exported_files": int(exported_files),
+            "files": asset_exports,
+            "sources": source_exports,
+        }
+        manifest_path = destination / "percentile_export_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+        if errors:
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                "\n".join(errors[:10]),
+            )
+            return
+        QMessageBox.information(
+            self._view,
+            self._t("dialog.info_title"),
+            self._t(
+                "message.export_percentile_done",
+                frame_count=exported_records,
+                file_count=exported_files,
+                folder=str(destination),
+            ),
+        )
+
     def _select_result_layer_exports(self, choices: tuple[dict[str, str], ...]) -> tuple[dict[str, str], ...]:
         dialog = QDialog(self._view)
         dialog.setWindowTitle(self._t("dialog.select_result_layers"))
@@ -3514,12 +5142,22 @@ class KarakalPresenter(QObject):
                 selected.append(dict(data))
         return tuple(selected)
 
-    def _export_result_layer_jpgs(self, state: ExtendMatrixTabState) -> None:
+    def _export_result_layer_jpgs(self, state: ExtendMatrixTabState, *, records: tuple[FrameRecord, ...] | None = None) -> None:
         export_folder = self._ensure_export_folder()
         if export_folder is None:
             return
+        export_build_result = state.build_result
+        if records is not None:
+            selected_keys = {str(getattr(record, "key", "") or "") for record in records if record is not None}
+            selected_records = tuple(
+                record
+                for record in (getattr(state.build_result, "records", ()) or ())
+                if str(getattr(record, "key", "") or "") in selected_keys
+            )
+            if selected_records:
+                export_build_result = replace(state.build_result, records=selected_records)
         try:
-            choices = available_result_layer_exports(state.build_result)
+            choices = available_result_layer_exports(export_build_result)
         except Exception as error:
             QMessageBox.warning(self._view, self._t("dialog.warning_title"), str(error))
             return
@@ -3560,7 +5198,7 @@ class KarakalPresenter(QObject):
             if not color.isValid():
                 return
             selected_rgb = (int(color.red()), int(color.green()), int(color.blue()))
-        records_count = len(tuple(getattr(state.build_result, "records", ()) or ()))
+        records_count = len(tuple(getattr(export_build_result, "records", ()) or ()))
         total_units = max(1, records_count * len(selected_choices))
         progress = QProgressDialog(
             self._t("message.export_result_layer_progress", current=0, total=total_units, frame=""),
@@ -3595,19 +5233,19 @@ class KarakalPresenter(QObject):
 
         try:
             result = export_result_layer_jpgs(
-                state.build_result,
+                export_build_result,
                 export_folder,
                 layer_key=str(selected_choices[0].get("key") or ""),
                 map_color=selected_rgb,
-                max_workers=int(getattr(state.build_result.options, "max_workers", 0) or 0) or None,
+                max_workers=int(getattr(export_build_result.options, "max_workers", 0) or 0) or None,
                 progress_callback=on_progress,
                 cancel_check=progress.wasCanceled,
             ) if len(selected_choices) == 1 else export_result_layers_jpgs(
-                state.build_result,
+                export_build_result,
                 export_folder,
                 layer_keys=tuple(str(choice.get("key") or "") for choice in selected_choices),
                 map_color=selected_rgb,
-                max_workers=int(getattr(state.build_result.options, "max_workers", 0) or 0) or None,
+                max_workers=int(getattr(export_build_result.options, "max_workers", 0) or 0) or None,
                 progress_callback=on_progress,
                 cancel_check=progress.wasCanceled,
             )
@@ -3634,6 +5272,146 @@ class KarakalPresenter(QObject):
                 layer=str(result.get("layer_title") or self._t("message.export_result_layers_count", count=len(selected_choices))),
                 folder=destination,
             ),
+        )
+
+    def _grid_inspection_records_with_results(self, state: ExtendMatrixTabState) -> tuple[FrameRecord, ...]:
+        payload_keys = {str(key) for key in (getattr(state, "grid_inspection_payload_by_key", {}) or {}).keys()}
+        if not payload_keys:
+            return tuple()
+        return tuple(
+            record
+            for record in (getattr(state.build_result, "records", ()) or ())
+            if str(getattr(record, "key", "") or "") in payload_keys
+        )
+
+    def _select_grid_check_export_format(self) -> str | None:
+        options = (
+            (self._t("export_format.bmp"), "bmp"),
+            (self._t("export_format.png"), "png"),
+            (self._t("export_format.jpg"), "jpg"),
+        )
+        labels = [label for label, _value in options]
+        selected, accepted = QInputDialog.getItem(
+            self._view,
+            self._t("dialog.export_grid_check_format_title"),
+            self._t("dialog.export_grid_check_format_label"),
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return None
+        selected_text = str(selected)
+        return next((value for label, value in options if label == selected_text), "bmp")
+
+    @staticmethod
+    def _grid_check_export_format_label(image_format: str) -> str:
+        normalized = str(image_format or "bmp").strip().lower().lstrip(".")
+        if normalized in {"jpg", "jpeg"}:
+            return "JPG"
+        if normalized == "png":
+            return "PNG"
+        return "BMP"
+
+    def _export_grid_inspection_bmps(
+        self,
+        state: ExtendMatrixTabState,
+        records: tuple[FrameRecord, ...],
+        *,
+        render_records: tuple[FrameRecord, ...] | None = None,
+        image_format: str | None = None,
+    ) -> None:
+        selected_format = str(image_format or "")
+        if not selected_format:
+            selected_format = self._select_grid_check_export_format() or ""
+        if not selected_format:
+            return
+        format_label = self._grid_check_export_format_label(selected_format)
+        export_folder = self._ensure_export_folder()
+        if export_folder is None:
+            return
+        payloads = dict(getattr(state, "grid_inspection_payload_by_key", {}) or {})
+        if not payloads:
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                self._t("message.no_grid_check_results"),
+            )
+            return
+        target_records = tuple(record for record in records if record is not None)
+        if not target_records:
+            target_records = self._grid_inspection_records_with_results(state)
+        render_record_keys = None
+        if render_records is not None:
+            render_record_keys = tuple(
+                str(getattr(record, "key", "") or "")
+                for record in render_records
+                if record is not None and str(getattr(record, "key", "") or "")
+            )
+        total_units = max(1, len(target_records))
+        progress = QProgressDialog(
+            self._t("message.export_grid_check_bmps_progress", format=format_label, current=0, total=total_units, frame=""),
+            self._t("common.cancel"),
+            0,
+            total_units,
+            self._view,
+        )
+        progress.setWindowTitle(self._t("context.export_grid_check_bmps"))
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        last_progress_update = 0.0
+
+        def on_progress(current: int, total: int, frame_name: str) -> None:
+            nonlocal last_progress_update
+            now = perf_counter()
+            if int(current) < int(total) and now - last_progress_update < 0.10:
+                return
+            last_progress_update = now
+            progress.setMaximum(max(1, int(total)))
+            progress.setValue(max(0, min(int(current), max(1, int(total)))))
+            progress.setLabelText(
+                self._t(
+                    "message.export_grid_check_bmps_progress",
+                    format=format_label,
+                    current=int(current),
+                    total=int(total),
+                    frame=str(frame_name or ""),
+                )
+            )
+            QApplication.processEvents()
+
+        config_payload = dict(getattr(state, "grid_inspection_config_payload", {}) or {})
+        enabled_error_types = tuple(str(item) for item in (config_payload.get("enabled_error_types") or ()) if str(item))
+        try:
+            result = export_grid_cell_defect_bmps(
+                state.build_result,
+                {str(key): value for key, value in payloads.items()},
+                export_folder,
+                records=target_records,
+                render_record_keys=render_record_keys,
+                image_format=selected_format,
+                enabled_reason_types=enabled_error_types or None,
+                progress_callback=on_progress,
+                cancel_check=progress.wasCanceled,
+            )
+        except Exception as error:
+            progress.close()
+            QMessageBox.warning(self._view, self._t("dialog.warning_title"), str(error))
+            return
+        progress.close()
+        count = int(result.get("exported_count", 0))
+        skipped = int(result.get("skipped_count", 0))
+        destination = str(result.get("destination") or "")
+        if count <= 0:
+            errors = tuple(result.get("errors", ()) or ())
+            message = "\n".join(str(item) for item in errors[:10]) if errors else self._t("message.no_grid_check_results")
+            QMessageBox.warning(self._view, self._t("dialog.warning_title"), message)
+            return
+        QMessageBox.information(
+            self._view,
+            self._t("dialog.info_title"),
+            self._t("message.export_grid_check_bmps_done", format=format_label, count=count, skipped=skipped, folder=destination),
         )
 
     def _store_details_view_payload(self, payload: dict[str, object]) -> None:
@@ -3737,12 +5515,6 @@ class KarakalPresenter(QObject):
             return
         if selected is None:
             preview.frame_value.setText("-")
-            if preview.subpixel_group is not None:
-                preview.subpixel_group.hide()
-            if preview.subpixel_value is not None:
-                preview.subpixel_value.setText("-")
-            if getattr(preview, "subpixel_score_card", None) is not None:
-                preview.subpixel_score_card.hide()
             for card in preview.score_cards.values():
                 card.set_payload("-", self._metric_score_style(None, state.metric_key), "", visible=False, percentile_text="", percentile_style=self._percentile_style(None))
             if preview.overall_group is not None:
@@ -3757,12 +5529,6 @@ class KarakalPresenter(QObject):
             preview.frame_value.setText(selected.display_name if not management_text else f"{selected.display_name}\n{management_text}")
             if excluded_text:
                 preview.frame_value.setText(f"{preview.frame_value.text()}\n{excluded_text}")
-            if preview.subpixel_group is not None:
-                preview.subpixel_group.hide()
-            if preview.subpixel_value is not None:
-                preview.subpixel_value.setText("-")
-            if getattr(preview, "subpixel_score_card", None) is not None:
-                preview.subpixel_score_card.hide()
             for card in preview.score_cards.values():
                 card.set_payload("-", self._metric_score_style(None, state.metric_key), "", visible=False, percentile_text="", percentile_style=self._percentile_style(None))
             if preview.overall_group is not None:
@@ -3774,75 +5540,6 @@ class KarakalPresenter(QObject):
         management_text = self._management_summary_text(management_payload)
         preview.frame_value.setText(selected.display_name if not management_text else f"{selected.display_name}\n{management_text}")
         summary = selected.summary
-        selected_subpixel = None
-        if hasattr(state.matrix_view, "selected_tile_selection"):
-            try:
-                selected_subpixel = state.matrix_view.selected_tile_selection()
-            except Exception:
-                selected_subpixel = None
-        if (
-            preview.subpixel_group is not None
-            and preview.subpixel_value is not None
-            and selected_subpixel is not None
-            and getattr(selected_subpixel, "record", None) is not None
-            and getattr(selected_subpixel.record, "key", None) == selected.key
-        ):
-            parent_row = int(getattr(selected_subpixel, "matrix_row", getattr(selected_subpixel, "row", 0))) + 1
-            parent_column = int(getattr(selected_subpixel, "matrix_column", getattr(selected_subpixel, "column", 0))) + 1
-            sub_row = int(getattr(selected_subpixel, "sub_row", 0)) + 1
-            sub_column = int(getattr(selected_subpixel, "sub_column", 0)) + 1
-            spec = getattr(selected_subpixel, "spec", None)
-            rows = int(getattr(spec, "rows", 0) or 0)
-            columns = int(getattr(spec, "columns", 0) or 0)
-            parent_value = float(getattr(selected_subpixel, "parent_value", selected.score if bool(getattr(selected, "score_ready", False)) else 0.0))
-            subpixel_value = float(getattr(selected_subpixel, "subpixel_value", parent_value))
-            summary = selected.summary
-            frame_type = str(getattr(summary, "frame_type", "") or self._t("details.frame_type"))
-            preview.subpixel_value.setText(
-                self._t(
-                    "details.subpixel_selection_value",
-                    parent_row=parent_row,
-                    parent_column=parent_column,
-                    sub_row=sub_row,
-                    sub_column=sub_column,
-                    rows=rows,
-                    columns=columns,
-                    parent_value=parent_value,
-                )
-            )
-            preview.subpixel_group.setTitle(self._t("details.subpixel_selection"))
-            preview.subpixel_value.show()
-            preview.subpixel_group.show()
-            if getattr(preview, "subpixel_score_card", None) is not None:
-                subpixel_metric_key = str(state.metric_key or state.build_result.selected_metric_key or DEFAULT_MATRIX_METRIC_KEY)
-                subpixel_title = self._metric_text_for_key(subpixel_metric_key, state.build_result)
-                subpixel_details = "\n".join(
-                    [
-                        f"{self._t('details.frame_type')}: {frame_type}",
-                        f"{self._t('details.selected_comparison_score')}: {self._metric_score_text(subpixel_value, subpixel_metric_key)}",
-                        f"{self._t('details.subpixel_selection')}: {subpixel_value:.4f}",
-                        f"{self._t('details.parent_score')}: {float(getattr(selected_subpixel, 'parent_value', selected.score if bool(getattr(selected, 'score_ready', False)) else 0.0)):.4f}",
-                    ]
-                )
-                preview.subpixel_score_card.set_payload(
-                    self._metric_score_text(subpixel_value, subpixel_metric_key),
-                    self._metric_score_style(subpixel_value, subpixel_metric_key),
-                    subpixel_details,
-                    visible=True,
-                    percentile_text="",
-                    percentile_style=self._percentile_style(None),
-                    tooltip=self._metric_hint(subpixel_metric_key, selected.summary) if selected.summary is not None else self._metric_hint_fallback(subpixel_metric_key, state.build_result),
-                )
-                try:
-                    preview.subpixel_score_card.title_label.setText(subpixel_title)
-                except Exception:
-                    pass
-        elif preview.subpixel_group is not None:
-            preview.subpixel_group.hide()
-            if preview.subpixel_value is not None:
-                preview.subpixel_value.setText("-")
-            if getattr(preview, "subpixel_score_card", None) is not None:
-                preview.subpixel_score_card.hide()
         percentile_cache: dict[str, dict[str, float]] = {}
         visible_metric_keys = set(self._display_metric_keys_for_state(state, state.build_result))
         overall_visible = False
@@ -3893,7 +5590,22 @@ class KarakalPresenter(QObject):
         can_start_build = active_model_count >= required_model_count or can_build_from_base_only
         self.btn_build.setEnabled((current_state is not None or can_start_build) and not is_busy)
         self.btn_compute.setEnabled(current_state is not None and not is_busy)
+        if hasattr(self, "frame_search_input"):
+            self.frame_search_input.setEnabled(current_state is not None and not is_busy)
+        if hasattr(self, "btn_frame_search"):
+            self.btn_frame_search.setEnabled(current_state is not None and not is_busy)
+        if hasattr(self, "btn_export_layer"):
+            self.btn_export_layer.setEnabled(current_state is not None and bool(getattr(current_state.build_result, "records", ())) and not is_busy)
+        if hasattr(self, "btn_export_grid_checks"):
+            grid_mode = self._current_app_mode() == "grid_inspection"
+            has_grid_payloads = bool(getattr(current_state, "grid_inspection_payload_by_key", {}) or {}) if current_state is not None else False
+            self.btn_export_grid_checks.setVisible(grid_mode)
+            self.btn_export_grid_checks.setEnabled(grid_mode and has_grid_payloads and not is_busy)
         self.btn_cancel.setEnabled(is_busy)
+        if hasattr(self, "pair_matrix_table"):
+            self.pair_matrix_table.setEnabled(not is_busy)
+        if hasattr(self, "active_pair_list"):
+            self.active_pair_list.setEnabled(not is_busy)
         if hasattr(self._view, "set_workflow_summary"):
             original_state = self._t("workflow.state.ready") if self._original_folder is not None else self._t("workflow.state.pending")
             gt_state = self._t("workflow.state.ready") if self._gt_folder is not None else self._t("workflow.state.optional")
@@ -3945,12 +5657,22 @@ class KarakalPresenter(QObject):
             "original_folder": str(self._original_folder.path) if self._original_folder is not None else None,
             "gt_folder": str(self._gt_folder.path) if self._gt_folder is not None else None,
             "export_folder": str(self._export_folder) if self._export_folder is not None else None,
+            "comparison_pairs": [
+                {
+                    "model_a_id": pair.model_a_id,
+                    "model_b_id": pair.model_b_id,
+                    "operations": list(pair.operations),
+                }
+                for pair in self._selected_comparison_pairs()
+            ],
+            "comparison_pair_defaults_initialized": bool(self._pair_defaults_initialized),
         }
 
     def _restore_persisted_state(self) -> None:
         self._restore_folder_manager_state()
         self._restore_build_settings()
         self._update_source_labels()
+        self._refresh_pair_matrix()
         self._on_app_mode_changed()
         self._push_management_assignee_colors_to_views()
 
@@ -3984,8 +5706,21 @@ class KarakalPresenter(QObject):
                 self._gt_folder = FolderSpec(path=path, label=path.name)
             if export_folder and Path(export_folder).exists():
                 self._export_folder = Path(export_folder)
+            self._pair_defaults_initialized = bool(payload.get("comparison_pair_defaults_initialized", False))
+            self._comparison_pair_operations.clear()
+            for pair_entry in payload.get("comparison_pairs", []) or []:
+                model_a = str(pair_entry.get("model_a_id") or "").strip()
+                model_b = str(pair_entry.get("model_b_id") or "").strip()
+                operations = {
+                    str(operation).strip().lower()
+                    for operation in pair_entry.get("operations", []) or []
+                    if str(operation).strip().lower() in PAIR_OPERATION_ORDER
+                }
+                if model_a and model_b and operations:
+                    self._comparison_pair_operations[(model_a, model_b)] = operations
         finally:
             self.folder_list.blockSignals(False)
+        self._refresh_pair_matrix()
 
     def _build_build_settings_payload(self) -> dict:
         mask_threshold, boundary_radius = self._selected_polygon_compare_values()
@@ -3993,6 +5728,7 @@ class KarakalPresenter(QObject):
             "thumbnail_size": int(DEFAULT_CELL_SIZE),
             "matrix_score_view_mode": str(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE),
             "analysis_mode": self._selected_analysis_mode(),
+            "comparison_target": self._selected_comparison_target().value,
             "object_type": self._selected_object_type(),
             "geometry_mode": str(self.geometry_mode_combo.currentData() or DEFAULT_GEOMETRY_MODE),
             "polygon_compare_profile": self._selected_polygon_compare_profile(),
@@ -4004,15 +5740,7 @@ class KarakalPresenter(QObject):
             "point_confidence_radius": int(self.point_confidence_radius_spin.value()),
             "point_extraction_mode": str(self.point_extraction_mode_combo.currentData() or DEFAULT_POINT_EXTRACTION_MODE),
             "polygon_confidence_summary": str(self.polygon_confidence_summary_combo.currentData() or DEFAULT_POLYGON_CONFIDENCE_SUMMARY),
-            "tile_mode": self._selected_tile_mode(),
-            "tile_width": int(self.tile_width_spin.value()),
-            "tile_height": int(self.tile_height_spin.value()),
-            "tile_overlap_mode": self._selected_tile_overlap_mode(),
-            "tile_overlap": int(self.tile_overlap_spin.value()),
-            "subpixel_view_mode": self._selected_subpixel_view_mode(),
-            "subpixel_rows": self._selected_subpixel_rows(),
-            "subpixel_columns": self._selected_subpixel_columns(),
-            "subpixel_aggregation": self._selected_subpixel_aggregation(),
+            "grid_inspection_config": self._grid_inspection_config_payload(),
             "layout_mode": "indexed_grid",
             "total_frames": int(DEFAULT_TOTAL_FRAMES),
             "frames_per_row": int(self.frames_per_row_spin.value()),
@@ -4031,6 +5759,7 @@ class KarakalPresenter(QObject):
             QSignalBlocker(self.thumbnail_size_spin),
             QSignalBlocker(self.matrix_score_view_combo),
             QSignalBlocker(self.analysis_mode_combo),
+            QSignalBlocker(self.comparison_target_combo),
             QSignalBlocker(self.geometry_mode_combo),
             QSignalBlocker(self.polygon_compare_profile_combo),
             QSignalBlocker(self.mask_threshold_spin),
@@ -4039,15 +5768,6 @@ class KarakalPresenter(QObject):
             QSignalBlocker(self.point_match_radius_spin),
             QSignalBlocker(self.point_confidence_radius_spin),
             QSignalBlocker(self.point_extraction_mode_combo),
-            QSignalBlocker(self.tile_mode_combo),
-            QSignalBlocker(self.subpixel_view_mode_combo),
-            QSignalBlocker(self.subpixel_rows_spin),
-            QSignalBlocker(self.subpixel_columns_spin),
-            QSignalBlocker(self.subpixel_aggregation_combo),
-            QSignalBlocker(self.tile_width_spin),
-            QSignalBlocker(self.tile_height_spin),
-            QSignalBlocker(self.tile_overlap_mode_combo),
-            QSignalBlocker(self.tile_overlap_spin),
             QSignalBlocker(self.polygon_confidence_summary_combo),
             QSignalBlocker(self.layout_mode_combo),
             QSignalBlocker(self.total_frames_spin),
@@ -4059,6 +5779,16 @@ class KarakalPresenter(QObject):
             QSignalBlocker(self.metric_combo),
             QSignalBlocker(self.frame_type_filter_combo),
         ]
+        for slider_host in (
+            getattr(self, "grid_strictness_slider", None),
+            getattr(self, "grid_defect_threshold_slider", None),
+            getattr(self, "grid_fill_sensitivity_slider", None),
+            getattr(self, "grid_merge_sensitivity_slider", None),
+            getattr(self, "grid_noise_filter_slider", None),
+        ):
+            slider = getattr(slider_host, "_slider", None)
+            if slider is not None:
+                blockers.append(QSignalBlocker(slider))
         _ = blockers
         self.thumbnail_size_spin.setValue(int(DEFAULT_CELL_SIZE))
         score_view_mode = str(payload.get("matrix_score_view_mode") or DEFAULT_MATRIX_SCORE_VIEW_MODE)
@@ -4067,30 +5797,12 @@ class KarakalPresenter(QObject):
         analysis_mode = str(payload.get("analysis_mode") or self._selected_analysis_mode())
         analysis_index = self.analysis_mode_combo.findData(analysis_mode)
         self.analysis_mode_combo.setCurrentIndex(analysis_index if analysis_index >= 0 else 0)
+        comparison_target = str(payload.get("comparison_target") or DEFAULT_COMPARISON_TARGET)
+        comparison_target_index = self.comparison_target_combo.findData(comparison_target)
+        self.comparison_target_combo.setCurrentIndex(comparison_target_index if comparison_target_index >= 0 else 0)
         geometry_mode = str(payload.get("geometry_mode") or geometry_mode_for_object_type(payload.get("object_type")).value or DEFAULT_GEOMETRY_MODE)
         geometry_index = self.geometry_mode_combo.findData(geometry_mode)
         self.geometry_mode_combo.setCurrentIndex(geometry_index if geometry_index >= 0 else 0)
-        tile_mode = str(payload.get("tile_mode") or DEFAULT_TILE_MODE)
-        if tile_mode == "subpixel":
-            tile_mode = "tile"
-        tile_mode_index = self.tile_mode_combo.findData(tile_mode)
-        self.tile_mode_combo.setCurrentIndex(tile_mode_index if tile_mode_index >= 0 else 0)
-        subpixel_view_mode = str(payload.get("subpixel_view_mode") or DEFAULT_SUBPIXEL_VIEW_MODE)
-        if subpixel_view_mode == "subpixel":
-            subpixel_view_mode = "tile"
-        subpixel_view_mode_index = self.subpixel_view_mode_combo.findData(subpixel_view_mode)
-        self.subpixel_view_mode_combo.setCurrentIndex(subpixel_view_mode_index if subpixel_view_mode_index >= 0 else 0)
-        self.subpixel_rows_spin.setValue(int(payload.get("subpixel_rows", DEFAULT_SUBPIXEL_ROWS)))
-        self.subpixel_columns_spin.setValue(int(payload.get("subpixel_columns", DEFAULT_SUBPIXEL_COLUMNS)))
-        subpixel_aggregation = str(payload.get("subpixel_aggregation") or DEFAULT_SUBPIXEL_AGGREGATION)
-        subpixel_aggregation_index = self.subpixel_aggregation_combo.findData(subpixel_aggregation)
-        self.subpixel_aggregation_combo.setCurrentIndex(subpixel_aggregation_index if subpixel_aggregation_index >= 0 else 0)
-        self.tile_width_spin.setValue(int(payload.get("tile_width", DEFAULT_TILE_WIDTH)))
-        self.tile_height_spin.setValue(int(payload.get("tile_height", DEFAULT_TILE_HEIGHT)))
-        tile_overlap_mode = str(payload.get("tile_overlap_mode") or DEFAULT_TILE_OVERLAP_MODE)
-        tile_overlap_mode_index = self.tile_overlap_mode_combo.findData(tile_overlap_mode)
-        self.tile_overlap_mode_combo.setCurrentIndex(tile_overlap_mode_index if tile_overlap_mode_index >= 0 else 0)
-        self.tile_overlap_spin.setValue(int(payload.get("tile_overlap", DEFAULT_TILE_OVERLAP)))
         compare_profile = str(payload.get("polygon_compare_profile") or "")
         self.mask_threshold_spin.setValue(float(payload.get("mask_threshold", self.mask_threshold_spin.value())))
         self.boundary_radius_spin.setValue(int(payload.get("boundary_radius", self.boundary_radius_spin.value())))
@@ -4111,6 +5823,7 @@ class KarakalPresenter(QObject):
         polygon_confidence_summary = str(payload.get("polygon_confidence_summary") or DEFAULT_POLYGON_CONFIDENCE_SUMMARY)
         polygon_summary_index = self.polygon_confidence_summary_combo.findData(polygon_confidence_summary)
         self.polygon_confidence_summary_combo.setCurrentIndex(polygon_summary_index if polygon_summary_index >= 0 else 0)
+        self._set_grid_inspection_config_controls(dict(payload.get("grid_inspection_config") or {}))
         layout_index = self.layout_mode_combo.findData("indexed_grid")
         self.layout_mode_combo.setCurrentIndex(layout_index if layout_index >= 0 else 0)
         self.total_frames_spin.setValue(int(DEFAULT_TOTAL_FRAMES))
@@ -4130,7 +5843,6 @@ class KarakalPresenter(QObject):
             del blocker
         if hasattr(self, "analysis_settings_body"):
             self.analysis_settings_body.setVisible(analysis_panel_expanded)
-        self._sync_tile_overlap_bounds()
         self._sync_mode_controls(None, None)
 
     def _persist_state(self) -> None:

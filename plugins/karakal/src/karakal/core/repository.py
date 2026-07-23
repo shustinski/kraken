@@ -8,12 +8,14 @@ import math
 import pickle
 import shutil
 import ctypes
+import uuid
 from collections import OrderedDict
 from time import perf_counter
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 from PyQt6.QtCore import Qt
@@ -45,7 +47,7 @@ try:
 except Exception:
     cv2 = None
 
-from .backend_constants import (
+from .backend_constants import (  # noqa: E402
     ANALYSIS_CACHE_DIR,
     ANALYSIS_CACHE_VERSION,
     BCE_SCORE_CAP,
@@ -151,11 +153,13 @@ from .backend_constants import (
     EXPORT_SELECTION_MODE_PERCENTILE,
     INVALID_FILENAME_PATTERN,
 )
-from .confidence_maps import build_model_uncertainty, confidence_bad_area_intensity, normalize_algorithmic_confidence
-from .domain import (
+from .confidence_maps import build_model_uncertainty, confidence_bad_area_intensity, normalize_algorithmic_confidence  # noqa: E402
+from .domain import (  # noqa: E402
     BuildOptions,
     BuildResult,
+    ComparisonPairSelection,
     ComparisonMode,
+    ComparisonTarget,
     FolderSpec,
     FrameAnalysisSummary,
     FrameIdentity,
@@ -177,8 +181,8 @@ from .domain import (
     PolygonConfidencePipelineConfig,
     PolygonObjectConfidence,
 )
-from .grid_anomaly import detect_grid_cell_anomalies
-from ..comparison import (
+from .grid_anomaly import GridFrameAnalysisResult, detect_grid_cell_anomalies  # noqa: E402
+from ..comparison import (  # noqa: E402
     EnsembleComparisonRequest,
     FrameComparisonResult,
     ModelFrameResult,
@@ -205,6 +209,13 @@ DETAIL_CACHE_MAX_FILES = 20000
 CACHE_TRIM_INTERVAL_SECONDS = 300.0
 _CACHE_TRIM_LAST_BY_DIR: dict[str, float] = {}
 _LAST_ANALYTICS_WORKER_PLAN: dict[str, object] = {}
+
+PAIR_METRIC_OPERATIONS = frozenset({"xor", "iou", "dice"})
+CONFIDENCE_PAIR_METRIC_OPERATIONS = frozenset({"mae", "rmse", "mean_delta", "correlation", "low_iou", "disagreement"})
+COMBINED_PAIR_OUTPUT_WEIGHT = 0.7
+COMBINED_PAIR_CONFIDENCE_WEIGHT = 0.3
+CONFIDENCE_LOW_THRESHOLD = 0.5
+CONFIDENCE_DIFF_THRESHOLD = 0.25
 
 
 class BuildCancelledError(RuntimeError):
@@ -974,6 +985,79 @@ def _path_signature(path_text: str | None) -> tuple[str, int, int] | None:
     return _image_signature(Path(path_text))
 
 
+def _normalized_pair_operations(operations: tuple[str, ...] | list[str] | set[str] | None) -> tuple[str, ...]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for operation in operations or ():
+        key = str(operation or "").strip().lower()
+        if key not in PAIR_METRIC_OPERATIONS or key in seen:
+            continue
+        ordered.append(key)
+        seen.add(key)
+    return tuple(ordered)
+
+
+def _normalized_comparison_pairs(pairs: tuple[ComparisonPairSelection, ...] | list[ComparisonPairSelection] | None) -> tuple[ComparisonPairSelection, ...]:
+    normalized: list[ComparisonPairSelection] = []
+    seen: set[tuple[str, str]] = set()
+    for pair in pairs or ():
+        model_a = str(getattr(pair, "model_a_id", "") or "").strip()
+        model_b = str(getattr(pair, "model_b_id", "") or "").strip()
+        if not model_a or not model_b or model_a == model_b:
+            continue
+        operations = _normalized_pair_operations(getattr(pair, "operations", ()))
+        if not operations:
+            continue
+        key = (model_a, model_b)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(ComparisonPairSelection(model_a, model_b, operations))
+    return tuple(normalized)
+
+
+def pair_metric_key(model_a_id: str, model_b_id: str, operation: str) -> str:
+    return f"pair::{model_a_id}::{model_b_id}::{operation}"
+
+
+def confidence_pair_metric_key(model_a_id: str, model_b_id: str, operation: str) -> str:
+    return f"confidence_pair::{model_a_id}::{model_b_id}::{operation}"
+
+
+def combined_pair_metric_key(model_a_id: str, model_b_id: str, operation: str = "risk") -> str:
+    return f"combined_pair::{model_a_id}::{model_b_id}::{operation}"
+
+
+def parse_pair_metric_key(metric_key: str | None) -> tuple[str, str, str] | None:
+    parts = str(metric_key or "").split("::")
+    if len(parts) != 4 or parts[0] != "pair":
+        return None
+    model_a, model_b, operation = (str(parts[1]), str(parts[2]), str(parts[3]).lower())
+    if not model_a or not model_b or operation not in PAIR_METRIC_OPERATIONS:
+        return None
+    return model_a, model_b, operation
+
+
+def parse_confidence_pair_metric_key(metric_key: str | None) -> tuple[str, str, str] | None:
+    parts = str(metric_key or "").split("::")
+    if len(parts) != 4 or parts[0] != "confidence_pair":
+        return None
+    model_a, model_b, operation = (str(parts[1]), str(parts[2]), str(parts[3]).lower())
+    if not model_a or not model_b or operation not in CONFIDENCE_PAIR_METRIC_OPERATIONS:
+        return None
+    return model_a, model_b, operation
+
+
+def parse_combined_pair_metric_key(metric_key: str | None) -> tuple[str, str, str] | None:
+    parts = str(metric_key or "").split("::")
+    if len(parts) != 4 or parts[0] != "combined_pair":
+        return None
+    model_a, model_b, operation = (str(parts[1]), str(parts[2]), str(parts[3]).lower())
+    if not model_a or not model_b or operation != "risk":
+        return None
+    return model_a, model_b, operation
+
+
 def _record_payload_cache_key(
     record: FrameRecord,
     model_specs: tuple[ModelSpec, ...],
@@ -989,6 +1073,7 @@ def _record_payload_cache_key(
     include_model_output_confidence: bool,
     include_pairwise_metrics: bool,
     include_model_metrics: bool,
+    comparison_pairs: tuple[ComparisonPairSelection, ...] = (),
 ) -> str:
     payload = {
         "version": ANALYSIS_CACHE_VERSION,
@@ -1004,6 +1089,14 @@ def _record_payload_cache_key(
         "include_model_output_confidence": bool(include_model_output_confidence),
         "include_pairwise_metrics": bool(include_pairwise_metrics),
         "include_model_metrics": bool(include_model_metrics),
+        "comparison_pairs": [
+            {
+                "model_a_id": pair.model_a_id,
+                "model_b_id": pair.model_b_id,
+                "operations": list(pair.operations),
+            }
+            for pair in _normalized_comparison_pairs(comparison_pairs)
+        ],
         "original": _path_signature(record.original_path),
         "gt": _path_signature(record.gt_path),
         "models": [
@@ -1064,7 +1157,7 @@ def _load_cached_record_payload(cache_key: str) -> dict[str, object] | None:
 
 def _store_cached_record_payload(cache_key: str, payload: dict[str, object]) -> None:
     cache_path = _record_payload_cache_path(cache_key)
-    tmp_path = cache_path.with_suffix(".tmp")
+    tmp_path = cache_path.with_name(f"{cache_path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with tmp_path.open("wb") as handle:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1114,7 +1207,7 @@ def _store_cached_detail_payload(cache_key: str, payload: object) -> None:
     while len(_DETAIL_PAYLOAD_MEMORY_CACHE) > DETAIL_PAYLOAD_CACHE_SIZE:
         _DETAIL_PAYLOAD_MEMORY_CACHE.popitem(last=False)
     cache_path = _detail_payload_cache_path(cache_key)
-    tmp_path = cache_path.with_suffix(".tmp")
+    tmp_path = cache_path.with_name(f"{cache_path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with tmp_path.open("wb") as handle:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -5938,6 +6031,133 @@ def _pairwise_model_comparisons(
     return tuple(rows)
 
 
+def _pairwise_rows_by_ordered_pair(pairwise_rows: tuple[dict[str, object], ...]) -> dict[tuple[str, str], dict[str, object]]:
+    lookup: dict[tuple[str, str], dict[str, object]] = {}
+    for row in pairwise_rows:
+        model_a = str(row.get("model_a") or "")
+        model_b = str(row.get("model_b") or "")
+        if not model_a or not model_b:
+            continue
+        lookup[(model_a, model_b)] = row
+        lookup[(model_b, model_a)] = row
+    return lookup
+
+
+def _configured_pair_metric_values(
+    pairs: tuple[ComparisonPairSelection, ...],
+    pairwise_rows: tuple[dict[str, object], ...],
+    masks_by_model: dict[str, np.ndarray],
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    if not pairs:
+        return values
+    rows_by_pair = _pairwise_rows_by_ordered_pair(pairwise_rows)
+    for pair in _normalized_comparison_pairs(pairs):
+        model_a = str(pair.model_a_id)
+        model_b = str(pair.model_b_id)
+        row = rows_by_pair.get((model_a, model_b), {})
+        for operation in pair.operations:
+            key = pair_metric_key(model_a, model_b, operation)
+            if operation == "xor":
+                mask_a = masks_by_model.get(model_a)
+                mask_b = masks_by_model.get(model_b)
+                if mask_a is not None and mask_b is not None:
+                    values[key] = float(np.mean(np.logical_xor(np.asarray(mask_a, dtype=bool), np.asarray(mask_b, dtype=bool)), dtype=np.float64))
+                    continue
+                agreement = row.get("agreement_score")
+                if agreement is not None:
+                    values[key] = float(_clip01(1.0 - float(agreement)))
+                continue
+            metric_value = row.get(operation)
+            if metric_value is not None and math.isfinite(float(metric_value)):
+                values[key] = float(metric_value)
+    return values
+
+
+def _confidence_pair_metrics(confidence_a: np.ndarray, confidence_b: np.ndarray) -> dict[str, float]:
+    first_raw = np.asarray(confidence_a, dtype=np.float32)
+    second_raw = np.asarray(confidence_b, dtype=np.float32)
+    first = np.clip(first_raw, 0.0, 1.0)
+    second = np.clip(second_raw, 0.0, 1.0)
+    if first.ndim != 2 or second.ndim != 2 or first.shape != second.shape or first.size == 0:
+        return {}
+    valid = np.isfinite(first_raw) & np.isfinite(second_raw)
+    if not np.any(valid):
+        return {}
+    first = np.clip(first_raw[valid], 0.0, 1.0)
+    second = np.clip(second_raw[valid], 0.0, 1.0)
+    delta = first - second
+    abs_delta = np.abs(delta)
+    low_a = first < CONFIDENCE_LOW_THRESHOLD
+    low_b = second < CONFIDENCE_LOW_THRESHOLD
+    union = np.logical_or(low_a, low_b)
+    intersection = np.logical_and(low_a, low_b)
+    low_iou = 0.0 if not np.any(union) else float(np.mean(intersection[union], dtype=np.float64))
+    flat_a = first.reshape(-1)
+    flat_b = second.reshape(-1)
+    if flat_a.size < 2 or float(np.std(flat_a)) <= EPS or float(np.std(flat_b)) <= EPS:
+        correlation = float("nan")
+    else:
+        correlation = float(np.corrcoef(flat_a, flat_b)[0, 1])
+    return {
+        "mae": float(np.mean(abs_delta, dtype=np.float64)),
+        "rmse": float(np.sqrt(np.mean(np.square(delta.astype(np.float64, copy=False)), dtype=np.float64))),
+        "mean_delta": float(np.mean(delta, dtype=np.float64)),
+        "correlation": correlation,
+        "low_iou": low_iou,
+        "disagreement": float(np.mean(abs_delta > CONFIDENCE_DIFF_THRESHOLD, dtype=np.float64)),
+    }
+
+
+def _configured_confidence_pair_metric_values(
+    pairs: tuple[ComparisonPairSelection, ...],
+    output_probabilities_by_model: dict[str, np.ndarray],
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for pair in _normalized_comparison_pairs(pairs):
+        model_a = str(pair.model_a_id)
+        model_b = str(pair.model_b_id)
+        confidence_a = output_probabilities_by_model.get(model_a)
+        confidence_b = output_probabilities_by_model.get(model_b)
+        if confidence_a is None or confidence_b is None:
+            continue
+        metrics = _confidence_pair_metrics(confidence_a, confidence_b)
+        for operation, value in metrics.items():
+            if math.isfinite(float(value)):
+                values[confidence_pair_metric_key(model_a, model_b, operation)] = float(value)
+    return values
+
+
+def _configured_combined_pair_metric_values(
+    pairs: tuple[ComparisonPairSelection, ...],
+    pair_metric_values: dict[str, float],
+    confidence_pair_metric_values: dict[str, float],
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for pair in _normalized_comparison_pairs(pairs):
+        model_a = str(pair.model_a_id)
+        model_b = str(pair.model_b_id)
+        output_value = pair_metric_values.get(pair_metric_key(model_a, model_b, "xor"))
+        if output_value is None:
+            output_value = pair_metric_values.get(pair_metric_key(model_a, model_b, "iou"))
+            if output_value is not None:
+                output_value = 1.0 - float(output_value)
+        if output_value is None:
+            output_value = pair_metric_values.get(pair_metric_key(model_a, model_b, "dice"))
+            if output_value is not None:
+                output_value = 1.0 - float(output_value)
+        if output_value is None:
+            continue
+        confidence_value = confidence_pair_metric_values.get(confidence_pair_metric_key(model_a, model_b, "disagreement"))
+        if confidence_value is None:
+            continue
+        values[combined_pair_metric_key(model_a, model_b)] = float(_clip01(
+            COMBINED_PAIR_OUTPUT_WEIGHT * float(output_value)
+            + COMBINED_PAIR_CONFIDENCE_WEIGHT * float(confidence_value)
+        ))
+    return values
+
+
 def _point_feature_vector(prediction_view: object) -> dict[str, float]:
     points = tuple(getattr(prediction_view, "points", ()))
     point_count = len(points)
@@ -6389,6 +6609,8 @@ def _confidence_pairwise_metric_values(output_probabilities_by_model: dict[str, 
 def _metric_requires_model_output_confidence(metric_key: str | None) -> bool:
     if str(metric_key or "") in CONFIDENCE_COMPARISON_METRIC_KEYS:
         return True
+    if parse_confidence_pair_metric_key(metric_key) is not None or parse_combined_pair_metric_key(metric_key) is not None:
+        return True
     parsed = _parse_model_metric_key(str(metric_key or ''))
     if parsed is None:
         return False
@@ -6398,6 +6620,8 @@ def _metric_requires_model_output_confidence(metric_key: str | None) -> bool:
 
 def _metric_requires_pairwise_metrics(metric_key: str | None) -> bool:
     metric_key_text = str(metric_key or 'overall_frame_score')
+    if parse_pair_metric_key(metric_key_text) is not None or parse_combined_pair_metric_key(metric_key_text) is not None:
+        return True
     parsed = _parse_model_metric_key(metric_key_text)
     if parsed is not None:
         family, _model_id = parsed
@@ -6454,6 +6678,7 @@ def _analyze_record_payload(
     include_model_output_confidence: bool = False,
     include_pairwise_metrics: bool = True,
     include_model_metrics: bool = True,
+    comparison_pairs: tuple[ComparisonPairSelection, ...] = (),
 ) -> dict[str, object] | None:
     timings_ms: dict[str, float] = {}
     cache_key = None
@@ -6472,6 +6697,7 @@ def _analyze_record_payload(
             include_model_output_confidence=bool(include_model_output_confidence),
             include_pairwise_metrics=bool(include_pairwise_metrics),
             include_model_metrics=bool(include_model_metrics),
+            comparison_pairs=comparison_pairs,
         )
         cached = _load_cached_record_payload(cache_key)
         if cached is not None:
@@ -6525,6 +6751,24 @@ def _analyze_record_payload(
         agreement_scores = np.asarray([float(row.get('agreement_score', 0.0)) for row in pairwise_rows], dtype=np.float64)
         disagreement = float(np.mean(1.0 - agreement_scores, dtype=np.float64)) if agreement_scores.size else 0.0
         model_model_score = float(np.mean(agreement_scores, dtype=np.float64)) if agreement_scores.size else 1.0
+    pair_metric_values = _configured_pair_metric_values(
+        _normalized_comparison_pairs(comparison_pairs),
+        pairwise_rows,
+        masks_by_model,
+    )
+    confidence_pair_metric_values = _configured_confidence_pair_metric_values(
+        _normalized_comparison_pairs(comparison_pairs),
+        {
+            str(model_id): probability
+            for model_id, probability in output_probabilities_by_model.items()
+            if bool(model_confidence_output_available.get(str(model_id), False))
+        },
+    ) if include_model_output_confidence else {}
+    combined_pair_metric_values = _configured_combined_pair_metric_values(
+        _normalized_comparison_pairs(comparison_pairs),
+        pair_metric_values,
+        confidence_pair_metric_values,
+    )
 
     vector: dict[str, float] = {}
 
@@ -6565,6 +6809,9 @@ def _analyze_record_payload(
         'model_confidence': model_confidence,
         'model_confidence_output': model_confidence_output,
         'confidence_pairwise_metrics': confidence_pairwise_metrics,
+        'confidence_pair_metric_values': confidence_pair_metric_values,
+        'combined_pair_metric_values': combined_pair_metric_values,
+        'pair_metric_values': pair_metric_values,
         'model_confidence_output_available': model_confidence_output_available,
         'pairwise_rows': pairwise_rows,
         'timings_ms': timings_ms,
@@ -6575,8 +6822,8 @@ def _analyze_record_payload(
     return payload
 
 
-def _analyze_record_payload_for_executor(args: tuple[FrameRecord, tuple[ModelSpec, ...], int | None, GeometryMode, float, int, float, int, str, bool, bool, bool, bool, bool]) -> tuple[str, dict[str, object] | None]:
-    record, model_specs, analysis_max_side, geometry_mode, point_match_radius, boundary_radius, confidence_uncertainty_delta, point_confidence_radius, polygon_confidence_summary, cache_enabled, include_model_confidence, include_model_output_confidence, include_pairwise_metrics, include_model_metrics = args
+def _analyze_record_payload_for_executor(args: tuple[FrameRecord, tuple[ModelSpec, ...], int | None, GeometryMode, float, int, float, int, str, bool, bool, bool, bool, bool, tuple[ComparisonPairSelection, ...]]) -> tuple[str, dict[str, object] | None]:
+    record, model_specs, analysis_max_side, geometry_mode, point_match_radius, boundary_radius, confidence_uncertainty_delta, point_confidence_radius, polygon_confidence_summary, cache_enabled, include_model_confidence, include_model_output_confidence, include_pairwise_metrics, include_model_metrics, comparison_pairs = args
     return record.key, _analyze_record_payload(
         record,
         model_specs,
@@ -6592,11 +6839,12 @@ def _analyze_record_payload_for_executor(args: tuple[FrameRecord, tuple[ModelSpe
         include_model_output_confidence,
         include_pairwise_metrics,
         include_model_metrics,
+        comparison_pairs,
     )
 
 
 def _analyze_record_payload_batch_for_executor(
-    batch_args: tuple[tuple[FrameRecord, tuple[ModelSpec, ...], int | None, GeometryMode, float, int, float, int, str, bool, bool, bool, bool], ...]
+    batch_args: tuple[tuple[FrameRecord, tuple[ModelSpec, ...], int | None, GeometryMode, float, int, float, int, str, bool, bool, bool, bool, bool, tuple[ComparisonPairSelection, ...]], ...]
 ) -> tuple[tuple[str, dict[str, object] | None], ...]:
     results: list[tuple[str, dict[str, object] | None]] = []
     for args in batch_args:
@@ -6622,6 +6870,7 @@ def _iter_record_payloads(
     include_model_output_confidence: bool = False,
     include_pairwise_metrics: bool = True,
     include_model_metrics: bool = True,
+    comparison_pairs: tuple[ComparisonPairSelection, ...] = (),
     progress_callback=None,
     state_callback=None,
     cancel_check=None,
@@ -6674,6 +6923,7 @@ def _iter_record_payloads(
                 include_model_output_confidence,
                 include_pairwise_metrics,
                 include_model_metrics,
+                comparison_pairs,
             )
             if state_callback is not None:
                 state_callback(record.key, "done")
@@ -6707,6 +6957,7 @@ def _iter_record_payloads(
                 include_model_output_confidence,
                 include_pairwise_metrics,
                 include_model_metrics,
+                comparison_pairs,
             )
 
         def make_batch(order_index: int):
@@ -6826,6 +7077,7 @@ def _compute_record_payloads(
     include_model_output_confidence: bool = False,
     include_pairwise_metrics: bool = True,
     include_model_metrics: bool = True,
+    comparison_pairs: tuple[ComparisonPairSelection, ...] = (),
     progress_callback=None,
     state_callback=None,
     cancel_check=None,
@@ -6847,6 +7099,7 @@ def _compute_record_payloads(
         include_model_output_confidence=include_model_output_confidence,
         include_pairwise_metrics=include_pairwise_metrics,
         include_model_metrics=include_model_metrics,
+        comparison_pairs=comparison_pairs,
         progress_callback=progress_callback,
         state_callback=state_callback,
         cancel_check=cancel_check,
@@ -7678,9 +7931,174 @@ def _fast_grid_cell_defect_export_array(record: FrameRecord, build_result: Build
     if not path.is_file():
         return None
     gray = _load_export_grayscale_image(path)
-    result = detect_grid_cell_anomalies(gray)
+    result = detect_grid_cell_anomalies(gray, frame_id=str(record.key), frame_path=str(path))
+    height = max(1, int(getattr(result, "image_height", gray.shape[0] if gray.ndim == 2 else 1) or 1))
+    width = max(1, int(getattr(result, "image_width", gray.shape[1] if gray.ndim == 2 else 1) or 1))
+    intensity = np.zeros((height, width), dtype=np.float32)
+    for cell in getattr(result, "per_cell_results", getattr(result, "cells", ())) or ():
+        if str(getattr(cell, "status", "")) == "normal":
+            continue
+        x = max(0, min(width - 1, int(getattr(cell, "left", 0))))
+        y = max(0, min(height - 1, int(getattr(cell, "top", 0))))
+        w = max(1, int(getattr(cell, "width", 1)))
+        h = max(1, int(getattr(cell, "height", 1)))
+        x1 = min(width, x + w)
+        y1 = min(height, y + h)
+        if x1 > x and y1 > y:
+            intensity[y:y1, x:x1] = np.maximum(intensity[y:y1, x:x1], float(getattr(cell, "score", 0.0)))
     title = f"{str(getattr(spec, 'display_name', '') or model_id)} grid defects"
-    return np.asarray(result.intensity, dtype=np.float32), title
+    return intensity, title
+
+
+def grid_cell_defect_check_mask(
+    result: GridFrameAnalysisResult,
+    *,
+    enabled_reason_types: tuple[str, ...] | list[str] | set[str] | None = None,
+) -> np.ndarray:
+    """Render detected grid-cell errors as a black/white export mask."""
+
+    height = max(1, int(getattr(result, "image_height", 0) or 1))
+    width = max(1, int(getattr(result, "image_width", 0) or 1))
+    mask = np.zeros((height, width), dtype=np.uint8)
+    enabled_set = None if enabled_reason_types is None else {str(reason) for reason in enabled_reason_types if str(reason)}
+    for cell in getattr(result, "per_cell_results", getattr(result, "cells", ())) or ():
+        if str(getattr(cell, "status", "") or "") == "normal":
+            continue
+        reasons = tuple(str(reason) for reason in (getattr(cell, "reasons", ()) or ()) if str(reason))
+        if enabled_set is not None and reasons and not any(reason in enabled_set for reason in reasons):
+            continue
+        x = max(0, min(width - 1, int(getattr(cell, "left", 0))))
+        y = max(0, min(height - 1, int(getattr(cell, "top", 0))))
+        w = max(1, int(getattr(cell, "width", 1)))
+        h = max(1, int(getattr(cell, "height", 1)))
+        x1 = min(width, x + w)
+        y1 = min(height, y + h)
+        if x1 > x and y1 > y:
+            mask[y:y1, x:x1] = 255
+    return mask
+
+
+def _grid_check_record_source_path(record: FrameRecord) -> Path | None:
+    model_masks = getattr(record, "model_mask_paths", {}) or {}
+    path_text = str(next(iter(model_masks.values())) or "") if model_masks else ""
+    if not path_text:
+        path_text = str(getattr(record, "first_path", "") or getattr(record, "base_path", "") or getattr(record, "original_path", "") or "")
+    return Path(path_text) if path_text else None
+
+
+def _normalize_grid_check_export_format(image_format: str | None) -> tuple[str, str]:
+    value = str(image_format or "bmp").strip().lower().lstrip(".")
+    if value in {"jpg", "jpeg"}:
+        return "JPG", "jpg"
+    if value == "png":
+        return "PNG", "png"
+    if value == "bmp":
+        return "BMP", "bmp"
+    raise ValueError(f"Unsupported grid defect export format: {image_format}")
+
+
+def _grid_check_export_folder_name(records: tuple[FrameRecord, ...], extension: str) -> str:
+    first_record = next((record for record in records if record is not None), None)
+    source_path = _grid_check_record_source_path(first_record) if first_record is not None else None
+    if source_path is not None and source_path.name:
+        source_stem = source_path.stem
+    elif first_record is not None:
+        source_stem = Path(str(getattr(first_record, "display_name", "") or getattr(first_record, "key", "") or "frames")).stem
+    else:
+        source_stem = "frames"
+    stem_without_digits = "".join(char for char in str(source_stem) if not char.isdigit())
+    clean_stem = _safe_export_name(stem_without_digits, fallback="frames")
+    return _safe_export_name(f"check_{clean_stem}_{extension}", fallback=f"check_frames_{extension}")
+
+
+def export_grid_cell_defect_bmps(
+    build_result: BuildResult,
+    results_by_key: dict[str, GridFrameAnalysisResult],
+    destination: Path | str,
+    *,
+    records: tuple[FrameRecord, ...] | list[FrameRecord] | None = None,
+    render_record_keys: tuple[str, ...] | list[str] | set[str] | None = None,
+    image_format: str = "bmp",
+    folder_name: str | None = None,
+    enabled_reason_types: tuple[str, ...] | list[str] | set[str] | None = None,
+    progress_callback=None,
+    cancel_check=None,
+) -> dict[str, object]:
+    """Export computed grid-cell error highlights as black/white masks into the export folder."""
+
+    payloads = {str(key): value for key, value in (results_by_key or {}).items()}
+    qt_format, extension = _normalize_grid_check_export_format(image_format)
+    source_records = tuple(records if records is not None else (getattr(build_result, "records", ()) or ()))
+    render_key_set = None if render_record_keys is None else {str(key) for key in render_record_keys if str(key)}
+    missing_records = tuple(record for record in source_records if str(getattr(record, "key", "") or "") not in payloads)
+    export_records = tuple(record for record in source_records if str(getattr(record, "key", "") or "") in payloads)
+    if not export_records:
+        raise ValueError("No computed grid defect results are available for export.")
+
+    target_folder_name = str(folder_name or _grid_check_export_folder_name(export_records, extension))
+    destination_path = Path(destination) / target_folder_name
+    destination_path.mkdir(parents=True, exist_ok=True)
+
+    exported: list[dict[str, str]] = []
+    errors: list[str] = [
+        f"{str(getattr(record, 'display_name', '') or getattr(record, 'key', '') or 'frame')}: result is unavailable"
+        for record in missing_records
+    ]
+    used_names: set[str] = set()
+    total = len(export_records)
+    if progress_callback is not None:
+        progress_callback(0, total, "")
+
+    for index, record in enumerate(export_records, start=1):
+        frame_name = str(getattr(record, "display_name", "") or getattr(record, "key", "") or f"frame_{index:06d}")
+        if cancel_check is not None and cancel_check():
+            errors.append("Export cancelled")
+            break
+        try:
+            result = payloads.get(str(getattr(record, "key", "") or ""))
+            if result is None:
+                errors.append(f"{frame_name}: result is unavailable")
+                continue
+            source_path = _grid_check_record_source_path(record)
+            source_stem = source_path.stem if source_path is not None and source_path.name else Path(frame_name).stem
+            base_name = _safe_export_name(source_stem, fallback=f"frame_{index:06d}")
+            if base_name in used_names:
+                base_name = _unique_export_folder_name(base_name, used_names)
+            else:
+                used_names.add(base_name)
+            target_path = destination_path / f"{base_name}.{extension}"
+            record_key = str(getattr(record, "key", "") or "")
+            if render_key_set is not None and record_key not in render_key_set:
+                height = max(1, int(getattr(result, "image_height", 0) or 1))
+                width = max(1, int(getattr(result, "image_width", 0) or 1))
+                mask = np.zeros((height, width), dtype=np.uint8)
+            else:
+                mask = grid_cell_defect_check_mask(result, enabled_reason_types=enabled_reason_types)
+            quality = 100 if qt_format == "JPG" else -1
+            if not _grayscale_array_to_qimage(mask).save(str(target_path), qt_format, quality):
+                errors.append(f"{frame_name}: failed to save {qt_format}")
+                continue
+            exported.append({
+                "record_key": str(getattr(record, "key", "") or ""),
+                "record_name": frame_name,
+                "source": str(source_path) if source_path is not None else "",
+                "destination": str(target_path),
+            })
+        except Exception as error:
+            errors.append(f"{frame_name}: {error}")
+        finally:
+            if progress_callback is not None:
+                progress_callback(index, total, frame_name)
+
+    return {
+        "exported_count": len(exported),
+        "skipped_count": len(errors),
+        "destination": str(destination_path),
+        "format": qt_format,
+        "extension": extension,
+        "errors": tuple(errors),
+        "files": tuple(exported),
+    }
 
 
 def _fast_result_kind_export_array(record: FrameRecord, build_result: BuildResult, result_kind: str) -> tuple[np.ndarray, str] | None:
@@ -8523,11 +8941,22 @@ def compute_build_result_analytics(
 
     active_metric = metric_key or build_result.selected_metric_key or 'overall_frame_score'
     available_metric_keys_at_start = set(build_result.available_metric_keys or ()) | set(_available_metric_keys_for_models(build_result.model_specs, records))
-    if (_metric_requires_model_confidence(active_metric) or _metric_requires_model_output_confidence(active_metric)) and active_metric not in available_metric_keys_at_start:
+    if (
+        (_metric_requires_model_confidence(active_metric) or _metric_requires_model_output_confidence(active_metric))
+        and active_metric not in available_metric_keys_at_start
+        and parse_confidence_pair_metric_key(active_metric) is None
+        and parse_combined_pair_metric_key(active_metric) is None
+    ):
         active_metric = 'overall_frame_score'
     include_model_confidence = _metric_requires_model_confidence(active_metric)
-    include_model_output_confidence = _metric_requires_model_output_confidence(active_metric)
-    include_pairwise_metrics = _metric_requires_pairwise_metrics(active_metric)
+    comparison_pairs = _normalized_comparison_pairs(tuple(getattr(build_result.options, "comparison_pairs", ()) or ()))
+    comparison_target = getattr(build_result.options, "comparison_target", ComparisonTarget.OUTPUTS)
+    comparison_target_value = str(getattr(comparison_target, "value", comparison_target) or ComparisonTarget.OUTPUTS.value)
+    include_model_output_confidence = (
+        _metric_requires_model_output_confidence(active_metric)
+        or comparison_target_value in {ComparisonTarget.CONFIDENCE.value, ComparisonTarget.BOTH.value}
+    )
+    include_pairwise_metrics = _metric_requires_pairwise_metrics(active_metric) or bool(comparison_pairs)
     include_model_metrics = _metric_requires_model_metrics(active_metric)
     has_ground_truth = bool(build_result.gt_folder is not None or any(bool(record.gt_path) for record in records))
     if not has_ground_truth:
@@ -8567,6 +8996,7 @@ def compute_build_result_analytics(
             include_model_output_confidence=include_model_output_confidence,
             include_pairwise_metrics=include_pairwise_metrics,
             include_model_metrics=include_model_metrics,
+            comparison_pairs=comparison_pairs,
             progress_callback=progress_callback,
             state_callback=state_callback,
             cancel_check=cancel_check,
@@ -8588,6 +9018,9 @@ def compute_build_result_analytics(
             model_confidence = payload.get('model_confidence') or {}
             model_confidence_output = payload.get('model_confidence_output') or {}
             confidence_pairwise_metrics = payload.get('confidence_pairwise_metrics') or {}
+            confidence_pair_metric_values = payload.get('confidence_pair_metric_values') or {}
+            combined_pair_metric_values = payload.get('combined_pair_metric_values') or {}
+            pair_metric_values = payload.get('pair_metric_values') or {}
             comparison_result = payload.get('comparison_result')
             pairwise_rows = tuple(payload.get('pairwise_rows', ()))
             polygon_scores = _aggregate_inter_model_polygon_scores(pairwise_rows) if frame_type != 'point' else {}
@@ -8609,6 +9042,9 @@ def compute_build_result_analytics(
             metric_values.update(polygon_scores)
             metric_values.update(point_scores)
             metric_values.update({str(key): float(value) for key, value in confidence_pairwise_metrics.items()})
+            metric_values.update({str(key): float(value) for key, value in confidence_pair_metric_values.items()})
+            metric_values.update({str(key): float(value) for key, value in combined_pair_metric_values.items()})
+            metric_values.update({str(key): float(value) for key, value in pair_metric_values.items()})
             metric_values.update(_comparison_metric_values(comparison_result if isinstance(comparison_result, FrameComparisonResult) else None))
             for model_id, confidence_row in model_confidence.items():
                 if hasattr(confidence_row, 'mean_object_confidence'):
@@ -8875,6 +9311,16 @@ def metric_value_for_record(record: FrameRecord, metric_key: str) -> float | Non
 
 def metric_higher_is_better(metric_key: str) -> bool:
     metric_key = str(metric_key or "")
+    parsed_pair = parse_pair_metric_key(metric_key)
+    if parsed_pair is not None:
+        _model_a, _model_b, operation = parsed_pair
+        return operation in {"iou", "dice"}
+    parsed_confidence_pair = parse_confidence_pair_metric_key(metric_key)
+    if parsed_confidence_pair is not None:
+        _model_a, _model_b, operation = parsed_confidence_pair
+        return operation in {"correlation", "low_iou"}
+    if parse_combined_pair_metric_key(metric_key) is not None:
+        return False
     parsed = _parse_model_metric_key(metric_key)
     if parsed is not None:
         family, _model_id = parsed

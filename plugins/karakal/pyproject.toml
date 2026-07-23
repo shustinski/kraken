@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "karakal"
 version = "0.0.0"
-description = "Reserved Kraken plugin."
+description = "Kraken Qt plugin for frame-matrix validation, model comparison, and cell-defect inspection."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -14,6 +14,17 @@ dependencies = [
     "opencv-python>=4.13",
     "PyQt6>=6.6",
     "scipy>=1.14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-qt>=4.4",
+    "ruff>=0.6",
+]
+build = [
+    "build>=1.2",
+    "pyinstaller>=6.0",
 ]
 
 [tool.uv.sources]

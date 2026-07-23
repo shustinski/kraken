@@ -5,6 +5,7 @@ import math
 import hashlib
 import pickle
 import time
+import uuid
 from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -61,6 +62,7 @@ from .ui_constants import (
     GRADIENT_PRESETS,
     GRADIENT_PREVIEW_MIN_HEIGHT,
     GRADIENT_RANGE_SELECTOR_MIN_HEIGHT,
+    GROUND_TRUTH_BORDER,
     HOVER_BORDER,
     MATRIX_BACKGROUND,
     MATRIX_BACKGROUND_ALT,
@@ -132,6 +134,8 @@ LOW_ZOOM_OVERVIEW_RECORD_THRESHOLD = 20000
 VIEW_LOD_OVERVIEW = "overview"
 VIEW_LOD_PIXEL = "pixel"
 VIEW_LOD_SUBPIXEL = "subpixel"
+GRID_INSPECTION_OVERVIEW_RECORD_THRESHOLD = 1
+GRID_INSPECTION_ZOOM_STEP = 1.08
 TILE_VIEWPORT_DEBOUNCE_MS = 90
 TILE_HOVER_PREFETCH_MS = 120
 TILE_LOAD_SLICE_BUDGET_MS = 12.0
@@ -153,6 +157,7 @@ SUBPIXEL_GRID_MAX_IN_FLIGHT = 4
 MATRIX_VIRTUALIZE_RECORD_THRESHOLD = 5000
 MATRIX_ITEM_KEEP_MARGIN_CELLS = 2
 MATRIX_MAX_MATERIALIZED_ITEMS = 2000
+GRID_INSPECTION_MAX_MATERIALIZED_ITEMS = 160
 MATRIX_FILTERED_MATERIALIZE_RECORD_LIMIT = 20000
 SUBPIXEL_VISIBILITY_EXIT_THRESHOLD = 2.20
 _subpixel_grid_disk_cache_last_trim = 0.0
@@ -346,7 +351,7 @@ def _store_subpixel_grid_to_disk(cache_key: tuple[object, ...], grid: SubpixelGr
     try:
         SUBPIXEL_GRID_DISK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_path = _subpixel_disk_cache_path(cache_key)
-        tmp_path = cache_path.with_suffix(".tmp")
+        tmp_path = cache_path.with_name(f"{cache_path.name}.{uuid.uuid4().hex}.tmp")
         payload = {
             "spec": {
                 "rows": int(grid.spec.rows),
@@ -366,6 +371,11 @@ def _store_subpixel_grid_to_disk(cache_key: tuple[object, ...], grid: SubpixelGr
         tmp_path.replace(cache_path)
         _trim_subpixel_grid_disk_cache()
     except Exception:
+        try:
+            if "tmp_path" in locals() and tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
         return
 
 
@@ -471,6 +481,9 @@ class _MatrixCellItem(QGraphicsRectItem):
         self.grid_result: GridCellAnomalyResult | None = None
         self._tile_rect_cache_key: tuple[float, float, float, float, int, int, str, int, int, int] | None = None
         self._tile_rect_cache: tuple[QRectF, ...] = ()
+
+    def _has_ground_truth(self) -> bool:
+        return bool(str(getattr(self.record, "gt_path", "") or "").strip())
 
     def set_tile_state(
         self,
@@ -602,48 +615,15 @@ class _MatrixCellItem(QGraphicsRectItem):
         if rows * columns > 1:
             painter.setPen(QPen(QColor(255, 255, 255, 60), 0.0))
             painter.drawRect(rect)
+        self._paint_ground_truth_marker(painter)
         self._paint_attention_marker(painter)
         painter.restore()
 
     def _paint_grid_inspection_cell(self, painter: QPainter) -> None:
         rect = self.rect()
         painter.save()
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        painter.fillRect(rect, QColor(42, 46, 52))
-        thumbnail = self.grid_thumbnail
-        if thumbnail is not None and not thumbnail.isNull():
-            painter.drawPixmap(rect, thumbnail, QRectF(0.0, 0.0, float(thumbnail.width()), float(thumbnail.height())))
-        else:
-            painter.fillRect(rect, QColor(126, 128, 128))
-        result = self.grid_result
-        if result is not None and thumbnail is not None and not thumbnail.isNull():
-            source_height, source_width = getattr(result, "intensity", np.zeros((1, 1), dtype=np.float32)).shape[:2]
-            source_width = max(1.0, float(source_width))
-            source_height = max(1.0, float(source_height))
-            scale_x = float(rect.width()) / source_width
-            scale_y = float(rect.height()) / source_height
-            cell_w = max(1.0, float(getattr(result, "cell_width", 0) or 0) * scale_x)
-            cell_h = max(1.0, float(getattr(result, "cell_height", 0) or 0) * scale_y)
-            grid_pen = QPen(QColor(86, 220, 255, 150), 0.0)
-            grid_pen.setCosmetic(True)
-            painter.setPen(grid_pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            for center_x in getattr(result, "x_axes", ()) or ():
-                for center_y in getattr(result, "y_axes", ()) or ():
-                    x = rect.left() + float(center_x) * scale_x - cell_w / 2.0
-                    y = rect.top() + float(center_y) * scale_y - cell_h / 2.0
-                    painter.drawRect(QRectF(x, y, cell_w, cell_h))
-            for cell in result.cells:
-                x = rect.left() + float(cell.left) * scale_x
-                y = rect.top() + float(cell.top) * scale_y
-                w = max(1.0, float(cell.width) * scale_x)
-                h = max(1.0, float(cell.height) * scale_y)
-                alpha = int(max(80, min(220, round(80.0 + 140.0 * float(cell.score)))))
-                painter.fillRect(QRectF(x, y, w, h), QColor(255, 36, 64, alpha))
-                defect_pen = QPen(QColor(255, 232, 78, 245), 0.0)
-                defect_pen.setCosmetic(True)
-                painter.setPen(defect_pen)
-                painter.drawRect(QRectF(x, y, w, h))
+        base_color = QColor(self.brush().color()) if self.brush().style() != Qt.BrushStyle.NoBrush else QColor(42, 46, 52)
+        painter.fillRect(rect, base_color)
         if self._excluded:
             painter.fillRect(rect, QColor(0, 0, 0, 120))
             painter.setPen(QPen(QColor(235, 235, 235, 220), 1.0))
@@ -651,6 +631,7 @@ class _MatrixCellItem(QGraphicsRectItem):
         painter.setPen(self.pen())
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(rect)
+        self._paint_ground_truth_marker(painter)
         self._paint_attention_marker(painter)
         painter.restore()
 
@@ -660,8 +641,24 @@ class _MatrixCellItem(QGraphicsRectItem):
         painter.fillRect(rect, self.brush())
         painter.setPen(self.pen())
         painter.drawRect(rect)
+        self._paint_ground_truth_marker(painter)
         self._paint_attention_marker(painter)
         painter.restore()
+
+    def _paint_ground_truth_marker(self, painter: QPainter) -> None:
+        if not self._has_ground_truth():
+            return
+        rect = self.rect()
+        if rect.width() < 5.0 or rect.height() < 5.0:
+            return
+        inset = max(1.0, min(rect.width(), rect.height()) * 0.08)
+        width = max(1.4, min(3.2, min(rect.width(), rect.height()) * 0.10))
+        pen = QPen(GROUND_TRUTH_BORDER, width)
+        pen.setCosmetic(True)
+        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(rect.adjusted(inset, inset, -inset, -inset))
 
     def _paint_attention_marker(self, painter: QPainter) -> None:
         kind = self._attention_marker_kind
@@ -1298,6 +1295,7 @@ class MatrixListWidget(QGraphicsView):
         self._selected_item: _MatrixCellItem | None = None
         self._hovered_item: _MatrixCellItem | None = None
         self._range_selected_keys: set[str] = set()
+        self._highlighted_record_keys: set[str] = set()
         self._selection_drag_origin_scene: QPointF | None = None
         self._selection_drag_current_scene: QPointF | None = None
         self._selection_drag_active = False
@@ -1343,6 +1341,8 @@ class MatrixListWidget(QGraphicsView):
         self._grid_inspection_visual_mode = False
         self._grid_inspection_cache: OrderedDict[tuple[object, ...], tuple[QPixmap, GridCellAnomalyResult]] = OrderedDict()
         self._grid_inspection_payload_by_key: dict[str, tuple[QPixmap, GridCellAnomalyResult]] = {}
+        self._grid_inspection_score_low = 0.0
+        self._grid_inspection_score_high = 1.0
         self._grid_inspection_request_generation = 0
         self._pending_grid_inspection_keys: deque[str] = deque()
         self._pending_grid_inspection_key_set: set[str] = set()
@@ -1399,7 +1399,9 @@ class MatrixListWidget(QGraphicsView):
         self._pan_start = None
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setBackgroundBrush(MATRIX_BACKGROUND)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
+        self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
+        self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontSavePainterState, True)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setMouseTracking(True)
@@ -1414,8 +1416,9 @@ class MatrixListWidget(QGraphicsView):
         self._visible_record_key_cache = tuple()
 
     def _request_full_viewport_update(self) -> None:
-        self._scene.invalidate(self._scene.sceneRect(), QGraphicsScene.SceneLayer.AllLayers)
-        self._scene.update(self._scene.sceneRect())
+        rect = self.mapToScene(self.viewport().rect()).boundingRect() if self._grid_inspection_visual_mode else self._scene.sceneRect()
+        self._scene.invalidate(rect, QGraphicsScene.SceneLayer.AllLayers)
+        self._scene.update(rect)
         self.viewport().update()
 
     def _clear_subpixel_grid_cache(self) -> None:
@@ -1511,7 +1514,12 @@ class MatrixListWidget(QGraphicsView):
 
     def set_score_view_mode(self, mode: str | None) -> None:
         normalized = str(mode or "relative").strip().lower()
-        self._score_view_mode = "absolute" if normalized == "absolute" else "relative"
+        next_mode = "absolute" if normalized == "absolute" else "relative"
+        if self._score_view_mode == next_mode:
+            return
+        self._score_view_mode = next_mode
+        if self._grid_inspection_visual_mode:
+            self.refresh_scene()
 
     def set_metric_context(self, metric_key: str | None, *, point_match_radius: float, bce_score_cap: float) -> None:
         previous_metric_key = self._metric_key
@@ -1637,6 +1645,20 @@ class MatrixListWidget(QGraphicsView):
         self._sync_low_zoom_visibility_for_keys(previous | self._processing_keys)
         self._emit_overview_state()
 
+    def set_highlighted_record_keys(self, record_keys) -> None:
+        previous = set(self._highlighted_record_keys)
+        self._highlighted_record_keys = {str(key) for key in (record_keys or set()) if str(key)}
+        if bool(previous) != bool(self._highlighted_record_keys):
+            changed = {str(key) for key in self._record_positions}
+        else:
+            changed = previous | self._highlighted_record_keys
+        for key in changed:
+            item = self._item_by_key.get(str(key))
+            if item is not None:
+                self._apply_item_style(item, sync_tile_state=False)
+        self._refresh_overview_pixels_for_keys(changed)
+        self.viewport().update()
+
     def set_reference_key(self, reference_key: str | None) -> None:
         previous = self._reference_key
         self._reference_key = str(reference_key) if reference_key else None
@@ -1719,7 +1741,7 @@ class MatrixListWidget(QGraphicsView):
         self.refresh_scene()
 
     def set_grid_inspection_visual_mode(self, enabled: bool) -> None:
-        """Enable frame-thumbnail rendering with detected regular-grid defects."""
+        """Enable frame-thumbnail rendering with detected cell-contour defects."""
 
         normalized = bool(enabled)
         if self._grid_inspection_visual_mode == normalized:
@@ -1734,6 +1756,115 @@ class MatrixListWidget(QGraphicsView):
         self.refresh_scene()
         if normalized:
             self._schedule_visible_grid_inspection_request(immediate=True)
+
+    def set_grid_inspection_payloads(self, payload_by_key: dict[str, object] | None, *, enabled: bool = True) -> None:
+        """Compatibility hook for presenter-level grid inspection workers."""
+
+        normalized_enabled = bool(enabled)
+        if not normalized_enabled:
+            self.set_grid_inspection_visual_mode(False)
+            self._grid_inspection_payload_by_key.clear()
+            self._grid_inspection_cache.clear()
+            for item in self._item_by_key.values():
+                item.grid_inspection_enabled = False
+                item.grid_thumbnail = None
+                item.grid_result = None
+                item.update()
+            return
+
+        normalized_payloads: dict[str, tuple[QPixmap, GridCellAnomalyResult]] = {}
+        for key, payload in (payload_by_key or {}).items():
+            key_text = str(key)
+            thumbnail = QPixmap()
+            result: GridCellAnomalyResult | None = None
+            if isinstance(payload, tuple) and len(payload) == 2 and isinstance(payload[0], QPixmap):
+                thumbnail = payload[0]
+                candidate_result = payload[1]
+                if isinstance(candidate_result, GridCellAnomalyResult):
+                    result = candidate_result
+            elif isinstance(payload, GridCellAnomalyResult):
+                result = payload
+            if result is None:
+                continue
+            normalized_payloads[key_text] = (thumbnail, result)
+
+        payloads_unchanged = (
+            len(normalized_payloads) == len(self._grid_inspection_payload_by_key)
+            and all(
+                key in self._grid_inspection_payload_by_key
+                and self._grid_inspection_payload_by_key[key][1] == result
+                for key, (_thumbnail, result) in normalized_payloads.items()
+            )
+        )
+        self.set_grid_inspection_visual_mode(True)
+        if payloads_unchanged:
+            return
+        self._grid_inspection_payload_by_key = normalized_payloads
+        self._update_grid_inspection_score_window()
+        self.refresh_scene()
+
+    def update_grid_inspection_payloads(self, payload_by_key: dict[str, object] | None) -> None:
+        """Apply a completed result batch without rebuilding the matrix scene."""
+
+        changed_keys: set[str] = set()
+        for key, payload in (payload_by_key or {}).items():
+            key_text = str(key)
+            thumbnail = QPixmap()
+            result: GridCellAnomalyResult | None = None
+            if isinstance(payload, tuple) and len(payload) == 2 and isinstance(payload[0], QPixmap):
+                thumbnail = payload[0]
+                if isinstance(payload[1], GridCellAnomalyResult):
+                    result = payload[1]
+            elif isinstance(payload, GridCellAnomalyResult):
+                result = payload
+            if result is None:
+                continue
+            self._grid_inspection_payload_by_key[key_text] = (thumbnail, result)
+            changed_keys.add(key_text)
+
+        if not changed_keys:
+            return
+        self.set_grid_inspection_visual_mode(True)
+        for key in changed_keys:
+            item = self._item_by_key.get(key)
+            if item is not None:
+                self._apply_item_style(item, sync_tile_state=False)
+        self._refresh_overview_pixels_for_keys(changed_keys)
+        self._sync_low_zoom_visibility_for_keys(changed_keys)
+        self.viewport().update()
+
+    def finalize_grid_inspection_payloads(self) -> None:
+        """Finalize colors after streamed results without rebuilding scene items."""
+
+        self._update_grid_inspection_score_window()
+        for item in self._item_by_key.values():
+            self._apply_item_style(item, sync_tile_state=False)
+        placements = [
+            (record, position[0], position[1])
+            for record in self._records
+            for position in [self._record_positions.get(str(record.key))]
+            if position is not None
+        ]
+        self._overview_image = self._build_overview_image(placements)
+        self._refresh_overview_layer_pixmap()
+        self._sync_overview_layer_visibility(force=True)
+        self._request_full_viewport_update()
+        self._emit_overview_state()
+
+    def _update_grid_inspection_score_window(self) -> None:
+        scores = [
+            1.0 - max(0.0, min(1.0, float(getattr(result, "score", 0.0) or 0.0)))
+            for _pixmap, result in self._grid_inspection_payload_by_key.values()
+        ]
+        scores = [max(0.0, min(1.0, score)) for score in scores if math.isfinite(float(score))]
+        if not scores:
+            self._grid_inspection_score_low = 0.0
+            self._grid_inspection_score_high = 1.0
+            self._auto_color_window_low, self._auto_color_window_high = DEFAULT_ERROR_WINDOW
+            return
+        self._grid_inspection_score_low = min(scores)
+        self._grid_inspection_score_high = max(scores)
+        self._auto_color_window_low, self._auto_color_window_high = compute_auto_color_window(scores)
 
     def set_management_assignee_colors(self, assignee_colors: dict[str, str] | None) -> None:
         """Attach assignee color preferences used by management-mode rendering."""
@@ -1751,6 +1882,10 @@ class MatrixListWidget(QGraphicsView):
 
     def _is_record_excluded(self, record: FrameRecord) -> bool:
         return str(record.key) in self._excluded_record_keys
+
+    @staticmethod
+    def _record_has_ground_truth(record: FrameRecord) -> bool:
+        return bool(str(getattr(record, "gt_path", "") or "").strip())
 
     def refresh_scene(self) -> None:
         if not self._records:
@@ -2019,6 +2154,13 @@ class MatrixListWidget(QGraphicsView):
             keys.add(str(self._hovered_subpixel_selection.record.key))
         return {key for key in keys if key}
 
+    def _grid_inspection_pixel_overview_active(self) -> bool:
+        return bool(
+            self._grid_inspection_visual_mode
+            and self._overview_image is not None
+            and not self._overview_image.isNull()
+        )
+
     def _create_matrix_item(self, record: FrameRecord, row: int, column: int, index: int) -> _MatrixCellItem:
         x = self._scene_padding + int(column) * (self._cell_size + self._gap)
         y = self._scene_padding + int(row) * (self._cell_size + self._gap)
@@ -2026,28 +2168,11 @@ class MatrixListWidget(QGraphicsView):
         item.grid_inspection_enabled = self._is_grid_inspection_target_record(record)
         if item.grid_inspection_enabled:
             self._apply_cached_grid_inspection_payload(item, update=False)
-        item.subpixel_spec = self._subpixel_spec
-        item.subpixel_overlay_enabled = self._subpixel_spec is not None
-        item.subpixel_grid_provider = self._subpixel_grid_for_record if self._subpixel_spec is not None else None
-        grid = None
-        if self._subpixel_spec is not None and self._tile_overlay_visible:
-            grid = self._subpixel_cache_get(self._subpixel_cache_key_for_record(record, self._subpixel_spec))
-        if grid is None:
-            grid = getattr(record, "subpixel_grid", None)
-        if not isinstance(grid, SubpixelGrid) or self._subpixel_spec is None:
-            grid = None
-        elif self._subpixel_spec.mode == "tile":
-            if (
-                grid.spec.mode != "tile"
-                or int(grid.spec.tile_width) != int(self._subpixel_spec.tile_width)
-                or int(grid.spec.tile_height) != int(self._subpixel_spec.tile_height)
-                or int(grid.spec.overlap) != int(self._subpixel_spec.overlap)
-            ):
-                grid = None
-        elif grid.spec.normalized() != self._subpixel_spec:
-            grid = None
-        item.subpixel_grid = grid
-        item.subpixel_color_fn = self._subpixel_color_for_value
+        item.subpixel_spec = None
+        item.subpixel_overlay_enabled = False
+        item.subpixel_grid_provider = None
+        item.subpixel_grid = None
+        item.subpixel_color_fn = None
         item.subpixel_metric_key = self._metric_key
         item.setToolTip(self._tooltip_for_record(record))
         self._scene.addItem(item)
@@ -2069,29 +2194,21 @@ class MatrixListWidget(QGraphicsView):
     def _cached_grid_inspection_payload_for_record(self, record: FrameRecord) -> tuple[QPixmap, GridCellAnomalyResult] | None:
         return self._grid_inspection_payload_by_key.get(str(record.key))
 
-    def _grid_inspection_pixmap_from_gray(self, gray: np.ndarray) -> QPixmap:
-        contiguous = np.ascontiguousarray(gray)
-        height, width = contiguous.shape
-        image = QImage(contiguous.data, width, height, int(contiguous.strides[0]), QImage.Format.Format_Grayscale8).copy()
-        target_size = max(16, int(self._cell_size))
-        if width > target_size or height > target_size:
-            image = image.scaled(target_size, target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        return QPixmap.fromImage(image.convertToFormat(QImage.Format.Format_RGB888))
-
     def _store_grid_inspection_payload(
         self,
         cache_key: tuple[object, ...],
         gray: np.ndarray,
         result: GridCellAnomalyResult,
     ) -> tuple[QPixmap, GridCellAnomalyResult]:
-        pixmap = self._grid_inspection_pixmap_from_gray(gray)
-        payload = (pixmap, result)
+        _ = gray
+        payload = (QPixmap(), result)
         self._grid_inspection_cache[cache_key] = payload
         self._grid_inspection_payload_by_key[str(cache_key[0])] = payload
         self._grid_inspection_cache.move_to_end(cache_key)
         while len(self._grid_inspection_cache) > 512:
             evicted_key, _evicted_payload = self._grid_inspection_cache.popitem(last=False)
             self._grid_inspection_payload_by_key.pop(str(evicted_key[0]), None)
+        self._update_grid_inspection_score_window()
         return payload
 
     def _apply_cached_grid_inspection_payload(self, item: _MatrixCellItem, *, update: bool = True) -> bool:
@@ -2104,7 +2221,9 @@ class MatrixListWidget(QGraphicsView):
                     item.update()
             return False
         else:
-            item.grid_thumbnail, item.grid_result = payload
+            _thumbnail, result = payload
+            item.grid_thumbnail = None
+            item.grid_result = result
             if update:
                 item.update()
             return True
@@ -2135,6 +2254,16 @@ class MatrixListWidget(QGraphicsView):
     def _keys_to_materialize(self) -> tuple[str, ...]:
         if not self._virtualized_items_enabled:
             return tuple(self._record_positions)
+        if self._grid_inspection_pixel_overview_active():
+            ordered_keys: list[str] = []
+            key_set: set[str] = set()
+            for key in self._overlay_record_keys():
+                key_text = str(key)
+                if key_text and key_text in self._record_positions and key_text not in key_set:
+                    ordered_keys.append(key_text)
+                    key_set.add(key_text)
+            max_items = max(1, int(GRID_INSPECTION_MAX_MATERIALIZED_ITEMS))
+            return tuple(ordered_keys[:max_items])
         visible_keys = self._visible_record_keys(margin_cells=MATRIX_ITEM_KEEP_MARGIN_CELLS)
         max_items = max(1, int(MATRIX_MAX_MATERIALIZED_ITEMS))
         ordered_keys = list(visible_keys[:max_items])
@@ -2165,19 +2294,17 @@ class MatrixListWidget(QGraphicsView):
     def _grid_inspection_target_keys(self) -> set[str]:
         if not self._grid_inspection_visual_mode:
             return set()
-        if self._range_selected_keys:
-            return {str(key) for key in self._range_selected_keys if str(key)}
-        if self._selected_item is not None:
-            return {str(self._selected_item.record.key)}
-        return set()
+        return {
+            str(key)
+            for key in self._grid_inspection_payload_by_key
+            if str(key) and str(key) in self._record_positions
+        }
 
     def _is_grid_inspection_target_key(self, key: str | None) -> bool:
         normalized = str(key or "")
         if not normalized or not self._grid_inspection_visual_mode:
             return False
-        if self._range_selected_keys:
-            return normalized in self._range_selected_keys
-        return self._selected_item is not None and normalized == str(self._selected_item.record.key)
+        return normalized in self._grid_inspection_payload_by_key
 
     def _is_grid_inspection_target_record(self, record: FrameRecord) -> bool:
         return self._is_grid_inspection_target_key(str(record.key))
@@ -2333,7 +2460,9 @@ class MatrixListWidget(QGraphicsView):
             cached_payload = self._store_grid_inspection_payload(cache_key, gray, result)
             item = self._item_by_key.get(key)
             if item is not None:
-                item.grid_thumbnail, item.grid_result = cached_payload
+                _thumbnail, cached_result = cached_payload
+                item.grid_thumbnail = None
+                item.grid_result = cached_result
                 self._apply_item_style(item, sync_tile_state=False)
                 item.setToolTip(self._tooltip_for_record(item.record))
                 item.update()
@@ -2497,7 +2626,9 @@ class MatrixListWidget(QGraphicsView):
         if delta_y == 0:
             event.accept()
             return True
-        factor = 1.15 if delta_y > 0 else (1.0 / 1.15)
+        factor = GRID_INSPECTION_ZOOM_STEP if delta_y > 0 else (1.0 / GRID_INSPECTION_ZOOM_STEP)
+        if not self._grid_inspection_visual_mode:
+            factor = 1.12 if delta_y > 0 else (1.0 / 1.12)
         next_scale = self.transform().m11() * factor
         if MATRIX_MIN_SCALE <= next_scale <= MATRIX_MAX_SCALE:
             try:
@@ -2567,6 +2698,8 @@ class MatrixListWidget(QGraphicsView):
         item = self._item_for_view_pos(event.pos())
         record = None
         if item is not None:
+            item_key = str(item.record.key)
+            keep_range_selection = item_key in self._range_selected_keys
             selection = self._tile_selection_for_cell(item, event.pos(), allow_build=True)
             if selection is not None:
                 self._select_tile_selection(selection)
@@ -2574,6 +2707,8 @@ class MatrixListWidget(QGraphicsView):
                 self.tileSelected.emit(selection)
             else:
                 self._clear_tile_selection()
+                if not keep_range_selection:
+                    self._set_range_selected_records(())
                 self._select_item(item)
                 self.recordSelected.emit(item.record)
             record = item.record
@@ -2635,7 +2770,11 @@ class MatrixListWidget(QGraphicsView):
         if event.button() == Qt.MouseButton.LeftButton and self._selection_drag_origin_scene is not None:
             if self._selection_drag_active:
                 selected = self._records_in_scene_rect(self._selection_drag_rect())
-                self._set_range_selected_records(selected)
+                ctrl_pressed = bool((event.modifiers() | QApplication.keyboardModifiers()) & Qt.KeyboardModifier.ControlModifier)
+                if ctrl_pressed:
+                    self._add_range_selected_records(selected)
+                else:
+                    self._set_range_selected_records(selected)
                 self._finish_selection_drag()
                 self.recordSelected.emit(selected[0] if selected else None)
                 event.accept()
@@ -2644,20 +2783,30 @@ class MatrixListWidget(QGraphicsView):
             item = self._item_for_view_pos(event.pos())
             if item is not None:
                 selection = self._tile_selection_for_cell(item, event.pos(), allow_build=True)
-                self._set_range_selected_records(())
+                ctrl_pressed = bool((event.modifiers() | QApplication.keyboardModifiers()) & Qt.KeyboardModifier.ControlModifier)
                 if selection is not None:
+                    if ctrl_pressed:
+                        self._toggle_range_selected_record(item.record)
+                    else:
+                        self._set_range_selected_records(())
                     self._select_tile_selection(selection)
                     self.recordSelected.emit(item.record)
                     self.tileSelected.emit(selection)
                 else:
                     self._clear_tile_selection()
+                    if ctrl_pressed:
+                        self._toggle_range_selected_record(item.record)
+                    else:
+                        self._set_range_selected_records(())
                     self._select_item(item)
                     self.recordSelected.emit(item.record)
             else:
-                self._set_range_selected_records(())
-                self._clear_tile_selection()
-                self._clear_selection()
-                self.recordSelected.emit(None)
+                ctrl_pressed = bool((event.modifiers() | QApplication.keyboardModifiers()) & Qt.KeyboardModifier.ControlModifier)
+                if not ctrl_pressed:
+                    self._set_range_selected_records(())
+                    self._clear_tile_selection()
+                    self._clear_selection()
+                    self.recordSelected.emit(None)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -2681,8 +2830,16 @@ class MatrixListWidget(QGraphicsView):
         self._invalidate_grid_inspection_requests(clear_cache=False)
         self._clear_visible_record_key_cache()
         self._records = list(records)
-        ready_scores = [float(record.score) for record in self._records if bool(getattr(record, "score_ready", False))]
-        self._auto_color_window_low, self._auto_color_window_high = compute_auto_color_window(ready_scores)
+        if self._grid_inspection_visual_mode and self._grid_inspection_payload_by_key:
+            self._update_grid_inspection_score_window()
+        else:
+            ready_scores = [
+                float(score)
+                for record in self._records
+                for score in [self._display_score(record)]
+                if score is not None
+            ]
+            self._auto_color_window_low, self._auto_color_window_high = compute_auto_color_window(ready_scores)
         selected_key = self._selected_item.record.key if self._selected_item is not None else None
         hovered_key = self._hovered_item.record.key if self._hovered_item is not None else None
         self._selected_item = None
@@ -2733,7 +2890,11 @@ class MatrixListWidget(QGraphicsView):
             self._complete_filtered_view_active
             and len(placements) <= MATRIX_FILTERED_MATERIALIZE_RECORD_LIMIT
         )
-        self._virtualized_items_enabled = (not complete_materialization) and len(placements) >= MATRIX_VIRTUALIZE_RECORD_THRESHOLD
+        grid_inspection_pixel_mode = (
+            self._grid_inspection_visual_mode
+            and len(placements) >= GRID_INSPECTION_OVERVIEW_RECORD_THRESHOLD
+        )
+        self._virtualized_items_enabled = grid_inspection_pixel_mode or ((not complete_materialization) and len(placements) >= MATRIX_VIRTUALIZE_RECORD_THRESHOLD)
         for index, (record, row, column) in enumerate(placements):
             self._record_positions[record.key] = (row, column)
             self._record_by_position[(row, column)] = record
@@ -2794,11 +2955,11 @@ class MatrixListWidget(QGraphicsView):
         pixmap = QPixmap.fromImage(self._overview_image)
         if self._overview_layer_item is None:
             item = QGraphicsPixmapItem()
-            item.setTransformationMode(Qt.TransformationMode.FastTransformation)
             item.setShapeMode(QGraphicsPixmapItem.ShapeMode.BoundingRectShape)
             item.setZValue(-10.0)
             self._scene.addItem(item)
             self._overview_layer_item = item
+        self._overview_layer_item.setTransformationMode(Qt.TransformationMode.FastTransformation)
         self._overview_layer_item.setPixmap(pixmap)
         self._overview_layer_item.setPos(matrix_rect.left(), matrix_rect.top())
         self._overview_layer_item.setTransform(
@@ -2824,6 +2985,8 @@ class MatrixListWidget(QGraphicsView):
     def _overview_layer_should_be_active(self) -> bool:
         if self._overview_image is None or self._overview_image.isNull():
             return False
+        if self._grid_inspection_visual_mode:
+            return True
         if self._complete_filtered_view_active and len(self._records) <= MATRIX_FILTERED_MATERIALIZE_RECORD_LIMIT:
             return False
         if not self._virtualized_items_enabled and len(self._records) < LOW_ZOOM_OVERVIEW_RECORD_THRESHOLD:
@@ -2990,6 +3153,24 @@ class MatrixListWidget(QGraphicsView):
         self.viewport().update()
         self._on_grid_inspection_targets_changed(previous_targets)
 
+    def _toggle_range_selected_record(self, record: FrameRecord) -> None:
+        if record is None:
+            return
+        records_by_key = {str(item.key): item for item in self._records}
+        selected_keys = set(self._range_selected_keys)
+        key = str(record.key)
+        if key in selected_keys:
+            selected_keys.discard(key)
+        else:
+            selected_keys.add(key)
+        self._set_range_selected_records(tuple(records_by_key[item_key] for item_key in selected_keys if item_key in records_by_key))
+
+    def _add_range_selected_records(self, records) -> None:
+        records_by_key = {str(item.key): item for item in self._records}
+        selected_keys = set(self._range_selected_keys)
+        selected_keys.update(str(record.key) for record in records if record is not None)
+        self._set_range_selected_records(tuple(record for record in self._records if str(record.key) in selected_keys and str(record.key) in records_by_key))
+
     def _emit_overview_state(self) -> None:
         if self._overview_image is None or self._columns <= 0 or self._rows <= 0:
             self.overviewChanged.emit(None, QRectF(), None, False, tuple(), None)
@@ -3134,6 +3315,14 @@ class MatrixListWidget(QGraphicsView):
                 None if item is None else item.record.key,
             }
         )
+        if self._grid_inspection_pixel_overview_active():
+            overlay_keys = self._overlay_record_keys()
+            for stale_item in (previous,):
+                if stale_item is None:
+                    continue
+                stale_key = str(stale_item.record.key)
+                if stale_key not in overlay_keys:
+                    self._remove_matrix_item(stale_key)
 
     def _apply_item_style(self, item: _MatrixCellItem, *, sync_tile_state: bool = True) -> None:
         excluded = self._is_record_excluded(item.record)
@@ -3188,8 +3377,11 @@ class MatrixListWidget(QGraphicsView):
             self._sync_tile_state_for_keys({item.record.key})
         item.grid_inspection_enabled = bool(self._grid_inspection_visual_mode)
         item.grid_inspection_enabled = self._is_grid_inspection_target_record(item.record)
-        if item.grid_inspection_enabled and item.grid_result is None:
+        if item.grid_inspection_enabled:
             self._apply_cached_grid_inspection_payload(item, update=False)
+        else:
+            item.grid_thumbnail = None
+            item.grid_result = None
 
     def _sync_tile_state_for_keys(self, record_keys) -> None:
         keys = {str(key) for key in record_keys}
@@ -3353,16 +3545,25 @@ class MatrixListWidget(QGraphicsView):
             return QColor(138, 106, 18, 235)
         return QColor(140, 47, 57, 235)
 
-    @staticmethod
-    def _background_color_for_grid_result(result: GridCellAnomalyResult | None) -> QColor:
+    def _grid_inspection_display_score(self, result: GridCellAnomalyResult | None) -> float | None:
+        if result is None:
+            return None
+        damage_score = max(0.0, min(1.0, float(getattr(result, "score", 0.0) or 0.0)))
+        score = 1.0 - damage_score
+        return score
+
+    def _background_color_for_grid_result(self, result: GridCellAnomalyResult | None) -> QColor:
         if result is None:
             return QColor(86, 90, 96)
-        score = float(getattr(result, "score", 0.0) or 0.0)
-        return blend_colors(QColor(78, 82, 88), QColor(255, 36, 64), min(0.82, score * 0.82))
+        score = self._grid_inspection_display_score(result)
+        score = 0.0 if score is None else float(score)
+        return self._background_color(score)
 
     def _background_color_for_record(self, record: FrameRecord) -> QColor:
         if self._is_record_excluded(record):
             return QColor(144, 148, 153, 225)
+        if self._highlighted_record_keys and str(record.key) not in self._highlighted_record_keys:
+            return QColor(64, 68, 74)
         score = self._display_score(record)
         base_color = QColor(MATRIX_BACKGROUND_ALT) if score is None else self._background_color(score)
         if self._management_visual_mode:
@@ -3409,22 +3610,36 @@ class MatrixListWidget(QGraphicsView):
     def _tooltip_for_record(self, record: FrameRecord) -> str:
         if self._grid_inspection_visual_mode:
             if not self._is_grid_inspection_target_record(record):
-                return f"{record.display_name}\nSelect the frame or a matrix range to run grid inspection"
+                return f"{record.display_name}\nCell-defect result is not computed"
             payload = self._cached_grid_inspection_payload_for_record(record)
             if payload is None:
                 self._schedule_visible_grid_inspection_request()
                 return f"{record.display_name}\nGrid inspection loading..."
             _pixmap, result = payload
-            return "\n".join(
-                [
-                    str(record.display_name),
-                    f"Grid defects: {len(result.cells)}",
-                    f"Max defect score: {float(result.score):.3f}",
-                    f"Grid axes: {len(result.x_axes)} x {len(result.y_axes)}",
-                ]
-            )
+            bad_cells = int(getattr(result, "bad_cells", 0))
+            if bad_cells <= 0:
+                bad_cells = sum(
+                    1
+                    for cell in getattr(result, "per_cell_results", getattr(result, "cells", ())) or ()
+                    if str(getattr(cell, "status", "") or "").lower() != "normal"
+                )
+            absolute_score = float(getattr(result, "score", 0.0) or 0.0)
+            display_score = self._grid_inspection_display_score(result)
+            score_line = f"Cell damage score: {absolute_score:.3f}"
+            if self._score_view_mode != "absolute" and display_score is not None:
+                score_line = f"{score_line} | relative {float(display_score):.3f}"
+            lines = [
+                str(record.display_name),
+                f"Cell defects: {bad_cells}",
+                score_line,
+            ]
+            if self._record_has_ground_truth(record):
+                lines.append(self._t("matrix.ground_truth_frame"))
+            return "\n".join(lines)
         if self._is_record_excluded(record):
             base_text = f"{record.display_name}\n{self._t('matrix.validation_na_excluded')}"
+            if self._record_has_ground_truth(record):
+                base_text = f"{base_text}\n{self._t('matrix.ground_truth_frame')}"
             management_lines = self._management_tooltip_lines(record)
             if management_lines:
                 return "\n".join([base_text, "", *management_lines])
@@ -3432,6 +3647,8 @@ class MatrixListWidget(QGraphicsView):
         if not bool(getattr(record, "score_ready", False)):
             suffix = f"\n{self._t('matrix.reference_frame')}" if self._reference_key == record.key else ""
             base_text = f"{record.display_name}\n{self._t('matrix.mismatch_not_computed')}{suffix}"
+            if self._record_has_ground_truth(record):
+                base_text = f"{base_text}\n{self._t('matrix.ground_truth_frame')}"
             management_lines = self._management_tooltip_lines(record)
             if management_lines:
                 return "\n".join([base_text, "", *management_lines])
@@ -3445,21 +3662,28 @@ class MatrixListWidget(QGraphicsView):
             lines.append(f"Score percentile: P{float(record.score_percentile):.1f}")
         if self._reference_key == record.key:
             lines.append(self._t('matrix.reference_frame'))
+        if self._record_has_ground_truth(record):
+            lines.append(self._t("matrix.ground_truth_frame"))
         lines.extend(self._management_tooltip_lines(record))
         return "\n".join(lines)
 
     def _hover_text(self, record: FrameRecord) -> str:
         if self._grid_inspection_visual_mode:
             if not self._is_grid_inspection_target_record(record):
-                return f"{record.display_name} | select to inspect grid"
+                return f"{record.display_name} | cell defects not computed"
             payload = self._cached_grid_inspection_payload_for_record(record)
             if payload is None:
                 self._schedule_visible_grid_inspection_request()
                 return f"{record.display_name} | grid loading..."
             _pixmap, result = payload
-            return f"{record.display_name} | defects {len(result.cells)} | score {float(result.score):.3f}"
+            parts = [record.display_name, f"defects {len(result.cells)}", f"score {float(result.score):.3f}"]
+            if self._record_has_ground_truth(record):
+                parts.append(self._t("matrix.ground_truth_short"))
+            return " | ".join(parts)
         if self._is_record_excluded(record):
             parts = [record.display_name, self._t('matrix.validation_na_excluded').lower()]
+            if self._record_has_ground_truth(record):
+                parts.append(self._t("matrix.ground_truth_short"))
             management = self._management_payload_for_record(record)
             if management:
                 parts.append(self._t("management.short.task", value=management.get("status", "")))
@@ -3473,6 +3697,8 @@ class MatrixListWidget(QGraphicsView):
             return " | ".join(parts)
         if not bool(getattr(record, "score_ready", False)):
             parts = [record.display_name, self._t('matrix.mismatch_not_computed').lower()]
+            if self._record_has_ground_truth(record):
+                parts.append(self._t("matrix.ground_truth_short"))
             management = self._management_payload_for_record(record)
             if management:
                 parts.append(self._t("management.short.task", value=management.get("status", "")))
@@ -3487,6 +3713,8 @@ class MatrixListWidget(QGraphicsView):
         parts = [record.display_name]
         if self._reference_key == record.key:
             parts.append(self._t('matrix.reference_short'))
+        if self._record_has_ground_truth(record):
+            parts.append(self._t("matrix.ground_truth_short"))
         if record.absolute_score is not None:
             parts.append(f"{self._t('matrix.absolute_short')} {self._format_metric_value(record.absolute_score)}")
         if record.relative_score is not None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PyQt6.QtWidgets import QGroupBox, QLabel, QTabWidget, QWidget
+from PyQt6.QtWidgets import QCheckBox, QGroupBox, QLabel, QSpinBox, QTabWidget, QWidget
 
 from ..core.analysis_modes import INTER_MODEL_ANALYSIS_MODE, POLYGON_OBJECT_TYPE
 from ..core.domain import BuildResult
@@ -18,9 +18,6 @@ class ExtendPreviewPanel:
     group: QGroupBox
     frame_title: QLabel
     frame_value: QLabel
-    subpixel_group: QGroupBox | None = None
-    subpixel_value: QLabel | None = None
-    subpixel_score_card: QWidget | None = None
     overall_group: QGroupBox | None = None
     component_group: QGroupBox | None = None
     score_cards: dict[str, QWidget] = field(default_factory=dict)
@@ -46,9 +43,16 @@ class ExtendMatrixTabState:
     confidence_model_id: str | None = None
     frame_type_filter: str = 'all'
     preview: ExtendPreviewPanel | None = None
+    selected_percentile_metric_key: str | None = None
+    selected_percentile_bin_index: int | None = None
     percentile_filter_metric_key: str | None = None
     percentile_filter_bin_index: int | None = None
+    percentile_filter_full_matrix: bool = True
+    percentile_full_matrix_check: QCheckBox | None = None
+    selected_correlation_band: str | None = None
     correlation_filter_band: str | None = None
+    correlation_limit: int = 25
+    correlation_limit_spin: QSpinBox | None = None
     percentile_cache: dict[tuple[str, int], dict[str, float]] = field(default_factory=dict)
     metric_result_cache: dict[str, BuildResult] = field(default_factory=dict)
     base_records_cache: dict[tuple[str, int], tuple] = field(default_factory=dict)
@@ -60,6 +64,11 @@ class ExtendMatrixTabState:
     management_scenario_id: str = ""
     management_scenario_payload_by_key: dict[str, dict[str, str]] = field(default_factory=dict)
     management_scenario_summary: str = ""
+    grid_inspection_results_ready: bool = False
+    grid_inspection_payload_by_key: dict[str, object] = field(default_factory=dict)
+    grid_inspection_config_payload: dict[str, object] = field(default_factory=dict)
+    grid_inspection_calculation_record_keys: set[str] = field(default_factory=set)
+    grid_inspection_reference_record_key: str | None = None
     excluded_record_keys: set[str] = field(default_factory=set)
     last_analytics_request_signature: tuple[object, ...] | None = None
 

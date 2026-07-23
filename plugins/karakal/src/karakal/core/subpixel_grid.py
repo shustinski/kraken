@@ -6,10 +6,7 @@ from typing import Callable
 
 import numpy as np
 
-try:
-    from .tile_grid import plan_tile_grid, tile_bounds_for_index
-except ImportError:  # pragma: no cover - direct script execution fallback
-    from tile_grid import plan_tile_grid, tile_bounds_for_index
+from .tile_grid import plan_tile_grid, tile_bounds_for_index
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,22 +94,6 @@ class SubpixelGrid:
         return float(self.confidences[int(row), int(column)])
 
 
-@dataclass(frozen=True, slots=True)
-class SubpixelSelection:
-    """Describe one selected subpixel inside one parent pixel."""
-
-    parent_row: int
-    parent_column: int
-    sub_row: int
-    sub_column: int
-    parent_value: float
-    subpixel_value: float
-    subpixel_confidence: float | None = None
-    aggregation: str = "mean"
-    metric_key: str = "overall_frame_score"
-    spec: SubpixelGridSpec | None = None
-
-
 def _partition_edges(total: int, parts: int) -> np.ndarray:
     total = max(0, int(total))
     parts = max(1, int(parts))
@@ -157,64 +138,6 @@ def _resolved_spec_for_shape(shape: tuple[int, int], spec: SubpixelGridSpec) -> 
             right = int(x_edges[column + 1])
             bounds.append((left, top, max(0, right - left), max(0, bottom - top)))
     return normalized_spec, bounds
-
-
-def subpixel_spec_from_options(options, source_shape: tuple[int, int] | None = None) -> SubpixelGridSpec:
-    """Build one subpixel-grid specification from widget build options."""
-
-    mode = str(getattr(options, "subpixel_view_mode", "pixel") or "pixel").strip().lower()
-    if mode == "tile":
-        tile_width = int(getattr(options, "tile_width", 256) or 256)
-        tile_height = int(getattr(options, "tile_height", 256) or 256)
-        overlap = int(getattr(options, "tile_overlap", 0) or 0)
-        spec = SubpixelGridSpec(
-            rows=max(1, int(getattr(options, "subpixel_rows", 1) or 1)),
-            columns=max(1, int(getattr(options, "subpixel_columns", 1) or 1)),
-            mode="tile",
-            tile_width=tile_width,
-            tile_height=tile_height,
-            overlap=overlap,
-        ).normalized()
-        if source_shape is None:
-            return spec
-        plan = plan_tile_grid(source_shape, tile_width, tile_height, overlap)
-        return replace(spec, rows=int(plan.rows), columns=int(plan.columns))
-    return SubpixelGridSpec(
-        rows=max(1, int(getattr(options, "subpixel_rows", 2) or 2)),
-        columns=max(1, int(getattr(options, "subpixel_columns", 2) or 2)),
-    ).normalized()
-
-
-def build_subpixel_grid_from_image(image, spec: SubpixelGridSpec, *, aggregation: str = "mean", value_kind: str = "intensity") -> SubpixelGrid:
-    """Build a regular subpixel grid from a grayscale image."""
-
-    array = np.asarray(image, dtype=np.float32)
-    if array.ndim != 2 or array.size == 0:
-        raise ValueError("Subpixel source image must be a non-empty 2D array")
-    if float(np.nanmax(array)) > 1.0:
-        normalized = np.clip(array, 0.0, 255.0) / 255.0
-    else:
-        normalized = np.clip(array, 0.0, 1.0)
-    resolved_spec, bounds = _resolved_spec_for_shape(normalized.shape, spec)
-    values = np.zeros((resolved_spec.rows, resolved_spec.columns), dtype=np.float32)
-    confidences = np.zeros((resolved_spec.rows, resolved_spec.columns), dtype=np.float32)
-    for index, (left, top, width, height) in enumerate(bounds):
-        row = index // int(resolved_spec.columns)
-        column = index % int(resolved_spec.columns)
-        tile = normalized[top:top + height, left:left + width]
-        if tile.size == 0:
-            continue
-        mean_value = float(np.mean(tile, dtype=np.float64))
-        local_std = float(np.std(tile, dtype=np.float64))
-        values[row, column] = float(np.clip(mean_value, 0.0, 1.0))
-        confidences[row, column] = float(np.clip(1.0 - min(1.0, local_std * 1.75), 0.0, 1.0))
-    return SubpixelGrid(
-        spec=resolved_spec,
-        values=values,
-        confidences=confidences,
-        aggregation=aggregation,
-        value_kind=str(value_kind or "intensity"),
-    )
 
 
 def build_subpixel_grid_from_array(
@@ -306,78 +229,3 @@ def aggregate_subpixel_values(values, confidences=None, aggregation: str = "mean
     if mode == "median":
         return float(np.median(finite))
     return float(np.mean(finite, dtype=np.float64))
-
-
-def subpixel_bounds_for_index(
-    parent_width: float,
-    parent_height: float,
-    row: int,
-    column: int,
-    spec: SubpixelGridSpec,
-) -> tuple[int, int, int, int]:
-    """Return integer bounds for one subpixel cell inside a parent region."""
-
-    normalized_spec = spec.normalized()
-    width = max(0, int(round(float(parent_width))))
-    height = max(0, int(round(float(parent_height))))
-    if width <= 0 or height <= 0:
-        return 0, 0, 0, 0
-    if row < 0 or column < 0:
-        return 0, 0, 0, 0
-    if normalized_spec.is_tile_mode:
-        plan = plan_tile_grid((height, width), normalized_spec.tile_width, normalized_spec.tile_height, normalized_spec.overlap)
-        if row >= int(plan.rows) or column >= int(plan.columns):
-            return 0, 0, 0, 0
-        return tile_bounds_for_index(plan, row, column)
-    rows = max(1, int(normalized_spec.rows))
-    columns = max(1, int(normalized_spec.columns))
-    if row >= rows or column >= columns:
-        return 0, 0, 0, 0
-    x_edges = _partition_edges(width, columns)
-    y_edges = _partition_edges(height, rows)
-    left = int(x_edges[column])
-    right = int(x_edges[column + 1])
-    top = int(y_edges[row])
-    bottom = int(y_edges[row + 1])
-    return left, top, max(0, right - left), max(0, bottom - top)
-
-
-def resolve_subpixel_index(
-    local_x: float,
-    local_y: float,
-    parent_width: float,
-    parent_height: float,
-    spec: SubpixelGridSpec,
-) -> tuple[int, int] | None:
-    """Map one local point inside a parent pixel to a subpixel index."""
-
-    normalized_spec = spec.normalized()
-    width = max(0, int(round(float(parent_width))))
-    height = max(0, int(round(float(parent_height))))
-    if width <= 0 or height <= 0:
-        return None
-    x = float(local_x)
-    y = float(local_y)
-    if x < 0.0 or y < 0.0 or x > float(width) or y > float(height):
-        return None
-    if normalized_spec.is_tile_mode:
-        plan = plan_tile_grid((height, width), normalized_spec.tile_width, normalized_spec.tile_height, normalized_spec.overlap)
-        resolved: tuple[int, int] | None = None
-        for row in range(int(plan.rows)):
-            for column in range(int(plan.columns)):
-                left, top, tile_width, tile_height = tile_bounds_for_index(plan, row, column)
-                if tile_width <= 0 or tile_height <= 0:
-                    continue
-                right = left + tile_width
-                bottom = top + tile_height
-                if x < float(left) or y < float(top) or x > float(right) or y > float(bottom):
-                    continue
-                resolved = (row, column)
-        return resolved
-    x_edges = _partition_edges(width, int(normalized_spec.columns))
-    y_edges = _partition_edges(height, int(normalized_spec.rows))
-    x_index = int(np.searchsorted(x_edges[1:], min(float(width) - 1e-6, x), side="right"))
-    y_index = int(np.searchsorted(y_edges[1:], min(float(height) - 1e-6, y), side="right"))
-    column = min(normalized_spec.columns - 1, max(0, x_index))
-    row = min(normalized_spec.rows - 1, max(0, y_index))
-    return row, column

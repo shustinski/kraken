@@ -6,7 +6,13 @@ import numpy as np
 import pytest
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QHeaderView
+from PyQt6.QtWidgets import (
+    QApplication,
+    QDoubleSpinBox,
+    QFormLayout,
+    QHeaderView,
+    QSpinBox,
+)
 
 from contour.application.processing import (
     ContourDebugCandidate,
@@ -172,6 +178,40 @@ def test_heuristic_expert_group_and_tooltips() -> None:
             if label is not None:
                 assert label.toolTip() == editor.toolTip()
 
+        widget.resize(1280, 900)
+        widget.show()
+        widget.bright_via_advanced_outer.setChecked(True)
+        app.processEvents()
+        expert_spinboxes = [
+            editor
+            for editor in expert_widgets
+            if isinstance(editor, (QSpinBox, QDoubleSpinBox))
+        ]
+        assert expert_spinboxes
+        assert {editor.width() for editor in expert_spinboxes} == {
+            widget.heuristic_expert_spinbox_width
+        }
+        widget.bright_via_form.activate()
+        spinbox_x_positions = {editor.geometry().x() for editor in expert_spinboxes}
+        assert len(spinbox_x_positions) == 1
+        assert next(iter(spinbox_x_positions)) <= widget.heuristic_expert_label_width + 20
+        expert_labels = [
+            widget.bright_via_form.labelForField(editor)
+            for editor in expert_spinboxes
+        ]
+        assert {
+            label.width()
+            for label in expert_labels
+            if label is not None
+        } == {widget.heuristic_expert_label_width}
+        assert widget.bright_via_form.labelForField(
+            widget.heuristic_use_bilateral_checkbox
+        ) is None
+        assert (
+            widget.heuristic_use_bilateral_checkbox.geometry().x()
+            < next(iter(spinbox_x_positions))
+        )
+
         widget.heuristic_w_contrast_spin.setValue(37.0)
         widget.heuristic_min_center_brightness_spin.setValue(123.0)
         widget.heuristic_min_circularity_spin.setValue(0.55)
@@ -268,6 +308,47 @@ def test_contact_polarity_is_in_basics_and_obsolete_debug_controls_are_removed()
         assert not hasattr(widget, "via_debug_gradient_map_checkbox")
         assert not hasattr(widget, "noisy_traces_via_preset_button")
         assert not hasattr(widget, "blurred_via_preset_button")
+        widget.resize(1280, 900)
+        widget.show()
+        widget.bright_via_basics_form.activate()
+        basic_single_editors = (
+            widget.via_search_mode_combo,
+            widget.via_heuristic_polarity_combo,
+            widget.via_diameter_size_mode_combo,
+            widget.bright_via_diameter_fixed_spin,
+            widget.bright_via_min_final_score_spin,
+            widget.bright_via_nms_distance_spin,
+        )
+        assert {editor.width() for editor in basic_single_editors} == {
+            widget.bright_via_basics_editor_width
+        }
+        basic_fields = basic_single_editors + (
+            widget.bright_via_diameter_range_widget,
+            widget.via_white_range_widget,
+            widget.via_black_range_widget,
+            widget.via_preset_widget,
+            widget.reset_bright_via_button,
+        )
+        laid_out_x_positions = {
+            field.geometry().x()
+            for field in basic_fields
+            if field.geometry().x() > 0
+        }
+        assert len(laid_out_x_positions) == 1
+        assert all(
+            widget.bright_via_basics_form.getWidgetPosition(field)[1]
+            == QFormLayout.ItemRole.FieldRole
+            for field in basic_fields
+        )
+        basic_labels = [
+            widget.bright_via_basics_form.labelForField(field)
+            for field in basic_fields
+        ]
+        assert {
+            label.width()
+            for label in basic_labels
+            if label is not None
+        } == {widget.bright_via_basics_label_width}
 
         widget.via_search_mode_combo.setCurrentIndex(widget.via_search_mode_combo.findData("template"))
         app.processEvents()

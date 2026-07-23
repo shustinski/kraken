@@ -941,6 +941,12 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_basics_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
     self.bright_via_basics_form = QFormLayout(self.bright_via_basics_group)
     self._configure_compact_form(self.bright_via_basics_form)
+    self.bright_via_basics_form.setRowWrapPolicy(
+        QFormLayout.RowWrapPolicy.DontWrapRows
+    )
+    self.bright_via_basics_form.setFormAlignment(
+        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+    )
     self.bright_via_quality_group = QGroupBox("Фильтры качества")
     self.bright_via_quality_form = QFormLayout(self.bright_via_quality_group)
     self._configure_compact_form(self.bright_via_quality_form)
@@ -953,6 +959,12 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_advanced_inner = QWidget()
     self.bright_via_form = QFormLayout(self.bright_via_advanced_inner)
     self._configure_compact_form(self.bright_via_form)
+    # Expert numeric editors form one stable column. Wrapping individual rows
+    # would shift some spin boxes to the label's left edge in a narrow dock.
+    self.bright_via_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+    self.bright_via_form.setFormAlignment(
+        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+    )
     _bright_adv_wrap = QVBoxLayout(self.bright_via_advanced_outer)
     _bright_adv_wrap.setContentsMargins(8, 4, 8, 8)
     _bright_adv_wrap.addWidget(self.bright_via_advanced_inner)
@@ -1176,6 +1188,10 @@ def build_extraction_tab(self) -> QWidget:
         for name, widget in vars(self).items()
         if name.startswith("heuristic_") and (name.endswith("_spin") or name.endswith("_checkbox"))
     )
+    self.heuristic_expert_spinbox_width = 136
+    for _expert_widget in self._heuristic_expert_parameter_widgets:
+        if isinstance(_expert_widget, (QSpinBox, QDoubleSpinBox)):
+            _expert_widget.setFixedWidth(self.heuristic_expert_spinbox_width)
     for _lower, _upper in (
         (self.heuristic_contrast_score_min_spin, self.heuristic_contrast_score_max_spin),
         (self.heuristic_prominence_score_min_spin, self.heuristic_prominence_score_max_spin),
@@ -1489,6 +1505,27 @@ def build_extraction_tab(self) -> QWidget:
     _via_preset_actions_layout.addWidget(self.delete_via_preset_button)
     self.bright_via_basics_form.addRow("Управление пресетом", _via_preset_actions)
     self.bright_via_basics_form.addRow("Действия", self.reset_bright_via_button)
+    self.bright_via_basics_label_width = 190
+    self.bright_via_basics_editor_width = 136
+    for _basic_editor in (
+        self.via_search_mode_combo,
+        self.via_heuristic_polarity_combo,
+        self.via_diameter_size_mode_combo,
+        self.bright_via_diameter_fixed_spin,
+        self.bright_via_min_final_score_spin,
+        self.bright_via_nms_distance_spin,
+    ):
+        _basic_editor.setFixedWidth(self.bright_via_basics_editor_width)
+    for _row in range(self.bright_via_basics_form.rowCount()):
+        _label_item = self.bright_via_basics_form.itemAt(
+            _row, QFormLayout.ItemRole.LabelRole
+        )
+        _label_widget = _label_item.widget() if _label_item is not None else None
+        if _label_widget is None:
+            continue
+        _label_widget.setFixedWidth(self.bright_via_basics_label_width)
+        if isinstance(_label_widget, QLabel):
+            _label_widget.setWordWrap(True)
     self.bright_via_quality_form.addRow("Порог яркости пятна", self.bright_via_threshold_percentile_spin)
     self.bright_via_quality_form.addRow("Мин. круглость", self.bright_via_min_circularity_spin)
     self.bright_via_quality_form.addRow("Мин. изолированность пятна", self.bright_via_min_isolation_spin)
@@ -1510,7 +1547,7 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_form.addRow("Минимальная выраженность пика", self.heuristic_min_peak_prominence_spin)
     self.bright_via_form.addRow("Локальный процентиль бинаризации", self.heuristic_local_binarize_percentile_spin)
     self.bright_via_form.addRow("Минимальная яркость пика (карта отклика)", self.heuristic_min_abs_peak_spin)
-    self.bright_via_form.addRow("", self.heuristic_use_bilateral_checkbox)
+    self.bright_via_form.addRow(self.heuristic_use_bilateral_checkbox)
     self.bright_via_form.addRow("Порог пиков", self.heuristic_seed_percentile_spin)
     self.bright_via_form.addRow(QLabel("<b>Геометрия и обязательные фильтры</b>"))
     self.bright_via_form.addRow("Минимальная компактность", self.heuristic_min_compactness_spin)
@@ -1543,6 +1580,14 @@ def build_extraction_tab(self) -> QWidget:
         ("Вес штрафа за границу", "heuristic_w_border_spin"),
     ):
         self.bright_via_form.addRow(_label, getattr(self, _attr))
+    self.heuristic_expert_label_width = 268
+    for _expert_widget in self._heuristic_expert_parameter_widgets:
+        if not isinstance(_expert_widget, (QSpinBox, QDoubleSpinBox)):
+            continue
+        _expert_label = self.bright_via_form.labelForField(_expert_widget)
+        if isinstance(_expert_label, QLabel):
+            _expert_label.setFixedWidth(self.heuristic_expert_label_width)
+            _expert_label.setWordWrap(True)
     self.heuristic_defaults_button = QPushButton("По умолчанию")
     self.heuristic_defaults_button.setToolTip(
         "Восстанавливает значения по умолчанию только для экспертных параметров "

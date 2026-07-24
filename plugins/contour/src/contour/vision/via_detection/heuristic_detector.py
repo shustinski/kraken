@@ -300,12 +300,81 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
     )
 
 
+def analyze_via_at(
+    image: np.ndarray,
+    center_x: float,
+    center_y: float,
+    config: HeuristicViaDetectorConfig,
+) -> ViaDetection | None:
+    """Measure one caller-supplied contact center with the heuristic scorer."""
+
+    config.validate()
+    gray = _to_gray_u8(np.asarray(image))
+    height, width = gray.shape[:2]
+    if height < 3 or width < 3:
+        return None
+    allowed = config.allowed_diameters()
+    if not allowed:
+        return None
+    x_coord = max(0, min(width - 1, int(round(float(center_x)))))
+    y_coord = max(0, min(height - 1, int(round(float(center_y)))))
+    frame = _prepare_heuristic_frame(gray, config)
+    return _score_seed(
+        frame,
+        (y_coord, x_coord),
+        allowed,
+        _candidate_hypotheses(config),
+        config,
+        enforce_rejections=False,
+    )
+
+
+def _prepare_heuristic_frame(
+    gray: np.ndarray,
+    config: HeuristicViaDetectorConfig,
+) -> PreparedHeuristicFrame:
+    denoised = _preprocess_denoise(_to_gray_u8(gray), config)
+    background = cv2.GaussianBlur(denoised, (0, 0), float(config.background_sigma))
+    gray_f32 = denoised.astype(np.float32)
+    corrected = gray_f32 - background.astype(np.float32)
+    corrected_u8 = _normalize01_to_u8(corrected)
+    gradient_x = cv2.Sobel(gray_f32, cv2.CV_32F, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(gray_f32, cv2.CV_32F, 0, 1, ksize=3)
+    return PreparedHeuristicFrame(
+        gray=denoised,
+        gray_f32=gray_f32,
+        corrected_u8=corrected_u8,
+        gradient_x=gradient_x,
+        gradient_y=gradient_y,
+        gradient_magnitude=cv2.magnitude(gradient_x, gradient_y),
+    )
+
+
+def _candidate_hypotheses(config: HeuristicViaDetectorConfig) -> list[str]:
+    polarity = str(config.polarity or ViaPolarity.AUTO).lower()
+    if polarity in ("auto", str(ViaPolarity.AUTO)):
+        hypotheses: list[str] = []
+        if config.bright_range_enabled:
+            hypotheses.append(str(ViaPolarity.BRIGHT))
+        if config.dark_range_enabled:
+            hypotheses.append(str(ViaPolarity.DARK))
+        return hypotheses or [str(ViaPolarity.BRIGHT)]
+    if polarity in {
+        str(ViaPolarity.RING_LIGHT_RING),
+        str(ViaPolarity.RING_DARK_RING),
+    }:
+        return [polarity]
+    return [polarity]
+
+
 def _score_seed(
     frame: PreparedHeuristicFrame,
     seed: tuple[int, int],
     allowed_diameters: list[int],
     hypotheses: list[str],
     config: HeuristicViaDetectorConfig,
+    *,
+    enforce_rejections: bool = True,
 ) -> ViaDetection | None:
     """Score every allowed diameter for one seed and return its best candidate."""
 
@@ -338,6 +407,7 @@ def _score_seed(
                 frame.gradient_y[y0:y1, x0:x1],
                 frame.gradient_magnitude[y0:y1, x0:x1],
                 allowed_diameters,
+                enforce_rejections=enforce_rejections,
             )
             if detection is not None and _det_better(detection, best):
                 best = detection
@@ -755,6 +825,8 @@ def _segment_candidate(
     offset: tuple[int, int],
     hypothesis: str,
     config: HeuristicViaDetectorConfig,
+    *,
+    enforce_rejections: bool = True,
 ) -> tuple[SegmentedCandidate | None, ViaDetection | None]:
     """Build the local component and return either its data or a typed rejection."""
 
@@ -779,9 +851,9 @@ def _segment_candidate(
             _hard_reason(code),
         )
 
-    if not _center_in_brightness_range(center_grey, hypothesis, config):
+    if enforce_rejections and not _center_in_brightness_range(center_grey, hypothesis, config):
         return None, rejected(ViaRejectCode.BRIGHTNESS_RANGE)
-    if center_grey < float(config.min_center_brightness):
+    if enforce_rejections and center_grey < float(config.min_center_brightness):
         return None, rejected(ViaRejectCode.LOW_CENTER_BRIGHTNESS)
     annular_contrast = _contrast_for_polarity(
         patch, center_mask, inner_mask, outer_mask, hypothesis
@@ -790,7 +862,7 @@ def _segment_candidate(
         patch, pcx, pcy, float(diameter), hypothesis
     )
     contrast = max(float(annular_contrast), float(background_contrast))
-    if contrast < float(config.min_center_contrast):
+    if enforce_rejections and contrast < float(config.min_center_contrast):
         return None, rejected(ViaRejectCode.LOW_CONTRAST, contrast=contrast)
 
     median = _fast_percentile_u8(patch, 50.0)
@@ -799,7 +871,7 @@ def _segment_candidate(
     x0, x1 = max(0, pcx - peak_radius), min(width, pcx + peak_radius + 1)
     neighbourhood = patch[y0:y1, x0:x1].ravel()
     prominence = float(np.max(np.abs(neighbourhood - median))) if neighbourhood.size else 0.0
-    if prominence < float(config.min_peak_prominence):
+    if enforce_rejections and prominence < float(config.min_peak_prominence):
         return None, rejected(
             ViaRejectCode.LOW_PROMINENCE,
             contrast=contrast,
@@ -807,7 +879,12 @@ def _segment_candidate(
         )
 
     percentile = float(config.local_binarize_percentile)
-    delta = max(float(config.min_center_contrast), abs(contrast) * 0.30, 2.0)
+    segmentation_contrast_floor = (
+        float(config.min_center_contrast)
+        if enforce_rejections or contrast >= float(config.min_center_contrast)
+        else 0.0
+    )
+    delta = max(segmentation_contrast_floor, abs(contrast) * 0.30, 2.0)
     dark_component = hypothesis in (
         str(ViaPolarity.DARK),
         "dark",
@@ -820,8 +897,12 @@ def _segment_candidate(
         str(ViaPolarity.RING_DARK_RING),
         "ring_dark_ring",
     )
-    clamp_dark_seed = config.use_intensity_range_seeds or float(config.dark_range_max) <= 127.0
-    clamp_bright_seed = config.use_intensity_range_seeds or float(config.bright_range_min) >= 128.0
+    clamp_dark_seed = enforce_rejections and (
+        config.use_intensity_range_seeds or float(config.dark_range_max) <= 127.0
+    )
+    clamp_bright_seed = enforce_rejections and (
+        config.use_intensity_range_seeds or float(config.bright_range_min) >= 128.0
+    )
     if dark_component:
         threshold = min(
             _fast_percentile_u8(patch, max(1.0, 100.0 - percentile)),
@@ -923,13 +1004,22 @@ def _score_one(
     gradient_y: np.ndarray,
     gradient_magnitude: np.ndarray,
     allowed_diameters: list[int],
+    *,
+    enforce_rejections: bool = True,
 ) -> ViaDetection | None:
     h, w = patch.shape[:2]
     if pcx < 0 or pcy < 0 or pcx >= w or pcy >= h:
         return None
     ph, pw = h, w
     segmented, rejection = _segment_candidate(
-        patch, pcx, pcy, d_est, offset, hyp, config
+        patch,
+        pcx,
+        pcy,
+        d_est,
+        offset,
+        hyp,
+        config,
+        enforce_rejections=enforce_rejections,
     )
     if rejection is not None:
         return rejection
@@ -953,7 +1043,7 @@ def _score_one(
         eq_diam = 2.0 * math.sqrt(max(area, 1.0) / math.pi)
     tol = config.effective_size_tolerance()
     re = max(float(d_est), 1.0)
-    if abs(eq_diam - float(d_est)) / re > tol:
+    if enforce_rejections and abs(eq_diam - float(d_est)) / re > tol:
         return ViaDetection(
             float(offset[0] + pcx),
             float(offset[1] + pcy),
@@ -978,7 +1068,7 @@ def _score_one(
     fcx, fcy = _component_geometry_center(cnt0, segmented.component_stats, weighted_center)
     drift = math.hypot(fcx - float(pcx), fcy - float(pcy))
     max_drift = float(config.max_center_drift_ratio) * re
-    if drift > max_drift:
+    if enforce_rejections and drift > max_drift:
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),
@@ -1007,7 +1097,7 @@ def _score_one(
     )
     fill = 4.0 * area / (w_r * h_r + 1e-6) if w_r * h_r > 1e-6 else 0.0
     compact2 = 0.5 * min(1.0, min(fill, 1.0)) + 0.5 * min(1.0, area / (math.pi * r_expect**2 + 1e-3))
-    if compact2 < float(config.min_compactness):
+    if enforce_rejections and compact2 < float(config.min_compactness):
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),
@@ -1021,7 +1111,7 @@ def _score_one(
             hyp,
             _hard_reason(ViaRejectCode.LOW_COMPACTNESS),
         )
-    if circ2 < float(config.min_circularity):
+    if enforce_rejections and circ2 < float(config.min_circularity):
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),
@@ -1035,7 +1125,7 @@ def _score_one(
             hyp,
             _hard_reason(ViaRejectCode.LOW_CIRCULARITY),
         )
-    if aspect > float(config.max_elongation):
+    if enforce_rejections and aspect > float(config.max_elongation):
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),
@@ -1059,7 +1149,7 @@ def _score_one(
         float(d_est),
         float(contrast),
     )
-    if structure_coherence > float(config.max_line_coherence):
+    if enforce_rejections and structure_coherence > float(config.max_line_coherence):
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),
@@ -1073,7 +1163,7 @@ def _score_one(
             hyp,
             _hard_reason(ViaRejectCode.LINE_COHERENCE, f"({structure_coherence:.2f})"),
         )
-    if edge_sharpness < float(config.min_edge_sharpness):
+    if enforce_rejections and edge_sharpness < float(config.min_edge_sharpness):
         return ViaDetection(
             float(offset[0] + fcx),
             float(offset[1] + fcy),

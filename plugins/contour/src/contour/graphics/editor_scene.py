@@ -73,10 +73,13 @@ from .polygon_creation import (
     POLYGON_COMMIT_TOO_SMALL_AREA,
     polygon_commit_acceptability,
 )
-
-
-def _is_via_polygon(polygon: PolygonData) -> bool:
-    return polygon.category == "via" or polygon.shape_hint == "box"
+from .tool_mode_logic import (
+    can_add_polygon,
+    can_add_polygon_set,
+    can_add_via,
+    is_recognized_via,
+    is_via_polygon as _is_via_polygon,
+)
 
 
 class PolygonEditorScene(QGraphicsScene):
@@ -98,6 +101,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygon_overlays_visible = True
         self._gradient_overlay_user_visible = True
         self._polygon_category_visible: dict[str, bool] = {}
+        self._protect_recognized_vias = False
 
         self._image_item = QGraphicsPixmapItem()
         self._image_item.setZValue(0)
@@ -592,6 +596,23 @@ class PolygonEditorScene(QGraphicsScene):
     def get_polygons(self) -> list[PolygonData]:
         return [self._polygons[polygon_id].clone() for polygon_id in sorted(self._polygons)]
 
+    def set_protect_recognized_vias(self, enabled: bool) -> None:
+        self._protect_recognized_vias = bool(enabled)
+
+    def can_add_polygon(self) -> bool:
+        return can_add_polygon(self._polygons.values())
+
+    def can_add_via(self) -> bool:
+        return can_add_via(self._polygons.values())
+
+    def can_add_polygon_set(self, polygons: list[PolygonData]) -> bool:
+        return can_add_polygon_set(self._polygons.values(), polygons)
+
+    def polygon_is_deletable(self, polygon: PolygonData | None) -> bool:
+        if polygon is None:
+            return False
+        return not (self._protect_recognized_vias and is_recognized_via(polygon))
+
     def set_vector_geometry_settings(self, settings: VectorGeometrySettings | None) -> None:
         self._vector_geometry_settings = settings if settings is not None else VectorGeometrySettings()
 
@@ -890,13 +911,12 @@ class PolygonEditorScene(QGraphicsScene):
         polygon_id = self.polygon_at(scene_pos)
         if polygon_id is None:
             return False
-        self.delete_polygon(polygon_id)
-        return True
+        return self.delete_polygon(polygon_id)
 
     def delete_via_at(self, scene_pos: QPointF) -> bool:
         polygon_id = self.polygon_at(scene_pos)
         polygon = self._polygons.get(polygon_id) if polygon_id is not None else None
-        if polygon is None or not _is_via_polygon(polygon):
+        if polygon is None or not _is_via_polygon(polygon) or not self.polygon_is_deletable(polygon):
             return False
         self.delete_polygon(polygon_id)
         return True
@@ -905,7 +925,17 @@ class PolygonEditorScene(QGraphicsScene):
         target_ids = [polygon_id] if polygon_id is not None else sorted(self._selected_polygon_ids)
         if not target_ids and self._selected_polygon_id is not None:
             target_ids = [self._selected_polygon_id]
+        target_ids = [
+            target_id
+            for target_id in target_ids
+            if self.polygon_is_deletable(self._polygons.get(target_id))
+        ]
         delete_ids = self._delete_polygon_ids_with_descendants(target_ids)
+        delete_ids = [
+            target_id
+            for target_id in delete_ids
+            if self.polygon_is_deletable(self._polygons.get(target_id))
+        ]
         target_polygons = [self._polygons[target_id].clone() for target_id in delete_ids if target_id in self._polygons]
         if not target_polygons:
             return False
@@ -939,7 +969,12 @@ class PolygonEditorScene(QGraphicsScene):
             if polygon_id in self._polygons
         ]
 
+    def selected_deletable_polygons(self) -> list[PolygonData]:
+        return [polygon for polygon in self.selected_polygons() if self.polygon_is_deletable(polygon)]
+
     def antialias_selected_polygons(self, grade: int) -> bool:
+        if not self.can_add_polygon():
+            return False
         target_ids = {polygon_id for polygon_id in self._selected_polygon_ids if polygon_id in self._polygons}
         if not target_ids and self._selected_polygon_id is not None and self._selected_polygon_id in self._polygons:
             target_ids = {self._selected_polygon_id}
@@ -967,6 +1002,8 @@ class PolygonEditorScene(QGraphicsScene):
         return True
 
     def antialias_polygons_in_rect(self, rect: QRectF, grade: int) -> bool:
+        if not self.can_add_polygon():
+            return False
         normalized = rect.normalized()
         if normalized.width() <= 0.0 or normalized.height() <= 0.0:
             return False
@@ -993,7 +1030,7 @@ class PolygonEditorScene(QGraphicsScene):
         source_anchor: QPointF,
         target_anchor: QPointF,
     ) -> list[int]:
-        if not polygons:
+        if not polygons or not self.can_add_polygon_set(polygons):
             return []
         dx = target_anchor.x() - source_anchor.x()
         dy = target_anchor.y() - source_anchor.y()
@@ -1031,7 +1068,7 @@ class PolygonEditorScene(QGraphicsScene):
         return [polygon.id for polygon in new_polygons]
 
     def add_vertex_at(self, polygon_id: int, scene_pos: QPointF) -> bool:
-        if polygon_id not in self._polygons:
+        if not self.can_add_polygon() or polygon_id not in self._polygons:
             return False
         insert_index = self._nearest_segment_insert_index(polygon_id, scene_pos)
         new_point = integer_point((scene_pos.x(), scene_pos.y()))
@@ -1059,6 +1096,8 @@ class PolygonEditorScene(QGraphicsScene):
         return True
 
     def delete_vertex_at(self, scene_pos: QPointF, tolerance: float) -> bool:
+        if not self.can_add_polygon():
+            return False
         hit = self.vertex_at(scene_pos, tolerance)
         if hit is None:
             return False
@@ -1140,6 +1179,9 @@ class PolygonEditorScene(QGraphicsScene):
         self.clear_preview_rect()
 
     def finish_pending_polygon(self) -> bool:
+        if not self.can_add_polygon():
+            self.cancel_pending_polygon()
+            return False
         acceptable, reason = polygon_commit_acceptability(self._pending_points)
         if not acceptable:
             if reason == POLYGON_COMMIT_TOO_FEW_VERTICES:
@@ -1276,6 +1318,8 @@ class PolygonEditorScene(QGraphicsScene):
         self._via_cursor_item.hide()
 
     def add_via_at(self, scene_pos: QPointF, width: float, height: float) -> bool:
+        if not self.can_add_via():
+            return False
         rect = _centered_rect(scene_pos, width, height).normalized()
         if rect.width() < 1.0 or rect.height() < 1.0:
             return False
@@ -1316,6 +1360,9 @@ class PolygonEditorScene(QGraphicsScene):
         return False
 
     def add_rectangle_polygon(self, start: QPointF, end: QPointF, erase: bool = False) -> bool:
+        if not self.can_add_polygon():
+            self.clear_preview_rect()
+            return False
         rect = QRectF(start, end).normalized()
         if rect.width() < 1.0 or rect.height() < 1.0:
             self.clear_preview_rect()
@@ -1464,6 +1511,9 @@ class PolygonEditorScene(QGraphicsScene):
         return clipped
 
     def add_brush_stroke(self, points: list[tuple[float, float]], thickness: float, erase: bool = False) -> bool:
+        if not self.can_add_polygon():
+            self.cancel_pending_polygon()
+            return False
         if len(points) < 1:
             self.cancel_pending_polygon()
             return False
@@ -1499,6 +1549,9 @@ class PolygonEditorScene(QGraphicsScene):
         return True
 
     def add_trace_stroke(self, points: list[tuple[float, float]], width: float, erase: bool = False) -> bool:
+        if not self.can_add_polygon():
+            self.cancel_pending_polygon()
+            return False
         if len(points) < 2:
             self.cancel_pending_polygon()
             return False
@@ -1540,6 +1593,9 @@ class PolygonEditorScene(QGraphicsScene):
         return True
 
     def subtract_pending_polygon(self) -> bool:
+        if not self.can_add_polygon():
+            self.cancel_pending_polygon()
+            return False
         acceptable, reason = polygon_commit_acceptability(self._pending_points)
         if not acceptable:
             if reason == POLYGON_COMMIT_TOO_FEW_VERTICES:
@@ -1555,6 +1611,8 @@ class PolygonEditorScene(QGraphicsScene):
         return changed
 
     def delete_vertices_in_rect(self, rect: QRectF) -> int:
+        if not self.can_add_polygon():
+            return 0
         normalized = rect.normalized()
         if normalized.width() < 1.0 and normalized.height() < 1.0:
             return 0
@@ -1622,7 +1680,7 @@ class PolygonEditorScene(QGraphicsScene):
         thickness: float | None,
         label: str,
     ) -> bool:
-        if not points:
+        if not points or not self.can_add_polygon():
             return False
         shape_bbox = _bbox_from_points(points, padding=(round(thickness / 2.0) + 2) if thickness else 2)
         overlapping_ids = self._find_overlapping_polygon_ids(points=points, thickness=thickness, shape_bbox=shape_bbox)
@@ -1940,11 +1998,11 @@ class PolygonEditorScene(QGraphicsScene):
 
     @staticmethod
     def _via_score_color(polygon: PolygonData) -> str | None:
-        if str(getattr(polygon, "category", "") or "") != "via":
+        if not _is_via_polygon(polygon):
             return None
         score = getattr(polygon, "recognition_score", None)
         if score is None:
-            return None
+            return "#2563EB"
         normalized = max(0.0, min(1.0, float(score) / 100.0))
         # HSL hue 0° is red, 60° yellow and 120° green.
         return QColor.fromHslF(normalized / 3.0, 0.82, 0.50).name()

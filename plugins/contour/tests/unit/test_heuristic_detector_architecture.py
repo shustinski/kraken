@@ -9,6 +9,7 @@ from contour.vision.via_detection.config import HeuristicViaDetectorConfig, ViaP
 from contour.vision.via_detection.heuristic_detector import (
     CandidateFeatures,
     _final_candidate_score,
+    analyze_via_at,
     detect_vias_heuristic,
 )
 from contour.vision.via_detection.settings_bridge import heuristic_config_from_settings
@@ -97,6 +98,68 @@ def test_all_polarity_shapes_are_detected(
         "final_score",
     } <= result.accepted[0].features.keys()
     assert result.accepted[0].features["center_brightness"] == pytest.approx(center, abs=5.0)
+
+
+def test_analyze_via_at_reuses_heuristic_candidate_metrics() -> None:
+    image = np.full((96, 96), 96, dtype=np.uint8)
+    cv2.circle(image, (48, 48), 5, 230, thickness=-1)
+    config = HeuristicViaDetectorConfig(
+        diameter_mode="fixed",
+        fixed_diameters=[10],
+        polarity="bright",
+        min_final_score=0.0,
+        min_center_contrast=1.0,
+        min_peak_prominence=1.0,
+        min_compactness=0.01,
+        bright_range_enabled=False,
+        dark_range_enabled=False,
+        max_line_coherence=1.0,
+        min_edge_sharpness=0.0,
+    )
+
+    detected = detect_vias_heuristic(image, config).accepted[0]
+    analyzed = analyze_via_at(image, 48.0, 48.0, config)
+
+    assert analyzed is not None
+    assert analyzed.features.keys() == detected.features.keys()
+    assert analyzed.features["center_brightness"] == pytest.approx(
+        detected.features["center_brightness"]
+    )
+    assert analyzed.features["final_score"] == pytest.approx(detected.features["final_score"])
+
+
+def test_analyze_via_at_reports_full_metrics_even_when_detection_gate_rejects() -> None:
+    image = np.full((96, 96), 96, dtype=np.uint8)
+    cv2.circle(image, (48, 48), 5, 220, thickness=-1)
+    config = HeuristicViaDetectorConfig(
+        diameter_mode="fixed",
+        fixed_diameters=[10],
+        polarity="bright",
+        min_center_brightness=250.0,
+        bright_range_enabled=True,
+        bright_range_min=250.0,
+        min_center_contrast=1.0,
+        min_peak_prominence=1.0,
+        min_compactness=0.01,
+        max_line_coherence=1.0,
+        min_edge_sharpness=0.0,
+    )
+
+    assert detect_vias_heuristic(image, config).accepted == []
+    analyzed = analyze_via_at(image, 48.0, 48.0, config)
+
+    assert analyzed is not None
+    assert analyzed.reject_reason is None
+    assert {
+        "center_brightness",
+        "contrast",
+        "prominence",
+        "diameter",
+        "equivalent_diameter",
+        "compactness",
+        "circularity",
+        "final_score",
+    } <= analyzed.features.keys()
 
 
 def test_minimum_center_brightness_rejects_dimmer_candidate() -> None:

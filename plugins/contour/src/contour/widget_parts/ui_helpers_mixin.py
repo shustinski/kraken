@@ -47,6 +47,14 @@ class WidgetUiHelpersMixin:
         if shift_clicked:
             self._cycle_editor_tool_mode(tool)
 
+    def _on_available_editor_tools_changed(self, available_tools: object) -> None:
+        available = set(available_tools) if available_tools is not None else set()
+        if hasattr(self, "_tool_buttons"):
+            for tool, button in self._tool_buttons.items():
+                button.setVisible(tool in available)
+        if hasattr(self, "_tool_parameter_blocks"):
+            self._place_active_tool_parameters_near_tool_button(self.polygon_editor.current_tool)
+
     def _cycle_editor_tool_mode(self, tool: EditorTool) -> None:
         combo = None
         if tool == EditorTool.ADD_POLYGON and hasattr(self, "polygon_mode_combo"):

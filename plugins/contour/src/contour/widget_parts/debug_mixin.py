@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from ._imports import *  # noqa: F403
 
@@ -40,13 +40,14 @@ class WidgetDebugMixin:
         candidates = list(current_state.debug_candidates) if current_state is not None else []
         is_via_like = (polygon.shape_hint or "") == "box" or (polygon.category or "") == "via"
         title = self._tr("debug.via_title" if is_via_like else "debug.polygon_title")
-        if not candidates:
-            message = self._tr("debug.no_current_frame_data")
-            self._show_nonblocking_via_debug_message(title, message)
-            return
+        is_manual_via = bool(is_via_like and polygon.recognition_score is None)
         candidate = self._best_debug_candidate_for_polygon(polygon, candidates)
+        if candidate is None and is_manual_via:
+            candidate = self._manual_via_debug_candidate(polygon)
         if candidate is None:
-            message = self._tr("debug.no_source_candidate")
+            message = self._tr(
+                "debug.no_source_candidate" if candidates or is_manual_via else "debug.no_current_frame_data"
+            )
             self._show_nonblocking_via_debug_message(title, message)
             return
         source = self._debug_candidate_source(candidate)
@@ -100,6 +101,47 @@ class WidgetDebugMixin:
         message = "\n".join(lines)
         self._append_log(message.replace("\n", " | "))
         self._show_nonblocking_via_debug_message(title, message)
+
+    def _manual_via_debug_candidate(self, polygon: PolygonData) -> ContourDebugCandidate | None:
+        image = self._workspace.current_display_image()
+        if image is None:
+            return None
+        polygon_rect = self._polygon_rect(polygon)
+        if polygon_rect.isNull():
+            return None
+        from ..vision.via_detection import analyze_via_at
+        from ..vision.via_detection.settings_bridge import heuristic_config_from_settings
+
+        settings = self._current_contour_settings()
+        config = heuristic_config_from_settings(settings)
+        detection = analyze_via_at(
+            np.asarray(image),
+            polygon_rect.center().x(),
+            polygon_rect.center().y(),
+            config,
+        )
+        if detection is None:
+            return None
+        accepted = bool(
+            detection.reject_reason is None
+            and float(detection.score) >= float(config.min_final_score)
+        )
+        reason = str(
+            detection.reject_reason
+            or ("accepted:heuristic" if accepted else "below_threshold")
+        )
+        return ContourDebugCandidate(
+            contour_index=-1,
+            bbox=tuple(int(value) for value in detection.bbox),
+            area=float(detection.bbox[2] * detection.bbox[3]),
+            perimeter=float(2 * (detection.bbox[2] + detection.bbox[3])),
+            roundness=float(detection.features.get("circularity", 0.0) * 100.0),
+            accepted=accepted,
+            reason=reason,
+            source="heuristic",
+            score=float(detection.score),
+            metrics=dict(detection.features),
+        )
 
     def _show_nonblocking_via_debug_message(self, title: str, message: str) -> QMessageBox:
         dialog = QMessageBox(self._debug_parent_widget())

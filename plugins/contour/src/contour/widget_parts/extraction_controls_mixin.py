@@ -1108,6 +1108,8 @@ class WidgetExtractionControlsMixin:
             if hasattr(self, "recognition_mode_combo")
             else "conductors"
         )
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_contact_recognition_mode(rec == "via")
         is_via_profile = self._active_extraction_profile == "vias"
         advanced = self._advanced_extraction_enabled()
         show_manual_via_filters = is_via_profile and rec == "disabled"

@@ -2027,6 +2027,28 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.assertEqual(scene.neighbor_frame_path_at(QPointF(90, 50)), "neighbor.jpg")
         self.assertIsNone(scene.neighbor_frame_path_at(QPointF(40, 50)))
 
+    def test_contact_tool_click_on_existing_via_requests_diagnostics(self) -> None:
+        via = _rectangle_polygon(40, 40, 60, 60)
+        via.category = "via"
+        via.shape_hint = "box"
+        requested: list[PolygonData] = []
+        self.view.set_polygons([via])
+        self.view.set_contact_recognition_mode(True)
+        self.view.set_via_debug_inspection_enabled(True)
+        self.view.set_tool(EditorTool.ADD_VIA)
+        self.view.viaDebugRequested.connect(requested.append)
+
+        QTest.mouseClick(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            self.view.mapFromScene(QPointF(50.0, 50.0)),
+        )
+        self._app.processEvents()
+
+        self.assertEqual([polygon.id for polygon in requested], [1])
+        self.assertEqual(len(self.view.get_polygons()), 1)
+
     def tearDown(self) -> None:
         self.view.close()
         self.view.deleteLater()
@@ -3373,6 +3395,35 @@ class PolygonExtractionWidgetBrushModeUiTests(unittest.TestCase):
 
         self.assertEqual(self.widget.brush_mode_combo.currentData(), BrushMode.FREEFORM)
 
+    def test_toolbar_hides_incompatible_tools_and_falls_back_to_select(self) -> None:
+        via = _rectangle_polygon(10, 10, 20, 20)
+        via.category = "via"
+        via.shape_hint = "box"
+        self.widget.polygon_editor.set_tool(EditorTool.ADD_POLYGON)
+        self.widget.polygon_editor.set_polygons([via])
+        self._app.processEvents()
+
+        self.assertEqual(self.widget.polygon_editor.current_tool, EditorTool.SELECT)
+        self.assertFalse(self.widget._tool_buttons[EditorTool.ADD_VIA].isHidden())
+        for tool in (
+            EditorTool.ADD_POLYGON,
+            EditorTool.BRUSH,
+            EditorTool.TRACE_PEN,
+            EditorTool.ADD_VERTEX,
+            EditorTool.DELETE_VERTEX,
+            EditorTool.MOVE_VERTEX,
+            EditorTool.ANTIALIAS,
+        ):
+            self.assertTrue(self.widget._tool_buttons[tool].isHidden())
+        self.widget.polygon_editor.set_tool(EditorTool.ADD_VIA)
+        self.widget.polygon_editor.set_tool(EditorTool.ADD_POLYGON)
+        self.assertEqual(self.widget.polygon_editor.current_tool, EditorTool.ADD_VIA)
+
+        self.widget.polygon_editor.set_polygons([_rectangle_polygon(0, 0, 30, 30)])
+        self._app.processEvents()
+        self.assertTrue(self.widget._tool_buttons[EditorTool.ADD_VIA].isHidden())
+        self.assertFalse(self.widget._tool_buttons[EditorTool.ADD_POLYGON].isHidden())
+
 
 class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
     @classmethod
@@ -3440,13 +3491,76 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
     def test_delete_via_at_deletes_only_vias(self) -> None:
         scene = PolygonEditorScene()
         conductor = _rectangle_polygon(0, 0, 20, 20)
-        scene.set_polygons([conductor])
-        self.assertTrue(scene.add_via_at(QPointF(40.0, 40.0), 10.0, 10.0))
+        via = _rectangle_polygon(35, 35, 45, 45)
+        via.id = 2
+        via.category = "via"
+        via.shape_hint = "box"
+        scene.set_polygons([conductor, via])
 
         self.assertFalse(scene.delete_via_at(QPointF(10.0, 10.0)))
         self.assertEqual(len(scene.get_polygons()), 2)
         self.assertTrue(scene.delete_via_at(QPointF(40.0, 40.0)))
         self.assertEqual(len(scene.get_polygons()), 1)
+
+    def test_polygon_and_via_creation_are_mutually_exclusive(self) -> None:
+        scene = PolygonEditorScene()
+        scene.set_image(np.zeros((100, 100), dtype=np.uint8))
+
+        self.assertTrue(scene.add_via_at(QPointF(20.0, 20.0), 10.0, 10.0))
+        self.assertFalse(scene.add_rectangle_polygon(QPointF(40.0, 40.0), QPointF(60.0, 60.0)))
+
+        scene.set_polygons([_rectangle_polygon(10, 10, 30, 30)])
+        self.assertFalse(scene.add_via_at(QPointF(60.0, 60.0), 10.0, 10.0))
+
+    def test_paste_cannot_create_mixed_content(self) -> None:
+        scene = PolygonEditorScene()
+        via = _rectangle_polygon(10, 10, 20, 20)
+        via.category = "via"
+        via.shape_hint = "box"
+        scene.set_polygons([via])
+
+        pasted = scene.add_cloned_polygons_at(
+            [_rectangle_polygon(30, 30, 50, 50)],
+            QPointF(40.0, 40.0),
+            QPointF(70.0, 70.0),
+        )
+
+        self.assertEqual(pasted, [])
+        self.assertEqual(len(scene.get_polygons()), 1)
+
+    def test_contact_recognition_mode_protects_only_recognized_vias(self) -> None:
+        scene = PolygonEditorScene()
+        manual = _rectangle_polygon(10, 10, 20, 20)
+        manual.category = "via"
+        manual.shape_hint = "box"
+        automatic = _rectangle_polygon(30, 30, 40, 40)
+        automatic.id = 2
+        automatic.category = "via"
+        automatic.shape_hint = "box"
+        automatic.recognition_score = 82.0
+        scene.set_polygons([manual, automatic])
+        scene.set_protect_recognized_vias(True)
+
+        self.assertFalse(scene.delete_via_at(QPointF(35.0, 35.0)))
+        self.assertTrue(scene.delete_via_at(QPointF(15.0, 15.0)))
+        self.assertEqual([polygon.id for polygon in scene.get_polygons()], [2])
+
+    def test_manual_via_is_blue_and_recognized_via_keeps_score_color(self) -> None:
+        scene = PolygonEditorScene()
+        manual = _rectangle_polygon(10, 10, 20, 20)
+        manual.category = "via"
+        manual.shape_hint = "box"
+        automatic = _rectangle_polygon(30, 30, 40, 40)
+        automatic.id = 2
+        automatic.category = "via"
+        automatic.shape_hint = "box"
+        automatic.recognition_score = 100.0
+        scene.set_polygons([manual, automatic])
+
+        self.assertEqual(scene._polygon_items[1].pen().color().name().lower(), "#2563eb")
+        self.assertNotEqual(scene._polygon_items[2].pen().color().name().lower(), "#2563eb")
+        scene.select_polygon(1)
+        self.assertEqual(scene._polygon_items[1].pen().color().name().lower(), "#facc15")
 
     def test_via_display_mode_switches_between_circle_and_rectangle_paths(self) -> None:
         polygon = PolygonData(

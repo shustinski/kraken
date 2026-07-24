@@ -600,6 +600,47 @@ def test_heuristic_contact_click_shows_measured_features_and_expert_settings(
         widget.deleteLater()
 
 
+def test_manual_contact_without_saved_candidate_is_analyzed_on_click(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    widget = PolygonExtractionWidget()
+    try:
+        widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("via"))
+        app.processEvents()
+        image = np.full((96, 96), 96, dtype=np.uint8)
+        yy, xx = np.ogrid[:96, :96]
+        image[(xx - 48) ** 2 + (yy - 48) ** 2 <= 25] = 220
+        polygon = PolygonData(
+            id=1,
+            points=[(43, 43), (53, 43), (53, 53), (43, 53)],
+            category="via",
+            shape_hint="box",
+        )
+        widget._workspace._current_state = ImageProcessingState(
+            image_path="sample.png",
+            source_image=image,
+            polygons=[polygon],
+            debug_candidates=[],
+        )
+        shown: list[str] = []
+        monkeypatch.setattr(
+            widget,
+            "_show_nonblocking_via_debug_message",
+            lambda _title, message: shown.append(str(message)),
+        )
+
+        widget._on_via_debug_requested(polygon)
+
+        assert len(shown) == 1
+        assert "Измеренные параметры контакта:" in shown[0]
+        assert "Яркость центра:" in shown[0]
+        assert "Итоговая оценка:" in shown[0]
+    finally:
+        widget.close()
+        widget.deleteLater()
+
+
 def test_via_debug_windows_are_nonmodal_and_can_stay_open_together() -> None:
     app = QApplication.instance() or QApplication([])
     widget = PolygonExtractionWidget()

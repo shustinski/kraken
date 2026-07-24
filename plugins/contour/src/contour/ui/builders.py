@@ -2032,6 +2032,7 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.imageRegionSelected.connect(self._on_editor_image_region_selected)
     self.polygon_editor.rulerMeasurementChanged.connect(self._update_ruler_status)
     self.polygon_editor.toolChanged.connect(self._on_editor_tool_changed)
+    self.polygon_editor.availableToolsChanged.connect(self._on_available_editor_tools_changed)
     self.polygon_editor.neighborFrameActivated.connect(self._on_neighbor_frame_activated)
     self.polygon_editor.frameNavigationRequested.connect(self._on_frame_navigation_requested)
     self.polygon_editor.currentFrameChanged.connect(self._on_editor_current_frame_changed)

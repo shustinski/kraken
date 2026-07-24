@@ -68,7 +68,12 @@ from .geometry import (
     _snap_to_45,
     is_valid_closed_polygon_ring,
 )
-from .tool_mode_logic import effective_polygon_create_mode, normalize_editor_tool
+from .tool_mode_logic import (
+    available_editor_tools,
+    effective_polygon_create_mode,
+    is_via_polygon,
+    normalize_editor_tool,
+)
 from .tools import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode
 from .viewport_navigation import (
     DEFAULT_ZOOM_STEP_FACTOR,
@@ -108,6 +113,7 @@ class PolygonEditorView(QGraphicsView):
     frameNavigationRequested = pyqtSignal(object)
     currentFrameChanged = pyqtSignal(object)
     editorViewportChanged = pyqtSignal(object)
+    availableToolsChanged = pyqtSignal(object)
 
     def __init__(self, parent=None) -> None:
         self._editor_scene = PolygonEditorScene()
@@ -130,6 +136,8 @@ class PolygonEditorView(QGraphicsView):
         self.verticalScrollBar().valueChanged.connect(self._schedule_pyramid_visible_update)
 
         self._tool = EditorTool.SELECT
+        self._available_tools = available_editor_tools(())
+        self._contact_recognition_mode = False
         self._polygon_create_mode = PolygonCreateMode.POINTS
         self._brush_mode = BrushMode.FREEFORM
         self._brush_thickness = 12.0
@@ -204,6 +212,7 @@ class PolygonEditorView(QGraphicsView):
         self._pyramid_selection_item.hide()
 
         self._editor_scene.polygonsChanged.connect(self.polygonsEdited.emit)
+        self._editor_scene.polygonsChanged.connect(self._refresh_available_tools_from_scene)
         self._editor_scene.activePolygonChanged.connect(self.activePolygonChanged.emit)
         self._editor_scene.logRequested.connect(self.logRequested.emit)
 
@@ -268,6 +277,10 @@ class PolygonEditorView(QGraphicsView):
 
     def set_tool(self, tool: EditorTool) -> None:
         tool = normalize_editor_tool(tool)
+        if tool not in self._available_tools:
+            if self._tool in self._available_tools:
+                return
+            tool = EditorTool.SELECT
         self._tool = tool
         self._select_press_polygon_id = None
         self._select_press_start = None
@@ -293,6 +306,24 @@ class PolygonEditorView(QGraphicsView):
         self._update_tool_cursors()
         self.toolChanged.emit(tool)
         self._emit_effective_polygon_create_mode_changed()
+
+    def available_tools(self) -> frozenset[EditorTool]:
+        return self._available_tools
+
+    def _refresh_available_tools_from_scene(self) -> None:
+        available = available_editor_tools(self._editor_scene.get_polygons())
+        changed = available != self._available_tools
+        self._available_tools = available
+        if self._tool not in available:
+            self.set_tool(EditorTool.SELECT)
+        if self._paste_mode and not self._editor_scene.can_add_polygon_set(self._clipboard_polygons):
+            self._exit_paste_mode()
+        if changed:
+            self.availableToolsChanged.emit(available)
+
+    def set_contact_recognition_mode(self, enabled: bool) -> None:
+        self._contact_recognition_mode = bool(enabled)
+        self._editor_scene.set_protect_recognized_vias(self._contact_recognition_mode)
 
     def set_polygon_create_mode(self, mode: PolygonCreateMode) -> None:
         mode = PolygonCreateMode(mode)
@@ -404,6 +435,7 @@ class PolygonEditorView(QGraphicsView):
 
     def set_polygons(self, polygons: list[PolygonData], *, emit_signal: bool = True) -> None:
         self._editor_scene.set_polygons(polygons, emit_signal=emit_signal)
+        self._refresh_available_tools_from_scene()
 
     def get_polygons(self) -> list[PolygonData]:
         return self._editor_scene.get_polygons()
@@ -813,12 +845,14 @@ class PolygonEditorView(QGraphicsView):
         self._clipboard_anchor = _polygons_center(self._clipboard_polygons)
 
     def cut_selected(self) -> None:
-        self.copy_selected()
-        if self._clipboard_polygons:
+        polygons = self._editor_scene.selected_deletable_polygons()
+        if polygons:
+            self._clipboard_polygons = [polygon.clone() for polygon in polygons]
+            self._clipboard_anchor = _polygons_center(self._clipboard_polygons)
             self._editor_scene.delete_polygon()
 
     def start_paste_mode(self) -> None:
-        if not self._clipboard_polygons:
+        if not self._clipboard_polygons or not self._editor_scene.can_add_polygon_set(self._clipboard_polygons):
             return
         self._paste_mode = True
         self._update_paste_preview(
@@ -1013,8 +1047,18 @@ class PolygonEditorView(QGraphicsView):
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.RightButton,
         ):
+            polygon_id = self._editor_scene.polygon_at(scene_pos)
+            polygon = self._editor_scene.polygon_snapshot(polygon_id) if polygon_id is not None else None
             if event.button() == Qt.MouseButton.RightButton:
                 self._editor_scene.delete_via_at(scene_pos)
+            elif (
+                self._contact_recognition_mode
+                and polygon is not None
+                and is_via_polygon(polygon)
+            ):
+                self._editor_scene.select_polygon(polygon.id)
+                if self._via_debug_inspection_enabled:
+                    self.viaDebugRequested.emit(polygon)
             else:
                 self._editor_scene.add_via_at(scene_pos, self._via_width, self._via_height)
             self._update_tool_cursors()
@@ -1532,6 +1576,9 @@ class PolygonEditorView(QGraphicsView):
         polygon = self._editor_scene.polygon_snapshot(polygon_id) if polygon_id is not None else None
         if polygon is None or (polygon.category != "via" and polygon.shape_hint != "box"):
             event.ignore()
+            return
+        if not self._editor_scene.polygon_is_deletable(polygon):
+            event.accept()
             return
         language = getattr(self._editor_scene, "_ui_language", "en")
         delete_label = (

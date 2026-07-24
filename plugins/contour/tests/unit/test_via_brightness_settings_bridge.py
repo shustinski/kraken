@@ -44,20 +44,22 @@ def test_heuristic_config_uses_both_ranges_when_enabled() -> None:
     assert cfg.dark_range_max == 40.0
 
 
-def test_fixed_size_uses_selected_diameter_instead_of_legacy_diameter_list() -> None:
+def test_candidate_search_always_uses_minimum_and_maximum_diameter() -> None:
     settings = ContourExtractionSettings(
         via_size_mode="fixed",
-        bright_via_diameter_min=14,
+        bright_via_diameter_min=8,
         bright_via_diameter_max=14,
+        via_output_diameter=21,
         via_fixed_diameters_text="6, 8, 10",
     )
 
     cfg = heuristic_config_from_settings(settings)
 
-    assert cfg.allowed_diameters() == [14]
+    assert cfg.diameter_mode == "range"
+    assert cfg.allowed_diameters() == list(range(8, 15))
 
 
-def test_fixed_size_forces_candidate_output_geometry() -> None:
+def test_output_size_forces_uniform_geometry() -> None:
     detection = ViaDetection(
         x=20.0,
         y=30.0,
@@ -76,16 +78,17 @@ def test_fixed_size_forces_candidate_output_geometry() -> None:
     assert hit.height == 14.0
 
 
-def test_fixed_size_is_preserved_by_full_sem_via_detection() -> None:
+def test_output_size_is_independent_from_search_range_in_full_sem_detection() -> None:
     image = np.zeros((48, 48), dtype=np.uint8)
     cv2.circle(image, (24, 24), 5, 255, thickness=-1)
     settings = ContourExtractionSettings(
         algorithm_backend="sem",
         object_type="via",
         via_search_mode="heuristic",
-        via_size_mode="fixed",
-        bright_via_diameter_min=14,
+        via_size_mode="range",
+        bright_via_diameter_min=8,
         bright_via_diameter_max=14,
+        via_output_diameter=17,
         via_fixed_diameters_text="6, 8, 10",
     )
 
@@ -97,8 +100,8 @@ def test_fixed_size_is_preserved_by_full_sem_via_detection() -> None:
     )
 
     assert len(output.hits) == 1
-    assert output.hits[0].width == 14.0
-    assert output.hits[0].height == 14.0
+    assert output.hits[0].width == 17.0
+    assert output.hits[0].height == 17.0
 
 
 def test_local_contrast_recovers_subtle_via_within_absolute_brightness_range() -> None:

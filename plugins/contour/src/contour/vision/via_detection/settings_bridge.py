@@ -42,12 +42,11 @@ def _heuristic_polarity_from_brightness_settings(settings: ContourExtractionSett
 
 
 def fixed_via_diameters_from_settings(settings: ContourExtractionSettings) -> list[int]:
-    """Return the exact output diameters selected for fixed-size mode."""
+    """Return the single configured output diameter, independent of search sizes."""
 
-    from ...application.processing import VIA_SIZE_MODE_FIXED, normalize_via_size_mode
-
-    if normalize_via_size_mode(getattr(settings, "via_size_mode", "fixed") or "fixed") != VIA_SIZE_MODE_FIXED:
-        return []
+    explicit = int(getattr(settings, "via_output_diameter", 0) or 0)
+    if explicit > 0:
+        return [explicit]
     from ...application.processing import ALGORITHM_BACKEND_SEM, normalize_algorithm_backend
 
     if normalize_algorithm_backend(getattr(settings, "algorithm_backend", "")) != ALGORITHM_BACKEND_SEM:
@@ -57,7 +56,7 @@ def fixed_via_diameters_from_settings(settings: ContourExtractionSettings) -> li
         ]
         migrated = sorted(
             {
-                max(1, int(round((width + height) * 0.5)))
+                max(1, round((width + height) * 0.5))
                 for width, height in zip(legacy_widths, legacy_heights, strict=False)
             }
         )
@@ -76,28 +75,38 @@ def fixed_via_diameters_from_settings(settings: ContourExtractionSettings) -> li
 def heuristic_config_from_settings(settings: ContourExtractionSettings) -> HeuristicViaDetectorConfig:
     from ...application.processing import (
         ALGORITHM_BACKEND_SEM,
-        VIA_SIZE_MODE_FIXED,
         normalize_algorithm_backend,
-        normalize_via_size_mode,
     )
 
-    mode = normalize_via_size_mode(getattr(settings, "via_size_mode", "fixed") or "fixed")
     dmin = max(1, int(getattr(settings, "bright_via_diameter_min", 6) or 6))
     dmax = max(dmin, int(getattr(settings, "bright_via_diameter_max", 8) or 8))
-    fixed = fixed_via_diameters_from_settings(settings)
-    if not fixed:
-        fixed = [dmin, dmax]
-    migrated_legacy_settings = (
-        normalize_algorithm_backend(getattr(settings, "algorithm_backend", "")) != ALGORITHM_BACKEND_SEM
-    )
-    if migrated_legacy_settings and mode == VIA_SIZE_MODE_FIXED and fixed:
-        dmin, dmax = min(fixed), max(fixed)
+    migrated_legacy_settings = normalize_algorithm_backend(
+        getattr(settings, "algorithm_backend", "")
+    ) != ALGORITHM_BACKEND_SEM
+    if migrated_legacy_settings:
+        legacy_widths = [
+            int(value)
+            for value in (getattr(settings, "fixed_via_widths", None) or [])
+            if int(value) > 0
+        ]
+        legacy_heights = [
+            int(value)
+            for value in (getattr(settings, "fixed_via_heights", None) or [])
+            if int(value) > 0
+        ]
+        legacy_diameters = [
+            max(1, round((width + height) * 0.5))
+            for width, height in zip(legacy_widths, legacy_heights, strict=False)
+        ]
+        if legacy_diameters:
+            dmin = min(legacy_diameters)
+            dmax = max(legacy_diameters)
 
     return HeuristicViaDetectorConfig(
-        diameter_mode="fixed" if mode == VIA_SIZE_MODE_FIXED else "range",
+        diameter_mode="range",
         diameter_min=dmin,
         diameter_max=dmax,
-        fixed_diameters=fixed,
+        fixed_diameters=[],
         polarity=_heuristic_polarity_from_brightness_settings(settings),
         nms_distance=max(0, int(getattr(settings, "bright_via_nms_distance", 5) or 0)),
         min_final_score=float(getattr(settings, "bright_via_min_final_score", 38.0) or 0.0),

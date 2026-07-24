@@ -123,7 +123,6 @@ class WidgetExtractionControlsMixin:
         )
         self._set_field_tooltip(self.min_solidity_label_widget, self.min_solidity_spin, "min_solidity")
         self._set_field_tooltip(self.min_extent_label_widget, self.min_extent_spin, "min_extent")
-        self._set_field_tooltip(self.via_size_mode_label_widget, self.via_size_mode_combo, "via_size_mode")
         if getattr(self, "via_search_mode_label_widget", None) is not None:
             self._set_field_tooltip(self.via_search_mode_label_widget, self.via_search_mode_combo, "via_search_mode")
         if hasattr(self, "bright_via_viamode_label_widget"):
@@ -227,23 +226,12 @@ class WidgetExtractionControlsMixin:
                 "Maximum contact diameter in pixels (typ. 8–14).",
             )
         )
-        if hasattr(self, "bright_via_diameter_fixed_spin"):
-            self.bright_via_diameter_fixed_spin.setToolTip(
-                tt(
-                    "Ожидаемый диаметр контакта в пикселях (фиксированный размер).\n"
-                    "Используйте, когда все контакты на кадре примерно одного размера.\n"
-                    "Обычно: 6–12 px.",
-                    "Expected contact diameter in pixels when size is fixed (typ. 6–12).",
-                )
+        self.via_output_diameter_spin.setToolTip(
+            tt(
+                "Единый диаметр всех сохраняемых контактов. На поиск кандидатов не влияет.",
+                "Uniform diameter of every saved contact. It does not affect candidate search.",
             )
-        if hasattr(self, "via_diameter_size_mode_combo"):
-            self.via_diameter_size_mode_combo.setToolTip(
-                tt(
-                    "Фиксированный — один диаметр для всех контактов.\n"
-                    "Диапазон — поиск контактов между минимальным и максимальным размером.",
-                    "Fixed: single diameter. Range: search between min and max.",
-                )
-            )
+        )
         self.bright_via_clahe_clip_spin.setToolTip(
             tt(
                 "Предел усиления локального контраста (CLAHE).\n"
@@ -970,7 +958,6 @@ class WidgetExtractionControlsMixin:
             )
 
     def _update_via_size_controls_state(self) -> None:
-        fixed_mode = normalize_via_size_mode(self.via_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
         range_widgets = [
             (self.min_via_width_label_widget, self.via_width_range_widget),
             (self.min_via_height_label_widget, self.via_height_range_widget),
@@ -980,27 +967,23 @@ class WidgetExtractionControlsMixin:
         ]
         for label_widget, field_widget in range_widgets:
             if label_widget is not None:
-                label_widget.setVisible(not fixed_mode)
-            field_widget.setVisible(not fixed_mode)
+                label_widget.setVisible(True)
+            field_widget.setVisible(True)
         for label_widget, field_widget in fixed_widgets:
             if label_widget is not None:
-                label_widget.setVisible(fixed_mode)
-            field_widget.setVisible(fixed_mode)
+                label_widget.setVisible(False)
+            field_widget.setVisible(False)
         self._update_bright_via_diameter_controls_state()
         self._update_via_threshold_controls_state()
 
     def _update_bright_via_diameter_controls_state(self) -> None:
-        if not hasattr(self, "via_diameter_size_mode_combo"):
-            return
-        fixed_mode = normalize_via_size_mode(self.via_diameter_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
-        if hasattr(self, "bright_via_diameter_fixed_spin"):
-            self.bright_via_diameter_fixed_spin.setVisible(fixed_mode)
-        if getattr(self, "bright_via_diameter_fixed_label_widget", None) is not None:
-            self.bright_via_diameter_fixed_label_widget.setVisible(fixed_mode)
         if getattr(self, "bright_via_diameter_range_label_widget", None) is not None:
-            self.bright_via_diameter_range_label_widget.setVisible(not fixed_mode)
+            self.bright_via_diameter_range_label_widget.setVisible(True)
         if hasattr(self, "bright_via_diameter_range_widget"):
-            self.bright_via_diameter_range_widget.setVisible(not fixed_mode)
+            self.bright_via_diameter_range_widget.setVisible(True)
+        if getattr(self, "via_output_diameter_label_widget", None) is not None:
+            self.via_output_diameter_label_widget.setVisible(True)
+        self.via_output_diameter_spin.setVisible(True)
 
     def _update_via_threshold_controls_state(self) -> None:
         mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())

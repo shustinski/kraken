@@ -50,6 +50,9 @@ class ViaDetectionSettings:
     search_mode: Literal["heuristic", "bright_tophat_dog", "template", "hybrid"] = "heuristic"
     polarity: Literal["auto", "bright", "dark", "ring_light_ring", "ring_dark_ring"] = "auto"
     size_mode: Literal["range", "fixed"] = "range"
+    candidate_diameter_min: int = 8
+    candidate_diameter_max: int = 8
+    output_diameter: int = 8
     min_width: int = 3
     max_width: int = 80
     min_height: int = 3
@@ -165,6 +168,9 @@ class ProcessingRequestV2:
                 via_search_mode=via_mode.search_mode,
                 via_heuristic_polarity=via_mode.polarity,
                 via_size_mode=via_mode.size_mode,
+                bright_via_diameter_min=via_mode.candidate_diameter_min,
+                bright_via_diameter_max=via_mode.candidate_diameter_max,
+                via_output_diameter=via_mode.output_diameter,
                 min_via_width=via_mode.min_width,
                 max_via_width=via_mode.max_width,
                 min_via_height=via_mode.min_height,
@@ -212,6 +218,9 @@ class ProcessingRequestV2:
                 search_mode=legacy.via_search_mode,
                 polarity=legacy.via_heuristic_polarity,
                 size_mode=legacy.via_size_mode,
+                candidate_diameter_min=legacy.bright_via_diameter_min,
+                candidate_diameter_max=legacy.bright_via_diameter_max,
+                output_diameter=legacy.via_output_diameter,
                 min_width=legacy.min_via_width,
                 max_width=legacy.max_via_width or 80,
                 min_height=legacy.min_via_height,

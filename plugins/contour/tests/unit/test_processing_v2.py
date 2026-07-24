@@ -24,11 +24,22 @@ def test_v2_request_round_trip_keeps_discriminated_settings() -> None:
 
 def test_legacy_migrator_reports_unknown_fields() -> None:
     request, report = ProcessingRequestV2.migrate_legacy(
-        {"recognition_mode": "via", "min_via_width": 7, "removed_knob": 42}
+        {
+            "recognition_mode": "via",
+            "min_via_width": 7,
+            "bright_via_diameter_min": 6,
+            "bright_via_diameter_max": 12,
+            "via_output_diameter": 9,
+            "removed_knob": 42,
+        }
     )
 
     assert isinstance(request.recognition, ViaDetectionSettings)
     assert request.recognition.min_width == 7
+    assert request.recognition.candidate_diameter_min == 6
+    assert request.recognition.candidate_diameter_max == 12
+    assert request.recognition.output_diameter == 9
+    assert request.to_legacy_settings().via_output_diameter == 9
     assert report.dropped_fields == {"removed_knob": 42}
     assert report.warnings
 

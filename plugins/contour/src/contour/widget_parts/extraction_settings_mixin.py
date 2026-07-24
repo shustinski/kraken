@@ -115,8 +115,8 @@ class WidgetExtractionSettingsMixin:
             QSignalBlocker(self.conductor_gradient_checkbox),
             QSignalBlocker(self.conductor_gradient_min_strength_spin),
             QSignalBlocker(self.conductor_gradient_band_radius_spin),
-            QSignalBlocker(self.via_size_mode_combo),
             QSignalBlocker(self.via_search_mode_combo),
+            QSignalBlocker(self.via_output_diameter_spin),
             QSignalBlocker(self.via_white_range_checkbox),
             QSignalBlocker(self.via_white_range_min_spin),
             QSignalBlocker(self.via_white_range_max_spin),
@@ -225,18 +225,11 @@ class WidgetExtractionSettingsMixin:
             self.conductor_gradient_checkbox.setChecked(bool(settings.conductor_gradient_enabled))
             self.conductor_gradient_min_strength_spin.setValue(float(settings.conductor_gradient_min_strength))
             self.conductor_gradient_band_radius_spin.setValue(int(settings.conductor_gradient_band_radius))
-            via_size_mode_index = self.via_size_mode_combo.findData(normalize_via_size_mode(settings.via_size_mode))
-            if via_size_mode_index >= 0:
-                self.via_size_mode_combo.setCurrentIndex(via_size_mode_index)
             via_search_mode_index = self.via_search_mode_combo.findData(
                 normalize_via_search_mode(settings.via_search_mode)
             )
             if via_search_mode_index >= 0:
                 self.via_search_mode_combo.setCurrentIndex(via_search_mode_index)
-            if hasattr(self, "via_diameter_size_mode_combo"):
-                _di = self.via_diameter_size_mode_combo.findData(normalize_via_size_mode(settings.via_size_mode))
-                if _di >= 0:
-                    self.via_diameter_size_mode_combo.setCurrentIndex(_di)
             if hasattr(self, "via_heuristic_polarity_combo"):
                 _po = str(getattr(settings, "via_heuristic_polarity", "auto") or "auto")
                 _pidx = self.via_heuristic_polarity_combo.findData(_po)
@@ -365,15 +358,21 @@ class WidgetExtractionSettingsMixin:
             self.via_spot_line_suppression_spin.setValue(float(settings.via_spot_line_suppression))
             self.bright_via_diameter_min_spin.setValue(int(settings.bright_via_diameter_min))
             self.bright_via_diameter_max_spin.setValue(int(settings.bright_via_diameter_max))
-            if hasattr(self, "bright_via_diameter_fixed_spin"):
-                if int(settings.bright_via_diameter_min) == int(settings.bright_via_diameter_max):
-                    self.bright_via_diameter_fixed_spin.setValue(int(settings.bright_via_diameter_min))
-                else:
-                    self.bright_via_diameter_fixed_spin.setValue(
-                        int(
-                            round((int(settings.bright_via_diameter_min) + int(settings.bright_via_diameter_max)) * 0.5)
-                        )
+            self.via_output_diameter_spin.setValue(
+                int(
+                    getattr(
+                        settings,
+                        "via_output_diameter",
+                        round(
+                            (
+                                int(settings.bright_via_diameter_min)
+                                + int(settings.bright_via_diameter_max)
+                            )
+                            * 0.5
+                        ),
                     )
+                )
+            )
             self.bright_via_clahe_clip_spin.setValue(float(settings.bright_via_clahe_clip_limit))
             self.bright_via_clahe_tile_spin.setValue(int(settings.bright_via_clahe_tile_grid_size))
             self.bright_via_median_kernel_spin.setValue(int(settings.bright_via_median_blur_kernel))
@@ -511,14 +510,9 @@ class WidgetExtractionSettingsMixin:
             del blockers
 
     def _bright_via_diameter_bounds_from_widgets(self) -> tuple[int, int]:
-        if (
-            hasattr(self, "via_diameter_size_mode_combo")
-            and normalize_via_size_mode(self.via_diameter_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
-            and hasattr(self, "bright_via_diameter_fixed_spin")
-        ):
-            diameter = int(self.bright_via_diameter_fixed_spin.value())
-            return diameter, diameter
-        return int(self.bright_via_diameter_min_spin.value()), int(self.bright_via_diameter_max_spin.value())
+        first = int(self.bright_via_diameter_min_spin.value())
+        second = int(self.bright_via_diameter_max_spin.value())
+        return min(first, second), max(first, second)
 
     def _current_contour_settings(self) -> ContourExtractionSettings:
         if hasattr(self, "_ensure_via_template_metadata"):
@@ -536,10 +530,7 @@ class WidgetExtractionSettingsMixin:
             else "conductors"
         )
         rec_mode = normalize_recognition_mode(raw_rec)
-        if rec_mode == "via" and hasattr(self, "via_diameter_size_mode_combo"):
-            via_size_mode = normalize_via_size_mode(self.via_diameter_size_mode_combo.currentData())
-        else:
-            via_size_mode = normalize_via_size_mode(self.via_size_mode_combo.currentData())
+        via_size_mode = VIA_SIZE_MODE_RANGE
         via_search_mode_effective = normalize_via_search_mode(self.via_search_mode_combo.currentData())
         if rec_mode == "via":
             extraction_profile = "vias"
@@ -615,6 +606,7 @@ class WidgetExtractionSettingsMixin:
             via_spot_line_suppression=self.via_spot_line_suppression_spin.value(),
             bright_via_diameter_min=bright_via_diameter_min,
             bright_via_diameter_max=bright_via_diameter_max,
+            via_output_diameter=int(self.via_output_diameter_spin.value()),
             bright_via_clahe_clip_limit=self.bright_via_clahe_clip_spin.value(),
             bright_via_clahe_tile_grid_size=self.bright_via_clahe_tile_spin.value(),
             bright_via_median_blur_kernel=self.bright_via_median_kernel_spin.value(),

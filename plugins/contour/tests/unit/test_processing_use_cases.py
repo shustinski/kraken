@@ -36,6 +36,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
             via_spot_line_suppression=0.73,
             via_template_min_score=0.48,
             via_min_roundness=55.0,
+            via_output_diameter=17,
             via_template_images=[np.array([[1, 2], [3, 4]], dtype=np.uint8)],
         )
 
@@ -48,6 +49,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertEqual(loaded.via_spot_line_suppression, 0.73)
         self.assertEqual(loaded.via_template_min_score, 0.48)
         self.assertEqual(loaded.via_min_roundness, 55.0)
+        self.assertEqual(loaded.via_output_diameter, 17)
         self.assertEqual(loaded.via_template_images, [[[1, 2], [3, 4]]])
 
     def test_contour_settings_from_dict_ignores_legacy_via_detector_keys(self) -> None:
@@ -1083,6 +1085,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 via_template_min_score=0.5,
                 via_template_min_scores=[0.5],
                 via_template_diameters=[23],
+                via_output_diameter=23,
                 via_min_score=0.95,
                 via_min_contrast=0.0,
                 via_min_edge_coverage=0.0,

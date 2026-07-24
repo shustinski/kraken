@@ -107,6 +107,8 @@ class PolygonEditorView(QGraphicsView):
     zoomChanged = pyqtSignal(float)
     neighborFrameActivated = pyqtSignal(str)
     viaDebugRequested = pyqtSignal(object)
+    manualViaAdded = pyqtSignal(float, float)
+    recognizedViasDeleted = pyqtSignal(object)
     metalOverlayDetailRequested = pyqtSignal(str, str)
     middlePreviewHoldChanged = pyqtSignal(bool)
     filterPreviewHoldChanged = pyqtSignal(bool)
@@ -323,7 +325,9 @@ class PolygonEditorView(QGraphicsView):
 
     def set_contact_recognition_mode(self, enabled: bool) -> None:
         self._contact_recognition_mode = bool(enabled)
-        self._editor_scene.set_protect_recognized_vias(self._contact_recognition_mode)
+        # Recognized contacts remain selectable on left click, but right click /
+        # Delete must be able to turn one into negative heuristic feedback.
+        self._editor_scene.set_protect_recognized_vias(False)
 
     def set_polygon_create_mode(self, mode: PolygonCreateMode) -> None:
         mode = PolygonCreateMode(mode)
@@ -1050,7 +1054,8 @@ class PolygonEditorView(QGraphicsView):
             polygon_id = self._editor_scene.polygon_at(scene_pos)
             polygon = self._editor_scene.polygon_snapshot(polygon_id) if polygon_id is not None else None
             if event.button() == Qt.MouseButton.RightButton:
-                self._editor_scene.delete_via_at(scene_pos)
+                if self._editor_scene.delete_via_at(scene_pos):
+                    self._emit_recognized_vias_deleted([polygon] if polygon is not None else [])
             elif (
                 self._contact_recognition_mode
                 and polygon is not None
@@ -1060,7 +1065,8 @@ class PolygonEditorView(QGraphicsView):
                 if self._via_debug_inspection_enabled:
                     self.viaDebugRequested.emit(polygon)
             else:
-                self._editor_scene.add_via_at(scene_pos, self._via_width, self._via_height)
+                if self._editor_scene.add_via_at(scene_pos, self._via_width, self._via_height):
+                    self.manualViaAdded.emit(float(scene_pos.x()), float(scene_pos.y()))
             self._update_tool_cursors()
             event.accept()
             return
@@ -1070,7 +1076,10 @@ class PolygonEditorView(QGraphicsView):
             return
 
         if event.button() == Qt.MouseButton.RightButton:
+            polygon_id = self._editor_scene.polygon_at(scene_pos)
+            polygon = self._editor_scene.polygon_snapshot(polygon_id)
             if self._editor_scene.delete_via_at(scene_pos):
+                self._emit_recognized_vias_deleted([polygon] if polygon is not None else [])
                 event.accept()
                 return
             super().mousePressEvent(event)
@@ -1694,7 +1703,9 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete:
-            self._editor_scene.delete_polygon()
+            deleted = self._editor_scene.selected_deletable_polygons()
+            if self._editor_scene.delete_polygon():
+                self._emit_recognized_vias_deleted(deleted)
             event.accept()
             return
         if event.key() == Qt.Key.Key_Shift and self._drag_kind is None and not event.isAutoRepeat():
@@ -1714,6 +1725,15 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def _emit_recognized_vias_deleted(self, polygons: list[PolygonData]) -> None:
+        recognized = [
+            polygon.clone()
+            for polygon in polygons
+            if is_via_polygon(polygon) and polygon.recognition_score is not None
+        ]
+        if recognized:
+            self.recognizedViasDeleted.emit(recognized)
 
     def keyReleaseEvent(self, event: QKeyEvent | None) -> None:
         if event is None:

@@ -80,6 +80,7 @@ from ..application.processing import (
     VIA_SEARCH_MODE_HYBRID,
     VIA_SEARCH_MODE_TEMPLATE,
     VIA_SIZE_MODE_FIXED,
+    VIA_SIZE_MODE_RANGE,
     ContourDebugCandidate,
     ContourExtractionSettings,
     DisplaySettings,

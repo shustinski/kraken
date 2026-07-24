@@ -307,21 +307,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.min_solidity_label_widget.setText(self._tr("min_solidity_label"))
     if self.min_extent_label_widget is not None:
         self.min_extent_label_widget.setText(self._tr("min_extent_label"))
-    if self.via_size_mode_label_widget is not None:
-        self.via_size_mode_label_widget.setText(
-            self._tr(
-                "via_size_mode_label",
-                "Режим размеров контактов" if self._ui_language == "ru" else "Contact size mode",
-            )
-        )
-    self.via_size_mode_combo.setItemText(
-        0,
-        self._tr("via_size_mode_range", "Диапазон" if self._ui_language == "ru" else "Range"),
-    )
-    self.via_size_mode_combo.setItemText(
-        1,
-        self._tr("via_size_mode_fixed", "Фиксированные значения" if self._ui_language == "ru" else "Fixed values"),
-    )
     if getattr(self, "via_search_mode_label_widget", None) is not None:
         self.via_search_mode_label_widget.setText(
             self._tr(
@@ -330,6 +315,18 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             )
         )
     if self.via_search_mode_combo.count() >= 3:
+        if getattr(self, "bright_via_diameter_range_label_widget", None) is not None:
+            self.bright_via_diameter_range_label_widget.setText(
+                "Диаметр поиска"
+                if self._ui_language == "ru"
+                else "Candidate diameter range, px"
+            )
+        if getattr(self, "via_output_diameter_label_widget", None) is not None:
+            self.via_output_diameter_label_widget.setText(
+                "Диаметр сохранения"
+                if self._ui_language == "ru"
+                else "Saved contact diameter, px"
+            )
         self.via_search_mode_combo.setItemText(
             0,
             self._tr("via_search_mode_heuristic", "Эвристический" if self._ui_language == "ru" else "Heuristic"),

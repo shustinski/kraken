@@ -308,25 +308,41 @@ def analyze_via_at(
 ) -> ViaDetection | None:
     """Measure one caller-supplied contact center with the heuristic scorer."""
 
+    return analyze_vias_at(image, [(center_x, center_y)], config)[0]
+
+
+def analyze_vias_at(
+    image: np.ndarray,
+    centers: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    config: HeuristicViaDetectorConfig,
+) -> list[ViaDetection | None]:
+    """Measure caller-supplied contact centers while preparing the frame once."""
+
     config.validate()
     gray = _to_gray_u8(np.asarray(image))
     height, width = gray.shape[:2]
     if height < 3 or width < 3:
-        return None
+        return [None] * len(centers)
     allowed = config.allowed_diameters()
     if not allowed:
-        return None
-    x_coord = max(0, min(width - 1, int(round(float(center_x)))))
-    y_coord = max(0, min(height - 1, int(round(float(center_y)))))
+        return [None] * len(centers)
     frame = _prepare_heuristic_frame(gray, config)
-    return _score_seed(
-        frame,
-        (y_coord, x_coord),
-        allowed,
-        _candidate_hypotheses(config),
-        config,
-        enforce_rejections=False,
-    )
+    hypotheses = _candidate_hypotheses(config)
+    results: list[ViaDetection | None] = []
+    for center_x, center_y in centers:
+        x_coord = max(0, min(width - 1, int(round(float(center_x)))))
+        y_coord = max(0, min(height - 1, int(round(float(center_y)))))
+        results.append(
+            _score_seed(
+                frame,
+                (y_coord, x_coord),
+                allowed,
+                hypotheses,
+                config,
+                enforce_rejections=False,
+            )
+        )
+    return results
 
 
 def _prepare_heuristic_frame(

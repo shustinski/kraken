@@ -892,9 +892,7 @@ class WidgetProcessingMixin:
 
     def _via_debug_inspection_enabled(self: Any) -> bool:
         return bool(
-            hasattr(self, "debug_candidates_checkbox")
-            and self.debug_candidates_checkbox.isChecked()
-            and hasattr(self, "recognition_mode_combo")
+            hasattr(self, "recognition_mode_combo")
             and str(self.recognition_mode_combo.currentData() or "") == "via"
         )
 
@@ -1518,6 +1516,298 @@ class WidgetProcessingMixin:
             self._update_frame_item_status(self._workspace.current_image_path)
             self._update_vector_edit_status_label()
             self.polygonsEdited.emit()
+
+    def _heuristic_contact_feedback_context(self: Any):
+        if not hasattr(self, "recognition_mode_combo") or str(
+            self.recognition_mode_combo.currentData() or ""
+        ) != "via":
+            self._append_log(
+                self._contact_feedback_text(
+                    "Подбор по контактам доступен только в режиме распознавания контактов.",
+                    "Contact feedback is available only in contact-recognition mode.",
+                )
+            )
+            return None
+        if (
+            not hasattr(self, "via_search_mode_combo")
+            or normalize_via_search_mode(self.via_search_mode_combo.currentData())
+            != VIA_SEARCH_MODE_HEURISTIC
+        ):
+            self._append_log(
+                self._contact_feedback_text(
+                    "Подбор порогов доступен только для эвристического метода.",
+                    "Threshold feedback is available only for the heuristic method.",
+                )
+            )
+            return None
+        current_path = self._workspace.current_image_path
+        current_state = self._workspace.current_state
+        if (
+            not current_path
+            or current_state is None
+            or current_state.image_path != current_path
+        ):
+            self._append_log(
+                self._contact_feedback_text(
+                    "Нет актуального кадра для подбора.",
+                    "No current frame for feedback.",
+                )
+            )
+            return None
+        image = (
+            current_state.preprocessed_image
+            if current_state.preprocessed_image is not None
+            else current_state.source_image
+        )
+        if image is None:
+            self._append_log(
+                self._contact_feedback_text(
+                    "Нет изображения для измерения контакта.",
+                    "No image is available for contact measurement.",
+                )
+            )
+            return None
+        return current_path, current_state, np.asarray(image), self._current_contour_settings()
+
+    def _contact_feedback_text(self: Any, ru: str, en: str) -> str:
+        return ru if getattr(self, "_ui_language", "en") == "ru" else en
+
+    @staticmethod
+    def _contact_center(polygon: PolygonData) -> tuple[float, float]:
+        x_coord, y_coord, width, height = polygon.bbox
+        if width > 0 and height > 0:
+            return x_coord + 0.5 * width, y_coord + 0.5 * height
+        if not polygon.points:
+            return 0.0, 0.0
+        return (
+            sum(float(point[0]) for point in polygon.points) / len(polygon.points),
+            sum(float(point[1]) for point in polygon.points) / len(polygon.points),
+        )
+
+    def _on_manual_via_added(self: Any, center_x: float, center_y: float) -> None:
+        context = self._heuristic_contact_feedback_context()
+        if context is None:
+            return
+        _path, _state, image, settings = context
+        from ..application.use_cases.contact_feedback import fit_positive_contact
+        from ..vision.via_detection import analyze_vias_at
+        from ..vision.via_detection.settings_bridge import heuristic_config_from_settings
+
+        detection = analyze_vias_at(
+            image,
+            [(float(center_x), float(center_y))],
+            heuristic_config_from_settings(settings),
+        )[0]
+        adjustment = fit_positive_contact(settings, detection)
+        if self._apply_contact_feedback_adjustments([adjustment]):
+            self._append_log(
+                self._contact_feedback_text(
+                    "Пороги распознавания расширены по установленному контакту.",
+                    "Recognition thresholds were expanded from the added contact.",
+                )
+            )
+        elif adjustment.reason == "measurement_failed":
+            self._append_log(
+                self._contact_feedback_text(
+                    "Не удалось измерить установленный контакт; настройки не изменены.",
+                    "The added contact could not be measured; settings were not changed.",
+                )
+            )
+        elif adjustment.reason == "already_within_thresholds":
+            self._append_log(
+                self._contact_feedback_text(
+                    "Контакт уже лежит внутри всех настраиваемых порогов; распознавание перезапущено.",
+                    "The contact is already inside every adjustable threshold; recognition was restarted.",
+                )
+            )
+            self._restart_after_contact_feedback()
+
+    def _on_recognized_vias_deleted(self: Any, polygons: object) -> None:
+        removed_polygons = [
+            polygon
+            for polygon in list(polygons or [])
+            if isinstance(polygon, PolygonData) and polygon.recognition_score is not None
+        ]
+        if not removed_polygons:
+            return
+        context = self._heuristic_contact_feedback_context()
+        if context is None:
+            return
+        _path, current_state, image, settings = context
+        from ..application.use_cases.contact_feedback import fit_negative_contact
+        from ..vision.via_detection import analyze_vias_at
+        from ..vision.via_detection.settings_bridge import heuristic_config_from_settings
+
+        references = sorted(
+            (
+                polygon
+                for polygon in current_state.polygons
+                if (polygon.category == "via" or polygon.shape_hint == "box")
+                and polygon.recognition_score is not None
+            ),
+            key=lambda polygon: float(polygon.recognition_score or 0.0),
+            reverse=True,
+        )[:10]
+        centers = [
+            *(self._contact_center(polygon) for polygon in removed_polygons),
+            *(self._contact_center(polygon) for polygon in references),
+        ]
+        measured = analyze_vias_at(
+            image,
+            centers,
+            heuristic_config_from_settings(settings),
+        )
+        removed_count = len(removed_polygons)
+        removed_detections = measured[:removed_count]
+        reference_detections = [
+            detection for detection in measured[removed_count:] if detection is not None
+        ]
+        adjustments = []
+        for detection in removed_detections:
+            adjustment = fit_negative_contact(settings, detection, reference_detections)
+            adjustments.append(adjustment)
+            for change in adjustment.changes:
+                setattr(settings, change.field, change.new_value)
+        if self._apply_contact_feedback_adjustments(adjustments):
+            features = ", ".join(
+                adjustment.selected_feature or ""
+                for adjustment in adjustments
+                if adjustment.changes
+            )
+            self._append_log(
+                self._contact_feedback_text(
+                    f"Пороги распознавания ужесточены после удаления контакта: {features}.",
+                    f"Recognition thresholds were tightened after contact removal: {features}.",
+                )
+            )
+            return
+        reason = next(
+            (adjustment.reason for adjustment in adjustments if adjustment.reason),
+            "no_separating_threshold",
+        )
+        if reason == "insufficient_references":
+            message = self._contact_feedback_text(
+                "Контакт удалён; для изменения порогов нужно не менее двух эталонных контактов.",
+                "The contact was removed; at least two reference contacts are required to change thresholds.",
+            )
+        else:
+            message = self._contact_feedback_text(
+                "Контакт удалён, но подходящая разделяющая граница не найдена.",
+                "The contact was removed, but no separating threshold was found.",
+            )
+        self._append_log(message)
+
+    def _apply_contact_feedback_adjustments(self: Any, adjustments: list[object]) -> bool:
+        widget_by_field = {
+            "bright_via_min_final_score": "bright_via_min_final_score_spin",
+            "heuristic_min_circularity": "heuristic_min_circularity_spin",
+            "heuristic_min_compactness": "heuristic_min_compactness_spin",
+            "heuristic_min_center_contrast": "heuristic_min_center_contrast_spin",
+            "heuristic_min_peak_prominence": "heuristic_min_peak_prominence_spin",
+            "heuristic_min_edge_sharpness": "heuristic_min_edge_sharpness_spin",
+            "heuristic_max_elongation": "heuristic_max_elongation_spin",
+            "heuristic_max_line_coherence": "heuristic_max_line_coherence_spin",
+            "heuristic_min_center_brightness": "heuristic_min_center_brightness_spin",
+            "heuristic_max_center_drift_ratio": "heuristic_max_center_drift_ratio_spin",
+        }
+        labels = {
+            "bright_via_min_final_score": ("Минимальная итоговая оценка", "Minimum final score"),
+            "heuristic_min_circularity": ("Минимальная округлость", "Minimum circularity"),
+            "heuristic_min_compactness": ("Минимальная компактность", "Minimum compactness"),
+            "heuristic_min_center_contrast": ("Минимальный контраст центра", "Minimum center contrast"),
+            "heuristic_min_peak_prominence": ("Минимальная выраженность пика", "Minimum peak prominence"),
+            "heuristic_min_edge_sharpness": ("Минимальная резкость края", "Minimum edge sharpness"),
+            "heuristic_max_elongation": ("Максимальная вытянутость", "Maximum elongation"),
+            "heuristic_max_line_coherence": ("Максимальная направленность границ", "Maximum line coherence"),
+            "heuristic_min_center_brightness": ("Минимальная яркость центра", "Minimum center brightness"),
+            "heuristic_max_center_drift_ratio": ("Допустимое смещение центра", "Maximum center drift"),
+        }
+        changes_by_field = {}
+        for adjustment in adjustments:
+            for change in getattr(adjustment, "changes", ()):
+                changes_by_field[change.field] = change
+        if not changes_by_field:
+            return False
+        if any(field.startswith("heuristic_") for field in changes_by_field) and hasattr(
+            self, "bright_via_advanced_outer"
+        ):
+            self.bright_via_advanced_outer.setChecked(True)
+        changed_text: list[str] = []
+        for field, change in changes_by_field.items():
+            widget = getattr(self, widget_by_field[field])
+            blocker = QSignalBlocker(widget)
+            try:
+                if isinstance(widget, QSpinBox):
+                    widget.setValue(int(round(float(change.new_value))))
+                else:
+                    widget.setValue(float(change.new_value))
+            finally:
+                del blocker
+            self._highlight_contact_feedback_widget(widget)
+            ru_label, en_label = labels[field]
+            label = ru_label if getattr(self, "_ui_language", "en") == "ru" else en_label
+            changed_text.append(
+                f"{label}: {self._format_contact_feedback_value(change.old_value)} → "
+                f"{self._format_contact_feedback_value(widget.value())}"
+            )
+        self._store_active_extraction_profile_settings()
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_debug_candidates([])
+        self._append_log(
+            self._contact_feedback_text(
+                "Автоподбор изменил параметры: ",
+                "Contact feedback changed parameters: ",
+            )
+            + "; ".join(changed_text)
+        )
+        self._restart_after_contact_feedback()
+        return True
+
+    def _restart_after_contact_feedback(self: Any) -> None:
+        self._abort_in_flight_interactive_processing(preview=True, prepared=False)
+        self.process_current_image(debounced=False)
+
+    def _format_contact_feedback_value(self: Any, value: object) -> str:
+        numeric = float(value)
+        if numeric.is_integer():
+            return str(int(numeric))
+        text = f"{numeric:.3f}".rstrip("0").rstrip(".")
+        return text.replace(".", ",") if getattr(self, "_ui_language", "en") == "ru" else text
+
+    def _highlight_contact_feedback_widget(self: Any, widget: QWidget) -> None:
+        previous_style = widget.styleSheet()
+        highlight_style = (
+            previous_style
+            + " QSpinBox, QDoubleSpinBox { border: 2px solid #FACC15; "
+            "background-color: rgba(250, 204, 21, 0.18); }"
+        )
+        widget.setStyleSheet(highlight_style)
+        label = None
+        for form_name in ("bright_via_form", "bright_via_basics_form"):
+            form = getattr(self, form_name, None)
+            if form is not None:
+                candidate = form.labelForField(widget)
+                if candidate is not None:
+                    label = candidate
+                    break
+        previous_label_style = label.styleSheet() if label is not None else ""
+        if label is not None:
+            label.setStyleSheet(previous_label_style + " color: #FACC15; font-weight: 600;")
+
+        def clear_highlight() -> None:
+            try:
+                if widget.styleSheet() == highlight_style:
+                    widget.setStyleSheet(previous_style)
+                if (
+                    label is not None
+                    and label.styleSheet()
+                    == previous_label_style + " color: #FACC15; font-weight: 600;"
+                ):
+                    label.setStyleSheet(previous_label_style)
+            except RuntimeError:
+                pass
+
+        QTimer.singleShot(3000, clear_highlight)
 
     def _antialias_selected_polygons(self: Any) -> None:
         grade = int(self.antialias_grade_spin.value()) if hasattr(self, "antialias_grade_spin") else 1
@@ -2947,15 +3237,22 @@ class WidgetProcessingMixin:
         current_polygons = self.get_polygons() if polygons is None else [polygon.clone() for polygon in polygons]
         self._workspace.update_current_polygons(current_polygons)
         had_vector_edits = self._workspace.current_image_has_changes()
+        contour_settings = self._current_contour_settings()
+        polygons_to_save = current_polygons
+        if contour_settings.object_type == "via":
+            polygons_to_save = self._uniform_contact_polygons_for_save(
+                current_polygons,
+                diameter=int(contour_settings.via_output_diameter),
+            )
         saved_files = save_result_bundle(
             output_directory=target_directory,
             image_path=current_image_path,
-            polygons=current_polygons,
+            polygons=polygons_to_save,
             source_image=current_state.source_image,
             display_settings=self._display_settings,
             save_options=save_options or self._current_save_options(),
             metadata={
-                "contour_settings": self._current_contour_settings().to_dict(),
+                "contour_settings": contour_settings.to_dict(),
                 "pipeline": self.get_pipeline(),
             },
         )
@@ -2975,6 +3272,43 @@ class WidgetProcessingMixin:
             self._update_frame_item_status(current_image_path)
             self._update_vector_edit_status_label()
         return saved_files
+
+    @staticmethod
+    def _uniform_contact_polygons_for_save(
+        polygons: list[PolygonData],
+        *,
+        diameter: int,
+    ) -> list[PolygonData]:
+        """Return save-only copies with every contact represented by one square size."""
+
+        size = max(1, int(diameter))
+        half = float(size) * 0.5
+        normalized: list[PolygonData] = []
+        for source in polygons:
+            polygon = source.clone()
+            if str(polygon.category).lower() != "via" or not polygon.points:
+                normalized.append(polygon)
+                continue
+            xs = [float(point[0]) for point in polygon.points]
+            ys = [float(point[1]) for point in polygon.points]
+            center_x = 0.5 * (min(xs) + max(xs))
+            center_y = 0.5 * (min(ys) + max(ys))
+            x0 = round(center_x - half)
+            y0 = round(center_y - half)
+            x1 = x0 + size
+            y1 = y0 + size
+            polygon.points = [
+                (x0, y0),
+                (x1, y0),
+                (x1, y1),
+                (x0, y1),
+            ]
+            polygon.bbox = (x0, y0, size, size)
+            polygon.area = float(size * size)
+            polygon.perimeter = float(4 * size)
+            polygon.shape_hint = "box"
+            normalized.append(polygon)
+        return normalized
 
     def start_batch_processing(
         self: Any,

@@ -94,7 +94,10 @@ def _run_sem_via_detection(
     if mode in (VIA_SEARCH_MODE_TEMPLATE, VIA_SEARCH_MODE_HYBRID):
         tcfg = template_config_from_settings(legacy_settings)
         template_result = detect_vias_template(gray, tcfg)
-        template_hits = [_detection_to_hit(d, "template", ()) for d in template_result.accepted]
+        template_hits = [
+            _detection_to_hit(d, "template", fixed_output_diameters)
+            for d in template_result.accepted
+        ]
         template_log = f"template: n_templates={len(tcfg.templates)} min_corr={tcfg.min_correlation:.3f}"
         if mode == VIA_SEARCH_MODE_TEMPLATE:
             return ViaDetectionOutput(

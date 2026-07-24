@@ -336,10 +336,32 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(len(save_calls), 1)
         self.assertEqual(save_calls[0][0].points, polygon.points)
 
-    def test_via_size_is_configured_only_in_shared_lower_controls(self) -> None:
+    def test_via_search_range_and_output_size_have_separate_controls(self) -> None:
         self.assertFalse(hasattr(self.widget, "via_fixed_diameters_edit"))
-        self.assertTrue(hasattr(self.widget, "via_diameter_size_mode_combo"))
-        self.assertTrue(hasattr(self.widget, "bright_via_diameter_fixed_spin"))
+        self.assertFalse(hasattr(self.widget, "via_size_mode_combo"))
+        self.assertFalse(hasattr(self.widget, "via_diameter_size_mode_combo"))
+        self.assertFalse(hasattr(self.widget, "bright_via_diameter_fixed_spin"))
+        self.assertTrue(hasattr(self.widget, "bright_via_diameter_min_spin"))
+        self.assertTrue(hasattr(self.widget, "bright_via_diameter_max_spin"))
+        self.assertTrue(hasattr(self.widget, "via_output_diameter_spin"))
+
+    def test_contacts_are_normalized_to_output_diameter_for_saving(self) -> None:
+        via = PolygonData(
+            id=1,
+            points=[(10, 20), (22, 20), (22, 26), (10, 26)],
+            category="via",
+            shape_hint="box",
+            bbox=(10, 20, 12, 6),
+        )
+
+        saved = self.widget._uniform_contact_polygons_for_save([via], diameter=8)
+
+        self.assertEqual(saved[0].bbox[2:], (8, 8))
+        self.assertEqual(saved[0].area, 64.0)
+        self.assertEqual(via.bbox, (10, 20, 12, 6))
+
+        odd_saved = self.widget._uniform_contact_polygons_for_save([via], diameter=9)
+        self.assertEqual(odd_saved[0].bbox[2:], (9, 9))
 
     def test_pipeline_preview_request_is_built_in_no_extraction_mode(self) -> None:
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))

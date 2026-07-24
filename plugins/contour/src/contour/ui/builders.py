@@ -785,10 +785,6 @@ def build_extraction_tab(self) -> QWidget:
     self.via_group = QGroupBox("Contact constraints")
     self.via_form = QFormLayout(self.via_group)
     self._configure_compact_form(self.via_form)
-    self.via_size_mode_combo = QComboBox()
-    self.via_size_mode_combo.addItem("Fixed values", VIA_SIZE_MODE_FIXED)
-    self.via_size_mode_combo.addItem("Range", VIA_SIZE_MODE_RANGE)
-    self.via_size_mode_combo.setCurrentIndex(0)
     self.via_search_mode_combo = QComboBox()
     self.via_search_mode_combo.addItem("Эвристический", VIA_SEARCH_MODE_HEURISTIC)
     self.via_search_mode_combo.addItem("По шаблону", VIA_SEARCH_MODE_TEMPLATE)
@@ -804,10 +800,6 @@ def build_extraction_tab(self) -> QWidget:
         QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     )
     self.via_heuristic_polarity_combo.setMinimumContentsLength(12)
-    self.via_diameter_size_mode_combo = QComboBox()
-    self.via_diameter_size_mode_combo.addItem("Фиксированный", VIA_SIZE_MODE_FIXED)
-    self.via_diameter_size_mode_combo.addItem("Диапазон", VIA_SIZE_MODE_RANGE)
-    self.via_diameter_size_mode_combo.setCurrentIndex(0)
     self.via_mode_bright_widget = QWidget()
     _vmb = QFormLayout(self.via_mode_bright_widget)
     self._configure_compact_form(_vmb)
@@ -984,9 +976,9 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_diameter_max_spin = QSpinBox()
     self.bright_via_diameter_max_spin.setRange(1, 100_000)
     self.bright_via_diameter_max_spin.setValue(8)
-    self.bright_via_diameter_fixed_spin = QSpinBox()
-    self.bright_via_diameter_fixed_spin.setRange(1, 100_000)
-    self.bright_via_diameter_fixed_spin.setValue(8)
+    self.via_output_diameter_spin = QSpinBox()
+    self.via_output_diameter_spin.setRange(1, 100_000)
+    self.via_output_diameter_spin.setValue(8)
     self.bright_via_diameter_range_widget = self._build_range_row(
         self.bright_via_diameter_min_spin, self.bright_via_diameter_max_spin
     )
@@ -1329,10 +1321,8 @@ def build_extraction_tab(self) -> QWidget:
     self.conductor_gradient_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.conductor_gradient_min_strength_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.conductor_gradient_band_radius_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_size_mode_combo.currentIndexChanged.connect(self._on_via_size_mode_changed)
     self.via_search_mode_combo.currentIndexChanged.connect(self._on_via_search_method_changed)
     self.via_search_mode_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
-    self.via_diameter_size_mode_combo.currentIndexChanged.connect(self._sync_via_diameter_size_mode)
     self.via_heuristic_polarity_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.via_template_nms_distance_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.via_template_scale_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -1361,7 +1351,7 @@ def build_extraction_tab(self) -> QWidget:
     self.debug_candidates_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_diameter_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_diameter_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.bright_via_diameter_fixed_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.via_output_diameter_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_clahe_clip_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_clahe_tile_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_median_kernel_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -1448,8 +1438,7 @@ def build_extraction_tab(self) -> QWidget:
         self.conductor_gradient_band_radius_spin
     )
 
-    self.via_form.addRow("Contact size mode", self.via_size_mode_combo)
-    self.via_size_mode_label_widget = self.via_form.labelForField(self.via_size_mode_combo)
+    self.via_size_mode_label_widget = None
     self.via_search_mode_label_widget = None
     self.via_form.addRow("Polarity", self.via_range_checkboxes_widget)
     self.via_range_checkboxes_label_widget = self.via_form.labelForField(self.via_range_checkboxes_widget)
@@ -1477,17 +1466,15 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_polarity_label_widget = self.bright_via_basics_form.labelForField(
         self.via_heuristic_polarity_combo
     )
-    self.bright_via_basics_form.addRow("Размер контакта", self.via_diameter_size_mode_combo)
-    self.bright_via_diameter_mode_label_widget = self.bright_via_basics_form.labelForField(
-        self.via_diameter_size_mode_combo
-    )
-    self.bright_via_basics_form.addRow("Диаметр контакта, px", self.bright_via_diameter_fixed_spin)
-    self.bright_via_diameter_fixed_label_widget = self.bright_via_basics_form.labelForField(
-        self.bright_via_diameter_fixed_spin
-    )
-    self.bright_via_basics_form.addRow("Минимальный / максимальный диаметр", self.bright_via_diameter_range_widget)
+    self.bright_via_diameter_mode_label_widget = None
+    self.bright_via_diameter_fixed_label_widget = None
+    self.bright_via_basics_form.addRow("Диаметр поиска", self.bright_via_diameter_range_widget)
     self.bright_via_diameter_range_label_widget = self.bright_via_basics_form.labelForField(
         self.bright_via_diameter_range_widget
+    )
+    self.bright_via_basics_form.addRow("Диаметр сохранения", self.via_output_diameter_spin)
+    self.via_output_diameter_label_widget = self.bright_via_basics_form.labelForField(
+        self.via_output_diameter_spin
     )
     self.bright_via_basics_form.addRow(self.via_white_range_checkbox, self.via_white_range_widget)
     self.bright_via_white_range_label_widget = self.bright_via_basics_form.labelForField(self.via_white_range_widget)
@@ -1510,8 +1497,7 @@ def build_extraction_tab(self) -> QWidget:
     for _basic_editor in (
         self.via_search_mode_combo,
         self.via_heuristic_polarity_combo,
-        self.via_diameter_size_mode_combo,
-        self.bright_via_diameter_fixed_spin,
+        self.via_output_diameter_spin,
         self.bright_via_min_final_score_spin,
         self.bright_via_nms_distance_spin,
     ):
@@ -2037,6 +2023,8 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.frameNavigationRequested.connect(self._on_frame_navigation_requested)
     self.polygon_editor.currentFrameChanged.connect(self._on_editor_current_frame_changed)
     self.polygon_editor.viaDebugRequested.connect(self._on_via_debug_requested)
+    self.polygon_editor.manualViaAdded.connect(self._on_manual_via_added)
+    self.polygon_editor.recognizedViasDeleted.connect(self._on_recognized_vias_deleted)
     self.polygon_editor.metalOverlayDetailRequested.connect(self._on_metal_overlay_detail_requested)
     self.polygon_editor.middlePreviewHoldChanged.connect(self._on_middle_preview_hold_changed)
     self.polygon_editor.filterPreviewHoldChanged.connect(self._on_filter_preview_hold_changed)

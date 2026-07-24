@@ -134,11 +134,11 @@ def _detection_to_hit(
     d_est = float(getattr(detection, "diameter_estimate", 0.0) or 0.0)
     observed_diameter = d_est if d_est > 0.0 else 0.5 * (bw + bh)
     configured_diameters = [float(value) for value in fixed_output_diameters if int(value) > 0]
-    if "template" in strategy and d_est > 0.0:
-        w = h = d_est
-    elif configured_diameters:
+    if configured_diameters:
         output_diameter = min(configured_diameters, key=lambda value: abs(value - observed_diameter))
         w = h = output_diameter
+    elif "template" in strategy and d_est > 0.0:
+        w = h = d_est
     elif bw > 0.0 and bh > 0.0:
         w, h = bw, bh
     elif d_est > 0.0:

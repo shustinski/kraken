@@ -684,14 +684,6 @@ class WidgetPipelineMixin:
             )
             if mode_index >= 0:
                 self.via_search_mode_combo.setCurrentIndex(mode_index)
-            if hasattr(self, "via_diameter_size_mode_combo"):
-                size_mode_index = self.via_diameter_size_mode_combo.findData(
-                    normalize_via_size_mode(
-                        payload.get("via_size_mode", self.via_diameter_size_mode_combo.currentData())
-                    )
-                )
-                if size_mode_index >= 0:
-                    self.via_diameter_size_mode_combo.setCurrentIndex(size_mode_index)
             self.via_white_range_checkbox.setChecked(
                 bool(payload.get("via_white_range_enabled", self.via_white_range_checkbox.isChecked()))
             )
@@ -730,10 +722,6 @@ class WidgetPipelineMixin:
             self.bright_via_diameter_max_spin.setValue(
                 int(payload.get("bright_via_diameter_max", self.bright_via_diameter_max_spin.value()))
             )
-            if hasattr(self, "bright_via_diameter_fixed_spin"):
-                dmin = int(payload.get("bright_via_diameter_min", self.bright_via_diameter_min_spin.value()))
-                dmax = int(payload.get("bright_via_diameter_max", self.bright_via_diameter_max_spin.value()))
-                self.bright_via_diameter_fixed_spin.setValue(dmin if dmin == dmax else int(round((dmin + dmax) * 0.5)))
             self.bright_via_clahe_clip_spin.setValue(
                 float(payload.get("bright_via_clahe_clip_limit", self.bright_via_clahe_clip_spin.value()))
             )
@@ -1091,6 +1079,7 @@ class WidgetPipelineMixin:
         blockers = [
             QSignalBlocker(self.bright_via_diameter_min_spin),
             QSignalBlocker(self.bright_via_diameter_max_spin),
+            QSignalBlocker(self.via_output_diameter_spin),
             QSignalBlocker(self.bright_via_clahe_clip_spin),
             QSignalBlocker(self.bright_via_clahe_tile_spin),
             QSignalBlocker(self.bright_via_median_kernel_spin),
@@ -1123,14 +1112,9 @@ class WidgetPipelineMixin:
             if (widget := getattr(self, name, None)) is not None
         )
         try:
-            if hasattr(self, "via_diameter_size_mode_combo"):
-                fixed_index = self.via_diameter_size_mode_combo.findData(VIA_SIZE_MODE_FIXED)
-                if fixed_index >= 0:
-                    self.via_diameter_size_mode_combo.setCurrentIndex(fixed_index)
             self.bright_via_diameter_min_spin.setValue(8)
             self.bright_via_diameter_max_spin.setValue(8)
-            if hasattr(self, "bright_via_diameter_fixed_spin"):
-                self.bright_via_diameter_fixed_spin.setValue(8)
+            self.via_output_diameter_spin.setValue(8)
             self.bright_via_clahe_clip_spin.setValue(2.0)
             self.bright_via_clahe_tile_spin.setValue(8)
             self.bright_via_median_kernel_spin.setValue(3)

@@ -128,38 +128,11 @@ class WidgetPipelineActionsMixin:
             self._update_via_threshold_controls_state()
 
     def _sync_via_diameter_size_mode(self, *_args) -> None:
-        if hasattr(self, "via_size_mode_combo") and hasattr(self, "via_diameter_size_mode_combo"):
-            with QSignalBlocker(self.via_size_mode_combo):
-                self.via_size_mode_combo.setCurrentIndex(self.via_diameter_size_mode_combo.currentIndex())
-        if (
-            hasattr(self, "via_diameter_size_mode_combo")
-            and normalize_via_size_mode(self.via_diameter_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
-            and hasattr(self, "bright_via_diameter_fixed_spin")
-            and hasattr(self, "bright_via_diameter_min_spin")
-        ):
-            if int(self.bright_via_diameter_min_spin.value()) == int(self.bright_via_diameter_max_spin.value()):
-                with QSignalBlocker(self.bright_via_diameter_fixed_spin):
-                    self.bright_via_diameter_fixed_spin.setValue(int(self.bright_via_diameter_min_spin.value()))
-            else:
-                with QSignalBlocker(self.bright_via_diameter_fixed_spin):
-                    self.bright_via_diameter_fixed_spin.setValue(
-                        int(
-                            round(
-                                (self.bright_via_diameter_min_spin.value() + self.bright_via_diameter_max_spin.value())
-                                * 0.5
-                            )
-                        )
-                    )
-        self._on_via_size_mode_changed()
+        self._update_bright_via_diameter_controls_state()
+        self._on_extraction_settings_changed()
 
     def _on_via_size_mode_changed(self, *_args) -> None:
         self._update_via_size_controls_state()
-        if (
-            normalize_via_size_mode(self.via_size_mode_combo.currentData()) == VIA_SIZE_MODE_FIXED
-            and not self._fixed_via_rows
-        ):
-            self._add_fixed_via_row(width=1, height=1)
-            return
         self._on_extraction_settings_changed()
 
     def _on_extraction_profile_changed(self, *_args) -> None:

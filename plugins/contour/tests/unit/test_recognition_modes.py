@@ -101,7 +101,7 @@ def test_mode_switching_hides_irrelevant_ui_settings() -> None:
         widget.close()
 
 
-def test_contact_layout_stays_within_dock_and_hides_irrelevant_diameter_range() -> None:
+def test_contact_layout_stays_within_dock_and_always_shows_search_diameter_range() -> None:
     app = QApplication.instance() or QApplication([])
     widget = PolygonExtractionWidget()
     try:
@@ -115,16 +115,15 @@ def test_contact_layout_stays_within_dock_and_hides_irrelevant_diameter_range() 
         assert widget.bright_via_mode_stack.isHidden()
 
         widget.via_search_mode_combo.setCurrentIndex(widget.via_search_mode_combo.findData("hybrid"))
-        widget.via_diameter_size_mode_combo.setCurrentIndex(
-            widget.via_diameter_size_mode_combo.findData("fixed")
-        )
         widget._via_template_images = [np.full((8, 8), 180, dtype=np.uint8)]
         widget._refresh_via_template_list()
         app.processEvents()
 
-        assert widget.bright_via_diameter_range_widget.isHidden()
-        assert widget.bright_via_diameter_range_label_widget.isHidden()
-        assert not widget.bright_via_diameter_fixed_spin.isHidden()
+        assert not hasattr(widget, "via_diameter_size_mode_combo")
+        assert not hasattr(widget, "bright_via_diameter_fixed_spin")
+        assert not widget.bright_via_diameter_range_widget.isHidden()
+        assert not widget.bright_via_diameter_range_label_widget.isHidden()
+        assert not widget.via_output_diameter_spin.isHidden()
         header = widget.via_template_table.horizontalHeader()
         assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.Stretch
         assert header.sectionResizeMode(3) == QHeaderView.ResizeMode.Stretch
@@ -143,12 +142,6 @@ def test_contact_layout_stays_within_dock_and_hides_irrelevant_diameter_range() 
         )
         widget.recognition_mode_combo.hidePopup()
 
-        widget.via_diameter_size_mode_combo.setCurrentIndex(
-            widget.via_diameter_size_mode_combo.findData("range")
-        )
-        app.processEvents()
-        assert not widget.bright_via_diameter_range_widget.isHidden()
-        assert widget.bright_via_diameter_fixed_spin.isHidden()
     finally:
         widget.close()
         widget.deleteLater()
@@ -223,7 +216,7 @@ def test_heuristic_expert_group_and_tooltips() -> None:
         assert payload["heuristic_min_circularity"] == pytest.approx(0.55)
         original_method = widget.via_search_mode_combo.currentData()
         original_polarity = widget.via_heuristic_polarity_combo.currentData()
-        original_diameter = widget.bright_via_diameter_fixed_spin.value()
+        original_diameter = widget.via_output_diameter_spin.value()
         widget.heuristic_w_contrast_spin.setValue(12.0)
         widget.heuristic_min_circularity_spin.setValue(0.1)
         widget.bright_via_advanced_outer.setChecked(False)
@@ -241,7 +234,7 @@ def test_heuristic_expert_group_and_tooltips() -> None:
         assert widget.bright_via_advanced_outer.isChecked()
         assert widget.via_search_mode_combo.currentData() == original_method
         assert widget.via_heuristic_polarity_combo.currentData() == original_polarity
-        assert widget.bright_via_diameter_fixed_spin.value() == original_diameter
+        assert widget.via_output_diameter_spin.value() == original_diameter
         widget.heuristic_max_line_coherence_spin.setValue(0.41)
         widget.heuristic_use_bilateral_checkbox.setChecked(True)
         widget.bright_via_advanced_outer.setChecked(True)
@@ -276,7 +269,7 @@ def test_heuristic_expert_group_and_tooltips() -> None:
         assert widget.heuristic_edge_quality_floor_spin.value() == pytest.approx(0.55)
         assert widget.heuristic_border_balance_scale_spin.value() == pytest.approx(2.0)
         assert not widget.heuristic_use_bilateral_checkbox.isChecked()
-        assert widget.bright_via_diameter_fixed_spin.value() == original_diameter
+        assert widget.via_output_diameter_spin.value() == original_diameter
         assert widget.heuristic_defaults_button.text() == "По умолчанию"
         assert len(widget.heuristic_defaults_button.toolTip()) >= 40
         widget.bright_via_advanced_outer.setChecked(False)
@@ -314,8 +307,7 @@ def test_contact_polarity_is_in_basics_and_obsolete_debug_controls_are_removed()
         basic_single_editors = (
             widget.via_search_mode_combo,
             widget.via_heuristic_polarity_combo,
-            widget.via_diameter_size_mode_combo,
-            widget.bright_via_diameter_fixed_spin,
+            widget.via_output_diameter_spin,
             widget.bright_via_min_final_score_spin,
             widget.bright_via_nms_distance_spin,
         )
@@ -779,7 +771,7 @@ def test_via_preset_json_contains_full_snapshot_but_applies_only_expert_settings
         widget.via_heuristic_polarity_combo.setCurrentIndex(
             widget.via_heuristic_polarity_combo.findData("dark")
         )
-        widget.bright_via_diameter_fixed_spin.setValue(13)
+        widget.via_output_diameter_spin.setValue(13)
         monkeypatch.setattr(
             "contour.widget_parts.pipeline_actions_mixin.QFileDialog.getOpenFileName",
             lambda *_args, **_kwargs: (str(path), "JSON"),
@@ -789,7 +781,7 @@ def test_via_preset_json_contains_full_snapshot_but_applies_only_expert_settings
         assert widget.heuristic_w_contrast_spin.value() == 34.0
         assert widget.via_search_mode_combo.currentData() == "template"
         assert widget.via_heuristic_polarity_combo.currentData() == "dark"
-        assert widget.bright_via_diameter_fixed_spin.value() == 13
+        assert widget.via_output_diameter_spin.value() == 13
         assert widget.bright_via_advanced_outer.isChecked()
     finally:
         widget.close()

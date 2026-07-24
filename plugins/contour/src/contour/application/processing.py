@@ -335,6 +335,7 @@ class ContourExtractionSettings:
     heuristic_w_border: float = 20.0
     bright_via_diameter_min: int = 8
     bright_via_diameter_max: int = 8
+    via_output_diameter: int = 8
     bright_via_clahe_clip_limit: float = 2.0
     bright_via_clahe_tile_grid_size: int = 8
     bright_via_median_blur_kernel: int = 3
@@ -526,6 +527,7 @@ class ContourExtractionSettings:
             "heuristic_w_border": self.heuristic_w_border,
             "bright_via_diameter_min": self.bright_via_diameter_min,
             "bright_via_diameter_max": self.bright_via_diameter_max,
+            "via_output_diameter": self.via_output_diameter,
             "bright_via_clahe_clip_limit": self.bright_via_clahe_clip_limit,
             "bright_via_clahe_tile_grid_size": self.bright_via_clahe_tile_grid_size,
             "bright_via_median_blur_kernel": self.bright_via_median_blur_kernel,
@@ -651,6 +653,35 @@ class ContourExtractionSettings:
             white_range_enabled = True
             white_range_min = payload.get("via_threshold_range_min", white_range_min)
             white_range_max = payload.get("via_threshold_range_max", white_range_max)
+        fixed_via_widths = parse_integer_value_list(payload.get("fixed_via_widths"))
+        fixed_via_heights = parse_integer_value_list(payload.get("fixed_via_heights"))
+        legacy_diameters = [
+            max(1, round((width + height) * 0.5))
+            for width, height in zip(fixed_via_widths, fixed_via_heights, strict=False)
+            if width > 0 and height > 0
+        ]
+        candidate_diameter_min = int(
+            payload.get(
+                "bright_via_diameter_min",
+                min(legacy_diameters) if legacy_diameters else 6,
+            )
+        )
+        candidate_diameter_max = int(
+            payload.get(
+                "bright_via_diameter_max",
+                max(legacy_diameters) if legacy_diameters else 8,
+            )
+        )
+        output_diameter = int(
+            payload.get(
+                "via_output_diameter",
+                round(
+                    sum(legacy_diameters) / len(legacy_diameters)
+                    if legacy_diameters
+                    else (candidate_diameter_min + candidate_diameter_max) * 0.5
+                ),
+            )
+        )
         return cls(
             extraction_profile=str(payload.get("extraction_profile", "conductors")),
             algorithm_backend=normalize_algorithm_backend(payload.get("algorithm_backend", ALGORITHM_BACKEND_LEGACY)),
@@ -686,8 +717,8 @@ class ContourExtractionSettings:
             max_via_height=None if max_via_height in (None, "", 0, 0.0) else max(1, int(max_via_height)),
             via_size_mode=normalize_via_size_mode(payload.get("via_size_mode", VIA_SIZE_MODE_FIXED)),
             via_search_mode=normalize_via_search_mode(payload.get("via_search_mode", VIA_SEARCH_MODE_HEURISTIC)),
-            fixed_via_widths=parse_integer_value_list(payload.get("fixed_via_widths")),
-            fixed_via_heights=parse_integer_value_list(payload.get("fixed_via_heights")),
+            fixed_via_widths=fixed_via_widths,
+            fixed_via_heights=fixed_via_heights,
             via_channel_mode=normalize_via_channel_mode(payload.get("via_channel_mode", VIA_CHANNEL_MODE_GRAYSCALE)),
             via_white_range_enabled=bool(white_range_enabled),
             via_white_range_min=max(0, min(255, int(white_range_min))),
@@ -780,8 +811,9 @@ class ContourExtractionSettings:
             heuristic_w_line=max(0.0, float(payload.get("heuristic_w_line", 20.0))),
             heuristic_w_border=max(0.0, float(payload.get("heuristic_w_border", 20.0))),
             via_spot_line_suppression=max(0.0, min(1.0, float(payload.get("via_spot_line_suppression", 0.65)))),
-            bright_via_diameter_min=max(1, int(payload.get("bright_via_diameter_min", 6))),
-            bright_via_diameter_max=max(1, int(payload.get("bright_via_diameter_max", 8))),
+            bright_via_diameter_min=max(1, candidate_diameter_min),
+            bright_via_diameter_max=max(1, candidate_diameter_max),
+            via_output_diameter=max(1, output_diameter),
             bright_via_clahe_clip_limit=max(0.01, float(payload.get("bright_via_clahe_clip_limit", 2.0))),
             bright_via_clahe_tile_grid_size=max(1, int(payload.get("bright_via_clahe_tile_grid_size", 8))),
             bright_via_median_blur_kernel=_odd_positive(payload.get("bright_via_median_blur_kernel", 3), minimum=1),

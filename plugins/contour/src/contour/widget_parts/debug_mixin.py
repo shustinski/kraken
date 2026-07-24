@@ -42,7 +42,7 @@ class WidgetDebugMixin:
         title = self._tr("debug.via_title" if is_via_like else "debug.polygon_title")
         is_manual_via = bool(is_via_like and polygon.recognition_score is None)
         candidate = self._best_debug_candidate_for_polygon(polygon, candidates)
-        if candidate is None and is_manual_via:
+        if candidate is None and is_via_like:
             candidate = self._manual_via_debug_candidate(polygon)
         if candidate is None:
             message = self._tr(

@@ -9,10 +9,22 @@ from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid5
 
 from kraken_manager.application.dto import (
+    ArchiveLayerCommand,
+    ArchiveProjectCommand,
+    ActivateRepresentationCommand,
+    ArchiveRepresentationCommand,
+    AssignProjectRoleCommand,
     CommandContext as ApplicationCommandContext,
     CreateLayerCommand,
     CreateProjectCommand,
     CreateRepresentationCommand,
+    RenameLayerCommand,
+    RenameProjectCommand,
+    RenameRepresentationCommand,
+    ReorderLayerCommand,
+    RestoreProjectCommand,
+    RevokeProjectRoleCommand,
+    UpdateRepresentationNoteCommand,
     StorageBackendKind,
     StorageScope,
 )
@@ -25,7 +37,23 @@ from kraken_manager.application.errors import (
 )
 from kraken_manager.application.ports import StorageCapabilities, StorageProfile
 from kraken_manager.application.use_cases import CreateLayerHandler, CreateProjectHandler, CreateRepresentationHandler
-from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, validate_uuid
+from kraken_manager.application.lifecycle import (
+    ArchiveLayerHandler,
+    ArchiveProjectHandler,
+    RenameLayerHandler,
+    RenameProjectHandler,
+    ReorderLayerHandler,
+    RestoreProjectHandler,
+)
+from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
+from kraken_manager.application.representation_lifecycle import (
+    ActivateRepresentationHandler,
+    ArchiveRepresentationHandler,
+    RenameRepresentationHandler,
+    UpdateRepresentationNoteHandler,
+)
+from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, RepresentationId, validate_uuid
+from kraken_manager.domain.identity import ProjectRole
 from kraken_manager.domain.project import GridOrientation, Layer, LayerType, Project, Representation, RepresentationKind
 from kraken_manager.infrastructure.postgres import PostgresEventStore, PostgresIdentityAclStore, PostgresProjectionStore
 
@@ -128,6 +156,18 @@ class PostgresServerServices:
         self._create_project = CreateProjectHandler(uow_factory, self.profiles, SystemClock())
         self._create_layer = CreateLayerHandler(uow_factory, self.profiles, SystemClock())
         self._create_representation = CreateRepresentationHandler(uow_factory, self.profiles, SystemClock())
+        self._rename_project = RenameProjectHandler(uow_factory, self.profiles, SystemClock())
+        self._archive_project = ArchiveProjectHandler(uow_factory, self.profiles, SystemClock())
+        self._restore_project = RestoreProjectHandler(uow_factory, self.profiles, SystemClock())
+        self._rename_layer = RenameLayerHandler(uow_factory, self.profiles, SystemClock())
+        self._reorder_layer = ReorderLayerHandler(uow_factory, self.profiles, SystemClock())
+        self._archive_layer = ArchiveLayerHandler(uow_factory, self.profiles, SystemClock())
+        self._assign_project_role = AssignProjectRoleHandler(uow_factory, self.profiles, SystemClock())
+        self._revoke_project_role = RevokeProjectRoleHandler(uow_factory, self.profiles, SystemClock())
+        self._activate_representation = ActivateRepresentationHandler(uow_factory, self.profiles, SystemClock())
+        self._archive_representation = ArchiveRepresentationHandler(uow_factory, self.profiles, SystemClock())
+        self._rename_representation = RenameRepresentationHandler(uow_factory, self.profiles, SystemClock())
+        self._update_representation_note = UpdateRepresentationNoteHandler(uow_factory, self.profiles, SystemClock())
 
     def health(self) -> dict[str, Any]:
         try:
@@ -192,6 +232,71 @@ class PostgresServerServices:
             raise NotFoundError(project_id)
         return _project_dict(project)
 
+    def _application_context(self, context: CommandContext) -> ApplicationCommandContext:
+        return ApplicationCommandContext(
+            actor=self._actor(context.actor_id),
+            idempotency_key=context.idempotency_key,
+            gitlab_identity_verified=True,
+        )
+
+    @staticmethod
+    def _translate_lifecycle_error(exc: Exception) -> None:
+        if isinstance(exc, ApplicationNotFoundError):
+            raise NotFoundError(str(exc)) from exc
+        if isinstance(exc, (ApplicationConcurrencyError, ApplicationConflictError)):
+            raise ConflictError(str(exc)) from exc
+        if isinstance(exc, ApplicationAuthorizationError):
+            raise ForbiddenError(str(exc)) from exc
+        if isinstance(exc, (StorageCapabilityError, ValueError, TypeError)):
+            raise ValidationError(str(exc)) from exc
+        raise exc
+
+    def rename_project(self, project_id: str, name: str, context: CommandContext) -> dict[str, Any]:
+        try:
+            return _project_dict(
+                self._rename_project(
+                    RenameProjectCommand(
+                        context=self._application_context(context),
+                        project_id=_project_id(project_id),
+                        name=name,
+                        expected_revision=self._require_revision(context),
+                    )
+                )
+            )
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
+    def archive_project(self, project_id: str, context: CommandContext) -> dict[str, Any]:
+        try:
+            return _project_dict(
+                self._archive_project(
+                    ArchiveProjectCommand(
+                        context=self._application_context(context),
+                        project_id=_project_id(project_id),
+                        expected_revision=self._require_revision(context),
+                    )
+                )
+            )
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
+    def restore_project(self, project_id: str, context: CommandContext) -> dict[str, Any]:
+        try:
+            return _project_dict(
+                self._restore_project(
+                    RestoreProjectCommand(
+                        context=self._application_context(context),
+                        project_id=_project_id(project_id),
+                        expected_revision=self._require_revision(context),
+                    )
+                )
+            )
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
     @staticmethod
     def _require_revision(context: CommandContext) -> int:
         if context.expected_revision is None:
@@ -230,6 +335,126 @@ class PostgresServerServices:
             raise ForbiddenError(str(exc)) from exc
         except (StorageCapabilityError, ValueError, TypeError) as exc:
             raise ValidationError(str(exc)) from exc
+
+    def rename_layer(
+        self, project_id: str, layer_id: str, name: str, context: CommandContext
+    ) -> dict[str, Any]:
+        try:
+            return _layer_dict(
+                self._rename_layer(
+                    RenameLayerCommand(
+                        context=self._application_context(context),
+                        project_id=_project_id(project_id),
+                        layer_id=_layer_id(layer_id),
+                        name=name,
+                        expected_revision=self._require_revision(context),
+                    )
+                )
+            )
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
+    def reorder_layer(
+        self, project_id: str, layer_id: str, order: int, context: CommandContext
+    ) -> dict[str, Any]:
+        try:
+            return _layer_dict(
+                self._reorder_layer(
+                    ReorderLayerCommand(
+                        context=self._application_context(context),
+                        project_id=_project_id(project_id),
+                        layer_id=_layer_id(layer_id),
+                        order=order,
+                        expected_revision=self._require_revision(context),
+                    )
+                )
+            )
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
+    def archive_layer(
+        self, project_id: str, layer_id: str, context: CommandContext
+    ) -> dict[str, Any]:
+        try:
+            return _layer_dict(
+                self._archive_layer(
+                    ArchiveLayerCommand(
+                        context=self._application_context(context),
+                        project_id=_project_id(project_id),
+                        layer_id=_layer_id(layer_id),
+                        expected_revision=self._require_revision(context),
+                    )
+                )
+            )
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
+    def project_roles(self, project_id: str, principal_id: str) -> dict[str, Any]:
+        project = self.get_project(project_id)
+        del project
+        try:
+            project_identifier = _project_id(project_id)
+            principal_identifier = PrincipalId(validate_uuid(principal_id, field="principal_id"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Invalid project or principal id") from exc
+        if self.identities.get(principal_identifier) is None:
+            raise NotFoundError(principal_id)
+        stream_id = f"acl:{project_identifier}:{principal_identifier}"
+        return {
+            "project_id": project_id,
+            "principal_id": principal_id,
+            "roles": sorted(
+                role.value for role in self.identities.roles_for(project_identifier, principal_identifier)
+            ),
+            "revision": self.events.current_revision(stream_id),
+        }
+
+    def assign_project_role(
+        self,
+        project_id: str,
+        principal_id: str,
+        role: str,
+        context: CommandContext,
+    ) -> dict[str, Any]:
+        try:
+            self._assign_project_role(
+                AssignProjectRoleCommand(
+                    context=self._application_context(context),
+                    project_id=_project_id(project_id),
+                    principal_id=PrincipalId(validate_uuid(principal_id, field="principal_id")),
+                    role=ProjectRole(role),
+                    expected_revision=self._require_revision(context),
+                )
+            )
+            return self.project_roles(project_id, principal_id)
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
+    def revoke_project_role(
+        self,
+        project_id: str,
+        principal_id: str,
+        role: str,
+        context: CommandContext,
+    ) -> dict[str, Any]:
+        try:
+            self._revoke_project_role(
+                RevokeProjectRoleCommand(
+                    context=self._application_context(context),
+                    project_id=_project_id(project_id),
+                    principal_id=PrincipalId(validate_uuid(principal_id, field="principal_id")),
+                    role=ProjectRole(role),
+                    expected_revision=self._require_revision(context),
+                )
+            )
+            return self.project_roles(project_id, principal_id)
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
 
     def list_representations(self, project_id: str, layer_id: str) -> list[dict[str, Any]]:
         self.get_project(project_id)
@@ -279,6 +504,52 @@ class PostgresServerServices:
             raise ForbiddenError(str(exc)) from exc
         except (StorageCapabilityError, ValueError, TypeError) as exc:
             raise ValidationError(str(exc)) from exc
+
+    def update_representation(
+        self,
+        project_id: str,
+        layer_id: str,
+        representation_id: str,
+        payload: Mapping[str, Any],
+        context: CommandContext,
+    ) -> dict[str, Any]:
+        operations = [key for key in ("name", "note", "active", "archive") if key in payload]
+        if len(operations) != 1:
+            raise ValidationError("Exactly one representation operation is required")
+        try:
+            common = {
+                "context": self._application_context(context),
+                "project_id": _project_id(project_id),
+                "layer_id": _layer_id(layer_id),
+                "representation_id": RepresentationId(
+                    validate_uuid(representation_id, field="representation_id")
+                ),
+                "expected_layer_revision": self._require_revision(context),
+                "expected_representation_revision": int(
+                    payload.get("expected_representation_revision", -1)
+                ),
+            }
+            operation = operations[0]
+            if operation == "name":
+                value = self._rename_representation(
+                    RenameRepresentationCommand(name=str(payload["name"]), **common)
+                )
+            elif operation == "note":
+                value = self._update_representation_note(
+                    UpdateRepresentationNoteCommand(note=str(payload["note"]), **common)
+                )
+            elif operation == "active":
+                if not bool(payload["active"]):
+                    raise ValueError("Only activation is supported")
+                value = self._activate_representation(ActivateRepresentationCommand(**common))
+            else:
+                if not bool(payload["archive"]):
+                    raise ValueError("archive must be true")
+                value = self._archive_representation(ArchiveRepresentationCommand(**common))
+            return _representation_dict(value)
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
 
     def matrix_viewport(
         self,

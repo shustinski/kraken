@@ -132,6 +132,18 @@ Kraken Agent uses a durable local SQLite queue and authenticated loopback
 channel. Start it with `kraken-agent`; its registry determines which V1 plugin
 operations may run.
 
+The Desktop project catalog supports audited rename/archive/restore, managed
+directory imports with `<x>_<y>`, row-major or regex mapping, sparse matrix
+statuses, representation switching, activity reports, integrity scans and
+canonical backup/restore bundles. Managed files are copied into the immutable
+SHA-256 BlobStore; a source folder is never treated as the authoritative
+project state.
+
+Shared mutations under `/api/v1` require `Idempotency-Key`, optimistic
+`If-Match`, a GitLab principal and a live GitLab `userinfo` check. Project,
+layer, representation and ACL lifecycle changes all emit versioned audit
+events; local/server accounts remain read-only for shared content.
+
 Kraken Hub checks for its own updates at startup when an update manifest is
 configured. Set it in the Hub with **Update source…**, pass
 `--update-url https://example.org/kraken/version.json`, or set the

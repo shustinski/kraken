@@ -574,6 +574,14 @@ class ImportPluginResultHandler:
             now = self._clock.now()
             job = _move_job(job, PluginJobState.IMPORTING, at=now)
             versions: list[ArtifactVersion] = []
+            wanted_frames = {result.frame_id for result in manifest.results}
+            coordinates_by_frame = {}
+            for coordinate in job.selection.iter_coordinates():
+                frame_id = coordinate.frame_id(project.id)
+                if frame_id in wanted_frames:
+                    coordinates_by_frame[frame_id] = (coordinate.x, coordinate.y)
+                    if len(coordinates_by_frame) == len(wanted_frames):
+                        break
             for result in manifest.results:
                 if result.outcome is not PluginFrameOutcome.SUCCEEDED:
                     continue
@@ -625,6 +633,9 @@ class ImportPluginResultHandler:
                 active = uow.projections.get_active_artifact_version(series.id)
                 parameters = dict(manifest.parameters_applied)
                 parameters["plugin_output_role"] = result.role
+                coordinate = coordinates_by_frame.get(result.frame_id)
+                if coordinate is not None:
+                    parameters["x"], parameters["y"] = coordinate
                 version = ArtifactVersion.managed(
                     version_id=ArtifactVersionId(result.output_id),
                     series_id=series.id,

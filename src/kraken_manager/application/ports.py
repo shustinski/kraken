@@ -155,6 +155,16 @@ class ProjectionStore(Protocol):
         self, series_id: ArtifactSeriesId, *, as_of: datetime | None = None
     ) -> ArtifactSeries | None: ...
 
+    def list_artifact_series(
+        self,
+        project_id: ProjectId,
+        *,
+        layer_id: LayerId | None = None,
+        representation_id: RepresentationId | None = None,
+        include_archived: bool = False,
+        as_of: datetime | None = None,
+    ) -> tuple[ArtifactSeries, ...]: ...
+
     def save_artifact_series(self, series: ArtifactSeries) -> None: ...
 
     def get_artifact_version(

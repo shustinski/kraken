@@ -1,4 +1,5 @@
 __pycache__/
+.*/
 *.py[cod]
 *.pyd
 *.so
@@ -15,8 +16,7 @@ dist/
 .coverage
 htmlcov/
 .idea/
-.vscode/*
-!.vscode/launch.json
+.vscode/
 *.log
 *.tmp
 *.bak
@@ -24,5 +24,8 @@ htmlcov/
 *.AppImage
 *.tar.gz
 *.exe
+*.cif
+*.jpg
+*.bmp
 plugins/*/dist/
 plugins/*/build/

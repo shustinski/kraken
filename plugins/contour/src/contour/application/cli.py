@@ -5,7 +5,7 @@ import multiprocessing as mp
 import sys
 from collections.abc import Sequence
 
-from ..batch_processor import configure_batch_runtime
+from ..kraken_bridge import prepare_contour_launch
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -23,12 +23,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.add_argument("--no-qss", action="store_true", help="Do not apply the main application QSS theme.")
         parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging.")
         parser.add_argument("--log-file", default=None, help="Path to the log file.")
+        parser.add_argument("--kraken-job-manifest", help="Kraken Agent job manifest (managed mode).")
+        parser.add_argument("--kraken-result-manifest", help="Kraken Agent result manifest (managed mode).")
+        parser.add_argument("--kraken-staging-root", help="Kraken Agent staging workspace (managed mode).")
         parser.print_help()
         return
 
+    kraken_session, args = prepare_contour_launch(args)
     from .bootstrap import build_application
 
     app, window = build_application(args)
+    if kraken_session is not None:
+        kraken_session.attach_return_action(window)
     window.show()
     app.exec()
 

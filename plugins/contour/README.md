@@ -72,6 +72,20 @@ python -m contour                 # as a module
 | `--log-file PATH` | Override the log file location. |
 | `--version` | Print version and exit. |
 
+### Kraken Agent protocol v1
+
+Agent supplies `KRAKEN_JOB_MANIFEST`, `KRAKEN_RESULT_MANIFEST`, and
+`KRAKEN_STAGING_ROOT`; equivalent CLI flags use the corresponding lower-case
+`--kraken-*` names. In this mode Contour opens only the exact input list from
+the manifest and saves CIF files only under `<staging>/outputs`.
+
+After saving the desired CIF files, use **Kraken → Вернуть результаты в
+Kraken** (`Ctrl+Shift+Return`). Only this explicit action writes the result
+manifest. Closing Contour without it does not import or alter project data.
+Managed V1 jobs require unique input filename stems because the existing
+Contour exporter maps each image stem to the matching CIF stem. Symlinks,
+paths outside staging, and SHA-256 mismatches are rejected.
+
 ## Embedding the widget
 
 `PolygonExtractionWidget` can be hosted inside any PyQt6 application. See

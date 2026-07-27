@@ -2,12 +2,23 @@
   "id": "contour",
   "display_name": "Contour",
   "description": "Polygon extraction and editing.",
-  "version": "0.6.0",
+  "version": "0.5.0",
+  "protocol_version": "1.0",
   "enabled": true,
   "platforms": ["windows", "linux"],
   "executables": {
     "windows": {"command": ["python", "__main__.py"]},
     "linux": {"command": ["python", "__main__.py"]}
   },
-  "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
+  "actions": ["get_capabilities", "open_path", "open_folder", "run_action"],
+  "deprecated_actions": ["open_path", "open_folder", "run_action"],
+  "capabilities": [
+    {
+      "operation": "frames.vectorize.v1",
+      "modes": ["interactive"],
+      "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
+      "output_media_types": ["application/x-cif"],
+      "maximum_batch_size": 10000
+    }
+  ]
 }

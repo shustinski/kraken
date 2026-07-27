@@ -27,6 +27,11 @@ def _snapshot(value: Representation) -> dict[str, object]:
         "kind": value.kind.value,
         "note": value.note,
         "source": value.source,
+        "source_image_representation_id": (
+            None
+            if value.source_image_representation_id is None
+            else str(value.source_image_representation_id)
+        ),
         "active": value.active,
         "state": value.state.value,
         "revision": value.revision,
@@ -94,7 +99,16 @@ class _RepresentationHandler:
             deactivated: list[Representation] = []
             if self.event_type == "RepresentationActivated":
                 for previous in uow.projections.list_representations(layer.id):
-                    if previous.id != value.id and previous.kind is value.kind and previous.active:
+                    if (
+                        previous.id != value.id
+                        and previous.kind is value.kind
+                        and previous.active
+                        and (
+                            value.kind.value != "vector"
+                            or previous.source_image_representation_id
+                            == value.source_image_representation_id
+                        )
+                    ):
                         deactivated.append(previous.deactivate())
             next_layer = replace(layer, revision=layer.revision + 1)
             now = self._clock.now()

@@ -47,7 +47,7 @@ class ProjectManagerShell(QMainWindow):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("projectManagerShell")
-        self.setWindowTitle("Kraken Project Manager")
+        self.setWindowTitle("Kraken")
         self.resize(1280, 800)
         self._pages: dict[str, QWidget] = {}
         self._navigation_items: dict[str, QListWidgetItem] = {}
@@ -166,6 +166,10 @@ class ProjectManagerShell(QMainWindow):
             self.replace_page("workspace", page)
         else:
             self.register_page("workspace", "Проект", page, navigation=False)
+        page.selectionCountChanged.connect(
+            lambda count: self.statusBar().showMessage(f"Выбрано кадров: {count:n}")
+        )
+        self.statusBar().showMessage("Выбрано кадров: 0")
         self.show_page("workspace")
         return page
 

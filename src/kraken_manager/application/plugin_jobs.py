@@ -685,6 +685,9 @@ class ImportPluginResultHandler:
                         payload={
                             "artifact_version_id": str(version.id),
                             "series_id": str(series.id),
+                            "layer_id": str(series.layer_id),
+                            "representation_id": str(series.representation_id),
+                            "frame_id": str(series.frame_id),
                             "sha256": version.sha256,
                             "size_bytes": version.size_bytes,
                             "media_type": version.media_type,

@@ -649,7 +649,8 @@ class FrameMatrixView(QGraphicsView):
 
                 if lod is MatrixLod.DETAILS:
                     painter.setPen(QColor("#f8fafc"))
-                    coordinate_text = cell.label or f"{x}, {y}"
+                    frame_number = (y - 1) * self.matrix_width + x
+                    coordinate_text = cell.label or f"{frame_number:04d}"
                     painter.drawText(
                         rect.adjusted(4.0, 3.0, -4.0, -3.0),
                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,

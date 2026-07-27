@@ -20,6 +20,81 @@ from . import windows_credentials
 from .composition import DesktopSession, EmbeddedProjectService
 
 
+class RepresentationDialog:
+    """Shared image/vector representation form with a folder-only source picker."""
+
+    def __init__(self, parent, kind: RepresentationKind) -> None:
+        from PyQt6.QtWidgets import (
+            QCheckBox,
+            QDialog,
+            QDialogButtonBox,
+            QFormLayout,
+            QLineEdit,
+            QTextEdit,
+        )
+
+        self.kind = kind
+        self.dialog = QDialog(parent)
+        self.dialog.setObjectName("representationDialog")
+        noun = "изображение" if kind is RepresentationKind.IMAGE else "вектор"
+        self.dialog.setWindowTitle(f"Добавить {noun}")
+        self.name = QLineEdit()
+        self.name.setObjectName("representationName")
+        self.source_picker = ClickableLabel("Выбрать папку…")
+        self.source_picker.setObjectName("representationSourceFolderPicker")
+        self.source_picker.setToolTip("Выбрать папку с файлами")
+        self.source_picker.setStyleSheet("color: #60A5FA; text-decoration: underline;")
+        self.source_picker.setMinimumWidth(
+            self.source_picker.fontMetrics().horizontalAdvance(self.source_picker.text()) + 8
+        )
+        self.source_picker.clicked.connect(self._choose_source_folder)
+        # Kept hidden for automation/API compatibility; the visible source
+        # control is deliberately only the ClickableLabel.
+        self._source_compatibility = QLineEdit(self.dialog)
+        self._source_compatibility.setObjectName("representationSource")
+        self._source_compatibility.hide()
+        self.note = QTextEdit()
+        self.note.setObjectName("representationNote")
+        self.note.setAcceptRichText(False)
+        self.note.setFixedHeight(80)
+        self.active = QCheckBox("Сделать активным")
+        self.active.setChecked(True)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.accepted.connect(self.dialog.accept)
+        self.buttons.rejected.connect(self.dialog.reject)
+
+        form = QFormLayout(self.dialog)
+        form.addRow("Название", self.name)
+        form.addRow("Источник", self.source_picker)
+        form.addRow(self.active)
+        form.addRow("Примечание", self.note)
+        form.addRow(self.buttons)
+
+    @property
+    def source_directory(self) -> str:
+        return str(self.source_picker.property("sourceDirectory") or "")
+
+    def _choose_source_folder(self) -> None:
+        from PyQt6.QtWidgets import QFileDialog
+
+        directory = QFileDialog.getExistingDirectory(
+            self.dialog,
+            "Выберите папку с изображениями"
+            if self.kind is RepresentationKind.IMAGE
+            else "Выберите папку с векторами",
+            self.source_directory,
+        )
+        if directory:
+            self.source_picker.setProperty("sourceDirectory", directory)
+            self.source_picker.setText(directory)
+            self._source_compatibility.setText(directory)
+
+    def exec(self):
+        return self.dialog.exec()
+
+
 def _remember_credentials(username: str, password: str) -> None:
     try:
         windows_credentials.save_credentials(username, password)
@@ -266,7 +341,6 @@ class DesktopController:
     def create_project(self) -> None:
         from PyQt6.QtWidgets import (
             QCheckBox,
-            QComboBox,
             QDialog,
             QDialogButtonBox,
             QFormLayout,
@@ -357,7 +431,7 @@ class DesktopController:
         if layers:
             first = workspace.layer_model.layer_by_id(str(layers[0].id))
             if first is not None:
-                workspace.layer_list.setCurrentIndex(workspace.layer_model.index(0, 0))
+                workspace.layer_tabs.setCurrentIndex(0)
                 self._select_layer(workspace, project.id, first)
 
     def _load_layers(self, workspace, project) -> None:
@@ -371,6 +445,7 @@ class DesktopController:
             LayerListItem(str(layer.id), layer.name, layer.type.value, colors[layer.type.value])
             for layer in self.service.list_layers(project.id)
         )
+        workspace.sync_layer_tabs()
 
     def _select_layer(self, workspace, project_id, item: LayerListItem) -> None:
         workspace._selected_layer_id = item.layer_id
@@ -378,18 +453,27 @@ class DesktopController:
 
     def _load_representations(self, workspace, project_id, layer_id) -> None:
         representations = self.service.list_representations(project_id, layer_id)
+        images = sorted(
+            (value for value in representations if value.kind is RepresentationKind.IMAGE),
+            key=lambda value: (not value.active, value.name.casefold()),
+        )
+        current_image_id = str(workspace.image_representation_combo.currentData() or "")
+        if not any(str(item.id) == current_image_id for item in images):
+            current_image_id = str(images[0].id) if images else ""
         workspace.set_representations(
             images=[
                 (str(item.id), item.name)
-                for item in sorted(
-                    (value for value in representations if value.kind is RepresentationKind.IMAGE),
-                    key=lambda value: (not value.active, value.name.casefold()),
-                )
+                for item in images
             ],
             vectors=[
                 (str(item.id), item.name)
                 for item in sorted(
-                    (value for value in representations if value.kind is RepresentationKind.VECTOR),
+                    (
+                        value
+                        for value in representations
+                        if value.kind is RepresentationKind.VECTOR
+                        and str(value.source_image_representation_id or "") == current_image_id
+                    ),
                     key=lambda value: (not value.active, value.name.casefold()),
                 )
             ],
@@ -458,13 +542,17 @@ class DesktopController:
             "error": 10,
         }
         cells: dict[tuple[int, int], FrameCellData] = {}
+        coverage_by_representation: dict[str, set[tuple[int, int]]] = {}
         for representation_id in representation_ids:
             if not representation_id:
                 continue
+            representation_key = str(representation_id)
+            coverage = coverage_by_representation.setdefault(representation_key, set())
             for item in self.service.frame_cells(
                 project_id, layer_id, str(representation_id)
             ):
                 key = (item.x, item.y)
+                coverage.add(key)
                 current = cells.get(key)
                 if current is not None and priority.get(current.status, 0) > priority.get(item.status, 0):
                     continue
@@ -472,7 +560,7 @@ class DesktopController:
                     item.x,
                     item.y,
                     status=item.status,
-                    label=f"{item.x},{item.y}",
+                    label=f"{(item.y - 1) * workspace.matrix_view.matrix_width + item.x:04d}",
                     tooltip=(
                         f"Кадр ({item.x}, {item.y})\nСтатус: {item.status}\n"
                         f"SHA-256: {item.sha256}\nВерсия: {item.artifact_version_id}"
@@ -482,21 +570,38 @@ class DesktopController:
                         "artifact_version_id": item.artifact_version_id,
                     },
                 )
+        selected_representations = {
+            str(item.id): item
+            for item in self.service.list_representations(project_id, layer_id)
+            if str(item.id) in {str(value) for value in representation_ids if value}
+        }
+        managed_selected = [
+            identifier
+            for identifier, item in selected_representations.items()
+            if item.source == "managed-import"
+        ]
+        if managed_selected:
+            for y in range(1, workspace.matrix_view.matrix_height + 1):
+                for x in range(1, workspace.matrix_view.matrix_width + 1):
+                    key = (x, y)
+                    if all(
+                        key in coverage_by_representation.get(identifier, set())
+                        for identifier in managed_selected
+                    ):
+                        continue
+                    number = (y - 1) * workspace.matrix_view.matrix_width + x
+                    cells[key] = FrameCellData(
+                        x,
+                        y,
+                        status="error",
+                        label=f"{number:04d}",
+                        tooltip="Отсутствует требуемый файл",
+                        payload={"missing": True},
+                    )
         workspace.matrix_view.set_cells(cells.values())
 
     def _add_representation(self, workspace, project_id, kind: RepresentationKind) -> None:
-        from PyQt6.QtWidgets import (
-            QCheckBox,
-            QDialog,
-            QDialogButtonBox,
-            QFileDialog,
-            QFormLayout,
-            QHBoxLayout,
-            QLineEdit,
-            QMessageBox,
-            QSizePolicy,
-            QWidget,
-        )
+        from PyQt6.QtWidgets import QDialog, QMessageBox
 
         layer_id = getattr(workspace, "_selected_layer_id", None)
         if layer_id is None:
@@ -508,90 +613,48 @@ class DesktopController:
             self._error("Слой или проект больше не доступен")
             return
         label = "изображение" if kind is RepresentationKind.IMAGE else "вектор"
-        dialog = QDialog(workspace)
-        dialog.setWindowTitle(f"Добавить {label}")
-        form = QFormLayout(dialog)
-        name = QLineEdit()
-        name.setObjectName("representationName")
-        note = QLineEdit()
-        note.setObjectName("representationNote")
-        source = QLineEdit()
-        source.setObjectName("representationSource")
-        mapping_mode = QComboBox()
-        mapping_mode.addItem("Координаты <x>_<y>", ImportMappingMode.XY_FILENAME.value)
-        mapping_mode.addItem("Числовой суффикс (row-major)", ImportMappingMode.ROW_MAJOR_SUFFIX.value)
-        mapping_mode.addItem("Регулярное выражение (?P<x>…)(?P<y>…)", ImportMappingMode.REGEX.value)
-        mapping_regex = QLineEdit()
-        mapping_regex.setPlaceholderText(r"frame_(?P<x>\d+)_(?P<y>\d+)")
-        active = QCheckBox("Сделать активным")
-        active.setChecked(True)
-        form.addRow("Название", name)
-        form.addRow("Примечание", note)
-        if kind is RepresentationKind.IMAGE:
-            source_row = QWidget()
-            source_layout = QHBoxLayout(source_row)
-            source_layout.setContentsMargins(0, 0, 0, 0)
-            source_layout.addWidget(source, 1)
-            source_picker = ClickableLabel("Выбрать папку…")
-            source_picker.setObjectName("representationSourceFolderPicker")
-            source_picker.setToolTip("Открыть окно выбора папки с изображениями")
-            source_picker.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-            source_picker.setMinimumWidth(
-                source_picker.fontMetrics().horizontalAdvance(source_picker.text()) + 8
+        source_image_id = (
+            str(workspace.image_representation_combo.currentData() or "")
+            if kind is RepresentationKind.VECTOR
+            else None
+        )
+        if kind is RepresentationKind.VECTOR and not source_image_id:
+            QMessageBox.information(
+                workspace, "Kraken", "Сначала добавьте и выберите слой изображения."
             )
-            source_picker.setStyleSheet("color: #60A5FA; text-decoration: underline;")
-            source_layout.addWidget(source_picker)
-
-            def choose_source_folder() -> None:
-                directory = QFileDialog.getExistingDirectory(
-                    dialog,
-                    "Выберите папку с изображениями",
-                    source.text().strip(),
+            return
+        form = RepresentationDialog(workspace, kind)
+        while form.exec() == QDialog.DialogCode.Accepted:
+            if not form.name.text().strip():
+                QMessageBox.warning(
+                    form.dialog, f"Не удалось добавить {label}", "Введите название."
                 )
-                if directory:
-                    source.setText(directory)
-
-            source_picker.clicked.connect(choose_source_folder)
-            form.addRow("Источник", source_row)
-        else:
-            form.addRow("Источник", source)
-        form.addRow("Сопоставление кадров", mapping_mode)
-        form.addRow("Regex", mapping_regex)
-        form.addRow(active)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
-        while dialog.exec() == QDialog.DialogCode.Accepted:
-            if not name.text().strip():
-                QMessageBox.warning(dialog, f"Не удалось добавить {label}", "Введите название.")
-                name.setFocus()
+                form.name.setFocus()
                 continue
             import_plan = None
-            source_directory = source.text().strip()
+            source_directory = form.source_directory
             if source_directory:
                 try:
                     import_plan = self.service.plan_import_directory(
                         project=project,
                         directory=source_directory,
-                        mode=ImportMappingMode(str(mapping_mode.currentData())),
-                        regex=mapping_regex.text().strip() or None,
+                        mode=ImportMappingMode.ROW_MAJOR_SUFFIX,
                     )
                 except Exception as exc:
-                    QMessageBox.warning(dialog, "Ошибка preflight", str(exc))
+                    QMessageBox.warning(form.dialog, "Ошибка проверки файлов", str(exc))
                     continue
                 issue_text = "\n".join(
                     f"• {issue.message}" for issue in import_plan.issues
                 ) or "Ошибок не обнаружено"
                 if not import_plan.ready:
                     QMessageBox.warning(
-                        dialog,
+                        form.dialog,
                         "Импорт заблокирован",
                         f"Preflight не пройден:\n{issue_text}",
                     )
                     continue
                 answer = QMessageBox.question(
-                    dialog,
+                    form.dialog,
                     "Подтверждение managed import",
                     (
                         f"Файлов: {len(import_plan.items)}\n"
@@ -607,12 +670,13 @@ class DesktopController:
                     principal=self.session.principal,
                     project=project,
                     layer=layer,
-                    name=name.text(),
+                    name=form.name.text(),
                     kind=kind,
                     idempotency_key=str(uuid4()),
-                    note=note.text(),
+                    note=form.note.toPlainText(),
                     source="managed-import" if import_plan is not None else None,
-                    active=active.isChecked(),
+                    source_image_representation_id=source_image_id,
+                    active=form.active.isChecked(),
                 )
                 if import_plan is not None:
                     imported = self.service.commit_managed_import(
@@ -624,12 +688,22 @@ class DesktopController:
                         idempotency_key=str(uuid4()),
                     )
                     QMessageBox.information(
-                        dialog,
+                        form.dialog,
                         "Импорт завершён",
                         f"Создано immutable версий: {len(imported.versions)}",
                     )
+                    if import_plan.missing_coordinates:
+                        QMessageBox.warning(
+                            form.dialog,
+                            "Неполный набор файлов",
+                            (
+                                f"Не найдено файлов для кадров: "
+                                f"{import_plan.missing_coordinates:n}. "
+                                "Соответствующие ячейки отмечены красным."
+                            ),
+                        )
             except Exception as exc:
-                QMessageBox.warning(dialog, f"Не удалось добавить {label}", str(exc))
+                QMessageBox.warning(form.dialog, f"Не удалось добавить {label}", str(exc))
                 continue
             self._load_representations(workspace, project_id, layer_id)
             combo = (

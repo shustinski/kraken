@@ -111,6 +111,7 @@ class CreateRepresentationCommand:
     expected_layer_revision: int
     note: str = ""
     source: str | None = None
+    source_image_representation_id: RepresentationId | None = None
     active: bool = False
 
 

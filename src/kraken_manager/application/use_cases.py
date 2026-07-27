@@ -28,7 +28,14 @@ from kraken_manager.domain.common import (
 )
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope
 from kraken_manager.domain.identity import Permission, Principal, ProjectRole, ProjectRoleAssignment
-from kraken_manager.domain.project import Layer, Project, ProjectState, Representation, StructureState
+from kraken_manager.domain.project import (
+    Layer,
+    Project,
+    ProjectState,
+    Representation,
+    RepresentationKind,
+    StructureState,
+)
 from kraken_manager.domain.workflows import (
     ReviewComparisonReport,
     ReviewFileComparison,
@@ -279,6 +286,28 @@ class CreateRepresentationHandler(_ProjectHandler):
             existing_representations = uow.projections.list_representations(layer.id)
             if any(item.name.casefold() == command.name.strip().casefold() for item in existing_representations):
                 raise ConflictError(f"Representation name {command.name!r} already exists in the layer")
+            source_image_id = command.source_image_representation_id
+            if command.kind is RepresentationKind.VECTOR:
+                if source_image_id is None:
+                    active_images = [
+                        item
+                        for item in existing_representations
+                        if item.kind is RepresentationKind.IMAGE and item.active
+                    ]
+                    if len(active_images) == 1:
+                        source_image_id = active_images[0].id
+                source_image = next(
+                    (
+                        item
+                        for item in existing_representations
+                        if item.id == source_image_id and item.kind is RepresentationKind.IMAGE
+                    ),
+                    None,
+                )
+                if source_image_id is not None and source_image is None:
+                    raise ConflictError("A vector representation must belong to an image representation")
+            elif source_image_id is not None:
+                raise ConflictError("An image representation cannot have a parent image")
             now = self._clock.now()
             representation = Representation.create(
                 project_id=project.id,
@@ -287,13 +316,22 @@ class CreateRepresentationHandler(_ProjectHandler):
                 kind=command.kind,
                 note=command.note,
                 source=command.source,
+                source_image_representation_id=source_image_id,
                 active=command.active,
                 created_at=now,
             )
             deactivated_ids: list[str] = []
             if representation.active:
                 for previous in existing_representations:
-                    if previous.kind is representation.kind and previous.active:
+                    if (
+                        previous.kind is representation.kind
+                        and previous.active
+                        and (
+                            representation.kind is not RepresentationKind.VECTOR
+                            or previous.source_image_representation_id
+                            == representation.source_image_representation_id
+                        )
+                    ):
                         uow.projections.save_representation(previous.deactivate())
                         deactivated_ids.append(str(previous.id))
             next_layer = replace(layer, revision=layer.revision + 1)
@@ -309,6 +347,7 @@ class CreateRepresentationHandler(_ProjectHandler):
                     "kind": representation.kind.value,
                     "note": representation.note,
                     "source": representation.source,
+                    "source_image_representation_id": representation.source_image_representation_id,
                     "active": representation.active,
                     "state": representation.state.value,
                     "created_at": representation.created_at.isoformat(),
@@ -397,6 +436,9 @@ class AddArtifactVersionHandler(_ProjectHandler):
                 payload={
                     "artifact_version_id": version.id,
                     "series_id": series.id,
+                    "layer_id": series.layer_id,
+                    "representation_id": series.representation_id,
+                    "frame_id": series.frame_id,
                     "sha256": version.sha256,
                     "size_bytes": version.size_bytes,
                     "media_type": version.media_type,

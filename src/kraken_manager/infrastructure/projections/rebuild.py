@@ -198,6 +198,11 @@ class ProjectionRebuilder:
                 kind=RepresentationKind(str(payload["kind"])),
                 note=str(payload.get("note", "")),
                 source=None if payload.get("source") is None else str(payload["source"]),
+                source_image_representation_id=(
+                    None
+                    if payload.get("source_image_representation_id") is None
+                    else RepresentationId(str(payload["source_image_representation_id"]))
+                ),
                 active=bool(payload.get("active", False)),
                 state=StructureState(str(payload.get("state", "active"))),
                 revision=0,
@@ -231,6 +236,11 @@ class ProjectionRebuilder:
                     kind=RepresentationKind(str(item["kind"])),
                     note=str(item.get("note", "")),
                     source=None if item.get("source") is None else str(item["source"]),
+                    source_image_representation_id=(
+                        None
+                        if item.get("source_image_representation_id") is None
+                        else RepresentationId(str(item["source_image_representation_id"]))
+                    ),
                     active=bool(item.get("active", False)),
                     state=StructureState(str(item["state"])),
                     revision=int(item["revision"]),

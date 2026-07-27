@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from kraken_manager.presentation.qt import (
+    FrameSelection,
     LayerListItem,
     LayerListModel,
     ProjectListItem,
@@ -67,4 +68,24 @@ def test_shell_opens_lightweight_project_workspace(qapp):
     assert workspace.matrix_view.matrix_size() == (1, 1)
     assert image_requests == [True]
     assert vector_requests == [True]
+
+
+def test_workspace_uses_bottom_layer_tabs_and_status_bar_selection(qapp):
+    shell = ProjectManagerShell()
+    workspace = shell.open_project_workspace()
+    workspace.layer_model.replace_items(
+        [
+            LayerListItem("l-1", "Metal 1", "metal"),
+            LayerListItem("l-2", "Metal 2", "metal"),
+        ]
+    )
+    workspace.sync_layer_tabs()
+
+    workspace.matrix_view.set_selection(FrameSelection.single(1, 1))
+    qapp.processEvents()
+
+    assert workspace.layer_tabs.count() == 2
+    assert not workspace.add_layer_button.icon().isNull()
+    assert shell.statusBar().currentMessage() == "Выбрано кадров: 1"
+    assert shell.windowTitle() == "Kraken"
 

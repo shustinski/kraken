@@ -167,7 +167,7 @@ QToolButton {
     color: #ffffff;
     border: 1px solid #4e86ff;
     border-radius: 10px;
-    padding: 8px 16px;
+    padding: 3px;
     min-height: 30px;
     font-weight: 600;
 }

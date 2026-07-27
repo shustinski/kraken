@@ -72,6 +72,37 @@ class StatisticsReportTests(unittest.TestCase):
         self.assertEqual(1, metrics.values["unique_first_vectorized_frames"])
         self.assertEqual(("first",), metrics.event_ids_by_metric["unique_first_vectorized_frames"])
 
+    def test_repeated_stages_are_counted_per_vector_layer(self) -> None:
+        now = datetime.now(UTC)
+        records = (
+            ActivityRecord(
+                "one",
+                now,
+                "frame.vectorized",
+                "p",
+                "l",
+                representation_id="vectors-a",
+                frame_id="f",
+            ),
+            ActivityRecord(
+                "two",
+                now,
+                "frame.vectorized",
+                "p",
+                "l",
+                representation_id="vectors-a",
+                frame_id="f",
+            ),
+        )
+        filters = ReportFilters(now - timedelta(seconds=1), now + timedelta(seconds=1))
+
+        metrics = ReportService().aggregate(records, filters)
+
+        self.assertEqual(
+            {"frame.vectorized": 2},
+            metrics.by_vector_layer["vectors-a"],
+        )
+
     def test_csv_is_utf8_normalized_event_journal(self) -> None:
         now = datetime.now(UTC)
         record = ActivityRecord("событие", now, "artifact.imported", "проект", payload={"заметка": "тест"})

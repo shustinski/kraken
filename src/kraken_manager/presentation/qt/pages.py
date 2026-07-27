@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QModelIndex, Qt, pyqtSignal
+from PyQt6.QtCore import QModelIndex, QPointF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -11,8 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListView,
     QPushButton,
-    QSizePolicy,
-    QSplitter,
+    QTabBar,
     QVBoxLayout,
     QWidget,
 )
@@ -139,7 +139,7 @@ class ProjectCatalogPage(_TitledPage):
 
 
 class ProjectWorkspacePage(_TitledPage):
-    """Three-pane layer/matrix/inspector workspace ready for presenter wiring."""
+    """Matrix workspace with Excel-style layer tabs."""
 
     layerActivated = pyqtSignal(object)
     addLayerRequested = pyqtSignal()
@@ -147,6 +147,7 @@ class ProjectWorkspacePage(_TitledPage):
     addVectorRepresentationRequested = pyqtSignal()
     imageRepresentationChanged = pyqtSignal(str)
     vectorRepresentationChanged = pyqtSignal(str)
+    selectionCountChanged = pyqtSignal(int)
 
     def __init__(
         self,
@@ -155,6 +156,7 @@ class ProjectWorkspacePage(_TitledPage):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__("Проект", parent=parent)
+        self.title_label.hide()
         self.description_label.hide()
 
         representation_row = QHBoxLayout()
@@ -174,22 +176,46 @@ class ProjectWorkspacePage(_TitledPage):
         representation_row.addWidget(self.add_vector_representation_button)
         self.root_layout.addLayout(representation_row)
 
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.setObjectName("projectWorkspaceSplitter")
-        self.layer_panel = self._build_layer_panel(layer_model)
+        self.layer_model = layer_model or LayerListModel(parent=self)
         self.matrix_view = matrix_view or FrameMatrixView()
         self.matrix_view.setMinimumSize(320, 240)
-        self.inspector_panel = self._build_inspector_panel()
-        self.splitter.addWidget(self.layer_panel)
-        self.splitter.addWidget(self.matrix_view)
-        self.splitter.addWidget(self.inspector_panel)
-        self.splitter.setStretchFactor(0, 0)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([220, 720, 260])
-        self.root_layout.addWidget(self.splitter, 1)
+        self.root_layout.addWidget(self.matrix_view, 1)
 
-        self.layer_list.clicked.connect(self._activate_layer)
+        layer_row = QHBoxLayout()
+        layer_row.setContentsMargins(0, 0, 0, 0)
+        self.layer_tabs = QTabBar()
+        self.layer_tabs.setObjectName("layerTabs")
+        self.layer_tabs.setShape(QTabBar.Shape.RoundedSouth)
+        self.layer_tabs.setExpanding(False)
+        self.layer_tabs.setDrawBase(True)
+        layer_row.addWidget(self.layer_tabs, 1)
+        self.add_layer_button = QPushButton()
+        self.add_layer_button.setObjectName("addLayerButton")
+        self.add_layer_button.setToolTip("Добавить слой")
+        self.add_layer_button.setFixedSize(38, 38)
+        plus_pixmap = QPixmap(20, 20)
+        plus_pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(plus_pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#f5f9ff"), 2.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(4, 10), QPointF(16, 10))
+        painter.drawLine(QPointF(10, 4), QPointF(10, 16))
+        painter.end()
+        self.add_layer_button.setIcon(QIcon(plus_pixmap))
+        self.add_layer_button.setIconSize(plus_pixmap.size())
+        self.add_layer_button.setStyleSheet(
+            """
+            QPushButton#addLayerButton {
+                padding: 0;
+            }
+            """
+        )
+        layer_row.addWidget(self.add_layer_button)
+        self.root_layout.addLayout(layer_row)
+
+        self.layer_tabs.currentChanged.connect(self._activate_layer_tab)
         self.add_layer_button.clicked.connect(self.addLayerRequested)
         self.add_image_representation_button.clicked.connect(self.addImageRepresentationRequested)
         self.add_vector_representation_button.clicked.connect(self.addVectorRepresentationRequested)
@@ -205,49 +231,33 @@ class ProjectWorkspacePage(_TitledPage):
         )
         self.matrix_view.selectionChanged.connect(self._show_selection_summary)
 
-    def _build_layer_panel(self, model: LayerListModel | None) -> QWidget:
-        panel = QFrame()
-        panel.setObjectName("sidePanel")
-        panel.setMinimumWidth(180)
-        panel.setMaximumWidth(340)
-        layout = QVBoxLayout(panel)
-        title = QLabel("Слои")
-        title.setObjectName("panelTitle")
-        layout.addWidget(title)
-        self.layer_list = QListView()
-        self.layer_list.setObjectName("layerList")
-        self.layer_model = model or LayerListModel(parent=self)
-        self.layer_list.setModel(self.layer_model)
-        layout.addWidget(self.layer_list, 1)
-        self.add_layer_button = QPushButton("Добавить слой")
-        layout.addWidget(self.add_layer_button)
-        return panel
-
-    def _build_inspector_panel(self) -> QWidget:
-        panel = QFrame()
-        panel.setObjectName("sidePanel")
-        panel.setMinimumWidth(210)
-        panel.setMaximumWidth(380)
-        layout = QVBoxLayout(panel)
-        title = QLabel("Инспектор")
-        title.setObjectName("panelTitle")
-        layout.addWidget(title)
-        self.inspector_summary = QLabel("Выберите кадр или область")
-        self.inspector_summary.setWordWrap(True)
-        self.inspector_summary.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.inspector_summary.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Expanding,
-        )
-        layout.addWidget(self.inspector_summary, 1)
-        return panel
-
     def set_project_title(self, name: str) -> None:
-        self.title_label.setText(str(name) or "Проект")
+        project_name = str(name).strip()
+        window = self.window()
+        window.setWindowTitle(f"Kraken — {project_name}" if project_name else "Kraken")
 
     def set_layer_model(self, model: LayerListModel) -> None:
         self.layer_model = model
-        self.layer_list.setModel(model)
+        self.sync_layer_tabs()
+
+    def sync_layer_tabs(self) -> None:
+        current_id = self.layer_tabs.tabData(self.layer_tabs.currentIndex())
+        self.layer_tabs.blockSignals(True)
+        while self.layer_tabs.count():
+            self.layer_tabs.removeTab(0)
+        selected = -1
+        for row in range(self.layer_model.rowCount()):
+            item = self.layer_model.item_for_index(self.layer_model.index(row, 0))
+            if not isinstance(item, LayerListItem):
+                continue
+            index = self.layer_tabs.addTab(item.name)
+            self.layer_tabs.setTabData(index, item.layer_id)
+            self.layer_tabs.setTabToolTip(index, item.layer_type)
+            if item.layer_id == current_id:
+                selected = index
+        if self.layer_tabs.count():
+            self.layer_tabs.setCurrentIndex(max(0, selected))
+        self.layer_tabs.blockSignals(False)
 
     def set_representations(
         self,
@@ -266,20 +276,14 @@ class ProjectWorkspacePage(_TitledPage):
             combo.addItem(name, identifier)
         combo.blockSignals(False)
 
-    def _activate_layer(self, index: QModelIndex) -> None:
-        item = self.layer_model.item_for_index(index)
+    def _activate_layer_tab(self, tab_index: int) -> None:
+        layer_id = self.layer_tabs.tabData(tab_index)
+        item = self.layer_model.layer_by_id(str(layer_id or ""))
         if isinstance(item, LayerListItem):
             self.layerActivated.emit(item)
 
     def _show_selection_summary(self, selection) -> None:
-        if selection.is_empty:
-            self.inspector_summary.setText("Выберите кадр или область")
-            return
-        rectangle_count = len(selection.rectangles)
-        frame_count = sum(rectangle.frame_count for rectangle in selection.rectangles)
-        self.inspector_summary.setText(
-            f"Выбрано областей: {rectangle_count}\nКадров (до объединения): {frame_count:n}"
-        )
+        self.selectionCountChanged.emit(sum(1 for _ in selection.coordinates()))
 
 
 class _PlaceholderPage(_TitledPage):

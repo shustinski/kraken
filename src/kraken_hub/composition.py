@@ -319,6 +319,7 @@ class EmbeddedProjectService:
         idempotency_key: str,
         note: str = "",
         source: str | None = None,
+        source_image_representation_id=None,
         active: bool = False,
     ) -> Representation:
         current_layer = next((item for item in self.list_layers(project.id) if item.id == layer.id), None)
@@ -333,6 +334,7 @@ class EmbeddedProjectService:
             expected_layer_revision=current_layer.revision,
             note=note,
             source=source,
+            source_image_representation_id=source_image_representation_id,
             active=active,
         )
         return CreateRepresentationHandler(self._uow(str(project.id)), self.profiles, self.clock)(command)

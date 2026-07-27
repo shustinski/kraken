@@ -26,6 +26,7 @@ class ActivityRecord:
     project_id: str
     layer_id: str | None = None
     layer_type: str | None = None
+    representation_id: str | None = None
     frame_id: str | None = None
     actor_id: str | None = None
     performer_id: str | None = None
@@ -50,6 +51,9 @@ class ActivityRecord:
         """
 
         payload = dict(event.payload)
+        representation_snapshot = payload.get("representation")
+        if not isinstance(representation_snapshot, Mapping):
+            representation_snapshot = {}
         program = getattr(event, "program", None)
         raw_size = payload.get("size_bytes", payload.get("bytes_count", 0))
         size = raw_size if isinstance(raw_size, int) and not isinstance(raw_size, bool) else 0
@@ -58,8 +62,15 @@ class ActivityRecord:
             recorded_at=event.recorded_at,
             event_type=str(event.event_type),
             project_id=str(event.project_id),
-            layer_id=_optional_text(payload.get("layer_id")),
+            layer_id=_optional_text(
+                payload.get("layer_id") or representation_snapshot.get("layer_id")
+            ),
             layer_type=_optional_text(payload.get("layer_type")),
+            representation_id=_optional_text(
+                payload.get("representation_id")
+                or payload.get("target_representation_id")
+                or representation_snapshot.get("id")
+            ),
             frame_id=_optional_text(payload.get("frame_id")),
             actor_id=str(event.actor.principal_id),
             performer_id=_optional_text(getattr(event, "performer_id", None)),
@@ -81,6 +92,7 @@ class ReportFilters:
     project_ids: frozenset[str] = frozenset()
     layer_ids: frozenset[str] = frozenset()
     layer_types: frozenset[str] = frozenset()
+    representation_ids: frozenset[str] = frozenset()
     performer_ids: frozenset[str] = frozenset()
     actor_ids: frozenset[str] = frozenset()
     tools: frozenset[str] = frozenset()
@@ -100,6 +112,7 @@ class ReportFilters:
             (self.project_ids, item.project_id),
             (self.layer_ids, item.layer_id),
             (self.layer_types, item.layer_type),
+            (self.representation_ids, item.representation_id),
             (self.performer_ids, item.performer_id),
             (self.actor_ids, item.actor_id),
             (self.tools, item.tool),
@@ -114,6 +127,7 @@ class ReportMetrics:
     values: Mapping[str, int | float]
     by_project: Mapping[str, Mapping[str, int]]
     by_performer: Mapping[str, Mapping[str, int]]
+    by_vector_layer: Mapping[str, Mapping[str, int]]
     event_ids_by_metric: Mapping[str, tuple[str, ...]]
 
 
@@ -218,6 +232,7 @@ class _MetricsAccumulator:
         self.first_vectorization: dict[tuple[str, str, str], ActivityRecord] = {}
         self.project_counters: dict[str, Counter[str]] = defaultdict(Counter)
         self.performer_counters: dict[str, Counter[str]] = defaultdict(Counter)
+        self.vector_layer_counters: dict[str, Counter[str]] = defaultdict(Counter)
         self.imported_bytes = 0
         self.issued = 0
         self.accepted = 0
@@ -233,7 +248,11 @@ class _MetricsAccumulator:
             and item.frame_id is not None
             and item.layer_id is not None
         ):
-            key = (item.project_id, item.layer_id, item.frame_id)
+            key = (
+                item.project_id,
+                item.representation_id or item.layer_id,
+                item.frame_id,
+            )
             existing = self.first_vectorization.get(key)
             if existing is None or (item.recorded_at, item.event_id) < (existing.recorded_at, existing.event_id):
                 self.first_vectorization[key] = item
@@ -259,6 +278,10 @@ class _MetricsAccumulator:
         self.project_counters[item.project_id][item.event_type] += 1
         if item.performer_id:
             self.performer_counters[item.performer_id][item.event_type] += 1
+        if item.representation_id:
+            # Count every occurrence. A vector layer may pass the same workflow
+            # stage repeatedly and each pass remains visible in statistics.
+            self.vector_layer_counters[item.representation_id][item.event_type] += 1
         return True
 
     def finish(self) -> ReportMetrics:
@@ -292,6 +315,9 @@ class _MetricsAccumulator:
             values=values,
             by_project={key: dict(value) for key, value in self.project_counters.items()},
             by_performer={key: dict(value) for key, value in self.performer_counters.items()},
+            by_vector_layer={
+                key: dict(value) for key, value in self.vector_layer_counters.items()
+            },
             event_ids_by_metric=drill_down,
         )
 
@@ -351,6 +377,7 @@ class ReportService:
                     "project_id",
                     "layer_id",
                     "layer_type",
+                    "representation_id",
                     "frame_id",
                     "actor_id",
                     "performer_id",
@@ -368,6 +395,7 @@ class ReportService:
                     item.project_id,
                     item.layer_id or "",
                     item.layer_type or "",
+                    item.representation_id or "",
                     item.frame_id or "",
                     item.actor_id or "",
                     item.performer_id or "",
@@ -403,11 +431,24 @@ class ReportService:
         summary = workbook.create_sheet("Summary")
         projects = workbook.create_sheet("Projects")
         layers_sheet = workbook.create_sheet("Layers")
+        vector_layers_sheet = workbook.create_sheet("Vector layers")
         performers = workbook.create_sheet("Performers")
         tools_sheet = workbook.create_sheet("Tools")
         events = workbook.create_sheet("Events")
         events.append(
-            ("Event ID", "Recorded at", "Type", "Project", "Layer", "Frame", "Actor", "Performer", "Tool", "Status")
+            (
+                "Event ID",
+                "Recorded at",
+                "Type",
+                "Project",
+                "Layer",
+                "Vector layer",
+                "Frame",
+                "Actor",
+                "Performer",
+                "Tool",
+                "Status",
+            )
         )
         accumulator = _MetricsAccumulator(filters)
         layer_counters: dict[str, Counter[str]] = defaultdict(Counter)
@@ -430,6 +471,7 @@ class ReportService:
                         item.event_type,
                         item.project_id,
                         item.layer_id,
+                        item.representation_id,
                         item.frame_id,
                         item.actor_id,
                         item.performer_id,
@@ -445,6 +487,9 @@ class ReportService:
             summary.append((_safe_tabular_text(key), value))
         self._write_counter_sheet(projects, "Project", metrics.by_project)
         self._write_counter_sheet(layers_sheet, "Layer", layer_counters)
+        self._write_counter_sheet(
+            vector_layers_sheet, "Vector layer", metrics.by_vector_layer
+        )
         self._write_counter_sheet(performers, "Performer", metrics.by_performer)
         self._write_counter_sheet(tools_sheet, "Tool", tool_counters)
 

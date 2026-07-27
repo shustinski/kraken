@@ -273,6 +273,7 @@ class Representation:
     state: StructureState
     revision: int
     created_at: datetime
+    source_image_representation_id: RepresentationId | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", RepresentationId(validate_uuid(str(self.id), field="representation.id")))
@@ -290,6 +291,19 @@ class Representation:
         object.__setattr__(self, "note", self.note.strip())
         if self.source is not None:
             object.__setattr__(self, "source", require_non_empty(self.source, field="representation.source", maximum=2048))
+        if self.source_image_representation_id is not None:
+            object.__setattr__(
+                self,
+                "source_image_representation_id",
+                RepresentationId(
+                    validate_uuid(
+                        str(self.source_image_representation_id),
+                        field="representation.source_image_representation_id",
+                    )
+                ),
+            )
+        if self.kind is RepresentationKind.IMAGE and self.source_image_representation_id is not None:
+            raise DomainValidationError("an image representation cannot belong to another image")
         if not isinstance(self.active, bool):
             raise DomainValidationError("representation.active must be boolean")
         if not isinstance(self.state, StructureState):
@@ -310,6 +324,7 @@ class Representation:
         kind: RepresentationKind,
         note: str = "",
         source: str | None = None,
+        source_image_representation_id: RepresentationId | str | None = None,
         active: bool = False,
         representation_id: RepresentationId | str | None = None,
         created_at: datetime | None = None,
@@ -322,6 +337,11 @@ class Representation:
             kind=kind,
             note=note,
             source=source,
+            source_image_representation_id=(
+                None
+                if source_image_representation_id is None
+                else RepresentationId(str(source_image_representation_id))
+            ),
             active=active,
             state=StructureState.ACTIVE,
             revision=0,

@@ -60,6 +60,7 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
                 {RepresentationKind.IMAGE, RepresentationKind.VECTOR},
                 {item.kind for item in representations},
             )
+            self.assertEqual(image.id, vector.source_image_representation_id)
 
     def test_initial_account_is_created_with_identity_and_authenticated_session(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

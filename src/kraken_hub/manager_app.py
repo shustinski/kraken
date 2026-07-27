@@ -6,18 +6,21 @@ import os
 import sys
 from uuid import uuid4
 
+from kraken_core.frame_matrix import MatrixSession, ThumbnailStoreFactory
+from kraken_core.frame_matrix.qt import FrameMatrixWidget
 from kraken_core.plugins import PluginInventoryItem
 from kraken_core.qt import configure_application_identity
 from kraken_core.styles import load_shared_stylesheet
 from kraken_manager.domain.project import GridOrientation as DomainOrientation
 from kraken_manager.domain.project import LayerType, RepresentationKind
 from kraken_manager.application.imports import ImportMappingMode
-from kraken_manager.presentation.qt import ProjectManagerShell
+from kraken_manager.presentation.qt import ProjectManagerShell, ProjectWorkspacePage
 from kraken_manager.presentation.qt.models import LayerListItem, ProjectListItem
-from kraken_manager.presentation.qt.widgets import ClickableLabel, FrameCellData, GridDimensionsWidget
+from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimensionsWidget
 
 from . import windows_credentials
 from .composition import DesktopSession, EmbeddedProjectService
+from .matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
 
 
 class RepresentationDialog:
@@ -235,10 +238,18 @@ def _login(parent, service: EmbeddedProjectService) -> DesktopSession | None:
 
 
 class DesktopController:
-    def __init__(self, shell: ProjectManagerShell, service: EmbeddedProjectService, session: DesktopSession) -> None:
+    def __init__(
+        self,
+        shell: ProjectManagerShell,
+        service: EmbeddedProjectService,
+        session: DesktopSession,
+        *,
+        thumbnail_store_uri: str = "",
+    ) -> None:
         self.shell = shell
         self.service = service
         self.session = session
+        self.thumbnail_store_uri = str(thumbnail_store_uri)
         self.catalog_page = shell.page("projects")
         assert self.catalog_page is not None
         self.catalog_page.createRequested.connect(self.create_project)
@@ -403,9 +414,46 @@ class DesktopController:
             self._error("Проект больше не доступен")
             self.refresh_projects()
             return
-        workspace = self.shell.open_project_workspace()
+        cache_root = self.service.data_dir / "cache" / "frame-thumbnails"
+        store_uri = (
+            self.thumbnail_store_uri
+            or os.environ.get("KRAKEN_THUMBNAIL_STORE_URI")
+            or f"sqlite:///{cache_root.as_posix()}"
+        )
+        try:
+            thumbnail_store = ThumbnailStoreFactory().create(store_uri)
+        except Exception:
+            thumbnail_store = ThumbnailStoreFactory().create("memory://")
+        data_source = KrakenMatrixDataSource(
+            self.service,
+            project_id=str(project.id),
+            matrix_width=project.width,
+        )
+        asset_source = KrakenMatrixAssetSource(self.service, project_id=str(project.id))
+        matrix_view = FrameMatrixWidget(
+            project.width,
+            project.height,
+            project.orientation.value,
+            data_source=data_source,
+            asset_source=asset_source,
+            thumbnail_store=thumbnail_store,
+        )
+        workspace = self.shell.open_project_workspace(ProjectWorkspacePage(matrix_view=matrix_view))
+        workspace._matrix_data_source = data_source
+        workspace._matrix_asset_source = asset_source
         workspace.set_project_title(project.name)
-        workspace.matrix_view.set_matrix_size(project.width, project.height, project.orientation.value)
+        workspace.matrix_view.set_session(
+            MatrixSession(
+                namespace=str(project.id),
+                width=project.width,
+                height=project.height,
+                source_revision=str(project.revision),
+                orientation=project.orientation.value,
+                generation=0,
+            ),
+            data_source=data_source,
+            asset_source=asset_source,
+        )
         self._load_layers(workspace, project)
 
         def add_layer() -> None:
@@ -524,81 +572,40 @@ class DesktopController:
         if layer_id is None:
             workspace.matrix_view.clear_cells()
             return
-        representation_ids = (
-            workspace.image_representation_combo.currentData(),
-            workspace.vector_representation_combo.currentData(),
+        representation_ids = tuple(
+            str(value)
+            for value in (
+                workspace.image_representation_combo.currentData(),
+                workspace.vector_representation_combo.currentData(),
+            )
+            if value
         )
-        priority = {
-            "empty": 0,
-            "image_ready": 1,
-            "processing": 2,
-            "vectorized": 3,
-            "in_review": 4,
-            "returned_unchanged": 5,
-            "returned_changed": 6,
-            "approved": 7,
-            "changes_requested": 8,
-            "conflict": 9,
-            "error": 10,
-        }
-        cells: dict[tuple[int, int], FrameCellData] = {}
-        coverage_by_representation: dict[str, set[tuple[int, int]]] = {}
-        for representation_id in representation_ids:
-            if not representation_id:
-                continue
-            representation_key = str(representation_id)
-            coverage = coverage_by_representation.setdefault(representation_key, set())
-            for item in self.service.frame_cells(
-                project_id, layer_id, str(representation_id)
-            ):
-                key = (item.x, item.y)
-                coverage.add(key)
-                current = cells.get(key)
-                if current is not None and priority.get(current.status, 0) > priority.get(item.status, 0):
-                    continue
-                cells[key] = FrameCellData(
-                    item.x,
-                    item.y,
-                    status=item.status,
-                    label=f"{(item.y - 1) * workspace.matrix_view.matrix_width + item.x:04d}",
-                    tooltip=(
-                        f"Кадр ({item.x}, {item.y})\nСтатус: {item.status}\n"
-                        f"SHA-256: {item.sha256}\nВерсия: {item.artifact_version_id}"
-                    ),
-                    payload={
-                        "frame_id": item.frame_id,
-                        "artifact_version_id": item.artifact_version_id,
-                    },
-                )
-        selected_representations = {
-            str(item.id): item
-            for item in self.service.list_representations(project_id, layer_id)
-            if str(item.id) in {str(value) for value in representation_ids if value}
-        }
-        managed_selected = [
-            identifier
-            for identifier, item in selected_representations.items()
-            if item.source == "managed-import"
-        ]
-        if managed_selected:
-            for y in range(1, workspace.matrix_view.matrix_height + 1):
-                for x in range(1, workspace.matrix_view.matrix_width + 1):
-                    key = (x, y)
-                    if all(
-                        key in coverage_by_representation.get(identifier, set())
-                        for identifier in managed_selected
-                    ):
-                        continue
-                    number = (y - 1) * workspace.matrix_view.matrix_width + x
-                    cells[key] = FrameCellData(
-                        x,
-                        y,
-                        status="error",
-                        label=f"{number:04d}",
-                        tooltip="Отсутствует требуемый файл",
-                        payload={"missing": True},
-                    )
-        workspace.matrix_view.set_cells(cells.values())
+        data_source = getattr(workspace, "_matrix_data_source", None)
+        if data_source is None or not isinstance(workspace.matrix_view, FrameMatrixWidget):
+            return
+        data_source.set_context(
+            layer_id=str(layer_id),
+            representation_ids=representation_ids,
+            matrix_width=workspace.matrix_view.matrix_width,
+        )
+        project = self.service.get_project(project_id)
+        if project is None:
+            workspace.matrix_view.clear_cells()
+            return
+        previous = workspace.matrix_view.session()
+        generation = 1 if previous is None else previous.generation + 1
+        workspace.matrix_view.set_session(
+            MatrixSession(
+                namespace=str(project.id),
+                width=project.width,
+                height=project.height,
+                source_revision=f"{project.revision}:{layer_id}:{','.join(representation_ids)}",
+                orientation=project.orientation.value,
+                generation=generation,
+            ),
+            data_source=data_source,
+            asset_source=getattr(workspace, "_matrix_asset_source", None),
+        )
 
     def _add_representation(self, workspace, project_id, kind: RepresentationKind) -> None:
         from PyQt6.QtWidgets import QDialog, QMessageBox
@@ -1065,7 +1072,12 @@ def _administration_panel(service: EmbeddedProjectService):
     return host
 
 
-def run_manager_gui(items: list[PluginInventoryItem], *, update_url: str = "") -> int:
+def run_manager_gui(
+    items: list[PluginInventoryItem],
+    *,
+    update_url: str = "",
+    thumbnail_store_uri: str = "",
+) -> int:
     del update_url  # Update wiring remains available in the legacy feature flag.
     from PyQt6.QtWidgets import QApplication
 
@@ -1093,7 +1105,12 @@ def run_manager_gui(items: list[PluginInventoryItem], *, update_url: str = "") -
     administration_page = shell.page("administration")
     if administration_page is not None:
         administration_page.set_content(_administration_panel(service))
-    shell._desktop_controller = DesktopController(shell, service, session)  # keep Qt slots alive
+    shell._desktop_controller = DesktopController(  # keep Qt slots alive
+        shell,
+        service,
+        session,
+        thumbnail_store_uri=thumbnail_store_uri,
+    )
     shell.show()
     return app.exec()
 

@@ -4,12 +4,26 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtGui import QContextMenuEvent
+from PyQt6.QtCore import QBuffer, QIODevice, QPoint, QPointF, Qt
+from PyQt6.QtGui import QContextMenuEvent, QImage, QWheelEvent
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtTest import QTest
+
+from kraken_core.frame_matrix import (
+    MatrixAssetRef,
+    MatrixBounds,
+    MatrixItem,
+    MatrixSession,
+    MatrixViewportRequest,
+    MatrixViewportResult,
+)
+from kraken_core.frame_matrix.adapters.memory import MemoryThumbnailStore
+from kraken_hub.matrix_source import KrakenMatrixDataSource
 
 from kraken_manager.presentation.qt import (
     FrameCellData,
     FrameMatrixView,
+    FrameMatrixWidget,
     FrameRect,
     FrameSelection,
     GridOrientation,
@@ -95,3 +109,146 @@ def test_frame_selection_expansion_can_be_bounded():
 
     with pytest.raises(ValueError, match="more than 10"):
         tuple(selection.coordinates(maximum=10))
+
+
+def test_shared_widget_loads_only_the_visible_viewport(qapp):
+    requests = []
+
+    class Source:
+        def load_viewport(self, request, cancellation=None):
+            requests.append(request)
+            return MatrixViewportResult(
+                request,
+                items=(MatrixItem("frame-1", request.bounds.x1, request.bounds.y1, status="image_ready"),),
+                source_revision="1",
+            )
+
+    view = FrameMatrixWidget(10_000_000, 1, data_source=Source())
+    view.resize(900, 480)
+    view.show()
+    view.set_session(MatrixSession("large", 10_000_000, 1))
+    QTest.qWait(180)
+    qapp.processEvents()
+
+    assert requests
+    assert requests[-1].bounds.width < 10_000_000
+    assert view.materialized_cell_count() == 1
+
+
+def _send_wheel(view, delta, modifiers=Qt.KeyboardModifier.NoModifier):
+    position = QPointF(view.viewport().rect().center())
+    event = QWheelEvent(
+        position,
+        QPointF(view.viewport().mapToGlobal(position.toPoint())),
+        QPoint(),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        modifiers,
+        Qt.ScrollPhase.ScrollUpdate,
+        False,
+    )
+    QApplication.sendEvent(view.viewport(), event)
+
+
+def test_wheel_scrolls_and_modifier_changes_axis_or_zoom(qapp):
+    view = FrameMatrixView(100, 100)
+    view.resize(480, 320)
+    view.show()
+    view.center_on_frame(50, 50)
+    qapp.processEvents()
+
+    vertical_before = view.verticalScrollBar().value()
+    _send_wheel(view, -120)
+    assert view.verticalScrollBar().value() > vertical_before
+
+    horizontal_before = view.horizontalScrollBar().value()
+    _send_wheel(view, -120, Qt.KeyboardModifier.ShiftModifier)
+    assert view.horizontalScrollBar().value() > horizontal_before
+
+    zoom_before = view.zoom_factor()
+    _send_wheel(view, 120, Qt.KeyboardModifier.ControlModifier)
+    assert view.zoom_factor() > zoom_before
+
+
+def test_shared_widget_deduplicates_viewport_and_loads_thumbnail(qapp):
+    requests = []
+    image = QImage(8, 8, QImage.Format.Format_RGB32)
+    image.fill(Qt.GlobalColor.red)
+    output = QBuffer()
+    output.open(QIODevice.OpenModeFlag.WriteOnly)
+    assert image.save(output, "PNG")
+    thumbnail = bytes(output.data())
+
+    class Source:
+        def load_viewport(self, request, cancellation=None):
+            requests.append(request)
+            return MatrixViewportResult(
+                request,
+                items=(
+                    MatrixItem(
+                        "frame-1",
+                        1,
+                        1,
+                        status="image_ready",
+                        asset=MatrixAssetRef("asset-1", "revision-1"),
+                    ),
+                ),
+            )
+
+    class Assets:
+        def load_asset(self, reference, *, width, height, cancellation=None):
+            return thumbnail
+
+    loading = []
+    view = FrameMatrixWidget(
+        10,
+        10,
+        data_source=Source(),
+        asset_source=Assets(),
+        thumbnail_store=MemoryThumbnailStore(),
+    )
+    view.loadingChanged.connect(loading.append)
+    view.resize(480, 320)
+    view.show()
+    view.set_session(MatrixSession("thumbnail", 10, 10))
+    QTest.qWait(300)
+    qapp.processEvents()
+
+    assert len(requests) == 1
+    assert view.cell_data(1, 1).thumbnail is not None
+    assert not view.cell_data(1, 1).thumbnail.isNull()
+    assert loading == [True, False]
+
+
+def test_kraken_data_source_prefers_image_asset_over_vector_artifact():
+    class Service:
+        def matrix_viewport(self, *_args, **_kwargs):
+            return {
+                "revision": "viewport-1",
+                "cells": (
+                    {
+                        "x": 1,
+                        "y": 1,
+                        "frame_id": "frame-1",
+                        "status": "vectorized",
+                        "sha256": "vector-artifact",
+                        "artifact_version_id": "vector-version",
+                        "asset_sha256": "image-artifact",
+                        "asset_revision": "image-version",
+                    },
+                ),
+                "aggregates": (),
+            }
+
+    source = KrakenMatrixDataSource(
+        Service(),
+        project_id="project",
+        layer_id="layer",
+        representation_ids=("image", "vector"),
+    )
+    request = MatrixViewportRequest(MatrixBounds(1, 1, 1, 1))
+    result = source.load_viewport(request)
+
+    assert result.items[0].asset is not None
+    assert result.items[0].asset.source_key == "image-artifact"
+    assert result.items[0].asset.source_revision == "image-version"

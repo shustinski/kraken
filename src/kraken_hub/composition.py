@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import mimetypes
 import os
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from kraken_core.safe_files import ensure_regular_directory, open_regular_read
 
@@ -151,6 +155,7 @@ class EmbeddedProjectService:
         self.identities = LocalIdentityAclStore(self.data_dir / "identity.sqlite3")
         self.performers = LocalSQLitePerformerStore(self.data_dir / "identity.sqlite3")
         self.profile = filesystem_storage_profile(str(self.catalog_root))
+        self._external_source_indexes: dict[tuple[str, str, int], tuple[Path, ...]] = {}
         self.profiles = DesktopStorageProfiles(self.profile)
         self.clock = SystemClock()
 
@@ -693,6 +698,263 @@ class EmbeddedProjectService:
                         previous.sha256,
                     )
         return tuple(sorted(cells.values(), key=lambda item: (item.y, item.x)))
+
+    def matrix_viewport(
+        self,
+        project_id: ProjectId | str,
+        *,
+        layer_id: LayerId | str,
+        representation_ids: Iterable[RepresentationId | str],
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        lod: int = 0,
+    ) -> dict[str, Any]:
+        """Return sparse cells or aggregate buckets for a visible matrix region."""
+
+        project = self.get_project(project_id)
+        if project is None:
+            raise ValueError("Project does not exist")
+        if not (1 <= int(x1) <= int(x2) <= project.width and 1 <= int(y1) <= int(y2) <= project.height):
+            raise ValueError("Viewport is outside the project grid")
+        if int(lod) < 0 or int(lod) > 24:
+            raise ValueError("LOD must be between 0 and 24")
+
+        identifiers = tuple(str(value) for value in representation_ids if str(value))
+        representations = {
+            str(value.id): value
+            for value in self.list_representations(project.id, LayerId(str(layer_id)))
+            if str(value.id) in identifiers
+        }
+        priority = {
+            "empty": 0,
+            "image_ready": 1,
+            "processing": 2,
+            "vectorized": 3,
+            "in_review": 4,
+            "returned_unchanged": 5,
+            "returned_changed": 6,
+            "approved": 7,
+            "changes_requested": 8,
+            "conflict": 9,
+            "error": 10,
+        }
+        merged: dict[tuple[int, int], dict[str, Any]] = {}
+        coverage: dict[str, set[tuple[int, int]]] = {}
+        for identifier in identifiers:
+            current_coverage = coverage.setdefault(identifier, set())
+            representation = representations.get(identifier)
+            frame_cells = self.frame_cells(project.id, layer_id, identifier)
+            for item in frame_cells:
+                if not (x1 <= item.x <= x2 and y1 <= item.y <= y2):
+                    continue
+                coordinate = (item.x, item.y)
+                current_coverage.add(coordinate)
+                current = merged.get(coordinate)
+                image_asset = (
+                    {
+                        "asset_sha256": item.sha256,
+                        "asset_revision": item.artifact_version_id,
+                    }
+                    if representation is not None
+                    and representation.kind is RepresentationKind.IMAGE
+                    and item.sha256
+                    else {}
+                )
+                if current is not None and priority.get(str(current["status"]), 0) > priority.get(item.status, 0):
+                    current.update(image_asset)
+                    continue
+                replacement = {
+                    "artifact_version_id": item.artifact_version_id,
+                    "frame_id": item.frame_id,
+                    "sha256": item.sha256,
+                    "status": item.status,
+                    "x": item.x,
+                    "y": item.y,
+                }
+                if current is not None:
+                    for field in ("asset_sha256", "asset_revision"):
+                        if field in current:
+                            replacement[field] = current[field]
+                replacement.update(image_asset)
+                merged[coordinate] = replacement
+            if (
+                not frame_cells
+                and representation is not None
+                and representation.kind is RepresentationKind.IMAGE
+                and representation.source
+                and representation.source != "managed-import"
+            ):
+                for cell in self._external_directory_viewport(
+                    project,
+                    representation,
+                    x1=int(x1),
+                    y1=int(y1),
+                    x2=int(x2),
+                    y2=int(y2),
+                ):
+                    coordinate = (int(cell["x"]), int(cell["y"]))
+                    current_coverage.add(coordinate)
+                    current = merged.get(coordinate)
+                    if current is None:
+                        merged[coordinate] = cell
+                    else:
+                        current.update(
+                            {
+                                field: cell[field]
+                                for field in (
+                                    "asset_source_key",
+                                    "asset_revision",
+                                    "asset_path",
+                                    "asset_media_type",
+                                )
+                            }
+                        )
+
+        managed = {
+            identifier
+            for identifier, representation in representations.items()
+            if representation.source == "managed-import"
+        }
+        if int(lod) == 0 and managed:
+            for y in range(int(y1), int(y2) + 1):
+                for x in range(int(x1), int(x2) + 1):
+                    coordinate = (x, y)
+                    if all(coordinate in coverage.get(identifier, set()) for identifier in managed):
+                        continue
+                    merged[coordinate] = {
+                        "artifact_version_id": "",
+                        "frame_id": "",
+                        "sha256": "",
+                        "status": "error",
+                        "missing": True,
+                        "x": x,
+                        "y": y,
+                    }
+
+        revision = str(self._projection(project.id).checkpoint)
+        if int(lod) == 0:
+            return {
+                "project_id": str(project.id),
+                "layer_id": str(layer_id),
+                "bounds": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                "lod": 0,
+                "revision": revision,
+                "cells": tuple(sorted(merged.values(), key=lambda value: (value["y"], value["x"]))),
+                "aggregates": (),
+            }
+
+        span = 1 << int(lod)
+        buckets: dict[tuple[int, int], dict[str, Any]] = {}
+        for cell in merged.values():
+            bucket_x = (int(cell["x"]) - 1) // span
+            bucket_y = (int(cell["y"]) - 1) // span
+            bucket = buckets.setdefault(
+                (bucket_x, bucket_y),
+                {
+                    "bounds": {
+                        "x1": bucket_x * span + 1,
+                        "y1": bucket_y * span + 1,
+                        "x2": min(project.width, (bucket_x + 1) * span),
+                        "y2": min(project.height, (bucket_y + 1) * span),
+                    },
+                    "materialized_count": 0,
+                    "status_counts": {},
+                },
+            )
+            bucket["materialized_count"] += 1
+            status = str(cell["status"])
+            bucket["status_counts"][status] = int(bucket["status_counts"].get(status, 0)) + 1
+        return {
+            "project_id": str(project.id),
+            "layer_id": str(layer_id),
+            "bounds": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+            "lod": int(lod),
+            "revision": revision,
+            "cells": (),
+            "aggregates": tuple(buckets[key] for key in sorted(buckets, key=lambda value: (value[1], value[0]))),
+        }
+
+    @staticmethod
+    def _natural_path_key(path: Path) -> tuple[object, ...]:
+        return tuple(
+            int(part) if part.isdigit() else part.casefold()
+            for part in re.split(r"(\d+)", path.name)
+        )
+
+    def _external_directory_viewport(
+        self,
+        project: Project,
+        representation: Representation,
+        *,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+    ) -> tuple[dict[str, Any], ...]:
+        """Read legacy explicit-directory representations without importing them."""
+
+        try:
+            root = ensure_regular_directory(representation.source)
+            directory_revision = root.stat().st_mtime_ns
+        except (OSError, ValueError):
+            return ()
+        cache_key = (str(representation.id), str(root), directory_revision)
+        paths = self._external_source_indexes.get(cache_key)
+        if paths is None:
+            paths = tuple(
+                sorted(
+                    (
+                        path
+                        for path in root.iterdir()
+                        if path.is_file()
+                        and (mimetypes.guess_type(path.name)[0] or "").startswith("image/")
+                    ),
+                    key=self._natural_path_key,
+                )
+            )
+            self._external_source_indexes = {
+                key: value
+                for key, value in self._external_source_indexes.items()
+                if key[0] != str(representation.id)
+            }
+            self._external_source_indexes[cache_key] = paths
+
+        cells: list[dict[str, Any]] = []
+        first_index = (y1 - 1) * project.width + (x1 - 1)
+        last_index = min(len(paths), (y2 - 1) * project.width + x2)
+        for index in range(first_index, last_index):
+            x = index % project.width + 1
+            y = index // project.width + 1
+            if not (x1 <= x <= x2 and y1 <= y <= y2):
+                continue
+            path = paths[index]
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            normalized_path = str(path.resolve())
+            cells.append(
+                {
+                    "artifact_version_id": "",
+                    "frame_id": str(project.frame_id_at(x, y)),
+                    "sha256": "",
+                    "status": "image_ready",
+                    "x": x,
+                    "y": y,
+                    "asset_source_key": hashlib.sha256(
+                        normalized_path.encode("utf-8")
+                    ).hexdigest(),
+                    "asset_revision": f"{stat.st_mtime_ns}:{stat.st_size}",
+                    "asset_path": normalized_path,
+                    "asset_media_type": mimetypes.guess_type(path.name)[0] or "image/*",
+                }
+            )
+        return tuple(cells)
+
+    def read_project_blob(self, project_id: ProjectId | str, sha256: str) -> bytes:
+        return FilesystemBlobStore.for_project(self.catalog_root, str(project_id)).read(sha256)
 
     def history(self, project_id: ProjectId | str, *, as_of: datetime | None = None) -> tuple[object, ...]:
         store = FilesystemEventStore(self.catalog_root, str(project_id))

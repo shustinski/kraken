@@ -273,12 +273,21 @@ def run_legacy_gui(items: list[PluginInventoryItem], *, update_url: str = "") ->
     return app.exec()
 
 
-def run_gui(items: list[PluginInventoryItem], *, update_url: str = "") -> int:
+def run_gui(
+    items: list[PluginInventoryItem],
+    *,
+    update_url: str = "",
+    thumbnail_store_uri: str = "",
+) -> int:
     """Launch the project manager while retaining the old launcher by flag."""
 
     from .manager_app import run_manager_gui
 
-    return run_manager_gui(items, update_url=update_url)
+    return run_manager_gui(
+        items,
+        update_url=update_url,
+        thumbnail_store_uri=thumbnail_store_uri,
+    )
 
 
 def format_version_history(plugin: PluginMetadata) -> str:
@@ -311,6 +320,10 @@ def main(argv: list[str] | None = None) -> None:
         help="URL or local path of the Kraken Hub update manifest (also KRAKEN_UPDATE_URL).",
     )
     parser.add_argument("--legacy-launcher", action="store_true", help="Open the deprecated standalone plugin hub.")
+    parser.add_argument(
+        "--thumbnail-store-uri",
+        help="Thumbnail cache backend: sqlite:///path, files:///path or memory://.",
+    )
     args = parser.parse_args(argv)
     catalog = discover_catalog(args.catalog)
     plugins_dir = Path(args.plugins_dir).expanduser().resolve() if args.plugins_dir else default_plugins_dir()
@@ -319,5 +332,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.list:
         print_inventory(inventory)
         return
-    launcher = run_legacy_gui if args.legacy_launcher else run_gui
-    raise SystemExit(launcher(inventory, update_url=args.update_url or ""))
+    if args.legacy_launcher:
+        raise SystemExit(run_legacy_gui(inventory, update_url=args.update_url or ""))
+    raise SystemExit(
+        run_gui(
+            inventory,
+            update_url=args.update_url or "",
+            thumbnail_store_uri=args.thumbnail_store_uri or "",
+        )
+    )

@@ -534,6 +534,7 @@ class InMemoryServerServices:
             "layer_id": layer_id,
             "bounds": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
             "lod": lod,
+            "revision": str(project["revision"]),
             "cells": [],
             "aggregates": [],
         }

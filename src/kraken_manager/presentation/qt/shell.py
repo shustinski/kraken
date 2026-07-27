@@ -132,6 +132,7 @@ class ProjectManagerShell(QMainWindow):
         stack_index = self.page_stack.indexOf(previous)
         was_current = self.page_stack.currentWidget() is previous
         self.page_stack.removeWidget(previous)
+        previous.close()
         previous.setParent(None)
         self.page_stack.insertWidget(stack_index, page)
         self._pages[key] = page

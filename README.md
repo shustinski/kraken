@@ -139,6 +139,10 @@ canonical backup/restore bundles. Managed files are copied into the immutable
 SHA-256 BlobStore; a source folder is never treated as the authoritative
 project state.
 
+The project workspace uses the shared virtualized frame matrix. Its thumbnail
+cache is storage-neutral and supports `sqlite://`, `files://`, and `memory://`
+adapters; see [`docs/frame-matrix.md`](docs/frame-matrix.md).
+
 Shared mutations under `/api/v1` require `Idempotency-Key`, optimistic
 `If-Match`, a GitLab principal and a live GitLab `userinfo` check. Project,
 layer, representation and ACL lifecycle changes all emit versioned audit

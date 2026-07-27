@@ -57,6 +57,10 @@ postgresql = "kraken_manager.infrastructure.postgres.registration:backend_regist
 [project.entry-points."kraken.blob_backends"]
 filesystem = "kraken_manager.infrastructure.blob.registration:blob_registration"
 
+[project.entry-points."kraken.thumbnail_stores"]
+files = "kraken_core.frame_matrix.adapters.filesystem:FilesystemThumbnailStore"
+sqlite = "kraken_core.frame_matrix.adapters.sqlite:ShardedSQLiteThumbnailStore"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["kraken_core*", "kraken_hub*", "kraken_manager*", "kraken_server*", "kraken_agent*"]

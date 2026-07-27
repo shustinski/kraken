@@ -14,6 +14,60 @@ from kraken_manager.infrastructure.filesystem import LocalProjectUnitOfWorkFacto
 
 
 class EmbeddedProjectServiceTests(unittest.TestCase):
+    def test_legacy_directory_representation_provides_viewport_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "images"
+            source.mkdir()
+            for index in range(4):
+                (source / f"{index:04d}.jpg").write_bytes(f"image-{index}".encode())
+
+            service = EmbeddedProjectService(root / "data")
+            session = service.create_initial_account("operator", "Operator", "")
+            project = service.create_project(
+                principal=session.principal,
+                name="External images",
+                width=2,
+                height=2,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="project",
+            )
+            layer = service.create_layer(
+                principal=session.principal,
+                project=project,
+                name="Metal",
+                layer_type=LayerType.METAL,
+                order=1,
+                idempotency_key="layer",
+            )
+            representation = service.create_representation(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                name="Legacy",
+                kind=RepresentationKind.IMAGE,
+                idempotency_key="representation",
+                source=str(source),
+                active=True,
+            )
+
+            viewport = service.matrix_viewport(
+                project.id,
+                layer_id=layer.id,
+                representation_ids=(representation.id,),
+                x1=1,
+                y1=1,
+                x2=2,
+                y2=2,
+            )
+
+            self.assertEqual(4, len(viewport["cells"]))
+            self.assertEqual(
+                tuple(str(source / f"{index:04d}.jpg") for index in range(4)),
+                tuple(cell["asset_path"] for cell in viewport["cells"]),
+            )
+            self.assertTrue(all(cell["asset_source_key"] for cell in viewport["cells"]))
+
     def test_image_and_vector_representations_can_be_added_to_a_layer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             service = EmbeddedProjectService(Path(temporary))
@@ -313,6 +367,37 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
                 ((1, 1, "image_ready"), (2, 1, "image_ready")),
                 tuple((cell.x, cell.y, cell.status) for cell in cells),
             )
+            detailed_viewport = service.matrix_viewport(
+                project.id,
+                layer_id=layer.id,
+                representation_ids=(representation.id,),
+                x1=1,
+                y1=1,
+                x2=2,
+                y2=2,
+                lod=0,
+            )
+            aggregate_viewport = service.matrix_viewport(
+                project.id,
+                layer_id=layer.id,
+                representation_ids=(representation.id,),
+                x1=1,
+                y1=1,
+                x2=2,
+                y2=2,
+                lod=1,
+            )
+            self.assertEqual(2, len(detailed_viewport["cells"]))
+            self.assertEqual("image_ready", detailed_viewport["cells"][0]["status"])
+            self.assertEqual(
+                imported.versions[0].sha256,
+                detailed_viewport["cells"][0]["asset_sha256"],
+            )
+            self.assertEqual(
+                {"image_ready": 2},
+                aggregate_viewport["aggregates"][0]["status_counts"],
+            )
+            self.assertTrue(detailed_viewport["revision"])
             projection = service._projection(project.id)
             for item, version in zip(plan.items, imported.versions, strict=True):
                 series_id = deterministic_frame_series_id(

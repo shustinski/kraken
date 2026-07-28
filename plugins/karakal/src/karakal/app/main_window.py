@@ -1,7 +1,7 @@
 """Main window for the extended validation gradient widget."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QActionGroup, QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -39,6 +39,13 @@ from PyQt6.QtWidgets import (
 from updater.qt import QtUpdateController
 
 from ..infra.services import KarakalSettingsService
+from ..updater import (
+    QtUpdateController,
+    create_karakal_update_controller,
+    load_karakal_update_channel,
+    load_karakal_update_client_config,
+    save_karakal_update_channel,
+)
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
 from ..core.domain import BuildResult
 from ..ui.app_icon import apply_karakal_icon
@@ -449,6 +456,8 @@ class KarakalWidget(QWidget):
         self._presenter._restore_persisted_state()
         self._presenter._refresh_folder_rows()
         self._presenter._sync_action_buttons()
+        if self._update_controller is not None:
+            QTimer.singleShot(1500, lambda: self._update_controller.check_for_updates(manual=False))
 
     def _build_ui(self) -> None:
         root_layout = QVBoxLayout(self)
@@ -826,6 +835,14 @@ class KarakalWidget(QWidget):
         self.mode_toggle_button.setMenu(self._mode_menu)
         self._mode_menu.triggered.connect(self._on_mode_menu_triggered)
 
+        self.update_tool_button = QToolButton(self._menu_bar)
+        self.update_tool_button.setAutoRaise(True)
+        self.update_tool_button.setObjectName("updateToolButton")
+        self.update_tool_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_tool_button.setText("Update")
+        self.update_tool_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.update_tool_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+
         self.language_toggle_button = QToolButton(self._menu_bar)
         self.language_toggle_button.setAutoRaise(True)
         self.language_toggle_button.setObjectName(EXTEND_LANGUAGE_BUTTON_OBJECT_NAME)
@@ -835,6 +852,7 @@ class KarakalWidget(QWidget):
         top_corner_layout.setContentsMargins(0, 0, 0, 0)
         top_corner_layout.setSpacing(4)
         top_corner_layout.addWidget(self.mode_toggle_button)
+        top_corner_layout.addWidget(self.update_tool_button)
         top_corner_layout.addWidget(self.language_toggle_button)
         self._update_language_toggle_button()
         self._rebuild_mode_menu()
@@ -1057,6 +1075,42 @@ class KarakalWidget(QWidget):
             submenu_title="Update" if self._i18n.language == "en" else "Обновление",
         )
         self._menu_bar.setCornerWidget(self._top_corner_widget, Qt.Corner.TopRightCorner)
+        self._setup_update_menu()
+
+    def _setup_update_menu(self) -> None:
+        if self._update_controller is None:
+            self._update_controller = create_karakal_update_controller(self)
+        config = load_karakal_update_client_config()
+        selected_channel = load_karakal_update_channel(config)
+        self._update_menu = QMenu(self.update_tool_button)
+        self._update_channel_menu = QMenu("Channel", self._update_menu)
+        self._update_channel_action_group = QActionGroup(self._update_channel_menu)
+        self._update_channel_action_group.setExclusive(True)
+        channel_labels = {
+            "stable": "Stable",
+            "beta": "Beta",
+        }
+        for channel in config.available_channels:
+            normalized_channel = str(channel or "").strip().lower()
+            action = self._update_channel_menu.addAction(
+                channel_labels.get(normalized_channel, normalized_channel or "stable")
+            )
+            action.setCheckable(True)
+            action.setData(normalized_channel)
+            action.setChecked(normalized_channel == selected_channel)
+            self._update_channel_action_group.addAction(action)
+        self._update_channel_action_group.triggered.connect(self._on_update_channel_triggered)
+        self._update_menu.addMenu(self._update_channel_menu)
+        self._check_updates_action = self._update_menu.addAction("Check for updates")
+        self._check_updates_action.triggered.connect(
+            lambda _checked=False: self._update_controller.check_for_updates(manual=True)
+        )
+        self.update_tool_button.setMenu(self._update_menu)
+
+    def _on_update_channel_triggered(self, action) -> None:
+        channel = str(action.data() or "").strip().lower()
+        if channel:
+            save_karakal_update_channel(channel)
 
     def _rebuild_mode_menu(self) -> None:
         self._mode_menu.clear()
@@ -2045,6 +2099,3 @@ class KarakalMainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._widget.shutdown()
         super().closeEvent(event)
-
-
-

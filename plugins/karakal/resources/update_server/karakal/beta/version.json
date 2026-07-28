@@ -1,0 +1,6 @@
+{
+  "version": "1.1.0-beta.1",
+  "channel": "beta",
+  "download_url": "http://127.0.0.1:8080/karakal/beta/Karakal-setup-1.1.0-beta.1.exe",
+  "release_notes_markdown": "## Karakal 1.1.0 beta 1\n\n- Test beta update manifest.\n- Replace this text with beta release notes before publication."
+}

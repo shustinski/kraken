@@ -10,6 +10,7 @@ a = Analysis(
         ('src\\karakal\\resources\\icons\\karakal_light.png', 'karakal/resources/icons'),
         ('src\\karakal\\resources\\icons\\karakal.ico', 'karakal/resources/icons'),
         ('src\\karakal\\resources\\icons\\karakal.png', 'karakal/resources/icons'),
+        ('resources\\update_client.json', 'resources'),
     ],
     hiddenimports=[],
     hookspath=[],

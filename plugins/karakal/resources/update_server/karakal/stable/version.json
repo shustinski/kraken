@@ -1,0 +1,6 @@
+{
+  "version": "1.0.1",
+  "channel": "stable",
+  "download_url": "http://127.0.0.1:8080/karakal/stable/Karakal-setup-1.0.1.exe",
+  "release_notes_markdown": "## Karakal 1.0.1\n\n- Test stable update manifest.\n- Replace this text with stable release notes before publication."
+}

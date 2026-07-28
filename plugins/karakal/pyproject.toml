@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "karakal"
-version = "0.0.0"
+version = "1.0.0"
 description = "Kraken Qt plugin for frame-matrix validation, model comparison, and cell-defect inspection."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -26,6 +26,8 @@ build = [
     "build>=1.2",
     "pyinstaller>=6.0",
 ]
+[tool.uv.sources]
+kraken = { workspace = true }
 
 [tool.uv.sources]
 kraken = { workspace = true }

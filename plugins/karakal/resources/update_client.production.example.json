@@ -1,0 +1,7 @@
+{
+  "default_channel": "stable",
+  "channels": {
+    "stable": "https://your-server.example.com/karakal/stable/version.json",
+    "beta": "https://your-server.example.com/karakal/beta/version.json"
+  }
+}

@@ -18,6 +18,8 @@ from kraken_manager.application import (
     CreateProjectHandler,
     CreateRepresentationCommand,
     CreateRepresentationHandler,
+    ReorderLayersCommand,
+    ReorderLayersHandler,
     ReturnedFileDigest,
     ReviewReturnComparator,
     StorageBackendKind,
@@ -291,6 +293,57 @@ class AuthorizationPolicyTests(unittest.TestCase):
 
 
 class CommandHandlerTests(unittest.TestCase):
+    def test_complete_layer_order_is_atomic_and_checks_every_revision(self) -> None:
+        actor = Principal.local(subject="alice", display_name="Alice")
+        local = profile(StorageScope.LOCAL, profile_id="local")
+        profiles = FakeProfiles(local)
+        factory = FakeUowFactory()
+        common = (factory, profiles, FakeClock())
+        project = CreateProjectHandler(*common)(
+            CreateProjectCommand(
+                context=CommandContext(actor=actor, idempotency_key="project"),
+                name="Chip",
+                width=2,
+                height=2,
+                orientation=GridOrientation.Y_DOWN,
+                storage_profile_id="local",
+                project_id=ProjectId(str(uuid4())),
+            )
+        )
+        first = CreateLayerHandler(*common)(
+            CreateLayerCommand(
+                context=CommandContext(actor=actor, idempotency_key="layer-1"),
+                project_id=project.id,
+                name="One",
+                type=LayerType.METAL,
+                order=0,
+                expected_project_revision=project.revision,
+            )
+        )
+        project = factory.uow.projections.get_project(project.id)
+        second = CreateLayerHandler(*common)(
+            CreateLayerCommand(
+                context=CommandContext(actor=actor, idempotency_key="layer-2"),
+                project_id=project.id,
+                name="Two",
+                type=LayerType.GATE,
+                order=1,
+                expected_project_revision=project.revision,
+            )
+        )
+        reordered = ReorderLayersHandler(*common)(
+            ReorderLayersCommand(
+                context=CommandContext(actor=actor, idempotency_key="reorder-all"),
+                project_id=project.id,
+                layer_ids=(second.id, first.id),
+                expected_revisions=((first.id, first.revision), (second.id, second.revision)),
+            )
+        )
+
+        self.assertEqual([item.id for item in reordered], [second.id, first.id])
+        self.assertEqual([item.order for item in reordered], [0, 1])
+        self.assertEqual(factory.uow.commits, 4)
+
     def test_local_vertical_slice_creates_structure_and_immutable_artifact(self) -> None:
         actor = Principal.local(subject="alice", display_name="Alice")
         local = profile(StorageScope.LOCAL, profile_id="local")

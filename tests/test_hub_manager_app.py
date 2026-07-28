@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -10,6 +13,11 @@ from kraken_hub import windows_credentials
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_hub.manager_app import DesktopController, _development_session, _login
 from kraken_manager.domain.project import RepresentationKind
+from kraken_manager.presentation.qt import (
+    LayerPipelineSnapshot,
+    PipelineLane,
+    PipelineNode,
+)
 from kraken_manager.presentation.qt.widgets import ClickableLabel
 
 
@@ -150,3 +158,86 @@ def test_image_representation_source_picker_fills_selected_folder(qapp, monkeypa
     monkeypatch.setattr(QDialog, "exec", use_picker_and_cancel)
 
     controller._add_representation(workspace, "project-1", RepresentationKind.IMAGE)
+
+
+def test_external_cif_import_uses_source_from_clicked_pipeline_lane(monkeypatch) -> None:
+    controller = object.__new__(DesktopController)
+    controller._workspace = object()
+    controller._project_id = "project-1"
+    missing = PipelineNode("missing-cif", "CIF не получен", "missing")
+    controller._pipeline_snapshot = lambda *_args: LayerPipelineSnapshot(
+        "project-1",
+        "layer-1",
+        (
+            PipelineLane(
+                "source-representation-2",
+                "Source 2",
+                (
+                    PipelineNode("source-representation-2", "Source 2", "source"),
+                    missing,
+                ),
+                (("source-representation-2", "missing-cif"),),
+            ),
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(
+        controller,
+        "_add_representation",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    controller._layer_manager_action("layer-1", missing, "add_external_vector")
+
+    assert calls
+    assert calls[0][0][2] is RepresentationKind.VECTOR
+    assert calls[0][1]["source_image_id"] == "source-representation-2"
+
+
+def test_contour_vectorize_receives_staged_base_layer_path(tmp_path: Path) -> None:
+    representation = SimpleNamespace(
+        id="binary-representation-1",
+        kind=RepresentationKind.IMAGE,
+        source="managed-import",
+    )
+
+    class ServiceStub:
+        data_dir = tmp_path
+
+        @staticmethod
+        def list_representations(_project_id, _layer_id):
+            return (representation,)
+
+        @staticmethod
+        def frame_cells(_project_id, _layer_id, _representation_id):
+            return (
+                SimpleNamespace(x=3, y=4, sha256="a" * 64),
+            )
+
+        @staticmethod
+        def read_project_blob(_project_id, _sha256):
+            return b"image"
+
+    controller = object.__new__(DesktopController)
+    controller.service = ServiceStub()
+    controller._project_id = "project-1"
+    node = PipelineNode(
+        "binary-representation-1",
+        "Binary",
+        "binary",
+        representation_id="binary-representation-1",
+    )
+
+    arguments, parameters = controller._contour_launch_arguments(
+        layer_id="layer-1",
+        node=node,
+        action="vectorize",
+        source_representation_id="source-representation-1",
+    )
+
+    input_directory = Path(arguments[arguments.index("--input-dir") + 1])
+    output_directory = Path(arguments[arguments.index("--output-dir") + 1])
+    assert input_directory.is_dir()
+    assert (input_directory / "3_4.png").read_bytes() == b"image"
+    assert output_directory.is_dir()
+    assert parameters["input_representation_id"] == "binary-representation-1"

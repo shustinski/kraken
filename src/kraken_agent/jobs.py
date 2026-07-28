@@ -7,7 +7,6 @@ into an authoritative project is an application-service responsibility.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 import sqlite3
@@ -19,7 +18,15 @@ from pathlib import Path
 from contextlib import contextmanager
 from typing import Iterable, Iterator
 
-from kraken_core.plugin_protocol import PluginJobManifest, PluginResultManifest, safe_relative_path
+from kraken_core.plugin_protocol import (
+    PluginJobManifest,
+    PluginJobManifestV2,
+    PluginResultManifest,
+    PluginResultPublicationV2,
+    parse_plugin_job_json,
+    parse_plugin_result_json,
+    safe_relative_path,
+)
 from kraken_core.safe_files import (
     UnsafeFilesystemPath,
     contained_path,
@@ -111,12 +118,12 @@ class AgentJob:
     error: str | None = None
 
     @property
-    def manifest(self) -> PluginJobManifest:
-        return PluginJobManifest.from_json(self.manifest_json)
+    def manifest(self) -> PluginJobManifest | PluginJobManifestV2:
+        return parse_plugin_job_json(self.manifest_json)
 
     @property
-    def result(self) -> PluginResultManifest | None:
-        return None if self.result_json is None else PluginResultManifest.from_json(self.result_json)
+    def result(self) -> PluginResultManifest | PluginResultPublicationV2 | None:
+        return None if self.result_json is None else parse_plugin_result_json(self.result_json)
 
 
 def _utc_now() -> str:
@@ -167,6 +174,15 @@ class DurableJobStore:
                     received_at TEXT NOT NULL,
                     PRIMARY KEY(job_id, callback_key)
                 );
+                CREATE TABLE IF NOT EXISTS publications (
+                    job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+                    publication_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    PRIMARY KEY(job_id, publication_id),
+                    UNIQUE(job_id, sequence)
+                );
                 """
             )
 
@@ -183,7 +199,7 @@ class DurableJobStore:
             error=row["error"],
         )
 
-    def enqueue(self, manifest: PluginJobManifest) -> AgentJob:
+    def enqueue(self, manifest: PluginJobManifest | PluginJobManifestV2) -> AgentJob:
         now = _utc_now()
         canonical = manifest.to_json()
         with self._lock, self._connect() as connection:
@@ -256,7 +272,7 @@ class DurableJobStore:
 
     def record_result(
         self,
-        result: PluginResultManifest,
+        result: PluginResultManifest | PluginResultPublicationV2,
         *,
         callback_key: str,
         expected_revision: int,
@@ -284,16 +300,48 @@ class DurableJobStore:
             if int(row["revision"]) != expected_revision:
                 connection.rollback()
                 raise JobStateError(f"Expected revision {expected_revision}, found {row['revision']}")
+            if isinstance(result, PluginResultPublicationV2):
+                existing_sequence = connection.execute(
+                    "SELECT publication_id FROM publications WHERE job_id=? AND sequence=?",
+                    (result.job_id, result.sequence),
+                ).fetchone()
+                if existing_sequence is not None:
+                    connection.rollback()
+                    raise DuplicateCallbackError(
+                        "Publication sequence was reused with another publication ID"
+                    )
             connection.execute(
                 "INSERT INTO callbacks VALUES (?, ?, ?, ?)",
                 (result.job_id, callback_key, payload_hash, _utc_now()),
             )
+            if isinstance(result, PluginResultPublicationV2):
+                connection.execute(
+                    "INSERT INTO publications VALUES (?, ?, ?, ?, ?)",
+                    (
+                        result.job_id,
+                        result.publication_id,
+                        result.sequence,
+                        payload,
+                        _utc_now(),
+                    ),
+                )
             connection.execute(
                 "UPDATE jobs SET result_json=?, updated_at=?, revision=revision+1 WHERE job_id=?",
                 (payload, _utc_now(), result.job_id),
             )
             connection.commit()
         return self.get(result.job_id), False
+
+    def list_publications(self, job_id: str) -> tuple[PluginResultPublicationV2, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM publications WHERE job_id=? ORDER BY sequence",
+                (job_id,),
+            ).fetchall()
+        return tuple(
+            PluginResultPublicationV2.from_json(str(row["payload_json"]))
+            for row in rows
+        )
 
     def recover_interrupted(self) -> int:
         """Mark jobs that cannot safely continue without operator inspection."""
@@ -357,7 +405,7 @@ class StagingWorkspace:
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def write_manifest(self, manifest: PluginJobManifest) -> Path:
+    def write_manifest(self, manifest: PluginJobManifest | PluginJobManifestV2) -> Path:
         self.create()
         destination = self.path / "job.json"
         temporary = destination.with_suffix(".tmp")
@@ -389,7 +437,7 @@ class StagingWorkspace:
         contained_path(self.path, tuple(normalized.split("/")))
         return destination
 
-    def verify_result(self, result: PluginResultManifest) -> None:
+    def verify_result(self, result: PluginResultManifest | PluginResultPublicationV2) -> None:
         seen: set[Path] = set()
         for output in result.outputs:
             normalized = safe_relative_path(output.relative_path)

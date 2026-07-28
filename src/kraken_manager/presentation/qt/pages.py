@@ -159,22 +159,23 @@ class ProjectWorkspacePage(_TitledPage):
         self.title_label.hide()
         self.description_label.hide()
 
-        representation_row = QHBoxLayout()
-        representation_row.addWidget(QLabel("Изображения:"))
-        self.image_representation_combo = QComboBox()
+        self.image_representation_combo = QComboBox(self)
         self.image_representation_combo.setObjectName("imageRepresentationCombo")
-        representation_row.addWidget(self.image_representation_combo, 1)
-        self.add_image_representation_button = QPushButton("Добавить")
+        self.add_image_representation_button = QPushButton("Добавить", self)
         self.add_image_representation_button.setObjectName("addImageRepresentationButton")
-        representation_row.addWidget(self.add_image_representation_button)
-        representation_row.addWidget(QLabel("Векторы:"))
-        self.vector_representation_combo = QComboBox()
+        self.vector_representation_combo = QComboBox(self)
         self.vector_representation_combo.setObjectName("vectorRepresentationCombo")
-        representation_row.addWidget(self.vector_representation_combo, 1)
-        self.add_vector_representation_button = QPushButton("Добавить")
+        self.add_vector_representation_button = QPushButton("Добавить", self)
         self.add_vector_representation_button.setObjectName("addVectorRepresentationButton")
-        representation_row.addWidget(self.add_vector_representation_button)
-        self.root_layout.addLayout(representation_row)
+        # Compatibility controls remain alive for older automation, but
+        # representation selection now lives in the modeless layer manager.
+        for compatibility_control in (
+            self.image_representation_combo,
+            self.add_image_representation_button,
+            self.vector_representation_combo,
+            self.add_vector_representation_button,
+        ):
+            compatibility_control.hide()
 
         self.layer_model = layer_model or LayerListModel(parent=self)
         matrix_toolbar = QHBoxLayout()

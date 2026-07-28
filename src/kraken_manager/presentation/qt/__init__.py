@@ -1,6 +1,12 @@
 """PyQt6 presentation components for Kraken Project Manager."""
 
 from .models import LayerListItem, LayerListModel, ProjectListItem, ProjectListModel
+from .layer_management import (
+    LayerManagerDialog,
+    LayerPipelineSnapshot,
+    PipelineLane,
+    PipelineNode,
+)
 from .pages import (
     AdministrationPage,
     MyWorkPage,
@@ -37,6 +43,8 @@ __all__ = [
     "GridOrientation",
     "LayerListItem",
     "LayerListModel",
+    "LayerManagerDialog",
+    "LayerPipelineSnapshot",
     "MatrixLod",
     "MyWorkPage",
     "PerformersPage",
@@ -46,6 +54,8 @@ __all__ = [
     "ProjectListModel",
     "ProjectManagerShell",
     "ProjectWorkspacePage",
+    "PipelineLane",
+    "PipelineNode",
     "StatisticsPage",
 ]
 

@@ -70,6 +70,10 @@ class ServerServices(Protocol):
         self, project_id: str, layer_id: str, order: int, context: CommandContext
     ) -> dict[str, Any]: ...
 
+    def reorder_layers(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> list[dict[str, Any]]: ...
+
     def archive_layer(
         self, project_id: str, layer_id: str, context: CommandContext
     ) -> dict[str, Any]: ...
@@ -336,6 +340,54 @@ class InMemoryServerServices:
     ) -> dict[str, Any]:
         return self._layer_lifecycle(project_id, layer_id, context, operation="reorder", value=order)
 
+    def reorder_layers(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> list[dict[str, Any]]:
+        self.get_project(project_id)
+        layer_ids = tuple(str(value) for value in payload.get("layer_ids", ()))
+        raw_revisions = payload.get("expected_revisions", {})
+        if not isinstance(raw_revisions, Mapping):
+            raise ValidationError("expected_revisions must be an object")
+        expected = {str(identifier): int(revision) for identifier, revision in raw_revisions.items()}
+        key = (f"layers:reorder:{project_id}:{context.actor_id}", context.idempotency_key)
+        with self._lock:
+            cached = self._idempotency.get(key)
+            if cached is not None:
+                return [dict(item) for item in cached["items"]]
+            layers = self._layers.get(project_id)
+            if layers is None:
+                raise NotFoundError(project_id)
+            current_ids = {str(item["layer_id"]) for item in layers}
+            if not layer_ids or len(layer_ids) != len(set(layer_ids)) or set(layer_ids) != current_ids:
+                raise ConflictError("Layer order must contain every project layer exactly once")
+            if set(expected) != current_ids:
+                raise ValidationError("expected_revisions must cover every project layer")
+            for layer in layers:
+                if int(layer["revision"]) != expected[str(layer["layer_id"])]:
+                    raise ConflictError("Layer revision changed")
+            by_id = {str(item["layer_id"]): item for item in layers}
+            reordered: list[dict[str, Any]] = []
+            now = datetime.now(UTC).isoformat()
+            for order, identifier in enumerate(layer_ids):
+                layer = by_id[identifier]
+                layer["order"] = order
+                layer["revision"] += 1
+                reordered.append(layer)
+                self._events[project_id].append(
+                    {
+                        "event_id": str(uuid4()),
+                        "event_type": "LayersReordered",
+                        "revision": layer["revision"],
+                        "recorded_at": now,
+                        "actor_id": context.actor_id,
+                        "payload": {"layer": dict(layer), "layer_ids": list(layer_ids)},
+                    }
+                )
+            self._layers[project_id] = reordered
+            result = {"items": [dict(item) for item in reordered]}
+            self._idempotency[key] = result
+            return [dict(item) for item in reordered]
+
     def archive_layer(
         self, project_id: str, layer_id: str, context: CommandContext
     ) -> dict[str, Any]:
@@ -443,6 +495,9 @@ class InMemoryServerServices:
         kind = str(payload.get("kind", ""))
         if not name or kind not in {"image", "vector"}:
             raise ValidationError("Representation name and kind are required")
+        purpose = str(payload.get("purpose", "vector" if kind == "vector" else "source"))
+        if purpose not in {"source", "binary", "vector"} or (kind == "vector") != (purpose == "vector"):
+            raise ValidationError("Representation purpose is incompatible with its kind")
         with self._lock:
             representations = self._representations[layer_id]
             if any(item["name"].casefold() == name.casefold() for item in representations):
@@ -458,6 +513,8 @@ class InMemoryServerServices:
                 "layer_id": layer_id,
                 "name": name,
                 "kind": kind,
+                "purpose": purpose,
+                "source_image_representation_id": payload.get("source_image_representation_id"),
                 "note": str(payload.get("note", "")),
                 "source": payload.get("source"),
                 "active": active,

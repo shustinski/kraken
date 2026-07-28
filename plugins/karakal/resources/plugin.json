@@ -3,11 +3,21 @@
   "display_name": "Karakal",
   "description": "Validation gradient matrix viewer and metrics explorer.",
   "version": "0.0.1",
+  "protocol_version": "2.0",
   "enabled": true,
   "platforms": ["windows", "linux"],
   "executables": {
     "windows": {"command": ["python", "-m", "karakal"]},
     "linux": {"command": ["python", "-m", "karakal"]}
   },
-  "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
+  "actions": ["get_capabilities", "open_path", "open_folder", "run_action"],
+  "capabilities": [
+    {
+      "operation": "layer.confidence.analyze.v1",
+      "modes": ["interactive"],
+      "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
+      "output_media_types": ["application/vnd.kraken.confidence+json"],
+      "maximum_batch_size": 10000
+    }
+  ]
 }

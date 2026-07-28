@@ -115,6 +115,11 @@ class KrakenMatrixDataSource:
                         "artifact_version_id": version,
                         "frame_id": str(cell.get("frame_id") or ""),
                         "missing": bool(cell.get("missing")),
+                        "modified_at": str(cell.get("modified_at") or ""),
+                        "performer_color": str(cell.get("performer_color") or ""),
+                        "performer_initials": str(cell.get("performer_initials") or ""),
+                        "review_status": str(cell.get("review_status") or "not_checked"),
+                        "quality": cell.get("quality"),
                     },
                 )
             )

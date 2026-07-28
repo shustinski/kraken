@@ -21,6 +21,9 @@ class KarakalPlugin:
     def create_widget(self, host: PluginHost | None = None, parent: QWidget | None = None) -> KarakalWidget:
         self._host = host
         self._widget = KarakalWidget(parent)
+        if host is not None and callable(getattr(host, "publish_quality", None)):
+            self._widget.qualityPublicationRequested.connect(host.publish_quality)
+            self._widget.set_kraken_publish_available(True)
         return self._widget
 
     def shutdown(self) -> None:

@@ -34,6 +34,7 @@ from kraken_manager.domain.project import (
     ProjectState,
     Representation,
     RepresentationKind,
+    RepresentationPurpose,
     StructureState,
 )
 from kraken_manager.domain.workflows import (
@@ -287,7 +288,11 @@ class CreateRepresentationHandler(_ProjectHandler):
             if any(item.name.casefold() == command.name.strip().casefold() for item in existing_representations):
                 raise ConflictError(f"Representation name {command.name!r} already exists in the layer")
             source_image_id = command.source_image_representation_id
-            if command.kind is RepresentationKind.VECTOR:
+            has_image_parent = (
+                command.kind is RepresentationKind.VECTOR
+                or command.purpose is RepresentationPurpose.BINARY
+            )
+            if has_image_parent:
                 if source_image_id is None:
                     active_images = [
                         item
@@ -305,9 +310,9 @@ class CreateRepresentationHandler(_ProjectHandler):
                     None,
                 )
                 if source_image_id is not None and source_image is None:
-                    raise ConflictError("A vector representation must belong to an image representation")
+                    raise ConflictError("A derived representation must belong to an image representation")
             elif source_image_id is not None:
-                raise ConflictError("An image representation cannot have a parent image")
+                raise ConflictError("A source image representation cannot have a parent image")
             now = self._clock.now()
             representation = Representation.create(
                 project_id=project.id,
@@ -318,6 +323,7 @@ class CreateRepresentationHandler(_ProjectHandler):
                 source=command.source,
                 source_image_representation_id=source_image_id,
                 active=command.active,
+                purpose=command.purpose,
                 created_at=now,
             )
             deactivated_ids: list[str] = []
@@ -345,6 +351,7 @@ class CreateRepresentationHandler(_ProjectHandler):
                     "layer_id": layer.id,
                     "name": representation.name,
                     "kind": representation.kind.value,
+                    "purpose": representation.purpose.value,
                     "note": representation.note,
                     "source": representation.source,
                     "source_image_representation_id": representation.source_image_representation_id,

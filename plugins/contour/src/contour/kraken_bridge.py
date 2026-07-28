@@ -135,7 +135,10 @@ class ContourKrakenSession:
             manifest = PluginJobManifest.from_json(manifest_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError) as exc:
             raise KrakenBridgeError(f"Invalid Kraken job manifest: {exc}") from exc
-        if manifest.operation != PluginOperation.VECTORIZE_FRAMES.value:
+        if manifest.operation not in {
+            PluginOperation.VECTORIZE_FRAMES.value,
+            PluginOperation.PREPARE_DATASET.value,
+        }:
             raise KrakenBridgeError(f"Contour does not support operation {manifest.operation!r}")
         if len(manifest.inputs) > 10_000:
             raise KrakenBridgeError("Contour protocol v1 accepts at most 10000 frames per job")
@@ -306,9 +309,14 @@ def prepare_contour_launch(
         result_manifest=str(values["result_manifest"]),
         staging_root=str(values["staging_root"]),
     )
+    destination_option = (
+        "--dataset-dir"
+        if session.manifest.operation == PluginOperation.PREPARE_DATASET.value
+        else "--output-dir"
+    )
     controlled = [
         *safe_ui_arguments,
-        "--output-dir",
+        destination_option,
         str(session.output_directory),
         *(str(path) for path in session.input_paths),
     ]

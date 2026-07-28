@@ -36,6 +36,7 @@ from .dto import (
     RenameProjectCommand,
     RenameRepresentationCommand,
     ReorderLayerCommand,
+    ReorderLayersCommand,
     RestoreProjectCommand,
     RevokeProjectRoleCommand,
     ReviewPackagePlan,
@@ -114,6 +115,7 @@ from .lifecycle import (
     RenameLayerHandler,
     RenameProjectHandler,
     ReorderLayerHandler,
+    ReorderLayersHandler,
     RestoreProjectHandler,
 )
 
@@ -192,6 +194,8 @@ __all__ = [
     "RenameRepresentationHandler",
     "ReorderLayerCommand",
     "ReorderLayerHandler",
+    "ReorderLayersCommand",
+    "ReorderLayersHandler",
     "RestoreProjectCommand",
     "RestoreProjectHandler",
     "RevokeProjectRoleCommand",

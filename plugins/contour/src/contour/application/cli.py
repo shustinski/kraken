@@ -15,6 +15,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.add_argument("paths", nargs="*", help="Optional image files or a single directory to load on startup.")
         parser.add_argument("--input-dir", help="Input image directory.")
         parser.add_argument("--output-dir", help="Output directory for exported results.")
+        parser.add_argument("--dataset-dir", help="Directory for the prepared training dataset.")
         parser.add_argument("--cif-dir", help="Directory with CIF overlays.")
         parser.add_argument("--pipeline-json", help="Path to pipeline JSON config.")
         parser.add_argument("--language", choices=("ru", "en"), default=None, help="UI language override.")

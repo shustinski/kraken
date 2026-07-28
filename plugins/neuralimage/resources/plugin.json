@@ -3,7 +3,7 @@
   "display_name": "NeuralImage",
   "description": "Neural IC image segmentation, training, and recognition.",
   "version": "6.3.0",
-  "protocol_version": "1.0",
+  "protocol_version": "2.0",
   "enabled": true,
   "platforms": ["windows", "linux"],
   "executables": {
@@ -19,6 +19,19 @@
       "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
       "output_media_types": ["image/png"],
       "maximum_batch_size": 10000
+    },
+    {
+      "operation": "frames.binary-segment.v2",
+      "modes": ["headless"],
+      "input_media_types": ["image/png", "image/tiff", "image/jpeg", "application/x-pytorch"],
+      "output_media_types": ["image/png"],
+      "maximum_batch_size": 10000
+    },
+    {
+      "operation": "dataset.model.train.v1",
+      "modes": ["interactive"],
+      "input_media_types": ["application/vnd.kraken.dataset+zip"],
+      "output_media_types": ["application/x-pytorch", "application/json"]
     }
   ]
 }

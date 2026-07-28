@@ -70,24 +70,33 @@ def discover_neuralimage_channel_catalog(root: Path) -> str:
     return str((Path(manifest).expanduser().resolve().parent / "plugins.json"))
 
 
-def build_launch_command(plugin: PluginMetadata, *, root: Path | None = None) -> list[str]:
+def build_launch_command(
+    plugin: PluginMetadata,
+    *,
+    root: Path | None = None,
+    arguments: tuple[str, ...] = (),
+) -> list[str]:
     platform = current_platform()
     executable = plugin.executable_for(platform)
     if executable.path:
-        return [str(Path(executable.path).expanduser())]
+        return [str(Path(executable.path).expanduser()), *arguments]
     plugin_root = (root or workspace_root()) / "plugins" / plugin.id
     if plugin_root.exists() and shutil.which("uv"):
         if (plugin_root / "__main__.py").is_file():
-            return ["uv", "run", "python", "__main__.py"]
-        return ["uv", "run", "python", "-m", plugin.id]
+            return ["uv", "run", "python", "__main__.py", *arguments]
+        return ["uv", "run", "python", "-m", plugin.id, *arguments]
     if plugin_root.exists() and (plugin_root / "__main__.py").is_file():
-        return [sys.executable, str(plugin_root / "__main__.py")]
+        return [sys.executable, str(plugin_root / "__main__.py"), *arguments]
     if executable.command:
-        return [part.format(workspace=str(root or workspace_root()), plugin_id=plugin.id) for part in executable.command]
-    return [sys.executable, "-m", plugin.id]
+        command = [
+            part.format(workspace=str(root or workspace_root()), plugin_id=plugin.id)
+            for part in executable.command
+        ]
+        return [*command, *arguments]
+    return [sys.executable, "-m", plugin.id, *arguments]
 
 
-def launch_plugin(plugin: PluginMetadata) -> None:
+def launch_plugin(plugin: PluginMetadata, *, arguments: tuple[str, ...] = ()) -> None:
     root = workspace_root()
     plugin_root = root / "plugins" / plugin.id
     cwd = plugin_root if plugin_root.exists() and not plugin.executable_for().path else root
@@ -96,7 +105,11 @@ def launch_plugin(plugin: PluginMetadata) -> None:
         env = dict(**os.environ)
         python_paths = [str(root / "src"), str(root / "plugins" / plugin.id / "src")]
         env["PYTHONPATH"] = os.pathsep.join(python_paths + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-    subprocess.Popen(build_launch_command(plugin, root=root), cwd=str(cwd), env=env)
+    subprocess.Popen(
+        build_launch_command(plugin, root=root, arguments=arguments),
+        cwd=str(cwd),
+        env=env,
+    )
 
 
 def build_install_command(plugin: PluginMetadata) -> list[str]:

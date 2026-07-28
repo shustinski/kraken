@@ -16,9 +16,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from kraken_core.plugin_protocol import PluginJobManifest
+from kraken_core.plugin_protocol import PluginResultPublicationV2, parse_plugin_job
 
-from .jobs import AgentJob, AgentJobState, DurableJobStore, JobStateError
+from .jobs import (
+    AgentJob,
+    AgentJobState,
+    DuplicateCallbackError,
+    DurableJobStore,
+    JobStateError,
+)
 
 
 AGENT_API_VERSION = "v1"
@@ -105,6 +111,60 @@ class AgentControlServer:
                 path = urlparse(self.path).path
                 jobs_path = f"/api/{AGENT_API_VERSION}/jobs"
                 if path != jobs_path:
+                    publication_suffix = "/publications"
+                    prefix = jobs_path + "/"
+                    if path.startswith(prefix) and path.endswith(publication_suffix):
+                        job_id = path[len(prefix) : -len(publication_suffix)]
+                        try:
+                            payload = self._body()
+                            publication = PluginResultPublicationV2.from_dict(payload)
+                            if publication.job_id != job_id:
+                                raise ValueError("Publication belongs to another job")
+                            current = store.get(job_id)
+                            if current.state not in {
+                                AgentJobState.RUNNING,
+                                AgentJobState.WAITING_FOR_USER,
+                                AgentJobState.PARTIAL,
+                            }:
+                                raise JobStateError(
+                                    f"Job cannot publish from {current.state.value}"
+                                )
+                            current, duplicate = store.record_result(
+                                publication,
+                                callback_key=f"publication:{publication.publication_id}",
+                                expected_revision=current.revision,
+                            )
+                            if publication.final:
+                                target = {
+                                    "succeeded": AgentJobState.IMPORTING,
+                                    "partial": AgentJobState.PARTIAL,
+                                    "failed": AgentJobState.FAILED,
+                                    "cancelled": AgentJobState.CANCELLED,
+                                }[publication.outcome]
+                                current = store.transition(
+                                    current.job_id,
+                                    target,
+                                    expected_revision=current.revision,
+                                )
+                        except KeyError:
+                            self._send(HTTPStatus.NOT_FOUND, {"code": "agent.job_not_found"})
+                            return
+                        except (
+                            ValueError,
+                            TypeError,
+                            DuplicateCallbackError,
+                            JobStateError,
+                            json.JSONDecodeError,
+                        ) as exc:
+                            self._send(
+                                HTTPStatus.CONFLICT,
+                                {"code": "agent.invalid_publication", "detail": str(exc)},
+                            )
+                            return
+                        response = _job_payload(current)
+                        response["duplicate"] = duplicate
+                        self._send(HTTPStatus.OK, response)
+                        return
                     suffixes = {
                         "/cancel": AgentJobState.CANCELLED,
                         "/confirm-partial": AgentJobState.IMPORTING,
@@ -135,7 +195,7 @@ class AgentControlServer:
                     self._send(HTTPStatus.NOT_FOUND, {"code": "agent.route_not_found"})
                     return
                 try:
-                    manifest = PluginJobManifest.from_dict(self._body())
+                    manifest = parse_plugin_job(self._body())
                     job = store.enqueue(manifest)
                 except (ValueError, TypeError, json.JSONDecodeError) as exc:
                     self._send(HTTPStatus.BAD_REQUEST, {"code": "agent.invalid_manifest", "detail": str(exc)})

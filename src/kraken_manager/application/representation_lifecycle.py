@@ -25,6 +25,7 @@ def _snapshot(value: Representation) -> dict[str, object]:
         "layer_id": str(value.layer_id),
         "name": value.name,
         "kind": value.kind.value,
+        "purpose": value.purpose.value,
         "note": value.note,
         "source": value.source,
         "source_image_representation_id": (

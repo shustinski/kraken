@@ -6,6 +6,7 @@ import math
 from collections.abc import Iterable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
@@ -274,6 +275,8 @@ class FrameMatrixView(QGraphicsView):
         self._orientation = GridOrientation.Y_DOWN
         self._cells: dict[tuple[int, int], FrameCellData] = {}
         self._status_colors = dict(DEFAULT_STATUS_COLORS)
+        self._border_mode = "status"
+        self._fill_mode = "thumbnail"
         self._selection = FrameSelection()
         self._selection_anchor: tuple[int, int] | None = None
         self._drag_anchor: tuple[int, int] | None = None
@@ -661,25 +664,27 @@ class FrameMatrixView(QGraphicsView):
                     self.CELL_SIZE,
                     self.CELL_SIZE,
                 )
-                painter.fillRect(rect, self._status_color(cell.status))
-                if lod is MatrixLod.DETAILS and cell.thumbnail is not None and not cell.thumbnail.isNull():
+                fill_color = self._cell_visual_color(cell, self._fill_mode)
+                painter.fillRect(rect, fill_color)
+                if (
+                    self._fill_mode == "thumbnail"
+                    and lod is MatrixLod.DETAILS
+                    and cell.thumbnail is not None
+                    and not cell.thumbnail.isNull()
+                ):
                     painter.save()
                     painter.setOpacity(0.92)
                     painter.drawPixmap(rect.toRect(), cell.thumbnail)
                     painter.restore()
 
-                performer_pen: QPen | None = None
-                if cell.performer_color:
-                    performer_color = QColor(cell.performer_color)
-                    if performer_color.isValid():
-                        performer_pen = QPen(performer_color, 3.0)
-                        performer_pen.setCosmetic(True)
-                painter.setPen(
-                    selection_pen
-                    if self._selection.contains(x, y)
-                    else performer_pen or base_pen
-                )
+                border_color = self._cell_visual_color(cell, self._border_mode)
+                semantic_pen = QPen(border_color if border_color.isValid() else base_pen.color(), 3.0)
+                semantic_pen.setCosmetic(True)
+                painter.setPen(semantic_pen)
                 painter.drawRect(rect)
+                if self._selection.contains(x, y):
+                    painter.setPen(selection_pen)
+                    painter.drawRect(rect.adjusted(-1.5, -1.5, 1.5, 1.5))
 
                 if lod is MatrixLod.DETAILS:
                     painter.setPen(QColor("#f8fafc"))
@@ -724,6 +729,64 @@ class FrameMatrixView(QGraphicsView):
                             renderer.render(matrix_item, context)
                         except Exception:
                             continue
+
+    def set_visual_modes(self, border: str, fill: str) -> None:
+        border_modes = {"time", "performer", "quality", "status"}
+        fill_modes = border_modes | {"thumbnail"}
+        if border not in border_modes or fill not in fill_modes:
+            raise ValueError("Unsupported matrix visual mode")
+        self._border_mode, self._fill_mode = border, fill
+        self.viewport().update()
+
+    def visual_modes(self) -> tuple[str, str]:
+        return self._border_mode, self._fill_mode
+
+    def _cell_visual_color(self, cell: FrameCellData, mode: str) -> QColor:
+        payload = cell.payload if isinstance(cell.payload, Mapping) else {}
+        neutral = QColor("#475569")
+        if mode == "thumbnail":
+            return self._status_color(cell.status)
+        if mode == "performer":
+            color = QColor(str(payload.get("performer_color") or cell.performer_color or ""))
+            return color if color.isValid() else neutral
+        if mode == "quality":
+            try:
+                value = max(0.0, min(1.0, float(payload["quality"])))
+            except (KeyError, TypeError, ValueError):
+                return neutral
+            return QColor.fromRgbF(1.0 - value, value, 0.10)
+        if mode == "status":
+            return {
+                "not_checked": QColor("#64748b"),
+                "in_review": QColor("#f59e0b"),
+                "checked": QColor("#22c55e"),
+            }.get(str(payload.get("review_status") or ""), self._status_color(cell.status))
+        if mode == "time":
+            stamp = self._timestamp(payload.get("modified_at"))
+            values = [
+                parsed
+                for value in self._cells.values()
+                if (parsed := self._timestamp(
+                    (value.payload if isinstance(value.payload, Mapping) else {}).get("modified_at")
+                )) is not None
+            ]
+            if stamp is None or not values:
+                return neutral
+            oldest, newest = min(values), max(values)
+            ratio = 1.0 if newest <= oldest else (stamp - oldest) / (newest - oldest)
+            return QColor.fromRgbF(1.0 - ratio, ratio, 0.08)
+        return neutral
+
+    @staticmethod
+    def _timestamp(value: object) -> float | None:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None
+        return None
 
     def _after_transform(self) -> None:
         self._indexed_tile_cells = 0

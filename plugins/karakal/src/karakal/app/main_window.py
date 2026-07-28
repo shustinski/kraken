@@ -36,7 +36,9 @@ from updater.qt import QtUpdateController
 
 from ..infra.services import KarakalSettingsService
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
+from ..core.domain import BuildResult
 from ..version import __version__
+from ..ui.app_icon import apply_karakal_icon
 from ..ui.i18n import Translator, set_current_language
 from ..ui.matrix_view import MatrixListWidget, MatrixMiniMapWidget
 from ..ui.ui_constants import (
@@ -371,6 +373,8 @@ class _CorrelationColumnWidget(QFrame):
 class KarakalWidget(QWidget):
 
     """Embeddable widget for multi-model segmentation quality evaluation."""
+
+    qualityPublicationRequested = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -721,11 +725,56 @@ class KarakalWidget(QWidget):
         top_corner_layout = QHBoxLayout(self._top_corner_widget)
         top_corner_layout.setContentsMargins(0, 0, 0, 0)
         top_corner_layout.setSpacing(4)
+        self.kraken_publish_button = QPushButton("Отправить в Kraken", self._top_corner_widget)
+        self.kraken_publish_button.setObjectName("sendQualityToKrakenButton")
+        self.kraken_publish_button.setEnabled(False)
+        self.kraken_publish_button.setToolTip("Доступно в управляемом запуске из Kraken")
+        self.kraken_publish_button.clicked.connect(self._publish_quality_to_kraken)
+        top_corner_layout.addWidget(self.kraken_publish_button)
         top_corner_layout.addWidget(self.mode_toggle_button)
         top_corner_layout.addWidget(self.language_toggle_button)
         self._update_language_toggle_button()
         self._rebuild_mode_menu()
         self._update_mode_toggle_button()
+
+    def set_kraken_publish_available(self, available: bool) -> None:
+        self.kraken_publish_button.setEnabled(bool(available))
+        self.kraken_publish_button.setToolTip(
+            "Опубликовать текущую матрицу качества, не закрывая Karakal"
+            if available else "Доступно в управляемом запуске из Kraken"
+        )
+
+    def _publish_quality_to_kraken(self) -> None:
+        state = self._presenter._current_tab_state()
+        if state is None or state.build_result is None:
+            return
+        result = state.build_result
+        metric = str(result.selected_metric_key or "overall_frame_score")
+        frames = []
+        for record in result.records:
+            value = None
+            if record.summary is not None:
+                value = record.summary.metric_values.get(metric)
+            if value is None and record.score_ready:
+                value = record.score
+            if value is None:
+                continue
+            frames.append(
+                {
+                    "frame_key": record.key,
+                    "confidence": max(0.0, min(1.0, float(value))),
+                }
+            )
+        self.qualityPublicationRequested.emit(
+            {
+                "metric": metric,
+                "frames": frames,
+                "parameters": {
+                    "geometry_mode": result.options.geometry_mode.value,
+                    "comparison_mode": result.options.comparison_mode.value,
+                },
+            }
+        )
 
     def _build_management_mode_controls_panel(self, parent: QWidget) -> QWidget:
         controls_host = QWidget(parent)
@@ -892,6 +941,27 @@ class KarakalWidget(QWidget):
             self._analysis_task_group.setVisible(not is_management and not is_grid_inspection)
         if hasattr(self, "_tile_grid_group"):
             self._tile_grid_group.setVisible(not is_management and not is_grid_inspection)
+
+    def _rebuild_mode_menu(self) -> None:
+        self._mode_menu.clear()
+        current = str(self.app_mode_combo.currentData() or "validation")
+        for index in range(self.app_mode_combo.count()):
+            action = self._mode_menu.addAction(self.app_mode_combo.itemText(index))
+            action.setData(str(self.app_mode_combo.itemData(index)))
+            action.setCheckable(True)
+            action.setChecked(str(action.data()) == current)
+
+    def _update_mode_toggle_button(self) -> None:
+        current = self.app_mode_combo.currentText().strip()
+        self.mode_toggle_button.setText(current or "⋯")
+        self.mode_toggle_button.setToolTip(self._t("management.current_mode"))
+
+    def _on_mode_menu_triggered(self, action) -> None:
+        index = self.app_mode_combo.findData(str(action.data() or "validation"))
+        if index >= 0:
+            self.app_mode_combo.setCurrentIndex(index)
+        self._rebuild_mode_menu()
+        self._update_mode_toggle_button()
 
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()

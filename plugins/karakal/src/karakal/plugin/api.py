@@ -28,6 +28,10 @@ class PluginHost(Protocol):
         """Ask the host to open a filesystem path for the user."""
         ...
 
+    def publish_quality(self, payload: dict[str, Any]) -> None:
+        """Publish a non-terminal confidence snapshot back to Kraken."""
+        ...
+
 
 @runtime_checkable
 class WidgetPlugin(Protocol):

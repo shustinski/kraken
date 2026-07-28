@@ -45,6 +45,14 @@ class RepresentationKind(StrEnum):
     VECTOR = "vector"
 
 
+class RepresentationPurpose(StrEnum):
+    """Semantic role of a representation inside a layer pipeline."""
+
+    SOURCE = "source"
+    BINARY = "binary"
+    VECTOR = "vector"
+
+
 class StructureState(StrEnum):
     ACTIVE = "active"
     ARCHIVED = "archived"
@@ -274,6 +282,7 @@ class Representation:
     revision: int
     created_at: datetime
     source_image_representation_id: RepresentationId | None = None
+    purpose: RepresentationPurpose = RepresentationPurpose.SOURCE
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", RepresentationId(validate_uuid(str(self.id), field="representation.id")))
@@ -288,6 +297,12 @@ class Representation:
         object.__setattr__(self, "name", require_non_empty(self.name, field="representation.name"))
         if not isinstance(self.kind, RepresentationKind):
             object.__setattr__(self, "kind", RepresentationKind(self.kind))
+        if not isinstance(self.purpose, RepresentationPurpose):
+            object.__setattr__(self, "purpose", RepresentationPurpose(self.purpose))
+        if self.kind is RepresentationKind.VECTOR:
+            object.__setattr__(self, "purpose", RepresentationPurpose.VECTOR)
+        elif self.purpose is RepresentationPurpose.VECTOR:
+            raise DomainValidationError("an image representation cannot have vector purpose")
         object.__setattr__(self, "note", self.note.strip())
         if self.source is not None:
             object.__setattr__(self, "source", require_non_empty(self.source, field="representation.source", maximum=2048))
@@ -302,8 +317,12 @@ class Representation:
                     )
                 ),
             )
-        if self.kind is RepresentationKind.IMAGE and self.source_image_representation_id is not None:
-            raise DomainValidationError("an image representation cannot belong to another image")
+        if (
+            self.kind is RepresentationKind.IMAGE
+            and self.purpose is RepresentationPurpose.SOURCE
+            and self.source_image_representation_id is not None
+        ):
+            raise DomainValidationError("a source image representation cannot belong to another image")
         if not isinstance(self.active, bool):
             raise DomainValidationError("representation.active must be boolean")
         if not isinstance(self.state, StructureState):
@@ -326,6 +345,7 @@ class Representation:
         source: str | None = None,
         source_image_representation_id: RepresentationId | str | None = None,
         active: bool = False,
+        purpose: RepresentationPurpose | str | None = None,
         representation_id: RepresentationId | str | None = None,
         created_at: datetime | None = None,
     ) -> Representation:
@@ -346,6 +366,11 @@ class Representation:
             state=StructureState.ACTIVE,
             revision=0,
             created_at=created_at or utc_now(),
+            purpose=(
+                RepresentationPurpose.VECTOR
+                if kind is RepresentationKind.VECTOR
+                else RepresentationPurpose(purpose or RepresentationPurpose.SOURCE)
+            ),
         )
 
     def rename(self, name: str, *, expected_revision: int | None = None) -> Representation:
@@ -390,6 +415,7 @@ __all__ = [
     "ProjectState",
     "Representation",
     "RepresentationKind",
+    "RepresentationPurpose",
     "StructureState",
     "deterministic_frame_id",
 ]

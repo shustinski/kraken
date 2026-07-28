@@ -4,17 +4,28 @@ from __future__ import annotations
 
 import os
 import sys
+import logging
+import shutil
+from pathlib import Path
 from uuid import uuid4
 
 from kraken_core.frame_matrix import MatrixSession, ThumbnailStoreFactory
 from kraken_core.frame_matrix.qt import FrameMatrixWidget
+from kraken_core.external_model import ExternalModelLink
 from kraken_core.plugins import PluginInventoryItem
 from kraken_core.qt import configure_application_identity
 from kraken_core.styles import load_shared_stylesheet
 from kraken_manager.domain.project import GridOrientation as DomainOrientation
-from kraken_manager.domain.project import LayerType, RepresentationKind
+from kraken_manager.domain.project import LayerType, RepresentationKind, RepresentationPurpose
 from kraken_manager.application.imports import ImportMappingMode
-from kraken_manager.presentation.qt import ProjectManagerShell, ProjectWorkspacePage
+from kraken_manager.presentation.qt import (
+    LayerManagerDialog,
+    LayerPipelineSnapshot,
+    PipelineLane,
+    PipelineNode,
+    ProjectManagerShell,
+    ProjectWorkspacePage,
+)
 from kraken_manager.presentation.qt.models import LayerListItem, ProjectListItem
 from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimensionsWidget
 
@@ -245,11 +256,16 @@ class DesktopController:
         session: DesktopSession,
         *,
         thumbnail_store_uri: str = "",
+        plugin_items: list[PluginInventoryItem] | None = None,
     ) -> None:
         self.shell = shell
         self.service = service
         self.session = session
         self.thumbnail_store_uri = str(thumbnail_store_uri)
+        self.plugin_items = {item.metadata.id: item for item in (plugin_items or [])}
+        self._workspace = None
+        self._project_id = None
+        self._layer_dialog: LayerManagerDialog | None = None
         self.catalog_page = shell.page("projects")
         assert self.catalog_page is not None
         self.catalog_page.createRequested.connect(self.create_project)
@@ -258,6 +274,8 @@ class DesktopController:
         self.catalog_page.renameRequested.connect(self.rename_project)
         self.catalog_page.archiveRequested.connect(self.archive_project)
         self.catalog_page.restoreRequested.connect(self.restore_project)
+        self.shell.layersRequested.connect(self.open_layer_manager)
+        self.shell.cellVisualModeChanged.connect(self._set_matrix_visual_mode)
         self.refresh_projects()
 
     def refresh_projects(self) -> None:
@@ -439,6 +457,12 @@ class DesktopController:
             thumbnail_store=thumbnail_store,
         )
         workspace = self.shell.open_project_workspace(ProjectWorkspacePage(matrix_view=matrix_view))
+        self._workspace = workspace
+        self._project_id = str(project.id)
+        if self._layer_dialog is not None:
+            self._layer_dialog.hide()
+            self._layer_dialog.deleteLater()
+            self._layer_dialog = None
         workspace._matrix_data_source = data_source
         workspace._matrix_asset_source = asset_source
         workspace.set_project_title(project.name)
@@ -454,6 +478,7 @@ class DesktopController:
             data_source=data_source,
             asset_source=asset_source,
         )
+        workspace.matrix_view.set_visual_modes(*self.shell.visual_modes())
         self._load_layers(workspace, project)
 
         def add_layer() -> None:
@@ -494,10 +519,807 @@ class DesktopController:
             for layer in self.service.list_layers(project.id)
         )
         workspace.sync_layer_tabs()
+        if self._layer_dialog is not None:
+            self._layer_dialog.set_layers(
+                list(workspace.layer_model.items()),
+                str(getattr(workspace, "_selected_layer_id", "")),
+            )
 
     def _select_layer(self, workspace, project_id, item: LayerListItem) -> None:
         workspace._selected_layer_id = item.layer_id
         self._load_representations(workspace, project_id, item.layer_id)
+        if self._layer_dialog is not None:
+            self._layer_dialog.select_layer(item.layer_id)
+            self._layer_dialog.set_pipeline(self._pipeline_snapshot(project_id, item.layer_id))
+
+    def open_layer_manager(self) -> None:
+        workspace = self._workspace
+        project_id = self._project_id
+        if workspace is None or not project_id or self.shell.current_page_key() != "workspace":
+            return
+        if self._layer_dialog is None:
+            dialog = LayerManagerDialog(
+                project_id,
+                self.shell,
+                action_availability=self._action_availability,
+            )
+            dialog.layerSelected.connect(self._layer_manager_select)
+            dialog.orderChanged.connect(self._layer_manager_reorder)
+            dialog.representationActivated.connect(self._layer_manager_activate)
+            dialog.nodeActionRequested.connect(self._layer_manager_action)
+            dialog.layerActionRequested.connect(self._layer_manager_layer_action)
+            self._layer_dialog = dialog
+        self._layer_dialog.set_layers(
+            list(workspace.layer_model.items()),
+            str(getattr(workspace, "_selected_layer_id", "")),
+        )
+        selected = str(getattr(workspace, "_selected_layer_id", ""))
+        if selected:
+            self._layer_dialog.set_pipeline(self._pipeline_snapshot(project_id, selected))
+        self._layer_dialog.show()
+        self._layer_dialog.raise_()
+        self._layer_dialog.activateWindow()
+
+    def _layer_manager_select(self, layer_id: str) -> None:
+        workspace = self._workspace
+        if workspace is None:
+            return
+        item = workspace.layer_model.layer_by_id(layer_id)
+        if item is None:
+            return
+        for index in range(workspace.layer_tabs.count()):
+            if str(workspace.layer_tabs.tabData(index)) == layer_id:
+                if workspace.layer_tabs.currentIndex() != index:
+                    workspace.layer_tabs.setCurrentIndex(index)
+                    return
+                break
+        self._select_layer(workspace, self._project_id, item)
+
+    def _layer_manager_reorder(self, layer_ids: tuple[str, ...]) -> None:
+        workspace = self._workspace
+        project = self.service.get_project(self._project_id)
+        if workspace is None or project is None:
+            return
+        layers = self.service.list_layers(project.id)
+        try:
+            self.service.reorder_layers(
+                principal=self.session.principal,
+                project=project,
+                layers=layers,
+                layer_ids=layer_ids,
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            self._error(str(exc))
+        latest = self.service.get_project(project.id)
+        if latest is not None:
+            self._load_layers(workspace, latest)
+
+    def _layer_manager_activate(self, representation_id: str) -> None:
+        workspace = self._workspace
+        if workspace is None:
+            return
+        layer_id = str(getattr(workspace, "_selected_layer_id", ""))
+        representations = self.service.list_representations(self._project_id, layer_id)
+        selected = next(
+            (item for item in representations if str(item.id) == str(representation_id)),
+            None,
+        )
+        if (
+            selected is not None
+            and selected.kind is RepresentationKind.VECTOR
+            and selected.source_image_representation_id is not None
+        ):
+            # A vector is rendered together with its linked raster.  Activating
+            # both keeps the hidden compatibility selectors and the matrix data
+            # source on the same pair selected in the graph.
+            self._activate_representation(
+                workspace,
+                self._project_id,
+                str(selected.source_image_representation_id),
+            )
+        self._activate_representation(workspace, self._project_id, representation_id)
+        if self._layer_dialog is not None and layer_id:
+            self._layer_dialog.set_pipeline(self._pipeline_snapshot(self._project_id, layer_id))
+
+    def _pipeline_snapshot(self, project_id, layer_id) -> LayerPipelineSnapshot:
+        representations = self.service.list_representations(project_id, layer_id)
+        project_history = self.service.history(project_id)
+        histories = [
+            event
+            for event in project_history
+            if event.event_type == "PluginJobCreated"
+            and str(event.payload.get("manifest", {}).get("layer_id", "")) == str(layer_id)
+        ]
+        latest_job_events = {}
+        for event in project_history:
+            job = event.payload.get("job", {})
+            if not isinstance(job, dict) and not hasattr(job, "get"):
+                continue
+            job_id = str(event.payload.get("plugin_job_id", job.get("id", "")))
+            if job_id and str(job.get("layer_id", "")) == str(layer_id):
+                latest_job_events[job_id] = event
+        removed_action_ids = {
+            str(event.payload.get("action_event_id", ""))
+            for event in project_history
+            if event.event_type == "LayerPipelineActionRemoved"
+            and str(event.payload.get("layer_id", "")) == str(layer_id)
+        }
+        action_events = [
+            event
+            for event in project_history
+            if event.event_type == "LayerPipelineActionRequested"
+            and str(event.payload.get("layer_id", "")) == str(layer_id)
+            and event.event_id not in removed_action_ids
+        ]
+        sources = [
+            value for value in representations
+            if value.kind is RepresentationKind.IMAGE and value.purpose is RepresentationPurpose.SOURCE
+        ]
+        binaries = [
+            value for value in representations
+            if value.kind is RepresentationKind.IMAGE and value.purpose is RepresentationPurpose.BINARY
+        ]
+        vectors = [value for value in representations if value.kind is RepresentationKind.VECTOR]
+        karakal_run = self.service.latest_karakal_analysis(project_id, layer_id)
+        if not sources and binaries:
+            sources = binaries[:1]
+        lanes: list[PipelineLane] = []
+        for source in sources:
+            lane_nodes: list[PipelineNode] = [
+                PipelineNode(
+                    str(source.id),
+                    source.name,
+                    "source",
+                    "Исходные изображения",
+                    str(source.id),
+                    source.active,
+                    details={"источник": source.source or "BlobStore", "создан": source.created_at.isoformat()},
+                )
+            ]
+            lane_edges: list[tuple[str, str]] = []
+            lane_binaries = [
+                value
+                for value in binaries
+                if str(value.source_image_representation_id or "") == str(source.id)
+                or (
+                    value.source_image_representation_id is None
+                    and source is sources[0]
+                )
+            ]
+            lane_vectors = [
+                value for value in vectors
+                if str(value.source_image_representation_id or "") in {str(source.id), *(str(item.id) for item in lane_binaries)}
+            ]
+            target_ids = {str(item.id) for item in (*lane_binaries, *lane_vectors)}
+            for action_event in action_events:
+                action_payload = action_event.payload
+                action_parameters = dict(action_payload.get("parameters", {}))
+                action_source = str(
+                    action_parameters.get("source_representation_id")
+                    or action_payload.get("node_id", "")
+                )
+                if action_source != str(source.id):
+                    # Backward-compatible fallback for old layer-level actions
+                    # that were recorded before source association existed.
+                    if action_source or source is not sources[0]:
+                        continue
+                action_id = f"action:{action_event.event_id}"
+                lane_nodes.append(
+                    PipelineNode(
+                        action_id,
+                        str(action_payload.get("action", "Действие")),
+                        "job",
+                        str(action_payload.get("state", "launched")),
+                        state=str(action_payload.get("state", "")),
+                        details={
+                            "время": action_event.recorded_at.isoformat(),
+                            "автор": action_event.actor.display_name,
+                            "программа": action_payload.get("plugin_id", ""),
+                            "capability": action_payload.get("capability", ""),
+                            "режим": action_payload.get("mode", ""),
+                            "параметры": action_parameters,
+                            "pipeline_event_id": action_event.event_id,
+                            "deletable": True,
+                        },
+                    )
+                )
+                lane_edges.append((str(source.id), action_id))
+            for event in histories:
+                manifest = dict(event.payload.get("manifest", {}))
+                target_id = str(manifest.get("target_representation_id", ""))
+                parameters = dict(manifest.get("parameters", {}))
+                declared_source = str(parameters.get("source_representation_id", ""))
+                if declared_source and declared_source != str(source.id):
+                    continue
+                if target_id not in target_ids and source is not sources[0]:
+                    continue
+                job_id = str(event.payload.get("plugin_job_id", event.event_id))
+                current_event = latest_job_events.get(job_id, event)
+                job = dict(current_event.payload.get("job", event.payload.get("job", {})))
+                capability = str(manifest.get("capability", "Задание"))
+                program = getattr(current_event, "program", None)
+                output_id = target_id
+                output_kind = ""
+                output_title = ""
+                if capability == "frames.dataset.prepare.v1":
+                    output_id = f"{job_id}:dataset"
+                    output_kind = "dataset"
+                    output_title = "Выборка Contour"
+                elif capability == "dataset.model.train.v1":
+                    output_id = f"{job_id}:model"
+                    output_kind = "model"
+                    output_title = "Модель NeuralImage"
+                lane_nodes.append(
+                    PipelineNode(
+                        job_id,
+                        capability,
+                        "job",
+                        str(job.get("state", "queued")),
+                        state=str(job.get("state", "")),
+                        details={
+                            "время": current_event.recorded_at.isoformat(),
+                            "автор": current_event.actor.display_name,
+                            "программа": (
+                                ""
+                                if program is None
+                                else f"{program.name} {program.version or ''}".strip()
+                            ),
+                            "состояние": str(job.get("state", "queued")),
+                            "прогресс": job.get("progress", 0),
+                            "ошибка": job.get("error") or "",
+                            "параметры": parameters,
+                        },
+                    )
+                )
+                lane_edges.append((str(source.id), job_id))
+                if output_kind:
+                    lane_nodes.append(
+                        PipelineNode(
+                            output_id,
+                            output_title,
+                            output_kind,
+                            str(job.get("state", "")),
+                            state=str(job.get("state", "")),
+                            details={"job_id": job_id, "capability": capability},
+                        )
+                    )
+                if output_id:
+                    lane_edges.append((job_id, output_id))
+            for value in lane_binaries:
+                lane_nodes.append(
+                    PipelineNode(
+                        str(value.id), value.name, "binary", "Бинарные изображения",
+                        str(value.id), value.active, details={"создан": value.created_at.isoformat()},
+                    )
+                )
+                if not any(target == str(value.id) for _, target in lane_edges):
+                    lane_edges.append((str(source.id), str(value.id)))
+            for value in lane_vectors:
+                lane_nodes.append(
+                    PipelineNode(
+                        str(value.id), value.name, "vector", "CIF",
+                        str(value.id), value.active, details={"создан": value.created_at.isoformat()},
+                    )
+                )
+                if not any(target == str(value.id) for _, target in lane_edges):
+                    lane_edges.append((str(value.source_image_representation_id or source.id), str(value.id)))
+            if karakal_run is not None and source is sources[0]:
+                karakal_id = f"karakal:{karakal_run.run_id}"
+                lane_nodes.append(
+                    PipelineNode(
+                        karakal_id,
+                        f"Karakal · публикация {karakal_run.publication_sequence}",
+                        "karakal",
+                        f"{len(karakal_run.frame_confidence)} кадров",
+                        details={
+                            "время": karakal_run.created_at,
+                            "версия": karakal_run.plugin_version,
+                            "параметры": karakal_run.parameters,
+                            "отчёт": karakal_run.report,
+                        },
+                    )
+                )
+                for value in lane_binaries:
+                    lane_edges.append((str(value.id), karakal_id))
+            if not lane_vectors:
+                missing_id = f"{source.id}:missing-cif"
+                lane_nodes.append(PipelineNode(missing_id, "CIF не получен", "missing", "Результат отсутствует"))
+                lane_edges.append((str(source.id), missing_id))
+            lanes.append(PipelineLane(str(source.id), source.name, tuple(lane_nodes), tuple(lane_edges)))
+        return LayerPipelineSnapshot(str(project_id), str(layer_id), tuple(lanes))
+
+    def _layer_manager_action(self, _layer_id: str, _node: PipelineNode, action: str) -> None:
+        if action == "archive_representation":
+            self._archive_layer_representation(_layer_id, _node)
+            return
+        if action == "add_external_vector":
+            workspace = self._workspace
+            if workspace is None:
+                return
+            snapshot = self._pipeline_snapshot(self._project_id, _layer_id)
+            source_representation_id = next(
+                (
+                    lane.lane_id
+                    for lane in snapshot.lanes
+                    if any(node.node_id == _node.node_id for node in lane.nodes)
+                ),
+                "",
+            )
+            if not source_representation_id:
+                self._error("Не удалось определить исходный слой изображений для CIF")
+                return
+            self._add_representation(
+                workspace,
+                self._project_id,
+                RepresentationKind.VECTOR,
+                source_image_id=source_representation_id,
+            )
+            return
+        if action == "delete_pipeline_step":
+            action_event_id = str(_node.details.get("pipeline_event_id", ""))
+            if not action_event_id:
+                self._error("Этот шаг является частью неизменяемой истории задания")
+                return
+            try:
+                self.service.remove_layer_pipeline_action(
+                    principal=self.session.principal,
+                    project_id=self._project_id,
+                    layer_id=_layer_id,
+                    action_event_id=action_event_id,
+                )
+            except (OSError, ValueError) as exc:
+                self._error(str(exc))
+                return
+            if self._layer_dialog is not None:
+                self._layer_dialog.set_pipeline(
+                    self._pipeline_snapshot(self._project_id, _layer_id)
+                )
+            return
+        available, reason = self._action_availability(action)
+        if not available:
+            self._error(reason)
+            return
+        plugin_id = "contour" if action in {"prepare_dataset", "vectorize"} else "neuralimage"
+        _plugin, capability, mode = self._action_requirement(action)
+        parameters: dict[str, object] = {}
+        snapshot = self._pipeline_snapshot(self._project_id, _layer_id)
+        source_representation_id = next(
+            (
+                lane.lane_id
+                for lane in snapshot.lanes
+                if any(node.node_id == _node.node_id for node in lane.nodes)
+            ),
+            "",
+        )
+        if source_representation_id:
+            parameters["source_representation_id"] = source_representation_id
+        if action == "recognize_external":
+            from PyQt6.QtCore import QSettings
+            from PyQt6.QtWidgets import QFileDialog
+
+            settings = QSettings("Kraken", "KrakenHub")
+            key_root = f"external-model/{self._project_id}/{_layer_id}"
+            key = f"{key_root}/path"
+            model_path = str(settings.value(key, "") or "")
+            linked_now = False
+            if not model_path or not Path(model_path).is_file():
+                model_path, _selected_filter = QFileDialog.getOpenFileName(
+                    self.shell,
+                    "Выберите готовую модель NeuralImage",
+                    "",
+                    "Модели (*.onnx *.pt *.pth *.h5 *.keras);;Все файлы (*)",
+                )
+                linked_now = bool(model_path)
+            if not model_path:
+                return
+            try:
+                stored_hash = str(settings.value(f"{key_root}/sha256", "") or "")
+                stored_size = int(settings.value(f"{key_root}/size", 0) or 0)
+                link = (
+                    ExternalModelLink(str(Path(model_path).resolve()), stored_size, stored_hash)
+                    if not linked_now and stored_size > 0 and len(stored_hash) == 64
+                    else ExternalModelLink.observe(model_path)
+                )
+                stage_root = self.service.data_dir / "agent-staging" / str(uuid4())
+                staged = link.stage(stage_root)
+            except (OSError, ValueError) as exc:
+                self._error(f"Не удалось подготовить внешнюю модель: {exc}")
+                return
+            if linked_now or not stored_hash:
+                settings.setValue(key, link.path)
+                settings.setValue(f"{key_root}/size", link.size)
+                settings.setValue(f"{key_root}/sha256", link.observed_sha256)
+            parameters = {
+                "external_model_path": link.path,
+                "observed_size": link.size,
+                "observed_sha256": link.observed_sha256,
+                "staged_relative_path": staged.relative_path,
+                "used_sha256": staged.used_sha256,
+                "changed_since_observation": staged.changed_since_observation,
+            }
+        launch_arguments: tuple[str, ...] = ()
+        if plugin_id == "contour":
+            try:
+                launch_arguments, contour_parameters = (
+                    self._contour_launch_arguments(
+                        layer_id=_layer_id,
+                        node=_node,
+                        action=action,
+                        source_representation_id=source_representation_id,
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                self._error(f"Не удалось подготовить данные для Contour: {exc}")
+                return
+            parameters.update(contour_parameters)
+        self.service.record_layer_pipeline_action(
+            principal=self.session.principal,
+            project_id=self._project_id,
+            layer_id=_layer_id,
+            action=action,
+            node_id=_node.node_id,
+            plugin_id=plugin_id,
+            capability=capability,
+            mode=mode,
+            parameters=parameters,
+        )
+        self._launch_managed_plugin(plugin_id, arguments=launch_arguments)
+        if self._layer_dialog is not None:
+            self._layer_dialog.set_pipeline(self._pipeline_snapshot(self._project_id, _layer_id))
+
+    def _layer_manager_layer_action(self, _layer_id: str, action: str) -> None:
+        if action == "add_image_representation":
+            workspace = self._workspace
+            if workspace is None:
+                return
+            item = workspace.layer_model.layer_by_id(_layer_id)
+            if item is None:
+                self._error("Слой больше не доступен")
+                return
+            self._select_layer(workspace, self._project_id, item)
+            self._add_representation(
+                workspace,
+                self._project_id,
+                RepresentationKind.IMAGE,
+            )
+            return
+        if action == "karakal":
+            available, reason = self._action_availability(action)
+            if not available:
+                self._error(reason)
+                return
+            _plugin, capability, mode = self._action_requirement(action)
+            self.service.record_layer_pipeline_action(
+                principal=self.session.principal,
+                project_id=self._project_id,
+                layer_id=_layer_id,
+                action=action,
+                node_id=_layer_id,
+                plugin_id="karakal",
+                capability=capability,
+                mode=mode,
+            )
+            if self._layer_dialog is not None:
+                self._layer_dialog.set_pipeline(
+                    self._pipeline_snapshot(self._project_id, _layer_id)
+                )
+            self._launch_karakal(_layer_id)
+
+    @staticmethod
+    def _action_requirement(action: str) -> tuple[str, str, str]:
+        return {
+            "prepare_dataset": ("contour", "frames.dataset.prepare.v1", "interactive"),
+            "vectorize": ("contour", "frames.vectorize.v1", "interactive"),
+            "train": ("neuralimage", "dataset.model.train.v1", "interactive"),
+            "recognize": ("neuralimage", "frames.binary-segment.v2", "headless"),
+            "recognize_external": ("neuralimage", "frames.binary-segment.v2", "headless"),
+            "karakal": ("karakal", "layer.confidence.analyze.v1", "interactive"),
+        }.get(action, ("", "", ""))
+
+    def _action_availability(self, action: str) -> tuple[bool, str]:
+        if action in {
+            "add_external_vector",
+            "add_image_representation",
+            "archive_representation",
+            "delete_pipeline_step",
+        }:
+            return True, ""
+        requirement = self._action_requirement(action)
+        if not requirement[0]:
+            return False, f"Неизвестное действие: {action}"
+        plugin_id, operation, mode = requirement
+        inventory = self.plugin_items.get(plugin_id)
+        if inventory is None or not inventory.installed or not inventory.metadata.enabled:
+            return False, f"Плагин {plugin_id} не установлен или отключён"
+        capability = next(
+            (
+                item
+                for item in inventory.metadata.capabilities
+                if item.operation == operation and mode in item.modes
+            ),
+            None,
+        )
+        if capability is None:
+            return False, f"Плагин {plugin_id} не поддерживает {operation} в режиме {mode}"
+        return True, ""
+
+    def _contour_launch_arguments(
+        self,
+        *,
+        layer_id: str,
+        node: PipelineNode,
+        action: str,
+        source_representation_id: str,
+    ) -> tuple[tuple[str, ...], dict[str, object]]:
+        representations = self.service.list_representations(
+            self._project_id, layer_id
+        )
+        input_representation_id = str(
+            node.representation_id or source_representation_id
+        )
+        representation = next(
+            (
+                item
+                for item in representations
+                if str(item.id) == input_representation_id
+            ),
+            None,
+        )
+        if representation is None or representation.kind is not RepresentationKind.IMAGE:
+            raise ValueError("выбранный базовый слой изображений не найден")
+
+        stage = (
+            self.service.data_dir
+            / "agent-staging"
+            / f"contour-{action}-{uuid4()}"
+        ).resolve()
+        stage.mkdir(parents=True, exist_ok=False)
+        source_path = Path(str(representation.source or "")).expanduser()
+        if source_path.is_absolute() and source_path.is_dir():
+            input_directory = source_path.resolve()
+        else:
+            input_directory = stage / "inputs"
+            input_directory.mkdir()
+            cells = self.service.frame_cells(
+                self._project_id,
+                layer_id,
+                representation.id,
+            )
+            for cell in cells:
+                if not cell.sha256:
+                    continue
+                destination = input_directory / f"{cell.x}_{cell.y}.png"
+                with destination.open("xb") as stream:
+                    stream.write(
+                        self.service.read_project_blob(
+                            self._project_id, cell.sha256
+                        )
+                    )
+            if not any(input_directory.iterdir()):
+                raise ValueError("в базовом слое нет доступных изображений")
+
+        destination = stage / (
+            "dataset" if action == "prepare_dataset" else "vectors"
+        )
+        destination.mkdir()
+        destination_option = (
+            "--dataset-dir"
+            if action == "prepare_dataset"
+            else "--output-dir"
+        )
+        return (
+            (
+                "--input-dir",
+                str(input_directory),
+                destination_option,
+                str(destination),
+            ),
+            {
+                "input_representation_id": str(representation.id),
+                "input_directory": str(input_directory),
+                "result_directory": str(destination),
+            },
+        )
+
+    def _launch_managed_plugin(
+        self,
+        plugin_id: str,
+        *,
+        arguments: tuple[str, ...] = (),
+    ) -> None:
+        inventory = self.plugin_items.get(plugin_id)
+        if inventory is None or not inventory.installed or not inventory.metadata.enabled:
+            self._error(f"Плагин {plugin_id} не установлен или отключён")
+            return
+        from .app import launch_plugin
+        launch_plugin(inventory.metadata, arguments=arguments)
+
+    def _launch_karakal(self, layer_id: str) -> None:
+        inventory = self.plugin_items.get("karakal")
+        if inventory is None:
+            self._error("Плагин karakal не установлен")
+            return
+        try:
+            from PyQt6.QtCore import QSettings, Qt, QUrl
+            from PyQt6.QtGui import QDesktopServices
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout
+            from karakal.core.domain import FolderSpec
+            from karakal.plugin.plugin import KarakalPlugin
+        except ImportError as exc:
+            self._error(f"Не удалось загрузить Karakal: {exc}")
+            return
+
+        controller = self
+        project_id = str(self._project_id)
+        frame_key_map: dict[str, str] = {}
+        project = self.service.get_project(project_id)
+        if project is not None:
+            for representation in self.service.list_representations(project_id, layer_id):
+                if not representation.source or not Path(representation.source).is_dir():
+                    continue
+                paths = sorted(
+                    (
+                        path
+                        for path in Path(representation.source).iterdir()
+                        if path.is_file()
+                    ),
+                    key=self.service._natural_path_key,
+                )
+                for index, path in enumerate(paths[: project.width * project.height]):
+                    frame_id = str(
+                        project.frame_id_at(
+                            index % project.width + 1,
+                            index // project.width + 1,
+                        )
+                    )
+                    for key in (path.name, path.stem, str(path), frame_id):
+                        frame_key_map[key] = frame_id
+
+        class KrakenHost:
+            def settings(self):
+                return QSettings("Kraken", "Karakal")
+
+            def logger(self):
+                return logging.getLogger("kraken.karakal")
+
+            def task_runner(self):
+                return None
+
+            def open_path(self, path: Path) -> None:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+            def publish_quality(self, payload: dict) -> None:
+                confidences = {
+                    frame_key_map.get(
+                        str(item.get("frame_key", "")),
+                        str(item.get("frame_key", "")),
+                    ): float(item.get("confidence", 0.0))
+                    for item in payload.get("frames", ())
+                    if str(item.get("frame_key", "")).strip()
+                }
+                controller.service.publish_karakal_analysis(
+                    principal=controller.session.principal,
+                    project_id=project_id,
+                    layer_id=layer_id,
+                    frame_confidence=confidences,
+                    report=dict(payload),
+                    parameters=dict(payload.get("parameters", {})),
+                    plugin_version=inventory.metadata.version,
+                    idempotency_key=f"karakal:{uuid4()}",
+                )
+                workspace = controller._workspace
+                if workspace is not None:
+                    controller._refresh_matrix(workspace, project_id)
+                if controller._layer_dialog is not None:
+                    controller._layer_dialog.set_pipeline(
+                        controller._pipeline_snapshot(project_id, layer_id)
+                    )
+
+        plugin = KarakalPlugin()
+        dialog = QDialog(self.shell)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.setModal(False)
+        dialog.setWindowTitle(f"Karakal · {inventory.metadata.version}")
+        dialog.resize(1380, 860)
+        layout = QVBoxLayout(dialog)
+        widget = plugin.create_widget(KrakenHost(), dialog)
+        layout.addWidget(widget)
+
+        # External directory representations can be transferred immediately.
+        # Managed BlobStore representations remain available through Agent
+        # staging and are not exposed as arbitrary host filesystem paths.
+        representations = self.service.list_representations(project_id, layer_id)
+        karakal_stage = (
+            self.service.data_dir / "agent-staging" / f"karakal-{uuid4()}"
+        ).resolve()
+        karakal_stage.mkdir(parents=True, exist_ok=False)
+        staged_folders: dict[str, Path | None] = {}
+
+        def representation_folder(representation) -> Path | None:
+            identifier = str(representation.id)
+            if identifier in staged_folders:
+                return staged_folders[identifier]
+            if representation.source and Path(representation.source).is_dir():
+                result = Path(representation.source).resolve()
+                staged_folders[identifier] = result
+                return result
+            cells = self.service.frame_cells(
+                project_id,
+                layer_id,
+                representation.id,
+            )
+            if not cells:
+                staged_folders[identifier] = None
+                return None
+            folder = karakal_stage / identifier
+            folder.mkdir()
+            for cell in cells:
+                if not cell.sha256:
+                    continue
+                destination = folder / f"{cell.x}_{cell.y}.png"
+                with destination.open("xb") as stream:
+                    stream.write(self.service.read_project_blob(project_id, cell.sha256))
+            result = folder if any(folder.iterdir()) else None
+            staged_folders[identifier] = result
+            return result
+
+        source = next(
+            (
+                item
+                for item in representations
+                if item.purpose is RepresentationPurpose.SOURCE
+                and representation_folder(item) is not None
+            ),
+            None,
+        )
+        if source is not None:
+            source_path = representation_folder(source)
+            assert source_path is not None
+            widget._presenter._original_folder = FolderSpec(
+                path=source_path,
+                label=source.name,
+            )
+        for binary in representations:
+            binary_path = (
+                representation_folder(binary)
+                if binary.purpose is RepresentationPurpose.BINARY
+                else None
+            )
+            if binary_path is not None:
+                widget._presenter._append_folder_item(
+                    binary_path,
+                    checked=True,
+                )
+        widget._presenter._update_source_labels()
+        widget._presenter._refresh_folder_rows()
+        widget._presenter._sync_action_buttons()
+
+        windows = getattr(self, "_plugin_windows", None)
+        if windows is None:
+            windows = []
+            self._plugin_windows = windows
+        windows.append((dialog, plugin))
+
+        def dispose() -> None:
+            plugin.shutdown()
+            if (dialog, plugin) in windows:
+                windows.remove((dialog, plugin))
+            staging_root = (self.service.data_dir / "agent-staging").resolve()
+            try:
+                karakal_stage.relative_to(staging_root)
+            except ValueError:
+                return
+            if karakal_stage.is_dir() and not karakal_stage.is_symlink():
+                shutil.rmtree(karakal_stage)
+
+        dialog.finished.connect(lambda _result: dispose())
+        dialog.show()
+
+    def _set_matrix_visual_mode(self, _channel: str, _mode: str) -> None:
+        workspace = self._workspace
+        if workspace is not None:
+            workspace.matrix_view.set_visual_modes(*self.shell.visual_modes())
 
     def _load_representations(self, workspace, project_id, layer_id) -> None:
         representations = self.service.list_representations(project_id, layer_id)
@@ -607,7 +1429,68 @@ class DesktopController:
             asset_source=getattr(workspace, "_matrix_asset_source", None),
         )
 
-    def _add_representation(self, workspace, project_id, kind: RepresentationKind) -> None:
+    def _archive_layer_representation(self, layer_id: str, node: PipelineNode) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        workspace = self._workspace
+        project = self.service.get_project(self._project_id)
+        layer = next(
+            (
+                item
+                for item in self.service.list_layers(self._project_id)
+                if str(item.id) == str(layer_id)
+            ),
+            None,
+        )
+        representation_id = str(node.representation_id or node.node_id)
+        representation = next(
+            (
+                item
+                for item in self.service.list_representations(
+                    self._project_id, layer_id
+                )
+                if str(item.id) == representation_id
+            ),
+            None,
+        )
+        if workspace is None or project is None or layer is None or representation is None:
+            self._error("Слой изображений больше не доступен")
+            return
+        answer = QMessageBox.question(
+            self._layer_dialog or workspace,
+            "Удалить слой изображений",
+            (
+                f"Удалить «{representation.name}» из проекта?\n\n"
+                "Связанная история обработки останется в журнале проекта."
+            ),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.service.archive_representation(
+                principal=self.session.principal,
+                project=project,
+                layer=layer,
+                representation=representation,
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            self._error(str(exc))
+            return
+        self._load_representations(workspace, self._project_id, layer_id)
+        if self._layer_dialog is not None:
+            self._layer_dialog.set_pipeline(
+                self._pipeline_snapshot(self._project_id, layer_id)
+            )
+
+    def _add_representation(
+        self,
+        workspace,
+        project_id,
+        kind: RepresentationKind,
+        *,
+        source_image_id: str | None = None,
+    ) -> None:
         from PyQt6.QtWidgets import QDialog, QMessageBox
 
         layer_id = getattr(workspace, "_selected_layer_id", None)
@@ -620,11 +1503,12 @@ class DesktopController:
             self._error("Слой или проект больше не доступен")
             return
         label = "изображение" if kind is RepresentationKind.IMAGE else "вектор"
-        source_image_id = (
-            str(workspace.image_representation_combo.currentData() or "")
-            if kind is RepresentationKind.VECTOR
-            else None
-        )
+        if kind is RepresentationKind.VECTOR and not source_image_id:
+            source_image_id = str(
+                workspace.image_representation_combo.currentData() or ""
+            )
+        if kind is RepresentationKind.IMAGE:
+            source_image_id = None
         if kind is RepresentationKind.VECTOR and not source_image_id:
             QMessageBox.information(
                 workspace, "Kraken", "Сначала добавьте и выберите слой изображения."
@@ -719,6 +1603,10 @@ class DesktopController:
                 else workspace.vector_representation_combo
             )
             combo.setCurrentIndex(combo.findData(str(representation.id)))
+            if self._layer_dialog is not None:
+                self._layer_dialog.set_pipeline(
+                    self._pipeline_snapshot(project_id, layer_id)
+                )
             return
 
     def _add_layer(self, workspace, project_id) -> None:
@@ -1110,6 +1998,7 @@ def run_manager_gui(
         service,
         session,
         thumbnail_store_uri=thumbnail_store_uri,
+        plugin_items=items,
     )
     shell.show()
     return app.exec()

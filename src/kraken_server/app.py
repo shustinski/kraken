@@ -308,6 +308,21 @@ def create_app(
             command_context(actor, idempotency_key, if_match, revision_required=True),
         )
 
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/reorder")
+    async def reorder_layers(
+        project_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        return {
+            "items": backend.reorder_layers(
+                project_id,
+                payload,
+                command_context(actor, idempotency_key, None, revision_required=False),
+            )
+        }
+
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/archive")
     async def archive_layer(
         project_id: str,

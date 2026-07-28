@@ -19,6 +19,13 @@
       "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
       "output_media_types": ["application/x-cif"],
       "maximum_batch_size": 10000
+    },
+    {
+      "operation": "frames.dataset.prepare.v1",
+      "modes": ["interactive"],
+      "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
+      "output_media_types": ["application/vnd.kraken.dataset+zip"],
+      "maximum_batch_size": 10000
     }
   ]
 }

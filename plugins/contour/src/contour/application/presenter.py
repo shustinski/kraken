@@ -30,6 +30,8 @@ class ContourPresenter:
         startup = self.model.startup
         if startup.output_dir:
             self.view.set_output_directory(startup.output_dir)
+        if startup.dataset_dir:
+            self.view.set_dataset_directory(startup.dataset_dir)
         if startup.cif_dir:
             self.view.set_cif_directory(startup.cif_dir)
         if startup.pipeline_json:

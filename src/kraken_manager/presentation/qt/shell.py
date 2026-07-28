@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSettings, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QActionGroup
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -34,6 +35,8 @@ class ProjectManagerShell(QMainWindow):
 
     pageChanged = pyqtSignal(str)
     navigationRequested = pyqtSignal(str)
+    layersRequested = pyqtSignal()
+    cellVisualModeChanged = pyqtSignal(str, str)
 
     DEFAULT_NAVIGATION = (
         ("projects", "Проекты"),
@@ -62,10 +65,66 @@ class ProjectManagerShell(QMainWindow):
         root.addWidget(self.sidebar)
         root.addWidget(self.page_stack, 1)
         self.setCentralWidget(central)
+        self._build_workspace_menus()
 
         self._register_default_pages()
         self.navigation_list.currentRowChanged.connect(self._on_navigation_row_changed)
         self.show_page("projects")
+
+    def _build_workspace_menus(self) -> None:
+        self._ui_settings = QSettings("Kraken", "KrakenHub")
+        management = self.menuBar().addMenu("Управление")
+        self.layers_action = QAction("Слои…", self)
+        self.layers_action.setEnabled(False)
+        self.layers_action.triggered.connect(self.layersRequested)
+        management.addAction(self.layers_action)
+
+        self.view_menu = self.menuBar().addMenu("Вид")
+        self.view_menu.setEnabled(False)
+        self._visual_actions: dict[tuple[str, str], QAction] = {}
+        labels = {
+            "time": "Время",
+            "performer": "Исполнитель",
+            "quality": "Качество",
+            "status": "Статус",
+            "thumbnail": "Миниатюра",
+        }
+        defaults = {"border": "status", "fill": "thumbnail"}
+        for channel, title, modes in (
+            ("border", "Рамка ячейки", ("time", "performer", "quality", "status")),
+            ("fill", "Заполнение ячейки", ("time", "performer", "quality", "status", "thumbnail")),
+        ):
+            submenu = self.view_menu.addMenu(title)
+            group = QActionGroup(self)
+            group.setExclusive(True)
+            selected = str(self._ui_settings.value(f"matrix/{channel}-mode", defaults[channel]))
+            if selected not in modes:
+                selected = defaults[channel]
+            for mode in modes:
+                action = QAction(labels[mode], self, checkable=True)
+                action.setData(mode)
+                action.setChecked(mode == selected)
+                action.triggered.connect(
+                    lambda _checked=False, c=channel, m=mode: self._set_visual_mode(c, m)
+                )
+                group.addAction(action)
+                submenu.addAction(action)
+                self._visual_actions[(channel, mode)] = action
+
+    def _set_visual_mode(self, channel: str, mode: str) -> None:
+        self._ui_settings.setValue(f"matrix/{channel}-mode", mode)
+        self.cellVisualModeChanged.emit(channel, mode)
+
+    def visual_modes(self) -> tuple[str, str]:
+        border = next(
+            (mode for (channel, mode), action in self._visual_actions.items() if channel == "border" and action.isChecked()),
+            "status",
+        )
+        fill = next(
+            (mode for (channel, mode), action in self._visual_actions.items() if channel == "fill" and action.isChecked()),
+            "thumbnail",
+        )
+        return border, fill
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame()
@@ -159,6 +218,9 @@ class ProjectManagerShell(QMainWindow):
             self.navigation_list.setCurrentItem(navigation_item)
         if changed:
             self.pageChanged.emit(normalized)
+        workspace_active = normalized == "workspace"
+        self.layers_action.setEnabled(workspace_active)
+        self.view_menu.setEnabled(workspace_active)
 
     def open_project_workspace(self, workspace: ProjectWorkspacePage | None = None) -> ProjectWorkspacePage:
         """Register or replace the non-sidebar workspace and display it."""

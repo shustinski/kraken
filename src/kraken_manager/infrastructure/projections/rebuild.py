@@ -21,6 +21,7 @@ from kraken_manager.domain.project import (
     ProjectState,
     Representation,
     RepresentationKind,
+    RepresentationPurpose,
     StructureState,
 )
 from kraken_manager.domain.artifacts import ArtifactScope
@@ -173,7 +174,7 @@ class ProjectionRebuilder:
             if project is not None:
                 self._save("project", replace(project, revision=event.revision), event)
             return True
-        if event.event_type in {"LayerRenamed", "LayerReordered", "LayerArchived"}:
+        if event.event_type in {"LayerRenamed", "LayerReordered", "LayersReordered", "LayerArchived"}:
             raw = payload.get("layer")
             if not isinstance(raw, Mapping):
                 raise ValueError("Layer lifecycle event has no aggregate snapshot")
@@ -196,6 +197,9 @@ class ProjectionRebuilder:
                 layer_id=LayerId(str(payload["layer_id"])),
                 name=str(payload["name"]),
                 kind=RepresentationKind(str(payload["kind"])),
+                purpose=RepresentationPurpose(
+                    str(payload.get("purpose", "vector" if str(payload["kind"]) == "vector" else "source"))
+                ),
                 note=str(payload.get("note", "")),
                 source=None if payload.get("source") is None else str(payload["source"]),
                 source_image_representation_id=(
@@ -234,6 +238,9 @@ class ProjectionRebuilder:
                     layer_id=LayerId(str(item["layer_id"])),
                     name=str(item["name"]),
                     kind=RepresentationKind(str(item["kind"])),
+                    purpose=RepresentationPurpose(
+                        str(item.get("purpose", "vector" if str(item["kind"]) == "vector" else "source"))
+                    ),
                     note=str(item.get("note", "")),
                     source=None if item.get("source") is None else str(item["source"]),
                     source_image_representation_id=(

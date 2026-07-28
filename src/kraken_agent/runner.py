@@ -10,7 +10,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from kraken_core.plugin_protocol import PluginJobManifest, PluginJobOutcome, PluginResultManifest
+from kraken_core.plugin_protocol import (
+    PluginAssetScope,
+    PluginJobManifest,
+    PluginJobManifestV2,
+    PluginJobOutcome,
+    PluginResultManifest,
+    PluginResultPublicationV2,
+    parse_plugin_result_json,
+)
 from kraken_core.safe_files import open_regular_append, open_regular_read
 
 from .jobs import AgentJobState, DurableJobStore, JobStateError, StagingWorkspace, TERMINAL_STATES
@@ -111,7 +119,29 @@ class SubprocessPluginRunner:
             process.wait(timeout=10)
 
     @staticmethod
-    def _validate_result_contract(manifest: PluginJobManifest, result: PluginResultManifest) -> None:
+    def _validate_result_contract(
+        manifest: PluginJobManifest | PluginJobManifestV2,
+        result: PluginResultManifest | PluginResultPublicationV2,
+    ) -> None:
+        if isinstance(manifest, PluginJobManifestV2):
+            if not isinstance(result, PluginResultPublicationV2):
+                raise ValueError("A V2 job requires a V2 result publication")
+            input_frames = {
+                str(item.frame_id)
+                for item in manifest.inputs
+                if item.scope is PluginAssetScope.FRAME and item.frame_id is not None
+            }
+            for output in result.outputs:
+                if (
+                    output.scope is PluginAssetScope.FRAME
+                    and output.frame_id not in input_frames
+                ):
+                    raise ValueError(f"Plugin returned an unknown frame: {output.frame_id}")
+            if not result.final:
+                raise ValueError("A terminating V2 process must mark its publication final")
+            return
+        if not isinstance(result, PluginResultManifest):
+            raise ValueError("A V1 job requires a V1 result manifest")
         inputs = {item.frame_id: item for item in manifest.inputs}
         output_frames: set[str] = set()
         for output in result.outputs:
@@ -182,18 +212,30 @@ class SubprocessPluginRunner:
                 raw_result = result_stream.read(self._MAX_RESULT_MANIFEST_BYTES + 1)
             if len(raw_result) > self._MAX_RESULT_MANIFEST_BYTES:
                 raise ValueError("Plugin result manifest is too large")
-            result = PluginResultManifest.from_json(raw_result.decode("utf-8"))
+            result = parse_plugin_result_json(raw_result.decode("utf-8"))
             if result.job_id != job.job_id:
                 raise ValueError("Plugin returned a result for another job")
             self._validate_result_contract(manifest, result)
             workspace.verify_result(result)
             current = self.store.get(job.job_id)
+            callback_key = (
+                f"publication:{result.publication_id}"
+                if isinstance(result, PluginResultPublicationV2)
+                else f"process:{result.completed_at}"
+            )
             current, _ = self.store.record_result(
                 result,
-                callback_key=f"process:{result.completed_at}",
+                callback_key=callback_key,
                 expected_revision=current.revision,
             )
-            if result.outcome == PluginJobOutcome.SUCCEEDED.value:
+            if isinstance(result, PluginResultPublicationV2):
+                target = {
+                    "succeeded": AgentJobState.IMPORTING,
+                    "partial": AgentJobState.PARTIAL,
+                    "failed": AgentJobState.FAILED,
+                    "cancelled": AgentJobState.CANCELLED,
+                }[result.outcome]
+            elif result.outcome == PluginJobOutcome.SUCCEEDED.value:
                 target = AgentJobState.IMPORTING
             elif result.outcome == PluginJobOutcome.PARTIAL.value:
                 target = AgentJobState.PARTIAL

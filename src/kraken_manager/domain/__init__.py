@@ -45,6 +45,7 @@ from .project import (
     ProjectState,
     Representation,
     RepresentationKind,
+    RepresentationPurpose,
     StructureState,
     deterministic_frame_id,
 )
@@ -122,6 +123,7 @@ __all__ = [
     "Representation",
     "RepresentationId",
     "RepresentationKind",
+    "RepresentationPurpose",
     "ReviewBatch",
     "ReviewBatchId",
     "ReviewBatchState",

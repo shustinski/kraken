@@ -31,6 +31,7 @@ from kraken_manager.application.dto import (
     RenameProjectCommand,
     RenameRepresentationCommand,
     ReorderLayerCommand,
+    ReorderLayersCommand,
     RestoreProjectCommand,
     RevokeProjectRoleCommand,
     UpdateRepresentationNoteCommand,
@@ -50,6 +51,7 @@ from kraken_manager.application.lifecycle import (
     RenameLayerHandler,
     RenameProjectHandler,
     ReorderLayerHandler,
+    ReorderLayersHandler,
     RestoreProjectHandler,
 )
 from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
@@ -60,9 +62,18 @@ from kraken_manager.application.representation_lifecycle import (
     UpdateRepresentationNoteHandler,
 )
 from kraken_manager.domain.artifacts import ArtifactScope, ArtifactVersion, deterministic_frame_series_id
-from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, RepresentationId
+from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, RepresentationId, new_uuid
+from kraken_manager.domain.events import ActorSnapshot, EventEnvelope, ProgramSnapshot
 from kraken_manager.domain.identity import Performer, Principal, ProjectRole
-from kraken_manager.domain.project import GridOrientation, Layer, LayerType, Project, Representation, RepresentationKind
+from kraken_manager.domain.project import (
+    GridOrientation,
+    Layer,
+    LayerType,
+    Project,
+    Representation,
+    RepresentationKind,
+    RepresentationPurpose,
+)
 from kraken_manager.domain.workflows import ReviewBatch
 from kraken_manager.infrastructure.auth.identity_store import LocalIdentityAclStore
 from kraken_manager.infrastructure.auth.local import LocalAccountStore, ScryptPasswordHasher
@@ -142,6 +153,34 @@ class FrameCellSnapshot:
     frame_id: str
     artifact_version_id: str
     sha256: str
+    modified_at: str = ""
+    performer_color: str = ""
+    performer_initials: str = ""
+    review_status: str = "not_checked"
+    quality: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FrameManagementState:
+    frame_id: str
+    artifact_version_id: str
+    modified_at: str
+    performer_color: str
+    performer_initials: str
+    review_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class KarakalAnalysisRun:
+    run_id: str
+    project_id: str
+    layer_id: str
+    publication_sequence: int
+    created_at: str
+    frame_confidence: dict[str, float]
+    report: dict[str, object]
+    parameters: dict[str, object]
+    plugin_version: str
 
 
 class EmbeddedProjectService:
@@ -326,6 +365,7 @@ class EmbeddedProjectService:
         source: str | None = None,
         source_image_representation_id=None,
         active: bool = False,
+        purpose: RepresentationPurpose = RepresentationPurpose.SOURCE,
     ) -> Representation:
         current_layer = next((item for item in self.list_layers(project.id) if item.id == layer.id), None)
         if current_layer is None:
@@ -341,6 +381,7 @@ class EmbeddedProjectService:
             source=source,
             source_image_representation_id=source_image_representation_id,
             active=active,
+            purpose=purpose,
         )
         return CreateRepresentationHandler(self._uow(str(project.id)), self.profiles, self.clock)(command)
 
@@ -635,6 +676,19 @@ class EmbeddedProjectService:
         if representation is None or str(representation.layer_id) != str(layer_id):
             return ()
         cells: dict[str, FrameCellSnapshot] = {}
+        performers = {
+            str(item.principal_id): item
+            for item in self.list_performers()
+            if item.principal_id is not None
+        }
+        accepted_versions = {
+            str(identifier)
+            for event in self.history(project.id, as_of=as_of)
+            if event.event_type == "ReviewBatchAccepted"
+            for identifier in event.payload.get("candidate_version_ids", ())
+        }
+        analysis = self.latest_karakal_analysis(project.id, layer_id, as_of=as_of)
+        confidence = {} if analysis is None else analysis.frame_confidence
         for series in projection.list_artifact_series(
             project.id,
             layer_id=LayerId(str(layer_id)),
@@ -666,6 +720,7 @@ class EmbeddedProjectService:
             if version is None or coordinate is None or series.frame_id is None:
                 continue
             status = "image_ready" if representation.kind is RepresentationKind.IMAGE else "vectorized"
+            performer = performers.get(str(version.author_principal_id))
             cells[str(series.frame_id)] = FrameCellSnapshot(
                 coordinate[0],
                 coordinate[1],
@@ -673,6 +728,11 @@ class EmbeddedProjectService:
                 str(series.frame_id),
                 str(version.id),
                 version.sha256,
+                version.created_at.isoformat(),
+                "" if performer is None else performer.color,
+                "" if performer is None else "".join(part[:1] for part in performer.name.split()[:2]).upper(),
+                "checked" if str(version.id) in accepted_versions else "not_checked",
+                confidence.get(str(series.frame_id)),
             )
         review_status = {
             "issued": "in_review",
@@ -696,8 +756,232 @@ class EmbeddedProjectService:
                         previous.frame_id,
                         previous.artifact_version_id,
                         previous.sha256,
+                        previous.modified_at,
+                        previous.performer_color,
+                        previous.performer_initials,
+                        "in_review",
+                        previous.quality,
                     )
         return tuple(sorted(cells.values(), key=lambda item: (item.y, item.x)))
+
+    def frame_management_states(
+        self,
+        project_id: ProjectId | str,
+        layer_id: LayerId | str,
+        representation_id: RepresentationId | str,
+        *,
+        as_of: datetime | None = None,
+    ) -> tuple[FrameManagementState, ...]:
+        return tuple(
+            FrameManagementState(
+                frame_id=item.frame_id,
+                artifact_version_id=item.artifact_version_id,
+                modified_at=item.modified_at,
+                performer_color=item.performer_color,
+                performer_initials=item.performer_initials,
+                review_status=item.review_status,
+            )
+            for item in self.frame_cells(
+                project_id,
+                layer_id,
+                representation_id,
+                as_of=as_of,
+            )
+        )
+
+    def publish_karakal_analysis(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        layer_id: LayerId | str,
+        frame_confidence: dict[str, float],
+        report: dict[str, object],
+        parameters: dict[str, object],
+        plugin_version: str,
+        idempotency_key: str,
+    ) -> KarakalAnalysisRun:
+        project = self.get_project(project_id)
+        if project is None:
+            raise ValueError("Project does not exist")
+        layer = next(
+            (value for value in self.list_layers(project.id) if str(value.id) == str(layer_id)),
+            None,
+        )
+        if layer is None:
+            raise ValueError("Layer does not exist")
+        normalized: dict[str, float] = {}
+        for frame_id, raw_value in frame_confidence.items():
+            value = float(raw_value)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError("Karakal confidence must be in range 0..1")
+            normalized[str(frame_id)] = value
+        prior = next(
+            (
+                event
+                for event in reversed(self.history(project.id))
+                if event.event_type == "KarakalAnalysisPublished"
+                and event.idempotency_key == idempotency_key
+            ),
+            None,
+        )
+        if prior is None:
+            stream_id = f"karakal:{layer.id}"
+            store = FilesystemEventStore(self.catalog_root, str(project.id))
+            revision = store.current_revision(stream_id)
+            run_id = new_uuid()
+            event = EventEnvelope.create(
+                stream_id=stream_id,
+                project_id=project.id,
+                revision=revision + 1,
+                event_type="KarakalAnalysisPublished",
+                payload={
+                    "run_id": run_id,
+                    "layer_id": str(layer.id),
+                    "publication_sequence": revision + 1,
+                    "frame_confidence": normalized,
+                    "report": dict(report),
+                    "parameters": dict(parameters),
+                    "plugin_version": str(plugin_version),
+                },
+                actor=ActorSnapshot.from_principal(principal),
+                program=ProgramSnapshot("Karakal", str(plugin_version)),
+                idempotency_key=idempotency_key,
+            )
+            store.append(stream_id, expected_revision=revision, events=(event,))
+            prior = event
+        return self._karakal_run_from_event(prior)
+
+    def record_layer_pipeline_action(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        layer_id: LayerId | str,
+        action: str,
+        node_id: str,
+        plugin_id: str,
+        capability: str,
+        mode: str,
+        parameters: dict[str, object] | None = None,
+    ) -> EventEnvelope:
+        project = self.get_project(project_id)
+        if project is None:
+            raise ValueError("Project does not exist")
+        if not any(str(value.id) == str(layer_id) for value in self.list_layers(project.id)):
+            raise ValueError("Layer does not exist")
+        stream_id = f"layer-pipeline:{layer_id}"
+        store = FilesystemEventStore(self.catalog_root, str(project.id))
+        revision = store.current_revision(stream_id)
+        event = EventEnvelope.create(
+            stream_id=stream_id,
+            project_id=project.id,
+            revision=revision + 1,
+            event_type="LayerPipelineActionRequested",
+            payload={
+                "layer_id": str(layer_id),
+                "action": str(action),
+                "node_id": str(node_id),
+                "plugin_id": str(plugin_id),
+                "capability": str(capability),
+                "mode": str(mode),
+                "parameters": dict(parameters or {}),
+                "state": "launched",
+            },
+            actor=ActorSnapshot.from_principal(principal),
+            program=ProgramSnapshot(str(plugin_id)),
+        )
+        store.append(stream_id, expected_revision=revision, events=(event,))
+        return event
+
+    def remove_layer_pipeline_action(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        layer_id: LayerId | str,
+        action_event_id: str,
+    ) -> EventEnvelope:
+        project = self.get_project(project_id)
+        if project is None:
+            raise ValueError("Project does not exist")
+        target = next(
+            (
+                event
+                for event in self.history(project.id)
+                if event.event_id == str(action_event_id)
+                and event.event_type == "LayerPipelineActionRequested"
+                and str(event.payload.get("layer_id", "")) == str(layer_id)
+            ),
+            None,
+        )
+        if target is None:
+            raise ValueError("Pipeline step does not exist in this layer")
+        prior = next(
+            (
+                event
+                for event in self.history(project.id)
+                if event.event_type == "LayerPipelineActionRemoved"
+                and str(event.payload.get("action_event_id", "")) == target.event_id
+            ),
+            None,
+        )
+        if prior is not None:
+            return prior
+        stream_id = f"layer-pipeline:{layer_id}"
+        store = FilesystemEventStore(self.catalog_root, str(project.id))
+        revision = store.current_revision(stream_id)
+        event = EventEnvelope.create(
+            stream_id=stream_id,
+            project_id=project.id,
+            revision=revision + 1,
+            event_type="LayerPipelineActionRemoved",
+            payload={
+                "layer_id": str(layer_id),
+                "action_event_id": target.event_id,
+                "action": str(target.payload.get("action", "")),
+            },
+            actor=ActorSnapshot.from_principal(principal),
+            program=ProgramSnapshot("Kraken"),
+        )
+        store.append(stream_id, expected_revision=revision, events=(event,))
+        return event
+
+    def latest_karakal_analysis(
+        self,
+        project_id: ProjectId | str,
+        layer_id: LayerId | str,
+        *,
+        as_of: datetime | None = None,
+    ) -> KarakalAnalysisRun | None:
+        event = next(
+            (
+                item
+                for item in reversed(self.history(project_id, as_of=as_of))
+                if item.event_type == "KarakalAnalysisPublished"
+                and str(item.payload.get("layer_id", "")) == str(layer_id)
+            ),
+            None,
+        )
+        return None if event is None else self._karakal_run_from_event(event)
+
+    @staticmethod
+    def _karakal_run_from_event(event: EventEnvelope) -> KarakalAnalysisRun:
+        payload = event.payload
+        return KarakalAnalysisRun(
+            run_id=str(payload["run_id"]),
+            project_id=str(event.project_id),
+            layer_id=str(payload["layer_id"]),
+            publication_sequence=int(payload["publication_sequence"]),
+            created_at=event.recorded_at.isoformat(),
+            frame_confidence={
+                str(identifier): float(value)
+                for identifier, value in dict(payload.get("frame_confidence", {})).items()
+            },
+            report=dict(payload.get("report", {})),
+            parameters=dict(payload.get("parameters", {})),
+            plugin_version=str(payload.get("plugin_version", "")),
+        )
 
     def matrix_viewport(
         self,
@@ -772,6 +1056,11 @@ class EmbeddedProjectService:
                     "status": item.status,
                     "x": item.x,
                     "y": item.y,
+                    "modified_at": item.modified_at,
+                    "performer_color": item.performer_color,
+                    "performer_initials": item.performer_initials,
+                    "review_status": item.review_status,
+                    "quality": item.quality,
                 }
                 if current is not None:
                     for field in ("asset_sha256", "asset_revision"):
@@ -883,6 +1172,25 @@ class EmbeddedProjectService:
             for part in re.split(r"(\d+)", path.name)
         )
 
+    def reorder_layers(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layers: Iterable[Layer],
+        layer_ids: Iterable[LayerId | str],
+        idempotency_key: str,
+    ) -> tuple[Layer, ...]:
+        current = tuple(layers)
+        return ReorderLayersHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+            ReorderLayersCommand(
+                context=CommandContext(actor=principal, idempotency_key=idempotency_key),
+                project_id=project.id,
+                layer_ids=tuple(LayerId(str(value)) for value in layer_ids),
+                expected_revisions=tuple((layer.id, layer.revision) for layer in current),
+            )
+        )
+
     def _external_directory_viewport(
         self,
         project: Project,
@@ -922,6 +1230,8 @@ class EmbeddedProjectService:
             self._external_source_indexes[cache_key] = paths
 
         cells: list[dict[str, Any]] = []
+        analysis = self.latest_karakal_analysis(project.id, representation.layer_id)
+        confidence = {} if analysis is None else analysis.frame_confidence
         first_index = (y1 - 1) * project.width + (x1 - 1)
         last_index = min(len(paths), (y2 - 1) * project.width + x2)
         for index in range(first_index, last_index):
@@ -935,12 +1245,18 @@ class EmbeddedProjectService:
             except OSError:
                 continue
             normalized_path = str(path.resolve())
+            frame_id = str(project.frame_id_at(x, y))
             cells.append(
                 {
                     "artifact_version_id": "",
-                    "frame_id": str(project.frame_id_at(x, y)),
+                    "frame_id": frame_id,
                     "sha256": "",
                     "status": "image_ready",
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+                    "performer_color": "",
+                    "performer_initials": "",
+                    "review_status": "not_checked",
+                    "quality": confidence.get(frame_id),
                     "x": x,
                     "y": y,
                     "asset_source_key": hashlib.sha256(

@@ -26,7 +26,12 @@ from kraken_manager.domain.common import (
 )
 from kraken_manager.domain.identity import Principal
 from kraken_manager.domain.identity import ProjectRole
-from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
+from kraken_manager.domain.project import (
+    GridOrientation,
+    LayerType,
+    RepresentationKind,
+    RepresentationPurpose,
+)
 from kraken_manager.domain.selection import FrameSelectionV1
 from kraken_manager.domain.workflows import PluginInputV1, PluginJob, PluginResultManifestV1
 from kraken_manager.domain.workflows import (
@@ -113,6 +118,7 @@ class CreateRepresentationCommand:
     source: str | None = None
     source_image_representation_id: RepresentationId | None = None
     active: bool = False
+    purpose: RepresentationPurpose = RepresentationPurpose.SOURCE
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +159,31 @@ class ReorderLayerCommand:
     layer_id: LayerId
     order: int
     expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReorderLayersCommand:
+    """Atomically replace the complete active layer order of a project."""
+
+    context: CommandContext
+    project_id: ProjectId
+    layer_ids: tuple[LayerId, ...]
+    expected_revisions: tuple[tuple[LayerId, int], ...]
+
+    def __post_init__(self) -> None:
+        identifiers = tuple(LayerId(str(value)) for value in self.layer_ids)
+        if not identifiers or len(identifiers) != len(set(identifiers)):
+            raise ValueError("layer_ids must be a non-empty unique sequence")
+        revisions = tuple((LayerId(str(identifier)), int(revision)) for identifier, revision in self.expected_revisions)
+        if (
+            len(revisions) != len(identifiers)
+            or {identifier for identifier, _ in revisions} != set(identifiers)
+        ):
+            raise ValueError("expected_revisions must cover every layer exactly once")
+        if any(revision < 0 for _, revision in revisions):
+            raise ValueError("layer revisions must not be negative")
+        object.__setattr__(self, "layer_ids", identifiers)
+        object.__setattr__(self, "expected_revisions", revisions)
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,6 +498,7 @@ __all__ = [
     "RenameProjectCommand",
     "RenameRepresentationCommand",
     "ReorderLayerCommand",
+    "ReorderLayersCommand",
     "RestoreProjectCommand",
     "RevokeProjectRoleCommand",
     "ReturnedFileDigest",

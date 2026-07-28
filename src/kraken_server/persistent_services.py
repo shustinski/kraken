@@ -22,6 +22,7 @@ from kraken_manager.application.dto import (
     RenameProjectCommand,
     RenameRepresentationCommand,
     ReorderLayerCommand,
+    ReorderLayersCommand,
     RestoreProjectCommand,
     RevokeProjectRoleCommand,
     UpdateRepresentationNoteCommand,
@@ -43,6 +44,7 @@ from kraken_manager.application.lifecycle import (
     RenameLayerHandler,
     RenameProjectHandler,
     ReorderLayerHandler,
+    ReorderLayersHandler,
     RestoreProjectHandler,
 )
 from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
@@ -54,7 +56,15 @@ from kraken_manager.application.representation_lifecycle import (
 )
 from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, RepresentationId, validate_uuid
 from kraken_manager.domain.identity import ProjectRole
-from kraken_manager.domain.project import GridOrientation, Layer, LayerType, Project, Representation, RepresentationKind
+from kraken_manager.domain.project import (
+    GridOrientation,
+    Layer,
+    LayerType,
+    Project,
+    Representation,
+    RepresentationKind,
+    RepresentationPurpose,
+)
 from kraken_manager.infrastructure.postgres import PostgresEventStore, PostgresIdentityAclStore, PostgresProjectionStore
 
 from .services import CommandContext, ConflictError, ForbiddenError, NotFoundError, ValidationError
@@ -126,6 +136,12 @@ def _representation_dict(representation: Representation) -> dict[str, Any]:
         "layer_id": str(representation.layer_id),
         "name": representation.name,
         "kind": representation.kind.value,
+        "purpose": representation.purpose.value,
+        "source_image_representation_id": (
+            None
+            if representation.source_image_representation_id is None
+            else str(representation.source_image_representation_id)
+        ),
         "note": representation.note,
         "source": representation.source,
         "active": representation.active,
@@ -161,6 +177,7 @@ class PostgresServerServices:
         self._restore_project = RestoreProjectHandler(uow_factory, self.profiles, SystemClock())
         self._rename_layer = RenameLayerHandler(uow_factory, self.profiles, SystemClock())
         self._reorder_layer = ReorderLayerHandler(uow_factory, self.profiles, SystemClock())
+        self._reorder_layers = ReorderLayersHandler(uow_factory, self.profiles, SystemClock())
         self._archive_layer = ArchiveLayerHandler(uow_factory, self.profiles, SystemClock())
         self._assign_project_role = AssignProjectRoleHandler(uow_factory, self.profiles, SystemClock())
         self._revoke_project_role = RevokeProjectRoleHandler(uow_factory, self.profiles, SystemClock())
@@ -374,6 +391,29 @@ class PostgresServerServices:
             self._translate_lifecycle_error(exc)
             raise AssertionError("unreachable")
 
+    def reorder_layers(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> list[dict[str, Any]]:
+        raw_revisions = payload.get("expected_revisions", {})
+        if not isinstance(raw_revisions, Mapping):
+            raise ValidationError("expected_revisions must be an object")
+        try:
+            layers = self._reorder_layers(
+                ReorderLayersCommand(
+                    context=self._application_context(context),
+                    project_id=_project_id(project_id),
+                    layer_ids=tuple(_layer_id(str(value)) for value in payload.get("layer_ids", ())),
+                    expected_revisions=tuple(
+                        (_layer_id(str(identifier)), int(revision))
+                        for identifier, revision in raw_revisions.items()
+                    ),
+                )
+            )
+            return [_layer_dict(layer) for layer in layers]
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
     def archive_layer(
         self, project_id: str, layer_id: str, context: CommandContext
     ) -> dict[str, Any]:
@@ -489,9 +529,22 @@ class PostgresServerServices:
                     layer_id=_layer_id(layer_id),
                     name=str(payload.get("name", "")),
                     kind=RepresentationKind(str(payload.get("kind", ""))),
+                    purpose=RepresentationPurpose(
+                        str(
+                            payload.get(
+                                "purpose",
+                                "vector" if str(payload.get("kind", "")) == "vector" else "source",
+                            )
+                        )
+                    ),
                     expected_layer_revision=self._require_revision(context),
                     note=str(payload.get("note", "")),
                     source=None if payload.get("source") is None else str(payload["source"]),
+                    source_image_representation_id=(
+                        None
+                        if payload.get("source_image_representation_id") is None
+                        else RepresentationId(str(payload["source_image_representation_id"]))
+                    ),
                     active=bool(payload.get("active", False)),
                 )
             )

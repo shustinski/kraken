@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from threading import Thread
 
 from kraken_core.safe_files import ensure_regular_directory, open_regular_read
+from kraken_core.plugin_protocol import WorkspacePluginResultV1
 
 from kraken_manager.application.dto import (
     AddArtifactVersionCommand,
@@ -37,6 +39,19 @@ from kraken_manager.application.dto import (
     UpdateRepresentationNoteCommand,
 )
 from kraken_manager.application.imports import ImportMappingMode, ImportPlan, ImportPlanner, ImportSource
+from kraken_manager.workspace import (
+    DerivedRun,
+    DerivedRunKind,
+    ImageConversionSettings,
+    LayerFileBinding,
+    LayerSourceScan,
+    ProjectWorkspaceBinding,
+    WorkspaceValidationError,
+    layer_binding_to_dict,
+    map_frame_positions,
+    project_workspace_to_dict,
+    validate_workspace_name,
+)
 from kraken_manager.application.ports import StorageProfile
 from kraken_manager.application.use_cases import (
     AddArtifactVersionHandler,
@@ -95,6 +110,7 @@ from kraken_manager.infrastructure.migration import (
 )
 from kraken_manager.infrastructure.projections import rebuild_filesystem_index
 from kraken_manager.infrastructure.reports import ActivityRecord
+from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
 
 
 def default_data_dir() -> Path:
@@ -194,7 +210,15 @@ class EmbeddedProjectService:
         self.identities = LocalIdentityAclStore(self.data_dir / "identity.sqlite3")
         self.performers = LocalSQLitePerformerStore(self.data_dir / "identity.sqlite3")
         self.profile = filesystem_storage_profile(str(self.catalog_root))
-        self._external_source_indexes: dict[tuple[str, str, int], tuple[Path, ...]] = {}
+        self.workspace_registry = WorkspaceRegistry(self.catalog_root)
+        self.workspace_files = WorkspaceFileService(self.workspace_registry)
+        self.default_source_root = self.data_dir / "workspace-source"
+        self.default_derived_root = self.data_dir / "workspace-derived"
+        self.default_source_root.mkdir(parents=True, exist_ok=True)
+        self.default_derived_root.mkdir(parents=True, exist_ok=True)
+        self._external_source_indexes: dict[
+            tuple[str, str, int], tuple[Path | None, ...]
+        ] = {}
         self.profiles = DesktopStorageProfiles(self.profile)
         self.clock = SystemClock()
 
@@ -297,6 +321,31 @@ class EmbeddedProjectService:
             acl=self.identities,
         )
 
+    def _record_workspace_event(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        stream_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        idempotency_key: str,
+    ) -> EventEnvelope:
+        store = FilesystemEventStore(self.catalog_root, str(project_id))
+        revision = store.current_revision(stream_id)
+        event = EventEnvelope.create(
+            stream_id=stream_id,
+            project_id=ProjectId(str(project_id)),
+            revision=revision + 1,
+            event_type=event_type,
+            payload=payload,
+            actor=ActorSnapshot.from_principal(principal),
+            program=ProgramSnapshot("Kraken workspace", "1"),
+            idempotency_key=idempotency_key,
+        )
+        store.append(stream_id, expected_revision=revision, events=(event,))
+        return event
+
     def create_project(
         self,
         *,
@@ -307,10 +356,13 @@ class EmbeddedProjectService:
         orientation: GridOrientation,
         idempotency_key: str,
         layer_template: bool = False,
+        source_root: Path | str | None = None,
+        derived_root: Path | str | None = None,
     ) -> Project:
+        safe_name = validate_workspace_name(name, field_name="Название проекта")
         command = CreateProjectCommand(
             context=CommandContext(actor=principal, idempotency_key=idempotency_key),
-            name=name,
+            name=safe_name,
             width=width,
             height=height,
             orientation=orientation,
@@ -318,7 +370,27 @@ class EmbeddedProjectService:
         )
         assert command.project_id is not None
         project_id = str(command.project_id)
-        project = CreateProjectHandler(self._uow(project_id), self.profiles, self.clock)(command)
+        binding = self.workspace_files.create_project(
+            project_id=project_id,
+            project_name=safe_name,
+            source_root=source_root or self.default_source_root,
+            derived_root=derived_root or self.default_derived_root,
+        )
+
+        try:
+            project = CreateProjectHandler(self._uow(project_id), self.profiles, self.clock)(command)
+        except Exception:
+            self.workspace_files.remove_project_layout(binding)
+            self.workspace_registry.remove_project(project_id)
+            raise
+        self._record_workspace_event(
+            principal=principal,
+            project_id=project.id,
+            stream_id=f"project-workspace:{project.id}",
+            event_type="ProjectWorkspaceBoundV1",
+            payload=project_workspace_to_dict(binding),
+            idempotency_key=f"{idempotency_key}:workspace",
+        )
         if layer_template:
             for order, layer_type in enumerate(LayerType, start=1):
                 self.create_layer(
@@ -332,6 +404,391 @@ class EmbeddedProjectService:
                 project = self.get_project(project.id) or project
         return project
 
+    def project_workspace(self, project_id: ProjectId | str) -> ProjectWorkspaceBinding | None:
+        return self.workspace_registry.get_project(str(project_id))
+
+    def layer_file_binding(
+        self, project_id: ProjectId | str, layer_id: LayerId | str
+    ) -> LayerFileBinding | None:
+        return self.workspace_registry.get_layer(str(project_id), str(layer_id))
+
+    def scan_layer_source(
+        self, directory: Path | str, *, maximum_frames: int
+    ) -> LayerSourceScan:
+        return self.workspace_files.scan(directory, maximum_frames=maximum_frames)
+
+    def create_layer_from_disk(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        name: str,
+        layer_type: LayerType,
+        order: int,
+        scan: LayerSourceScan,
+        conversion: ImageConversionSettings,
+        idempotency_key: str,
+        progress=None,
+        cancelled=None,
+    ) -> tuple[Layer, LayerFileBinding, Representation]:
+        workspace = self.project_workspace(project.id)
+        if workspace is None:
+            raise WorkspaceValidationError("project has no two-root workspace")
+        safe_name = validate_workspace_name(name, field_name="Название слоя")
+        reserved_layer_id = LayerId(new_uuid())
+        binding = self.workspace_files.import_layer(
+            project=workspace,
+            layer_id=str(reserved_layer_id),
+            layer_name=safe_name,
+            scan=scan,
+            conversion=conversion,
+            progress=progress,
+            cancelled=cancelled,
+        )
+        try:
+            current_project = self.get_project(project.id) or project
+            layer = self.create_layer(
+                principal=principal,
+                project=current_project,
+                name=safe_name,
+                layer_type=layer_type,
+                order=order,
+                idempotency_key=idempotency_key,
+                layer_id=reserved_layer_id,
+            )
+            latest_project = self.get_project(project.id) or current_project
+            representation = self.create_representation(
+                principal=principal,
+                project=latest_project,
+                layer=layer,
+                name="Исходные изображения",
+                kind=RepresentationKind.IMAGE,
+                idempotency_key=f"{idempotency_key}:representation",
+                source=binding.image_directory,
+                active=True,
+                purpose=RepresentationPurpose.SOURCE,
+            )
+            self._record_workspace_event(
+                principal=principal,
+                project_id=project.id,
+                stream_id=f"layer-files:{layer.id}",
+                event_type="LayerFileBoundV1",
+                payload=layer_binding_to_dict(binding),
+                idempotency_key=f"{idempotency_key}:file-binding",
+            )
+            return layer, binding, representation
+        except Exception:
+            stored = self.layer_file_binding(project.id, reserved_layer_id)
+            if stored is not None:
+                self.workspace_files.remove_managed_layer_layout(stored, workspace)
+                self.workspace_registry.remove_layer(str(project.id), str(reserved_layer_id))
+            current_project = self.get_project(project.id) or project
+            current_layer = next(
+                (item for item in self.list_layers(project.id) if item.id == reserved_layer_id),
+                None,
+            )
+            if current_layer is not None:
+                try:
+                    self.archive_layer(
+                        principal=principal,
+                        project=current_project,
+                        layer=current_layer,
+                        idempotency_key=f"{idempotency_key}:compensate",
+                    )
+                except Exception:
+                    pass
+            raise
+
+    def create_external_layer(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        name: str,
+        layer_type: LayerType,
+        order: int,
+        image_directory: Path | str,
+        ssc_directory: Path | str | None,
+        prv_directory: Path | str | None,
+        idempotency_key: str,
+    ) -> tuple[Layer, LayerFileBinding, Representation]:
+        safe_name = validate_workspace_name(name, field_name="Название слоя")
+        reserved_layer_id = LayerId(new_uuid())
+        binding = self.workspace_files.bind_external_layer(
+            project_id=str(project.id),
+            layer_id=str(reserved_layer_id),
+            layer_name=safe_name,
+            image_directory=image_directory,
+            ssc_directory=ssc_directory,
+            prv_directory=prv_directory,
+            maximum_frames=project.frame_count,
+        )
+        try:
+            current_project = self.get_project(project.id) or project
+            layer = self.create_layer(
+                principal=principal,
+                project=current_project,
+                name=safe_name,
+                layer_type=layer_type,
+                order=order,
+                idempotency_key=idempotency_key,
+                layer_id=reserved_layer_id,
+            )
+            latest_project = self.get_project(project.id) or current_project
+            representation = self.create_representation(
+                principal=principal,
+                project=latest_project,
+                layer=layer,
+                name="Исходные изображения",
+                kind=RepresentationKind.IMAGE,
+                idempotency_key=f"{idempotency_key}:representation",
+                source=binding.image_directory,
+                active=True,
+                purpose=RepresentationPurpose.SOURCE,
+            )
+            self._record_workspace_event(
+                principal=principal,
+                project_id=project.id,
+                stream_id=f"layer-files:{layer.id}",
+                event_type="LayerFileBoundV1",
+                payload=layer_binding_to_dict(binding),
+                idempotency_key=f"{idempotency_key}:file-binding",
+            )
+            return layer, binding, representation
+        except Exception:
+            self.workspace_registry.remove_layer(str(project.id), str(reserved_layer_id))
+            current_project = self.get_project(project.id) or project
+            current_layer = next(
+                (item for item in self.list_layers(project.id) if item.id == reserved_layer_id),
+                None,
+            )
+            if current_layer is not None:
+                try:
+                    self.archive_layer(
+                        principal=principal,
+                        project=current_project,
+                        layer=current_layer,
+                        idempotency_key=f"{idempotency_key}:compensate",
+                    )
+                except Exception:
+                    pass
+            raise
+
+    def begin_derived_run(
+        self,
+        *,
+        project_id: ProjectId | str,
+        layer_id: LayerId | str,
+        layer_name: str,
+        kind: DerivedRunKind,
+        plugin_id: str,
+        operation: str,
+        principal: Principal | None = None,
+    ) -> DerivedRun:
+        run = self.workspace_files.begin_run(
+            project_id=str(project_id),
+            layer_id=str(layer_id),
+            layer_name=layer_name,
+            kind=kind,
+            plugin_id=plugin_id,
+            operation=operation,
+        )
+        if principal is not None:
+            self._record_workspace_event(
+                principal=principal,
+                project_id=project_id,
+                stream_id=f"derived-run:{run.run_id}",
+                event_type="DerivedRunStartedV1",
+                payload={
+                    "run_id": run.run_id,
+                    "layer_id": run.layer_id,
+                    "kind": run.kind.value,
+                    "state": run.state.value,
+                    "path": run.path,
+                    "plugin_id": run.plugin_id,
+                    "operation": run.operation,
+                    "created_at": run.created_at,
+                },
+                idempotency_key=f"derived-run:{run.run_id}:start",
+            )
+        return run
+
+    def list_derived_runs(
+        self,
+        project_id: ProjectId | str,
+        layer_id: LayerId | str = "",
+    ) -> tuple[DerivedRun, ...]:
+        return self.workspace_registry.list_runs(
+            str(project_id),
+            str(layer_id) if layer_id else "",
+        )
+
+    def delete_layer(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        confirmation_name: str,
+        idempotency_key: str,
+    ) -> Layer:
+        if confirmation_name != layer.name:
+            raise WorkspaceValidationError("layer name confirmation does not match")
+        workspace = self.project_workspace(project.id)
+        binding = self.layer_file_binding(project.id, layer.id)
+        if workspace is None or binding is None:
+            raise WorkspaceValidationError("layer has no two-root file binding")
+        active_runs = [
+            run
+            for run in self.workspace_registry.list_runs(str(project.id), str(layer.id))
+            if run.state.value == "running"
+        ]
+        if active_runs:
+            raise WorkspaceValidationError("layer has an active plugin run")
+        stage = self.workspace_files.stage_layer_deletion(
+            project=workspace,
+            binding=binding,
+            delete_id=idempotency_key,
+        )
+        try:
+            current_project = self.get_project(project.id) or project
+            current_layer = next(
+                (item for item in self.list_layers(project.id) if item.id == layer.id),
+                None,
+            )
+            if current_layer is None:
+                raise WorkspaceValidationError("layer is no longer available")
+            archived = self.archive_layer(
+                principal=principal,
+                project=current_project,
+                layer=current_layer,
+                idempotency_key=idempotency_key,
+            )
+            self._record_workspace_event(
+                principal=principal,
+                project_id=project.id,
+                stream_id=f"layer-files:{layer.id}",
+                event_type="LayerDeletedV1",
+                payload={
+                    "layer_id": str(layer.id),
+                    "layer_name": layer.name,
+                    "delete_id": idempotency_key,
+                    "managed_files": binding.mode.value == "managed_copy",
+                },
+                idempotency_key=f"{idempotency_key}:files",
+            )
+            self.workspace_registry.remove_layer(str(project.id), str(layer.id))
+        except Exception:
+            self.workspace_files.rollback_layer_deletion(stage)
+            raise
+        Thread(
+            target=self.workspace_files.purge_layer_deletion,
+            args=(stage,),
+            name=f"kraken-layer-trash-{idempotency_key}",
+            daemon=True,
+        ).start()
+        return archived
+
+    def publish_workspace_plugin_result(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        result: WorkspacePluginResultV1,
+    ) -> tuple[DerivedRun, Representation | None]:
+        run = self.workspace_registry.get_run(str(project.id), result.run_id)
+        if run is None or run.layer_id != str(layer.id):
+            raise WorkspaceValidationError("workspace result does not belong to this layer")
+        if run.plugin_id != result.plugin_id or run.operation != result.operation:
+            raise WorkspaceValidationError("workspace result provenance does not match the run")
+        if result.outcome != "succeeded":
+            raise WorkspaceValidationError(
+                f"plugin result is not publishable: {result.outcome}"
+            )
+        published = self.workspace_files.publish_run(
+            project_id=str(project.id),
+            run_id=run.run_id,
+            output_directory=result.output_directory,
+            provenance=dict(result.provenance),
+        )
+        self._record_workspace_event(
+            principal=principal,
+            project_id=project.id,
+            stream_id=f"derived-run:{published.run_id}",
+            event_type="DerivedRunPublishedV1",
+            payload={
+                "run_id": published.run_id,
+                "layer_id": published.layer_id,
+                "kind": published.kind.value,
+                "state": published.state.value,
+                "path": published.path,
+                "plugin_id": published.plugin_id,
+                "operation": published.operation,
+                "provenance": dict(published.provenance),
+            },
+            idempotency_key=f"derived-run:{published.run_id}:publish",
+        )
+        representation: Representation | None = None
+        if published.kind in {DerivedRunKind.VECTOR, DerivedRunKind.RESULT}:
+            current_project = self.get_project(project.id) or project
+            current_layer = next(
+                (item for item in self.list_layers(project.id) if item.id == layer.id),
+                layer,
+            )
+            kind = (
+                RepresentationKind.VECTOR
+                if published.kind is DerivedRunKind.VECTOR
+                else RepresentationKind.IMAGE
+            )
+            representation = self.create_representation(
+                principal=principal,
+                project=current_project,
+                layer=current_layer,
+                name=f"{layer.name} · {published.kind.value} · {published.run_id[:8]}",
+                kind=kind,
+                idempotency_key=f"workspace-run:{published.run_id}",
+                source=published.path,
+                active=True,
+                purpose=(
+                    RepresentationPurpose.SOURCE
+                    if kind is RepresentationKind.VECTOR
+                    else RepresentationPurpose.BINARY
+                ),
+            )
+        return published, representation
+
+    def fail_derived_run(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        run_id: str,
+        error: str,
+    ) -> DerivedRun:
+        failed = self.workspace_files.fail_run(
+            project_id=str(project_id),
+            run_id=run_id,
+            error=error,
+        )
+        self._record_workspace_event(
+            principal=principal,
+            project_id=project_id,
+            stream_id=f"derived-run:{failed.run_id}",
+            event_type="DerivedRunFailedV1",
+            payload={
+                "run_id": failed.run_id,
+                "layer_id": failed.layer_id,
+                "kind": failed.kind.value,
+                "state": failed.state.value,
+                "plugin_id": failed.plugin_id,
+                "operation": failed.operation,
+                "error": str(error)[:10_000],
+            },
+            idempotency_key=f"derived-run:{failed.run_id}:failed",
+        )
+        return failed
+
     def create_layer(
         self,
         *,
@@ -341,6 +798,7 @@ class EmbeddedProjectService:
         layer_type: LayerType,
         order: int,
         idempotency_key: str,
+        layer_id: LayerId | str | None = None,
     ) -> Layer:
         command = CreateLayerCommand(
             context=CommandContext(actor=principal, idempotency_key=idempotency_key),
@@ -349,6 +807,7 @@ class EmbeddedProjectService:
             type=layer_type,
             order=order,
             expected_project_revision=project.revision,
+            layer_id=LayerId(str(layer_id)) if layer_id is not None else LayerId(new_uuid()),
         )
         return CreateLayerHandler(self._uow(str(project.id)), self.profiles, self.clock)(command)
 
@@ -1211,17 +1670,42 @@ class EmbeddedProjectService:
         cache_key = (str(representation.id), str(root), directory_revision)
         paths = self._external_source_indexes.get(cache_key)
         if paths is None:
-            paths = tuple(
+            discovered = tuple(
                 sorted(
                     (
                         path
                         for path in root.iterdir()
                         if path.is_file()
-                        and (mimetypes.guess_type(path.name)[0] or "").startswith("image/")
+                        and path.suffix.casefold() in {".jpg", ".jpeg", ".bmp", ".png"}
                     ),
                     key=self._natural_path_key,
                 )
             )
+            binding = self.layer_file_binding(project.id, representation.layer_id)
+            if binding is not None and binding.frame_positions:
+                slots: list[Path | None] = [None] * project.frame_count
+                matched = 0
+                for path in discovered:
+                    position = binding.frame_positions.get(path.name)
+                    if position is not None and 1 <= position <= project.frame_count:
+                        slots[position - 1] = path
+                        matched += 1
+                if matched:
+                    paths = tuple(slots)
+                else:
+                    try:
+                        derived_positions = map_frame_positions(
+                            discovered,
+                            maximum=project.frame_count,
+                        )
+                    except WorkspaceValidationError:
+                        paths = discovered
+                    else:
+                        for path in discovered:
+                            slots[derived_positions[path.name] - 1] = path
+                        paths = tuple(slots)
+            else:
+                paths = discovered
             self._external_source_indexes = {
                 key: value
                 for key, value in self._external_source_indexes.items()
@@ -1232,14 +1716,18 @@ class EmbeddedProjectService:
         cells: list[dict[str, Any]] = []
         analysis = self.latest_karakal_analysis(project.id, representation.layer_id)
         confidence = {} if analysis is None else analysis.frame_confidence
-        first_index = (y1 - 1) * project.width + (x1 - 1)
-        last_index = min(len(paths), (y2 - 1) * project.width + x2)
-        for index in range(first_index, last_index):
+        for index, path in enumerate(paths[: project.frame_count]):
             x = index % project.width + 1
-            y = index // project.width + 1
+            visual_row = index // project.width
+            y = (
+                visual_row + 1
+                if project.orientation is GridOrientation.Y_DOWN
+                else project.height - visual_row
+            )
             if not (x1 <= x <= x2 and y1 <= y <= y2):
                 continue
-            path = paths[index]
+            if path is None:
+                continue
             try:
                 stat = path.stat()
             except OSError:

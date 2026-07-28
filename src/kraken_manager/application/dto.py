@@ -104,6 +104,7 @@ class CreateLayerCommand:
     type: LayerType
     order: int
     expected_project_revision: int
+    layer_id: LayerId = field(default_factory=lambda: LayerId(new_uuid()))
 
 
 @dataclass(frozen=True, slots=True)

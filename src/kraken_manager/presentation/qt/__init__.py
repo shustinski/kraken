@@ -7,6 +7,7 @@ from .layer_management import (
     PipelineLane,
     PipelineNode,
 )
+from .layer_creation import LayerCreationDialog
 from .pages import (
     AdministrationPage,
     MyWorkPage,
@@ -43,6 +44,7 @@ __all__ = [
     "GridOrientation",
     "LayerListItem",
     "LayerListModel",
+    "LayerCreationDialog",
     "LayerManagerDialog",
     "LayerPipelineSnapshot",
     "MatrixLod",

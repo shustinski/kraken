@@ -63,6 +63,7 @@ class ProjectCatalogPage(_TitledPage):
         self.create_button.setObjectName("primaryAction")
         self.refresh_button = QPushButton("Обновить")
         self.rename_button = QPushButton("Переименовать")
+        self.rename_button.hide()
         self.archive_button = QPushButton("В архив")
         self.restore_button = QPushButton("Восстановить")
         self.show_archived_check = QCheckBox("Показывать архивные")

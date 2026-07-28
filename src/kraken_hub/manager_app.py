@@ -6,19 +6,33 @@ import os
 import sys
 import logging
 import shutil
+import hashlib
 from pathlib import Path
+from threading import Event
 from uuid import uuid4
+
+from PyQt6.QtCore import QThread, pyqtSignal
 
 from kraken_core.frame_matrix import MatrixSession, ThumbnailStoreFactory
 from kraken_core.frame_matrix.qt import FrameMatrixWidget
 from kraken_core.external_model import ExternalModelLink
 from kraken_core.plugins import PluginInventoryItem
+from kraken_core.plugin_protocol import (
+    PluginFrameInput,
+    PluginJobManifest,
+    PluginResultManifest,
+    WorkspacePluginContextV1,
+    WorkspacePluginResultV1,
+)
 from kraken_core.qt import configure_application_identity
 from kraken_core.styles import load_shared_stylesheet
 from kraken_manager.domain.project import GridOrientation as DomainOrientation
-from kraken_manager.domain.project import LayerType, RepresentationKind, RepresentationPurpose
+from kraken_manager.domain.project import RepresentationKind, RepresentationPurpose
 from kraken_manager.application.imports import ImportMappingMode
+from kraken_manager.workspace import DerivedRunKind
+from kraken_manager.infrastructure.workspace_files import validate_workspace_roots
 from kraken_manager.presentation.qt import (
+    LayerCreationDialog,
     LayerManagerDialog,
     LayerPipelineSnapshot,
     PipelineLane,
@@ -32,6 +46,149 @@ from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimension
 from . import windows_credentials
 from .composition import DesktopSession, EmbeddedProjectService
 from .matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
+
+
+class _LayerCreateThread(QThread):
+    progress = pyqtSignal(int, int, str)
+    succeeded = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, function, *, cancelled: Event, parent=None) -> None:
+        super().__init__(parent)
+        self._function = function
+        self.cancelled = cancelled
+
+    def run(self) -> None:
+        try:
+            result = self._function(
+                progress=lambda done, total, label: self.progress.emit(done, total, label),
+                cancelled=self.cancelled,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.succeeded.emit(result)
+
+
+def _volume_key(path: Path) -> str:
+    text = str(path)
+    if text.startswith("\\\\"):
+        parts = [part for part in text.split("\\") if part]
+        return "\\\\" + "\\".join(parts[:2]).casefold()
+    return path.anchor.casefold()
+
+
+def _configure_workspace_roots(parent, service, *, force: bool = False) -> tuple[str, str] | None:
+    from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import (
+        QDialog,
+        QDialogButtonBox,
+        QFileDialog,
+        QFormLayout,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QMessageBox,
+        QPushButton,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    settings = QSettings("Kraken", "KrakenHub")
+    source_value = str(settings.value("workspace/source-root", "") or "")
+    derived_value = str(settings.value("workspace/derived-root", "") or "")
+    if not force and source_value and derived_value:
+        try:
+            source, derived = validate_workspace_roots(source_value, derived_value)
+            return str(source), str(derived)
+        except Exception:
+            pass
+
+    dialog = QDialog(parent)
+    dialog.setObjectName("workspaceRootsDialog")
+    dialog.setWindowTitle("Хранилища проектов")
+    dialog.setMinimumWidth(680)
+    root_layout = QVBoxLayout(dialog)
+    hint = QLabel(
+        "Выберите два корневых каталога. В каждом новом проекте Kraken создаст "
+        "одноимённую папку; изменение настроек не переносит существующие проекты.",
+        dialog,
+    )
+    hint.setWordWrap(True)
+    root_layout.addWidget(hint)
+    form = QFormLayout()
+
+    def directory_row(value: str, object_name: str, title: str):
+        host = QWidget(dialog)
+        layout = QHBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        edit = QLineEdit(value, host)
+        edit.setObjectName(object_name)
+        button = QPushButton("Обзор…", host)
+        button.clicked.connect(
+            lambda: (
+                (selected := QFileDialog.getExistingDirectory(dialog, title, edit.text().strip()))
+                and edit.setText(selected)
+            )
+        )
+        layout.addWidget(edit, 1)
+        layout.addWidget(button)
+        return host, edit
+
+    source_host, source_edit = directory_row(
+        source_value or str(service.default_source_root),
+        "workspaceSourceRoot",
+        "Корень исходных данных",
+    )
+    derived_host, derived_edit = directory_row(
+        derived_value or str(service.default_derived_root),
+        "workspaceDerivedRoot",
+        "Корень производных данных",
+    )
+    form.addRow("Исходные данные", source_host)
+    form.addRow("Производные данные", derived_host)
+    root_layout.addLayout(form)
+    error_label = QLabel(dialog)
+    error_label.setObjectName("workspaceRootsError")
+    error_label.setWordWrap(True)
+    error_label.setStyleSheet("color:#fca5a5;")
+    root_layout.addWidget(error_label)
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        dialog,
+    )
+    buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Сохранить")
+    buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
+    buttons.rejected.connect(dialog.reject)
+
+    def accept() -> None:
+        try:
+            source, derived = validate_workspace_roots(source_edit.text(), derived_edit.text())
+        except Exception as exc:
+            error_label.setText(str(exc))
+            return
+        if _volume_key(source) == _volume_key(derived):
+            answer = QMessageBox.warning(
+                dialog,
+                "Один том",
+                "Оба каталога находятся на одном томе или UNC-ресурсе. Продолжить?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        settings.setValue("workspace/source-root", str(source))
+        settings.setValue("workspace/derived-root", str(derived))
+        dialog.accept()
+
+    buttons.accepted.connect(accept)
+    root_layout.addWidget(buttons)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+        return None
+    return (
+        str(settings.value("workspace/source-root", "")),
+        str(settings.value("workspace/derived-root", "")),
+    )
 
 
 class RepresentationDialog:
@@ -181,6 +338,7 @@ def _login(parent, service: EmbeddedProjectService) -> DesktopSession | None:
         form.addRow("Повторите пароль", confirmation)
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Создать аккаунт")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
@@ -297,30 +455,10 @@ class DesktopController:
         self.catalog_page.project_model.replace_items(items)
 
     def rename_project(self, item: ProjectListItem | None) -> None:
-        if item is None:
-            return
-        from PyQt6.QtWidgets import QInputDialog
-
-        project = self.service.get_project(item.project_id)
-        if project is None:
-            self._error("Проект больше не доступен")
-            return
-        name, accepted = QInputDialog.getText(
-            self.shell, "Переименовать проект", "Новое имя", text=project.name
+        self._error(
+            "Имя проекта совпадает с физическими папками на двух дисках "
+            "и после создания не изменяется."
         )
-        if not accepted:
-            return
-        try:
-            self.service.rename_project(
-                principal=self.session.principal,
-                project=project,
-                name=name,
-                idempotency_key=str(uuid4()),
-            )
-        except Exception as exc:
-            self._error(str(exc))
-            return
-        self.refresh_projects()
 
     def archive_project(self, item: ProjectListItem | None) -> None:
         if item is None:
@@ -369,7 +507,6 @@ class DesktopController:
 
     def create_project(self) -> None:
         from PyQt6.QtWidgets import (
-            QCheckBox,
             QDialog,
             QDialogButtonBox,
             QFormLayout,
@@ -379,6 +516,10 @@ class DesktopController:
             QVBoxLayout,
         )
 
+        roots = _configure_workspace_roots(self.shell, self.service)
+        if roots is None:
+            return
+        source_root, derived_root = roots
         dialog = QDialog(self.shell)
         dialog.setWindowTitle("Новый локальный проект")
         layout = QVBoxLayout(dialog)
@@ -389,10 +530,15 @@ class DesktopController:
         layout.addLayout(form)
         dimensions = GridDimensionsWidget(maximum_frames=self.service.profile.capabilities.max_frames or 100_000)
         layout.addWidget(dimensions)
-        layout.addWidget(QLabel("Хранилище: локальная файловая система · single-writer"))
-        template = QCheckBox("Создать шаблон из четырёх типов слоёв")
-        layout.addWidget(template)
+        storage = QLabel(
+            f"Исходные данные: {source_root}\n"
+            f"Производные данные: {derived_root}"
+        )
+        storage.setWordWrap(True)
+        layout.addWidget(storage)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Создать проект")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -408,7 +554,9 @@ class DesktopController:
                     height=size.height,
                     orientation=DomainOrientation(size.orientation.value),
                     idempotency_key=str(uuid4()),
-                    layer_template=template.isChecked(),
+                    layer_template=False,
+                    source_root=source_root,
+                    derived_root=derived_root,
                 )
             except Exception as exc:
                 QMessageBox.warning(dialog, "Не удалось создать проект", str(exc))
@@ -432,6 +580,31 @@ class DesktopController:
             self._error("Проект больше не доступен")
             self.refresh_projects()
             return
+        workspace_binding = self.service.project_workspace(project.id)
+        if workspace_binding is None:
+            self._error(
+                "Этот проект создан до введения двухдискового хранилища. "
+                "Автоматическая миграция отключена; создайте новый проект."
+            )
+            return
+        unavailable = [
+            path
+            for path in (
+                workspace_binding.source_project_dir,
+                workspace_binding.derived_project_dir,
+            )
+            if not Path(path).is_dir()
+        ]
+        if unavailable:
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(
+                self.shell,
+                "Хранилище недоступно",
+                "Метаданные и история доступны только для просмотра. "
+                "Файловые операции и плагины заблокированы.\n\n"
+                + "\n".join(unavailable),
+            )
         cache_root = self.service.data_dir / "cache" / "frame-thumbnails"
         store_uri = (
             self.thumbnail_store_uri
@@ -525,6 +698,23 @@ class DesktopController:
                 str(getattr(workspace, "_selected_layer_id", "")),
             )
 
+    def _show_created_layer(self, workspace, project_id, layer) -> None:
+        """Reload and select a layer so its registered image source is visible."""
+
+        latest = self.service.get_project(project_id)
+        if latest is None:
+            return
+        self._load_layers(workspace, latest)
+        item = workspace.layer_model.layer_by_id(str(layer.id))
+        if item is None:
+            return
+        for index in range(workspace.layer_tabs.count()):
+            if str(workspace.layer_tabs.tabData(index)) == str(layer.id):
+                if workspace.layer_tabs.currentIndex() != index:
+                    workspace.layer_tabs.setCurrentIndex(index)
+                break
+        self._select_layer(workspace, project_id, item)
+
     def _select_layer(self, workspace, project_id, item: LayerListItem) -> None:
         workspace._selected_layer_id = item.layer_id
         self._load_representations(workspace, project_id, item.layer_id)
@@ -548,6 +738,9 @@ class DesktopController:
             dialog.representationActivated.connect(self._layer_manager_activate)
             dialog.nodeActionRequested.connect(self._layer_manager_action)
             dialog.layerActionRequested.connect(self._layer_manager_layer_action)
+            dialog.addLayerRequested.connect(
+                lambda: self._add_layer(workspace, project_id)
+            )
             self._layer_dialog = dialog
         self._layer_dialog.set_layers(
             list(workspace.layer_model.items()),
@@ -662,6 +855,7 @@ class DesktopController:
         ]
         vectors = [value for value in representations if value.kind is RepresentationKind.VECTOR]
         karakal_run = self.service.latest_karakal_analysis(project_id, layer_id)
+        workspace_runs = self.service.list_derived_runs(project_id, layer_id)
         if not sources and binaries:
             sources = binaries[:1]
         lanes: list[PipelineLane] = []
@@ -725,6 +919,55 @@ class DesktopController:
                     )
                 )
                 lane_edges.append((str(source.id), action_id))
+            if source is sources[0]:
+                for run in workspace_runs:
+                    job_id = f"workspace-job:{run.run_id}"
+                    lane_nodes.append(
+                        PipelineNode(
+                            job_id,
+                            f"{run.plugin_id} · {run.operation}",
+                            "job",
+                            run.state.value,
+                            state=run.state.value,
+                            details={
+                                "run_id": run.run_id,
+                                "path": run.path,
+                                "operation": run.operation,
+                                "plugin": run.plugin_id,
+                                "создан": run.created_at,
+                            },
+                        )
+                    )
+                    lane_edges.append((str(source.id), job_id))
+                    if run.state.value != "succeeded":
+                        continue
+                    output_id = f"workspace-output:{run.run_id}"
+                    output_kind = {
+                        DerivedRunKind.DATASET: "dataset",
+                        DerivedRunKind.RESULT: "model",
+                        DerivedRunKind.VECTOR: "vector",
+                    }[run.kind]
+                    output_title = {
+                        DerivedRunKind.DATASET: "Выборка Contour",
+                        DerivedRunKind.RESULT: "Результат NeuralImage",
+                        DerivedRunKind.VECTOR: "Векторы Contour",
+                    }[run.kind]
+                    lane_nodes.append(
+                        PipelineNode(
+                            output_id,
+                            output_title,
+                            output_kind,
+                            run.state.value,
+                            state=run.state.value,
+                            details={
+                                "run_id": run.run_id,
+                                "path": run.path,
+                                "operation": run.operation,
+                                "plugin": run.plugin_id,
+                            },
+                        )
+                    )
+                    lane_edges.append((job_id, output_id))
             for event in histories:
                 manifest = dict(event.payload.get("manifest", {}))
                 target_id = str(manifest.get("target_representation_id", ""))
@@ -894,14 +1137,30 @@ class DesktopController:
         )
         if source_representation_id:
             parameters["source_representation_id"] = source_representation_id
-        if action == "recognize_external":
+        if action in {"recognize", "recognize_external"}:
             from PyQt6.QtCore import QSettings
             from PyQt6.QtWidgets import QFileDialog
 
             settings = QSettings("Kraken", "KrakenHub")
             key_root = f"external-model/{self._project_id}/{_layer_id}"
             key = f"{key_root}/path"
-            model_path = str(settings.value(key, "") or "")
+            model_path = ""
+            if action == "recognize":
+                result_directory = Path(str(_node.details.get("path", "")))
+                model_path = str(
+                    next(
+                        (
+                            path
+                            for path in result_directory.rglob("*")
+                            if path.is_file()
+                            and path.suffix.casefold()
+                            in {".onnx", ".pt", ".pth", ".h5", ".keras"}
+                        ),
+                        "",
+                    )
+                )
+            else:
+                model_path = str(settings.value(key, "") or "")
             linked_now = False
             if not model_path or not Path(model_path).is_file():
                 model_path, _selected_filter = QFileDialog.getOpenFileName(
@@ -926,7 +1185,7 @@ class DesktopController:
             except (OSError, ValueError) as exc:
                 self._error(f"Не удалось подготовить внешнюю модель: {exc}")
                 return
-            if linked_now or not stored_hash:
+            if action == "recognize_external" and (linked_now or not stored_hash):
                 settings.setValue(key, link.path)
                 settings.setValue(f"{key_root}/size", link.size)
                 settings.setValue(f"{key_root}/sha256", link.observed_sha256)
@@ -953,6 +1212,35 @@ class DesktopController:
                 self._error(f"Не удалось подготовить данные для Contour: {exc}")
                 return
             parameters.update(contour_parameters)
+        elif plugin_id == "neuralimage" and action == "train":
+            try:
+                launch_arguments, neural_parameters = (
+                    self._neural_train_launch_arguments(
+                        layer_id=_layer_id,
+                        node=_node,
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                self._error(f"Не удалось подготовить обучение NeuralImage: {exc}")
+                return
+            parameters.update(neural_parameters)
+        elif plugin_id == "neuralimage" and action in {
+            "recognize",
+            "recognize_external",
+        }:
+            try:
+                launch_arguments, recognition_parameters = (
+                    self._neural_recognition_launch_arguments(
+                        layer_id=_layer_id,
+                        source_representation_id=source_representation_id,
+                        stage_root=stage_root,
+                        staged_model=staged,
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                self._error(f"Не удалось подготовить распознавание NeuralImage: {exc}")
+                return
+            parameters.update(recognition_parameters)
         self.service.record_layer_pipeline_action(
             principal=self.session.principal,
             project_id=self._project_id,
@@ -964,11 +1252,92 @@ class DesktopController:
             mode=mode,
             parameters=parameters,
         )
-        self._launch_managed_plugin(plugin_id, arguments=launch_arguments)
+        process = self._launch_managed_plugin(plugin_id, arguments=launch_arguments)
+        if process is not None and parameters.get("workspace_result_manifest"):
+            self._monitor_workspace_result(
+                process,
+                result_manifest=str(parameters["workspace_result_manifest"]),
+                workspace_run_id=str(parameters["workspace_run_id"]),
+                layer_id=str(_layer_id),
+            )
+        elif process is not None and parameters.get("agent_result_manifest"):
+            self._monitor_agent_result(
+                process,
+                result_manifest=str(parameters["agent_result_manifest"]),
+                staging_root=str(parameters["agent_staging_root"]),
+                workspace_run_id=str(parameters["workspace_run_id"]),
+                layer_id=str(_layer_id),
+            )
         if self._layer_dialog is not None:
             self._layer_dialog.set_pipeline(self._pipeline_snapshot(self._project_id, _layer_id))
 
     def _layer_manager_layer_action(self, _layer_id: str, action: str) -> None:
+        if action == "delete_layer":
+            from PyQt6.QtWidgets import (
+                QDialog,
+                QInputDialog,
+                QLineEdit,
+                QMessageBox,
+            )
+
+            workspace = self._workspace
+            project = self.service.get_project(self._project_id)
+            if workspace is None or project is None:
+                return
+            layer = next(
+                (
+                    item
+                    for item in self.service.list_layers(project.id)
+                    if str(item.id) == str(_layer_id)
+                ),
+                None,
+            )
+            if layer is None:
+                self._error("Слой больше не доступен")
+                return
+            confirmation_dialog = QInputDialog(self.shell)
+            confirmation_dialog.setWindowTitle("Удалить слой")
+            confirmation_dialog.setLabelText(
+                (
+                    "Управляемые файлы будут перемещены в корзину Kraken, "
+                    "внешние папки останутся без изменений.\n\n"
+                    f"Для подтверждения введите: {layer.name}"
+                )
+            )
+            confirmation_dialog.setInputMode(QInputDialog.InputMode.TextInput)
+            confirmation_dialog.setTextEchoMode(QLineEdit.EchoMode.Normal)
+            confirmation_dialog.setOkButtonText("Удалить")
+            confirmation_dialog.setCancelButtonText("Отмена")
+            if confirmation_dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            confirmation = confirmation_dialog.textValue()
+            if confirmation != layer.name:
+                QMessageBox.warning(
+                    self.shell,
+                    "Удаление не подтверждено",
+                    "Введённое имя не совпадает с названием слоя.",
+                )
+                return
+            try:
+                self.service.delete_layer(
+                    principal=self.session.principal,
+                    project=project,
+                    layer=layer,
+                    confirmation_name=confirmation,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                self._error(str(exc))
+                return
+            latest = self.service.get_project(project.id)
+            if latest is not None:
+                self._load_layers(workspace, latest)
+            QMessageBox.information(
+                self.shell,
+                "Слой удалён",
+                "Метаданные заархивированы, управляемые файлы удаляются из корзины в фоне.",
+            )
+            return
         if action == "add_image_representation":
             workspace = self._workspace
             if workspace is None:
@@ -1023,6 +1392,7 @@ class DesktopController:
             "add_image_representation",
             "archive_representation",
             "delete_pipeline_step",
+            "delete_layer",
         }:
             return True, ""
         requirement = self._action_requirement(action)
@@ -1069,18 +1439,89 @@ class DesktopController:
         if representation is None or representation.kind is not RepresentationKind.IMAGE:
             raise ValueError("выбранный базовый слой изображений не найден")
 
-        stage = (
-            self.service.data_dir
-            / "agent-staging"
-            / f"contour-{action}-{uuid4()}"
-        ).resolve()
-        stage.mkdir(parents=True, exist_ok=False)
+        if not all(
+            hasattr(self.service, name)
+            for name in (
+                "list_layers",
+                "project_workspace",
+                "layer_file_binding",
+                "begin_derived_run",
+            )
+        ):
+            stage = (
+                self.service.data_dir
+                / "agent-staging"
+                / f"contour-{action}-{uuid4()}"
+            ).resolve()
+            stage.mkdir(parents=True, exist_ok=False)
+            source_path = Path(str(representation.source or "")).expanduser()
+            if source_path.is_absolute() and source_path.is_dir():
+                input_directory = source_path.resolve()
+            else:
+                input_directory = stage / "inputs"
+                input_directory.mkdir()
+                for cell in self.service.frame_cells(
+                    self._project_id,
+                    layer_id,
+                    representation.id,
+                ):
+                    if not cell.sha256:
+                        continue
+                    destination = input_directory / f"{cell.x}_{cell.y}.png"
+                    with destination.open("xb") as stream:
+                        stream.write(
+                            self.service.read_project_blob(
+                                self._project_id,
+                                cell.sha256,
+                            )
+                        )
+            destination = stage / (
+                "dataset" if action == "prepare_dataset" else "vectors"
+            )
+            destination.mkdir()
+            destination_option = (
+                "--dataset-dir"
+                if action == "prepare_dataset"
+                else "--output-dir"
+            )
+            return (
+                (
+                    "--input-dir",
+                    str(input_directory),
+                    destination_option,
+                    str(destination),
+                ),
+                {
+                    "input_representation_id": str(representation.id),
+                    "input_directory": str(input_directory),
+                    "result_directory": str(destination),
+                },
+            )
+
+        layer = next(
+            (
+                value
+                for value in self.service.list_layers(self._project_id)
+                if str(value.id) == str(layer_id)
+            ),
+            None,
+        )
+        if layer is None:
+            raise ValueError("слой больше не доступен")
+        workspace = self.service.project_workspace(self._project_id)
+        binding = self.service.layer_file_binding(self._project_id, layer_id)
+        if workspace is None or binding is None or not workspace.available:
+            raise ValueError("двухдисковое хранилище слоя недоступно")
         source_path = Path(str(representation.source or "")).expanduser()
         if source_path.is_absolute() and source_path.is_dir():
             input_directory = source_path.resolve()
         else:
-            input_directory = stage / "inputs"
-            input_directory.mkdir()
+            input_directory = (
+                Path(workspace.derived_project_dir)
+                / ".plugin-inputs"
+                / f"contour-{action}-{uuid4()}"
+            )
+            input_directory.mkdir(parents=True)
             cells = self.service.frame_cells(
                 self._project_id,
                 layer_id,
@@ -1099,26 +1540,266 @@ class DesktopController:
             if not any(input_directory.iterdir()):
                 raise ValueError("в базовом слое нет доступных изображений")
 
-        destination = stage / (
-            "dataset" if action == "prepare_dataset" else "vectors"
+        operation = self._action_requirement(action)[1]
+        run = self.service.begin_derived_run(
+            project_id=self._project_id,
+            layer_id=layer_id,
+            layer_name=layer.name,
+            kind=(
+                DerivedRunKind.DATASET
+                if action == "prepare_dataset"
+                else DerivedRunKind.VECTOR
+            ),
+            plugin_id="contour",
+            operation=operation,
+            principal=self.session.principal,
         )
-        destination.mkdir()
-        destination_option = (
-            "--dataset-dir"
-            if action == "prepare_dataset"
-            else "--output-dir"
+        destination = Path(run.path)
+        if action == "prepare_dataset":
+            (destination / "images").mkdir(exist_ok=True)
+            (destination / "cif").mkdir(exist_ok=True)
+        result_manifest = destination / ".kraken-result.json"
+        context_path = destination / ".kraken-context.json"
+        input_directories = {"images": str(input_directory)}
+        if binding.ssc_directory:
+            input_directories["ssc"] = binding.ssc_directory
+        if binding.prv_directory:
+            input_directories["prv"] = binding.prv_directory
+        current_project = self.service.get_project(self._project_id)
+        if current_project is None:
+            raise ValueError("проект больше не доступен")
+        context = WorkspacePluginContextV1(
+            project_id=str(self._project_id),
+            project_name=current_project.name,
+            layer_id=str(layer_id),
+            layer_name=layer.name,
+            operation=operation,
+            plugin_id="contour",
+            run_id=run.run_id,
+            input_directories=input_directories,
+            proposed_output_directory=str(destination),
+            result_manifest_path=str(result_manifest),
         )
+        context.write(context_path)
         return (
             (
-                "--input-dir",
-                str(input_directory),
-                destination_option,
-                str(destination),
+                "--kraken-workspace-context",
+                str(context_path),
             ),
             {
                 "input_representation_id": str(representation.id),
                 "input_directory": str(input_directory),
                 "result_directory": str(destination),
+                "workspace_run_id": run.run_id,
+                "workspace_result_manifest": str(result_manifest),
+            },
+        )
+
+    def _neural_train_launch_arguments(
+        self,
+        *,
+        layer_id: str,
+        node: PipelineNode,
+    ) -> tuple[tuple[str, ...], dict[str, object]]:
+        dataset = Path(str(node.details.get("path", ""))).expanduser()
+        images = dataset / "images"
+        cif = dataset / "cif"
+        if not dataset.is_absolute() or not images.is_dir() or not cif.is_dir():
+            raise ValueError(
+                "выбранная опубликованная выборка не содержит папки images и cif"
+            )
+        project = self.service.get_project(self._project_id)
+        layer = next(
+            (
+                value
+                for value in self.service.list_layers(self._project_id)
+                if str(value.id) == str(layer_id)
+            ),
+            None,
+        )
+        if project is None or layer is None:
+            raise ValueError("проект или слой больше не доступен")
+        workspace = self.service.project_workspace(project.id)
+        if workspace is None or not workspace.available:
+            raise ValueError("двухдисковое хранилище проекта недоступно")
+        operation = self._action_requirement("train")[1]
+        run = self.service.begin_derived_run(
+            project_id=project.id,
+            layer_id=layer.id,
+            layer_name=layer.name,
+            kind=DerivedRunKind.RESULT,
+            plugin_id="neuralimage",
+            operation=operation,
+            principal=self.session.principal,
+        )
+        destination = Path(run.path)
+        result_manifest = destination / ".kraken-result.json"
+        context_path = destination / ".kraken-context.json"
+        WorkspacePluginContextV1(
+            project_id=str(project.id),
+            project_name=project.name,
+            layer_id=str(layer.id),
+            layer_name=layer.name,
+            operation=operation,
+            plugin_id="neuralimage",
+            run_id=run.run_id,
+            input_directories={
+                "images": str(images.resolve()),
+                "cif": str(cif.resolve()),
+            },
+            proposed_output_directory=str(destination),
+            result_manifest_path=str(result_manifest),
+        ).write(context_path)
+        return (
+            ("--kraken-workspace-context", str(context_path)),
+            {
+                "dataset_run_id": str(node.details.get("run_id", "")),
+                "dataset_directory": str(dataset),
+                "result_directory": str(destination),
+                "workspace_run_id": run.run_id,
+                "workspace_result_manifest": str(result_manifest),
+            },
+        )
+
+    def _neural_recognition_launch_arguments(
+        self,
+        *,
+        layer_id: str,
+        source_representation_id: str,
+        stage_root: Path,
+        staged_model,
+    ) -> tuple[tuple[str, ...], dict[str, object]]:
+        project = self.service.get_project(self._project_id)
+        layer = next(
+            (
+                value
+                for value in self.service.list_layers(self._project_id)
+                if str(value.id) == str(layer_id)
+            ),
+            None,
+        )
+        binding = self.service.layer_file_binding(self._project_id, layer_id)
+        representation = next(
+            (
+                value
+                for value in self.service.list_representations(
+                    self._project_id, layer_id
+                )
+                if str(value.id) == str(source_representation_id)
+            ),
+            None,
+        )
+        if project is None or layer is None or binding is None or representation is None:
+            raise ValueError("проект, слой или исходные изображения недоступны")
+        image_directory = Path(str(representation.source or binding.image_directory))
+        if not image_directory.is_dir():
+            raise ValueError("папка исходных изображений недоступна")
+        input_stage = stage_root / "inputs"
+        input_stage.mkdir(exist_ok=False)
+        inputs: list[PluginFrameInput] = []
+        frame_positions_by_id: dict[str, int] = {}
+        image_paths = sorted(
+            (
+                path
+                for path in image_directory.iterdir()
+                if path.is_file()
+                and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".bmp"}
+            ),
+            key=self.service._natural_path_key,
+        )
+        for path in image_paths:
+            position = binding.frame_positions.get(path.name)
+            if position is None:
+                continue
+            visual_row, column = divmod(position - 1, project.width)
+            x = column + 1
+            y = (
+                visual_row + 1
+                if project.orientation is DomainOrientation.Y_DOWN
+                else project.height - visual_row
+            )
+            if path.suffix.casefold() == ".bmp":
+                from PIL import Image, ImageOps
+
+                destination = input_stage / f"{path.stem}.png"
+                with Image.open(path) as opened:
+                    ImageOps.exif_transpose(opened).save(destination, format="PNG")
+            else:
+                destination = input_stage / path.name
+                shutil.copy2(path, destination)
+            digest_builder = hashlib.sha256()
+            with destination.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest_builder.update(chunk)
+            digest = digest_builder.hexdigest()
+            frame_id = str(project.frame_id_at(x, y))
+            # Layer bindings use Kraken's one-based matrix slots internally,
+            # while microscope and plugin filenames are always zero-based.
+            frame_positions_by_id[frame_id] = position - 1
+            inputs.append(
+                PluginFrameInput(
+                    frame_id=frame_id,
+                    x=x,
+                    y=y,
+                    artifact_version_id=str(uuid4()),
+                    sha256=digest,
+                    media_type=(
+                        "image/jpeg"
+                        if destination.suffix.casefold() in {".jpg", ".jpeg"}
+                        else "image/png"
+                        if destination.suffix.casefold() == ".png"
+                        else "image/bmp"
+                    ),
+                    relative_path=f"inputs/{destination.name}",
+                )
+            )
+        if not inputs:
+            raise ValueError("не найдено изображений с валидной нумерацией кадров")
+        operation = self._action_requirement("recognize")[1]
+        run = self.service.begin_derived_run(
+            project_id=project.id,
+            layer_id=layer.id,
+            layer_name=layer.name,
+            kind=DerivedRunKind.RESULT,
+            plugin_id="neuralimage",
+            operation=operation,
+            principal=self.session.principal,
+        )
+        job_id = str(uuid4())
+        job_manifest = stage_root / "job.json"
+        result_manifest = stage_root / "result.json"
+        manifest = PluginJobManifest(
+            job_id=job_id,
+            operation=operation,
+            project_id=str(project.id),
+            layer_id=str(layer.id),
+            actor_id=str(self.session.principal.id),
+            target_representation_id=str(representation.id),
+            inputs=tuple(inputs),
+            parameters={
+                "model_relative_path": staged_model.relative_path,
+                "model_sha256": staged_model.used_sha256,
+                "model_version": f"sha256:{staged_model.used_sha256[:12]}",
+                "lossless_binary_png": True,
+                "frame_positions": frame_positions_by_id,
+            },
+        )
+        with job_manifest.open("x", encoding="utf-8") as stream:
+            stream.write(manifest.to_json())
+        return (
+            (
+                "--kraken-job-manifest",
+                str(job_manifest),
+                "--kraken-result-manifest",
+                str(result_manifest),
+                "--kraken-staging-root",
+                str(stage_root),
+            ),
+            {
+                "workspace_run_id": run.run_id,
+                "agent_staging_root": str(stage_root),
+                "agent_result_manifest": str(result_manifest),
+                "frame_count": len(inputs),
             },
         )
 
@@ -1127,13 +1808,186 @@ class DesktopController:
         plugin_id: str,
         *,
         arguments: tuple[str, ...] = (),
-    ) -> None:
+    ):
         inventory = self.plugin_items.get(plugin_id)
         if inventory is None or not inventory.installed or not inventory.metadata.enabled:
             self._error(f"Плагин {plugin_id} не установлен или отключён")
-            return
+            return None
         from .app import launch_plugin
-        launch_plugin(inventory.metadata, arguments=arguments)
+        return launch_plugin(inventory.metadata, arguments=arguments)
+
+    def _monitor_workspace_result(
+        self,
+        process,
+        *,
+        result_manifest: str,
+        workspace_run_id: str,
+        layer_id: str,
+    ) -> None:
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QMessageBox
+
+        timer = QTimer(self.shell)
+        timer.setInterval(750)
+
+        def poll() -> None:
+            if process.poll() is None:
+                return
+            timer.stop()
+            timer.deleteLater()
+            manifest_path = Path(result_manifest)
+            if not manifest_path.is_file():
+                return
+            try:
+                result = WorkspacePluginResultV1.read(manifest_path)
+                project = self.service.get_project(self._project_id)
+                if project is None:
+                    raise ValueError("проект больше не доступен")
+                layer = next(
+                    (
+                        value
+                        for value in self.service.list_layers(project.id)
+                        if str(value.id) == str(layer_id)
+                    ),
+                    None,
+                )
+                if layer is None:
+                    raise ValueError("слой больше не доступен")
+                published, _representation = (
+                    self.service.publish_workspace_plugin_result(
+                        principal=self.session.principal,
+                        project=project,
+                        layer=layer,
+                        result=result,
+                    )
+                )
+            except Exception as exc:
+                try:
+                    self.service.fail_derived_run(
+                        principal=self.session.principal,
+                        project_id=self._project_id,
+                        run_id=workspace_run_id,
+                        error=str(exc),
+                    )
+                except Exception:
+                    pass
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось вернуть результат плагина",
+                    str(exc),
+                )
+                return
+            workspace = self._workspace
+            if workspace is not None:
+                latest = self.service.get_project(self._project_id)
+                if latest is not None:
+                    self._load_layers(workspace, latest)
+                item = workspace.layer_model.layer_by_id(layer_id)
+                if item is not None:
+                    self._select_layer(workspace, self._project_id, item)
+            QMessageBox.information(
+                self.shell,
+                "Результат опубликован",
+                f"Запуск {published.run_id[:8]} сохранён во втором хранилище.",
+            )
+
+        timer.timeout.connect(poll)
+        timer.start()
+
+    def _monitor_agent_result(
+        self,
+        process,
+        *,
+        result_manifest: str,
+        staging_root: str,
+        workspace_run_id: str,
+        layer_id: str,
+    ) -> None:
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QMessageBox
+
+        timer = QTimer(self.shell)
+        timer.setInterval(750)
+
+        def poll() -> None:
+            if process.poll() is None:
+                return
+            timer.stop()
+            timer.deleteLater()
+            root = Path(staging_root)
+            try:
+                result = PluginResultManifest.from_json(
+                    Path(result_manifest).read_text(encoding="utf-8")
+                )
+                if result.outcome != "succeeded":
+                    raise ValueError(
+                        "; ".join(result.errors)
+                        or f"NeuralImage завершился со статусом {result.outcome}"
+                    )
+                project = self.service.get_project(self._project_id)
+                layer = next(
+                    (
+                        value
+                        for value in self.service.list_layers(self._project_id)
+                        if str(value.id) == str(layer_id)
+                    ),
+                    None,
+                )
+                if project is None or layer is None:
+                    raise ValueError("проект или слой больше не доступен")
+                workspace_result = WorkspacePluginResultV1(
+                    run_id=workspace_run_id,
+                    plugin_id="neuralimage",
+                    operation=self._action_requirement("recognize")[1],
+                    outcome="succeeded",
+                    output_directory=str(root / "outputs"),
+                    provenance={
+                        "plugin_version": result.plugin_version,
+                        "output_count": len(result.outputs),
+                    },
+                )
+                published, _representation = (
+                    self.service.publish_workspace_plugin_result(
+                        principal=self.session.principal,
+                        project=project,
+                        layer=layer,
+                        result=workspace_result,
+                    )
+                )
+            except Exception as exc:
+                try:
+                    self.service.fail_derived_run(
+                        principal=self.session.principal,
+                        project_id=self._project_id,
+                        run_id=workspace_run_id,
+                        error=str(exc),
+                    )
+                except Exception:
+                    pass
+                QMessageBox.warning(
+                    self.shell,
+                    "Распознавание NeuralImage не опубликовано",
+                    str(exc),
+                )
+                return
+            finally:
+                shutil.rmtree(root, ignore_errors=True)
+            workspace = self._workspace
+            if workspace is not None:
+                latest = self.service.get_project(self._project_id)
+                if latest is not None:
+                    self._load_layers(workspace, latest)
+                item = workspace.layer_model.layer_by_id(layer_id)
+                if item is not None:
+                    self._select_layer(workspace, self._project_id, item)
+            QMessageBox.information(
+                self.shell,
+                "Распознавание опубликовано",
+                f"Запуск {published.run_id[:8]} сохранён как бинарное представление.",
+            )
+
+        timer.timeout.connect(poll)
+        timer.start()
 
     def _launch_karakal(self, layer_id: str) -> None:
         inventory = self.plugin_items.get("karakal")
@@ -1610,42 +2464,135 @@ class DesktopController:
             return
 
     def _add_layer(self, workspace, project_id) -> None:
-        from PyQt6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QMessageBox
+        from PyQt6.QtWidgets import QDialog, QMessageBox, QProgressDialog
 
         project = self.service.get_project(project_id)
         if project is None:
             self._error("Проект больше не доступен")
             return
-        dialog = QDialog(self.shell)
-        dialog.setWindowTitle("Добавить слой")
-        form = QFormLayout(dialog)
-        name = QLineEdit()
-        layer_type = QComboBox()
-        for value in LayerType:
-            layer_type.addItem(value.value, value.value)
-        form.addRow("Имя", name)
-        form.addRow("Тип", layer_type)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
+        project_binding = self.service.project_workspace(project.id)
+        if project_binding is None:
+            self._error("Проект не привязан к двухдисковому хранилищу.")
+            return
+        missing = [
+            value
+            for value in (
+                project_binding.source_project_dir,
+                project_binding.derived_project_dir,
+            )
+            if not Path(value).is_dir()
+        ]
+        if missing:
+            self._error(
+                "Файловые операции заблокированы: недоступно хранилище.\n\n"
+                + "\n".join(missing)
+            )
+            return
+        dialog = LayerCreationDialog(
+            maximum_frames=project.frame_count,
+            scanner=self.service.scan_layer_source,
+            parent=self.shell,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        try:
-            layers = self.service.list_layers(project.id)
-            self.service.create_layer(
+        order = len(self.service.list_layers(project.id)) + 1
+        operation_id = str(uuid4())
+        if dialog.mode == "manual":
+            try:
+                layer, _binding, _representation = self.service.create_external_layer(
+                    principal=self.session.principal,
+                    project=project,
+                    name=dialog.layer_name,
+                    layer_type=dialog.layer_type,
+                    order=order,
+                    image_directory=dialog.manual_images.text(),
+                    ssc_directory=dialog.manual_ssc.text() or None,
+                    prv_directory=dialog.manual_prv.text() or None,
+                    idempotency_key=operation_id,
+                )
+            except Exception as exc:
+                QMessageBox.warning(dialog, "Не удалось добавить слой", str(exc))
+                return
+            self._show_created_layer(workspace, project.id, layer)
+            QMessageBox.information(
+                self.shell,
+                "Слой создан",
+                "Внешние каталоги проверены и привязаны. Файлы не копировались.",
+            )
+            return
+
+        scan = dialog.scan_result
+        if scan is None:
+            self._error("Результат сканирования потерян. Выполните сканирование ещё раз.")
+            return
+        conversion = dialog.conversion_settings()
+        cancelled = Event()
+        progress_dialog = QProgressDialog(
+            "Подготовка импорта…",
+            "Отменить",
+            0,
+            max(1, scan.total_files),
+            self.shell,
+        )
+        progress_dialog.setObjectName("layerImportProgress")
+        progress_dialog.setWindowTitle("Импорт слоя")
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.canceled.connect(cancelled.set)
+
+        def perform(*, progress, cancelled):
+            return self.service.create_layer_from_disk(
                 principal=self.session.principal,
                 project=project,
-                name=name.text(),
-                layer_type=LayerType(str(layer_type.currentData())),
-                order=len(layers) + 1,
-                idempotency_key=str(uuid4()),
+                name=dialog.layer_name,
+                layer_type=dialog.layer_type,
+                order=order,
+                scan=scan,
+                conversion=conversion,
+                idempotency_key=operation_id,
+                progress=progress,
+                cancelled=cancelled,
             )
-            latest = self.service.get_project(project.id)
-            if latest is not None:
-                self._load_layers(workspace, latest)
-        except Exception as exc:
-            QMessageBox.warning(dialog, "Не удалось добавить слой", str(exc))
+
+        worker = _LayerCreateThread(perform, cancelled=cancelled, parent=self.shell)
+
+        def update_progress(done: int, total: int, label: str) -> None:
+            progress_dialog.setMaximum(max(1, total))
+            progress_dialog.setValue(done)
+            progress_dialog.setLabelText(
+                f"Скопировано и обработано: {done:n} из {total:n}\n{label}"
+            )
+
+        def succeeded(result: object) -> None:
+            progress_dialog.setValue(progress_dialog.maximum())
+            progress_dialog.close()
+            layer, _binding, _representation = result
+            self._show_created_layer(workspace, project.id, layer)
+            QMessageBox.information(
+                self.shell,
+                "Импорт завершён",
+                f"Слой «{dialog.layer_name}» создан атомарно. "
+                "Исходная папка не изменена.",
+            )
+
+        def failed(message: str) -> None:
+            progress_dialog.close()
+            if cancelled.is_set():
+                QMessageBox.information(
+                    self.shell,
+                    "Импорт отменён",
+                    "Слой не создан, частичные файлы удалены.",
+                )
+            else:
+                QMessageBox.warning(self.shell, "Не удалось импортировать слой", message)
+
+        worker.progress.connect(update_progress)
+        worker.succeeded.connect(succeeded)
+        worker.failed.connect(failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        progress_dialog.show()
 
     def _error(self, text: str) -> None:
         from PyQt6.QtWidgets import QMessageBox
@@ -1899,9 +2846,14 @@ def _administration_panel(service: EmbeddedProjectService):
     action_layout = QHBoxLayout(actions)
     action_layout.setContentsMargins(0, 0, 0, 0)
     scan_button = QPushButton("Проверить целостность")
+    roots_button = QPushButton("Настроить хранилища…")
     export_button = QPushButton("Создать backup")
     import_button = QPushButton("Восстановить backup")
+    projects.hide()
+    export_button.hide()
+    import_button.hide()
     action_layout.addWidget(scan_button)
+    action_layout.addWidget(roots_button)
     action_layout.addWidget(export_button)
     action_layout.addWidget(import_button)
     layout.addRow("Операции", actions)
@@ -1954,6 +2906,9 @@ def _administration_panel(service: EmbeddedProjectService):
         QMessageBox.information(host, "Backup восстановлен", f"Проект: {project.name}")
 
     scan_button.clicked.connect(scan)
+    roots_button.clicked.connect(
+        lambda: _configure_workspace_roots(host, service, force=True)
+    )
     export_button.clicked.connect(export_backup)
     import_button.clicked.connect(import_backup)
     refresh_projects()

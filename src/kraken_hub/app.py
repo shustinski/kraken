@@ -96,7 +96,11 @@ def build_launch_command(
     return [sys.executable, "-m", plugin.id, *arguments]
 
 
-def launch_plugin(plugin: PluginMetadata, *, arguments: tuple[str, ...] = ()) -> None:
+def launch_plugin(
+    plugin: PluginMetadata,
+    *,
+    arguments: tuple[str, ...] = (),
+) -> subprocess.Popen:
     root = workspace_root()
     plugin_root = root / "plugins" / plugin.id
     cwd = plugin_root if plugin_root.exists() and not plugin.executable_for().path else root
@@ -105,7 +109,7 @@ def launch_plugin(plugin: PluginMetadata, *, arguments: tuple[str, ...] = ()) ->
         env = dict(**os.environ)
         python_paths = [str(root / "src"), str(root / "plugins" / plugin.id / "src")]
         env["PYTHONPATH"] = os.pathsep.join(python_paths + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-    subprocess.Popen(
+    return subprocess.Popen(
         build_launch_command(plugin, root=root, arguments=arguments),
         cwd=str(cwd),
         env=env,

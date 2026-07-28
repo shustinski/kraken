@@ -27,6 +27,8 @@ from kraken_core.plugin_protocol import (
     PluginOperation,
     PluginResultManifest,
     PluginResultPublicationV2,
+    WorkspacePluginContextV1,
+    WorkspacePluginResultV1,
     parse_plugin_job_json,
     safe_relative_path,
 )
@@ -480,6 +482,7 @@ def _run_recognition(
     recognizer.run(multithreading=False)
 
     outputs: list[PluginFrameOutput] = []
+    frame_positions = dict(session.manifest.parameters.get("frame_positions", {}))
     for index, (frame, source) in enumerate(zip(session.frame_inputs, session.input_paths, strict=True), start=1):
         native = completed.get(source.resolve(strict=True))
         if native is None:
@@ -487,7 +490,17 @@ def _run_recognition(
         if native_directory not in native.parents:
             raise KrakenBridgeError("Inference returned an output outside its staging directory")
         _validate_binary_png(native)
-        destination = session.output_directory / f"{index:06d}_{frame.x}_{frame.y}.png"
+        try:
+            position = int(frame_positions.get(frame.frame_id, index - 1))
+        except (TypeError, ValueError):
+            position = index - 1
+        if position < 0:
+            raise KrakenBridgeError(
+                f"Frame {frame.frame_id} has an invalid negative filename position"
+            )
+        destination = session.output_directory / (
+            f"{index:06d}_{frame.x}_{frame.y}_{position}.png"
+        )
         _atomic_copy(native, destination)
         _validate_binary_png(destination)
         outputs.append(
@@ -502,6 +515,110 @@ def _run_recognition(
         )
     applied_threshold = getattr(recognizer, "_resolved_output_threshold", options.threshold)
     return outputs, None if applied_threshold is None else float(applied_threshold)
+
+
+@dataclass(frozen=True, slots=True)
+class NeuralImageWorkspaceSession:
+    context: WorkspacePluginContextV1
+    images_directory: Path
+    cif_directory: Path
+    output_directory: Path
+    result_manifest_path: Path
+
+    @classmethod
+    def load(
+        cls, context_path: str | os.PathLike[str]
+    ) -> "NeuralImageWorkspaceSession":
+        raw = Path(context_path)
+        if raw.is_symlink():
+            raise KrakenBridgeError("Workspace context must not be a symbolic link")
+        try:
+            context = WorkspacePluginContextV1.read(raw.resolve(strict=True))
+            images = Path(context.input_directories["images"]).resolve(strict=True)
+            cif = Path(context.input_directories["cif"]).resolve(strict=True)
+            output = Path(context.proposed_output_directory).resolve(strict=True)
+        except (KeyError, OSError, UnicodeError, ValueError) as exc:
+            raise KrakenBridgeError(f"Invalid NeuralImage workspace context: {exc}") from exc
+        if context.plugin_id != "neuralimage":
+            raise KrakenBridgeError("Workspace context is not intended for NeuralImage")
+        if context.operation != PluginOperation.TRAIN_MODEL.value:
+            raise KrakenBridgeError(
+                f"Interactive NeuralImage does not support {context.operation!r}"
+            )
+        if not images.is_dir() or not cif.is_dir() or not output.is_dir():
+            raise KrakenBridgeError("NeuralImage workspace directories are unavailable")
+        result_path = Path(context.result_manifest_path).resolve(strict=False)
+        if result_path.exists() or result_path.is_symlink():
+            raise KrakenBridgeError("Workspace result manifest already exists")
+        return cls(context, images, cif, output, result_path)
+
+    def attach(self, controller: object) -> None:
+        from PyQt6.QtGui import QAction, QKeySequence
+        from PyQt6.QtWidgets import QMainWindow, QMessageBox
+
+        presenter = getattr(controller, "main_window_presenter", None)
+        window = getattr(presenter, "view", None)
+        state = getattr(presenter, "main_window_state", None)
+        if not isinstance(window, QMainWindow) or state is None:
+            raise KrakenBridgeError(
+                "NeuralImage workspace mode requires the full desktop presenter"
+            )
+        window.set_jpg_path(str(self.images_directory))
+        window.set_label_path(str(self.cif_directory))
+        window.set_result_path(str(self.output_directory))
+        state.sample_folder = str(self.images_directory)
+        state.label_folder = str(self.cif_directory)
+        state.result_folder = str(self.output_directory)
+        menu = window.menuBar().addMenu("Kraken")
+        action = QAction("Вернуть результаты в Kraken", window)
+        action.setShortcut(QKeySequence("Ctrl+Shift+Return"))
+
+        def return_results() -> None:
+            try:
+                selected_text = str(window.lbl_result.text()).strip()
+                selected = Path(selected_text).expanduser()
+                if not selected.is_absolute() or selected.is_symlink():
+                    raise KrakenBridgeError(
+                        "Папка результата должна быть абсолютным обычным каталогом"
+                    )
+                selected = selected.resolve(strict=True)
+                outputs = tuple(
+                    path
+                    for path in selected.rglob("*")
+                    if path.is_file() and not path.is_symlink()
+                )
+                if not outputs:
+                    raise KrakenBridgeError(
+                        "В папке результата нет модели, checkpoint или отчёта"
+                    )
+                WorkspacePluginResultV1(
+                    run_id=self.context.run_id,
+                    plugin_id="neuralimage",
+                    operation=self.context.operation,
+                    outcome=PluginJobOutcome.SUCCEEDED.value,
+                    output_directory=str(selected),
+                    provenance={
+                        "plugin_version": APP_VERSION,
+                        "file_count": len(outputs),
+                    },
+                ).write(self.result_manifest_path)
+            except Exception as exc:
+                QMessageBox.critical(
+                    window,
+                    "Kraken",
+                    f"Не удалось вернуть результат:\n{exc}",
+                )
+                return
+            QMessageBox.information(
+                window,
+                "Kraken",
+                "Модель и отчёты переданы Kraken. NeuralImage можно закрыть.",
+            )
+            window.close()
+
+        action.triggered.connect(return_results)
+        menu.addAction(action)
+        setattr(window, "_kraken_return_action", action)
 
 
 def load_session_from_values(
@@ -533,5 +650,6 @@ __all__ = [
     "HeadlessOptions",
     "KrakenBridgeError",
     "NeuralImageKrakenSession",
+    "NeuralImageWorkspaceSession",
     "load_session_from_values",
 ]

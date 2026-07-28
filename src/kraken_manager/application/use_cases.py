@@ -220,6 +220,7 @@ class CreateLayerHandler(_ProjectHandler):
                 name=command.name,
                 type=command.type,
                 order=command.order,
+                layer_id=command.layer_id,
                 created_at=now,
             )
             next_project = replace(project, revision=project.revision + 1)

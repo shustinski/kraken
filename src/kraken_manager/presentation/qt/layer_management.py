@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QPushButton,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -114,9 +115,12 @@ class LayerOrderList(QListWidget):
         menu = QMenu(self)
         add_images = menu.addAction("Добавить слой изображений…")
         karakal = menu.addAction("Отправить слой в Karakal")
+        menu.addSeparator()
+        delete_layer = menu.addAction("Удалить слой…")
         by_action = {
             add_images: "add_image_representation",
             karakal: "karakal",
+            delete_layer: "delete_layer",
         }
         for menu_action, code in by_action.items():
             enabled, reason = self._action_availability(code)
@@ -403,6 +407,7 @@ class PipelineGraphView(QGraphicsView):
 
 
 class LayerManagerDialog(QDialog):
+    addLayerRequested = pyqtSignal()
     layerSelected = pyqtSignal(str)
     orderChanged = pyqtSignal(object)
     representationActivated = pyqtSignal(str)
@@ -426,9 +431,17 @@ class LayerManagerDialog(QDialog):
         self.settings = QSettings("Kraken", "KrakenHub")
         splitter = QSplitter(self)
         splitter.setOrientation(Qt.Orientation.Horizontal)
+        layer_panel = QWidget(splitter)
+        layer_layout = QVBoxLayout(layer_panel)
+        layer_layout.setContentsMargins(0, 0, 0, 0)
         self.layer_list = LayerOrderList(action_availability=action_availability)
+        self.add_layer_button = QPushButton("Добавить слой", layer_panel)
+        self.add_layer_button.setObjectName("layerManagerAddLayer")
+        self.add_layer_button.setToolTip("Создать слой из папки или подключить внешние каталоги")
+        layer_layout.addWidget(self.layer_list, 1)
+        layer_layout.addWidget(self.add_layer_button)
         self.graph = PipelineGraphView(self.settings, action_availability=action_availability)
-        splitter.addWidget(self.layer_list)
+        splitter.addWidget(layer_panel)
         splitter.addWidget(self.graph)
         splitter.setSizes([270, 910])
         layout = QVBoxLayout(self)
@@ -437,6 +450,7 @@ class LayerManagerDialog(QDialog):
         self.layer_list.layerSelected.connect(self.layerSelected)
         self.layer_list.orderChanged.connect(self.orderChanged)
         self.layer_list.layerActionRequested.connect(self.layerActionRequested)
+        self.add_layer_button.clicked.connect(self.addLayerRequested)
         self.graph.nodeActivated.connect(self._node_activated)
         self.graph.nodeActionRequested.connect(self._node_action)
 

@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 desktop = [
+    "Pillow>=10.0",
     "PyQt6>=6.6",
     "keyring>=25.0",
 ]

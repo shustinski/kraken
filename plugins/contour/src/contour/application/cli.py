@@ -5,6 +5,7 @@ import multiprocessing as mp
 import sys
 from collections.abc import Sequence
 
+from ..batch_processor import configure_batch_runtime
 from ..kraken_bridge import prepare_contour_launch
 
 
@@ -27,6 +28,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.add_argument("--kraken-job-manifest", help="Kraken Agent job manifest (managed mode).")
         parser.add_argument("--kraken-result-manifest", help="Kraken Agent result manifest (managed mode).")
         parser.add_argument("--kraken-staging-root", help="Kraken Agent staging workspace (managed mode).")
+        parser.add_argument(
+            "--kraken-workspace-context",
+            help="Kraken two-root local workspace context.",
+        )
         parser.print_help()
         return
 

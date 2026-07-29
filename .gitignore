@@ -27,5 +27,6 @@ htmlcov/
 *.cif
 *.jpg
 *.bmp
+*.png
 plugins/*/dist/
 plugins/*/build/

@@ -352,6 +352,9 @@ class FrameMatrixGraphicsView(QGraphicsView):
         self.updateThumbnailPixmaps(indexes)
 
     def setPyramidFrameStore(self, store: PyramidFrameStore | None) -> None:
+        if store is self._pyramid_store:
+            self.refreshVisibleRegion()
+            return
         self._pyramid_thumbnail_generation += 1
         self._pyramid_thumbnail_pending.clear()
         try:

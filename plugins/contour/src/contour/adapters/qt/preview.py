@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import cProfile
 import threading
+from time import perf_counter
 
 from PyQt6.QtCore import QObject, QRectF, QRunnable, Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QWidget
 
+from ...application.preview_cancellation import PreviewProcessingCancelled, use_preview_cancellation_event
 from ...application.use_cases.autotune import auto_tune_pipeline
 from ...application.use_cases.processing import (
     PreparedImageRequest,
@@ -13,7 +16,6 @@ from ...application.use_cases.processing import (
     prepare_image_for_preview,
     process_image_path,
 )
-from ...application.preview_cancellation import PreviewProcessingCancelled, use_preview_cancellation_event
 from .image_conversion import cv_to_qimage
 
 
@@ -51,6 +53,7 @@ class PreviewImageView(QGraphicsView):
 
 
 class PreviewProcessingSignals(QObject):
+    profile = pyqtSignal(int, object, float)
     result = pyqtSignal(int, object)
     error = pyqtSignal(int, str)
     finished = pyqtSignal(int)
@@ -75,6 +78,7 @@ class PreviewProcessingRunnable(QRunnable):
         request: PreviewProcessingRequest,
         *,
         cancel_event: threading.Event | None = None,
+        profile: bool = False,
     ) -> None:
         super().__init__()
         self.request_id = int(request_id)
@@ -87,10 +91,15 @@ class PreviewProcessingRunnable(QRunnable):
             passthrough_polygons=request.passthrough_polygons,
         )
         self._cancel = cancel_event
+        self._profile = bool(profile)
         self.signals = PreviewProcessingSignals()
 
     def run(self) -> None:
+        profiler = cProfile.Profile() if self._profile else None
+        started_at = perf_counter()
         try:
+            if profiler is not None:
+                profiler.enable()
             with use_preview_cancellation_event(self._cancel):
                 result = process_image_path(
                     image_path=self.request.image_path,
@@ -102,12 +111,24 @@ class PreviewProcessingRunnable(QRunnable):
                     if self.request.passthrough_polygons
                     else None,
                 )
+            if profiler is not None:
+                profiler.disable()
+                self.signals.profile.emit(
+                    self.request_id,
+                    profiler,
+                    (perf_counter() - started_at) * 1000.0,
+                )
             self.signals.result.emit(self.request_id, result)
         except PreviewProcessingCancelled:
             pass
         except Exception as exc:
             self.signals.error.emit(self.request_id, str(exc))
         finally:
+            if profiler is not None:
+                try:
+                    profiler.disable()
+                except ValueError:
+                    pass
             self.signals.finished.emit(self.request_id)
 
 

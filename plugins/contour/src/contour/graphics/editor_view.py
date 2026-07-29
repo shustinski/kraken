@@ -7,7 +7,7 @@ from collections import OrderedDict
 from math import hypot, log2
 from time import perf_counter
 
-from typing import Callable, cast
+from typing import Callable
 
 from PyQt6.QtCore import (
     QEvent,
@@ -51,7 +51,7 @@ from ..application.vector_geometry_postprocess import (
     resolve_focus_id_after_geometry_pass,
 )
 from ..commands import ReplacePolygonSetCommand
-from ..domain import Point, PolygonData, integer_points
+from ..domain import PolygonData
 from ..domain.polygon_ring import is_valid_closed_polygon_vertex_move
 from ..infrastructure.profiling import (
     try_disable_profiler,
@@ -108,6 +108,21 @@ class PolygonEditorView(QGraphicsView):
     neighborFrameActivated = pyqtSignal(str)
     viaDebugRequested = pyqtSignal(object)
     manualViaAdded = pyqtSignal(float, float)
+    contactPlacementHotkeyPressed = pyqtSignal()
+    contactPlacementAttemptStarted = pyqtSignal()
+    contactPlacementAttemptFinished = pyqtSignal(bool)
+    contactMultiSelectionStarted = pyqtSignal()
+    contactMultiSelectionFinished = pyqtSignal(int)
+    contactDeletionStarted = pyqtSignal(int)
+    contactDeletionFinished = pyqtSignal(int)
+    contactCopyStarted = pyqtSignal()
+    contactCopyFinished = pyqtSignal(int)
+    contactPasteStarted = pyqtSignal(int)
+    contactPasteFinished = pyqtSignal(int)
+    contactUndoStarted = pyqtSignal()
+    contactUndoFinished = pyqtSignal(bool, int)
+    contactRedoStarted = pyqtSignal()
+    contactRedoFinished = pyqtSignal(bool, int)
     recognizedViasDeleted = pyqtSignal(object)
     metalOverlayDetailRequested = pyqtSignal(str, str)
     middlePreviewHoldChanged = pyqtSignal(bool)
@@ -234,7 +249,12 @@ class PolygonEditorView(QGraphicsView):
                 continue
             shortcut = QShortcut(sequence, self)
             shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
-            shortcut.activated.connect(lambda t=tool: self.set_tool(t))
+            shortcut.activated.connect(lambda t=tool: self._activate_tool_shortcut(t))
+
+    def _activate_tool_shortcut(self, tool: EditorTool) -> None:
+        if tool == EditorTool.ADD_VIA:
+            self.contactPlacementHotkeyPressed.emit()
+        self.set_tool(tool)
 
     def _configure_opengl_viewport(self) -> bool:
         if not _OPENGL_VIEWPORT_ENABLED:
@@ -363,6 +383,9 @@ class PolygonEditorView(QGraphicsView):
     def set_via_size(self, width: float, height: float) -> None:
         self._via_width = max(1.0, float(width))
         self._via_height = max(1.0, float(height))
+
+    def set_minimum_contact_distance(self, distance: float) -> None:
+        self._editor_scene.set_minimum_contact_distance(distance)
         self._update_tool_cursors()
 
     def set_vector_geometry_settings(self, settings: VectorGeometrySettings | None) -> None:
@@ -836,29 +859,50 @@ class PolygonEditorView(QGraphicsView):
         self._start_zoom_animation(self._zoom_focus_viewport_pixel(), 1.0 / DEFAULT_ZOOM_STEP_FACTOR)
 
     def undo(self) -> None:
+        can_undo = self.undo_stack.canUndo()
+        contacts_before = self._editor_scene.contact_count()
+        self.contactUndoStarted.emit()
         self.undo_stack.undo()
+        contacts_changed = abs(self._editor_scene.contact_count() - contacts_before)
+        self.contactUndoFinished.emit(can_undo, contacts_changed)
 
     def redo(self) -> None:
+        can_redo = self.undo_stack.canRedo()
+        contacts_before = self._editor_scene.contact_count()
+        self.contactRedoStarted.emit()
         self.undo_stack.redo()
+        contacts_changed = abs(self._editor_scene.contact_count() - contacts_before)
+        self.contactRedoFinished.emit(can_redo, contacts_changed)
 
     def copy_selected(self) -> None:
+        self.contactCopyStarted.emit()
         polygons = self._editor_scene.selected_polygons()
         if not polygons:
+            self.contactCopyFinished.emit(0)
             return
         self._clipboard_polygons = [polygon.clone() for polygon in polygons]
         self._clipboard_anchor = _polygons_center(self._clipboard_polygons)
+        self.contactCopyFinished.emit(len(polygons))
 
     def cut_selected(self) -> None:
         polygons = self._editor_scene.selected_deletable_polygons()
         if polygons:
+            contacts = [polygon for polygon in polygons if is_via_polygon(polygon)]
+            if contacts:
+                self.contactDeletionStarted.emit(len(contacts))
             self._clipboard_polygons = [polygon.clone() for polygon in polygons]
             self._clipboard_anchor = _polygons_center(self._clipboard_polygons)
-            self._editor_scene.delete_polygon()
+            deleted = self._editor_scene.delete_polygon()
+            if contacts:
+                self.contactDeletionFinished.emit(len(contacts) if deleted else 0)
 
     def start_paste_mode(self) -> None:
+        self.contactPasteStarted.emit(len(self._clipboard_polygons))
         if not self._clipboard_polygons or not self._editor_scene.can_add_polygon_set(self._clipboard_polygons):
+            self.contactPasteFinished.emit(0)
             return
         self._paste_mode = True
+        self._rebuild_paste_preview()
         self._update_paste_preview(
             self._last_pointer_scene_pos or self.mapToScene(self._require_viewport().rect().center())
         )
@@ -873,33 +917,30 @@ class PolygonEditorView(QGraphicsView):
         self._paste_mode = False
         self._clear_paste_preview()
 
-    def _update_paste_preview(self, scene_pos: QPointF | None) -> None:
+    def _rebuild_paste_preview(self) -> None:
         self._clear_paste_preview()
-        if not self._paste_mode or scene_pos is None:
+        if not self._paste_mode:
             return
-        dx = scene_pos.x() - self._clipboard_anchor.x()
-        dy = scene_pos.y() - self._clipboard_anchor.y()
         pen = QPen(QColor("#38BDF8"), 1.5, Qt.PenStyle.DashLine)
         pen.setCosmetic(True)
         brush = QColor("#38BDF8")
         brush.setAlpha(42)
         for polygon in self._clipboard_polygons:
-            shifted = polygon.clone()
-            shifted.points = cast(
-                list[Point],
-                integer_points([(x + dx, y + dy) for x, y in shifted.points]),
-            )
             path = QPainterPath()
-            if shifted.shape_hint == "box" or shifted.category == "via":
-                x_values = [point[0] for point in shifted.points]
-                y_values = [point[1] for point in shifted.points]
+            if polygon.shape_hint == "box" or polygon.category == "via":
+                x_coord, y_coord, width, height = polygon.bbox
                 path.addEllipse(
-                    QRectF(min(x_values), min(y_values), max(x_values) - min(x_values), max(y_values) - min(y_values))
+                    QRectF(
+                        float(x_coord),
+                        float(y_coord),
+                        float(max(0, width - 1)),
+                        float(max(0, height - 1)),
+                    )
                 )
             else:
-                if shifted.points:
-                    path.moveTo(shifted.points[0][0], shifted.points[0][1])
-                    for x_coord, y_coord in shifted.points[1:]:
+                if polygon.points:
+                    path.moveTo(polygon.points[0][0], polygon.points[0][1])
+                    for x_coord, y_coord in polygon.points[1:]:
                         path.lineTo(x_coord, y_coord)
                     path.closeSubpath()
             item = QGraphicsPathItem(path)
@@ -908,6 +949,16 @@ class PolygonEditorView(QGraphicsView):
             item.setBrush(QBrush(brush))
             self._editor_scene.addItem(item)
             self._paste_preview_items.append(item)
+
+    def _update_paste_preview(self, scene_pos: QPointF | None) -> None:
+        if not self._paste_mode or scene_pos is None:
+            return
+        if len(self._paste_preview_items) != len(self._clipboard_polygons):
+            self._rebuild_paste_preview()
+        dx = scene_pos.x() - self._clipboard_anchor.x()
+        dy = scene_pos.y() - self._clipboard_anchor.y()
+        for item in self._paste_preview_items:
+            item.setPos(dx, dy)
 
     def wheelEvent(self, event: QWheelEvent | None) -> None:
         if event is None:
@@ -959,8 +1010,13 @@ class PolygonEditorView(QGraphicsView):
             return
 
         if self._paste_mode and event.button() == Qt.MouseButton.LeftButton:
-            self._editor_scene.add_cloned_polygons_at(self._clipboard_polygons, self._clipboard_anchor, scene_pos)
+            pasted_ids = self._editor_scene.add_cloned_polygons_at(
+                self._clipboard_polygons,
+                self._clipboard_anchor,
+                scene_pos,
+            )
             self._update_paste_preview(scene_pos)
+            self.contactPasteFinished.emit(len(pasted_ids))
             event.accept()
             return
 
@@ -1051,11 +1107,17 @@ class PolygonEditorView(QGraphicsView):
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.RightButton,
         ):
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.contactPlacementAttemptStarted.emit()
             polygon_id = self._editor_scene.polygon_at(scene_pos)
             polygon = self._editor_scene.polygon_snapshot(polygon_id) if polygon_id is not None else None
             if event.button() == Qt.MouseButton.RightButton:
-                if self._editor_scene.delete_via_at(scene_pos):
+                self.contactDeletionStarted.emit(1)
+                deleted = self._editor_scene.delete_via_at(scene_pos)
+                if deleted:
                     self._emit_recognized_vias_deleted([polygon] if polygon is not None else [])
+                self.contactDeletionFinished.emit(1 if deleted else 0)
+                self.contactPlacementAttemptFinished.emit(False)
             elif (
                 self._contact_recognition_mode
                 and polygon is not None
@@ -1064,9 +1126,12 @@ class PolygonEditorView(QGraphicsView):
                 self._editor_scene.select_polygon(polygon.id)
                 if self._via_debug_inspection_enabled:
                     self.viaDebugRequested.emit(polygon)
+                self.contactPlacementAttemptFinished.emit(False)
             else:
-                if self._editor_scene.add_via_at(scene_pos, self._via_width, self._via_height):
+                added = self._editor_scene.add_via_at(scene_pos, self._via_width, self._via_height)
+                if added:
                     self.manualViaAdded.emit(float(scene_pos.x()), float(scene_pos.y()))
+                self.contactPlacementAttemptFinished.emit(added)
             self._update_tool_cursors()
             event.accept()
             return
@@ -1078,9 +1143,15 @@ class PolygonEditorView(QGraphicsView):
         if event.button() == Qt.MouseButton.RightButton:
             polygon_id = self._editor_scene.polygon_at(scene_pos)
             polygon = self._editor_scene.polygon_snapshot(polygon_id)
-            if self._editor_scene.delete_via_at(scene_pos):
+            is_contact = polygon is not None and is_via_polygon(polygon)
+            if is_contact:
+                self.contactDeletionStarted.emit(1)
+            deleted = self._editor_scene.delete_via_at(scene_pos)
+            if deleted:
                 self._emit_recognized_vias_deleted([polygon] if polygon is not None else [])
                 event.accept()
+            if is_contact:
+                self.contactDeletionFinished.emit(1 if deleted else 0)
                 return
             super().mousePressEvent(event)
             return
@@ -1099,7 +1170,14 @@ class PolygonEditorView(QGraphicsView):
             return
 
         if self._tool == EditorTool.DELETE_POLYGON:
-            self._editor_scene.delete_polygon_at(scene_pos)
+            polygon_id = self._editor_scene.polygon_at(scene_pos)
+            polygon = self._editor_scene.polygon_snapshot(polygon_id)
+            is_contact = polygon is not None and is_via_polygon(polygon)
+            if is_contact:
+                self.contactDeletionStarted.emit(1)
+            deleted = self._editor_scene.delete_polygon_at(scene_pos)
+            if is_contact:
+                self.contactDeletionFinished.emit(1 if deleted else 0)
             event.accept()
             return
 
@@ -1116,8 +1194,6 @@ class PolygonEditorView(QGraphicsView):
             if polygon_id is None:
                 neighbor_path = self._editor_scene.neighbor_frame_path_at(scene_pos)
                 if neighbor_path is not None:
-                    if self._confirm_frame_navigation():
-                        self.neighborFrameActivated.emit(neighbor_path)
                     event.accept()
                     return
                 target_frame_id = self._pyramid_frame_at_viewport_pos(viewport_pixel)
@@ -1130,13 +1206,18 @@ class PolygonEditorView(QGraphicsView):
                     event.accept()
                     return
                 self._drag_kind = "select_area"
+                self.contactMultiSelectionStarted.emit()
                 self._drag_start_scene_pos = scene_pos
                 self._select_press_polygon_id = None
                 self._select_press_start = None
                 self._editor_scene.set_preview_rect(scene_pos, scene_pos)
                 event.accept()
                 return
+            if additive_selection:
+                self.contactMultiSelectionStarted.emit()
             self._editor_scene.select_polygon(polygon_id, additive=additive_selection)
+            if additive_selection:
+                self.contactMultiSelectionFinished.emit(self._selected_contact_count())
             if self._via_debug_inspection_enabled and polygon_id is not None:
                 polygon = self._editor_scene.polygon_snapshot(polygon_id)
                 if polygon is not None:
@@ -1396,6 +1477,7 @@ class PolygonEditorView(QGraphicsView):
                         rect,
                         additive=bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier),
                     )
+                self.contactMultiSelectionFinished.emit(self._selected_contact_count())
             elif self._drag_kind == "antialias_area" and self._drag_start_scene_pos is not None:
                 release_pos = self.mapToScene(event.position().toPoint())
                 rect = QRectF(self._drag_start_scene_pos, release_pos).normalized()
@@ -1597,7 +1679,9 @@ class PolygonEditorView(QGraphicsView):
         delete_action = menu.addAction(delete_label)
         chosen = menu.exec(event.globalPos())
         if chosen == delete_action:
-            self._editor_scene.delete_via_at(scene_pos)
+            self.contactDeletionStarted.emit(1)
+            deleted = self._editor_scene.delete_via_at(scene_pos)
+            self.contactDeletionFinished.emit(1 if deleted else 0)
         event.accept()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:
@@ -1685,10 +1769,15 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if event.key() == Qt.Key.Key_Escape:
+            paste_was_active = self._paste_mode
+            if self._drag_kind == "select_area":
+                self.contactMultiSelectionFinished.emit(0)
             self._editor_scene.cancel_pending_polygon()
             self._editor_scene.clear_measurement()
             self._editor_scene.clear_preview_rect()
             self._exit_paste_mode()
+            if paste_was_active:
+                self.contactPasteFinished.emit(0)
             if self._tool in (EditorTool.SELECT, EditorTool.ADD_VERTEX):
                 self._editor_scene.select_polygon(None)
             self._select_press_polygon_id = None
@@ -1704,8 +1793,14 @@ class PolygonEditorView(QGraphicsView):
             return
         if event.key() == Qt.Key.Key_Delete:
             deleted = self._editor_scene.selected_deletable_polygons()
-            if self._editor_scene.delete_polygon():
+            contacts = [polygon for polygon in deleted if is_via_polygon(polygon)]
+            if contacts:
+                self.contactDeletionStarted.emit(len(contacts))
+            did_delete = self._editor_scene.delete_polygon()
+            if did_delete:
                 self._emit_recognized_vias_deleted(deleted)
+            if contacts:
+                self.contactDeletionFinished.emit(len(contacts) if did_delete else 0)
             event.accept()
             return
         if event.key() == Qt.Key.Key_Shift and self._drag_kind is None and not event.isAutoRepeat():
@@ -1734,6 +1829,13 @@ class PolygonEditorView(QGraphicsView):
         ]
         if recognized:
             self.recognizedViasDeleted.emit(recognized)
+
+    def _selected_contact_count(self) -> int:
+        return sum(
+            1
+            for polygon in self._editor_scene.selected_polygons()
+            if is_via_polygon(polygon)
+        )
 
     def keyReleaseEvent(self, event: QKeyEvent | None) -> None:
         if event is None:

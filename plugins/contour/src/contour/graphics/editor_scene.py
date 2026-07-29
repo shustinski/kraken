@@ -35,8 +35,10 @@ from ..application.vector_geometry_postprocess import (
 )
 from ..commands import (
     AddPolygonCommand,
+    AddPolygonsCommand,
     AddVertexCommand,
     DeletePolygonCommand,
+    DeletePolygonsCommand,
     DeleteVertexCommand,
     ReplacePolygonSetCommand,
 )
@@ -102,6 +104,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._gradient_overlay_user_visible = True
         self._polygon_category_visible: dict[str, bool] = {}
         self._protect_recognized_vias = False
+        self._minimum_contact_distance = 0.0
 
         self._image_item = QGraphicsPixmapItem()
         self._image_item.setZValue(0)
@@ -596,8 +599,14 @@ class PolygonEditorScene(QGraphicsScene):
     def get_polygons(self) -> list[PolygonData]:
         return [self._polygons[polygon_id].clone() for polygon_id in sorted(self._polygons)]
 
+    def contact_count(self) -> int:
+        return sum(1 for polygon in self._polygons.values() if _is_via_polygon(polygon))
+
     def set_protect_recognized_vias(self, enabled: bool) -> None:
         self._protect_recognized_vias = bool(enabled)
+
+    def set_minimum_contact_distance(self, distance: float) -> None:
+        self._minimum_contact_distance = max(0.0, float(distance))
 
     def can_add_polygon(self) -> bool:
         return can_add_polygon(self._polygons.values())
@@ -939,12 +948,7 @@ class PolygonEditorScene(QGraphicsScene):
         target_polygons = [self._polygons[target_id].clone() for target_id in delete_ids if target_id in self._polygons]
         if not target_polygons:
             return False
-        self.undo_stack.beginMacro("Delete polygons")
-        try:
-            for target_polygon in target_polygons:
-                self.undo_stack.push(DeletePolygonCommand(self, target_polygon))
-        finally:
-            self.undo_stack.endMacro()
+        self.undo_stack.push(DeletePolygonsCommand(self, target_polygons))
         return True
 
     def _delete_polygon_ids_with_descendants(self, target_ids: list[int | None]) -> list[int]:
@@ -1034,37 +1038,221 @@ class PolygonEditorScene(QGraphicsScene):
             return []
         dx = target_anchor.x() - source_anchor.x()
         dy = target_anchor.y() - source_anchor.y()
+        shifted_polygons: list[PolygonData] = []
+        for polygon in polygons:
+            shifted = polygon.clone()
+            shifted.points = integer_points(
+                [(float(x) + dx, float(y) + dy) for x, y in polygon.points]
+            )
+            shifted.area, shifted.perimeter, shifted.bbox = compute_polygon_metrics(
+                shifted.points
+            )
+            shifted_polygons.append(shifted)
+        clipped_polygons = self._clip_pasted_polygons_to_inset(shifted_polygons, inset=3.0)
+        if not clipped_polygons:
+            return []
+        if not all(_is_via_polygon(polygon) for polygon in clipped_polygons):
+            return self._merge_pasted_polygons(clipped_polygons)
+        return self._add_pasted_contacts(clipped_polygons)
+
+    def _add_pasted_contacts(self, polygons: list[PolygonData]) -> list[int]:
+        new_polygons: list[PolygonData] = []
+        accepted_contacts = [
+            (
+                _polygon_data_rect(existing).center(),
+                _polygon_data_rect(existing),
+            )
+            for existing in self._polygons.values()
+            if _is_via_polygon(existing)
+        ]
+        minimum_distance_sq = self._minimum_contact_distance * self._minimum_contact_distance
+        for polygon in polygons:
+            candidate_rect = _polygon_data_rect(polygon)
+            candidate_center = candidate_rect.center()
+            if any(
+                candidate_rect.intersects(existing_rect)
+                or (
+                    minimum_distance_sq > 0.0
+                    and (
+                        (candidate_center.x() - existing_center.x()) ** 2
+                        + (candidate_center.y() - existing_center.y()) ** 2
+                    )
+                    < minimum_distance_sq
+                )
+                for existing_center, existing_rect in accepted_contacts
+            ):
+                continue
+            new_id = self._next_polygon_id
+            self._next_polygon_id += 1
+            new_polygon = polygon.clone()
+            new_polygon.id = new_id
+            new_polygon.parent_id = None
+            new_polygons.append(new_polygon)
+            accepted_contacts.append((candidate_center, candidate_rect))
+        if not new_polygons:
+            return []
+        self.undo_stack.push(
+            AddPolygonsCommand(
+                self,
+                new_polygons,
+                "Paste polygons",
+                select_after_redo=True,
+            )
+        )
+        return [polygon.id for polygon in new_polygons]
+
+    def _clip_pasted_polygons_to_inset(
+        self,
+        polygons: list[PolygonData],
+        *,
+        inset: float,
+    ) -> list[PolygonData]:
+        image_rect = QRectF(self._image_rect).normalized()
+        if image_rect.width() <= 1.0 or image_rect.height() <= 1.0:
+            return [polygon.clone() for polygon in polygons]
+        clip_rect = image_rect.adjusted(inset, inset, -inset, -inset)
+        if clip_rect.width() <= 0.0 or clip_rect.height() <= 0.0:
+            return []
+        polygon_rects = [
+            (polygon, _polygon_data_rect(polygon))
+            for polygon in polygons
+        ]
+        if all(clip_rect.contains(polygon_rect) for _polygon, polygon_rect in polygon_rects):
+            return [polygon.clone() for polygon in polygons]
+        clip_geom = shapely_box(
+            float(clip_rect.left()),
+            float(clip_rect.top()),
+            float(clip_rect.right()),
+            float(clip_rect.bottom()),
+        )
+        if all(_is_via_polygon(polygon) for polygon in polygons):
+            clipped_contacts: list[PolygonData] = []
+            for polygon, polygon_rect in polygon_rects:
+                if not clip_rect.intersects(polygon_rect):
+                    continue
+                if clip_rect.contains(polygon_rect):
+                    clipped_contacts.append(polygon.clone())
+                    continue
+                try:
+                    polygon_geom = tool_geometry(
+                        polygon.points,
+                        None,
+                        quad_segs=QUAD_SEGS_BRUSH_DEFAULT,
+                    )
+                    clipped = shapely_to_polygon_data_list(
+                        unary_union(make_valid(polygon_geom.intersection(clip_geom)))
+                    )
+                except Exception:
+                    clipped = []
+                for candidate in clipped:
+                    candidate.category = polygon.category
+                    candidate.shape_hint = polygon.shape_hint
+                    clipped_contacts.append(candidate)
+            return clipped_contacts
+        try:
+            polygon_map = {polygon.id: polygon.clone() for polygon in polygons}
+            pasted_region = region_geometry(polygon_map, list(polygon_map))
+            clipped = shapely_to_polygon_data_list(
+                unary_union(make_valid(pasted_region.intersection(clip_geom)))
+            )
+        except Exception:
+            return []
+        reference = next((polygon for polygon in polygons if not polygon.is_hole), polygons[0])
+        for candidate in clipped:
+            candidate.category = reference.category
+            candidate.shape_hint = reference.shape_hint
+        return clipped
+
+    def _merge_pasted_polygons(self, pasted_polygons: list[PolygonData]) -> list[int]:
+        try:
+            pasted_map = {polygon.id: polygon.clone() for polygon in pasted_polygons}
+            pasted_region = region_geometry(pasted_map, list(pasted_map))
+        except Exception:
+            return []
+        overlapping_root_ids: list[int] = []
+        for polygon_id, polygon in self._polygons.items():
+            if polygon.is_hole:
+                continue
+            try:
+                existing_region = region_geometry(
+                    self._polygons,
+                    self._polygon_family_ids(polygon_id),
+                )
+            except ValueError:
+                continue
+            if existing_region.intersects(pasted_region):
+                overlapping_root_ids.append(polygon_id)
+        if not overlapping_root_ids:
+            return self._add_pasted_polygon_set(pasted_polygons)
+        replaced_ids = self._render_polygon_ids(overlapping_root_ids)
+        try:
+            if replaced_ids:
+                existing_region = region_geometry(self._polygons, replaced_ids)
+                merged_region = unary_union(
+                    make_valid(existing_region.union(pasted_region))
+                )
+            else:
+                merged_region = unary_union(make_valid(pasted_region))
+            rebuilt = shapely_to_polygon_data_list(merged_region)
+        except Exception:
+            return []
+        if not rebuilt:
+            return []
+        reference = (
+            self._polygons[overlapping_root_ids[0]]
+            if overlapping_root_ids
+            else next(
+                (polygon for polygon in pasted_polygons if not polygon.is_hole),
+                pasted_polygons[0],
+            )
+        )
+        for candidate in rebuilt:
+            candidate.category = reference.category
+            candidate.shape_hint = reference.shape_hint
+        rebuilt = self._assign_polygon_ids(rebuilt, replaced_ids)
+        before = self.get_polygons()
+        replaced_id_set = set(replaced_ids)
+        after = [
+            polygon.clone()
+            for polygon in before
+            if polygon.id not in replaced_id_set
+        ]
+        after.extend(polygon.clone() for polygon in rebuilt)
+        after.sort(key=lambda polygon: polygon.id)
+        self.undo_stack.push(
+            ReplacePolygonSetCommand(self, before, after, "Paste and merge polygons")
+        )
+        selected_ids = [polygon.id for polygon in rebuilt]
+        self.select_polygons(selected_ids)
+        return selected_ids
+
+    def _add_pasted_polygon_set(
+        self,
+        polygons: list[PolygonData],
+    ) -> list[int]:
         id_map: dict[int, int] = {}
         new_polygons: list[PolygonData] = []
         for polygon in polygons:
-            shifted_points = integer_points([(float(x) + dx, float(y) + dy) for x, y in polygon.points])
-            area, perimeter, bbox = compute_polygon_metrics(shifted_points)
             new_id = self._next_polygon_id
             self._next_polygon_id += 1
             id_map[polygon.id] = new_id
-            new_polygons.append(
-                PolygonData(
-                    id=new_id,
-                    points=shifted_points,
-                    is_hole=polygon.is_hole,
-                    parent_id=polygon.parent_id,
-                    category=polygon.category,
-                    shape_hint=polygon.shape_hint,
-                    area=area,
-                    perimeter=perimeter,
-                    bbox=bbox,
-                )
-            )
+            cloned = polygon.clone()
+            cloned.id = new_id
+            new_polygons.append(cloned)
         for polygon in new_polygons:
-            polygon.parent_id = None if polygon.parent_id is None else id_map.get(polygon.parent_id)
-        self.undo_stack.beginMacro("Paste polygons")
-        try:
-            for polygon in new_polygons:
-                self.undo_stack.push(AddPolygonCommand(self, polygon))
-        finally:
-            self.undo_stack.endMacro()
-        if new_polygons:
-            self.select_polygons([polygon.id for polygon in new_polygons])
+            polygon.parent_id = (
+                None
+                if polygon.parent_id is None
+                else id_map.get(polygon.parent_id)
+            )
+        self.undo_stack.push(
+            AddPolygonsCommand(
+                self,
+                new_polygons,
+                "Paste polygons",
+                select_after_redo=True,
+            )
+        )
         return [polygon.id for polygon in new_polygons]
 
     def add_vertex_at(self, polygon_id: int, scene_pos: QPointF) -> bool:
@@ -1961,16 +2149,24 @@ class PolygonEditorScene(QGraphicsScene):
         return path
 
     def _refresh_all_items(self) -> None:
+        editable_vertex_ids = self._editable_vertex_polygon_ids()
         for polygon_id, item in self._polygon_items.items():
-            self._refresh_polygon_item(polygon_id, item)
+            self._refresh_polygon_item(polygon_id, item, editable_vertex_ids=editable_vertex_ids)
 
     def _refresh_polygon_items_by_id(self, *polygon_ids: int | None) -> None:
+        editable_vertex_ids = self._editable_vertex_polygon_ids()
         for polygon_id in {polygon_id for polygon_id in polygon_ids if polygon_id is not None}:
             item = self._polygon_items.get(polygon_id)
             if item is not None:
-                self._refresh_polygon_item(polygon_id, item)
+                self._refresh_polygon_item(polygon_id, item, editable_vertex_ids=editable_vertex_ids)
 
-    def _refresh_polygon_item(self, polygon_id: int, item: EditablePolygonItem | None = None) -> None:
+    def _refresh_polygon_item(
+        self,
+        polygon_id: int,
+        item: EditablePolygonItem | None = None,
+        *,
+        editable_vertex_ids: set[int] | None = None,
+    ) -> None:
         polygon = self._polygons.get(polygon_id)
         if polygon is None:
             return
@@ -1990,7 +2186,12 @@ class PolygonEditorScene(QGraphicsScene):
             cutout_polygons=self._cutout_polygons_for(polygon_id),
             custom_color=self._via_score_color(polygon) or self._object_color_for(polygon_id),
             conductor_hover_highlight=conductor_hover_highlight,
-            preview_vertices=polygon_id in self._editable_vertex_polygon_ids(),
+            preview_vertices=polygon_id
+            in (
+                editable_vertex_ids
+                if editable_vertex_ids is not None
+                else self._editable_vertex_polygon_ids()
+            ),
         )
         cat = str(getattr(polygon, "category", "") or "")
         vis = self._polygon_category_visible.get(cat, True)
@@ -2002,7 +2203,7 @@ class PolygonEditorScene(QGraphicsScene):
             return None
         score = getattr(polygon, "recognition_score", None)
         if score is None:
-            return "#2563EB"
+            return None
         normalized = max(0.0, min(1.0, float(score) / 100.0))
         # HSL hue 0° is red, 60° yellow and 120° green.
         return QColor.fromHslF(normalized / 3.0, 0.82, 0.50).name()
@@ -2253,6 +2454,34 @@ class PolygonEditorScene(QGraphicsScene):
             self._selected_polygon_id = None
             self.activePolygonChanged.emit(None)
         self._selected_polygon_ids.discard(polygon_id)
+        if refresh:
+            self._refresh_all_items()
+        if emit_signal:
+            self.polygonsChanged.emit()
+
+    def _remove_polygons_internal(
+        self,
+        polygon_ids: list[int],
+        *,
+        emit_signal: bool = True,
+        refresh: bool = True,
+    ) -> None:
+        for polygon_id in polygon_ids:
+            self._remove_polygon_internal(polygon_id, emit_signal=False, refresh=False)
+        if refresh:
+            self._refresh_all_items()
+        if emit_signal:
+            self.polygonsChanged.emit()
+
+    def _add_polygons_internal(
+        self,
+        polygons: list[PolygonData],
+        *,
+        emit_signal: bool = True,
+        refresh: bool = True,
+    ) -> None:
+        for polygon in polygons:
+            self._add_polygon_internal(polygon, emit_signal=False, refresh=False)
         if refresh:
             self._refresh_all_items()
         if emit_signal:

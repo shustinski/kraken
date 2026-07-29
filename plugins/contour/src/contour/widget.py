@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import tempfile
+from collections import OrderedDict
 from pathlib import Path
 
 import cv2
@@ -308,7 +309,12 @@ class PolygonExtractionWidget(
         self._auto_tune_thread_pool.setExpiryTimeout(-1)
         self._auto_tune_request_serial = 0
         self._auto_tune_running_request_id: int | None = None
-        self._neighbor_image_cache: dict[str, object] = {}
+        self._neighbor_image_cache: OrderedDict[str, object] = OrderedDict()
+        self._neighbor_image_cache_limit = 96
+        self._scene_source_image_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._scene_source_image_cache_bytes = 0
+        self._scene_source_image_cache_max_bytes = 512 * 1024 * 1024
+        self._scene_source_image_cache_lock = threading.RLock()
         self._neighbor_image_dimensions: dict[str, tuple[int, int]] = {}
         self._neighbor_vector_cache: dict[str, tuple[list[PolygonData], tuple[int, int] | None]] = {}
         self._neighbor_thread_pool = QThreadPool(self)
@@ -363,6 +369,7 @@ class PolygonExtractionWidget(
         self._thumbnail_build_interval_ms = 25
         self._thumbnail_pending_apply: dict[str, object] = {}
         self._thumbnail_icon_cache: dict[object, QIcon] = {}
+        self._thumbnail_icon_cache_limit = 2048
         self._thumbnail_disk_cache_dir = Path(tempfile.gettempdir()) / "contour-frame-thumbnails"
         self._thumbnail_disk_cache_key: str | None = None
         self._thumbnail_disk_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -493,5 +500,8 @@ class PolygonExtractionWidget(
                 pool.waitForDone(3000)
             except RuntimeError:
                 pass
+        with self._scene_source_image_cache_lock:
+            self._scene_source_image_cache.clear()
+            self._scene_source_image_cache_bytes = 0
         self._persist_session_state()
         super().closeEvent(event)

@@ -5,22 +5,289 @@ import hashlib
 import json
 import shutil
 from time import perf_counter, time_ns
-
 from typing import Any
 
 from PyQt6.QtGui import QImage, QImageReader
 
 from ..adapters.qt.object_validity import qt_object_is_valid
+from ..infrastructure.contact_placement_profiler import ContactPlacementProfile
 from ..infrastructure.frame_switch_profiler import (
     MAX_IDLE_POLLS,
     FrameSwitchProfile,
     frame_switch_profiling_enabled,
     profile_callable,
 )
+from ..infrastructure.profiling import (
+    contact_copy_profiling_enabled,
+    contact_deletion_profiling_enabled,
+    contact_multi_selection_profiling_enabled,
+    contact_paste_profiling_enabled,
+    contact_placement_profiling_enabled,
+    contact_redo_profiling_enabled,
+    contact_undo_profiling_enabled,
+)
 from ._imports import *  # noqa: F403
 
 
 class WidgetProcessingMixin:
+    def _start_contact_undo_profile(self: Any) -> None:
+        self._start_contact_history_profile("undo")
+
+    def _finish_contact_undo_profile(self: Any, applied: bool, contact_count: int) -> None:
+        self._finish_contact_history_profile("undo", applied, contact_count)
+
+    def _start_contact_redo_profile(self: Any) -> None:
+        self._start_contact_history_profile("redo")
+
+    def _finish_contact_redo_profile(self: Any, applied: bool, contact_count: int) -> None:
+        self._finish_contact_history_profile("redo", applied, contact_count)
+
+    def _start_contact_history_profile(self: Any, action: str) -> None:
+        enabled = (
+            contact_undo_profiling_enabled()
+            if action == "undo"
+            else contact_redo_profiling_enabled()
+        )
+        if not enabled:
+            return
+        attribute = f"_contact_{action}_profile"
+        previous = getattr(self, attribute, None)
+        if previous is not None:
+            previous.stop()
+        setattr(self, attribute, ContactPlacementProfile.begin(action=action))
+        self._emit_contact_profile_output(
+            f"[contour contact {action} profiling] started"
+        )
+
+    def _finish_contact_history_profile(
+        self: Any,
+        action: str,
+        applied: bool,
+        contact_count: int,
+    ) -> None:
+        attribute = f"_contact_{action}_profile"
+        session = getattr(self, attribute, None)
+        if session is None:
+            return
+        session.contact_count = max(0, int(contact_count))
+        session.note(f"{action}_applied_to_ui")
+        status = "displayed" if applied else "rejected"
+        QTimer.singleShot(
+            0,
+            lambda: self._complete_contact_history_profile(action, status, session),
+        )
+
+    def _complete_contact_history_profile(
+        self: Any,
+        action: str,
+        status: str,
+        expected_session: ContactPlacementProfile,
+    ) -> None:
+        attribute = f"_contact_{action}_profile"
+        session = getattr(self, attribute, None)
+        if session is not expected_session:
+            return
+        setattr(self, attribute, None)
+        session.stop()
+        self._emit_contact_profile_output(session.format_summary(status=status))
+        self._emit_contact_profile_output(session.format_stats())
+
+    def _start_contact_copy_profile(self: Any) -> None:
+        if not contact_copy_profiling_enabled():
+            return
+        previous = getattr(self, "_contact_copy_profile", None)
+        if previous is not None:
+            self._finish_contact_copy_profile(0, status="superseded")
+        self._contact_copy_profile = ContactPlacementProfile.begin(action="copy")
+
+    def _finish_contact_copy_profile(
+        self: Any,
+        contact_count: int,
+        *,
+        status: str | None = None,
+    ) -> None:
+        session = getattr(self, "_contact_copy_profile", None)
+        if session is None:
+            return
+        self._contact_copy_profile = None
+        session.contact_count = max(0, int(contact_count))
+        session.note("copied_to_clipboard")
+        session.stop()
+        resolved_status = status or (
+            f"copied_{int(contact_count)}" if int(contact_count) > 0 else "rejected"
+        )
+        self._emit_contact_profile_output(session.format_summary(status=resolved_status))
+        self._emit_contact_profile_output(session.format_stats())
+
+    def _start_contact_paste_profile(self: Any, contact_count: int) -> None:
+        if not contact_paste_profiling_enabled():
+            return
+        previous = getattr(self, "_contact_paste_profile", None)
+        if previous is not None:
+            self._finish_contact_paste_profile(0, status="superseded")
+        self._contact_paste_profile = ContactPlacementProfile.begin(action="paste")
+        self._contact_paste_profile.contact_count = max(0, int(contact_count))
+        self._emit_contact_profile_output(
+            f"[contour contact paste profiling] started contacts={max(0, int(contact_count))}"
+        )
+
+    def _finish_contact_paste_profile(
+        self: Any,
+        contact_count: int,
+        *,
+        status: str | None = None,
+    ) -> None:
+        session = getattr(self, "_contact_paste_profile", None)
+        if session is None:
+            return
+        session.note("paste_applied_to_ui")
+        if int(contact_count) <= 0:
+            resolved_status = status or "cancelled"
+            self._complete_contact_paste_profile(resolved_status)
+            return
+        session.contact_count = int(contact_count)
+        resolved_status = status or "displayed"
+        QTimer.singleShot(
+            0,
+            lambda: self._complete_contact_paste_profile(resolved_status),
+        )
+
+    def _complete_contact_paste_profile(self: Any, status: str) -> None:
+        session = getattr(self, "_contact_paste_profile", None)
+        if session is None:
+            return
+        self._contact_paste_profile = None
+        session.stop()
+        self._emit_contact_profile_output(session.format_summary(status=status))
+        self._emit_contact_profile_output(session.format_stats())
+
+    def _start_contact_multi_selection_profile(self: Any) -> None:
+        if not contact_multi_selection_profiling_enabled():
+            return
+        previous = getattr(self, "_contact_multi_selection_profile", None)
+        if previous is not None:
+            previous.stop()
+        self._contact_multi_selection_profile = ContactPlacementProfile.begin(
+            action="multi_selection"
+        )
+
+    def _finish_contact_multi_selection_profile(self: Any, contact_count: int) -> None:
+        session = getattr(self, "_contact_multi_selection_profile", None)
+        if session is None:
+            return
+        self._contact_multi_selection_profile = None
+        session.contact_count = max(0, int(contact_count))
+        session.note("selection_applied_to_ui")
+        session.stop()
+        if int(contact_count) < 2:
+            return
+        self._emit_contact_profile_output(
+            session.format_summary(status=f"selected_{int(contact_count)}")
+        )
+        self._emit_contact_profile_output(session.format_stats())
+
+    def _start_contact_deletion_profile(self: Any, contact_count: int) -> None:
+        if not contact_deletion_profiling_enabled() or int(contact_count) <= 0:
+            return
+        if getattr(self, "_contact_placement_profile", None) is not None:
+            self._finish_contact_placement_profile("replaced_by_deletion")
+        previous = getattr(self, "_contact_deletion_profile", None)
+        if previous is not None:
+            self._finish_contact_deletion_profile("superseded")
+        self._contact_deletion_profile = ContactPlacementProfile.begin(action="deletion")
+        self._contact_deletion_profile.contact_count = int(contact_count)
+        self._emit_contact_profile_output(
+            f"[contour contact deletion profiling] started contacts={int(contact_count)}"
+        )
+
+    def _on_contact_deletion_finished(self: Any, contact_count: int) -> None:
+        session = getattr(self, "_contact_deletion_profile", None)
+        if session is None:
+            return
+        session.note("deletion_applied_to_ui")
+        if int(contact_count) <= 0:
+            self._finish_contact_deletion_profile("rejected")
+        elif not session.waiting_for_preview:
+            QTimer.singleShot(
+                0,
+                lambda: self._finish_contact_deletion_profile("displayed"),
+            )
+
+    def _finish_contact_deletion_profile(self: Any, status: str) -> None:
+        session = getattr(self, "_contact_deletion_profile", None)
+        if session is None:
+            return
+        self._contact_deletion_profile = None
+        session.stop()
+        self._emit_contact_profile_output(session.format_summary(status=status))
+        self._emit_contact_profile_output(session.format_stats())
+
+    def _start_contact_placement_profile(self: Any) -> None:
+        if not contact_placement_profiling_enabled():
+            return
+        previous = getattr(self, "_contact_placement_profile", None)
+        if previous is not None:
+            self._finish_contact_placement_profile("superseded")
+        self._contact_placement_profile = ContactPlacementProfile.begin()
+        self._emit_contact_profile_output(
+            "[contour contact placement profiling] started at contact hotkey"
+        )
+
+    def _ensure_contact_placement_profile(self: Any) -> None:
+        if getattr(self, "_contact_placement_profile", None) is not None:
+            return
+        if not contact_placement_profiling_enabled():
+            return
+        self._contact_placement_profile = ContactPlacementProfile.begin()
+        self._emit_contact_profile_output(
+            "[contour contact placement profiling] started at contact placement"
+        )
+
+    def _emit_contact_profile_output(self: Any, message: str) -> None:
+        print(message, flush=True)
+
+    def _on_contact_placement_attempt_finished(self: Any, added: bool) -> None:
+        session = getattr(self, "_contact_placement_profile", None)
+        if session is None:
+            return
+        session.note("contact_attempt")
+        if not added:
+            self._finish_contact_placement_profile("rejected")
+
+    def _finish_contact_placement_profile(self: Any, status: str) -> None:
+        session = getattr(self, "_contact_placement_profile", None)
+        if session is None:
+            return
+        self._contact_placement_profile = None
+        session.stop()
+        self._emit_contact_profile_output(session.format_summary(status=status))
+        self._emit_contact_profile_output(session.format_stats())
+
+    def _on_contact_preview_profile(
+        self: Any,
+        request_id: int,
+        profiler: cProfile.Profile,
+        wall_ms: float,
+    ) -> None:
+        for attribute in (
+            "_contact_deletion_profile",
+            "_contact_placement_profile",
+        ):
+            session = getattr(self, attribute, None)
+            if session is not None and session.preview_request_id == request_id:
+                session.attach_worker(profiler, wall_ms)
+                return
+
+    def _contact_profile_waiting_for_preview(self: Any):
+        for attribute in (
+            "_contact_deletion_profile",
+            "_contact_placement_profile",
+        ):
+            session = getattr(self, attribute, None)
+            if session is not None and session.waiting_for_preview:
+                return session
+        return None
+
     def _current_save_options(self: Any) -> SaveOptions:
         return SaveOptions(
             save_cif=self.save_cif_checkbox.isChecked(),
@@ -903,6 +1170,32 @@ class WidgetProcessingMixin:
             return max(128, min(512, int(min(width, height))))
         return 256
 
+    def _load_scene_source_image_cached(self: Any, image_path: str):
+        normalized = str(Path(image_path))
+        cache = self._scene_source_image_cache
+        with self._scene_source_image_cache_lock:
+            cached = cache.get(normalized)
+            if cached is not None:
+                cache.move_to_end(normalized)
+                return cached
+            image = load_image_color(normalized)
+            previous = cache.pop(normalized, None)
+            if previous is not None:
+                self._scene_source_image_cache_bytes -= int(previous.nbytes)
+            cache[normalized] = image
+            self._scene_source_image_cache_bytes += int(image.nbytes)
+            cache_limit = max(
+                1,
+                int(getattr(self, "_scene_source_image_cache_max_bytes", 512 * 1024 * 1024)),
+            )
+            while (
+                self._scene_source_image_cache_bytes > cache_limit
+                and len(cache) > 1
+            ):
+                _evicted_path, evicted = cache.popitem(last=False)
+                self._scene_source_image_cache_bytes -= int(evicted.nbytes)
+            return image
+
     def _neighbor_frame_image(self: Any, image_path: str):
         normalized = str(Path(image_path))
         state = getattr(self._workspace, "_state_cache", {}).get(normalized)
@@ -910,6 +1203,8 @@ class WidgetProcessingMixin:
             return state.preprocessed_image if state.preprocessed_image is not None else state.source_image
         cached = self._neighbor_image_cache.get(normalized)
         if cached is not None:
+            if hasattr(self._neighbor_image_cache, "move_to_end"):
+                self._neighbor_image_cache.move_to_end(normalized)
             return cached
         return None
 
@@ -920,7 +1215,13 @@ class WidgetProcessingMixin:
         self._neighbor_queued_paths.add(normalized)
         try:
             max_dim = self._neighbor_preview_max_dimension()
-            runnable = ThumbnailLoadRunnable(0, normalized, max_dim, max_dim)
+            runnable = ThumbnailLoadRunnable(
+                0,
+                normalized,
+                max_dim,
+                max_dim,
+                source_image_loader=self._load_scene_source_image_cached,
+            )
             runnable.signals.result.connect(
                 lambda generation, image_path, width, height, qimage: self._on_neighbor_frame_loaded(
                     generation,
@@ -956,6 +1257,16 @@ class WidgetProcessingMixin:
         if qimage is None:
             return
         self._neighbor_image_cache[normalized] = qimage
+        if hasattr(self._neighbor_image_cache, "move_to_end"):
+            self._neighbor_image_cache.move_to_end(normalized)
+        cache_limit = max(1, int(getattr(self, "_neighbor_image_cache_limit", 96)))
+        while len(self._neighbor_image_cache) > cache_limit:
+            if hasattr(self._neighbor_image_cache, "move_to_end"):
+                evicted_path, _evicted_image = self._neighbor_image_cache.popitem(last=False)
+            else:
+                evicted_path = next(iter(self._neighbor_image_cache))
+                self._neighbor_image_cache.pop(evicted_path, None)
+            self._neighbor_image_dimensions.pop(str(evicted_path), None)
         self._schedule_neighbor_frame_apply(delay_ms=0)
 
     def _on_neighbor_frame_load_finished(self: Any, _generation: int, image_path: str) -> None:
@@ -1195,9 +1506,6 @@ class WidgetProcessingMixin:
             self._schedule_neighbor_frame_apply(delay_ms=50)
         elif session is not None:
             session.complete_pending("neighbor_sync", suffix="_cached_only")
-        if self._uses_large_frame_list() and len(self._neighbor_image_cache) > 48:
-            self._neighbor_image_cache.clear()
-            self._neighbor_image_dimensions.clear()
 
     def _on_neighbor_frame_activated(self: Any, image_path: str) -> None:
         if image_path in self._workspace.image_paths:
@@ -1306,7 +1614,11 @@ class WidgetProcessingMixin:
         if hasattr(self, "recognition_mode_combo"):
             self._set_recognition_status("updating")
         signature = self._preview_request_signature(request)
-        if signature == self._preview_running_signature:
+        contact_session = self._contact_profile_waiting_for_preview()
+        force_contact_rerun = bool(
+            contact_session is not None and contact_session.waiting_for_preview
+        )
+        if signature == self._preview_running_signature and not force_contact_rerun:
             self._preview_running_save_result = self._preview_running_save_result or save_result
             self._refresh_busy_indicator()
             return
@@ -1350,7 +1662,20 @@ class WidgetProcessingMixin:
         self._preview_run_cancel = cancel
         self._reset_busy_progress(request)
         self._busy_progress_timer.start()
-        worker = PreviewProcessingRunnable(request_id=request_id, request=request, cancel_event=cancel)
+        contact_session = self._contact_profile_waiting_for_preview()
+        profile_contact = bool(
+            contact_session is not None and contact_session.waiting_for_preview
+        )
+        worker = PreviewProcessingRunnable(
+            request_id=request_id,
+            request=request,
+            cancel_event=cancel,
+            profile=profile_contact,
+        )
+        if profile_contact:
+            contact_session.preview_request_id = request_id
+            contact_session.note("preview_started")
+            worker.signals.profile.connect(self._on_contact_preview_profile)
         worker.signals.result.connect(self._on_preview_processing_result)
         worker.signals.error.connect(self._on_preview_processing_error)
         worker.signals.finished.connect(self._on_preview_processing_finished)
@@ -1472,6 +1797,16 @@ class WidgetProcessingMixin:
         if self._preview_running_save_result:
             self.save_current_result(polygons=list(result.polygons))
         self.imageProcessed.emit(result.image_path, result.polygons)
+        for attribute, finish in (
+            ("_contact_deletion_profile", self._finish_contact_deletion_profile),
+            ("_contact_placement_profile", self._finish_contact_placement_profile),
+        ):
+            contact_session = getattr(self, attribute, None)
+            if contact_session is None or contact_session.preview_request_id != request_id:
+                continue
+            contact_session.note("result_applied_to_ui")
+            QTimer.singleShot(0, lambda callback=finish: callback("displayed"))
+            break
 
     def _on_preview_processing_error(self: Any, request_id: int, message: str) -> None:
         if request_id != self._preview_running_request_id:
@@ -1479,8 +1814,29 @@ class WidgetProcessingMixin:
         if hasattr(self, "recognition_mode_combo"):
             self._set_recognition_status("error", message)
         self._append_log(self._tr("processing_failed_log", error=message))
+        for attribute, finish in (
+            ("_contact_deletion_profile", self._finish_contact_deletion_profile),
+            ("_contact_placement_profile", self._finish_contact_placement_profile),
+        ):
+            contact_session = getattr(self, attribute, None)
+            if contact_session is not None and contact_session.preview_request_id == request_id:
+                finish("processing_error")
+                break
 
     def _on_preview_processing_finished(self: Any, request_id: int) -> None:
+        cancelled_finish = None
+        for attribute, finish in (
+            ("_contact_deletion_profile", self._finish_contact_deletion_profile),
+            ("_contact_placement_profile", self._finish_contact_placement_profile),
+        ):
+            contact_session = getattr(self, attribute, None)
+            if (
+                contact_session is not None
+                and contact_session.preview_request_id == request_id
+                and "result_applied_to_ui" not in contact_session.timings_ms
+            ):
+                cancelled_finish = finish
+                break
         if request_id == self._preview_running_request_id:
             self._preview_running_request_id = None
             self._preview_running_signature = None
@@ -1492,6 +1848,8 @@ class WidgetProcessingMixin:
         if self._preview_pending_request is not None and not self._preview_update_timer.isActive():
             self._start_pending_preview_processing()
         self._refresh_busy_indicator()
+        if cancelled_finish is not None:
+            cancelled_finish("cancelled")
 
     def _show_batch_progress(self: Any, total: int) -> None:
         if not self._batch_progress_enabled:
@@ -1587,6 +1945,7 @@ class WidgetProcessingMixin:
     def _on_manual_via_added(self: Any, center_x: float, center_y: float) -> None:
         context = self._heuristic_contact_feedback_context()
         if context is None:
+            self._finish_contact_placement_profile("displayed_without_checks")
             return
         _path, _state, image, settings = context
         from ..application.use_cases.contact_feedback import fit_positive_contact
@@ -1621,6 +1980,20 @@ class WidgetProcessingMixin:
                 )
             )
             self._restart_after_contact_feedback()
+        session = getattr(self, "_contact_placement_profile", None)
+        if session is not None:
+            session.note("contact_checks_finished")
+            if (
+                adjustment.reason == "measurement_failed"
+                or (
+                    not adjustment.changes
+                    and adjustment.reason != "already_within_thresholds"
+                )
+            ):
+                QTimer.singleShot(
+                    0,
+                    lambda: self._finish_contact_placement_profile("displayed"),
+                )
 
     def _on_recognized_vias_deleted(self: Any, polygons: object) -> None:
         removed_polygons = [
@@ -1764,6 +2137,14 @@ class WidgetProcessingMixin:
         return True
 
     def _restart_after_contact_feedback(self: Any) -> None:
+        for attribute in (
+            "_contact_deletion_profile",
+            "_contact_placement_profile",
+        ):
+            session = getattr(self, attribute, None)
+            if session is not None:
+                session.waiting_for_preview = True
+                session.note("preview_requested")
         self._abort_in_flight_interactive_processing(preview=True, prepared=False)
         self.process_current_image(debounced=False)
 
@@ -1982,6 +2363,8 @@ class WidgetProcessingMixin:
     def _restore_persisted_session_selection(self: Any) -> None:
         if not hasattr(self, "_session_settings_store"):
             return
+        from ..infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY
+
         image_paths = [
             str(Path(path))
             for path in self._session_settings_store.load_image_paths()
@@ -1996,13 +2379,27 @@ class WidgetProcessingMixin:
             self._pending_restore_vector_paths = list(vector_paths)
             self._workspace.set_cif_index(index_cif_file_paths(vector_paths))
             self._rebuild_vector_list()
-        if not image_paths:
-            return
         self._image_list_mode = self._session_settings_store.load_image_list_mode()
         preferred = self._session_settings_store.load_current_image_path()
         if preferred:
             preferred = str(Path(preferred))
         self._pending_restore_current_image_path = preferred
+        input_directory = self.input_dir_edit.text().strip() if hasattr(self, "input_dir_edit") else ""
+        if (
+            self._image_list_mode == IMAGE_LIST_MODE_DIRECTORY
+            and input_directory
+            and Path(input_directory).is_dir()
+        ):
+            cif_directory = self.cif_dir_edit.text().strip() if hasattr(self, "cif_dir_edit") else ""
+            self._pending_cif_directory_path_after_images = (
+                str(Path(cif_directory))
+                if cif_directory and Path(cif_directory).is_dir()
+                else None
+            )
+            self._begin_async_directory_scan(str(Path(input_directory)))
+            return
+        if not image_paths:
+            return
         self.load_images(image_paths, preferred_current_image_path=preferred)
 
     def _rebuild_image_list_items(self: Any, normalized_paths: list[str]) -> None:
@@ -2080,22 +2477,28 @@ class WidgetProcessingMixin:
         ordered_paths = [record.path for record in frame_records]
         self._base_frame_number_by_path = build_base_frame_number_map(frame_records)
         self._base_frame_numbers = set(self._base_frame_number_by_path.values())
+        previous_paths = [str(Path(path)) for path in self._workspace.image_paths]
+        preserve_cached_states = previous_paths == ordered_paths
         normalized_paths = self._workspace.replace_image_selection(
             ordered_paths,
             is_supported_image=is_image_path,
-            clear_state_cache=clear_state_cache,
+            clear_state_cache=bool(clear_state_cache and not preserve_cached_states),
         )
         self._configure_pyramid_frame_store(normalized_paths)
         self._reset_thumbnail_disk_cache_for_base_paths(normalized_paths)
         if not normalized_paths:
             self._save_persisted_current_image_path(None)
             self._save_persisted_session_paths()
-        self._neighbor_image_cache.clear()
-        self._neighbor_image_dimensions.clear()
-        self._neighbor_vector_cache.clear()
-        self._editor_pixmap_cache.clear()
-        self._editor_polygons_signature = None
-        getattr(self, "_thumbnail_icon_cache", {}).clear()
+        if not preserve_cached_states:
+            with self._scene_source_image_cache_lock:
+                self._scene_source_image_cache.clear()
+                self._scene_source_image_cache_bytes = 0
+            self._neighbor_image_cache.clear()
+            self._neighbor_image_dimensions.clear()
+            self._neighbor_vector_cache.clear()
+            self._editor_pixmap_cache.clear()
+            self._editor_polygons_signature = None
+            getattr(self, "_thumbnail_icon_cache", {}).clear()
         getattr(self, "_thumbnail_pending_apply", {}).clear()
         self._thumbnail_loaded_generation.clear()
         self._thumbnail_loaded_sizes.clear()
@@ -2182,6 +2585,9 @@ class WidgetProcessingMixin:
         self._neighbor_image_cache.clear()
         self._neighbor_image_dimensions.clear()
         self._neighbor_vector_cache.clear()
+        with self._scene_source_image_cache_lock:
+            self._scene_source_image_cache.clear()
+            self._scene_source_image_cache_bytes = 0
         self._persisted_highlight_paths.clear()
         self._viewed_image_paths.clear()
         self._cif_load_failure_stems.clear()
@@ -2335,6 +2741,15 @@ class WidgetProcessingMixin:
         active_load_path = getattr(self, "_loading_image_path", None)
         if active_load_path is not None:
             if active_load_path == normalized_load_path:
+                if bool(load_vectors):
+                    pending = getattr(self, "_frame_load_pending", None)
+                    if pending is None or str(Path(pending[0])) == normalized_load_path:
+                        preserve_pending = bool(pending[2]) if pending is not None else False
+                        self._frame_load_pending = (
+                            normalized_load_path,
+                            True,
+                            bool(preserve_editor_view_position) or preserve_pending,
+                        )
                 return
             self._frame_load_pending = (
                 normalized_load_path,
@@ -2415,7 +2830,7 @@ class WidgetProcessingMixin:
                 session = getattr(self, "_frame_switch_profile", None)
 
                 def _load() -> object:
-                    return load_image_color(image_path)
+                    return self._load_scene_source_image_cached(image_path)
 
                 try:
                     return profile_callable("worker_source_image", session, _load)

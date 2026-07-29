@@ -4,6 +4,9 @@ Environment switches:
   CONTOUR_PROFILE=0 disables all contour profiling.
   CONTOUR_PROFILE=1 enables profiling unless a narrower switch overrides it.
   CONTOUR_PROFILE_<KIND>=0/1 controls a specific profiler.
+
+The contact-placement profiler is normally toggled with the
+CONTACT_PLACEMENT_PROFILING_ENABLED code variable below.
 """
 
 from __future__ import annotations
@@ -18,11 +21,27 @@ DEFAULT_FRAME_SWITCH_ENABLED = False
 DEFAULT_PROCESSING_ENABLED = False
 DEFAULT_THUMBNAIL_ENABLED = False
 DEFAULT_VERTEX_MOVE_ENABLED = False
+# Change this value to True to profile one contact placement end-to-end.
+# CONTOUR_PROFILE_CONTACT_PLACEMENT=0/1 can still override it at runtime.
+CONTACT_PLACEMENT_PROFILING_ENABLED = False
+CONTACT_MULTI_SELECTION_PROFILING_ENABLED = False
+CONTACT_DELETION_PROFILING_ENABLED = False
+CONTACT_COPY_PROFILING_ENABLED = False
+CONTACT_PASTE_PROFILING_ENABLED = False
+CONTACT_UNDO_PROFILING_ENABLED = False
+CONTACT_REDO_PROFILING_ENABLED = False
 
 DEFAULT_FRAME_SWITCH_TOP_LINES = 80
 DEFAULT_PROCESSING_TOP_LINES = 25
 DEFAULT_THUMBNAIL_TOP_LINES = 25
 DEFAULT_VERTEX_MOVE_TOP_LINES = 40
+DEFAULT_CONTACT_PLACEMENT_TOP_LINES = 40
+DEFAULT_CONTACT_MULTI_SELECTION_TOP_LINES = 40
+DEFAULT_CONTACT_DELETION_TOP_LINES = 40
+DEFAULT_CONTACT_COPY_TOP_LINES = 40
+DEFAULT_CONTACT_PASTE_TOP_LINES = 40
+DEFAULT_CONTACT_UNDO_TOP_LINES = 40
+DEFAULT_CONTACT_REDO_TOP_LINES = 40
 DEFAULT_FRAME_SWITCH_IDLE_POLLS = 300
 
 
@@ -121,6 +140,55 @@ def vertex_move_profiling_enabled() -> bool:
     return profiling_enabled("vertex_move", default=DEFAULT_VERTEX_MOVE_ENABLED)
 
 
+def contact_placement_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "contact_placement",
+        default=CONTACT_PLACEMENT_PROFILING_ENABLED,
+    )
+
+
+def contact_multi_selection_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "contact_multi_selection",
+        default=CONTACT_MULTI_SELECTION_PROFILING_ENABLED,
+    )
+
+
+def contact_deletion_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "contact_deletion",
+        default=CONTACT_DELETION_PROFILING_ENABLED,
+    )
+
+
+def contact_copy_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "contact_copy",
+        default=CONTACT_COPY_PROFILING_ENABLED,
+    )
+
+
+def contact_paste_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "contact_paste",
+        default=CONTACT_PASTE_PROFILING_ENABLED,
+    )
+
+
+def contact_undo_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "contact_undo",
+        default=CONTACT_UNDO_PROFILING_ENABLED,
+    )
+
+
+def contact_redo_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "contact_redo",
+        default=CONTACT_REDO_PROFILING_ENABLED,
+    )
+
+
 def frame_switch_top_lines() -> int:
     return profiling_top_lines("frame_switch", DEFAULT_FRAME_SWITCH_TOP_LINES)
 
@@ -135,6 +203,37 @@ def thumbnail_top_lines() -> int:
 
 def vertex_move_top_lines() -> int:
     return profiling_top_lines("vertex_move", DEFAULT_VERTEX_MOVE_TOP_LINES)
+
+
+def contact_placement_top_lines() -> int:
+    return profiling_top_lines("contact_placement", DEFAULT_CONTACT_PLACEMENT_TOP_LINES)
+
+
+def contact_multi_selection_top_lines() -> int:
+    return profiling_top_lines(
+        "contact_multi_selection",
+        DEFAULT_CONTACT_MULTI_SELECTION_TOP_LINES,
+    )
+
+
+def contact_deletion_top_lines() -> int:
+    return profiling_top_lines("contact_deletion", DEFAULT_CONTACT_DELETION_TOP_LINES)
+
+
+def contact_copy_top_lines() -> int:
+    return profiling_top_lines("contact_copy", DEFAULT_CONTACT_COPY_TOP_LINES)
+
+
+def contact_paste_top_lines() -> int:
+    return profiling_top_lines("contact_paste", DEFAULT_CONTACT_PASTE_TOP_LINES)
+
+
+def contact_undo_top_lines() -> int:
+    return profiling_top_lines("contact_undo", DEFAULT_CONTACT_UNDO_TOP_LINES)
+
+
+def contact_redo_top_lines() -> int:
+    return profiling_top_lines("contact_redo", DEFAULT_CONTACT_REDO_TOP_LINES)
 
 
 def frame_switch_idle_polls() -> int:

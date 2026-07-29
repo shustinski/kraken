@@ -8,7 +8,10 @@ import pstats
 from pathlib import Path
 from threading import Lock
 from time import perf_counter
+from typing import Callable
 
+import cv2
+import numpy as np
 from PyQt6.QtCore import QObject, Qt, QRunnable, pyqtSignal
 from PyQt6.QtGui import QImage
 
@@ -34,13 +37,23 @@ class ThumbnailLoadRunnable(QRunnable):
     _cache_directory_lock = Lock()
     _prepared_cache_directories: set[str] = set()
 
-    def __init__(self, generation: int, path: str, width: int, height: int, cache_directory: str | None = None) -> None:
+    def __init__(
+        self,
+        generation: int,
+        path: str,
+        width: int,
+        height: int,
+        cache_directory: str | None = None,
+        *,
+        source_image_loader: Callable[[str], object] | None = None,
+    ) -> None:
         super().__init__()
         self.generation = int(generation)
         self.path = str(path)
         self.width = max(1, int(width))
         self.height = max(1, int(height))
         self.cache_directory = "" if cache_directory is None else str(cache_directory)
+        self.source_image_loader = source_image_loader
         self.signals = ThumbnailLoadSignals()
 
     def _cache_path(self) -> Path | None:
@@ -142,7 +155,21 @@ class ThumbnailLoadRunnable(QRunnable):
         qimage = self._load_cached_qimage(cache_path)
         if qimage is None:
             cache_status = "miss" if cache_path is not None else "none"
-            image = load_image_color_thumbnail(self.path, self.width, self.height, cover=True)
+            if self.source_image_loader is None:
+                image = load_image_color_thumbnail(self.path, self.width, self.height, cover=True)
+            else:
+                image = np.asarray(self.source_image_loader(self.path))
+                height, width = image.shape[:2]
+                if width > 0 and height > 0:
+                    scale = max(self.width / float(width), self.height / float(height))
+                    resized_width = max(1, round(width * scale))
+                    resized_height = max(1, round(height * scale))
+                    if resized_width != width or resized_height != height:
+                        image = cv2.resize(
+                            image,
+                            (resized_width, resized_height),
+                            interpolation=cv2.INTER_AREA,
+                        )
             qimage = cv_to_qimage(image)
             if not qimage.isNull():
                 if qimage.width() > self.width and qimage.height() > self.height:

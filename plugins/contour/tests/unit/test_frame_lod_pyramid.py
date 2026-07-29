@@ -3,6 +3,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from PyQt6.QtCore import QRectF
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QListWidgetItem
 
 import contour.application.frame_lod as frame_lod_module
@@ -105,3 +106,34 @@ def test_pyramid_store_forms_lods_from_image_paths(tmp_path) -> None:
     assert store.get_frame(1, 0).shape == (16, 20, 3)
     assert store.get_frame_size(1, 1) == (10, 8)
     assert store.get_frame(1, 1).shape == (8, 10, 3)
+
+
+def test_pyramid_store_reuses_decoded_source_and_lod_frames(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def _load(path) -> np.ndarray:
+        calls.append(str(path))
+        return np.zeros((32, 40, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(frame_lod_module, "_load_source_image", _load)
+    store = PyramidFrameStore.from_image_paths(["frame_000.png"])
+
+    assert store.get_frame(0, 0) is store.get_frame(0, 0)
+    assert store.get_frame(0, 1) is store.get_frame(0, 1)
+    assert store.get_frame_size(0, 1) == (20, 16)
+    assert calls == ["frame_000.png"]
+
+
+def test_frame_matrix_keeps_pixmap_cache_when_store_instance_is_unchanged(
+    _qt_application,
+) -> None:
+    view = FrameMatrixGraphicsView()
+    store = FakePyramidStore()
+    view.setPyramidFrameStore(store)
+    pixmap = QPixmap(2, 2)
+    pixmap.fill()
+    view._pixmap_lod_cache[("cached",)] = pixmap
+
+    view.setPyramidFrameStore(store)
+
+    assert ("cached",) in view._pixmap_lod_cache

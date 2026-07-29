@@ -26,6 +26,32 @@ class AddPolygonCommand(QUndoCommand):
         self._scene._remove_polygon_internal(self._polygon.id)
 
 
+class AddPolygonsCommand(QUndoCommand):
+    def __init__(
+        self,
+        scene: Any,
+        polygons: list[PolygonData],
+        description: str = "Add polygons",
+        *,
+        select_after_redo: bool = False,
+    ) -> None:
+        super().__init__(description)
+        self._scene = scene
+        self._polygons = [polygon.clone() for polygon in polygons]
+        self._select_after_redo = bool(select_after_redo)
+
+    def redo(self) -> None:
+        polygons = [polygon.clone() for polygon in self._polygons]
+        if self._select_after_redo:
+            self._scene._add_polygons_internal(polygons, refresh=False)
+            self._scene.select_polygons([polygon.id for polygon in polygons])
+            return
+        self._scene._add_polygons_internal(polygons)
+
+    def undo(self) -> None:
+        self._scene._remove_polygons_internal([polygon.id for polygon in self._polygons])
+
+
 class DeletePolygonCommand(QUndoCommand):
     def __init__(self, scene: Any, polygon: PolygonData) -> None:
         super().__init__("Delete polygon")
@@ -37,6 +63,19 @@ class DeletePolygonCommand(QUndoCommand):
 
     def undo(self) -> None:
         self._scene._add_polygon_internal(self._polygon.clone())
+
+
+class DeletePolygonsCommand(QUndoCommand):
+    def __init__(self, scene: Any, polygons: list[PolygonData]) -> None:
+        super().__init__("Delete polygons")
+        self._scene = scene
+        self._polygons = [polygon.clone() for polygon in polygons]
+
+    def redo(self) -> None:
+        self._scene._remove_polygons_internal([polygon.id for polygon in self._polygons])
+
+    def undo(self) -> None:
+        self._scene._add_polygons_internal([polygon.clone() for polygon in self._polygons])
 
 
 class MoveVertexCommand(QUndoCommand):

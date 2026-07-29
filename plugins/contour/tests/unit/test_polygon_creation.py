@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -172,6 +173,35 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         self.assertTrue(restored[2].is_hole)
         self.assertEqual(restored[2].parent_id, 1)
 
+    def test_multi_delete_refreshes_and_emits_once_per_undo_operation(self) -> None:
+        polygons = [
+            _polygon(
+                polygon_id,
+                [
+                    (float(polygon_id * 20), 0.0),
+                    (float(polygon_id * 20 + 10), 0.0),
+                    (float(polygon_id * 20 + 10), 10.0),
+                    (float(polygon_id * 20), 10.0),
+                ],
+            )
+            for polygon_id in range(1, 11)
+        ]
+        self._reset(polygons)
+        self.scene.select_polygons([polygon.id for polygon in polygons])
+        changed: list[None] = []
+        self.scene.polygonsChanged.connect(lambda: changed.append(None))
+
+        with patch.object(self.scene, "_refresh_all_items", wraps=self.scene._refresh_all_items) as refresh:
+            self.assertTrue(self.scene.delete_polygon())
+            self.assertEqual(refresh.call_count, 1)
+            self.assertEqual(len(changed), 1)
+            self.assertEqual(self.scene.get_polygons(), [])
+
+            self.scene.undo_stack.undo()
+            self.assertEqual(refresh.call_count, 2)
+            self.assertEqual(len(changed), 2)
+            self.assertEqual(len(self.scene.get_polygons()), len(polygons))
+
     def test_select_parent_polygon_shows_internal_contour_vertices(self) -> None:
         outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
         hole = _polygon(
@@ -201,6 +231,30 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
 
         self.assertEqual(len(self.scene._polygon_items[1]._handles), 4)
         self.assertEqual(len(self.scene._polygon_items[2]._handles), 4)
+
+    def test_multi_selection_computes_editable_vertex_ids_once_for_full_refresh(self) -> None:
+        polygons = [
+            _polygon(
+                polygon_id,
+                [
+                    (float(polygon_id * 20), 0.0),
+                    (float(polygon_id * 20 + 10), 0.0),
+                    (float(polygon_id * 20 + 10), 10.0),
+                    (float(polygon_id * 20), 10.0),
+                ],
+            )
+            for polygon_id in range(1, 11)
+        ]
+        self._reset(polygons)
+
+        with patch.object(
+            self.scene,
+            "_editable_vertex_polygon_ids",
+            wraps=self.scene._editable_vertex_polygon_ids,
+        ) as editable_ids:
+            self.scene.select_polygons([polygon.id for polygon in polygons])
+
+        self.assertEqual(editable_ids.call_count, 1)
 
     def test_selected_via_uses_via_selection_color(self) -> None:
         via = _polygon(7, [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)])

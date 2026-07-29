@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Sequence
 from math import ceil
 from pathlib import Path
+from threading import RLock
 
 import cv2
 import numpy as np
@@ -91,9 +93,18 @@ class FixedGridFrameLayout:
 class PyramidFrameStore:
     """Image-backed frame pyramid built with OpenCV resize on demand."""
 
-    def __init__(self, image_paths: Sequence[str | Path] = ()) -> None:
+    def __init__(
+        self,
+        image_paths: Sequence[str | Path] = (),
+        *,
+        max_cache_bytes: int = 256 * 1024 * 1024,
+    ) -> None:
         self.image_paths = [str(Path(path)) for path in image_paths]
         self._source_size: tuple[int, int] | None = None
+        self._frame_cache: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
+        self._frame_cache_bytes = 0
+        self._max_cache_bytes = max(1, int(max_cache_bytes))
+        self._cache_lock = RLock()
 
     @classmethod
     def from_image_paths(cls, image_paths: Sequence[str | Path]) -> PyramidFrameStore:
@@ -127,19 +138,49 @@ class PyramidFrameStore:
         return len(self.image_paths)
 
     def get_frame(self, frame_id: int, lod: int = 0) -> np.ndarray:
-        frame = _load_source_image(Path(self.image_paths[int(frame_id)]))
+        normalized_frame_id = int(frame_id)
         lod = max(0, int(lod))
+        cache_key = (normalized_frame_id, lod)
+        with self._cache_lock:
+            cached = self._frame_cache.get(cache_key)
+            if cached is not None:
+                self._frame_cache.move_to_end(cache_key)
+                return cached
+        source = (
+            _load_source_image(Path(self.image_paths[normalized_frame_id]))
+            if lod <= 0
+            else self.get_frame(normalized_frame_id, 0)
+        )
         if lod <= 0:
-            return frame
-        width, height = self.get_frame_size(frame_id, lod)
-        if width == frame.shape[1] and height == frame.shape[0]:
-            return frame
-        return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            frame = source
+        else:
+            source_width = int(source.shape[1])
+            source_height = int(source.shape[0])
+            shapes = _pyramid_lod_shapes(source_width, source_height)
+            width, height = shapes[min(lod, len(shapes) - 1)]
+            frame = (
+                source
+                if width == source_width and height == source_height
+                else cv2.resize(source, (width, height), interpolation=cv2.INTER_AREA)
+            )
+        self._cache_frame(cache_key, frame)
+        return frame
+
+    def _cache_frame(self, cache_key: tuple[int, int], frame: np.ndarray) -> None:
+        with self._cache_lock:
+            previous = self._frame_cache.pop(cache_key, None)
+            if previous is not None:
+                self._frame_cache_bytes -= int(previous.nbytes)
+            self._frame_cache[cache_key] = frame
+            self._frame_cache_bytes += int(frame.nbytes)
+            while self._frame_cache_bytes > self._max_cache_bytes and len(self._frame_cache) > 1:
+                _old_key, old_frame = self._frame_cache.popitem(last=False)
+                self._frame_cache_bytes -= int(old_frame.nbytes)
 
     def get_frame_size(self, frame_id: int, lod: int = 0) -> tuple[int, int]:
         if int(frame_id) == 0 and int(lod) == 0 and self._source_size is not None:
             return self._source_size
-        frame = _load_source_image(Path(self.image_paths[int(frame_id)]))
+        frame = self.get_frame(int(frame_id), 0)
         source_size = (int(frame.shape[1]), int(frame.shape[0]))
         if int(frame_id) == 0:
             self._source_size = source_size

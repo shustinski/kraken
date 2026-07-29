@@ -93,6 +93,8 @@ class WidgetPipelineActionsMixin:
         self._on_extraction_settings_changed()
 
     def _on_extraction_settings_changed(self, *_args) -> None:
+        if hasattr(self, "polygon_editor") and hasattr(self, "via_search_mode_combo"):
+            self._sync_editor_contact_minimum_distance()
         # Stop in-flight preview immediately (cooperative cancel); keep prepared-image
         # workers running — pipeline / source unchanged.
         self._abort_in_flight_interactive_processing(preview=True, prepared=False)

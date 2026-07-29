@@ -13,6 +13,19 @@ class WidgetUiHelpersMixin:
 
     def _sync_editor_via_size(self) -> None:
         self.polygon_editor.set_via_size(float(self.via_width_spin.value()), float(self.via_height_spin.value()))
+        self._sync_editor_contact_minimum_distance()
+
+    def _sync_editor_contact_minimum_distance(self) -> None:
+        mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
+        bright_distance = float(self.bright_via_nms_distance_spin.value())
+        template_distance = float(self.via_template_nms_distance_spin.value())
+        if mode == VIA_SEARCH_MODE_TEMPLATE:
+            distance = template_distance
+        elif mode == VIA_SEARCH_MODE_HYBRID:
+            distance = max(bright_distance, template_distance)
+        else:
+            distance = bright_distance
+        self.polygon_editor.set_minimum_contact_distance(distance)
 
     def _configure_toolbar_button(
         self,

@@ -13,7 +13,7 @@ import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer
-from PyQt6.QtGui import QColor, QImage, QPainter, QRegion, QWheelEvent
+from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap, QRegion, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
@@ -925,6 +925,57 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.assertEqual(self.widget.thumbnail_grid.count(), len(image_paths))
             self.assertEqual(index_requests, [str(Path(directory))])
 
+    def test_directory_session_restore_rescans_and_loads_current_vectors(self) -> None:
+        from contour.infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY
+
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "frame_001.png"
+            vector_path = Path(directory) / "frame_001.cif"
+            cv2.imwrite(str(image_path), np.zeros((16, 16), dtype=np.uint8))
+            vector_path.write_text(
+                "\n".join(
+                    (
+                        "DS 1 1 1;",
+                        "L NM;",
+                        "( R frame_001.png );",
+                        "( S 16 16 );",
+                        "B 6 6 8 8;",
+                        "DF;",
+                        "E",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            self.widget.input_dir_edit.setText(directory)
+            self.widget.cif_dir_edit.setText(directory)
+            self.widget._session_settings_store.save_image_list_mode(IMAGE_LIST_MODE_DIRECTORY)
+            self.widget._session_settings_store.save_image_paths([image_path])
+            self.widget._session_settings_store.save_vector_paths([])
+            self.widget._session_settings_store.save_current_image_path(image_path)
+
+            self.widget._restore_persisted_session_selection()
+
+            for _ in range(500):
+                self._app.processEvents()
+                state = self.widget._workspace.current_state
+                if (
+                    state is not None
+                    and state.image_path == str(image_path)
+                    and len(state.polygons) == 1
+                ):
+                    break
+                QTest.qWait(10)
+
+            state = self.widget._workspace.current_state
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.image_path, str(image_path))
+            self.assertEqual(len(state.polygons), 1)
+            self.assertEqual(
+                self.widget._workspace.resolve_cif_path(image_path),
+                str(vector_path),
+            )
+
     def test_refresh_preserves_explicit_image_subset(self) -> None:
         from contour.infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
 
@@ -1051,6 +1102,29 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self._app.processEvents()
             self.widget._thumbnail_thread_pool.waitForDone(3000)
             self.assertEqual(queued_loads[1].image_path, paths[1])
+
+    def test_cif_index_completion_queues_vectors_for_inflight_initial_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = str(Path(directory) / "frame_001.png")
+            vector_path = str(Path(directory) / "frame_001.cif")
+            cv2.imwrite(image_path, np.zeros((8, 8), dtype=np.uint8))
+            Path(vector_path).write_text("", encoding="utf-8")
+            self.widget._workspace.replace_image_selection(
+                [image_path],
+                is_supported_image=lambda _path: True,
+            )
+            self.widget._workspace.set_cif_index({"frame_001": vector_path})
+            self.widget._desired_image_path = image_path
+            self.widget._loading_image_path = image_path
+            self.widget._frame_load_running_path = image_path
+            self.widget._frame_load_pending = None
+
+            self.widget._sync_after_cif_index_changed()
+
+            self.assertEqual(
+                self.widget._frame_load_pending,
+                (image_path, True, False),
+            )
 
     def test_cached_first_frame_is_applied_when_switching_back_from_second_frame(self) -> None:
         paths = [str(Path("frame_001.png")), str(Path("frame_002.png"))]
@@ -1248,6 +1322,67 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertGreaterEqual(self.widget.thumbnail_grid.minimumWidth(), 10 * 64)
         self.assertGreaterEqual(self.widget.thumbnail_grid.minimumHeight(), 1_000 * 48)
         self.widget._workspace._current_image_path = "sample.png"
+
+    def test_thumbnail_matrix_rebuild_reuses_cached_icons(self) -> None:
+        path = str(Path(r"d:\frames\frame_000.png"))
+        self.widget._workspace._image_paths = [path]
+        self.widget.show_frame_matrix_checkbox.setChecked(True)
+        self.widget._thumbnail_build_chunk_size = 10
+        requested_size = self.widget._thumbnail_request_size()
+        pixmap = QPixmap(*requested_size)
+        pixmap.fill(QColor("#123456"))
+        self.widget._thumbnail_icon_cache[(path, requested_size)] = QIcon(pixmap)
+        self.widget._thumbnail_loading_blocked = lambda: True  # type: ignore[method-assign]
+
+        self.widget._rebuild_thumbnail_grid()
+        self._wait_for_thumbnail_grid_count(1)
+
+        self.assertFalse(self.widget.thumbnail_grid.item(0).icon().isNull())
+        self.assertEqual(
+            self.widget._thumbnail_loaded_generation[path],
+            self.widget._thumbnail_generation,
+        )
+        self.assertEqual(self.widget._thumbnail_loaded_sizes[path], requested_size)
+
+    def test_reapplying_same_image_paths_preserves_full_scene_cache(self) -> None:
+        path = str(Path(r"d:\frames\frame_000.png"))
+        state = ImageProcessingState(
+            image_path=path,
+            source_image=np.ones((24, 32, 3), dtype=np.uint8),
+        )
+        self.widget._workspace._image_paths = [path]
+        self.widget._workspace._state_cache[path] = state
+        self.widget._workspace._current_image_path = path
+        self.widget._workspace._current_state = state
+        self.widget._rebuild_image_list_items = lambda _paths: None  # type: ignore[method-assign]
+
+        self.widget._apply_image_paths_to_workspace(
+            [path],
+            clear_extra_layers=False,
+            select_path=path,
+            fallback_to_first=True,
+            clear_state_cache=True,
+        )
+
+        self.assertIs(self.widget._workspace._state_cache[path], state)
+        self.assertIs(self.widget._workspace._state_cache[path].source_image, state.source_image)
+
+    def test_main_and_neighbor_scene_loads_share_full_resolution_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "frame_000.png")
+            cv2.imwrite(path, np.full((24, 32, 3), 73, dtype=np.uint8))
+
+            with patch.object(
+                processing_mixin_module,
+                "load_image_color",
+                wraps=processing_mixin_module.load_image_color,
+            ) as decode:
+                neighbor_source = self.widget._load_scene_source_image_cached(path)
+                main_source = self.widget._load_scene_source_image_cached(path)
+
+            self.assertIs(main_source, neighbor_source)
+            self.assertEqual(decode.call_count, 1)
+            self.assertEqual(self.widget._scene_source_image_cache_bytes, neighbor_source.nbytes)
 
     def test_large_frame_matrix_count_matches_images_tab_count(self) -> None:
         paths = [rf"d:\frames\frame_{index:05d}.png" for index in range(1_200)]
@@ -2049,6 +2184,35 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.assertEqual(scene.neighbor_frame_path_at(QPointF(90, 50)), "neighbor.jpg")
         self.assertIsNone(scene.neighbor_frame_path_at(QPointF(40, 50)))
 
+    def test_neighbor_frame_navigation_requires_double_click(self) -> None:
+        neighbor = QImage(25, 25, QImage.Format.Format_RGB32)
+        neighbor.fill(0)
+        self.view.set_neighbor_frames(
+            [(1, 0, neighbor, "neighbor.jpg", [], (100, 100))],
+            0.5,
+        )
+        activated: list[str] = []
+        self.view.neighborFrameActivated.connect(activated.append)
+        position = self.view.mapFromScene(QPointF(120.0, 20.0))
+
+        QTest.mouseClick(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            position,
+        )
+        self._app.processEvents()
+        self.assertEqual(activated, [])
+
+        QTest.mouseDClick(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            position,
+        )
+        self._app.processEvents()
+        self.assertEqual(activated, ["neighbor.jpg"])
+
     def test_contact_tool_click_on_existing_via_requests_diagnostics(self) -> None:
         via = _rectangle_polygon(40, 40, 60, 60)
         via.category = "via"
@@ -2070,6 +2234,52 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
         self.assertEqual([polygon.id for polygon in requested], [1])
         self.assertEqual(len(self.view.get_polygons()), 1)
+
+    def test_copy_and_paste_emit_profile_boundaries_and_counts(self) -> None:
+        self.view._editor_scene.select_polygon(1)
+        copy_started: list[None] = []
+        copy_finished: list[int] = []
+        paste_started: list[int] = []
+        paste_finished: list[int] = []
+        self.view.contactCopyStarted.connect(lambda: copy_started.append(None))
+        self.view.contactCopyFinished.connect(copy_finished.append)
+        self.view.contactPasteStarted.connect(paste_started.append)
+        self.view.contactPasteFinished.connect(paste_finished.append)
+
+        self.view.copy_selected()
+        self.view.start_paste_mode()
+        QTest.mouseClick(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            self.view.mapFromScene(QPointF(15.0, 15.0)),
+        )
+        self._app.processEvents()
+
+        self.assertEqual(len(copy_started), 1)
+        self.assertEqual(copy_finished, [1])
+        self.assertEqual(paste_started, [1])
+        self.assertEqual(paste_finished, [1])
+        self.assertEqual(len(self.view.get_polygons()), 1)
+
+    def test_paste_preview_reuses_items_while_pointer_moves(self) -> None:
+        self.view._editor_scene.select_polygon(1)
+        self.view.copy_selected()
+        self.view.start_paste_mode()
+        initial_items = list(self.view._paste_preview_items)
+
+        self.view._update_paste_preview(QPointF(30.0, 30.0))
+        self.view._update_paste_preview(QPointF(60.0, 70.0))
+
+        self.assertEqual(len(initial_items), 1)
+        self.assertEqual(self.view._paste_preview_items, initial_items)
+        self.assertEqual(
+            initial_items[0].pos(),
+            QPointF(
+                60.0 - self.view._clipboard_anchor.x(),
+                70.0 - self.view._clipboard_anchor.y(),
+            ),
+        )
 
     def tearDown(self) -> None:
         self.view.close()
@@ -2820,6 +3030,86 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
         self.assertEqual(self.view.get_polygons(), [])
 
+    def test_contact_delete_key_emits_separate_profiling_boundaries(self) -> None:
+        via = _rectangle_polygon(20, 20, 40, 40)
+        via.category = "via"
+        via.shape_hint = "box"
+        self.view.set_polygons([via])
+        self.view._editor_scene.select_polygon(1)
+        started: list[int] = []
+        finished: list[int] = []
+        self.view.contactDeletionStarted.connect(started.append)
+        self.view.contactDeletionFinished.connect(finished.append)
+
+        QTest.keyClick(self.view.viewport(), Qt.Key.Key_Delete)
+        self._app.processEvents()
+
+        self.assertEqual(started, [1])
+        self.assertEqual(finished, [1])
+        self.assertEqual(self.view.get_polygons(), [])
+
+    def test_contact_undo_and_redo_emit_profiling_boundaries(self) -> None:
+        via = _rectangle_polygon(20, 20, 40, 40)
+        via.category = "via"
+        via.shape_hint = "box"
+        self.view.set_polygons([via])
+        self.view._editor_scene.select_polygon(1)
+        self.assertTrue(self.view._editor_scene.delete_polygon())
+        undo_started: list[bool] = []
+        undo_finished: list[tuple[bool, int]] = []
+        redo_started: list[bool] = []
+        redo_finished: list[tuple[bool, int]] = []
+        self.view.contactUndoStarted.connect(lambda: undo_started.append(True))
+        self.view.contactUndoFinished.connect(
+            lambda applied, count: undo_finished.append((applied, count))
+        )
+        self.view.contactRedoStarted.connect(lambda: redo_started.append(True))
+        self.view.contactRedoFinished.connect(
+            lambda applied, count: redo_finished.append((applied, count))
+        )
+
+        self.view.undo()
+        self.view.redo()
+
+        self.assertEqual(undo_started, [True])
+        self.assertEqual(undo_finished, [(True, 1)])
+        self.assertEqual(redo_started, [True])
+        self.assertEqual(redo_finished, [(True, 1)])
+
+    def test_area_selection_emits_selected_contact_count(self) -> None:
+        first = _rectangle_polygon(20, 20, 35, 35)
+        first.category = "via"
+        first.shape_hint = "box"
+        second = _rectangle_polygon(55, 55, 70, 70)
+        second.id = 2
+        second.category = "via"
+        second.shape_hint = "box"
+        self.view.set_polygons([first, second])
+        started: list[bool] = []
+        finished: list[int] = []
+        self.view.contactMultiSelectionStarted.connect(lambda: started.append(True))
+        self.view.contactMultiSelectionFinished.connect(finished.append)
+        press_pos = self.view.mapFromScene(QPointF(5.0, 5.0))
+        release_pos = self.view.mapFromScene(QPointF(85.0, 85.0))
+
+        QTest.mousePress(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            press_pos,
+        )
+        QTest.mouseMove(self.view.viewport(), release_pos)
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            release_pos,
+        )
+        self._app.processEvents()
+
+        self.assertEqual(started, [True])
+        self.assertEqual(finished, [2])
+
     def test_move_vertex_keeps_closed_duplicate_endpoint_together(self) -> None:
         points = [
             (20.0, 20.0),
@@ -3550,6 +3840,189 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
         self.assertEqual(pasted, [])
         self.assertEqual(len(scene.get_polygons()), 1)
 
+    def test_paste_merges_intersecting_conductors_and_is_undoable(self) -> None:
+        scene = PolygonEditorScene()
+        scene.set_image(np.zeros((100, 100), dtype=np.uint8))
+        existing = _rectangle_polygon(10, 10, 40, 40)
+        scene.set_polygons([existing])
+
+        pasted = scene.add_cloned_polygons_at(
+            [_rectangle_polygon(30, 10, 60, 40)],
+            QPointF(0.0, 0.0),
+            QPointF(0.0, 0.0),
+        )
+
+        self.assertEqual(len(pasted), 1)
+        polygons = scene.get_polygons()
+        self.assertEqual(len(polygons), 1)
+        self.assertEqual(min(x for x, _y in polygons[0].points), 10)
+        self.assertEqual(max(x for x, _y in polygons[0].points), 60)
+        self.assertAlmostEqual(polygons[0].area, 1500.0)
+
+        scene.undo_stack.undo()
+        restored = scene.get_polygons()
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(max(x for x, _y in restored[0].points), 40)
+
+        scene.undo_stack.redo()
+        self.assertEqual(max(x for x, _y in scene.get_polygons()[0].points), 60)
+
+    def test_nonintersecting_paste_preserves_points_without_shapely_rebuild(self) -> None:
+        scene = PolygonEditorScene()
+        scene.set_image(np.zeros((100, 100), dtype=np.uint8))
+        source = _rectangle_polygon(10, 10, 30, 30)
+
+        with patch(
+            "contour.graphics.editor_scene.shapely_to_polygon_data_list"
+        ) as rebuild:
+            pasted = scene.add_cloned_polygons_at(
+                [source],
+                QPointF(0.0, 0.0),
+                QPointF(40.0, 0.0),
+            )
+
+        self.assertEqual(len(pasted), 1)
+        self.assertEqual(scene.get_polygons()[0].points, [(50, 10), (70, 10), (70, 30), (50, 30)])
+        rebuild.assert_not_called()
+
+    def test_paste_clips_conductor_to_three_pixel_image_inset(self) -> None:
+        scene = PolygonEditorScene()
+        scene.set_image(np.zeros((100, 100), dtype=np.uint8))
+
+        pasted = scene.add_cloned_polygons_at(
+            [_rectangle_polygon(-10, -20, 110, 120)],
+            QPointF(0.0, 0.0),
+            QPointF(0.0, 0.0),
+        )
+
+        self.assertEqual(len(pasted), 1)
+        polygon = scene.get_polygons()[0]
+        self.assertEqual(min(x for x, _y in polygon.points), 3)
+        self.assertEqual(max(x for x, _y in polygon.points), 97)
+        self.assertEqual(min(y for _x, y in polygon.points), 3)
+        self.assertEqual(max(y for _x, y in polygon.points), 97)
+
+    def test_paste_rejects_conductor_fully_outside_image_inset(self) -> None:
+        scene = PolygonEditorScene()
+        scene.set_image(np.zeros((100, 100), dtype=np.uint8))
+        undo_count = scene.undo_stack.count()
+
+        pasted = scene.add_cloned_polygons_at(
+            [_rectangle_polygon(-30, -30, -10, -10)],
+            QPointF(0.0, 0.0),
+            QPointF(0.0, 0.0),
+        )
+
+        self.assertEqual(pasted, [])
+        self.assertEqual(scene.get_polygons(), [])
+        self.assertEqual(scene.undo_stack.count(), undo_count)
+
+    def test_paste_skips_contacts_closer_than_minimum_distance(self) -> None:
+        scene = PolygonEditorScene()
+        existing = _rectangle_polygon(0, 0, 10, 10)
+        existing.category = "via"
+        existing.shape_hint = "box"
+        too_close = _rectangle_polygon(10, 0, 20, 10)
+        too_close.category = "via"
+        too_close.shape_hint = "box"
+        far_enough = _rectangle_polygon(20, 0, 30, 10)
+        far_enough.id = 2
+        far_enough.category = "via"
+        far_enough.shape_hint = "box"
+        scene.set_polygons([existing])
+        scene.set_minimum_contact_distance(20.0)
+
+        pasted = scene.add_cloned_polygons_at(
+            [too_close, far_enough],
+            QPointF(0.0, 0.0),
+            QPointF(0.0, 0.0),
+        )
+
+        self.assertEqual(len(pasted), 1)
+        centers = sorted(
+            (min(x for x, _y in polygon.points) + max(x for x, _y in polygon.points)) / 2.0
+            for polygon in scene.get_polygons()
+        )
+        self.assertEqual(centers, [5.0, 25.0])
+        scene.undo_stack.undo()
+        self.assertEqual([polygon.id for polygon in scene.get_polygons()], [1])
+
+    def test_paste_filters_contacts_against_contacts_accepted_in_same_batch(self) -> None:
+        scene = PolygonEditorScene()
+        first = _rectangle_polygon(0, 0, 10, 10)
+        first.category = "via"
+        first.shape_hint = "box"
+        second = _rectangle_polygon(12, 0, 22, 10)
+        second.id = 2
+        second.category = "via"
+        second.shape_hint = "box"
+        scene.set_minimum_contact_distance(20.0)
+
+        pasted = scene.add_cloned_polygons_at(
+            [first, second],
+            QPointF(0.0, 0.0),
+            QPointF(0.0, 0.0),
+        )
+
+        self.assertEqual(len(pasted), 1)
+        self.assertEqual(len(scene.get_polygons()), 1)
+
+    def test_fully_filtered_contact_paste_does_not_create_undo_entry(self) -> None:
+        scene = PolygonEditorScene()
+        existing = _rectangle_polygon(0, 0, 10, 10)
+        existing.category = "via"
+        existing.shape_hint = "box"
+        duplicate = existing.clone()
+        scene.set_polygons([existing])
+        scene.set_minimum_contact_distance(20.0)
+        undo_count = scene.undo_stack.count()
+        changed: list[None] = []
+        scene.polygonsChanged.connect(lambda: changed.append(None))
+
+        pasted = scene.add_cloned_polygons_at(
+            [duplicate],
+            QPointF(0.0, 0.0),
+            QPointF(0.0, 0.0),
+        )
+
+        self.assertEqual(pasted, [])
+        self.assertEqual(scene.undo_stack.count(), undo_count)
+        self.assertEqual(changed, [])
+        self.assertEqual(len(scene.get_polygons()), 1)
+
+    def test_paste_refreshes_and_emits_once_per_undo_operation(self) -> None:
+        scene = PolygonEditorScene()
+        contacts = []
+        for index in range(10):
+            contact = _rectangle_polygon(index * 20, 10, index * 20 + 10, 20)
+            contact.id = index + 1
+            contact.category = "via"
+            contact.shape_hint = "box"
+            contacts.append(contact)
+        changed: list[None] = []
+        scene.polygonsChanged.connect(lambda: changed.append(None))
+
+        with patch.object(scene, "_refresh_all_items", wraps=scene._refresh_all_items) as refresh:
+            pasted = scene.add_cloned_polygons_at(
+                contacts,
+                QPointF(95.0, 15.0),
+                QPointF(95.0, 45.0),
+            )
+            self.assertEqual(len(pasted), len(contacts))
+            # Adding and applying the final selection share one scene refresh.
+            self.assertEqual(refresh.call_count, 1)
+            self.assertEqual(len(changed), 1)
+
+            scene.undo_stack.undo()
+            self.assertEqual(refresh.call_count, 2)
+            self.assertEqual(len(changed), 2)
+            self.assertEqual(scene.get_polygons(), [])
+
+            scene.undo_stack.redo()
+            self.assertEqual(refresh.call_count, 3)
+            self.assertEqual(len(changed), 3)
+            self.assertEqual(len(scene.get_polygons()), len(contacts))
+
     def test_contact_recognition_mode_protects_only_recognized_vias(self) -> None:
         scene = PolygonEditorScene()
         manual = _rectangle_polygon(10, 10, 20, 20)
@@ -3567,8 +4040,14 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
         self.assertTrue(scene.delete_via_at(QPointF(15.0, 15.0)))
         self.assertEqual([polygon.id for polygon in scene.get_polygons()], [2])
 
-    def test_manual_via_is_blue_and_recognized_via_keeps_score_color(self) -> None:
+    def test_manual_via_uses_configured_color_and_recognized_via_keeps_score_color(self) -> None:
         scene = PolygonEditorScene()
+        scene.set_display_settings(
+            DisplaySettings(
+                external_color="#7C3AED",
+                via_selection_color="#FACC15",
+            )
+        )
         manual = _rectangle_polygon(10, 10, 20, 20)
         manual.category = "via"
         manual.shape_hint = "box"
@@ -3579,8 +4058,8 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
         automatic.recognition_score = 100.0
         scene.set_polygons([manual, automatic])
 
-        self.assertEqual(scene._polygon_items[1].pen().color().name().lower(), "#2563eb")
-        self.assertNotEqual(scene._polygon_items[2].pen().color().name().lower(), "#2563eb")
+        self.assertEqual(scene._polygon_items[1].pen().color().name().lower(), "#7c3aed")
+        self.assertNotEqual(scene._polygon_items[2].pen().color().name().lower(), "#7c3aed")
         scene.select_polygon(1)
         self.assertEqual(scene._polygon_items[1].pen().color().name().lower(), "#facc15")
 

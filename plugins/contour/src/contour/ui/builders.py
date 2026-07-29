@@ -2023,6 +2023,33 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.frameNavigationRequested.connect(self._on_frame_navigation_requested)
     self.polygon_editor.currentFrameChanged.connect(self._on_editor_current_frame_changed)
     self.polygon_editor.viaDebugRequested.connect(self._on_via_debug_requested)
+    self.polygon_editor.contactPlacementHotkeyPressed.connect(self._start_contact_placement_profile)
+    self.polygon_editor.contactPlacementAttemptStarted.connect(
+        self._ensure_contact_placement_profile
+    )
+    self.polygon_editor.contactPlacementAttemptFinished.connect(
+        self._on_contact_placement_attempt_finished
+    )
+    self.polygon_editor.contactMultiSelectionStarted.connect(
+        self._start_contact_multi_selection_profile
+    )
+    self.polygon_editor.contactMultiSelectionFinished.connect(
+        self._finish_contact_multi_selection_profile
+    )
+    self.polygon_editor.contactDeletionStarted.connect(
+        self._start_contact_deletion_profile
+    )
+    self.polygon_editor.contactDeletionFinished.connect(
+        self._on_contact_deletion_finished
+    )
+    self.polygon_editor.contactCopyStarted.connect(self._start_contact_copy_profile)
+    self.polygon_editor.contactCopyFinished.connect(self._finish_contact_copy_profile)
+    self.polygon_editor.contactPasteStarted.connect(self._start_contact_paste_profile)
+    self.polygon_editor.contactPasteFinished.connect(self._finish_contact_paste_profile)
+    self.polygon_editor.contactUndoStarted.connect(self._start_contact_undo_profile)
+    self.polygon_editor.contactUndoFinished.connect(self._finish_contact_undo_profile)
+    self.polygon_editor.contactRedoStarted.connect(self._start_contact_redo_profile)
+    self.polygon_editor.contactRedoFinished.connect(self._finish_contact_redo_profile)
     self.polygon_editor.manualViaAdded.connect(self._on_manual_via_added)
     self.polygon_editor.recognizedViasDeleted.connect(self._on_recognized_vias_deleted)
     self.polygon_editor.metalOverlayDetailRequested.connect(self._on_metal_overlay_detail_requested)

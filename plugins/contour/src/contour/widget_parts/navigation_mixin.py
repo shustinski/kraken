@@ -522,7 +522,15 @@ class WidgetNavigationMixin:
         return [str(Path(path)) for path in self._workspace.image_paths]
 
     def _configure_pyramid_frame_store(self: Any, image_paths: list[str]) -> None:
-        store = PyramidFrameStore.from_image_paths(image_paths) if image_paths else None
+        normalized_paths = [str(Path(path)) for path in image_paths]
+        existing_store = getattr(self, "_pyramid_frame_store", None)
+        if (
+            isinstance(existing_store, PyramidFrameStore)
+            and existing_store.image_paths == normalized_paths
+        ):
+            store = existing_store
+        else:
+            store = PyramidFrameStore.from_image_paths(normalized_paths) if normalized_paths else None
         self._pyramid_frame_store = store
         current_path = str(Path(getattr(self._workspace, "current_image_path", "") or ""))
         current_frame_id = self._image_path_index(current_path) if current_path else None
@@ -561,7 +569,6 @@ class WidgetNavigationMixin:
         build_generation = self._thumbnail_grid_build_generation
         self._thumbnail_loaded_generation.clear()
         self._thumbnail_rebuild_in_progress = True
-        getattr(self, "_thumbnail_icon_cache", {}).clear()
         self._thumbnail_selected_path = None
         self._thumbnail_path_to_row = {}
         try:
@@ -650,10 +657,18 @@ class WidgetNavigationMixin:
         return None
 
     def _make_thumbnail_grid_item(self: Any, path: str) -> QListWidgetItem:
-        item = QListWidgetItem(self._thumbnail_placeholder(), "")
+        normalized = self._normalized_path(path)
+        requested_size = self._thumbnail_request_size()
+        cached_icon = getattr(self, "_thumbnail_icon_cache", {}).get(
+            (normalized, requested_size)
+        )
+        item = QListWidgetItem(cached_icon or self._thumbnail_placeholder(), "")
         item.setSizeHint(self._thumbnail_icon_size)
         item.setToolTip(Path(str(path)).stem)
         item.setData(Qt.ItemDataRole.UserRole, str(path))
+        if cached_icon is not None:
+            self._thumbnail_loaded_generation[normalized] = self._thumbnail_generation
+            self._thumbnail_loaded_sizes[normalized] = requested_size
         frame_id = (
             self.thumbnail_grid.count()
             if hasattr(self, "thumbnail_grid")
@@ -1046,10 +1061,14 @@ class WidgetNavigationMixin:
         if current:
             keep.add(self._normalized_path(current))
         icon_cache = getattr(self, "_thumbnail_icon_cache", {})
-        if len(icon_cache) > 256:
-            for path in list(icon_cache.keys()):
-                if path not in keep:
-                    icon_cache.pop(path, None)
+        cache_limit = max(1, int(getattr(self, "_thumbnail_icon_cache_limit", 2048)))
+        if len(icon_cache) > cache_limit:
+            for key in list(icon_cache.keys()):
+                key_path = key[0] if isinstance(key, tuple) and key else key
+                if key_path not in keep:
+                    icon_cache.pop(key, None)
+                if len(icon_cache) <= cache_limit:
+                    break
         decode_budget = max(0, int(THUMBNAIL_MAX_ACTIVE_DECODES))
         try:
             decode_budget -= int(self._thumbnail_thread_pool.activeThreadCount())
@@ -1381,10 +1400,20 @@ class WidgetNavigationMixin:
     def _sync_after_cif_index_changed(self: Any) -> None:
         self._clear_cif_transient_hints()
         self._refresh_image_list_item_states()
-        cur = self._workspace.current_image_path
+        desired = str(getattr(self, "_desired_image_path", "") or "")
+        cur = (
+            desired
+            or self._workspace.current_image_path
+            or str(getattr(self, "_loading_image_path", "") or "")
+            or str(getattr(self, "_frame_load_running_path", "") or "")
+        )
         if cur:
             state = self._workspace.current_state
-            if state is not None and state.source_image is not None:
+            state_matches_target = (
+                state is not None
+                and str(Path(state.image_path)) == str(Path(cur))
+            )
+            if state_matches_target and state.source_image is not None:
                 try:
                     self._reload_current_frame_vectors()
                 except Exception as exc:

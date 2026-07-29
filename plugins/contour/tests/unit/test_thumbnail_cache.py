@@ -92,6 +92,31 @@ def test_thumbnail_worker_supports_high_lod_from_large_source() -> None:
         assert results[0].height() == 512
 
 
+def test_neighbor_thumbnail_worker_can_reuse_shared_full_resolution_source() -> None:
+    source = np.full((100, 200, 3), 127, dtype=np.uint8)
+    loads: list[str] = []
+    results: list[object] = []
+
+    def _load(path: str) -> np.ndarray:
+        loads.append(path)
+        return source
+
+    worker = ThumbnailLoadRunnable(
+        1,
+        "frame_001.png",
+        64,
+        48,
+        source_image_loader=_load,
+    )
+    worker.signals.result.connect(lambda *_args: results.append(_args[-1]))
+    worker.run()
+
+    assert loads == ["frame_001.png"]
+    assert results
+    assert results[0].width() == 96
+    assert results[0].height() == 48
+
+
 def test_thumbnail_worker_profiles_gap_between_load_starts(capsys) -> None:
     with tempfile.TemporaryDirectory() as directory:
         image_path = Path(directory) / "frame_001.png"

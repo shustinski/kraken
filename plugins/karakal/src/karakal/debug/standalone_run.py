@@ -2,9 +2,16 @@
 from __future__ import annotations
 
 import ctypes
+import faulthandler
 import multiprocessing as mp
+import os
 import sys
+import traceback
+from datetime import datetime
 from pathlib import Path
+
+
+_FAULT_LOG_HANDLE = None
 
 
 def ensure_package_parent_on_sys_path(module_file: str | Path, package_name: str = "karakal") -> Path | None:
@@ -47,6 +54,34 @@ def _set_windows_app_user_model_id(app_id: str = "kraken.karakal") -> None:
         pass
 
 
+def _install_crash_logging() -> Path | None:
+    """Persist Python and native crash diagnostics for windowed builds."""
+
+    global _FAULT_LOG_HANDLE
+    try:
+        local_app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        log_path = local_app_data / "Karakal" / "karakal-crash.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _FAULT_LOG_HANDLE = log_path.open("a", encoding="utf-8", buffering=1)
+        faulthandler.enable(file=_FAULT_LOG_HANDLE, all_threads=True)
+    except Exception:
+        return None
+
+    previous_hook = sys.excepthook
+
+    def log_unhandled_exception(exc_type, exc_value, exc_traceback) -> None:
+        try:
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] Unhandled exception\n")
+                handle.writelines(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        except Exception:
+            pass
+        previous_hook(exc_type, exc_value, exc_traceback)
+
+    sys.excepthook = log_unhandled_exception
+    return log_path
+
+
 def _load_main_window_class():
     if __package__ in {None, ""}:
         ensure_package_parent_on_sys_path(__file__)
@@ -69,6 +104,7 @@ def main() -> int:
     from PyQt6.QtWidgets import QApplication
 
     mp.freeze_support()
+    _install_crash_logging()
     _set_windows_app_user_model_id()
     app = QApplication(sys.argv)
     app.setApplicationName("Karakal")

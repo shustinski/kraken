@@ -1,16 +1,34 @@
 from __future__ import annotations
 
-import numpy as np
+from concurrent.futures import ThreadPoolExecutor
+import uuid
 
-from karakal.core.domain import BuildResult, BuildOptions, FrameRecord, ModelSpec
+import numpy as np
+from PyQt6.QtWidgets import QApplication
+
+from karakal.core.domain import BuildResult, BuildOptions, ComparisonPairSelection, FrameRecord, ModelSpec
 from karakal.core.repository import (
     _grayscale_array_to_qimage,
+    _confidence_pair_metrics,
+    _configured_combined_pair_metric_values,
+    _load_cached_record_payload,
+    _record_payload_cache_path,
+    _store_cached_record_payload,
     available_result_layer_exports,
+    combined_pair_metric_key,
+    collect_frame_records,
     compute_build_result_analytics,
+    export_grid_cell_defect_bmps,
     export_result_layer_jpgs,
     export_result_layers_jpgs,
+    confidence_pair_metric_key,
+    load_grayscale_image,
     metric_value_for_record,
+    pair_metric_key,
 )
+from karakal.core.grid_anomaly import GridCellAnalysisResult, GridFrameAnalysisResult, analyze_grid_frame_path
+from karakal.app.main_window import _NoWheelSpinBox
+from karakal.ui.matrix_view import MatrixLayoutConfig, MatrixListWidget
 from karakal.comparison import (
     EnsembleComparisonRequest,
     ModelFrameResult,
@@ -177,6 +195,29 @@ def test_cache_key_changes_with_threshold_and_serialization_omits_arrays() -> No
     assert "image" not in payload["comparison"]["layers"]["raster"][0]
 
 
+def test_record_payload_cache_concurrent_writes_do_not_corrupt_payload() -> None:
+    cache_key = f"test_concurrent_{uuid.uuid4().hex}"
+    cache_path = _record_payload_cache_path(cache_key)
+    try:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [
+                executor.submit(_store_cached_record_payload, cache_key, {"writer": index, "values": tuple(range(index + 1))})
+                for index in range(16)
+            ]
+            for future in futures:
+                future.result()
+
+        payload = _load_cached_record_payload(cache_key)
+        assert isinstance(payload, dict)
+        assert isinstance(payload.get("writer"), int)
+        assert isinstance(payload.get("values"), tuple)
+        assert not list(cache_path.parent.glob(f"{cache_path.name}.*.tmp"))
+    finally:
+        cache_path.unlink(missing_ok=True)
+        for tmp_path in cache_path.parent.glob(f"{cache_path.name}.*.tmp"):
+            tmp_path.unlink(missing_ok=True)
+
+
 def test_pairwise_reuses_prepared_components_and_skeleton() -> None:
     mask_a = np.zeros((12, 12), dtype=bool)
     mask_a[5, 2:10] = True
@@ -316,6 +357,218 @@ def test_export_result_layer_jpgs_writes_comparison_layer(tmp_path) -> None:
     assert (tmp_path / "multi_export" / "result_layer_result_confidence_bad_inside_A" / "export_manifest.json").is_file()
 
 
+def test_export_grid_cell_defect_bmps_writes_white_check_mask(tmp_path) -> None:
+    model_dir = tmp_path / "imported"
+    export_dir = tmp_path / "export"
+    model_dir.mkdir()
+    export_dir.mkdir()
+    source = model_dir / "frame_001.png"
+    assert _grayscale_array_to_qimage(np.zeros((8, 8), dtype=np.uint8)).save(str(source), "PNG")
+    record = FrameRecord(
+        key="frame_001",
+        display_name="frame_001",
+        model_mask_paths={"A": str(source)},
+    )
+    build_result = BuildResult(
+        records=(record,),
+        model_specs=(ModelSpec(model_id="A", display_name="A", mask_folder=model_dir),),
+        options=BuildOptions(),
+    )
+    result = GridFrameAnalysisResult(
+        frame_id="frame_001",
+        frame_path=str(source),
+        image_width=8,
+        image_height=8,
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=2,
+        detected_cells=2,
+        normal_cells=1,
+        suspicious_cells=0,
+        broken_cells=1,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=0.5,
+        severity_level="HIGH",
+        grid_detected=True,
+        per_cell_results=(
+            GridCellAnalysisResult(0, 0, (0, 0, 2, 2), (1.0, 1.0), None, "normal", 0.0, ()),
+            GridCellAnalysisResult(1, 0, (2, 3, 3, 2), (3.5, 4.0), None, "broken", 0.9, ("broken_geometry",)),
+        ),
+    )
+
+    export = export_grid_cell_defect_bmps(build_result, {"frame_001": result}, export_dir)
+
+    assert export["exported_count"] == 1
+    assert export["extension"] == "bmp"
+    exported_path = export_dir / "check_frame_bmp" / "frame_001.bmp"
+    assert exported_path.is_file()
+    assert not (model_dir / "check_frame_bmp" / "frame_001.bmp").exists()
+    mask = load_grayscale_image(exported_path)
+    assert mask.shape == (8, 8)
+    assert np.all(mask[3:5, 2:5] == 255)
+    assert np.count_nonzero(mask) == 6
+    assert not (model_dir / "check_frame_bmp" / "export_manifest.json").exists()
+
+    jpg_export = export_grid_cell_defect_bmps(
+        build_result,
+        {"frame_001": result},
+        tmp_path / "export_jpg",
+        image_format="jpg",
+    )
+    assert jpg_export["extension"] == "jpg"
+    assert jpg_export["format"] == "JPG"
+    assert (tmp_path / "export_jpg" / "check_frame_jpg" / "frame_001.jpg").is_file()
+
+
+def test_export_grid_cell_defect_bmps_blacks_unselected_records(tmp_path) -> None:
+    model_dir = tmp_path / "imported"
+    export_dir = tmp_path / "export"
+    model_dir.mkdir()
+    export_dir.mkdir()
+    source_a = model_dir / "frame_001.png"
+    source_b = model_dir / "frame_002.png"
+    assert _grayscale_array_to_qimage(np.zeros((8, 8), dtype=np.uint8)).save(str(source_a), "PNG")
+    assert _grayscale_array_to_qimage(np.zeros((8, 8), dtype=np.uint8)).save(str(source_b), "PNG")
+    record_a = FrameRecord(
+        key="frame_001",
+        display_name="frame_001",
+        model_mask_paths={"A": str(source_a)},
+    )
+    record_b = FrameRecord(
+        key="frame_002",
+        display_name="frame_002",
+        model_mask_paths={"A": str(source_b)},
+    )
+    build_result = BuildResult(
+        records=(record_a, record_b),
+        model_specs=(ModelSpec(model_id="A", display_name="A", mask_folder=model_dir),),
+        options=BuildOptions(),
+    )
+    result_a = GridFrameAnalysisResult(
+        frame_id="frame_001",
+        frame_path=str(source_a),
+        image_width=8,
+        image_height=8,
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=1,
+        detected_cells=1,
+        normal_cells=0,
+        suspicious_cells=0,
+        broken_cells=1,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=1.0,
+        severity_level="HIGH",
+        grid_detected=True,
+        per_cell_results=(GridCellAnalysisResult(0, 0, (2, 3, 3, 2), (3.5, 4.0), None, "broken", 0.9, ("broken_geometry",)),),
+    )
+    result_b = GridFrameAnalysisResult(
+        frame_id="frame_002",
+        frame_path=str(source_b),
+        image_width=8,
+        image_height=8,
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=1,
+        detected_cells=1,
+        normal_cells=0,
+        suspicious_cells=0,
+        broken_cells=1,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=1.0,
+        severity_level="HIGH",
+        grid_detected=True,
+        per_cell_results=(GridCellAnalysisResult(0, 0, (1, 1, 4, 3), (3.0, 2.5), None, "broken", 0.9, ("broken_geometry",)),),
+    )
+
+    export = export_grid_cell_defect_bmps(
+        build_result,
+        {"frame_001": result_a, "frame_002": result_b},
+        export_dir,
+        render_record_keys=("frame_001",),
+        image_format="png",
+    )
+
+    assert export["exported_count"] == 2
+    assert export["format"] == "PNG"
+    assert export["extension"] == "png"
+    selected_mask = load_grayscale_image(export_dir / "check_frame_png" / "frame_001.png")
+    unselected_mask = load_grayscale_image(export_dir / "check_frame_png" / "frame_002.png")
+    assert np.count_nonzero(selected_mask) == 6
+    assert np.count_nonzero(unselected_mask) == 0
+
+    jpg_export = export_grid_cell_defect_bmps(
+        build_result,
+        {"frame_001": result_a, "frame_002": result_b},
+        tmp_path / "export_jpg_selected",
+        render_record_keys=("frame_001",),
+        image_format="jpg",
+    )
+
+    assert jpg_export["exported_count"] == 2
+    assert jpg_export["format"] == "JPG"
+    assert jpg_export["extension"] == "jpg"
+    selected_jpg_mask = load_grayscale_image(tmp_path / "export_jpg_selected" / "check_frame_jpg" / "frame_001.jpg")
+    unselected_jpg_mask = load_grayscale_image(tmp_path / "export_jpg_selected" / "check_frame_jpg" / "frame_002.jpg")
+    assert np.count_nonzero(selected_jpg_mask) > 0
+    assert np.count_nonzero(unselected_jpg_mask) == 0
+
+
+def test_collect_frame_records_ignores_nested_frames_by_default(tmp_path) -> None:
+    model_a_dir = tmp_path / "model_a"
+    model_b_dir = tmp_path / "model_b"
+    nested_a_dir = model_a_dir / "nested"
+    nested_b_dir = model_b_dir / "nested"
+    nested_a_dir.mkdir(parents=True)
+    nested_b_dir.mkdir(parents=True)
+    frame = np.full((4, 4), 255, dtype=np.uint8)
+    for folder in (model_a_dir, model_b_dir):
+        assert _grayscale_array_to_qimage(frame).save(str(folder / "frame_001.png"), "PNG")
+    assert _grayscale_array_to_qimage(frame).save(str(nested_a_dir / "frame_002.png"), "PNG")
+    assert _grayscale_array_to_qimage(frame).save(str(nested_b_dir / "frame_002.png"), "PNG")
+
+    result = collect_frame_records(
+        (
+            ModelSpec(model_id="A", display_name="A", mask_folder=model_a_dir),
+            ModelSpec(model_id="B", display_name="B", mask_folder=model_b_dir),
+        ),
+        BuildOptions(),
+    )
+
+    assert [record.display_name for record in result.records] == ["frame_001.png"]
+    assert all("nested" not in record.key for record in result.records)
+
+
+def test_matrix_ctrl_range_selection_adds_to_existing_selection() -> None:
+    _app = QApplication.instance() or QApplication([])
+    view = MatrixListWidget()
+    view.set_layout_config(MatrixLayoutConfig(total_frames=4, frames_per_row=2))
+    records = tuple(FrameRecord(f"frame_{index}", f"frame_{index}.png") for index in range(4))
+    view.set_records(list(records), reset_view=True)
+
+    view._set_range_selected_records((records[0], records[1]))
+    view._add_range_selected_records((records[3],))
+
+    assert tuple(record.key for record in view.selected_records()) == ("frame_0", "frame_1", "frame_3")
+    view.close()
+
+
+def test_correlation_limit_spin_clamps_manual_text_to_maximum() -> None:
+    _app = QApplication.instance() or QApplication([])
+    spinbox = _NoWheelSpinBox()
+    spinbox.setRange(1, 50)
+    spinbox.setValue(10)
+    spinbox.set_clamp_to_max_on_edit(True)
+
+    spinbox.lineEdit().textEdited.emit("500")
+
+    assert spinbox.value() == 50
+    spinbox.close()
+
+
 def test_compute_build_result_analytics_scores_confidence_folder_comparison(tmp_path) -> None:
     mask_a_dir = tmp_path / "mask_a"
     mask_b_dir = tmp_path / "mask_b"
@@ -352,12 +605,77 @@ def test_compute_build_result_analytics_scores_confidence_folder_comparison(tmp_
             ModelSpec(model_id="A", display_name="A", mask_folder=mask_a_dir, prob_folder=confidence_a_dir),
             ModelSpec(model_id="B", display_name="B", mask_folder=mask_b_dir, prob_folder=confidence_b_dir),
         ),
-        options=BuildOptions(),
+        options=BuildOptions(comparison_pairs=(ComparisonPairSelection("A", "B", ("xor",)),)),
     )
 
     result = compute_build_result_analytics(build_result, metric_key="confidence_model_score")
     values = {record.key: metric_value_for_record(record, "confidence_model_score") for record in result.records}
+    confidence_pair_key = confidence_pair_metric_key("A", "B", "disagreement")
+    combined_pair_key = combined_pair_metric_key("A", "B")
+    confidence_pair_values = {record.key: metric_value_for_record(record, confidence_pair_key) for record in result.records}
 
     assert "confidence_model_score" in result.available_metric_keys
+    assert confidence_pair_key in result.available_metric_keys
+    assert combined_pair_key in result.available_metric_keys
     assert values["same"] is not None and values["same"] > 99.0
     assert values["diff"] is not None and values["diff"] < values["same"]
+    assert confidence_pair_values["same"] == 0.0
+    assert confidence_pair_values["diff"] == 1.0
+
+
+def test_confidence_pair_metrics_compare_model_output_maps() -> None:
+    confidence_a = np.array([[0.1, 0.9], [0.2, 0.8]], dtype=np.float32)
+    confidence_b = np.array([[0.1, 0.6], [0.7, 0.8]], dtype=np.float32)
+
+    metrics = _confidence_pair_metrics(confidence_a, confidence_b)
+
+    assert np.isclose(metrics["mae"], np.mean(np.abs(confidence_a - confidence_b)))
+    assert np.isclose(metrics["rmse"], np.sqrt(np.mean(np.square(confidence_a - confidence_b))))
+    assert np.isclose(metrics["mean_delta"], np.mean(confidence_a - confidence_b))
+    assert metrics["disagreement"] == 0.5
+    assert np.isfinite(metrics["correlation"])
+
+
+def test_confidence_pair_metrics_handle_invalid_and_constant_maps() -> None:
+    confidence_a = np.array([[0.8, np.nan], [np.inf, 0.8]], dtype=np.float32)
+    confidence_b = np.array([[0.8, 0.1], [0.2, 0.8]], dtype=np.float32)
+
+    metrics = _confidence_pair_metrics(confidence_a, confidence_b)
+
+    assert metrics["mae"] == 0.0
+    assert metrics["low_iou"] == 0.0
+    assert np.isnan(metrics["correlation"])
+
+
+def test_combined_pair_metric_blends_output_and_confidence_disagreement() -> None:
+    pair = ComparisonPairSelection("A", "B", ("xor",))
+    output_values = {pair_metric_key("A", "B", "xor"): 0.2}
+    confidence_values = {confidence_pair_metric_key("A", "B", "disagreement"): 0.8}
+
+    values = _configured_combined_pair_metric_values((pair,), output_values, confidence_values)
+
+    assert values[combined_pair_metric_key("A", "B")] == 0.38
+
+
+def test_combined_pair_metric_is_unavailable_without_confidence_disagreement() -> None:
+    pair = ComparisonPairSelection("A", "B", ("xor",))
+    output_values = {pair_metric_key("A", "B", "xor"): 0.2}
+
+    values = _configured_combined_pair_metric_values((pair,), output_values, {})
+
+    assert combined_pair_metric_key("A", "B") not in values
+
+
+def test_grid_frame_path_loader_handles_non_ascii_paths(tmp_path) -> None:
+    folder = tmp_path / "\u043a\u0430\u0434\u0440\u044b"
+    folder.mkdir()
+    path = folder / "frame_001.png"
+    image = np.zeros((24, 32), dtype=np.uint8)
+    image[4:20, 6:26] = 255
+    assert _grayscale_array_to_qimage(image).save(str(path), "PNG")
+
+    result = analyze_grid_frame_path(path, frame_id="frame_001", use_cache=False)
+
+    assert result is not None
+    assert result.image_width == 32
+    assert result.image_height == 24

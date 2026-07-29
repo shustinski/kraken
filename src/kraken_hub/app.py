@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
 import json
 import os
 import shutil
@@ -311,6 +312,7 @@ def load_plugins(catalog_path: str, plugins_dir: Path) -> list[PluginMetadata]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    mp.freeze_support()
     parser = argparse.ArgumentParser(prog="kraken-hub")
     parser.add_argument("--catalog", help="Path to plugins.json catalog.")
     parser.add_argument("--plugins-dir", help="Folder where Kraken plugins are stored.")

@@ -5,7 +5,8 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 
 from ..core.analysis_modes import INTER_MODEL_ANALYSIS_MODE
-from ..core.domain import ComparisonMode, GeometryMode
+from ..core.domain import ComparisonMode, ComparisonTarget, GeometryMode
+from ..core.grid_anomaly import GRID_DAMAGE_REASON_TYPES
 
 SETTINGS_ORG = "Karakal"
 SETTINGS_APP = "Karakal"
@@ -28,19 +29,23 @@ DEFAULT_CELL_SIZE = 15
 DEFAULT_GRADIENT_NAME = "traffic_lights"
 DEFAULT_ERROR_WINDOW = (0.0, 1.0)
 DEFAULT_MATRIX_METRIC_KEY = "overall_frame_score"
+GRID_INSPECTION_DAMAGE_METRIC_KEY = "grid_inspection_damage_score"
+GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
+    ("grid_error.filled_cell", "filled_cell"),
+    ("grid_error.partial_filled_cell", "partial_filled_cell"),
+    ("grid_error.small_artifact", "small_artifact"),
+    ("grid_error.broken_geometry", "broken_geometry"),
+    ("grid_error.merged_contour", "merged_contour"),
+    ("grid_error.edge_clipped_cell", "edge_clipped_cell"),
+)
+GRID_INSPECTION_DEFAULT_ERROR_TYPES = tuple(
+    reason for reason in GRID_DAMAGE_REASON_TYPES if reason in {value for _label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS}
+)
 DEFAULT_ANALYSIS_MODE = INTER_MODEL_ANALYSIS_MODE
 DEFAULT_METRIC_SCOPE = ""
 DEFAULT_MATRIX_LAYOUT_MODE = "indexed_grid"
 DEFAULT_MATRIX_SCORE_VIEW_MODE = "relative"
-DEFAULT_TILE_MODE = "pixel"
-DEFAULT_SUBPIXEL_VIEW_MODE = "pixel"
-DEFAULT_SUBPIXEL_ROWS = 2
-DEFAULT_SUBPIXEL_COLUMNS = 2
-DEFAULT_SUBPIXEL_AGGREGATION = "mean"
-DEFAULT_TILE_WIDTH = 256
-DEFAULT_TILE_HEIGHT = 256
-DEFAULT_TILE_OVERLAP_MODE = "auto"
-DEFAULT_TILE_OVERLAP = 0
+DEFAULT_COMPARISON_TARGET = ComparisonTarget.OUTPUTS.value
 DEFAULT_TOTAL_FRAMES = 10000
 DEFAULT_FRAMES_PER_ROW = 100
 DEFAULT_MATRIX_ROWS = 100
@@ -69,36 +74,20 @@ TOTAL_FRAMES_RANGE = (0, 10_000_000)
 FRAMES_PER_ROW_RANGE = (0, 100_000)
 MATRIX_ROWS_RANGE = (1, 100_000)
 MATRIX_COLUMNS_RANGE = (1, 100_000)
-TILE_SIZE_RANGE = (1, 100_000)
-TILE_OVERLAP_RANGE = (0, 100_000)
-SUBPIXEL_ROWS_RANGE = (1, 64)
-SUBPIXEL_COLUMNS_RANGE = (1, 64)
 THUMBNAIL_SIZE_RANGE = (2, 128)
 BOUNDARY_RADIUS_RANGE = (1, 16)
 POINT_MATCH_RADIUS_RANGE = (1.0, 64.0)
 POINT_CONFIDENCE_RADIUS_RANGE = (1, 16)
 MASK_THRESHOLD_RANGE = (0.0, 1.0)
-TILE_MODE_OPTIONS = (
-    ("matrix.tile_mode.pixel", "pixel"),
-    ("matrix.tile_mode.subpixel", "subpixel"),
-)
-SUBPIXEL_VIEW_MODE_OPTIONS = (
-    ("matrix.subpixel_view_mode.pixel", "pixel"),
-    ("matrix.subpixel_view_mode.tile", "tile"),
-)
-SUBPIXEL_AGGREGATION_OPTIONS = (
-    ("subpixel_aggregation.mean", "mean"),
-    ("subpixel_aggregation.weighted_mean", "weighted_mean"),
-    ("subpixel_aggregation.median", "median"),
-)
-TILE_OVERLAP_MODE_OPTIONS = (
-    ("matrix.tile_overlap_mode.auto", "auto"),
-    ("matrix.tile_overlap_mode.manual", "manual"),
-)
 POLYGON_COMPARE_PROFILE_OPTIONS = (
     ("polygon_compare_profile.lenient", "lenient"),
     ("polygon_compare_profile.balanced", "balanced"),
     ("polygon_compare_profile.strict", "strict"),
+)
+COMPARISON_TARGET_OPTIONS = (
+    ("comparison_target.outputs", ComparisonTarget.OUTPUTS.value),
+    ("comparison_target.confidence", ComparisonTarget.CONFIDENCE.value),
+    ("comparison_target.both", ComparisonTarget.BOTH.value),
 )
 POLYGON_COMPARE_PROFILE_VALUES = {
     "lenient": (0.45, 1),
@@ -109,7 +98,7 @@ EXPORT_TOP_K_RANGE = (1, 10000)
 EXPORT_PERCENT_RANGE = (1, 100)
 EXPORT_PERCENTILE_RANGE = (1, 100)
 EXPORT_NEIGHBOR_RANGE = (0, 16)
-CONTROL_PANEL_SPLITTER_SIZES = (360, 1140)
+CONTROL_PANEL_SPLITTER_SIZES = (540, 960)
 SETTINGS_LABEL_MIN_WIDTH = 120
 METRIC_SETTINGS_LABEL_MIN_WIDTH = 140
 METRIC_SETTINGS_COMBO_MIN_CONTENTS_LENGTH = 14
@@ -163,6 +152,7 @@ HOVER_BORDER = QColor(255, 220, 120)
 PROCESSING_BORDER = QColor(255, 170, 0)
 PROCESSING_FILL = QColor(255, 170, 0)
 REFERENCE_BORDER = QColor(80, 210, 255)
+GROUND_TRUTH_BORDER = QColor(80, 245, 185)
 SELECTED_BLINK_COLOR = QColor(255, 255, 255)
 MINIMAP_SELECTED_COLOR = QColor(255, 255, 255)
 
@@ -235,13 +225,20 @@ EXTEND_WIDGET_STYLESHEET = """
 #KarakalRoot QWidget { background-color: #15191f; color: #edf3fb; }
 #KarakalRoot QGroupBox { background-color: #1a2028; border: 1px solid #304050; border-radius: 10px; margin-top: 10px; padding: 10px; font-weight: 600; }
 #KarakalRoot QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #d7e2ef; }
-#KarakalRoot QListWidget, #KarakalRoot QTabWidget::pane, #KarakalRoot QScrollArea, #KarakalRoot QMenu, #KarakalRoot QMenuBar, #KarakalRoot QSplitter::handle { background-color: #11161d; }
+#KarakalRoot QListWidget, #KarakalRoot QTableWidget, #KarakalRoot QTableView, #KarakalRoot QHeaderView, #KarakalRoot QHeaderView::section, #KarakalRoot QTabWidget::pane, #KarakalRoot QScrollArea, #KarakalRoot QMenu, #KarakalRoot QMenuBar, #KarakalRoot QSplitter::handle { background-color: #11161d; color: #edf3fb; }
 #KarakalRoot QListWidget { border: 1px solid #28384b; border-radius: 8px; outline: none; }
 #KarakalRoot QListWidget::item { border-radius: 8px; margin: 1px 0px; padding: 1px; }
 #KarakalRoot QListWidget::item:selected { background-color: #275fbb; color: #ffffff; }
+#KarakalRoot QTableWidget { border: 1px solid #28384b; border-radius: 8px; gridline-color: #30445a; outline: none; selection-background-color: #275fbb; selection-color: #ffffff; alternate-background-color: #11161d; }
+#KarakalRoot QTableWidget QTableCornerButton::section { background-color: #18212b; border: 1px solid #30445a; }
+#KarakalRoot QHeaderView::section { background-color: #18212b; color: #dfe8f2; border: 1px solid #30445a; padding: 4px; font-weight: 600; }
 #KarakalRoot QLineEdit, #KarakalRoot QComboBox, #KarakalRoot QSpinBox, #KarakalRoot QDoubleSpinBox { background-color: #10151c; border: 1px solid #30445a; border-radius: 8px; padding: 6px 10px; min-height: 26px; }
 #KarakalRoot QComboBox QAbstractItemView { background-color: #11161d; selection-background-color: #275fbb; selection-color: #ffffff; }
 #KarakalRoot QComboBox QAbstractItemView::item:disabled { color: #6f7a86; background-color: #11161d; }
+#KarakalRoot QPushButton { background-color: #111a24; border: 1px solid #30445a; border-radius: 6px; padding: 4px 8px; color: #edf3fb; }
+#KarakalRoot QPushButton:hover { background-color: #1d2a38; border-color: #46627f; }
+#KarakalRoot QPushButton:checked { background-color: #2767c5; border-color: #4e90ff; color: #ffffff; }
+#KarakalRoot QPushButton:disabled { color: #6f7a86; background-color: #161b22; border-color: #283541; }
 #KarakalRoot QToolButton[toolbarButton="true"] { background-color: #1e2630; border: 1px solid #314355; border-radius: 8px; padding: 4px; min-width: 28px; min-height: 28px; max-width: 28px; max-height: 28px; }
 #KarakalRoot QToolButton[toolbarButton="true"]:hover { background-color: #283342; border-color: #46627f; }
 #KarakalRoot QToolButton#extendLanguageToggleButton { background-color: #275fbb; border: 1px solid #3f7ee1; border-radius: 10px; padding: 6px 14px; min-width: 40px; font-weight: 700; }
@@ -250,6 +247,16 @@ EXTEND_WIDGET_STYLESHEET = """
 #KarakalRoot QCheckBox::indicator:checked { background-color: #3270d1; border-color: #4e90ff; }
 #KarakalRoot QProgressBar { border: 1px solid #30445a; border-radius: 6px; background-color: #10151c; text-align: center; }
 #KarakalRoot QProgressBar::chunk { background-color: #3270d1; border-radius: 5px; }
+#KarakalRoot QTabBar::tab { background-color: #17202a; color: #dfe8f2; border: 1px solid #30445a; padding: 6px 10px; }
+#KarakalRoot QTabBar::tab:selected { background-color: #275fbb; color: #ffffff; border-color: #4e90ff; }
+#KarakalRoot QTabBar::tab:!selected { background-color: #11161d; color: #b8c4d1; }
+#KarakalRoot QScrollBar:vertical, #KarakalRoot QScrollBar:horizontal { background-color: #10151c; border: 1px solid #28384b; margin: 0px; }
+#KarakalRoot QScrollBar:vertical { width: 14px; }
+#KarakalRoot QScrollBar:horizontal { height: 14px; }
+#KarakalRoot QScrollBar::handle:vertical, #KarakalRoot QScrollBar::handle:horizontal { background-color: #2f455d; border-radius: 5px; min-height: 24px; min-width: 24px; }
+#KarakalRoot QScrollBar::handle:vertical:hover, #KarakalRoot QScrollBar::handle:horizontal:hover { background-color: #3f5f80; }
+#KarakalRoot QScrollBar::add-line, #KarakalRoot QScrollBar::sub-line { background-color: #18212b; border: 1px solid #30445a; width: 14px; height: 14px; }
+#KarakalRoot QScrollBar::add-page, #KarakalRoot QScrollBar::sub-page { background-color: #10151c; }
 """
 
 # Backward-compatible lite aliases.

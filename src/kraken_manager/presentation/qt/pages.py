@@ -51,6 +51,7 @@ class ProjectCatalogPage(_TitledPage):
     renameRequested = pyqtSignal(object)
     archiveRequested = pyqtSignal(object)
     restoreRequested = pyqtSignal(object)
+    deleteRequested = pyqtSignal(object)
 
     def __init__(
         self,
@@ -66,12 +67,18 @@ class ProjectCatalogPage(_TitledPage):
         self.rename_button.hide()
         self.archive_button = QPushButton("В архив")
         self.restore_button = QPushButton("Восстановить")
+        self.delete_button = QPushButton("Удалить")
+        self.delete_button.setObjectName("deleteProjectButton")
+        self.delete_button.setToolTip(
+            "Удалить проект из Kraken, сохранив папки исходных и производных данных"
+        )
         self.show_archived_check = QCheckBox("Показывать архивные")
         actions.addWidget(self.create_button)
         actions.addWidget(self.refresh_button)
         actions.addWidget(self.rename_button)
         actions.addWidget(self.archive_button)
         actions.addWidget(self.restore_button)
+        actions.addWidget(self.delete_button)
         actions.addWidget(self.show_archived_check)
         actions.addStretch(1)
         self.root_layout.addLayout(actions)
@@ -97,6 +104,7 @@ class ProjectCatalogPage(_TitledPage):
         self.rename_button.clicked.connect(lambda: self.renameRequested.emit(self.selected_project()))
         self.archive_button.clicked.connect(lambda: self.archiveRequested.emit(self.selected_project()))
         self.restore_button.clicked.connect(lambda: self.restoreRequested.emit(self.selected_project()))
+        self.delete_button.clicked.connect(lambda: self.deleteRequested.emit(self.selected_project()))
         self.project_list.doubleClicked.connect(self._activate_index)
         self.project_list.selectionModel().currentChanged.connect(self._selection_changed)
         self.project_model.modelReset.connect(self._sync_empty_state)
@@ -132,6 +140,7 @@ class ProjectCatalogPage(_TitledPage):
         self.rename_button.setEnabled(selected and not archived)
         self.archive_button.setEnabled(selected and not archived)
         self.restore_button.setEnabled(selected and archived)
+        self.delete_button.setEnabled(selected)
 
     def _sync_empty_state(self, *_args: object) -> None:
         empty = self.project_model.rowCount() == 0

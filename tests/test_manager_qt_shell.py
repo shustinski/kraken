@@ -52,6 +52,22 @@ def test_project_manager_shell_has_stable_navigation_and_replaceable_pages(qapp)
     assert shell.current_page_key() == "statistics"
 
 
+def test_project_catalog_delete_action_emits_selected_project(qapp):
+    shell = ProjectManagerShell()
+    page = shell.page("projects")
+    assert page is not None
+    item = ProjectListItem("p-delete", "Delete me", 2, 2, "Local")
+    page.project_model.replace_items((item,))
+    page.project_list.setCurrentIndex(page.project_model.index(0, 0))
+    requested = []
+    page.deleteRequested.connect(requested.append)
+
+    page.delete_button.click()
+
+    assert page.delete_button.isEnabled()
+    assert requested == [item]
+
+
 def test_shell_opens_lightweight_project_workspace(qapp):
     shell = ProjectManagerShell()
     workspace = shell.open_project_workspace()

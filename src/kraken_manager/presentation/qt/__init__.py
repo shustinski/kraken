@@ -4,6 +4,9 @@ from .models import LayerListItem, LayerListModel, ProjectListItem, ProjectListM
 from .layer_management import (
     LayerManagerDialog,
     LayerPipelineSnapshot,
+    ObjectHistoryEntry,
+    ObjectPropertiesDialog,
+    ObjectPropertiesSnapshot,
     PipelineLane,
     PipelineNode,
 )
@@ -58,6 +61,9 @@ __all__ = [
     "ProjectWorkspacePage",
     "PipelineLane",
     "PipelineNode",
+    "ObjectHistoryEntry",
+    "ObjectPropertiesDialog",
+    "ObjectPropertiesSnapshot",
     "StatisticsPage",
 ]
 

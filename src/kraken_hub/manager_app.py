@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
+from enum import Enum
 import os
 import sys
 import logging
@@ -13,7 +16,12 @@ from uuid import uuid4
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from kraken_core.frame_matrix import MatrixSession, ThumbnailStoreFactory
+from kraken_core.frame_matrix import (
+    MatrixSession,
+    StoreNamespace,
+    StorePolicy,
+    ThumbnailStoreFactory,
+)
 from kraken_core.frame_matrix.qt import FrameMatrixWidget
 from kraken_core.external_model import ExternalModelLink
 from kraken_core.plugins import PluginInventoryItem
@@ -35,6 +43,9 @@ from kraken_manager.presentation.qt import (
     LayerCreationDialog,
     LayerManagerDialog,
     LayerPipelineSnapshot,
+    ObjectHistoryEntry,
+    ObjectPropertiesDialog,
+    ObjectPropertiesSnapshot,
     PipelineLane,
     PipelineNode,
     ProjectManagerShell,
@@ -46,6 +57,167 @@ from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimension
 from . import windows_credentials
 from .composition import DesktopSession, EmbeddedProjectService
 from .matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
+
+
+def _plain_value(value):
+    if is_dataclass(value):
+        return _plain_value(asdict(value))
+    if isinstance(value, Mapping):
+        return {str(key): _plain_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list, set)):
+        return [_plain_value(item) for item in value]
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _event_payload(event) -> dict[str, object]:
+    payload = getattr(event, "payload", {})
+    return _plain_value(payload) if isinstance(payload, Mapping) else {}
+
+
+def _nested_mapping(payload: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = payload.get(key, {})
+    return value if isinstance(value, Mapping) else {}
+
+
+def _event_belongs_to_layer(event, layer_id: str) -> bool:
+    identifier = str(layer_id)
+    payload = _event_payload(event)
+    candidates = {
+        str(payload.get("layer_id", "")),
+        str(_nested_mapping(payload, "layer").get("id", "")),
+        str(_nested_mapping(payload, "job").get("layer_id", "")),
+        str(_nested_mapping(payload, "manifest").get("layer_id", "")),
+    }
+    if identifier in candidates:
+        return True
+    if identifier in {str(value) for value in payload.get("layer_ids", ())}:
+        return True
+    stream_id = str(getattr(event, "stream_id", ""))
+    return stream_id in {
+        f"layer:{identifier}",
+        f"layer-files:{identifier}",
+        f"layer-pipeline:{identifier}",
+        f"karakal:{identifier}",
+    }
+
+
+def _node_identifiers(node: PipelineNode) -> set[str]:
+    identifiers = {str(node.node_id), str(node.representation_id or "")}
+    for key in ("job_id", "run_id", "pipeline_event_id"):
+        value = node.details.get(key)
+        if value:
+            identifiers.add(str(value))
+    for prefix in ("action:", "workspace-job:", "workspace-output:", "karakal:"):
+        if str(node.node_id).startswith(prefix):
+            identifiers.add(str(node.node_id)[len(prefix):])
+    if ":" in str(node.node_id):
+        identifiers.add(str(node.node_id).split(":", 1)[0])
+    return {value for value in identifiers if value}
+
+
+def _event_matches_node(event, node: PipelineNode) -> bool:
+    identifiers = _node_identifiers(node)
+    if not identifiers or node.kind in {"missing", "blackbox"}:
+        return False
+    payload = _event_payload(event)
+    manifest = _nested_mapping(payload, "manifest")
+    parameters = _nested_mapping(manifest, "parameters")
+    action_parameters = _nested_mapping(payload, "parameters")
+    job = _nested_mapping(payload, "job")
+    representation = _nested_mapping(payload, "representation")
+    candidates = {
+        str(getattr(event, "event_id", "")),
+        str(payload.get("representation_id", "")),
+        str(payload.get("plugin_job_id", "")),
+        str(payload.get("run_id", "")),
+        str(payload.get("action_event_id", "")),
+        str(payload.get("node_id", "")),
+        str(job.get("id", "")),
+        str(job.get("target_representation_id", "")),
+        str(manifest.get("target_representation_id", "")),
+        str(manifest.get("source_representation_id", "")),
+        str(parameters.get("source_representation_id", "")),
+        str(action_parameters.get("source_representation_id", "")),
+        str(payload.get("source_image_representation_id", "")),
+        str(representation.get("id", "")),
+        str(representation.get("source_image_representation_id", "")),
+    }
+    deactivated = {
+        str(value) for value in payload.get("deactivated_representation_ids", ())
+    }
+    for value in payload.get("deactivated", ()):
+        if isinstance(value, Mapping):
+            deactivated.add(str(value.get("id", "")))
+    if identifiers.intersection(candidates | deactivated):
+        return True
+    stream_id = str(getattr(event, "stream_id", ""))
+    return any(stream_id.endswith(f":{identifier}") for identifier in identifiers)
+
+
+def _history_entries(events) -> tuple[ObjectHistoryEntry, ...]:
+    ordered = sorted(
+        events,
+        key=lambda event: (
+            getattr(event, "recorded_at", None),
+            str(getattr(event, "event_id", "")),
+        ),
+        reverse=True,
+    )
+    return tuple(
+        ObjectHistoryEntry(
+            recorded_at=getattr(event, "recorded_at").isoformat(),
+            actor=str(getattr(getattr(event, "actor", None), "display_name", "") or "—"),
+            event_type=str(getattr(event, "event_type", "")),
+            payload=_event_payload(event),
+        )
+        for event in ordered
+    )
+
+
+def _creator(events) -> tuple[str, str]:
+    ordered = sorted(
+        events,
+        key=lambda event: (
+            getattr(event, "recorded_at", None),
+            str(getattr(event, "event_id", "")),
+        ),
+    )
+    if not ordered:
+        return "—", "—"
+    event = ordered[0]
+    actor = str(getattr(getattr(event, "actor", None), "display_name", "") or "—")
+    recorded_at = getattr(event, "recorded_at", None)
+    return actor, "—" if recorded_at is None else recorded_at.isoformat()
+
+
+def _count_regular_files(paths) -> int | None:
+    candidates = [Path(str(value)) for value in paths if str(value or "").strip()]
+    if not candidates:
+        return None
+    seen: set[str] = set()
+    accessible = False
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                accessible = True
+                seen.add(str(candidate.resolve()).casefold())
+                continue
+            if not candidate.is_dir():
+                continue
+            accessible = True
+            for path in candidate.rglob("*"):
+                try:
+                    if path.is_file():
+                        seen.add(str(path.resolve()).casefold())
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return len(seen) if accessible else None
 
 
 class _LayerCreateThread(QThread):
@@ -432,6 +604,7 @@ class DesktopController:
         self.catalog_page.renameRequested.connect(self.rename_project)
         self.catalog_page.archiveRequested.connect(self.archive_project)
         self.catalog_page.restoreRequested.connect(self.restore_project)
+        self.catalog_page.deleteRequested.connect(self.delete_project)
         self.shell.layersRequested.connect(self.open_layer_manager)
         self.shell.cellVisualModeChanged.connect(self._set_matrix_visual_mode)
         self.refresh_projects()
@@ -504,6 +677,108 @@ class DesktopController:
             self._error(str(exc))
             return
         self.refresh_projects()
+
+    def _clear_configured_thumbnail_cache(self, project_id: str) -> None:
+        store_uri = self.thumbnail_store_uri or os.environ.get("KRAKEN_THUMBNAIL_STORE_URI")
+        if not store_uri:
+            return
+        store = ThumbnailStoreFactory().create(store_uri)
+        namespace = StoreNamespace(
+            plugin="matrix",
+            project=str(project_id),
+            generation="v1",
+        )
+        try:
+            store.open(namespace, StorePolicy())
+            store.clear_namespace()
+        finally:
+            store.close()
+        root = getattr(store, "root", None)
+        if root is None:
+            return
+        safe_root = Path(root).resolve()
+        namespace_root = (safe_root / namespace.digest()).resolve()
+        if (
+            namespace_root.parent == safe_root
+            and namespace_root.is_dir()
+            and not namespace_root.is_symlink()
+        ):
+            shutil.rmtree(namespace_root)
+
+    def delete_project(self, item: ProjectListItem | None) -> None:
+        if item is None:
+            return
+        from PyQt6.QtCore import QSettings
+        from PyQt6.QtWidgets import QDialog, QInputDialog, QLineEdit, QMessageBox
+
+        project = self.service.get_project(item.project_id)
+        if project is None:
+            self._error("Проект больше не доступен")
+            self.refresh_projects()
+            return
+        binding = self.service.project_workspace(project.id)
+        preserved_paths = (
+            ()
+            if binding is None
+            else (binding.source_project_dir, binding.derived_project_dir)
+        )
+        dialog = QInputDialog(self.shell)
+        dialog.setObjectName("deleteProjectConfirmationDialog")
+        dialog.setWindowTitle("Удалить проект")
+        dialog.setLabelText(
+            "Проект будет удалён из Kraken вместе с его метаданными, историей "
+            "и файлами кэша.\n\n"
+            "Папки с изображениями слоёв, результатами нейросети и векторами "
+            "останутся без изменений:\n"
+            + ("\n".join(preserved_paths) if preserved_paths else "Папки проекта не зарегистрированы.")
+            + f"\n\nДля подтверждения введите: {project.name}"
+        )
+        dialog.setInputMode(QInputDialog.InputMode.TextInput)
+        dialog.setTextEchoMode(QLineEdit.EchoMode.Normal)
+        dialog.setOkButtonText("Удалить из Kraken")
+        dialog.setCancelButtonText("Отмена")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.textValue() != project.name:
+            QMessageBox.warning(
+                self.shell,
+                "Удаление не подтверждено",
+                "Введённое имя не совпадает с названием проекта.",
+            )
+            return
+
+        if self._project_id == str(project.id) and self._workspace is not None:
+            try:
+                self._workspace.matrix_view.clear_thumbnail_cache()
+                self._workspace.matrix_view.close()
+            finally:
+                self._workspace = None
+                self._project_id = None
+                if self._layer_dialog is not None:
+                    self._layer_dialog.hide()
+                    self._layer_dialog.deleteLater()
+                    self._layer_dialog = None
+        try:
+            self._clear_configured_thumbnail_cache(str(project.id))
+            self.service.delete_project(
+                principal=self.session.principal,
+                project=project,
+                confirmation_name=dialog.textValue(),
+            )
+        except Exception as exc:
+            self._error(str(exc))
+            return
+
+        settings = QSettings("Kraken", "KrakenHub")
+        settings.remove(f"external-model/{project.id}")
+        settings.remove(f"layer-manager/{project.id}")
+        self.shell.show_page("projects")
+        self.refresh_projects()
+        QMessageBox.information(
+            self.shell,
+            "Проект удалён",
+            "Проект и его кэш удалены из Kraken. Файлы в папках проекта сохранены.",
+        )
 
     def create_project(self) -> None:
         from PyQt6.QtWidgets import (
@@ -738,6 +1013,8 @@ class DesktopController:
             dialog.representationActivated.connect(self._layer_manager_activate)
             dialog.nodeActionRequested.connect(self._layer_manager_action)
             dialog.layerActionRequested.connect(self._layer_manager_layer_action)
+            dialog.nodePropertiesRequested.connect(self._show_node_properties)
+            dialog.layerPropertiesRequested.connect(self._show_layer_properties)
             dialog.addLayerRequested.connect(
                 lambda: self._add_layer(workspace, project_id)
             )
@@ -1072,6 +1349,339 @@ class DesktopController:
             lanes.append(PipelineLane(str(source.id), source.name, tuple(lane_nodes), tuple(lane_edges)))
         return LayerPipelineSnapshot(str(project_id), str(layer_id), tuple(lanes))
 
+    def _open_properties(self, snapshot: ObjectPropertiesSnapshot) -> None:
+        ObjectPropertiesDialog(
+            snapshot,
+            self._layer_dialog or self.shell,
+        ).exec()
+
+    def _show_layer_properties(self, layer_id: str) -> None:
+        layer = next(
+            (
+                item
+                for item in self.service.list_layers(self._project_id)
+                if str(item.id) == str(layer_id)
+            ),
+            None,
+        )
+        if layer is None:
+            self._error("Слой больше не доступен")
+            return
+        binding = self.service.layer_file_binding(self._project_id, layer_id)
+        events = tuple(
+            event
+            for event in self.service.history(self._project_id)
+            if _event_belongs_to_layer(event, layer_id)
+        )
+        created_events = tuple(
+            event
+            for event in events
+            if str(getattr(event, "event_type", "")) == "LayerCreated"
+            and str(_event_payload(event).get("layer_id", "")) == str(layer_id)
+        )
+        actor, created_at = _creator(created_events or events)
+        paths = (
+            ()
+            if binding is None
+            else (
+                binding.image_directory,
+                binding.ssc_directory,
+                binding.prv_directory,
+                binding.aux_directory,
+            )
+        )
+        properties: list[tuple[str, object]] = [
+            ("Название", layer.name),
+            ("Тип объекта", "Слой"),
+            ("Идентификатор", str(layer.id)),
+            ("Идентификатор проекта", str(layer.project_id)),
+            ("Тип слоя", layer.type.value),
+            ("Порядок", layer.order),
+            ("Состояние", layer.state.value),
+            ("Ревизия", layer.revision),
+            (
+                "Путь",
+                None if binding is None else binding.image_directory,
+            ),
+            ("Примечание", None),
+            ("Количество файлов", _count_regular_files(paths)),
+            ("Кто добавил", actor),
+            ("Когда добавлен", created_at if created_at != "—" else layer.created_at.isoformat()),
+        ]
+        if binding is not None:
+            properties.extend(
+                (
+                    ("Режим хранения", binding.mode.value),
+                    ("Каталог изображений", binding.image_directory),
+                    ("Каталог SSC", binding.ssc_directory),
+                    ("Каталог PRV", binding.prv_directory),
+                    ("Вспомогательный каталог", binding.aux_directory),
+                    ("Корень импорта", binding.import_root),
+                    ("Известно кадров", len(binding.frame_positions)),
+                    ("Позиции кадров", binding.frame_positions),
+                    ("Параметры преобразования", _plain_value(binding.conversion)),
+                )
+            )
+        self._open_properties(
+            ObjectPropertiesSnapshot(
+                title=layer.name,
+                object_kind="layer",
+                properties=tuple(properties),
+                history=_history_entries(events),
+            )
+        )
+
+    def _representation_file_count(self, layer_id: str, representation) -> int | None:
+        try:
+            cells = self.service.frame_cells(
+                self._project_id,
+                layer_id,
+                representation.id,
+            )
+        except (OSError, ValueError):
+            cells = ()
+        if cells:
+            return len({str(item.frame_id) for item in cells})
+        binding = self.service.layer_file_binding(self._project_id, layer_id)
+        if (
+            binding is not None
+            and representation.source
+            and str(Path(representation.source)).casefold()
+            == str(Path(binding.image_directory)).casefold()
+            and binding.frame_positions
+        ):
+            return len(binding.frame_positions)
+        return _count_regular_files((representation.source,))
+
+    def _show_node_properties(self, layer_id: str, node: PipelineNode) -> None:
+        project_history = tuple(self.service.history(self._project_id))
+        snapshot = self._pipeline_snapshot(self._project_id, layer_id)
+        if node.kind == "blackbox":
+            lane_id = str(node.node_id).removesuffix(":blackbox")
+            lane = next((item for item in snapshot.lanes if item.lane_id == lane_id), None)
+            hidden = (
+                ()
+                if lane is None
+                else tuple(
+                    item
+                    for item in lane.nodes
+                    if item.kind not in {"source", "vector", "missing"}
+                )
+            )
+            hidden_events = tuple(
+                event
+                for event in project_history
+                if any(_event_matches_node(event, item) for item in hidden)
+            )
+            self._open_properties(
+                ObjectPropertiesSnapshot(
+                    title=node.title,
+                    object_kind=node.kind,
+                    properties=(
+                        ("Название", node.title),
+                        ("Тип объекта", "Сгруппированные этапы"),
+                        ("Идентификатор", node.node_id),
+                        ("Путь", None),
+                        ("Примечание", node.subtitle),
+                        ("Количество файлов", None),
+                        ("Кто добавил", None),
+                        ("Когда добавлен", None),
+                        ("Количество скрытых этапов", len(hidden)),
+                        (
+                            "Скрытые этапы",
+                            [
+                                {
+                                    "id": item.node_id,
+                                    "name": item.title,
+                                    "kind": item.kind,
+                                    "state": item.state,
+                                }
+                                for item in hidden
+                            ],
+                        ),
+                    ),
+                    history=_history_entries(hidden_events),
+                )
+            )
+            return
+
+        events = tuple(
+            event for event in project_history if _event_matches_node(event, node)
+        )
+        actor, created_at = _creator(events)
+        representations = self.service.list_representations(self._project_id, layer_id)
+        representation = next(
+            (
+                item
+                for item in representations
+                if str(item.id) in {str(node.representation_id), str(node.node_id)}
+            ),
+            None,
+        )
+        run_id = str(node.details.get("run_id", ""))
+        if not run_id:
+            for prefix in ("workspace-job:", "workspace-output:"):
+                if str(node.node_id).startswith(prefix):
+                    run_id = str(node.node_id)[len(prefix):]
+                    break
+        derived_run = next(
+            (
+                item
+                for item in self.service.list_derived_runs(self._project_id, layer_id)
+                if item.run_id == run_id
+            ),
+            None,
+        )
+        kind_labels = {
+            "source": "Исходное представление",
+            "binary": "Бинарное представление",
+            "vector": "Векторное представление",
+            "dataset": "Выборка",
+            "model": "Модель",
+            "job": "Задание",
+            "karakal": "Публикация Karakal",
+            "missing": "Отсутствующий результат",
+        }
+        path: object = None
+        note: object = None
+        file_count: object = None
+        properties: list[tuple[str, object]] = [
+            ("Название", node.title),
+            ("Тип объекта", kind_labels.get(node.kind, node.kind)),
+            ("Идентификатор", node.node_id),
+            ("Идентификатор слоя", str(layer_id)),
+            ("Состояние", node.state or node.subtitle),
+        ]
+        if representation is not None:
+            path = representation.source
+            note = representation.note
+            file_count = self._representation_file_count(layer_id, representation)
+            properties.extend(
+                (
+                    ("Идентификатор представления", str(representation.id)),
+                    ("Идентификатор проекта", str(representation.project_id)),
+                    ("Вид представления", representation.kind.value),
+                    ("Назначение", representation.purpose.value),
+                    (
+                        "Исходное представление",
+                        None
+                        if representation.source_image_representation_id is None
+                        else str(representation.source_image_representation_id),
+                    ),
+                    ("Активно", representation.active),
+                    ("Состояние объекта", representation.state.value),
+                    ("Ревизия", representation.revision),
+                    ("Дата объекта", representation.created_at.isoformat()),
+                )
+            )
+        elif derived_run is not None:
+            path = derived_run.path
+            note = (
+                derived_run.provenance.get("notes")
+                or derived_run.provenance.get("note")
+            )
+            file_count = _count_regular_files((derived_run.path,))
+            properties.extend(
+                (
+                    ("Идентификатор запуска", derived_run.run_id),
+                    ("Тип результата", derived_run.kind.value),
+                    ("Состояние запуска", derived_run.state.value),
+                    ("Плагин", derived_run.plugin_id),
+                    ("Операция", derived_run.operation),
+                    ("Дата запуска", derived_run.created_at),
+                    ("Provenance", derived_run.provenance),
+                )
+            )
+        else:
+            creation = next(
+                (
+                    event
+                    for event in reversed(events)
+                    if str(getattr(event, "event_type", ""))
+                    in {
+                        "PluginJobCreated",
+                        "LayerPipelineActionRequested",
+                        "KarakalAnalysisPublished",
+                    }
+                ),
+                None,
+            )
+            latest = events[-1] if events else creation
+            creation_payload = {} if creation is None else _event_payload(creation)
+            latest_payload = {} if latest is None else _event_payload(latest)
+            manifest = _nested_mapping(creation_payload, "manifest")
+            job = _nested_mapping(latest_payload, "job")
+            if node.kind == "karakal":
+                properties.extend(
+                    (
+                        ("Идентификатор публикации", creation_payload.get("run_id")),
+                        (
+                            "Номер публикации",
+                            creation_payload.get("publication_sequence"),
+                        ),
+                        (
+                            "Версия плагина",
+                            creation_payload.get("plugin_version")
+                            or node.details.get("версия"),
+                        ),
+                        (
+                            "Параметры",
+                            creation_payload.get("parameters")
+                            or node.details.get("параметры"),
+                        ),
+                        (
+                            "Отчёт",
+                            creation_payload.get("report")
+                            or node.details.get("отчёт"),
+                        ),
+                    )
+                )
+            elif manifest or job:
+                properties.extend(
+                    (
+                        (
+                            "Идентификатор задания",
+                            creation_payload.get("plugin_job_id")
+                            or job.get("id")
+                            or node.details.get("job_id"),
+                        ),
+                        ("Capability", manifest.get("capability") or node.details.get("capability")),
+                        ("Плагин", manifest.get("plugin_name") or node.details.get("программа")),
+                        ("Параметры", manifest.get("parameters") or node.details.get("параметры")),
+                        ("Прогресс", job.get("progress") or node.details.get("прогресс")),
+                        ("Ошибка", job.get("error") or node.details.get("ошибка")),
+                    )
+                )
+            elif creation is not None:
+                properties.extend(
+                    (
+                        ("Событие создания", getattr(creation, "event_type", "")),
+                        ("Плагин", creation_payload.get("plugin_id")),
+                        ("Capability", creation_payload.get("capability")),
+                        ("Режим", creation_payload.get("mode")),
+                        ("Параметры", creation_payload.get("parameters")),
+                        ("Параметры события", creation_payload),
+                    )
+                )
+        properties.extend(
+            (
+                ("Путь", path),
+                ("Примечание", note),
+                ("Количество файлов", file_count),
+                ("Кто добавил", actor),
+                ("Когда добавлен", created_at),
+                ("Дополнительные свойства", node.details),
+            )
+        )
+        self._open_properties(
+            ObjectPropertiesSnapshot(
+                title=node.title,
+                object_kind=node.kind,
+                properties=tuple(properties),
+                history=_history_entries(events),
+            )
+        )
+
     def _layer_manager_action(self, _layer_id: str, _node: PipelineNode, action: str) -> None:
         if action == "archive_representation":
             self._archive_layer_representation(_layer_id, _node)
@@ -1180,7 +1790,11 @@ class DesktopController:
                     if not linked_now and stored_size > 0 and len(stored_hash) == 64
                     else ExternalModelLink.observe(model_path)
                 )
-                stage_root = self.service.data_dir / "agent-staging" / str(uuid4())
+                stage_root = (
+                    self.service.data_dir
+                    / "agent-staging"
+                    / f"{self._project_id}-{uuid4()}"
+                )
                 staged = link.stage(stage_root)
             except (OSError, ValueError) as exc:
                 self._error(f"Не удалось подготовить внешнюю модель: {exc}")
@@ -1451,7 +2065,7 @@ class DesktopController:
             stage = (
                 self.service.data_dir
                 / "agent-staging"
-                / f"contour-{action}-{uuid4()}"
+                / f"{self._project_id}-contour-{action}-{uuid4()}"
             ).resolve()
             stage.mkdir(parents=True, exist_ok=False)
             source_path = Path(str(representation.source or "")).expanduser()
@@ -2085,7 +2699,7 @@ class DesktopController:
         # staging and are not exposed as arbitrary host filesystem paths.
         representations = self.service.list_representations(project_id, layer_id)
         karakal_stage = (
-            self.service.data_dir / "agent-staging" / f"karakal-{uuid4()}"
+            self.service.data_dir / "agent-staging" / f"{project_id}-karakal-{uuid4()}"
         ).resolve()
         karakal_stage.mkdir(parents=True, exist_ok=False)
         staged_folders: dict[str, Path | None] = {}

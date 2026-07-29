@@ -7,7 +7,8 @@ import hashlib
 import mimetypes
 import os
 import re
-from collections.abc import Iterable
+import shutil
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from threading import Thread
 
 from kraken_core.safe_files import ensure_regular_directory, open_regular_read
 from kraken_core.plugin_protocol import WorkspacePluginResultV1
+from kraken_core.frame_matrix import StoreNamespace
 
 from kraken_manager.application.dto import (
     AddArtifactVersionCommand,
@@ -39,6 +41,7 @@ from kraken_manager.application.dto import (
     UpdateRepresentationNoteCommand,
 )
 from kraken_manager.application.imports import ImportMappingMode, ImportPlan, ImportPlanner, ImportSource
+from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.workspace import (
     DerivedRun,
     DerivedRunKind,
@@ -79,7 +82,7 @@ from kraken_manager.application.representation_lifecycle import (
 from kraken_manager.domain.artifacts import ArtifactScope, ArtifactVersion, deterministic_frame_series_id
 from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, RepresentationId, new_uuid
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope, ProgramSnapshot
-from kraken_manager.domain.identity import Performer, Principal, ProjectRole
+from kraken_manager.domain.identity import Permission, Performer, Principal, ProjectRole
 from kraken_manager.domain.project import (
     GridOrientation,
     Layer,
@@ -197,6 +200,14 @@ class KarakalAnalysisRun:
     report: dict[str, object]
     parameters: dict[str, object]
     plugin_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectDeletionResult:
+    project_id: str
+    catalog_cache_removed: bool
+    thumbnail_cache_removed: bool
+    staging_directories_removed: int
 
 
 class EmbeddedProjectService:
@@ -999,6 +1010,140 @@ class EmbeddedProjectService:
                 project_id=project.id,
                 expected_revision=project.revision,
             )
+        )
+
+    @staticmethod
+    def _remove_cache_tree(root: Path, target: Path) -> bool:
+        safe_root = root.resolve()
+        safe_target = target.resolve()
+        if safe_target.parent != safe_root:
+            raise WorkspaceValidationError(
+                f"Путь кэша проекта выходит за допустимые границы: {safe_target}"
+            )
+        if not safe_target.exists():
+            return False
+        if safe_target.is_symlink():
+            raise WorkspaceValidationError(
+                f"Кэш проекта не должен быть символической ссылкой: {safe_target}"
+            )
+        shutil.rmtree(safe_target)
+        return True
+
+    @staticmethod
+    def _staging_entry_belongs_to_project(entry: Path, project_id: str) -> bool:
+        if entry.name.startswith(f"{project_id}-"):
+            return True
+        inspected = 0
+        try:
+            manifests = entry.rglob("*.json")
+            for manifest in manifests:
+                inspected += 1
+                if inspected > 128:
+                    break
+                try:
+                    if not manifest.is_file() or manifest.stat().st_size > 2 * 1024 * 1024:
+                        continue
+                    payload = json.loads(manifest.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict) and str(payload.get("project_id", "")) == project_id:
+                    return True
+        except OSError:
+            return False
+        return False
+
+    def delete_project(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        confirmation_name: str,
+    ) -> ProjectDeletionResult:
+        """Forget a local project while preserving both workspace data trees."""
+
+        current = self.get_project(project.id)
+        if current is None:
+            raise WorkspaceValidationError("project is no longer available")
+        if confirmation_name != current.name:
+            raise WorkspaceValidationError("project name confirmation does not match")
+        AuthorizationPolicy().require(
+            principal=principal,
+            storage=self.profile,
+            permission=Permission.ARCHIVE_PROJECT,
+            roles=self.project_roles(current.id, principal.id),
+        )
+
+        active_runs = [
+            run
+            for run in self.list_derived_runs(current.id)
+            if run.state.value == "running"
+        ]
+        latest_jobs: dict[str, str] = {}
+        for event in self.history(current.id):
+            payload = event.payload
+            job = payload.get("job", {})
+            if not isinstance(job, Mapping):
+                continue
+            job_id = str(payload.get("plugin_job_id", job.get("id", "")))
+            if job_id:
+                latest_jobs[job_id] = str(job.get("state", ""))
+        active_job_states = {
+            state
+            for state in latest_jobs.values()
+            if state and state not in {"succeeded", "failed", "cancelled"}
+        }
+        if active_runs or active_job_states:
+            raise WorkspaceValidationError(
+                "project has an active plugin run; finish or cancel it before deletion"
+            )
+
+        identifier = str(current.id)
+        projects_root = (self.catalog_root / "projects").resolve()
+        project_cache = (projects_root / identifier).resolve()
+        binding = self.project_workspace(current.id)
+        if binding is not None:
+            for workspace_path in (
+                binding.source_project_dir,
+                binding.derived_project_dir,
+            ):
+                resolved_workspace = Path(workspace_path).resolve()
+                if resolved_workspace == project_cache or resolved_workspace.is_relative_to(project_cache):
+                    raise WorkspaceValidationError(
+                        "Папка данных проекта находится внутри внутреннего кэша Kraken; "
+                        "безопасное удаление невозможно."
+                    )
+
+        thumbnail_root = (self.data_dir / "cache" / "frame-thumbnails").resolve()
+        namespace = StoreNamespace(
+            plugin="matrix",
+            project=identifier,
+            generation="v1",
+        )
+        thumbnail_cache = (thumbnail_root / namespace.digest()).resolve()
+        thumbnail_removed = self._remove_cache_tree(thumbnail_root, thumbnail_cache)
+
+        staging_removed = 0
+        staging_root = (self.data_dir / "agent-staging").resolve()
+        if staging_root.is_dir():
+            for entry in tuple(staging_root.iterdir()):
+                if (
+                    not entry.is_dir()
+                    or entry.is_symlink()
+                    or entry.resolve().parent != staging_root
+                    or not self._staging_entry_belongs_to_project(entry, identifier)
+                ):
+                    continue
+                shutil.rmtree(entry)
+                staging_removed += 1
+
+        catalog_removed = self._remove_cache_tree(projects_root, project_cache)
+        self.identities.remove_project(current.id)
+        self._external_source_indexes.clear()
+        return ProjectDeletionResult(
+            project_id=identifier,
+            catalog_cache_removed=catalog_removed,
+            thumbnail_cache_removed=thumbnail_removed,
+            staging_directories_removed=staging_removed,
         )
 
     def rename_layer(
@@ -1849,6 +1994,7 @@ __all__ = [
     "FrameCellSnapshot",
     "IntegrityScanResult",
     "ManagedImportResult",
+    "ProjectDeletionResult",
     "SystemClock",
     "default_data_dir",
 ]

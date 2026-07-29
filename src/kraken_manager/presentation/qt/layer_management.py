@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Callable
 
 from PyQt6.QtCore import QLineF, QPointF, QRectF, QSettings, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QDialog,
+    QDialogButtonBox,
     QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsPathItem,
@@ -21,7 +26,11 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QHeaderView,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -56,10 +65,117 @@ class LayerPipelineSnapshot:
     lanes: tuple[PipelineLane, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class ObjectHistoryEntry:
+    recorded_at: str
+    actor: str
+    event_type: str
+    payload: object = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectPropertiesSnapshot:
+    title: str
+    object_kind: str
+    properties: tuple[tuple[str, object], ...]
+    history: tuple[ObjectHistoryEntry, ...] = ()
+
+
+def _display_value(value: object) -> str:
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, (Mapping, list, tuple, set)):
+        serializable = dict(value) if isinstance(value, Mapping) else value
+        return json.dumps(
+            list(value) if isinstance(value, set) else serializable,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+    if isinstance(value, bool):
+        return "Да" if value else "Нет"
+    return str(value)
+
+
+def _local_timestamp(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return str(value) or "—"
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone()
+    return parsed.strftime("%d.%m.%Y %H:%M:%S")
+
+
+class ObjectPropertiesDialog(QDialog):
+    """Read-only object metadata and event history."""
+
+    def __init__(
+        self,
+        snapshot: ObjectPropertiesSnapshot,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.snapshot = snapshot
+        self.setObjectName("objectPropertiesDialog")
+        self.setWindowTitle(f"Свойства: {snapshot.title}")
+        self.setModal(True)
+        self.resize(880, 620)
+
+        tabs = QTabWidget(self)
+        tabs.setObjectName("objectPropertiesTabs")
+        self.properties_table = self._table(("Свойство", "Значение"))
+        self.properties_table.setObjectName("objectPropertiesTable")
+        self.properties_table.setRowCount(len(snapshot.properties))
+        for row, (name, value) in enumerate(snapshot.properties):
+            self.properties_table.setItem(row, 0, QTableWidgetItem(str(name)))
+            value_item = QTableWidgetItem(_display_value(value))
+            value_item.setToolTip(value_item.text())
+            self.properties_table.setItem(row, 1, value_item)
+        self.properties_table.resizeRowsToContents()
+        tabs.addTab(self.properties_table, "Свойства")
+
+        self.history_table = self._table(("Дата и время", "Пользователь", "Событие", "Данные"))
+        self.history_table.setObjectName("objectHistoryTable")
+        self.history_table.setRowCount(len(snapshot.history))
+        for row, entry in enumerate(snapshot.history):
+            timestamp = QTableWidgetItem(_local_timestamp(entry.recorded_at))
+            timestamp.setToolTip(entry.recorded_at)
+            self.history_table.setItem(row, 0, timestamp)
+            self.history_table.setItem(row, 1, QTableWidgetItem(entry.actor or "—"))
+            self.history_table.setItem(row, 2, QTableWidgetItem(entry.event_type))
+            payload = QTableWidgetItem(_display_value(entry.payload))
+            payload.setToolTip(payload.text())
+            self.history_table.setItem(row, 3, payload)
+        self.history_table.resizeRowsToContents()
+        tabs.addTab(self.history_table, f"История изменений ({len(snapshot.history)})")
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть")
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(tabs, 1)
+        layout.addWidget(buttons)
+
+    def _table(self, headers: tuple[str, ...]) -> QTableWidget:
+        table = QTableWidget(0, len(headers), self)
+        table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.setWordWrap(True)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(len(headers) - 1, QHeaderView.ResizeMode.Stretch)
+        return table
+
+
 class LayerOrderList(QListWidget):
     orderChanged = pyqtSignal(object)
     layerSelected = pyqtSignal(str)
     layerActionRequested = pyqtSignal(str, str)
+    layerPropertiesRequested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -117,6 +233,8 @@ class LayerOrderList(QListWidget):
         karakal = menu.addAction("Отправить слой в Karakal")
         menu.addSeparator()
         delete_layer = menu.addAction("Удалить слой…")
+        menu.addSeparator()
+        properties = menu.addAction("Свойства")
         by_action = {
             add_images: "add_image_representation",
             karakal: "karakal",
@@ -129,7 +247,9 @@ class LayerOrderList(QListWidget):
                 menu_action.setToolTip(reason)
                 menu_action.setStatusTip(reason)
         selected = menu.exec(self.viewport().mapToGlobal(position))
-        if selected in by_action:
+        if selected is properties:
+            self.layerPropertiesRequested.emit(layer_id)
+        elif selected in by_action:
             self.layerActionRequested.emit(layer_id, by_action[selected])
 
 
@@ -167,6 +287,7 @@ class PipelineNodeItem(QGraphicsRectItem):
         *,
         activate: Callable[[PipelineNode], None],
         request_action: Callable[[PipelineNode, str], None],
+        request_properties: Callable[[PipelineNode], None],
         expand: Callable[[], None],
         collapse: Callable[[], None] | None,
         action_availability: Callable[[str], tuple[bool, str]],
@@ -176,6 +297,7 @@ class PipelineNodeItem(QGraphicsRectItem):
         self.node = node
         self._activate = activate
         self._request_action = request_action
+        self._request_properties = request_properties
         self._expand = expand
         self._collapse = collapse
         self._action_availability = action_availability
@@ -238,8 +360,6 @@ class PipelineNodeItem(QGraphicsRectItem):
             actions = (*actions, ("Удалить шаг из pipeline", "delete_pipeline_step"))
         if self._collapse is not None:
             actions = (*actions, ("Свернуть", "collapse_pipeline"))
-        if not actions:
-            return
         menu = QMenu()
         by_action = {}
         for label, code in actions:
@@ -254,8 +374,13 @@ class PipelineNodeItem(QGraphicsRectItem):
                 menu_action.setToolTip(reason)
                 menu_action.setStatusTip(reason)
             by_action[menu_action] = code
+        if actions:
+            menu.addSeparator()
+        properties = menu.addAction("Свойства")
         selected = menu.exec(event.screenPos())
-        if selected in by_action:
+        if selected is properties:
+            self._request_properties(self.node)
+        elif selected in by_action:
             code = by_action[selected]
             if code == "collapse_pipeline" and self._collapse is not None:
                 self._collapse()
@@ -266,6 +391,7 @@ class PipelineNodeItem(QGraphicsRectItem):
 class PipelineGraphView(QGraphicsView):
     nodeActivated = pyqtSignal(object)
     nodeActionRequested = pyqtSignal(object, str)
+    nodePropertiesRequested = pyqtSignal(object)
 
     def __init__(
         self,
@@ -339,6 +465,7 @@ class PipelineGraphView(QGraphicsView):
                     node,
                     activate=lambda value: self.nodeActivated.emit(value),
                     request_action=lambda value, action: self.nodeActionRequested.emit(value, action),
+                    request_properties=lambda value: self.nodePropertiesRequested.emit(value),
                     expand=lambda lane_id=lane.lane_id: self.expand_lane(lane_id),
                     collapse=(
                         (lambda lane_id=lane.lane_id: self.collapse_lane(lane_id))
@@ -413,6 +540,8 @@ class LayerManagerDialog(QDialog):
     representationActivated = pyqtSignal(str)
     nodeActionRequested = pyqtSignal(str, object, str)
     layerActionRequested = pyqtSignal(str, str)
+    nodePropertiesRequested = pyqtSignal(str, object)
+    layerPropertiesRequested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -450,9 +579,11 @@ class LayerManagerDialog(QDialog):
         self.layer_list.layerSelected.connect(self.layerSelected)
         self.layer_list.orderChanged.connect(self.orderChanged)
         self.layer_list.layerActionRequested.connect(self.layerActionRequested)
+        self.layer_list.layerPropertiesRequested.connect(self.layerPropertiesRequested)
         self.add_layer_button.clicked.connect(self.addLayerRequested)
         self.graph.nodeActivated.connect(self._node_activated)
         self.graph.nodeActionRequested.connect(self._node_action)
+        self.graph.nodePropertiesRequested.connect(self._node_properties)
 
     def set_layers(self, layers: list[LayerListItem], selected_id: str = "") -> None:
         self.layer_list.set_layers(layers, selected_id)
@@ -472,6 +603,11 @@ class LayerManagerDialog(QDialog):
         if snapshot is not None:
             self.nodeActionRequested.emit(snapshot.layer_id, node, action)
 
+    def _node_properties(self, node: PipelineNode) -> None:
+        snapshot = self.graph._snapshot
+        if snapshot is not None:
+            self.nodePropertiesRequested.emit(snapshot.layer_id, node)
+
     def hideEvent(self, event) -> None:  # type: ignore[override]
         self.graph.save_layout()
         super().hideEvent(event)
@@ -480,6 +616,9 @@ class LayerManagerDialog(QDialog):
 __all__ = [
     "LayerManagerDialog",
     "LayerPipelineSnapshot",
+    "ObjectHistoryEntry",
+    "ObjectPropertiesDialog",
+    "ObjectPropertiesSnapshot",
     "PipelineLane",
     "PipelineNode",
 ]

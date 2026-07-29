@@ -149,6 +149,9 @@ from kraken_manager.presentation.qt import (  # noqa: E402
     LayerListItem,
     LayerManagerDialog,
     LayerPipelineSnapshot,
+    ObjectHistoryEntry,
+    ObjectPropertiesDialog,
+    ObjectPropertiesSnapshot,
     PipelineLane,
     PipelineNode,
     ProjectManagerShell,
@@ -269,6 +272,13 @@ def test_workspace_menus_and_modeless_layer_manager(qapp, monkeypatch) -> None:
         dialog.layer_list.visualItemRect(first_item).center()
     )
     assert layer_actions[-1] == ("layer-a", "add_image_representation")
+    layer_properties = []
+    dialog.layerPropertiesRequested.connect(layer_properties.append)
+    requested_menu_label["value"] = "Свойства"
+    dialog.layer_list._context_menu(
+        dialog.layer_list.visualItemRect(first_item).center()
+    )
+    assert layer_properties == ["layer-a"]
 
     class ContextEvent:
         @staticmethod
@@ -288,6 +298,48 @@ def test_workspace_menus_and_modeless_layer_manager(qapp, monkeypatch) -> None:
     requested_menu_label["value"] = "Добавить CIF из внешнего источника…"
     dialog.graph._items["missing-a"].contextMenuEvent(ContextEvent())
     assert node_actions[-1] == ("layer-a", "missing-a", "add_external_vector")
+
+    node_properties = []
+    dialog.nodePropertiesRequested.connect(
+        lambda layer_id, node: node_properties.append((layer_id, node.node_id))
+    )
+    requested_menu_label["value"] = "Свойства"
+    dialog.graph._items["missing-a"].contextMenuEvent(ContextEvent())
+    dialog.graph._items["lane-b:blackbox"].contextMenuEvent(ContextEvent())
+    assert node_properties == [
+        ("layer-a", "missing-a"),
+        ("layer-a", "lane-b:blackbox"),
+    ]
+    dialog.close()
+
+
+def test_object_properties_dialog_renders_nested_values_and_local_history(qapp) -> None:
+    snapshot = ObjectPropertiesSnapshot(
+        title="Metal 1",
+        object_kind="layer",
+        properties=(
+            ("Название", "Metal 1"),
+            ("Примечание", None),
+            ("Параметры", {"quality": 95, "flags": ["a", "b"]}),
+        ),
+        history=(
+            ObjectHistoryEntry(
+                "2026-07-28T10:00:00+00:00",
+                "Оператор",
+                "LayerCreated",
+                {"layer_id": "layer-a"},
+            ),
+        ),
+    )
+
+    dialog = ObjectPropertiesDialog(snapshot)
+
+    assert dialog.windowTitle() == "Свойства: Metal 1"
+    assert dialog.properties_table.item(1, 1).text() == "—"
+    assert '"quality": 95' in dialog.properties_table.item(2, 1).text()
+    assert dialog.history_table.item(0, 1).text() == "Оператор"
+    assert dialog.history_table.item(0, 2).text() == "LayerCreated"
+    assert dialog.history_table.item(0, 0).toolTip() == "2026-07-28T10:00:00+00:00"
     dialog.close()
 
 

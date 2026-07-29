@@ -152,5 +152,14 @@ class LocalIdentityAclStore:
                 (datetime.now(UTC).isoformat(), str(project_id), str(principal_id), role.value),
             )
 
+    def remove_project(self, project_id: ProjectId) -> None:
+        """Remove orphaned ACL rows after a local project is permanently deleted."""
+
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM project_acl WHERE project_id=?",
+                (str(project_id),),
+            )
+
 
 __all__ = ["LocalIdentityAclStore"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,16 +8,34 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtWidgets import QApplication, QDialog, QFileDialog, QLineEdit, QWidget
+from PyQt6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QInputDialog,
+    QLineEdit,
+    QMessageBox,
+    QWidget,
+)
 
 from kraken_hub import windows_credentials
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_hub.manager_app import DesktopController, _development_session, _login
+from kraken_hub.manager_app import (
+    DesktopController,
+    _count_regular_files,
+    _development_session,
+    _event_belongs_to_layer,
+    _event_matches_node,
+    _history_entries,
+    _login,
+)
 from kraken_manager.domain.project import RepresentationKind
 from kraken_manager.presentation.qt import (
     LayerPipelineSnapshot,
     PipelineLane,
     PipelineNode,
+    ProjectListItem,
+    ProjectManagerShell,
 )
 from kraken_manager.presentation.qt.widgets import ClickableLabel
 
@@ -24,6 +43,398 @@ from kraken_manager.presentation.qt.widgets import ClickableLabel
 @pytest.fixture(scope="module")
 def qapp():
     return QApplication.instance() or QApplication([])
+
+
+def _event(
+    event_type: str,
+    payload: dict[str, object],
+    *,
+    minute: int = 0,
+    event_id: str = "event-1",
+    stream_id: str = "project:project-1",
+):
+    return SimpleNamespace(
+        event_id=event_id,
+        stream_id=stream_id,
+        event_type=event_type,
+        payload=payload,
+        recorded_at=datetime(2026, 7, 28, 10, minute, tzinfo=UTC),
+        actor=SimpleNamespace(display_name="Оператор"),
+    )
+
+
+def test_property_helpers_filter_history_and_deduplicate_files(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    nested = first / "nested"
+    nested.mkdir(parents=True)
+    (first / "a.png").write_bytes(b"a")
+    (nested / "b.cif").write_bytes(b"b")
+    missing = tmp_path / "missing"
+
+    assert _count_regular_files((first, first / "a.png", missing)) == 2
+    assert _count_regular_files((missing,)) is None
+
+    layer_event = _event("LayerRenamed", {"layer": {"id": "layer-1"}})
+    job_event = _event(
+        "PluginJobCreated",
+        {
+            "plugin_job_id": "job-1",
+            "manifest": {
+                "layer_id": "layer-1",
+                "target_representation_id": "representation-1",
+            },
+            "job": {"id": "job-1", "layer_id": "layer-1"},
+        },
+        minute=1,
+        event_id="event-2",
+        stream_id="plugin-job:job-1",
+    )
+    unrelated = _event("LayerCreated", {"layer_id": "layer-2"}, minute=2)
+    representation_event = _event(
+        "RepresentationNoteUpdated",
+        {"representation": {"id": "representation-1", "layer_id": "layer-1"}},
+        minute=3,
+        event_id="event-3",
+        stream_id="layer:layer-1",
+    )
+    node = PipelineNode(
+        "representation-1",
+        "Исходники",
+        "source",
+        representation_id="representation-1",
+    )
+
+    assert _event_belongs_to_layer(layer_event, "layer-1")
+    assert _event_belongs_to_layer(job_event, "layer-1")
+    assert not _event_belongs_to_layer(unrelated, "layer-1")
+    assert _event_matches_node(job_event, node)
+    assert _event_matches_node(representation_event, node)
+    assert not _event_matches_node(unrelated, node)
+    assert [item.event_type for item in _history_entries((layer_event, job_event))] == [
+        "PluginJobCreated",
+        "LayerRenamed",
+    ]
+
+
+def test_delete_project_confirmation_calls_cache_only_service(qapp, monkeypatch, tmp_path: Path) -> None:
+    project = SimpleNamespace(id="project-1", name="Preserve files")
+    source = tmp_path / "source" / project.name
+    derived = tmp_path / "derived" / project.name
+    source.mkdir(parents=True)
+    derived.mkdir(parents=True)
+    deleted = []
+
+    class Service:
+        @staticmethod
+        def get_project(_project_id):
+            return project
+
+        @staticmethod
+        def project_workspace(_project_id):
+            return SimpleNamespace(
+                source_project_dir=str(source),
+                derived_project_dir=str(derived),
+            )
+
+        @staticmethod
+        def delete_project(**kwargs):
+            deleted.append(kwargs)
+
+    shell = ProjectManagerShell()
+    controller = object.__new__(DesktopController)
+    controller.shell = shell
+    controller.service = Service()
+    controller.session = SimpleNamespace(principal=SimpleNamespace(id="principal-1"))
+    controller.thumbnail_store_uri = ""
+    controller._project_id = None
+    controller._workspace = None
+    controller._layer_dialog = None
+    refreshed = []
+    controller.refresh_projects = lambda: refreshed.append(True)
+    controller._error = pytest.fail
+
+    def confirm(dialog: QInputDialog):
+        assert str(source) in dialog.labelText()
+        assert str(derived) in dialog.labelText()
+        dialog.setTextValue(project.name)
+        return QDialog.DialogCode.Accepted
+
+    messages = []
+    monkeypatch.setattr(QInputDialog, "exec", confirm)
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda *_args: messages.append(True),
+    )
+
+    controller.delete_project(
+        ProjectListItem(project.id, project.name, 2, 2, "Local")
+    )
+
+    assert deleted == [
+        {
+            "principal": controller.session.principal,
+            "project": project,
+            "confirmation_name": project.name,
+        }
+    ]
+    assert refreshed == [True]
+    assert messages == [True]
+    assert source.is_dir()
+    assert derived.is_dir()
+
+
+def test_controller_builds_layer_and_representation_properties(tmp_path: Path) -> None:
+    image_directory = tmp_path / "images"
+    image_directory.mkdir()
+    (image_directory / "0.jpg").write_bytes(b"image")
+    layer = SimpleNamespace(
+        id="layer-1",
+        project_id="project-1",
+        name="Metal 1",
+        type=SimpleNamespace(value="metal"),
+        order=2,
+        state=SimpleNamespace(value="active"),
+        revision=3,
+        created_at=datetime(2026, 7, 28, 10, 0, tzinfo=UTC),
+    )
+    binding = SimpleNamespace(
+        image_directory=str(image_directory),
+        ssc_directory="",
+        prv_directory="",
+        aux_directory="",
+        import_root=str(tmp_path),
+        mode=SimpleNamespace(value="managed_copy"),
+        frame_positions={"0.jpg": 1},
+        conversion=SimpleNamespace(target_format="jpg", jpeg_quality=95),
+    )
+    representation = SimpleNamespace(
+        id="representation-1",
+        project_id="project-1",
+        layer_id="layer-1",
+        name="Исходные изображения",
+        kind=SimpleNamespace(value="image"),
+        purpose=SimpleNamespace(value="source"),
+        note="Проверено",
+        source=str(image_directory),
+        source_image_representation_id=None,
+        active=True,
+        state=SimpleNamespace(value="active"),
+        revision=1,
+        created_at=datetime(2026, 7, 28, 10, 1, tzinfo=UTC),
+    )
+    events = (
+        _event("LayerCreated", {"layer_id": "layer-1"}),
+        _event(
+            "RepresentationCreated",
+            {
+                "layer_id": "layer-1",
+                "representation_id": "representation-1",
+                "note": "Проверено",
+            },
+            minute=1,
+            event_id="event-2",
+            stream_id="layer:layer-1",
+        ),
+    )
+
+    class Service:
+        @staticmethod
+        def list_layers(_project_id):
+            return (layer,)
+
+        @staticmethod
+        def list_representations(_project_id, _layer_id):
+            return (representation,)
+
+        @staticmethod
+        def layer_file_binding(_project_id, _layer_id):
+            return binding
+
+        @staticmethod
+        def history(_project_id):
+            return events
+
+        @staticmethod
+        def frame_cells(_project_id, _layer_id, _representation_id):
+            return (SimpleNamespace(frame_id="frame-1"),)
+
+        @staticmethod
+        def list_derived_runs(_project_id, _layer_id):
+            return ()
+
+    controller = object.__new__(DesktopController)
+    controller.service = Service()
+    controller._project_id = "project-1"
+    controller._pipeline_snapshot = lambda *_args: LayerPipelineSnapshot(
+        "project-1",
+        "layer-1",
+        (
+            PipelineLane(
+                "representation-1",
+                "Исходные изображения",
+                (
+                    PipelineNode(
+                        "representation-1",
+                        "Исходные изображения",
+                        "source",
+                        representation_id="representation-1",
+                    ),
+                ),
+                (),
+            ),
+        ),
+    )
+    snapshots = []
+    controller._open_properties = snapshots.append
+
+    controller._show_layer_properties("layer-1")
+    layer_properties = dict(snapshots[-1].properties)
+    assert layer_properties["Путь"] == str(image_directory)
+    assert layer_properties["Количество файлов"] == 1
+    assert layer_properties["Кто добавил"] == "Оператор"
+    assert len(snapshots[-1].history) == 2
+
+    node = PipelineNode(
+        "representation-1",
+        "Исходные изображения",
+        "source",
+        representation_id="representation-1",
+    )
+    controller._show_node_properties("layer-1", node)
+    representation_properties = dict(snapshots[-1].properties)
+    assert representation_properties["Примечание"] == "Проверено"
+    assert representation_properties["Количество файлов"] == 1
+    assert representation_properties["Ревизия"] == 1
+    assert [item.event_type for item in snapshots[-1].history] == [
+        "RepresentationCreated"
+    ]
+
+
+def test_controller_builds_derived_job_karakal_and_virtual_properties(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "result.bin").write_bytes(b"result")
+    run = SimpleNamespace(
+        run_id="run-1",
+        path=str(output),
+        kind=SimpleNamespace(value="result"),
+        state=SimpleNamespace(value="succeeded"),
+        plugin_id="neuralimage",
+        operation="recognize",
+        created_at="2026-07-28T10:00:00+00:00",
+        provenance={"notes": "Готово"},
+    )
+    events = (
+        _event(
+            "DerivedRunStartedV1",
+            {"layer_id": "layer-1", "run_id": "run-1"},
+            event_id="event-run-start",
+            stream_id="derived-run:run-1",
+        ),
+        _event(
+            "PluginJobCreated",
+            {
+                "plugin_job_id": "job-1",
+                "manifest": {
+                    "layer_id": "layer-1",
+                    "capability": "dataset.model.train.v1",
+                    "parameters": {"epochs": 5},
+                },
+                "job": {"id": "job-1", "layer_id": "layer-1", "progress": 20},
+            },
+            minute=1,
+            event_id="event-job",
+            stream_id="plugin-job:job-1",
+        ),
+        _event(
+            "KarakalAnalysisPublished",
+            {"layer_id": "layer-1", "run_id": "karakal-1", "report": {"ok": True}},
+            minute=2,
+            event_id="event-karakal",
+            stream_id="karakal:layer-1",
+        ),
+    )
+    derived = PipelineNode(
+        "workspace-output:run-1",
+        "Результат NeuralImage",
+        "model",
+        details={"run_id": "run-1"},
+    )
+    job = PipelineNode(
+        "job-1",
+        "Обучение",
+        "job",
+        details={"job_id": "job-1"},
+    )
+    karakal = PipelineNode(
+        "karakal:karakal-1",
+        "Karakal",
+        "karakal",
+        details={"отчёт": {"ok": True}},
+    )
+    missing = PipelineNode(
+        "source-1:missing-cif",
+        "CIF не получен",
+        "missing",
+        "Результат отсутствует",
+    )
+    internal = (derived, job, karakal)
+    snapshot = LayerPipelineSnapshot(
+        "project-1",
+        "layer-1",
+        (
+            PipelineLane(
+                "source-1",
+                "Источник",
+                (PipelineNode("source-1", "Источник", "source"), *internal, missing),
+                (),
+            ),
+        ),
+    )
+
+    class Service:
+        @staticmethod
+        def history(_project_id):
+            return events
+
+        @staticmethod
+        def list_representations(_project_id, _layer_id):
+            return ()
+
+        @staticmethod
+        def list_derived_runs(_project_id, _layer_id):
+            return (run,)
+
+        @staticmethod
+        def layer_file_binding(_project_id, _layer_id):
+            return None
+
+    controller = object.__new__(DesktopController)
+    controller.service = Service()
+    controller._project_id = "project-1"
+    controller._pipeline_snapshot = lambda *_args: snapshot
+    snapshots = []
+    controller._open_properties = snapshots.append
+
+    controller._show_node_properties("layer-1", derived)
+    assert dict(snapshots[-1].properties)["Количество файлов"] == 1
+    assert dict(snapshots[-1].properties)["Примечание"] == "Готово"
+
+    controller._show_node_properties("layer-1", job)
+    assert dict(snapshots[-1].properties)["Capability"] == "dataset.model.train.v1"
+
+    controller._show_node_properties("layer-1", karakal)
+    assert snapshots[-1].history[0].event_type == "KarakalAnalysisPublished"
+
+    controller._show_node_properties("layer-1", missing)
+    assert snapshots[-1].history == ()
+
+    blackbox = PipelineNode("source-1:blackbox", "Чёрный ящик", "blackbox")
+    controller._show_node_properties("layer-1", blackbox)
+    blackbox_properties = dict(snapshots[-1].properties)
+    assert blackbox_properties["Количество скрытых этапов"] == 3
+    assert len(snapshots[-1].history) == 3
 
 
 def test_login_creates_first_account_in_dialog(qapp, monkeypatch, tmp_path) -> None:

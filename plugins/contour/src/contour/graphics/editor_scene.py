@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from math import ceil, floor, hypot
 
-from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -87,8 +87,11 @@ from .tool_mode_logic import (
     can_add_polygon_set,
     can_add_via,
     is_recognized_via,
+)
+from .tool_mode_logic import (
     is_via_polygon as _is_via_polygon,
 )
+from .tools import EditorTool
 
 _ZOOM_COLOR_QUANTIZATION_STEP = 17
 _ZOOM_BATCH_TILE_SIZE = 256.0
@@ -181,6 +184,10 @@ class PolygonEditorScene(QGraphicsScene):
         self._display_settings = DisplaySettings()
         self._polygons: dict[int, PolygonData] = {}
         self._polygon_items: dict[int, EditablePolygonItem] = {}
+        self._recycled_polygon_items: list[EditablePolygonItem] = []
+        self._recycled_polygon_cleanup_timer = QTimer(self)
+        self._recycled_polygon_cleanup_timer.setInterval(0)
+        self._recycled_polygon_cleanup_timer.timeout.connect(self._drain_recycled_polygon_items)
         self._hole_children_by_parent: dict[int, list[PolygonData]] = {}
         self._polygon_child_ids_by_parent: dict[int, set[int]] = {}
         self._selected_polygon_id: int | None = None
@@ -207,6 +214,10 @@ class PolygonEditorScene(QGraphicsScene):
         self._pending_neighbor_overlap_pixels: int = 0
         self._pending_neighbor_show_main_frame: bool = True
         self._debug_candidate_items: list[QGraphicsPathItem | QGraphicsSimpleTextItem] = []
+        self._recycled_debug_candidate_items: list[QGraphicsPathItem] = []
+        self._recycled_debug_cleanup_timer = QTimer(self)
+        self._recycled_debug_cleanup_timer.setInterval(0)
+        self._recycled_debug_cleanup_timer.timeout.connect(self._drain_recycled_debug_candidate_items)
         self._metal_overlay_items: list[QGraphicsPathItem] = []
         self._extra_layer_items: list[QGraphicsPixmapItem] = []
         self._gradient_overlay_item = QGraphicsPixmapItem()
@@ -484,8 +495,13 @@ class PolygonEditorScene(QGraphicsScene):
         return path_item
 
     def set_debug_candidates(self, candidates: list[object]) -> None:
+        self._recycled_debug_cleanup_timer.stop()
         for item in self._debug_candidate_items:
-            self.removeItem(item)
+            item.setVisible(False)
+            if isinstance(item, QGraphicsPathItem):
+                self._recycled_debug_candidate_items.append(item)
+            else:
+                self.removeItem(item)
         self._debug_candidate_items.clear()
         for candidate in candidates:
             if bool(getattr(candidate, "accepted", False)):
@@ -504,7 +520,12 @@ class PolygonEditorScene(QGraphicsScene):
             rect = QRectF(x_coord, y_coord, width, height)
             path = QPainterPath()
             path.addEllipse(rect)
-            path_item = QGraphicsPathItem(path)
+            if self._recycled_debug_candidate_items:
+                path_item = self._recycled_debug_candidate_items.pop()
+                path_item.setPath(path)
+            else:
+                path_item = QGraphicsPathItem(path)
+                self.addItem(path_item)
             path_item.setZValue(4.5)
             pen = QPen(color, 2.0, Qt.PenStyle.DashLine)
             pen.setCosmetic(True)
@@ -516,8 +537,17 @@ class PolygonEditorScene(QGraphicsScene):
             if self._ui_language != "ru":
                 status = "Below threshold" if below_threshold else "Rejected"
             path_item.setToolTip(f"{status}\n{reason or '-'}\nScore: {score:.1f}")
-            self.addItem(path_item)
+            path_item.setVisible(True)
             self._debug_candidate_items.append(path_item)
+        if self._recycled_debug_candidate_items:
+            self._recycled_debug_cleanup_timer.start()
+
+    def _drain_recycled_debug_candidate_items(self) -> None:
+        batch_size = min(32, len(self._recycled_debug_candidate_items))
+        for _index in range(batch_size):
+            self.removeItem(self._recycled_debug_candidate_items.pop())
+        if not self._recycled_debug_candidate_items:
+            self._recycled_debug_cleanup_timer.stop()
 
     def set_metal_overlays(
         self,
@@ -956,9 +986,7 @@ class PolygonEditorScene(QGraphicsScene):
         self.end_zoom_vector_render_mode()
         prev_primary = self._selected_polygon_id
         prev_selected_ids = set(self._selected_polygon_ids)
-        for item in list(self._polygon_items.values()):
-            self.removeItem(item)
-        self._polygon_items.clear()
+        self._recycle_polygon_items()
         self._polygons.clear()
         self._hole_children_by_parent.clear()
         self._polygon_child_ids_by_parent.clear()
@@ -969,6 +997,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._next_polygon_id = 1
         for polygon in polygons:
             self._add_polygon_internal(polygon, emit_signal=False, refresh=False)
+        self._start_recycled_polygon_cleanup()
         if polygons:
             self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
             new_ids = {polygon.id for polygon in polygons}
@@ -998,9 +1027,7 @@ class PolygonEditorScene(QGraphicsScene):
     def set_polygons(self, polygons: list[PolygonData], *, emit_signal: bool = True) -> None:
         self.end_zoom_vector_render_mode()
         self.undo_stack.clear()
-        for item in list(self._polygon_items.values()):
-            self.removeItem(item)
-        self._polygon_items.clear()
+        self._recycle_polygon_items()
         self._polygons.clear()
         self._hole_children_by_parent.clear()
         self._polygon_child_ids_by_parent.clear()
@@ -1011,9 +1038,11 @@ class PolygonEditorScene(QGraphicsScene):
         self._next_polygon_id = 1
         for polygon in polygons:
             self._add_polygon_internal(polygon, emit_signal=False, refresh=False)
+        self._start_recycled_polygon_cleanup()
         if polygons:
             self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
-        self._refresh_all_items()
+        if not all(_is_via_polygon(polygon) for polygon in polygons):
+            self._refresh_all_items()
         if emit_signal:
             self.polygonsChanged.emit()
             self.activePolygonChanged.emit(self._selected_polygon_id)
@@ -2788,14 +2817,55 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygons[polygon.id] = polygon.clone()
         self._index_polygon_relationship(self._polygons[polygon.id])
         self._next_polygon_id = max(self._next_polygon_id, polygon.id + 1)
-        item = EditablePolygonItem(self._polygons[polygon.id], self._display_settings)
-        item.setVisible(self._polygon_overlays_visible)
+        custom_color = self._via_score_color(self._polygons[polygon.id]) or self._object_color_for(
+            polygon.id
+        )
+        if self._recycled_polygon_items:
+            item = self._recycled_polygon_items.pop()
+            item.update_from_polygon(
+                self._polygons[polygon.id],
+                self._display_settings,
+                selected=False,
+                custom_color=custom_color,
+            )
+        else:
+            item = EditablePolygonItem(
+                self._polygons[polygon.id],
+                self._display_settings,
+                custom_color=custom_color,
+            )
+            self.addItem(item)
+        category = str(getattr(polygon, "category", "") or "")
+        item.setVisible(
+            self._polygon_category_visible.get(category, True)
+            and self._polygon_overlays_visible
+        )
         self._polygon_items[polygon.id] = item
-        self.addItem(item)
         if refresh:
             self._refresh_all_items()
         if emit_signal:
             self.polygonsChanged.emit()
+
+    def _recycle_polygon_items(self) -> None:
+        self._recycled_polygon_cleanup_timer.stop()
+        for item in self._polygon_items.values():
+            item.setVisible(False)
+            self._recycled_polygon_items.append(item)
+        self._polygon_items.clear()
+
+    def _start_recycled_polygon_cleanup(self) -> None:
+        if self._recycled_polygon_items:
+            self._recycled_polygon_cleanup_timer.start()
+
+    def _drain_recycled_polygon_items(self) -> None:
+        # Removing a very large previous result synchronously can block the
+        # display of a replacement frame for tens of seconds. Dispose of the
+        # unused items in small event-loop batches after the new result is ready.
+        batch_size = min(32, len(self._recycled_polygon_items))
+        for _index in range(batch_size):
+            self.removeItem(self._recycled_polygon_items.pop())
+        if not self._recycled_polygon_items:
+            self._recycled_polygon_cleanup_timer.stop()
 
     def _remove_polygon_internal(self, polygon_id: int, emit_signal: bool = True, refresh: bool = True) -> None:
         item = self._polygon_items.pop(polygon_id, None)

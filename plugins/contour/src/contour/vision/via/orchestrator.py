@@ -111,7 +111,12 @@ class CompositeViaDetector:
             log.append(f"heuristic: diameters={ad[:6]!r}{'...' if len(ad) > 6 else ''}")
             hits = [_detection_to_hit(d, strategy, fixed_output_diameters) for d in result.accepted]
 
-        dbg = _result_debug(result, strategy)
+        include_candidate_debug = bool(
+            getattr(legacy_settings, "debug_enabled", True)
+            and getattr(legacy_settings, "via_display_show_candidates", True)
+            and getattr(legacy_settings, "bright_via_show_rejected", True)
+        )
+        dbg = _result_debug(result, strategy, include_candidates=include_candidate_debug)
         return ViaDetectionOutput(
             image=self.image_ref,
             mode=AppMode.VIA,
@@ -172,10 +177,23 @@ def _detection_to_hit(
     )
 
 
-def _result_debug(result: DetectionResult, strategy: str) -> dict[str, Any]:
+def _result_debug(
+    result: DetectionResult,
+    strategy: str,
+    *,
+    include_candidates: bool = True,
+) -> dict[str, Any]:
     d: dict[str, Any] = {**dict(result.debug_images), "parameters": dict(result.parameters_snapshot)}
     d["strategy"] = strategy
-    d["rejected"] = [asdict(v) for v in result.rejected] if result.rejected else []
-    d["below_threshold"] = [asdict(v) for v in result.below_threshold] if result.below_threshold else []
+    d["rejected"] = (
+        [asdict(v) for v in result.rejected]
+        if include_candidates and result.rejected
+        else []
+    )
+    d["below_threshold"] = (
+        [asdict(v) for v in result.below_threshold]
+        if include_candidates and result.below_threshold
+        else []
+    )
     d["candidates"] = "see overlay layer names in debug images"
     return d

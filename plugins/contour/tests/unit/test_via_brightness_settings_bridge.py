@@ -10,9 +10,30 @@ from contour.vision.integration import run_via_detection
 from contour.vision.schemas import OutputShapeKind
 from contour.vision.via.orchestrator import _detection_to_hit
 from contour.vision.via_detection.config import ViaPolarity
-from contour.vision.via_detection.heuristic_detector import detect_vias_heuristic
+from contour.vision.via_detection.heuristic_detector import (
+    _fast_percentile,
+    _mean_mask,
+    detect_vias_heuristic,
+)
 from contour.vision.via_detection.result import ViaDetection
 from contour.vision.via_detection.settings_bridge import heuristic_config_from_settings
+
+
+def test_hot_path_statistics_match_numpy() -> None:
+    rng = np.random.default_rng(17)
+    patch = rng.integers(0, 256, size=(31, 29), dtype=np.uint8)
+    mask = np.zeros_like(patch, dtype=bool)
+    mask[3:27, 5:23] = True
+    gradients = rng.normal(size=417).astype(np.float32)
+
+    assert np.isclose(_mean_mask(patch, mask), float(np.mean(patch[mask])))
+    for percentile in (10.0, 50.0, 60.0, 88.0, 100.0):
+        assert np.isclose(
+            _fast_percentile(gradients, percentile),
+            float(np.percentile(gradients, percentile)),
+            rtol=1e-6,
+            atol=1e-6,
+        )
 
 
 def test_heuristic_config_uses_white_range_for_bright_only() -> None:

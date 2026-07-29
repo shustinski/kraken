@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import cProfile
+from unittest.mock import patch
 
+from contour.adapters.qt.preview import PreviewProcessingRunnable
+from contour.application.processing import ContourExtractionSettings
+from contour.application.use_cases.processing import PreviewProcessingRequest
 from contour.infrastructure import profiling
 from contour.infrastructure.contact_placement_profiler import (
     ContactDragProfile,
     ContactPlacementProfile,
+    ImageRecognitionProfile,
     SceneZoomProfile,
 )
 
@@ -84,6 +89,66 @@ def test_scene_zoom_profile_reports_frames_fps_and_zoom_range() -> None:
     assert "_some_contact_work" in session.format_stats()
 
 
+def test_image_recognition_profile_combines_worker_and_ui_stats() -> None:
+    session = ImageRecognitionProfile.begin(
+        image_path="sample.png",
+        recognition_mode="via",
+    )
+    assert _some_contact_work() > 0
+    session.stop()
+    worker = cProfile.Profile()
+    worker.enable()
+    assert _some_contact_work() > 0
+    worker.disable()
+    session.attach_worker(worker, 12.5)
+    session.polygon_count = 42
+    session.note("result_applied_to_ui")
+
+    summary = session.format_summary(status="displayed")
+
+    assert "[contour image recognition profiling]" in summary
+    assert "mode=via" in summary
+    assert "polygons=42" in summary
+    assert "worker_wall=12.500ms" in summary
+    assert "_some_contact_work" in session.format_stats()
+
+
+def test_worker_profiler_conflict_never_prevents_image_recognition() -> None:
+    expected_result = object()
+    runnable = PreviewProcessingRunnable(
+        request_id=7,
+        request=PreviewProcessingRequest(
+            image_path="sample.png",
+            pipeline_config={},
+            contour_settings=ContourExtractionSettings(recognition_mode="via"),
+        ),
+        profile=True,
+    )
+    results: list[tuple[int, object]] = []
+    errors: list[tuple[int, str]] = []
+    runnable.signals.result.connect(
+        lambda request_id, result: results.append((request_id, result))
+    )
+    runnable.signals.error.connect(
+        lambda request_id, message: errors.append((request_id, message))
+    )
+
+    active_profiler = cProfile.Profile()
+    active_profiler.enable()
+    try:
+        with patch(
+            "contour.adapters.qt.preview.process_image_path",
+            return_value=expected_result,
+        ) as process_image:
+            runnable.run()
+    finally:
+        active_profiler.disable()
+
+    process_image.assert_called_once()
+    assert results == [(7, expected_result)]
+    assert errors == []
+
+
 def test_contact_profile_code_variable_is_the_default(monkeypatch) -> None:
     for name in (
         "CONTOUR_PROFILE",
@@ -143,6 +208,7 @@ def test_contact_action_code_switches_are_independent(monkeypatch) -> None:
         "CONTOUR_PROFILE_CONTACT_REDO",
         "CONTOUR_PROFILE_CONTACT_DRAG",
         "CONTOUR_PROFILE_SCENE_ZOOM",
+        "CONTOUR_PROFILE_IMAGE_RECOGNITION",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(profiling, "CONTACT_MULTI_SELECTION_PROFILING_ENABLED", True)
@@ -153,6 +219,7 @@ def test_contact_action_code_switches_are_independent(monkeypatch) -> None:
     monkeypatch.setattr(profiling, "CONTACT_REDO_PROFILING_ENABLED", False)
     monkeypatch.setattr(profiling, "CONTACT_DRAG_PROFILING_ENABLED", True)
     monkeypatch.setattr(profiling, "SCENE_ZOOM_PROFILING_ENABLED", False)
+    monkeypatch.setattr(profiling, "IMAGE_RECOGNITION_PROFILING_ENABLED", True)
 
     assert profiling.contact_multi_selection_profiling_enabled()
     assert not profiling.contact_deletion_profiling_enabled()
@@ -162,3 +229,4 @@ def test_contact_action_code_switches_are_independent(monkeypatch) -> None:
     assert not profiling.contact_redo_profiling_enabled()
     assert profiling.contact_drag_profiling_enabled()
     assert not profiling.scene_zoom_profiling_enabled()
+    assert profiling.image_recognition_profiling_enabled()

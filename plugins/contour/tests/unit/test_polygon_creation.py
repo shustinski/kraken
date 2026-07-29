@@ -100,6 +100,26 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
     def _reset(self, initial: list[PolygonData] | None = None) -> None:
         self.scene.set_polygons([p.clone() for p in (initial or [])])
 
+    def test_set_polygons_reuses_items_and_defers_surplus_cleanup(self) -> None:
+        first = _polygon(1, [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)])
+        second = _polygon(2, [(20.0, 0.0), (30.0, 0.0), (20.0, 10.0)])
+        replacement = _polygon(9, [(40.0, 0.0), (50.0, 0.0), (40.0, 10.0)])
+        self.scene.set_polygons([first, second])
+        original_items = set(self.scene._polygon_items.values())
+
+        self.scene.set_polygons([replacement])
+
+        replacement_item = self.scene._polygon_items[9]
+        self.assertIn(replacement_item, original_items)
+        self.assertEqual(replacement_item.polygon_id, 9)
+        self.assertEqual(len(self.scene._recycled_polygon_items), 1)
+        self.assertTrue(self.scene._recycled_polygon_cleanup_timer.isActive())
+
+        self.scene._drain_recycled_polygon_items()
+
+        self.assertEqual(self.scene._recycled_polygon_items, [])
+        self.assertFalse(self.scene._recycled_polygon_cleanup_timer.isActive())
+
     def test_points_mode_finish_adds_polygon_selects_emits_polygon_changed(self) -> None:
         self._reset([])
         changed: list[int] = []

@@ -89,6 +89,11 @@ def _run_sem_via_detection(
     image_ref = make_image_ref(image_path, gray)
     mode = normalize_via_search_mode(getattr(legacy_settings, "via_search_mode", ""))
     fixed_output_diameters = fixed_via_diameters_from_settings(legacy_settings)
+    include_candidate_debug = bool(
+        getattr(legacy_settings, "debug_enabled", True)
+        and getattr(legacy_settings, "via_display_show_candidates", True)
+        and getattr(legacy_settings, "bright_via_show_rejected", True)
+    )
     log: list[str] = []
 
     if mode in (VIA_SEARCH_MODE_TEMPLATE, VIA_SEARCH_MODE_HYBRID):
@@ -107,7 +112,11 @@ def _run_sem_via_detection(
                 hits=template_hits,
                 selected_strategy="template",
                 attempt_log=[template_log],
-                debug=_result_debug(template_result, "template"),
+                debug=_result_debug(
+                    template_result,
+                    "template",
+                    include_candidates=include_candidate_debug,
+                ),
             )
 
         hcfg = heuristic_config_from_settings(legacy_settings)
@@ -124,8 +133,16 @@ def _run_sem_via_detection(
             selected_strategy=VIA_SEARCH_MODE_HYBRID,
             attempt_log=[template_log, f"heuristic: polar={hcfg.polarity!r}"],
             debug={
-                "template": _result_debug(template_result, "template"),
-                "heuristic": _result_debug(heuristic_result, "heuristic"),
+                "template": _result_debug(
+                    template_result,
+                    "template",
+                    include_candidates=include_candidate_debug,
+                ),
+                "heuristic": _result_debug(
+                    heuristic_result,
+                    "heuristic",
+                    include_candidates=include_candidate_debug,
+                ),
             },
         )
 
@@ -167,7 +184,11 @@ def _run_sem_via_detection(
             attempt_log=[
                 f"bright_tophat_dog: diameter={cfg.diameter_min}-{cfg.diameter_max} min_score={cfg.min_final_score:.1f}"
             ],
-            debug=_result_debug(result, VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG),
+            debug=_result_debug(
+                result,
+                VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
+                include_candidates=include_candidate_debug,
+            ),
         )
 
     if mode != VIA_SEARCH_MODE_HEURISTIC:
@@ -175,7 +196,11 @@ def _run_sem_via_detection(
     hcfg = heuristic_config_from_settings(legacy_settings)
     result = detect_vias_heuristic(gray, hcfg)
     hits = [_detection_to_hit(d, "heuristic", fixed_output_diameters) for d in result.accepted]
-    dbg = _result_debug(result, "heuristic")
+    dbg = _result_debug(
+        result,
+        "heuristic",
+        include_candidates=include_candidate_debug,
+    )
     ad = hcfg.allowed_diameters()
     log.append(f"heuristic: polar={hcfg.polarity!r}")
     log.append(f"heuristic: diameters={ad[:12]!r}{'...' if len(ad) > 12 else ''}")

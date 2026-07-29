@@ -17,6 +17,7 @@ from .profiling import (
     contact_placement_top_lines,
     contact_redo_top_lines,
     contact_undo_top_lines,
+    image_recognition_top_lines,
     scene_zoom_top_lines,
     try_disable_profiler,
     try_enable_profiler,
@@ -258,6 +259,14 @@ class ContactPlacementProfile:
         else:
             self.main_stats_skipped = True
 
+    def resume_main_profiler(self) -> None:
+        if self.main_active:
+            return
+        if try_enable_profiler(self.main_profiler):
+            self.main_active = True
+        else:
+            self.main_stats_skipped = True
+
     def format_summary(self, *, status: str) -> str:
         phases = " ".join(
             f"{name}={value:.3f}ms"
@@ -304,3 +313,63 @@ class ContactPlacementProfile:
         return (
             f"{prefix} sort=cumulative top={top_lines}\n{stream.getvalue()}"
         )
+
+
+@dataclass
+class ImageRecognitionProfile(ContactPlacementProfile):
+    image_path: str = ""
+    recognition_mode: str = ""
+    polygon_count: int = 0
+
+    def attach_worker(self, profiler: cProfile.Profile, wall_ms: float) -> None:
+        if profiler.getstats():
+            self.worker_profilers.append(profiler)
+        self.timings_ms["worker_wall"] = float(wall_ms)
+
+    @classmethod
+    def begin(
+        cls,
+        *,
+        image_path: str,
+        recognition_mode: str,
+    ) -> ImageRecognitionProfile:
+        session = cls(
+            action="recognition",
+            image_path=str(image_path),
+            recognition_mode=str(recognition_mode),
+        )
+        if try_enable_profiler(session.main_profiler):
+            session.main_active = True
+        else:
+            session.main_stats_skipped = True
+        return session
+
+    def format_summary(self, *, status: str) -> str:
+        phases = " ".join(
+            f"{name}={value:.3f}ms"
+            for name, value in sorted(self.timings_ms.items())
+        )
+        skipped = " main_cprofile_skipped=yes" if self.main_stats_skipped else ""
+        return (
+            f"[contour image recognition profiling] status={status} "
+            f"total={self.elapsed_ms():.3f}ms mode={self.recognition_mode} "
+            f"polygons={self.polygon_count} image={self.image_path!r}{skipped}"
+            f"{(' ' + phases) if phases else ''}"
+        )
+
+    def format_stats(self) -> str:
+        prefix = "[contour image recognition profiling stats]"
+        profiles = [
+            profile
+            for profile in (self.main_profiler, *self.worker_profilers)
+            if profile.getstats()
+        ]
+        if not profiles:
+            return f"{prefix} no cProfile data collected"
+        stream = io.StringIO()
+        stats = pstats.Stats(profiles[0], stream=stream)
+        for profile in profiles[1:]:
+            stats.add(profile)
+        top_lines = image_recognition_top_lines()
+        stats.sort_stats("cumtime").print_stats(top_lines)
+        return f"{prefix} sort=cumulative top={top_lines}\n{stream.getvalue()}"

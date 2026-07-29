@@ -84,10 +84,27 @@ class WidgetExtractionSettingsMixin:
         self._refresh_busy_indicator()
 
     def _apply_auto_tune_result(self, result: AutoTuneResult) -> None:
+        current_settings = self._current_contour_settings()
+        tuned_settings = ContourExtractionSettings.from_dict(result.contour_settings.to_dict())
+        for field in (
+            "via_white_range_enabled",
+            "via_white_range_min",
+            "via_white_range_max",
+            "via_black_range_enabled",
+            "via_black_range_min",
+            "via_black_range_max",
+            "bright_via_min_final_score",
+        ):
+            setattr(tuned_settings, field, getattr(current_settings, field))
         self._pipeline = PreprocessingPipeline.from_dict(result.pipeline_config)
         self._populate_pipeline_list()
-        self._set_extraction_settings(result.contour_settings)
+        self._set_extraction_settings(tuned_settings)
         self.process_current_image()
+
+    def _on_via_output_diameter_changed(self, value: int) -> None:
+        self._store_active_extraction_profile_settings()
+        if hasattr(self, "_redraw_recognized_contacts_with_diameter"):
+            self._redraw_recognized_contacts_with_diameter(int(value))
 
     def _set_extraction_settings(self, settings: ContourExtractionSettings) -> None:
         blockers = [

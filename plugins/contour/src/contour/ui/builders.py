@@ -1351,7 +1351,7 @@ def build_extraction_tab(self) -> QWidget:
     self.debug_candidates_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_diameter_min_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_diameter_max_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.via_output_diameter_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.via_output_diameter_spin.valueChanged.connect(self._on_via_output_diameter_changed)
     self.bright_via_clahe_clip_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_clahe_tile_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.bright_via_median_kernel_spin.valueChanged.connect(self._on_extraction_settings_changed)

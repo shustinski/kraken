@@ -104,7 +104,13 @@ class VertexHandleItem(QGraphicsEllipseItem):
 
 
 class EditablePolygonItem(QGraphicsPathItem):
-    def __init__(self, polygon: PolygonData, display_settings: DisplaySettings) -> None:
+    def __init__(
+        self,
+        polygon: PolygonData,
+        display_settings: DisplaySettings,
+        *,
+        custom_color: str | None = None,
+    ) -> None:
         super().__init__()
         self.polygon_id = polygon.id
         self._polygon = polygon
@@ -113,7 +119,12 @@ class EditablePolygonItem(QGraphicsPathItem):
         self._handles: list[VertexHandleItem] = []
         self.setZValue(3)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
-        self.update_from_polygon(polygon, display_settings, selected=False)
+        self.update_from_polygon(
+            polygon,
+            display_settings,
+            selected=False,
+            custom_color=custom_color,
+        )
 
     def update_from_polygon(
         self,
@@ -126,6 +137,7 @@ class EditablePolygonItem(QGraphicsPathItem):
         conductor_hover_highlight: bool = False,
         preview_vertices: bool = False,
     ) -> None:
+        self.polygon_id = polygon.id
         self._polygon = polygon
         path = QPainterPath()
         path.addPath(_display_path_for_polygon(self._polygon, display_settings))
@@ -165,6 +177,7 @@ class EditablePolygonItem(QGraphicsPathItem):
         if show_handles:
             for index, point in enumerate(self._polygon.points):
                 handle = self._handles[index]
+                handle.polygon_id = self.polygon_id
                 handle.vertex_index = index
                 handle.update_geometry(point, display_settings.vertex_size, handle_color)
                 handle.setVisible(True)

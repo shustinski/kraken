@@ -96,10 +96,35 @@ class PreviewProcessingRunnable(QRunnable):
 
     def run(self) -> None:
         profiler = cProfile.Profile() if self._profile else None
+        profiler_active = False
+        profile_emitted = False
         started_at = perf_counter()
+
+        def emit_profile() -> None:
+            nonlocal profiler_active, profile_emitted
+            if profiler is None or profile_emitted:
+                return
+            if profiler_active:
+                try:
+                    profiler.disable()
+                except ValueError:
+                    pass
+                profiler_active = False
+            profile_emitted = True
+            if profiler.getstats():
+                self.signals.profile.emit(
+                    self.request_id,
+                    profiler,
+                    (perf_counter() - started_at) * 1000.0,
+                )
+
         try:
             if profiler is not None:
-                profiler.enable()
+                try:
+                    profiler.enable()
+                    profiler_active = True
+                except ValueError:
+                    profiler = None
             with use_preview_cancellation_event(self._cancel):
                 result = process_image_path(
                     image_path=self.request.image_path,
@@ -111,24 +136,15 @@ class PreviewProcessingRunnable(QRunnable):
                     if self.request.passthrough_polygons
                     else None,
                 )
-            if profiler is not None:
-                profiler.disable()
-                self.signals.profile.emit(
-                    self.request_id,
-                    profiler,
-                    (perf_counter() - started_at) * 1000.0,
-                )
+            emit_profile()
             self.signals.result.emit(self.request_id, result)
         except PreviewProcessingCancelled:
-            pass
+            emit_profile()
         except Exception as exc:
+            emit_profile()
             self.signals.error.emit(self.request_id, str(exc))
         finally:
-            if profiler is not None:
-                try:
-                    profiler.disable()
-                except ValueError:
-                    pass
+            emit_profile()
             self.signals.finished.emit(self.request_id)
 
 

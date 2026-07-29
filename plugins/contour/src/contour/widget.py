@@ -466,6 +466,8 @@ class PolygonExtractionWidget(
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._closing = True
+        if getattr(self, "_image_recognition_profile", None) is not None:
+            self._finish_image_recognition_profile("closed")
         for timer in list(getattr(self, "_deferred_image_load_timers", [])):
             try:
                 timer.stop()

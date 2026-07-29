@@ -30,8 +30,9 @@ CONTACT_COPY_PROFILING_ENABLED = False
 CONTACT_PASTE_PROFILING_ENABLED = False
 CONTACT_UNDO_PROFILING_ENABLED = False
 CONTACT_REDO_PROFILING_ENABLED = False
-CONTACT_DRAG_PROFILING_ENABLED = True
-SCENE_ZOOM_PROFILING_ENABLED = True
+CONTACT_DRAG_PROFILING_ENABLED = False
+SCENE_ZOOM_PROFILING_ENABLED = False
+IMAGE_RECOGNITION_PROFILING_ENABLED = True
 
 DEFAULT_FRAME_SWITCH_TOP_LINES = 80
 DEFAULT_PROCESSING_TOP_LINES = 25
@@ -46,6 +47,7 @@ DEFAULT_CONTACT_UNDO_TOP_LINES = 40
 DEFAULT_CONTACT_REDO_TOP_LINES = 40
 DEFAULT_CONTACT_DRAG_TOP_LINES = 40
 DEFAULT_SCENE_ZOOM_TOP_LINES = 40
+DEFAULT_IMAGE_RECOGNITION_TOP_LINES = 40
 DEFAULT_FRAME_SWITCH_IDLE_POLLS = 300
 
 
@@ -207,6 +209,13 @@ def scene_zoom_profiling_enabled() -> bool:
     )
 
 
+def image_recognition_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "image_recognition",
+        default=IMAGE_RECOGNITION_PROFILING_ENABLED,
+    )
+
+
 def frame_switch_top_lines() -> int:
     return profiling_top_lines("frame_switch", DEFAULT_FRAME_SWITCH_TOP_LINES)
 
@@ -260,6 +269,13 @@ def contact_drag_top_lines() -> int:
 
 def scene_zoom_top_lines() -> int:
     return profiling_top_lines("scene_zoom", DEFAULT_SCENE_ZOOM_TOP_LINES)
+
+
+def image_recognition_top_lines() -> int:
+    return profiling_top_lines(
+        "image_recognition",
+        DEFAULT_IMAGE_RECOGNITION_TOP_LINES,
+    )
 
 
 def frame_switch_idle_polls() -> int:

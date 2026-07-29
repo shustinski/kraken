@@ -112,7 +112,7 @@ def test_positive_feedback_expands_every_violated_boundary_outward() -> None:
     )
     changes = {change.field: change.new_value for change in result.changes}
 
-    assert changes["bright_via_min_final_score"] == pytest.approx(49.9)
+    assert "bright_via_min_final_score" not in changes
     assert changes["heuristic_min_circularity"] == pytest.approx(0.654)
     assert changes["heuristic_min_center_contrast"] == pytest.approx(65.0)
     assert changes["heuristic_max_elongation"] == pytest.approx(1.61)

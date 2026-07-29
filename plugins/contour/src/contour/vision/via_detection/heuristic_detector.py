@@ -455,8 +455,8 @@ def _normalize01_to_u8(a: np.ndarray) -> np.ndarray:
     return u.astype(np.uint8)
 
 
-def _fast_percentile_u8(values: np.ndarray, percentile: float) -> float:
-    """Linear percentile for uint8 patches without NumPy's generic quantile setup."""
+def _fast_percentile(values: np.ndarray, percentile: float) -> float:
+    """Linear percentile without NumPy's comparatively costly quantile setup."""
 
     flat = values.reshape(-1)
     if flat.size == 0:
@@ -468,7 +468,17 @@ def _fast_percentile_u8(values: np.ndarray, percentile: float) -> float:
     if lower == upper:
         return float(selected[lower])
     fraction = rank - lower
-    return float(selected[lower]) * (1.0 - fraction) + float(selected[upper]) * fraction
+    lower_value = float(selected[lower])
+    result = lower_value + (float(selected[upper]) - lower_value) * fraction
+    if np.issubdtype(flat.dtype, np.floating):
+        # np.percentile preserves a floating input dtype, so keep the same
+        # precision for float32 gradient rings.
+        result = float(flat.dtype.type(result))
+    return result
+
+
+def _fast_percentile_u8(values: np.ndarray, percentile: float) -> float:
+    return _fast_percentile(values, percentile)
 
 
 def _local_extrema_seeds(
@@ -718,10 +728,12 @@ def _annulus_masks(shape: tuple[int, int], cx: int, cy: int, d: float) -> tuple[
 
 
 def _mean_mask(patch: np.ndarray, m: np.ndarray) -> float:
-    v = patch[m]
-    if v.size == 0:
+    mask_u8 = m.view(np.uint8)
+    if cv2.countNonZero(mask_u8) == 0:
         return float(np.mean(patch))
-    return float(np.mean(v))
+    # OpenCV accumulates directly through the mask. NumPy's patch[m] first
+    # allocates a temporary array, which is costly in this per-candidate path.
+    return float(cv2.mean(patch, mask=mask_u8)[0])
 
 
 def _center_in_brightness_range(center_grey: float, hyp: str, config: HeuristicViaDetectorConfig) -> bool:
@@ -807,8 +819,8 @@ def _local_structure_metrics(
 
     edge_ring = gradient_magnitude[(distance >= 0.65 * radius) & (distance <= 1.35 * radius)]
     far_ring = gradient_magnitude[(distance >= 1.60 * radius) & (distance <= 2.80 * radius)]
-    edge_level = float(np.percentile(edge_ring, 60.0)) if edge_ring.size else 0.0
-    noise_level = float(np.median(far_ring)) if far_ring.size else 0.0
+    edge_level = _fast_percentile(edge_ring, 60.0)
+    noise_level = _fast_percentile(far_ring, 50.0)
     edge_snr = edge_level / (noise_level + 2.0)
     # A genuine contact has a localized boundary. A broad illumination spot
     # can have high center contrast but its edge changes too slowly at the

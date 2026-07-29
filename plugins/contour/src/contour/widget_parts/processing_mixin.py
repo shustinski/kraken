@@ -10,7 +10,10 @@ from typing import Any
 from PyQt6.QtGui import QImage, QImageReader
 
 from ..adapters.qt.object_validity import qt_object_is_valid
-from ..infrastructure.contact_placement_profiler import ContactPlacementProfile
+from ..infrastructure.contact_placement_profiler import (
+    ContactPlacementProfile,
+    ImageRecognitionProfile,
+)
 from ..infrastructure.frame_switch_profiler import (
     MAX_IDLE_POLLS,
     FrameSwitchProfile,
@@ -25,11 +28,48 @@ from ..infrastructure.profiling import (
     contact_placement_profiling_enabled,
     contact_redo_profiling_enabled,
     contact_undo_profiling_enabled,
+    image_recognition_profiling_enabled,
 )
 from ._imports import *  # noqa: F403
 
 
 class WidgetProcessingMixin:
+    def _start_image_recognition_profile(
+        self: Any,
+        request: PreviewProcessingRequest,
+    ) -> None:
+        if not image_recognition_profiling_enabled():
+            return
+        recognition_mode = normalize_recognition_mode(
+            request.contour_settings.recognition_mode
+        )
+        if recognition_mode == "disabled":
+            return
+        previous = getattr(self, "_image_recognition_profile", None)
+        if previous is not None:
+            self._finish_image_recognition_profile("superseded")
+        session = ImageRecognitionProfile.begin(
+            image_path=Path(request.image_path).name,
+            recognition_mode=recognition_mode,
+        )
+        session.note("queued")
+        self._image_recognition_profile = session
+        print(
+            "[contour image recognition profiling] "
+            f"started mode={recognition_mode} "
+            f"image={Path(request.image_path).name!r}",
+            flush=True,
+        )
+
+    def _finish_image_recognition_profile(self: Any, status: str) -> None:
+        session = getattr(self, "_image_recognition_profile", None)
+        if session is None:
+            return
+        self._image_recognition_profile = None
+        session.stop()
+        print(session.format_summary(status=status), flush=True)
+        print(session.format_stats(), flush=True)
+
     def _start_contact_undo_profile(self: Any) -> None:
         self._start_contact_history_profile("undo")
 
@@ -290,7 +330,15 @@ class WidgetProcessingMixin:
             session = getattr(self, attribute, None)
             if session is not None and session.preview_request_id == request_id:
                 session.attach_worker(profiler, wall_ms)
-                return
+                session.resume_main_profiler()
+                break
+        recognition_session = getattr(self, "_image_recognition_profile", None)
+        if (
+            recognition_session is not None
+            and recognition_session.preview_request_id == request_id
+        ):
+            recognition_session.attach_worker(profiler, wall_ms)
+            recognition_session.resume_main_profiler()
 
     def _contact_profile_waiting_for_preview(self: Any):
         for attribute in (
@@ -301,6 +349,16 @@ class WidgetProcessingMixin:
             if session is not None and session.waiting_for_preview:
                 return session
         return None
+
+    def _resume_preview_main_profiles(self: Any, request_id: int) -> None:
+        for attribute in (
+            "_contact_deletion_profile",
+            "_contact_placement_profile",
+            "_image_recognition_profile",
+        ):
+            session = getattr(self, attribute, None)
+            if session is not None and session.preview_request_id == request_id:
+                session.resume_main_profiler()
 
     def _current_save_options(self: Any) -> SaveOptions:
         return SaveOptions(
@@ -1640,6 +1698,7 @@ class WidgetProcessingMixin:
             self._preview_pending_save_result = self._preview_pending_save_result or save_result
             self._refresh_busy_indicator()
             return
+        self._start_image_recognition_profile(request)
         self._preview_update_timer.stop()
         if self._preview_run_cancel is not None:
             self._preview_run_cancel.set()
@@ -1680,16 +1739,27 @@ class WidgetProcessingMixin:
         profile_contact = bool(
             contact_session is not None and contact_session.waiting_for_preview
         )
+        recognition_session = getattr(self, "_image_recognition_profile", None)
+        profile_recognition = bool(recognition_session is not None)
+        if profile_contact:
+            contact_session.stop()
+        if profile_recognition:
+            recognition_session.stop()
         worker = PreviewProcessingRunnable(
             request_id=request_id,
             request=request,
             cancel_event=cancel,
-            profile=profile_contact,
+            profile=profile_contact or profile_recognition,
         )
         if profile_contact:
             contact_session.preview_request_id = request_id
             contact_session.note("preview_started")
             worker.signals.profile.connect(self._on_contact_preview_profile)
+        if profile_recognition:
+            recognition_session.preview_request_id = request_id
+            recognition_session.note("worker_started")
+            if not profile_contact:
+                worker.signals.profile.connect(self._on_contact_preview_profile)
         worker.signals.result.connect(self._on_preview_processing_result)
         worker.signals.error.connect(self._on_preview_processing_error)
         worker.signals.finished.connect(self._on_preview_processing_finished)
@@ -1791,7 +1861,22 @@ class WidgetProcessingMixin:
             return
         if self._workspace.current_image_path != result.image_path:
             return
+        self._resume_preview_main_profiles(request_id)
+        recognition_session = getattr(self, "_image_recognition_profile", None)
+        if (
+            recognition_session is not None
+            and recognition_session.preview_request_id == request_id
+        ):
+            recognition_session.note("result_received")
 
+        if (
+            hasattr(self, "recognition_mode_combo")
+            and str(self.recognition_mode_combo.currentData() or "") == "via"
+        ):
+            result.polygons = self._recognized_contact_polygons_with_diameter(
+                list(result.polygons),
+                diameter=int(self.via_output_diameter_spin.value()),
+            )
         if self._workspace.apply_processing_result(result):
             self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
         self._update_frame_item_status(result.image_path)
@@ -1811,6 +1896,16 @@ class WidgetProcessingMixin:
         if self._preview_running_save_result:
             self.save_current_result(polygons=list(result.polygons))
         self.imageProcessed.emit(result.image_path, result.polygons)
+        if (
+            recognition_session is not None
+            and recognition_session.preview_request_id == request_id
+        ):
+            recognition_session.polygon_count = len(result.polygons)
+            recognition_session.note("result_applied_to_ui")
+            QTimer.singleShot(
+                0,
+                lambda: self._finish_image_recognition_profile("displayed"),
+            )
         for attribute, finish in (
             ("_contact_deletion_profile", self._finish_contact_deletion_profile),
             ("_contact_placement_profile", self._finish_contact_placement_profile),
@@ -1825,9 +1920,17 @@ class WidgetProcessingMixin:
     def _on_preview_processing_error(self: Any, request_id: int, message: str) -> None:
         if request_id != self._preview_running_request_id:
             return
+        self._resume_preview_main_profiles(request_id)
         if hasattr(self, "recognition_mode_combo"):
             self._set_recognition_status("error", message)
         self._append_log(self._tr("processing_failed_log", error=message))
+        recognition_session = getattr(self, "_image_recognition_profile", None)
+        if (
+            recognition_session is not None
+            and recognition_session.preview_request_id == request_id
+        ):
+            recognition_session.note("processing_error")
+            self._finish_image_recognition_profile("processing_error")
         for attribute, finish in (
             ("_contact_deletion_profile", self._finish_contact_deletion_profile),
             ("_contact_placement_profile", self._finish_contact_placement_profile),
@@ -1864,6 +1967,14 @@ class WidgetProcessingMixin:
         self._refresh_busy_indicator()
         if cancelled_finish is not None:
             cancelled_finish("cancelled")
+        recognition_session = getattr(self, "_image_recognition_profile", None)
+        if (
+            recognition_session is not None
+            and recognition_session.preview_request_id == request_id
+            and "result_applied_to_ui" not in recognition_session.timings_ms
+            and "processing_error" not in recognition_session.timings_ms
+        ):
+            self._finish_image_recognition_profile("cancelled")
 
     def _show_batch_progress(self: Any, total: int) -> None:
         if not self._batch_progress_enabled:
@@ -2109,9 +2220,20 @@ class WidgetProcessingMixin:
             "heuristic_min_center_brightness": ("Минимальная яркость центра", "Minimum center brightness"),
             "heuristic_max_center_drift_ratio": ("Допустимое смещение центра", "Maximum center drift"),
         }
+        excluded_fields = {
+            "bright_via_min_final_score",
+            "via_white_range_enabled",
+            "via_white_range_min",
+            "via_white_range_max",
+            "via_black_range_enabled",
+            "via_black_range_min",
+            "via_black_range_max",
+        }
         changes_by_field = {}
         for adjustment in adjustments:
             for change in getattr(adjustment, "changes", ()):
+                if change.field in excluded_fields:
+                    continue
                 changes_by_field[change.field] = change
         if not changes_by_field:
             return False
@@ -3738,6 +3860,70 @@ class WidgetProcessingMixin:
             polygon.shape_hint = "box"
             normalized.append(polygon)
         return normalized
+
+    def _redraw_recognized_contacts_with_diameter(self: Any, diameter: int) -> None:
+        current_path = self._workspace.current_image_path
+        current_state = self._workspace.current_state
+        states_by_id = {
+            id(state): (image_path, state)
+            for image_path, state in self._workspace.cached_states()
+        }
+        if current_path is not None and current_state is not None:
+            states_by_id[id(current_state)] = (current_path, current_state)
+
+        for image_path, state in states_by_id.values():
+            original = list(state.polygons or [])
+            resized = self._recognized_contact_polygons_with_diameter(
+                original,
+                diameter=diameter,
+            )
+            if all(
+                original_polygon.points == resized_polygon.points
+                for original_polygon, resized_polygon in zip(
+                    original,
+                    resized,
+                    strict=True,
+                )
+            ):
+                continue
+            state.polygons = resized
+            state.polygons_dirty = None
+            if image_path == current_path:
+                self._workspace.update_current_polygons(resized)
+                self._sync_polygons_to_editor(image_path, resized)
+                self._update_frame_item_status(image_path)
+
+        if hasattr(self, "_request_neighbor_frame_sync"):
+            self._request_neighbor_frame_sync(delay_ms=0)
+
+    def _recognized_contact_polygons_with_diameter(
+        self: Any,
+        polygons: list[PolygonData],
+        *,
+        diameter: int,
+    ) -> list[PolygonData]:
+        recognized_ids = {
+            polygon.id
+            for polygon in polygons
+            if str(polygon.category).lower() == "via"
+            and polygon.recognition_score is not None
+        }
+        if not recognized_ids:
+            return [polygon.clone() for polygon in polygons]
+        normalized = self._uniform_contact_polygons_for_save(
+            polygons,
+            diameter=diameter,
+        )
+        return [
+            normalized_polygon
+            if original_polygon.id in recognized_ids
+            else original_polygon.clone()
+            for original_polygon, normalized_polygon in zip(
+                polygons,
+                normalized,
+                strict=True,
+            )
+        ]
 
     def start_batch_processing(
         self: Any,

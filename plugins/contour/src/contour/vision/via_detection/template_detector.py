@@ -10,6 +10,9 @@ import numpy as np
 from .config import TemplateViaDetectorConfig
 from .result import DetectionResult, ViaDetection
 
+_MAX_BELOW_THRESHOLD_PER_TEMPLATE_SCALE = 2_000
+_MAX_BELOW_THRESHOLD_RESULTS = 10_000
+
 
 @dataclass(frozen=True, slots=True)
 class TemplateRawMatch:
@@ -51,8 +54,15 @@ def detect_vias_template_raw(
                 continue
             t = cv2.resize(t0, (tw, th), interpolation=cv2.INTER_AREA if sc < 1.0 else cv2.INTER_LINEAR)
             res = cv2.matchTemplate(g, t, method)
-            floor = 0.0
-            _collect_peaks(res, t, floor, all_dets, template_index=template_index)
+            threshold = _template_threshold(config, template_index) / 100.0
+            _collect_peaks(
+                res,
+                t,
+                threshold,
+                all_dets,
+                template_index=template_index,
+                below_threshold_limit=_MAX_BELOW_THRESHOLD_PER_TEMPLATE_SCALE,
+            )
     return all_dets, (h, w)
 
 
@@ -61,50 +71,18 @@ def score_vias_template_raw(
 ) -> DetectionResult:
     h, w = image_shape
     base = dict(config.snapshot())
-    all_dets = [
-        ViaDetection(
-            d.x,
-            d.y,
-            d.bbox,
-            d.score,
-            float(config.output_diameters[d.template_index])
-            if d.template_index < len(config.output_diameters)
-            else d.diameter_estimate,
-            d.score * 0.32,
-            d.score * 0.20,
-            0.5,
-            float(max(d.bbox[2], d.bbox[3]) / (min(d.bbox[2], d.bbox[3]) + 1e-6)),
-            "template",
-            None,
-            d.template_index,
-        )
-        for d in raw_matches
-    ]
-    indexed_dets = list(zip(raw_matches, all_dets, strict=True))
-    indexed_dets.sort(key=lambda pair: pair[1].score, reverse=True)
-
-    def threshold(raw: TemplateRawMatch) -> float:
-        value = (
-            config.min_correlations[raw.template_index]
-            if raw.template_index < len(config.min_correlations)
-            else config.min_correlation
-        )
-        return max(0.0, min(1.0, float(value))) * 100.0
-
-    eligible = [(raw, detection) for raw, detection in indexed_dets if detection.score >= threshold(raw)]
-    below = [detection for raw, detection in indexed_dets if detection.score < threshold(raw)]
-    kept: list[tuple[TemplateRawMatch, ViaDetection]] = []
-    for raw, detection in eligible:
-        # Duplicate suppression is automatic: the matched template span plus
-        # two pixels. For two different templates the larger distance wins.
-        distance = max(raw.bbox[2], raw.bbox[3]) + 2
-        duplicate = any(
-            (detection.x - other.x) ** 2 + (detection.y - other.y) ** 2
-            <= float(max(distance, max(other_raw.bbox[2], other_raw.bbox[3]) + 2) ** 2)
-            for other_raw, other in kept
-        )
-        if not duplicate:
-            kept.append((raw, detection))
+    eligible: list[tuple[TemplateRawMatch, ViaDetection]] = []
+    below: list[ViaDetection] = []
+    below_threshold_count = 0
+    for raw in sorted(raw_matches, key=lambda item: item.score, reverse=True):
+        detection = _raw_match_detection(raw, config)
+        if detection.score >= _template_threshold(config, raw.template_index):
+            eligible.append((raw, detection))
+            continue
+        below_threshold_count += 1
+        if len(below) < _MAX_BELOW_THRESHOLD_RESULTS:
+            below.append(detection)
+    kept = _suppress_duplicate_matches(eligible)
     acc = [detection for _raw, detection in kept]
 
     dbg = {
@@ -117,8 +95,86 @@ def score_vias_template_raw(
         rejected=[],
         below_threshold=below,
         debug_images=dbg,
-        parameters_snapshot={**base, "raw_matches": len(all_dets)},
+        parameters_snapshot={
+            **base,
+            "raw_matches": len(raw_matches),
+            "below_threshold_count": below_threshold_count,
+            "below_threshold_debug_count": len(below),
+        },
     )
+
+
+def _template_threshold(config: TemplateViaDetectorConfig, template_index: int) -> float:
+    value = (
+        config.min_correlations[template_index]
+        if template_index < len(config.min_correlations)
+        else config.min_correlation
+    )
+    return max(0.0, min(1.0, float(value))) * 100.0
+
+
+def _raw_match_detection(
+    raw: TemplateRawMatch,
+    config: TemplateViaDetectorConfig,
+) -> ViaDetection:
+    return ViaDetection(
+        raw.x,
+        raw.y,
+        raw.bbox,
+        raw.score,
+        float(config.output_diameters[raw.template_index])
+        if raw.template_index < len(config.output_diameters)
+        else raw.diameter_estimate,
+        raw.score * 0.32,
+        raw.score * 0.20,
+        0.5,
+        float(max(raw.bbox[2], raw.bbox[3]) / (min(raw.bbox[2], raw.bbox[3]) + 1e-6)),
+        "template",
+        None,
+        raw.template_index,
+    )
+
+
+def _suppress_duplicate_matches(
+    eligible: list[tuple[TemplateRawMatch, ViaDetection]],
+) -> list[tuple[TemplateRawMatch, ViaDetection]]:
+    """Apply the original variable-radius NMS using a uniform spatial grid."""
+
+    if not eligible:
+        return []
+    radii = [max(raw.bbox[2], raw.bbox[3]) + 2 for raw, _detection in eligible]
+    cell_size = max(1, max(radii))
+    kept: list[tuple[TemplateRawMatch, ViaDetection]] = []
+    kept_radii: list[int] = []
+    grid: dict[tuple[int, int], list[int]] = {}
+
+    for (raw, detection), distance in zip(eligible, radii, strict=True):
+        cell_x = int(detection.x // cell_size)
+        cell_y = int(detection.y // cell_size)
+        duplicate = False
+        for grid_y in range(cell_y - 1, cell_y + 2):
+            for grid_x in range(cell_x - 1, cell_x + 2):
+                for kept_index in grid.get((grid_x, grid_y), ()):
+                    other = kept[kept_index][1]
+                    threshold = max(distance, kept_radii[kept_index])
+                    if (
+                        (detection.x - other.x) ** 2
+                        + (detection.y - other.y) ** 2
+                        <= float(threshold * threshold)
+                    ):
+                        duplicate = True
+                        break
+                if duplicate:
+                    break
+            if duplicate:
+                break
+        if duplicate:
+            continue
+        kept_index = len(kept)
+        kept.append((raw, detection))
+        kept_radii.append(distance)
+        grid.setdefault((cell_x, cell_y), []).append(kept_index)
+    return kept
 
 
 def _to_gray_u8(image: np.ndarray) -> np.ndarray:
@@ -149,6 +205,7 @@ def _collect_peaks(
     out: list[TemplateRawMatch],
     *,
     template_index: int,
+    below_threshold_limit: int = 0,
 ) -> None:
     if res.size == 0:
         return
@@ -157,12 +214,24 @@ def _collect_peaks(
     k = max(3, min(th, tw) // 2 | 1)
     ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
     dil = cv2.dilate(res, ker)
-    loc = (res == dil) & (res >= float(thr))
+    loc = res == dil
     ys, xs = np.where(loc)
-    for y, x in zip(ys, xs, strict=False):
+    if ys.size == 0:
+        return
+    values = res[ys, xs]
+    accepted_indices = np.flatnonzero(values >= float(thr))
+    below_indices = np.flatnonzero(values < float(thr))
+    limit = max(0, int(below_threshold_limit))
+    if below_indices.size > limit:
+        if limit == 0:
+            below_indices = below_indices[:0]
+        else:
+            relative = np.argpartition(values[below_indices], -limit)[-limit:]
+            below_indices = below_indices[relative]
+    selected_indices = np.concatenate((accepted_indices, below_indices))
+    for index in selected_indices:
+        y, x = ys[index], xs[index]
         v = float(res[y, x])
-        if v < thr:
-            continue
         cx = float(x) + float(tw) * 0.5
         cy = float(y) + float(th) * 0.5
         out.append(

@@ -39,7 +39,6 @@ class _ThresholdSpec:
 
 # The order is also the deterministic tie-break priority for negative feedback.
 _BASE_SPECS = (
-    _ThresholdSpec("bright_via_min_final_score", "score", "min", 0.0, 100.0, 0.1),
     _ThresholdSpec("heuristic_min_circularity", "circularity", "min", 0.0, 1.0, 0.001),
     _ThresholdSpec("heuristic_min_compactness", "compactness", "min", 0.0, 1.0, 0.001),
     _ThresholdSpec("heuristic_min_center_contrast", "contrast", "min", 0.0, 255.0, 0.1),

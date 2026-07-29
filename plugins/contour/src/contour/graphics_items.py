@@ -1,11 +1,87 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen
+from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsSimpleTextItem
 
 from .application.processing import DisplaySettings, normalize_via_display_mode
 from .domain import PolygonData
+
+
+class ZoomContactBatchItem(QGraphicsItem):
+    def __init__(
+        self,
+        *,
+        centers: list[QPointF],
+        width: float,
+        height: float,
+        pen: QPen,
+        brush: QBrush,
+        rectangles: bool,
+    ) -> None:
+        super().__init__()
+        self._width = max(0.1, float(width))
+        self._height = max(0.1, float(height))
+        self._pen = QPen(pen)
+        self._brush = QBrush(brush)
+        self._rectangles = bool(rectangles)
+        half_width = self._width / 2.0
+        half_height = self._height / 2.0
+        self._rects = [
+            QRectF(
+                center.x() - half_width,
+                center.y() - half_height,
+                self._width,
+                self._height,
+            )
+            for center in centers
+        ]
+        self._centers = QPolygonF(centers)
+        self._scale_y = self._height / self._width
+        self._paint_centers = (
+            QPolygonF(
+                [
+                    QPointF(point.x(), point.y() / self._scale_y)
+                    for point in self._centers
+                ]
+            )
+            if abs(self._scale_y - 1.0) > 1e-6
+            else self._centers
+        )
+        if self._rects:
+            bounds = QRectF(self._rects[0])
+            for rect in self._rects[1:]:
+                bounds = bounds.united(rect)
+            margin = max(1.0, self._pen.widthF())
+            self._bounds = bounds.adjusted(-margin, -margin, margin, margin)
+        else:
+            self._bounds = QRectF()
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(self._bounds)
+
+    def paint(self, painter: QPainter, _option, _widget=None) -> None:
+        if self._rectangles:
+            painter.setPen(self._pen)
+            painter.setBrush(self._brush)
+            painter.drawRects(self._rects)
+            return
+
+        painter.save()
+        if abs(self._scale_y - 1.0) > 1e-6:
+            painter.scale(1.0, self._scale_y)
+        marker_color = QColor(self._pen.color())
+        marker_color.setAlpha(max(96, self._brush.color().alpha()))
+        marker_pen = QPen(
+            marker_color,
+            self._width,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+        )
+        painter.setPen(marker_pen)
+        painter.drawPoints(self._paint_centers)
+        painter.restore()
 
 
 class VertexHandleItem(QGraphicsEllipseItem):
@@ -58,34 +134,14 @@ class EditablePolygonItem(QGraphicsPathItem):
         path.setFillRule(Qt.FillRule.OddEvenFill)
         self.setPath(path)
 
-        cat = str(getattr(polygon, "category", "") or "")
-        if selected and cat == "via":
-            color_name = display_settings.via_selection_color
-        elif selected:
-            color_name = display_settings.selected_color
-        elif conductor_hover_highlight:
-            color_name = display_settings.conductor_hover_highlight_color
-        elif cat == "metal_wide_gradient":
-            color_name = "#2563EB"
-        elif custom_color:
-            color_name = custom_color
-        elif polygon.is_hole:
-            color_name = display_settings.hole_color
-        else:
-            color_name = display_settings.external_color
-        outline = QColor(color_name)
-        fill = QColor(color_name)
-        if polygon.is_hole:
-            fill.setAlpha(0)
-        else:
-            fill.setAlphaF(max(0.0, min(1.0, display_settings.fill_opacity)))
+        self._update_appearance(
+            display_settings,
+            selected=selected,
+            custom_color=custom_color,
+            conductor_hover_highlight=conductor_hover_highlight,
+        )
 
-        pen = QPen(outline, max(1.0, display_settings.line_width))
-        pen.setCosmetic(True)
-        self.setPen(pen)
-        self.setBrush(QBrush(fill))
         self._label_item.setText(str(polygon.id))
-        self._label_item.setBrush(QBrush(outline))
         self._label_item.setVisible(display_settings.show_labels)
 
         bbox = self.boundingRect()
@@ -112,6 +168,57 @@ class EditablePolygonItem(QGraphicsPathItem):
                 handle.vertex_index = index
                 handle.update_geometry(point, display_settings.vertex_size, handle_color)
                 handle.setVisible(True)
+
+    def update_selection_appearance(
+        self,
+        display_settings: DisplaySettings,
+        *,
+        selected: bool,
+        custom_color: str | None = None,
+    ) -> None:
+        self._update_appearance(
+            display_settings,
+            selected=selected,
+            custom_color=custom_color,
+            conductor_hover_highlight=False,
+        )
+
+    def _update_appearance(
+        self,
+        display_settings: DisplaySettings,
+        *,
+        selected: bool,
+        custom_color: str | None,
+        conductor_hover_highlight: bool,
+    ) -> None:
+        polygon = self._polygon
+        cat = str(getattr(polygon, "category", "") or "")
+        if selected and cat == "via":
+            color_name = display_settings.via_selection_color
+        elif selected:
+            color_name = display_settings.selected_color
+        elif conductor_hover_highlight:
+            color_name = display_settings.conductor_hover_highlight_color
+        elif cat == "metal_wide_gradient":
+            color_name = "#2563EB"
+        elif custom_color:
+            color_name = custom_color
+        elif polygon.is_hole:
+            color_name = display_settings.hole_color
+        else:
+            color_name = display_settings.external_color
+        outline = QColor(color_name)
+        fill = QColor(color_name)
+        if polygon.is_hole:
+            fill.setAlpha(0)
+        else:
+            fill.setAlphaF(max(0.0, min(1.0, display_settings.fill_opacity)))
+
+        pen = QPen(outline, max(1.0, display_settings.line_width))
+        pen.setCosmetic(True)
+        self.setPen(pen)
+        self.setBrush(QBrush(fill))
+        self._label_item.setBrush(QBrush(outline))
 
     @property
     def polygon(self) -> PolygonData:

@@ -7,6 +7,13 @@ from PyQt6.QtGui import QUndoCommand
 from .domain import PolygonData
 
 
+def _all_vias(polygons: list[PolygonData]) -> bool:
+    return bool(polygons) and all(
+        polygon.category == "via" or polygon.shape_hint == "box"
+        for polygon in polygons
+    )
+
+
 class AddPolygonCommand(QUndoCommand):
     def __init__(self, scene: Any, polygon: PolygonData, *, select_after_redo: bool = False) -> None:
         super().__init__("Add polygon")
@@ -39,6 +46,7 @@ class AddPolygonsCommand(QUndoCommand):
         self._scene = scene
         self._polygons = [polygon.clone() for polygon in polygons]
         self._select_after_redo = bool(select_after_redo)
+        self._refresh_on_remove = not _all_vias(self._polygons)
 
     def redo(self) -> None:
         polygons = [polygon.clone() for polygon in self._polygons]
@@ -49,7 +57,10 @@ class AddPolygonsCommand(QUndoCommand):
         self._scene._add_polygons_internal(polygons)
 
     def undo(self) -> None:
-        self._scene._remove_polygons_internal([polygon.id for polygon in self._polygons])
+        self._scene._remove_polygons_internal(
+            [polygon.id for polygon in self._polygons],
+            refresh=self._refresh_on_remove,
+        )
 
 
 class DeletePolygonCommand(QUndoCommand):
@@ -70,12 +81,19 @@ class DeletePolygonsCommand(QUndoCommand):
         super().__init__("Delete polygons")
         self._scene = scene
         self._polygons = [polygon.clone() for polygon in polygons]
+        self._refresh_scene = not _all_vias(self._polygons)
 
     def redo(self) -> None:
-        self._scene._remove_polygons_internal([polygon.id for polygon in self._polygons])
+        self._scene._remove_polygons_internal(
+            [polygon.id for polygon in self._polygons],
+            refresh=self._refresh_scene,
+        )
 
     def undo(self) -> None:
-        self._scene._add_polygons_internal([polygon.clone() for polygon in self._polygons])
+        self._scene._add_polygons_internal(
+            [polygon.clone() for polygon in self._polygons],
+            refresh=self._refresh_scene,
+        )
 
 
 class MoveVertexCommand(QUndoCommand):

@@ -22,6 +22,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import (
     QBrush,
     QColor,
+    QCloseEvent,
     QContextMenuEvent,
     QKeyEvent,
     QKeySequence,
@@ -50,10 +51,13 @@ from ..application.vector_geometry_postprocess import (
     postprocess_changed_polygon_edit,
     resolve_focus_id_after_geometry_pass,
 )
-from ..commands import ReplacePolygonSetCommand
+from ..commands import MovePolygonCommand, ReplacePolygonSetCommand
 from ..domain import PolygonData
 from ..domain.polygon_ring import is_valid_closed_polygon_vertex_move
+from ..infrastructure.contact_placement_profiler import ContactDragProfile, SceneZoomProfile
 from ..infrastructure.profiling import (
+    contact_drag_profiling_enabled,
+    scene_zoom_profiling_enabled,
     try_disable_profiler,
     try_enable_profiler,
     vertex_move_profiling_enabled,
@@ -86,6 +90,7 @@ _WHEEL_ZOOM_COALESCE_MS = 3
 _ZOOM_ANIMATION_FRAME_MS = 16
 _ZOOM_EASING_FRACTION = 0.55
 _ZOOM_SETTLE_RATIO = 0.001
+_ZOOM_VECTOR_BATCH_THRESHOLD = 1000
 _OPENGL_VIEWPORT_ENABLED = True
 _OPENGL_DISABLED_PLATFORMS = {"offscreen", "minimal"}
 _PYRAMID_VISIBLE_UPDATE_MS = 24
@@ -112,6 +117,7 @@ class PolygonEditorView(QGraphicsView):
     contactPlacementAttemptStarted = pyqtSignal()
     contactPlacementAttemptFinished = pyqtSignal(bool)
     contactMultiSelectionStarted = pyqtSignal()
+    contactMultiSelectionApplyStarted = pyqtSignal()
     contactMultiSelectionFinished = pyqtSignal(int)
     contactDeletionStarted = pyqtSignal(int)
     contactDeletionFinished = pyqtSignal(int)
@@ -190,19 +196,24 @@ class PolygonEditorView(QGraphicsView):
         self._paste_preview_items: list[QGraphicsPathItem] = []
         self._vector_geometry_settings = VectorGeometrySettings()
         self._drag_polygons_snapshot: list[PolygonData] | None = None
+        self._drag_polygon_is_contact = False
+        self._contact_drag_profile: ContactDragProfile | None = None
         self._brush_pan_guard = False
         self._frame_navigation_guard: Callable[[], bool] | None = None
         self._pending_wheel_zoom_factor = 1.0
         self._pending_wheel_zoom_viewport_pixel: QPoint | None = None
         self._wheel_zoom_timer = QTimer(self)
         self._wheel_zoom_timer.setSingleShot(True)
+        self._wheel_zoom_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._wheel_zoom_timer.setInterval(_WHEEL_ZOOM_COALESCE_MS)
         self._wheel_zoom_timer.timeout.connect(self._flush_queued_wheel_zoom)
         self._zoom_animation_timer = QTimer(self)
+        self._zoom_animation_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._zoom_animation_timer.setInterval(_ZOOM_ANIMATION_FRAME_MS)
         self._zoom_animation_timer.timeout.connect(self._advance_zoom_animation)
         self._zoom_animation_viewport_pixel: QPoint | None = None
         self._zoom_animation_target_zoom = 1.0
+        self._scene_zoom_profile: SceneZoomProfile | None = None
         self._pyramid_store: PyramidFrameStore | None = None
         self._pyramid_layout: FixedGridFrameLayout | None = None
         self._pyramid_enabled = False
@@ -333,7 +344,7 @@ class PolygonEditorView(QGraphicsView):
         return self._available_tools
 
     def _refresh_available_tools_from_scene(self) -> None:
-        available = available_editor_tools(self._editor_scene.get_polygons())
+        available = self._editor_scene.available_editor_tools()
         changed = available != self._available_tools
         self._available_tools = available
         if self._tool not in available:
@@ -984,6 +995,14 @@ class PolygonEditorView(QGraphicsView):
         self._update_tool_cursors()
         event.accept()
 
+    def closeEvent(self, event: QCloseEvent | None) -> None:
+        self._wheel_zoom_timer.stop()
+        self._pending_wheel_zoom_factor = 1.0
+        self._pending_wheel_zoom_viewport_pixel = None
+        self._stop_zoom_animation()
+        if event is not None:
+            super().closeEvent(event)
+
     def mousePressEvent(self, event: QMouseEvent | None) -> None:
         if event is None:
             return
@@ -1215,6 +1234,7 @@ class PolygonEditorView(QGraphicsView):
                 return
             if additive_selection:
                 self.contactMultiSelectionStarted.emit()
+                self.contactMultiSelectionApplyStarted.emit()
             self._editor_scene.select_polygon(polygon_id, additive=additive_selection)
             if additive_selection:
                 self.contactMultiSelectionFinished.emit(self._selected_contact_count())
@@ -1291,6 +1311,7 @@ class PolygonEditorView(QGraphicsView):
     def mouseMoveEvent(self, event: QMouseEvent | None) -> None:
         if event is None:
             return
+        move_event_started_at = perf_counter()
         viewport_pixel = self._require_viewport().mapFrom(self, event.position().toPoint())
         self._last_pointer_viewport_pos = QPointF(viewport_pixel)
         scene_pos = self.mapToScene(self._viewport_to_view_point(viewport_pixel))
@@ -1316,7 +1337,17 @@ class PolygonEditorView(QGraphicsView):
             return
         brush_drag_active = self._drag_kind == "brush"
         trace_drag_active = self._drag_kind == "trace"
-        if self._tool in (EditorTool.BRUSH, EditorTool.TRACE_PEN) or brush_drag_active or trace_drag_active:
+        selection_drag_active = self._drag_kind == "select_area"
+        polygon_drag_active = self._drag_kind == "polygon"
+        zoom_active = self._zoom_animation_timer.isActive()
+        if (
+            self._tool in (EditorTool.BRUSH, EditorTool.TRACE_PEN)
+            or brush_drag_active
+            or trace_drag_active
+            or selection_drag_active
+            or polygon_drag_active
+            or zoom_active
+        ):
             self._editor_scene.clear_conductor_hover_highlight()
         else:
             self._editor_scene.sync_conductor_hover_highlight(scene_pos)
@@ -1334,10 +1365,18 @@ class PolygonEditorView(QGraphicsView):
             dx = scene_pos.x() - self._select_press_start.x()
             dy = scene_pos.y() - self._select_press_start.y()
             if hypot(dx, dy) >= self._scene_tolerance(4.0):
+                self._start_contact_drag_profile(self._select_press_polygon_id)
                 self._drag_kind = "polygon"
                 self._drag_polygon_id = self._select_press_polygon_id
+                self._drag_polygon_is_contact = self._editor_scene.polygon_is_contact(
+                    self._select_press_polygon_id
+                )
                 self._drag_origin_points = self._editor_scene.polygon_points(self._select_press_polygon_id)
-                self._drag_polygons_snapshot = self._editor_scene.get_polygons()
+                self._drag_polygons_snapshot = (
+                    None
+                    if self._drag_polygon_is_contact
+                    else self._editor_scene.get_polygons()
+                )
                 self._drag_start_scene_pos = QPointF(self._select_press_start)
                 self._select_press_polygon_id = None
                 self._select_press_start = None
@@ -1414,6 +1453,8 @@ class PolygonEditorView(QGraphicsView):
             dy = scene_pos.y() - self._drag_start_scene_pos.y()
             moved = [(x_coord + dx, y_coord + dy) for x_coord, y_coord in self._drag_origin_points]
             self._editor_scene.preview_polygon_move(self._drag_polygon_id, moved)
+            if self._contact_drag_profile is not None:
+                self._contact_drag_profile.record_frame(move_event_started_at)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -1421,6 +1462,12 @@ class PolygonEditorView(QGraphicsView):
     def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:
         if event is None:
             return
+        contact_drag_commit_started_at = (
+            perf_counter()
+            if self._contact_drag_profile is not None
+            else None
+        )
+        contact_drag_status = "released"
         if event.button() == Qt.MouseButton.MiddleButton and self._middle_pan_active:
             self._middle_pan_active = False
             self._middle_pan_last_viewport = None
@@ -1467,6 +1514,7 @@ class PolygonEditorView(QGraphicsView):
                 release_pos = self.mapToScene(event.position().toPoint())
                 rect = QRectF(self._drag_start_scene_pos, release_pos).normalized()
                 self._editor_scene.clear_preview_rect()
+                self.contactMultiSelectionApplyStarted.emit()
                 if rect.width() < self._scene_tolerance(3) and rect.height() < self._scene_tolerance(3):
                     polygon_id = self._editor_scene.polygon_at(release_pos)
                     self._editor_scene.select_polygon(
@@ -1577,14 +1625,29 @@ class PolygonEditorView(QGraphicsView):
                 self._drag_kind == "polygon"
                 and self._drag_polygon_id is not None
                 and self._drag_origin_points is not None
-                and self._drag_polygons_snapshot is not None
+                and (
+                    self._drag_polygon_is_contact
+                    or self._drag_polygons_snapshot is not None
+                )
             ):
                 new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
                 if _polygon_points_different(self._drag_origin_points, new_points):
                     if not is_valid_closed_polygon_ring(new_points):
+                        contact_drag_status = "rejected"
                         self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
                         self._editor_scene.warn_invalid_polygon_geometry()
+                    elif self._drag_polygon_is_contact:
+                        contact_drag_status = "displayed"
+                        self.undo_stack.push(
+                            MovePolygonCommand(
+                                self._editor_scene,
+                                self._drag_polygon_id,
+                                self._drag_origin_points,
+                                new_points,
+                            )
+                        )
                     else:
+                        assert self._drag_polygons_snapshot is not None
                         trial = apply_polygon_points_to_clone(
                             self._drag_polygons_snapshot,
                             self._drag_polygon_id,
@@ -1596,9 +1659,11 @@ class PolygonEditorView(QGraphicsView):
                             polygon_id=self._drag_polygon_id,
                         )
                         if not accepted:
+                            contact_drag_status = "rejected"
                             self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
                             self._editor_scene.warn_invalid_polygon_geometry()
                         else:
+                            contact_drag_status = "displayed"
                             focus_id = resolve_focus_id_after_geometry_pass(
                                 self._drag_polygons_snapshot,
                                 self._drag_polygon_id,
@@ -1619,9 +1684,18 @@ class PolygonEditorView(QGraphicsView):
             self._drag_origin_points = None
             self._drag_start_scene_pos = None
             self._drag_polygons_snapshot = None
+            self._drag_polygon_is_contact = False
             self._drag_erases = False
             self._brush_pan_guard = False
             self._update_tool_cursors()
+            if contact_drag_commit_started_at is not None:
+                self._finish_contact_drag_profile(
+                    contact_drag_status,
+                    commit_ms=(
+                        perf_counter() - contact_drag_commit_started_at
+                    )
+                    * 1000.0,
+                )
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -1772,6 +1846,8 @@ class PolygonEditorView(QGraphicsView):
             paste_was_active = self._paste_mode
             if self._drag_kind == "select_area":
                 self.contactMultiSelectionFinished.emit(0)
+            if self._contact_drag_profile is not None:
+                self._finish_contact_drag_profile("cancelled", commit_ms=0.0)
             self._editor_scene.cancel_pending_polygon()
             self._editor_scene.clear_measurement()
             self._editor_scene.clear_preview_rect()
@@ -1786,6 +1862,7 @@ class PolygonEditorView(QGraphicsView):
                 self.rulerMeasurementChanged.emit("")
             self._drag_kind = None
             self._drag_erases = False
+            self._drag_polygon_is_contact = False
             self._pending_polygon_erases = None
             self._update_tool_cursors()
             self._emit_effective_polygon_create_mode_changed()
@@ -1831,11 +1908,10 @@ class PolygonEditorView(QGraphicsView):
             self.recognizedViasDeleted.emit(recognized)
 
     def _selected_contact_count(self) -> int:
-        return sum(
-            1
-            for polygon in self._editor_scene.selected_polygons()
-            if is_via_polygon(polygon)
-        )
+        return self._editor_scene.selected_contact_count()
+
+    def selected_object_counts(self) -> tuple[int, int]:
+        return self._editor_scene.selected_object_counts()
 
     def keyReleaseEvent(self, event: QKeyEvent | None) -> None:
         if event is None:
@@ -1922,6 +1998,7 @@ class PolygonEditorView(QGraphicsView):
         target_zoom = clamp_zoom_factor(base_zoom * float(factor))
         if abs(target_zoom - current_zoom) <= 1e-9:
             return
+        self._start_scene_zoom_profile(current_zoom, target_zoom)
         self._zoom_animation_viewport_pixel = QPoint(viewport_pixel)
         self._zoom_animation_target_zoom = target_zoom
         self._update_navigation_scene_rect(target_zoom)
@@ -1933,11 +2010,13 @@ class PolygonEditorView(QGraphicsView):
         self._zoom_animation_timer.stop()
         self._zoom_animation_viewport_pixel = None
         self._leave_zoom_render_mode()
+        self._finish_scene_zoom_profile("interrupted")
 
     def _advance_zoom_animation(self) -> None:
+        frame_started_at = perf_counter()
         viewport_pixel = self._zoom_animation_viewport_pixel
         if viewport_pixel is None:
-            self._finish_zoom_animation()
+            self._finish_zoom_animation(frame_started_at=frame_started_at)
             return
         current_zoom = self.zoom_factor()
         target_zoom = self._zoom_animation_target_zoom
@@ -1952,23 +2031,70 @@ class PolygonEditorView(QGraphicsView):
         self._apply_zoom_at_viewport_pixel(viewport_pixel, factor, update_navigation=False)
         self.zoomChanged.emit(self.zoom_factor())
         if finish:
-            self._finish_zoom_animation()
+            self._finish_zoom_animation(frame_started_at=frame_started_at)
+        else:
+            self._require_viewport().update()
+            if self._scene_zoom_profile is not None:
+                self._scene_zoom_profile.record_frame(frame_started_at)
 
-    def _finish_zoom_animation(self) -> None:
+    def _finish_zoom_animation(self, *, frame_started_at: float | None = None) -> None:
         self._zoom_animation_timer.stop()
         self._zoom_animation_viewport_pixel = None
         self._leave_zoom_render_mode()
         self._update_navigation_scene_rect()
         self._schedule_pyramid_visible_update()
         self._update_tool_cursors()
+        self._require_viewport().update()
+        if frame_started_at is not None and self._scene_zoom_profile is not None:
+            self._scene_zoom_profile.record_frame(frame_started_at)
+        self._finish_scene_zoom_profile("displayed")
+
+    def _start_scene_zoom_profile(
+        self,
+        initial_zoom: float,
+        target_zoom: float,
+    ) -> None:
+        profile = self._scene_zoom_profile
+        if profile is not None:
+            profile.update_target(target_zoom)
+            return
+        if not scene_zoom_profiling_enabled():
+            return
+        self._scene_zoom_profile = SceneZoomProfile.begin(
+            initial_zoom=initial_zoom,
+            target_zoom=target_zoom,
+        )
+        print(
+            "[contour scene zoom profiling] "
+            f"started zoom={initial_zoom:.4f} target={target_zoom:.4f}",
+            flush=True,
+        )
+
+    def _finish_scene_zoom_profile(self, status: str) -> None:
+        profile = self._scene_zoom_profile
+        if profile is None:
+            return
+        self._scene_zoom_profile = None
+        profile.finish()
+        print(
+            profile.format_summary(status=status, final_zoom=self.zoom_factor()),
+            flush=True,
+        )
+        print(profile.format_stats(), flush=True)
 
     def _enter_zoom_render_mode(self) -> None:
+        self._editor_scene.begin_zoom_vector_render_mode(
+            minimum_contacts=_ZOOM_VECTOR_BATCH_THRESHOLD,
+        )
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.NoViewportUpdate)
         self.setRenderHints(self._zooming_render_hints)
         self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
 
     def _leave_zoom_render_mode(self) -> None:
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         self.setRenderHints(self._steady_render_hints)
         self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, False)
+        self._editor_scene.end_zoom_vector_render_mode()
 
     def _clamp_current_zoom_at_viewport_pixel(self, viewport_pixel: QPoint) -> None:
         current_zoom = self.zoom_factor()
@@ -2161,6 +2287,41 @@ class PolygonEditorView(QGraphicsView):
         dy = end.y() - start.y()
         distance = hypot(dx, dy)
         return f"L={distance:.1f}px, dX={dx:.1f}, dY={dy:.1f}"
+
+    def _start_contact_drag_profile(self, polygon_id: int | None) -> None:
+        if (
+            not contact_drag_profiling_enabled()
+            or not self._editor_scene.polygon_is_contact(polygon_id)
+            or polygon_id is None
+        ):
+            return
+        if self._contact_drag_profile is not None:
+            self._finish_contact_drag_profile("superseded", commit_ms=0.0)
+        contact_count = self._editor_scene.contact_count()
+        self._contact_drag_profile = ContactDragProfile.begin(
+            polygon_id=polygon_id,
+            contact_count=contact_count,
+        )
+        print(
+            "[contour contact drag profiling] "
+            f"started polygon_id={polygon_id} "
+            f"contacts={contact_count}",
+            flush=True,
+        )
+
+    def _finish_contact_drag_profile(
+        self,
+        status: str,
+        *,
+        commit_ms: float,
+    ) -> None:
+        profile = self._contact_drag_profile
+        if profile is None:
+            return
+        self._contact_drag_profile = None
+        profile.finish(commit_ms=commit_ms)
+        print(profile.format_summary(status=status), flush=True)
+        print(profile.format_stats(), flush=True)
 
     def _emit_vertex_move_profile(
         self,

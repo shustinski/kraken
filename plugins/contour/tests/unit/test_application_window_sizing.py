@@ -15,6 +15,7 @@ from contour.application.view import (
     ContourMainView,
     _bounded_initial_window_size,
 )
+from contour.domain import PolygonData
 
 
 def _app() -> QApplication:
@@ -77,6 +78,40 @@ def test_main_view_dock_contents_do_not_force_excessive_minimum_height() -> None
         view.resize(800, 420)
         app.processEvents()
         assert view.height() <= 420
+    finally:
+        view.close()
+        view.deleteLater()
+
+
+def test_main_view_status_bar_shows_selected_object_count() -> None:
+    app = _app()
+    view = ContourMainView()
+    try:
+        view.widget.set_ui_language("ru")
+        contact = PolygonData(
+            id=1,
+            points=[(10, 10), (20, 10), (20, 20), (10, 20)],
+            category="via",
+            shape_hint="box",
+            bbox=(10, 10, 11, 11),
+        )
+        view.widget.polygon_editor.set_polygons([contact])
+        view.widget.polygon_editor._editor_scene.select_polygon(1)
+        app.processEvents()
+
+        assert view._selection_status_label.text() == "Выделено контактов: 1"
+
+        view.widget.polygon_editor._editor_scene.select_polygon(None)
+        app.processEvents()
+        assert view._selection_status_label.text() == ""
+
+        polygon = contact.clone()
+        polygon.category = "conductor"
+        polygon.shape_hint = "polygon"
+        view.widget.polygon_editor.set_polygons([polygon])
+        view.widget.polygon_editor._editor_scene.select_polygon(1)
+        app.processEvents()
+        assert view._selection_status_label.text() == "Выделено полигонов: 1"
     finally:
         view.close()
         view.deleteLater()

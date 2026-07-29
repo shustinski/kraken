@@ -11,14 +11,202 @@ from time import perf_counter
 from .profiling import (
     contact_copy_top_lines,
     contact_deletion_top_lines,
+    contact_drag_top_lines,
     contact_multi_selection_top_lines,
     contact_paste_top_lines,
     contact_placement_top_lines,
     contact_redo_top_lines,
     contact_undo_top_lines,
+    scene_zoom_top_lines,
     try_disable_profiler,
     try_enable_profiler,
 )
+
+
+@dataclass
+class SceneZoomProfile:
+    initial_zoom: float
+    target_zoom: float
+    started_at: float = field(default_factory=perf_counter)
+    profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    profiler_active: bool = False
+    main_stats_skipped: bool = False
+    frame_durations_ms: list[float] = field(default_factory=list)
+    frame_intervals_ms: list[float] = field(default_factory=list)
+    last_frame_at: float | None = None
+
+    @classmethod
+    def begin(
+        cls,
+        *,
+        initial_zoom: float,
+        target_zoom: float,
+    ) -> SceneZoomProfile:
+        session = cls(
+            initial_zoom=max(0.0, float(initial_zoom)),
+            target_zoom=max(0.0, float(target_zoom)),
+        )
+        if try_enable_profiler(session.profiler):
+            session.profiler_active = True
+        else:
+            session.main_stats_skipped = True
+        return session
+
+    def update_target(self, target_zoom: float) -> None:
+        self.target_zoom = max(0.0, float(target_zoom))
+
+    def record_frame(self, frame_started_at: float) -> None:
+        completed_at = perf_counter()
+        self.frame_durations_ms.append(
+            max(0.0, (completed_at - frame_started_at) * 1000.0)
+        )
+        if self.last_frame_at is not None:
+            self.frame_intervals_ms.append(
+                max(0.0, (completed_at - self.last_frame_at) * 1000.0)
+            )
+        self.last_frame_at = completed_at
+
+    def finish(self) -> None:
+        if self.profiler_active:
+            try_disable_profiler(self.profiler)
+            self.profiler_active = False
+
+    def elapsed_ms(self) -> float:
+        return max(0.0, (perf_counter() - self.started_at) * 1000.0)
+
+    def _fps(self) -> float:
+        if self.frame_intervals_ms:
+            mean_interval = sum(self.frame_intervals_ms) / len(
+                self.frame_intervals_ms
+            )
+            return 1000.0 / mean_interval if mean_interval > 0.0 else 0.0
+        elapsed = self.elapsed_ms()
+        return (
+            len(self.frame_durations_ms) * 1000.0 / elapsed
+            if elapsed > 0.0
+            else 0.0
+        )
+
+    def format_summary(self, *, status: str, final_zoom: float) -> str:
+        durations = sorted(self.frame_durations_ms)
+        average_ms = sum(durations) / len(durations) if durations else 0.0
+        p95_index = max(0, min(len(durations) - 1, round(len(durations) * 0.95) - 1))
+        p95_ms = durations[p95_index] if durations else 0.0
+        maximum_ms = durations[-1] if durations else 0.0
+        skipped = " main_cprofile_skipped=yes" if self.main_stats_skipped else ""
+        return (
+            f"[contour scene zoom profiling] status={status} "
+            f"total={self.elapsed_ms():.3f}ms "
+            f"zoom={self.initial_zoom:.4f}->{max(0.0, float(final_zoom)):.4f} "
+            f"target={self.target_zoom:.4f} frames={len(durations)} "
+            f"fps={self._fps():.2f} frame_avg={average_ms:.3f}ms "
+            f"frame_p95={p95_ms:.3f}ms frame_max={maximum_ms:.3f}ms{skipped}"
+        )
+
+    def format_stats(self) -> str:
+        prefix = "[contour scene zoom profiling stats]"
+        if not self.profiler.getstats():
+            return f"{prefix} no cProfile data collected"
+        top_lines = scene_zoom_top_lines()
+        stream = io.StringIO()
+        pstats.Stats(self.profiler, stream=stream).sort_stats(
+            "cumtime"
+        ).print_stats(top_lines)
+        return f"{prefix} sort=cumulative top={top_lines}\n{stream.getvalue()}"
+
+
+@dataclass
+class ContactDragProfile:
+    polygon_id: int
+    contact_count: int
+    started_at: float = field(default_factory=perf_counter)
+    profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    profiler_active: bool = False
+    main_stats_skipped: bool = False
+    frame_durations_ms: list[float] = field(default_factory=list)
+    frame_intervals_ms: list[float] = field(default_factory=list)
+    last_frame_at: float | None = None
+    commit_ms: float = 0.0
+
+    @classmethod
+    def begin(
+        cls,
+        *,
+        polygon_id: int,
+        contact_count: int,
+    ) -> ContactDragProfile:
+        session = cls(
+            polygon_id=int(polygon_id),
+            contact_count=max(0, int(contact_count)),
+        )
+        if try_enable_profiler(session.profiler):
+            session.profiler_active = True
+        else:
+            session.main_stats_skipped = True
+        return session
+
+    def record_frame(self, event_started_at: float) -> None:
+        completed_at = perf_counter()
+        self.frame_durations_ms.append(
+            max(0.0, (completed_at - event_started_at) * 1000.0)
+        )
+        if self.last_frame_at is not None:
+            self.frame_intervals_ms.append(
+                max(0.0, (completed_at - self.last_frame_at) * 1000.0)
+            )
+        self.last_frame_at = completed_at
+
+    def finish(self, *, commit_ms: float) -> None:
+        self.commit_ms = max(0.0, float(commit_ms))
+        if self.profiler_active:
+            try_disable_profiler(self.profiler)
+            self.profiler_active = False
+
+    def elapsed_ms(self) -> float:
+        return max(0.0, (perf_counter() - self.started_at) * 1000.0)
+
+    def _fps(self) -> float:
+        if self.frame_intervals_ms:
+            mean_interval = sum(self.frame_intervals_ms) / len(
+                self.frame_intervals_ms
+            )
+            return 1000.0 / mean_interval if mean_interval > 0.0 else 0.0
+        elapsed = self.elapsed_ms()
+        return (
+            len(self.frame_durations_ms) * 1000.0 / elapsed
+            if elapsed > 0.0
+            else 0.0
+        )
+
+    def format_summary(self, *, status: str) -> str:
+        durations = sorted(self.frame_durations_ms)
+        average_ms = sum(durations) / len(durations) if durations else 0.0
+        p95_index = max(0, min(len(durations) - 1, round(len(durations) * 0.95) - 1))
+        p95_ms = durations[p95_index] if durations else 0.0
+        maximum_ms = durations[-1] if durations else 0.0
+        skipped = " main_cprofile_skipped=yes" if self.main_stats_skipped else ""
+        return (
+            f"[contour contact drag profiling] status={status} "
+            f"total={self.elapsed_ms():.3f}ms polygon_id={self.polygon_id} "
+            f"contacts={self.contact_count} frames={len(durations)} "
+            f"fps={self._fps():.2f} frame_avg={average_ms:.3f}ms "
+            f"frame_p95={p95_ms:.3f}ms frame_max={maximum_ms:.3f}ms "
+            f"commit={self.commit_ms:.3f}ms{skipped}"
+        )
+
+    def format_stats(self) -> str:
+        prefix = "[contour contact drag profiling stats]"
+        if not self.profiler.getstats():
+            return f"{prefix} no cProfile data collected"
+        top_lines = contact_drag_top_lines()
+        stream = io.StringIO()
+        pstats.Stats(self.profiler, stream=stream).sort_stats(
+            "cumtime"
+        ).print_stats(top_lines)
+        return (
+            f"{prefix} sort=cumulative top={top_lines}\n"
+            f"{stream.getvalue()}"
+        )
 
 
 @dataclass
@@ -60,6 +248,15 @@ class ContactPlacementProfile:
         if self.main_active:
             try_disable_profiler(self.main_profiler)
             self.main_active = False
+
+    def restart_main_profiler(self) -> None:
+        self.stop()
+        self.main_profiler.clear()
+        if try_enable_profiler(self.main_profiler):
+            self.main_active = True
+            self.main_stats_skipped = False
+        else:
+            self.main_stats_skipped = True
 
     def format_summary(self, *, status: str) -> str:
         phases = " ".join(

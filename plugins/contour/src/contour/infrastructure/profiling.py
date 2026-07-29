@@ -30,6 +30,8 @@ CONTACT_COPY_PROFILING_ENABLED = False
 CONTACT_PASTE_PROFILING_ENABLED = False
 CONTACT_UNDO_PROFILING_ENABLED = False
 CONTACT_REDO_PROFILING_ENABLED = False
+CONTACT_DRAG_PROFILING_ENABLED = True
+SCENE_ZOOM_PROFILING_ENABLED = True
 
 DEFAULT_FRAME_SWITCH_TOP_LINES = 80
 DEFAULT_PROCESSING_TOP_LINES = 25
@@ -42,6 +44,8 @@ DEFAULT_CONTACT_COPY_TOP_LINES = 40
 DEFAULT_CONTACT_PASTE_TOP_LINES = 40
 DEFAULT_CONTACT_UNDO_TOP_LINES = 40
 DEFAULT_CONTACT_REDO_TOP_LINES = 40
+DEFAULT_CONTACT_DRAG_TOP_LINES = 40
+DEFAULT_SCENE_ZOOM_TOP_LINES = 40
 DEFAULT_FRAME_SWITCH_IDLE_POLLS = 300
 
 
@@ -189,6 +193,20 @@ def contact_redo_profiling_enabled() -> bool:
     )
 
 
+def contact_drag_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "contact_drag",
+        default=CONTACT_DRAG_PROFILING_ENABLED,
+    )
+
+
+def scene_zoom_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "scene_zoom",
+        default=SCENE_ZOOM_PROFILING_ENABLED,
+    )
+
+
 def frame_switch_top_lines() -> int:
     return profiling_top_lines("frame_switch", DEFAULT_FRAME_SWITCH_TOP_LINES)
 
@@ -234,6 +252,14 @@ def contact_undo_top_lines() -> int:
 
 def contact_redo_top_lines() -> int:
     return profiling_top_lines("contact_redo", DEFAULT_CONTACT_REDO_TOP_LINES)
+
+
+def contact_drag_top_lines() -> int:
+    return profiling_top_lines("contact_drag", DEFAULT_CONTACT_DRAG_TOP_LINES)
+
+
+def scene_zoom_top_lines() -> int:
+    return profiling_top_lines("scene_zoom", DEFAULT_SCENE_ZOOM_TOP_LINES)
 
 
 def frame_switch_idle_polls() -> int:

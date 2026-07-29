@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QGraphicsPathItem,
+    QGraphicsPixmapItem,
     QGraphicsView,
     QListWidgetItem,
     QMenu,
@@ -2281,6 +2282,166 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
             ),
         )
 
+    def test_contact_drag_commit_updates_only_contact_and_is_undoable(self) -> None:
+        contact = _rectangle_polygon(20, 20, 40, 40)
+        contact.category = "via"
+        contact.shape_hint = "box"
+        contact.recognition_score = 87.0
+        self.view.set_polygons([contact])
+        scene = self.view._editor_scene
+        scene.select_polygon(1)
+        original_points = scene.polygon_points(1)
+        moved_points = [(x + 15, y + 10) for x, y in original_points]
+        scene.preview_polygon_move(1, moved_points)
+        self.view._drag_kind = "polygon"
+        self.view._drag_polygon_id = 1
+        self.view._drag_origin_points = original_points
+        self.view._drag_start_scene_pos = QPointF(20.0, 20.0)
+        self.view._drag_polygons_snapshot = None
+        self.view._drag_polygon_is_contact = True
+
+        with patch.object(
+            scene,
+            "_bulk_restore_polygons",
+            wraps=scene._bulk_restore_polygons,
+        ) as bulk_restore:
+            QTest.mouseRelease(
+                self.view.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                self.view.mapFromScene(QPointF(55.0, 50.0)),
+            )
+            self._app.processEvents()
+
+        bulk_restore.assert_not_called()
+        self.assertEqual(scene.polygon_points(1), moved_points)
+        self.assertEqual(scene.polygon_snapshot(1).recognition_score, 87.0)
+
+        scene.undo_stack.undo()
+        self.assertEqual(scene.polygon_points(1), original_points)
+        scene.undo_stack.redo()
+        self.assertEqual(scene.polygon_points(1), moved_points)
+
+    def test_contact_drag_skips_hover_hit_testing_on_mouse_move(self) -> None:
+        contact = _rectangle_polygon(20, 20, 40, 40)
+        contact.category = "via"
+        contact.shape_hint = "box"
+        self.view.set_polygons([contact])
+        self.view._drag_kind = "polygon"
+        self.view._drag_polygon_id = None
+        self.view._drag_polygon_is_contact = True
+
+        with patch.object(
+            self.view._editor_scene,
+            "sync_conductor_hover_highlight",
+            wraps=self.view._editor_scene.sync_conductor_hover_highlight,
+        ) as hover_hit_test:
+            QTest.mouseMove(
+                self.view.viewport(),
+                self.view.mapFromScene(QPointF(30.0, 30.0)),
+            )
+            self._app.processEvents()
+
+        hover_hit_test.assert_not_called()
+
+    def test_zoom_uses_visible_composite_contact_layer_and_restores_items(self) -> None:
+        scene = self.view._editor_scene
+        contact_a = _rectangle_polygon(20, 20, 28, 28)
+        contact_a.category = "via"
+        contact_a.shape_hint = "box"
+        contact_b = _rectangle_polygon(400, 400, 408, 408)
+        contact_b.id = 2
+        contact_b.category = "via"
+        contact_b.shape_hint = "box"
+        self.view.set_polygons([contact_a, contact_b])
+
+        enabled = scene.begin_zoom_vector_render_mode(minimum_contacts=2)
+
+        self.assertTrue(enabled)
+        self.assertTrue(scene.polygon_overlays_visible())
+        self.assertTrue(scene._zoom_contact_composite_items)
+        self.assertEqual(len(scene._zoom_contact_composite_items), 1)
+        self.assertIsInstance(
+            scene._zoom_contact_composite_items[0],
+            QGraphicsPixmapItem,
+        )
+        self.assertFalse(
+            scene._zoom_contact_composite_items[0].pixmap().isNull()
+        )
+        self.assertTrue(all(item.isVisible() for item in scene._zoom_contact_composite_items))
+        self.assertFalse(scene._polygon_items[1].isVisible())
+        self.assertFalse(scene._polygon_items[2].isVisible())
+
+        scene.set_polygon_overlays_visible(False)
+        self.assertFalse(scene._zoom_contact_composite_items[0].isVisible())
+        scene.set_polygon_overlays_visible(True)
+        self.assertTrue(scene._zoom_contact_composite_items[0].isVisible())
+        self.assertFalse(scene._polygon_items[1].isVisible())
+        self.assertFalse(scene._polygon_items[2].isVisible())
+
+        scene.end_zoom_vector_render_mode()
+
+        self.assertFalse(scene._zoom_contact_composite_items)
+        self.assertTrue(scene._polygon_items[1].isVisible())
+        self.assertTrue(scene._polygon_items[2].isVisible())
+        self.assertTrue(scene.polygon_overlays_visible())
+
+    def test_zoom_requests_one_managed_viewport_update_per_frame(self) -> None:
+        viewport = self.view.viewport()
+        self.assertEqual(
+            self.view._wheel_zoom_timer.timerType(),
+            Qt.TimerType.PreciseTimer,
+        )
+        self.assertEqual(
+            self.view._zoom_animation_timer.timerType(),
+            Qt.TimerType.PreciseTimer,
+        )
+        with patch.object(viewport, "update") as viewport_update:
+            self.view._enter_zoom_render_mode()
+            self.assertEqual(
+                self.view.viewportUpdateMode(),
+                QGraphicsView.ViewportUpdateMode.NoViewportUpdate,
+            )
+
+            self.view._zoom_animation_viewport_pixel = QPoint(30, 30)
+            self.view._zoom_animation_target_zoom = self.view.zoom_factor() * 2.0
+            self.view._advance_zoom_animation()
+
+            viewport_update.assert_called_once_with()
+            self.view._leave_zoom_render_mode()
+
+        self.assertEqual(
+            self.view.viewportUpdateMode(),
+            QGraphicsView.ViewportUpdateMode.FullViewportUpdate,
+        )
+
+    def test_zoom_skips_hover_hit_testing_on_mouse_move(self) -> None:
+        self.view._zoom_animation_timer.start(60_000)
+        try:
+            with patch.object(
+                self.view._editor_scene,
+                "sync_conductor_hover_highlight",
+                wraps=self.view._editor_scene.sync_conductor_hover_highlight,
+            ) as hover_hit_test:
+                QTest.mouseMove(
+                    self.view.viewport(),
+                    self.view.mapFromScene(QPointF(30.0, 30.0)),
+                )
+                self._app.processEvents()
+
+            hover_hit_test.assert_not_called()
+        finally:
+            self.view._zoom_animation_timer.stop()
+
+    def test_closing_view_finishes_active_zoom_profile(self) -> None:
+        self.view._start_zoom_animation(QPoint(30, 30), 1.2)
+        self.assertIsNotNone(self.view._scene_zoom_profile)
+
+        self.view.close()
+
+        self.assertIsNone(self.view._scene_zoom_profile)
+        self.assertFalse(self.view._zoom_animation_timer.isActive())
+
     def tearDown(self) -> None:
         self.view.close()
         self.view.deleteLater()
@@ -3800,6 +3961,105 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
 
         self.assertEqual(len(scene.get_polygons()), 1)
 
+    def test_via_placement_skips_global_cleanup_and_refreshes_only_new_selection(self) -> None:
+        scene = PolygonEditorScene()
+        contacts = []
+        for index in range(100):
+            contact = _rectangle_polygon(index * 15, 0, index * 15 + 8, 8)
+            contact.id = index + 1
+            contact.category = "via"
+            contact.shape_hint = "box"
+            contacts.append(contact)
+        scene.set_polygons(contacts)
+        scene.set_image(np.zeros((60, 1600), dtype=np.uint8))
+
+        with (
+            patch.object(scene, "_maybe_push_vector_postprocess") as postprocess,
+            patch.object(
+                scene,
+                "_refresh_polygon_selection_item",
+                wraps=scene._refresh_polygon_selection_item,
+            ) as refresh_item,
+        ):
+            added = scene.add_via_at(QPointF(20.0, 30.0), 8.0, 8.0)
+
+        self.assertTrue(added)
+        postprocess.assert_not_called()
+        self.assertEqual(refresh_item.call_count, 1)
+        self.assertEqual(scene.selected_polygon_id(), 101)
+
+    def test_contact_drag_preview_refreshes_only_moved_contact(self) -> None:
+        scene = PolygonEditorScene()
+        contacts = []
+        for index in range(100):
+            contact = _rectangle_polygon(index * 15, 0, index * 15 + 8, 8)
+            contact.id = index + 1
+            contact.category = "via"
+            contact.shape_hint = "box"
+            contacts.append(contact)
+        scene.set_polygons(contacts)
+        moved_points = [(x, y + 20) for x, y in scene.polygon_points(1)]
+
+        with (
+            patch.object(
+                scene,
+                "_refresh_all_items",
+                wraps=scene._refresh_all_items,
+            ) as refresh_all,
+            patch.object(
+                scene,
+                "_refresh_polygon_item",
+                wraps=scene._refresh_polygon_item,
+            ) as refresh_item,
+        ):
+            scene.preview_polygon_move(1, moved_points)
+
+        self.assertEqual(refresh_all.call_count, 0)
+        self.assertEqual(refresh_item.call_count, 1)
+        self.assertEqual(scene.polygon_points(1), moved_points)
+
+    def test_selection_refreshes_only_previous_and_next_contacts(self) -> None:
+        scene = PolygonEditorScene()
+        contacts = []
+        for index in range(100):
+            contact = _rectangle_polygon(index * 15, 0, index * 15 + 8, 8)
+            contact.id = index + 1
+            contact.category = "via"
+            contact.shape_hint = "box"
+            contacts.append(contact)
+        scene.set_polygons(contacts)
+        scene.select_polygon(20)
+
+        with patch.object(
+            scene,
+            "_refresh_polygon_selection_item",
+            wraps=scene._refresh_polygon_selection_item,
+        ) as refresh_item:
+            scene.select_polygon(80)
+
+        self.assertEqual(refresh_item.call_count, 2)
+
+    def test_multi_selection_does_not_resolve_edit_families_for_contacts(self) -> None:
+        scene = PolygonEditorScene()
+        contacts = []
+        for index in range(100):
+            contact = _rectangle_polygon(index * 15, 0, index * 15 + 8, 8)
+            contact.id = index + 1
+            contact.category = "via"
+            contact.shape_hint = "box"
+            contacts.append(contact)
+        scene.set_polygons(contacts)
+
+        with patch.object(
+            scene,
+            "_polygon_edit_family_ids",
+            wraps=scene._polygon_edit_family_ids,
+        ) as edit_family:
+            scene.select_polygons([contact.id for contact in contacts])
+
+        edit_family.assert_not_called()
+        self.assertEqual(len(scene.selected_polygons()), len(contacts))
+
     def test_delete_via_at_deletes_only_vias(self) -> None:
         scene = PolygonEditorScene()
         conductor = _rectangle_polygon(0, 0, 20, 20)
@@ -3813,6 +4073,30 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
         self.assertEqual(len(scene.get_polygons()), 2)
         self.assertTrue(scene.delete_via_at(QPointF(40.0, 40.0)))
         self.assertEqual(len(scene.get_polygons()), 1)
+
+    def test_via_deletion_and_undo_skip_full_scene_refresh(self) -> None:
+        scene = PolygonEditorScene()
+        contacts = []
+        for index in range(100):
+            contact = _rectangle_polygon(index * 15, 0, index * 15 + 8, 8)
+            contact.id = index + 1
+            contact.category = "via"
+            contact.shape_hint = "box"
+            contacts.append(contact)
+        scene.set_polygons(contacts)
+
+        with patch.object(
+            scene,
+            "_refresh_all_items",
+            wraps=scene._refresh_all_items,
+        ) as refresh:
+            self.assertTrue(scene.delete_via_at(QPointF(4.0, 4.0)))
+            self.assertEqual(refresh.call_count, 0)
+            self.assertEqual(len(scene.get_polygons()), 99)
+
+            scene.undo_stack.undo()
+            self.assertEqual(refresh.call_count, 0)
+            self.assertEqual(len(scene.get_polygons()), 100)
 
     def test_polygon_and_via_creation_are_mutually_exclusive(self) -> None:
         scene = PolygonEditorScene()
@@ -4009,17 +4293,17 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
                 QPointF(95.0, 45.0),
             )
             self.assertEqual(len(pasted), len(contacts))
-            # Adding and applying the final selection share one scene refresh.
-            self.assertEqual(refresh.call_count, 1)
+            # New items are refreshed directly; unchanged scene items are not.
+            self.assertEqual(refresh.call_count, 0)
             self.assertEqual(len(changed), 1)
 
             scene.undo_stack.undo()
-            self.assertEqual(refresh.call_count, 2)
+            self.assertEqual(refresh.call_count, 0)
             self.assertEqual(len(changed), 2)
             self.assertEqual(scene.get_polygons(), [])
 
             scene.undo_stack.redo()
-            self.assertEqual(refresh.call_count, 3)
+            self.assertEqual(refresh.call_count, 0)
             self.assertEqual(len(changed), 3)
             self.assertEqual(len(scene.get_polygons()), len(contacts))
 

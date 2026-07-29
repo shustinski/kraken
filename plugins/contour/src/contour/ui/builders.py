@@ -2013,6 +2013,8 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.viewport().installEventFilter(self)
     self.polygon_editor.set_frame_navigation_guard(self.confirm_ok_to_leave_current_vectors)
     self.polygon_editor.polygonsEdited.connect(self._on_polygons_edited)
+    self.polygon_editor.polygonsEdited.connect(self._update_editor_selection_status)
+    self.polygon_editor.activePolygonChanged.connect(self._update_editor_selection_status)
     self.polygon_editor.logRequested.connect(self._append_log)
     self.polygon_editor.imageClicked.connect(self._on_editor_image_clicked)
     self.polygon_editor.imageRegionSelected.connect(self._on_editor_image_region_selected)
@@ -2032,6 +2034,9 @@ def build_visual_panel(self) -> QWidget:
     )
     self.polygon_editor.contactMultiSelectionStarted.connect(
         self._start_contact_multi_selection_profile
+    )
+    self.polygon_editor.contactMultiSelectionApplyStarted.connect(
+        self._mark_contact_multi_selection_apply_started
     )
     self.polygon_editor.contactMultiSelectionFinished.connect(
         self._finish_contact_multi_selection_profile

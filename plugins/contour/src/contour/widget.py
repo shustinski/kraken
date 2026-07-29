@@ -231,6 +231,7 @@ class PolygonExtractionWidget(
     batchFinished = pyqtSignal()
     polygonsEdited = pyqtSignal()
     logMessage = pyqtSignal(str)
+    selectionStatusChanged = pyqtSignal(str)
     workSimulationActiveChanged = pyqtSignal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:

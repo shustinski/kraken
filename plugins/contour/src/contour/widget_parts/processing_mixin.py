@@ -171,13 +171,27 @@ class WidgetProcessingMixin:
             action="multi_selection"
         )
 
+    def _mark_contact_multi_selection_apply_started(self: Any) -> None:
+        session = getattr(self, "_contact_multi_selection_profile", None)
+        if session is None:
+            return
+        session.note("selection_gesture")
+        session.restart_main_profiler()
+
     def _finish_contact_multi_selection_profile(self: Any, contact_count: int) -> None:
         session = getattr(self, "_contact_multi_selection_profile", None)
         if session is None:
             return
         self._contact_multi_selection_profile = None
         session.contact_count = max(0, int(contact_count))
-        session.note("selection_applied_to_ui")
+        applied_at = session.elapsed_ms()
+        gesture_ms = session.timings_ms.get("selection_gesture")
+        if gesture_ms is not None:
+            session.timings_ms["selection_apply"] = max(
+                0.0,
+                applied_at - gesture_ms,
+            )
+        session.timings_ms["selection_applied_to_ui"] = applied_at
         session.stop()
         if int(contact_count) < 2:
             return
@@ -1872,7 +1886,7 @@ class WidgetProcessingMixin:
             if current_path:
                 self._persisted_highlight_paths.discard(str(Path(current_path)))
             self._update_frame_item_status(self._workspace.current_image_path)
-            self._update_vector_edit_status_label()
+            self._update_vector_edit_status_label(sync_editor=False)
             self.polygonsEdited.emit()
 
     def _heuristic_contact_feedback_context(self: Any):

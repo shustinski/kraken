@@ -6,7 +6,17 @@ from typing import Any
 from kraken_core.theme import apply_app_theme, normalize_theme
 from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QIcon
-from PyQt6.QtWidgets import QDockWidget, QMainWindow, QMenu, QMenuBar, QSizePolicy, QStatusBar, QToolBar, QWidget
+from PyQt6.QtWidgets import (
+    QDockWidget,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMenuBar,
+    QSizePolicy,
+    QStatusBar,
+    QToolBar,
+    QWidget,
+)
 
 from ..__version__ import __version__
 from ..infrastructure import WidgetAppearanceSettingsStore
@@ -86,6 +96,9 @@ class ContourMainView(QMainWindow):
         self._widget = PolygonExtractionWidget(self)
         self._widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCentralWidget(self._widget)
+        self._selection_status_label = QLabel("")
+        _status_bar(self).addPermanentWidget(self._selection_status_label)
+        self._widget.selectionStatusChanged.connect(self.set_selection_status)
         self._editor_tools_toolbar = self._create_editor_tools_toolbar()
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._editor_tools_toolbar)
         menu_bar = _main_menu_bar(self)
@@ -440,6 +453,9 @@ class ContourMainView(QMainWindow):
 
     def bind_image_processed(self, handler: Callable[[str, list], None]) -> None:
         self._widget.imageProcessed.connect(handler)
+
+    def set_selection_status(self, message: str) -> None:
+        self._selection_status_label.setText(str(message))
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if hasattr(self._widget, "confirm_ok_to_leave_current_vectors") and not self._widget.confirm_ok_to_leave_current_vectors():

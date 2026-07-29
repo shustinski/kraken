@@ -1,6 +1,6 @@
 #define MyAppName "Contour"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.9.0"
+  #define MyAppVersion "0.9.3"
 #endif
 #define MyAppPublisher "Contour"
 #define MyAppExeName "Contour.exe"

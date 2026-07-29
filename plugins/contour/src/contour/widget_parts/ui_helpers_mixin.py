@@ -213,6 +213,7 @@ class WidgetUiHelpersMixin:
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_ui_language(self._ui_language)
         self._retranslate_ui()
+        self._update_editor_selection_status()
         if hasattr(self, "recognition_mode_combo"):
             self._update_extraction_profile_controls_state()
 
@@ -361,6 +362,35 @@ class WidgetUiHelpersMixin:
                 self.ruler_status_label.clear()
             return
         self.ruler_status_label.setText(text)
+
+    def _update_editor_selection_status(self, *_args: object) -> None:
+        if not hasattr(self, "polygon_editor"):
+            return
+        contact_count, polygon_count = self.polygon_editor.selected_object_counts()
+        if self._ui_language == "ru":
+            if contact_count and polygon_count:
+                text = (
+                    f"Выделено контактов: {contact_count}; "
+                    f"полигонов: {polygon_count}"
+                )
+            elif contact_count:
+                text = f"Выделено контактов: {contact_count}"
+            elif polygon_count:
+                text = f"Выделено полигонов: {polygon_count}"
+            else:
+                text = ""
+        elif contact_count and polygon_count:
+            text = (
+                f"Selected contacts: {contact_count}; "
+                f"polygons: {polygon_count}"
+            )
+        elif contact_count:
+            text = f"Selected contacts: {contact_count}"
+        elif polygon_count:
+            text = f"Selected polygons: {polygon_count}"
+        else:
+            text = ""
+        self.selectionStatusChanged.emit(text)
 
     def _retranslate_editor_mode_combos(self) -> None:
         polygon_mode = self.polygon_mode_combo.currentData()

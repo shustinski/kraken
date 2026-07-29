@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from math import hypot
+from math import ceil, floor, hypot
 
 from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
     QImage,
+    QPainter,
     QPainterPath,
     QPen,
     QPixmap,
@@ -43,7 +44,12 @@ from ..commands import (
     ReplacePolygonSetCommand,
 )
 from ..domain import PolygonData, compute_polygon_metrics, integer_point, integer_points
-from ..graphics_items import EditablePolygonItem, VertexHandleItem, _display_path_for_polygon
+from ..graphics_items import (
+    EditablePolygonItem,
+    VertexHandleItem,
+    ZoomContactBatchItem,
+    _display_path_for_polygon,
+)
 from ..i18n import active_language, tr
 from .brush_vector import (
     QUAD_SEGS_BRUSH_DEFAULT,
@@ -76,12 +82,91 @@ from .polygon_creation import (
     polygon_commit_acceptability,
 )
 from .tool_mode_logic import (
+    available_editor_tools,
     can_add_polygon,
     can_add_polygon_set,
     can_add_via,
     is_recognized_via,
     is_via_polygon as _is_via_polygon,
 )
+
+_ZOOM_COLOR_QUANTIZATION_STEP = 17
+_ZOOM_BATCH_TILE_SIZE = 256.0
+_ZOOM_RASTER_MAX_DIMENSION = 4096
+_CONTACT_PASTE_SPATIAL_CELL_SIZE = 64.0
+_ZOOM_QUANTIZED_CHANNELS = tuple(
+    min(255, max(0, round(channel / _ZOOM_COLOR_QUANTIZATION_STEP) * _ZOOM_COLOR_QUANTIZATION_STEP))
+    for channel in range(256)
+)
+
+
+def _zoom_quantized_rgba(rgba: int) -> int:
+    value = int(rgba)
+    return (
+        (value & 0xFF000000)
+        | (_ZOOM_QUANTIZED_CHANNELS[(value >> 16) & 0xFF] << 16)
+        | (_ZOOM_QUANTIZED_CHANNELS[(value >> 8) & 0xFF] << 8)
+        | _ZOOM_QUANTIZED_CHANNELS[value & 0xFF]
+    )
+
+
+class _ContactSpatialIndex:
+    def __init__(self, minimum_distance: float) -> None:
+        self._minimum_distance = max(0.0, float(minimum_distance))
+        self._minimum_distance_sq = self._minimum_distance * self._minimum_distance
+        self._entries: list[tuple[float, float, QRectF]] = []
+        self._cell_entries: dict[tuple[int, int], list[int]] = {}
+
+    @staticmethod
+    def _cells_for_rect(rect: QRectF):
+        normalized = rect.normalized()
+        cell_size = _CONTACT_PASTE_SPATIAL_CELL_SIZE
+        left = floor(float(normalized.left()) / cell_size)
+        right = floor(float(normalized.right()) / cell_size)
+        top = floor(float(normalized.top()) / cell_size)
+        bottom = floor(float(normalized.bottom()) / cell_size)
+        for cell_y in range(top, bottom + 1):
+            for cell_x in range(left, right + 1):
+                yield cell_x, cell_y
+
+    def add(self, center_x: float, center_y: float, rect: QRectF) -> None:
+        entry_index = len(self._entries)
+        stored_rect = QRectF(rect)
+        self._entries.append((float(center_x), float(center_y), stored_rect))
+        for cell in self._cells_for_rect(stored_rect):
+            self._cell_entries.setdefault(cell, []).append(entry_index)
+
+    def conflicts(self, center_x: float, center_y: float, rect: QRectF) -> bool:
+        search_rect = QRectF(rect)
+        if self._minimum_distance > 0.0:
+            radius = self._minimum_distance
+            search_rect = search_rect.united(
+                QRectF(
+                    float(center_x) - radius,
+                    float(center_y) - radius,
+                    radius * 2.0,
+                    radius * 2.0,
+                )
+            )
+        visited: set[int] = set()
+        for cell in self._cells_for_rect(search_rect):
+            for entry_index in self._cell_entries.get(cell, ()):
+                if entry_index in visited:
+                    continue
+                visited.add(entry_index)
+                existing_x, existing_y, existing_rect = self._entries[entry_index]
+                if rect.intersects(existing_rect):
+                    return True
+                if (
+                    self._minimum_distance_sq > 0.0
+                    and (
+                        (float(center_x) - existing_x) ** 2
+                        + (float(center_y) - existing_y) ** 2
+                    )
+                    < self._minimum_distance_sq
+                ):
+                    return True
+        return False
 
 
 class PolygonEditorScene(QGraphicsScene):
@@ -97,12 +182,15 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygons: dict[int, PolygonData] = {}
         self._polygon_items: dict[int, EditablePolygonItem] = {}
         self._hole_children_by_parent: dict[int, list[PolygonData]] = {}
+        self._polygon_child_ids_by_parent: dict[int, set[int]] = {}
         self._selected_polygon_id: int | None = None
         self._selected_polygon_ids: set[int] = set()
         self._next_polygon_id = 1
         self._polygon_overlays_visible = True
         self._gradient_overlay_user_visible = True
         self._polygon_category_visible: dict[str, bool] = {}
+        self._zoom_contact_composite_items: list[QGraphicsItem] = []
+        self._zoom_hidden_contact_ids: set[int] = set()
         self._protect_recognized_vias = False
         self._minimum_contact_distance = 0.0
 
@@ -589,9 +677,173 @@ class PolygonEditorScene(QGraphicsScene):
             poly = self._polygons[polygon_id]
             cat = str(getattr(poly, "category", "") or "")
             vis = self._polygon_category_visible.get(cat, True)
-            item.setVisible(self._polygon_overlays_visible and vis)
+            item.setVisible(
+                self._polygon_overlays_visible
+                and vis
+                and polygon_id not in self._zoom_hidden_contact_ids
+            )
+        zoom_contacts_visible = (
+            self._polygon_overlays_visible
+            and self._polygon_category_visible.get("via", True)
+        )
+        for item in self._zoom_contact_composite_items:
+            item.setVisible(zoom_contacts_visible)
         self._pending_path_item.setVisible(self._polygon_overlays_visible)
         self._preview_rect_item.setVisible(self._polygon_overlays_visible)
+
+    def begin_zoom_vector_render_mode(self, *, minimum_contacts: int) -> bool:
+        if self._zoom_contact_composite_items:
+            return True
+        if not self._polygon_overlays_visible or self._display_settings.show_labels:
+            return False
+        visible_contacts = [
+            (polygon_id, self._polygon_items[polygon_id])
+            for polygon_id, polygon in self._polygons.items()
+            if (
+                _is_via_polygon(polygon)
+                and polygon_id in self._polygon_items
+                and self._polygon_items[polygon_id].isVisible()
+            )
+        ]
+        if len(visible_contacts) < max(1, int(minimum_contacts)):
+            return False
+
+        rectangle_mode = (
+            normalize_via_display_mode(self._display_settings.via_display_mode)
+            == "rectangle"
+        )
+        grouped_contacts: dict[
+            tuple[bool, int, int, float, int, float, float, int, int],
+            tuple[list[QPointF], QPen, QBrush],
+        ] = {}
+        zoom_colors: dict[int, QColor] = {}
+        quantized_rgba: dict[int, int] = {}
+        batched_ids: set[int] = set()
+        for polygon_id, item in visible_contacts:
+            bounds = item.path().boundingRect()
+            if bounds.isEmpty():
+                continue
+            width = max(0.1, float(bounds.width()))
+            height = max(0.1, float(bounds.height()))
+            center = item.mapToScene(bounds.center())
+            pen = item.pen()
+            brush = item.brush()
+            raw_pen_rgba = int(pen.color().rgba())
+            pen_rgba = quantized_rgba.get(raw_pen_rgba)
+            if pen_rgba is None:
+                pen_rgba = _zoom_quantized_rgba(raw_pen_rgba)
+                quantized_rgba[raw_pen_rgba] = pen_rgba
+            raw_brush_rgba = int(brush.color().rgba())
+            brush_rgba = quantized_rgba.get(raw_brush_rgba)
+            if brush_rgba is None:
+                brush_rgba = _zoom_quantized_rgba(raw_brush_rgba)
+                quantized_rgba[raw_brush_rgba] = brush_rgba
+            key = (
+                polygon_id in self._selected_polygon_ids,
+                pen_rgba,
+                brush_rgba,
+                float(pen.widthF()),
+                int(brush.style().value),
+                round(width, 3),
+                round(height, 3),
+                int(center.x() // _ZOOM_BATCH_TILE_SIZE),
+                int(center.y() // _ZOOM_BATCH_TILE_SIZE),
+            )
+            group = grouped_contacts.get(key)
+            if group is None:
+                pen_color = zoom_colors.get(pen_rgba)
+                if pen_color is None:
+                    pen_color = QColor.fromRgba(pen_rgba)
+                    zoom_colors[pen_rgba] = pen_color
+                brush_color = zoom_colors.get(brush_rgba)
+                if brush_color is None:
+                    brush_color = QColor.fromRgba(brush_rgba)
+                    zoom_colors[brush_rgba] = brush_color
+                zoom_pen = QPen(pen)
+                zoom_pen.setColor(pen_color)
+                zoom_brush = QBrush(brush)
+                zoom_brush.setColor(brush_color)
+                centers: list[QPointF] = []
+                grouped_contacts[key] = (centers, zoom_pen, zoom_brush)
+            else:
+                centers = group[0]
+            centers.append(center)
+            batched_ids.add(polygon_id)
+
+        if not grouped_contacts:
+            return False
+
+        batches: list[ZoomContactBatchItem] = []
+        for key, (centers, pen, brush) in grouped_contacts.items():
+            batch = ZoomContactBatchItem(
+                centers=centers,
+                width=key[5],
+                height=key[6],
+                pen=pen,
+                brush=brush,
+                rectangles=rectangle_mode,
+            )
+            batch.setZValue(3.1 if key[0] else 3.0)
+            batches.append(batch)
+
+        batches.sort(key=lambda item: item.zValue())
+        raster_bounds = QRectF()
+        for batch in batches:
+            raster_bounds = (
+                batch.boundingRect()
+                if raster_bounds.isNull()
+                else raster_bounds.united(batch.boundingRect())
+            )
+        raster_scale = min(
+            1.0,
+            _ZOOM_RASTER_MAX_DIMENSION / max(1.0, float(raster_bounds.width())),
+            _ZOOM_RASTER_MAX_DIMENSION / max(1.0, float(raster_bounds.height())),
+        )
+        raster_width = max(1, ceil(float(raster_bounds.width()) * raster_scale))
+        raster_height = max(1, ceil(float(raster_bounds.height()) * raster_scale))
+        raster_image = QImage(
+            raster_width,
+            raster_height,
+            QImage.Format.Format_ARGB32_Premultiplied,
+        )
+        raster_image.fill(Qt.GlobalColor.transparent)
+        raster_painter = QPainter(raster_image)
+        raster_painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        raster_painter.scale(raster_scale, raster_scale)
+        raster_painter.translate(-raster_bounds.left(), -raster_bounds.top())
+        for batch in batches:
+            batch.paint(raster_painter, None)
+        raster_painter.end()
+
+        raster_item = QGraphicsPixmapItem(QPixmap.fromImage(raster_image))
+        raster_item.setTransformationMode(Qt.TransformationMode.FastTransformation)
+        raster_item.setPos(raster_bounds.topLeft())
+        raster_item.setScale(1.0 / raster_scale)
+        raster_item.setZValue(3.0)
+        self.addItem(raster_item)
+        self._zoom_contact_composite_items = [raster_item]
+        self._zoom_hidden_contact_ids = batched_ids
+        for polygon_id in self._zoom_hidden_contact_ids:
+            self._polygon_items[polygon_id].setVisible(False)
+        return True
+
+    def end_zoom_vector_render_mode(self) -> None:
+        if not self._zoom_contact_composite_items and not self._zoom_hidden_contact_ids:
+            return
+        for polygon_id in self._zoom_hidden_contact_ids:
+            polygon = self._polygons.get(polygon_id)
+            item = self._polygon_items.get(polygon_id)
+            if polygon is None or item is None:
+                continue
+            category = str(getattr(polygon, "category", "") or "")
+            item.setVisible(
+                self._polygon_overlays_visible
+                and self._polygon_category_visible.get(category, True)
+            )
+        self._zoom_hidden_contact_ids.clear()
+        for composite in self._zoom_contact_composite_items:
+            self.removeItem(composite)
+        self._zoom_contact_composite_items.clear()
 
     def polygon_overlays_visible(self) -> bool:
         return self._polygon_overlays_visible
@@ -601,6 +853,25 @@ class PolygonEditorScene(QGraphicsScene):
 
     def contact_count(self) -> int:
         return sum(1 for polygon in self._polygons.values() if _is_via_polygon(polygon))
+
+    def selected_contact_count(self) -> int:
+        return sum(
+            1
+            for polygon_id in self._selected_polygon_ids
+            if (
+                polygon_id in self._polygons
+                and _is_via_polygon(self._polygons[polygon_id])
+            )
+        )
+
+    def selected_object_counts(self) -> tuple[int, int]:
+        selected_count = sum(
+            1
+            for polygon_id in self._selected_polygon_ids
+            if polygon_id in self._polygons
+        )
+        contact_count = self.selected_contact_count()
+        return contact_count, selected_count - contact_count
 
     def set_protect_recognized_vias(self, enabled: bool) -> None:
         self._protect_recognized_vias = bool(enabled)
@@ -616,6 +887,9 @@ class PolygonEditorScene(QGraphicsScene):
 
     def can_add_polygon_set(self, polygons: list[PolygonData]) -> bool:
         return can_add_polygon_set(self._polygons.values(), polygons)
+
+    def available_editor_tools(self) -> frozenset[EditorTool]:
+        return available_editor_tools(self._polygons.values())
 
     def polygon_is_deletable(self, polygon: PolygonData | None) -> bool:
         if polygon is None:
@@ -679,6 +953,7 @@ class PolygonEditorScene(QGraphicsScene):
         emit_signal: bool = True,
         selection_fallback: PolygonData | None = None,
     ) -> None:
+        self.end_zoom_vector_render_mode()
         prev_primary = self._selected_polygon_id
         prev_selected_ids = set(self._selected_polygon_ids)
         for item in list(self._polygon_items.values()):
@@ -686,6 +961,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygon_items.clear()
         self._polygons.clear()
         self._hole_children_by_parent.clear()
+        self._polygon_child_ids_by_parent.clear()
         self._hover_conductor_polygon_id = None
         self._vertex_preview_polygon_id = None
         self._selected_polygon_id = None
@@ -720,12 +996,14 @@ class PolygonEditorScene(QGraphicsScene):
             self.activePolygonChanged.emit(self._selected_polygon_id)
 
     def set_polygons(self, polygons: list[PolygonData], *, emit_signal: bool = True) -> None:
+        self.end_zoom_vector_render_mode()
         self.undo_stack.clear()
         for item in list(self._polygon_items.values()):
             self.removeItem(item)
         self._polygon_items.clear()
         self._polygons.clear()
         self._hole_children_by_parent.clear()
+        self._polygon_child_ids_by_parent.clear()
         self._hover_conductor_polygon_id = None
         self._vertex_preview_polygon_id = None
         self._selected_polygon_id = None
@@ -785,6 +1063,9 @@ class PolygonEditorScene(QGraphicsScene):
     def select_polygon(self, polygon_id: int | None, *, additive: bool = False) -> None:
         if polygon_id is not None and polygon_id not in self._polygons:
             polygon_id = None
+        refresh_ids = set(self._selected_polygon_ids)
+        if self._selected_polygon_ids or self._vertex_preview_polygon_id is not None:
+            refresh_ids.update(self._editable_vertex_polygon_ids())
         if polygon_id is None:
             if not additive:
                 self._selected_polygon_ids.clear()
@@ -799,14 +1080,37 @@ class PolygonEditorScene(QGraphicsScene):
         else:
             self._selected_polygon_ids = {polygon_id}
             self._selected_polygon_id = polygon_id
-        self._refresh_all_items()
+        editable_vertex_ids = self._editable_vertex_polygon_ids()
+        refresh_ids.update(self._selected_polygon_ids)
+        refresh_ids.update(editable_vertex_ids)
+        for refresh_id in refresh_ids:
+            item = self._polygon_items.get(refresh_id)
+            if item is not None:
+                self._refresh_polygon_selection_item(
+                    refresh_id,
+                    item,
+                    editable_vertex_ids=editable_vertex_ids,
+                )
         self.activePolygonChanged.emit(self._selected_polygon_id)
 
     def select_polygons(self, polygon_ids: list[int]) -> None:
+        refresh_ids = set(self._selected_polygon_ids)
+        if self._selected_polygon_ids or self._vertex_preview_polygon_id is not None:
+            refresh_ids.update(self._editable_vertex_polygon_ids())
         selected_ids = {polygon_id for polygon_id in polygon_ids if polygon_id in self._polygons}
         self._selected_polygon_ids = selected_ids
         self._selected_polygon_id = min(selected_ids) if selected_ids else None
-        self._refresh_all_items()
+        editable_vertex_ids = self._editable_vertex_polygon_ids()
+        refresh_ids.update(selected_ids)
+        refresh_ids.update(editable_vertex_ids)
+        for refresh_id in refresh_ids:
+            item = self._polygon_items.get(refresh_id)
+            if item is not None:
+                self._refresh_polygon_selection_item(
+                    refresh_id,
+                    item,
+                    editable_vertex_ids=editable_vertex_ids,
+                )
         self.activePolygonChanged.emit(self._selected_polygon_id)
 
     def select_polygons_in_rect(self, rect: QRectF, *, additive: bool = False) -> None:
@@ -828,6 +1132,13 @@ class PolygonEditorScene(QGraphicsScene):
         if polygon_id is None or polygon_id not in self._polygons:
             return None
         return self._polygons[polygon_id].clone()
+
+    def polygon_is_contact(self, polygon_id: int | None) -> bool:
+        return (
+            polygon_id is not None
+            and polygon_id in self._polygons
+            and _is_via_polygon(self._polygons[polygon_id])
+        )
 
     def polygon_at(self, scene_pos: QPointF) -> int | None:
         for item in self.items(scene_pos):
@@ -961,8 +1272,8 @@ class PolygonEditorScene(QGraphicsScene):
             delete_ids.add(current_id)
             pending.extend(
                 child_id
-                for child_id, polygon in self._polygons.items()
-                if polygon.parent_id == current_id and child_id not in delete_ids
+                for child_id in self._polygon_child_ids_by_parent.get(current_id, ())
+                if child_id not in delete_ids
             )
         return sorted(delete_ids)
 
@@ -1057,29 +1368,26 @@ class PolygonEditorScene(QGraphicsScene):
 
     def _add_pasted_contacts(self, polygons: list[PolygonData]) -> list[int]:
         new_polygons: list[PolygonData] = []
-        accepted_contacts = [
-            (
-                _polygon_data_rect(existing).center(),
-                _polygon_data_rect(existing),
+        spatial_index = _ContactSpatialIndex(self._minimum_contact_distance)
+        for existing in self._polygons.values():
+            if not _is_via_polygon(existing):
+                continue
+            existing_rect = _polygon_data_rect(existing)
+            existing_center = existing_rect.center()
+            spatial_index.add(
+                existing_center.x(),
+                existing_center.y(),
+                existing_rect,
             )
-            for existing in self._polygons.values()
-            if _is_via_polygon(existing)
-        ]
-        minimum_distance_sq = self._minimum_contact_distance * self._minimum_contact_distance
         for polygon in polygons:
             candidate_rect = _polygon_data_rect(polygon)
             candidate_center = candidate_rect.center()
-            if any(
-                candidate_rect.intersects(existing_rect)
-                or (
-                    minimum_distance_sq > 0.0
-                    and (
-                        (candidate_center.x() - existing_center.x()) ** 2
-                        + (candidate_center.y() - existing_center.y()) ** 2
-                    )
-                    < minimum_distance_sq
-                )
-                for existing_center, existing_rect in accepted_contacts
+            center_x = candidate_center.x()
+            center_y = candidate_center.y()
+            if spatial_index.conflicts(
+                center_x,
+                center_y,
+                candidate_rect,
             ):
                 continue
             new_id = self._next_polygon_id
@@ -1088,7 +1396,7 @@ class PolygonEditorScene(QGraphicsScene):
             new_polygon.id = new_id
             new_polygon.parent_id = None
             new_polygons.append(new_polygon)
-            accepted_contacts.append((candidate_center, candidate_rect))
+            spatial_index.add(center_x, center_y, candidate_rect)
         if not new_polygons:
             return []
         self.undo_stack.push(
@@ -1536,7 +1844,6 @@ class PolygonEditorScene(QGraphicsScene):
             bbox=bbox,
         )
         self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
-        self._maybe_push_vector_postprocess("Vector geometry cleanup")
         return True
 
     def _via_rect_overlaps_existing(self, rect: QRectF) -> bool:
@@ -2160,6 +2467,30 @@ class PolygonEditorScene(QGraphicsScene):
             if item is not None:
                 self._refresh_polygon_item(polygon_id, item, editable_vertex_ids=editable_vertex_ids)
 
+    def _refresh_polygon_selection_item(
+        self,
+        polygon_id: int,
+        item: EditablePolygonItem,
+        *,
+        editable_vertex_ids: set[int],
+    ) -> None:
+        polygon = self._polygons.get(polygon_id)
+        if polygon is not None and _is_via_polygon(polygon):
+            item.update_selection_appearance(
+                self._display_settings,
+                selected=polygon_id in self._selected_polygon_ids,
+                custom_color=(
+                    self._via_score_color(polygon)
+                    or self._object_color_for(polygon_id)
+                ),
+            )
+            return
+        self._refresh_polygon_item(
+            polygon_id,
+            item,
+            editable_vertex_ids=editable_vertex_ids,
+        )
+
     def _refresh_polygon_item(
         self,
         polygon_id: int,
@@ -2215,6 +2546,13 @@ class PolygonEditorScene(QGraphicsScene):
                 continue
             item = self._polygon_items.get(polygon_id)
             if item is not None:
+                item.setVisible(
+                    bool(visible)
+                    and self._polygon_overlays_visible
+                    and polygon_id not in self._zoom_hidden_contact_ids
+                )
+        if str(category) == "via":
+            for item in self._zoom_contact_composite_items:
                 item.setVisible(bool(visible) and self._polygon_overlays_visible)
 
     def _object_color_for(self, polygon_id: int) -> str | None:
@@ -2232,15 +2570,29 @@ class PolygonEditorScene(QGraphicsScene):
 
     def _rebuild_polygon_relationship_cache(self) -> None:
         self._hole_children_by_parent.clear()
+        self._polygon_child_ids_by_parent.clear()
         for polygon in self._polygons.values():
             self._index_polygon_relationship(polygon)
 
     def _index_polygon_relationship(self, polygon: PolygonData) -> None:
-        if polygon.is_hole and polygon.parent_id is not None:
+        if polygon.parent_id is None:
+            return
+        self._polygon_child_ids_by_parent.setdefault(
+            polygon.parent_id,
+            set(),
+        ).add(polygon.id)
+        if polygon.is_hole:
             self._hole_children_by_parent.setdefault(polygon.parent_id, []).append(polygon)
 
     def _unindex_polygon_relationship(self, polygon: PolygonData | None) -> None:
-        if polygon is None or not polygon.is_hole or polygon.parent_id is None:
+        if polygon is None or polygon.parent_id is None:
+            return
+        child_ids = self._polygon_child_ids_by_parent.get(polygon.parent_id)
+        if child_ids is not None:
+            child_ids.discard(polygon.id)
+            if not child_ids:
+                self._polygon_child_ids_by_parent.pop(polygon.parent_id, None)
+        if not polygon.is_hole:
             return
         children = self._hole_children_by_parent.get(polygon.parent_id)
         if not children:
@@ -2268,6 +2620,8 @@ class PolygonEditorScene(QGraphicsScene):
                 active_ids.add(polygon_id)
         editable_ids: set[int] = set()
         for polygon_id in active_ids:
+            if _is_via_polygon(self._polygons[polygon_id]):
+                continue
             editable_ids.update(self._polygon_edit_family_ids(polygon_id))
         return editable_ids
 
@@ -2341,7 +2695,7 @@ class PolygonEditorScene(QGraphicsScene):
             if current_id in family_ids or current_id not in self._polygons:
                 continue
             family_ids.append(current_id)
-            pending.extend(child_id for child_id, polygon in self._polygons.items() if polygon.parent_id == current_id)
+            pending.extend(self._polygon_child_ids_by_parent.get(current_id, ()))
         return sorted(family_ids)
 
     def _assign_polygon_ids(
@@ -2424,6 +2778,8 @@ class PolygonEditorScene(QGraphicsScene):
             area=area,
             perimeter=perimeter,
             bbox=bbox,
+            recognition_score=existing.recognition_score,
+            reject_reason=existing.reject_reason,
         )
 
     def _add_polygon_internal(self, polygon: PolygonData, emit_signal: bool = True, refresh: bool = True) -> None:
@@ -2492,10 +2848,12 @@ class PolygonEditorScene(QGraphicsScene):
     ) -> None:
         if polygon_id not in self._polygons:
             return
+        refresh_ids = set(self._polygon_edit_family_ids(polygon_id))
         self._unindex_polygon_relationship(self._polygons.get(polygon_id))
         self._polygons[polygon_id] = self._create_polygon_snapshot(polygon_id, points)
         self._index_polygon_relationship(self._polygons[polygon_id])
-        self._refresh_all_items()
+        refresh_ids.update(self._polygon_edit_family_ids(polygon_id))
+        self._refresh_polygon_items_by_id(*refresh_ids)
         if emit_signal:
             self.polygonsChanged.emit()
 

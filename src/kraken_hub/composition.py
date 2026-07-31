@@ -520,7 +520,12 @@ class EmbeddedProjectService:
         layer_template: bool = False,
         source_root: Path | str | None = None,
         derived_root: Path | str | None = None,
+        storage_profile_id: str | None = None,
     ) -> Project:
+        if storage_profile_id not in {None, self.profile.id}:
+            raise ValueError(
+                f"Local catalog only supports storage profile {self.profile.id!r}"
+            )
         safe_name = validate_workspace_name(name, field_name="Название проекта")
         command = CreateProjectCommand(
             context=CommandContext(actor=principal, idempotency_key=idempotency_key),
@@ -565,6 +570,25 @@ class EmbeddedProjectService:
                 )
                 project = self.get_project(project.id) or project
         return project
+
+    def list_storage_profiles(self) -> tuple[StorageProfile, ...]:
+        return (self.profile,)
+
+    @property
+    def supports_workspace_roots(self) -> bool:
+        return True
+
+    @property
+    def supports_live_sync(self) -> bool:
+        return False
+
+    def project_storage_label(self, project_id: ProjectId | str) -> str:
+        del project_id
+        return "Локальный файл"
+
+    def is_remote_project(self, project_id: ProjectId | str) -> bool:
+        del project_id
+        return False
 
     def project_workspace(self, project_id: ProjectId | str) -> ProjectWorkspaceBinding | None:
         return self.workspace_registry.get_project(str(project_id))

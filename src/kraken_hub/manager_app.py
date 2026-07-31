@@ -59,8 +59,11 @@ from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimension
 
 from . import windows_credentials
 from .composition import DesktopSession, EmbeddedProjectService
+from .dual_catalog import DualCatalogService, build_workspace_service
 from .matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
 from .agent_runtime import LocalAgentRuntime
+from .remote_client import load_remote_auth_from_env
+from .workspace_service import REMOTE_STORAGE_PROFILE, ProjectEventWake
 
 
 def _plain_value(value):
@@ -586,7 +589,7 @@ class DesktopController:
     def __init__(
         self,
         shell: ProjectManagerShell,
-        service: EmbeddedProjectService,
+        service: EmbeddedProjectService | DualCatalogService,
         session: DesktopSession,
         *,
         thumbnail_store_uri: str = "",
@@ -613,6 +616,10 @@ class DesktopController:
         self._workspace = None
         self._project_id = None
         self._layer_dialog: LayerManagerDialog | None = None
+        self._pending_wakes: list[ProjectEventWake] = []
+        self._sync_timer = QTimer(self.shell)
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.timeout.connect(self._drain_live_wakes)
         self.catalog_page = shell.page("projects")
         assert self.catalog_page is not None
         self.catalog_page.createRequested.connect(self.create_project)
@@ -629,7 +636,67 @@ class DesktopController:
         self.shell.cellVisualModeChanged.connect(self._set_matrix_visual_mode)
         self.shell.reviewReturnRequested.connect(self.load_review_return)
         self.shell.framePropertiesRequested.connect(self.show_selected_frame)
+        self._wire_live_sync()
         self.refresh_projects()
+
+    def _wire_live_sync(self) -> None:
+        add_wake = getattr(self.service, "add_wake_handler", None)
+        add_catalog = getattr(self.service, "add_catalog_handler", None)
+        start_sync = getattr(self.service, "start_sync", None)
+        if callable(add_wake):
+            add_wake(self._on_remote_wake)
+        if callable(add_catalog):
+            add_catalog(lambda: self._on_remote_wake(None))
+        if callable(start_sync):
+            try:
+                start_sync()
+            except Exception:
+                logging.getLogger(__name__).exception("Failed to start remote live sync")
+
+    def _on_remote_wake(self, wake: ProjectEventWake | None) -> None:
+        if wake is not None:
+            self._pending_wakes.append(wake)
+        if not self._sync_timer.isActive():
+            self._sync_timer.start(50)
+
+    def _drain_live_wakes(self) -> None:
+        wakes = list(self._pending_wakes)
+        self._pending_wakes.clear()
+        catalog_changed = not wakes or any(
+            wake.event_type.startswith("Project") or wake.event_type.startswith("project.")
+            for wake in wakes
+        )
+        if catalog_changed:
+            self.refresh_projects()
+        if self._project_id is None or self._workspace is None:
+            return
+        relevant = [
+            wake
+            for wake in wakes
+            if wake is not None and wake.project_id == self._project_id
+        ]
+        if not wakes or relevant:
+            project = self.service.get_project(self._project_id)
+            if project is None:
+                return
+            self._workspace.set_project_title(project.name)
+            matrix = getattr(self._workspace, "matrix_view", None)
+            if matrix is not None:
+                session = getattr(matrix, "session", None)
+                if session is not None:
+                    matrix.set_session(
+                        MatrixSession(
+                            namespace=str(project.id),
+                            width=project.width,
+                            height=project.height,
+                            source_revision=str(project.revision),
+                            orientation=project.orientation.value,
+                            generation=getattr(session, "generation", 0) + 1,
+                        ),
+                        data_source=getattr(self._workspace, "_matrix_data_source", None),
+                        asset_source=getattr(self._workspace, "_matrix_asset_source", None),
+                    )
+            self._load_layers(self._workspace, project)
 
     def _sync_project_permissions(self, item: ProjectListItem | None) -> None:
         permissions = (
@@ -906,16 +973,25 @@ class DesktopController:
         dialog.exec()
 
     def refresh_projects(self) -> None:
+        label_for = getattr(self.service, "project_storage_label", None)
         items = [
             ProjectListItem(
                 project_id=str(project.id),
                 name=project.name,
                 width=project.width,
                 height=project.height,
-                storage_label="Локальный файл",
+                storage_label=(
+                    label_for(project.id)
+                    if callable(label_for)
+                    else "Локальный файл"
+                ),
                 status=project.state.value,
                 archived=project.state.value == "archived",
-                metadata={"orientation": project.orientation.value, "revision": project.revision},
+                metadata={
+                    "orientation": project.orientation.value,
+                    "revision": project.revision,
+                    "storage_profile": project.storage_profile,
+                },
             )
             for project in self.service.list_projects(
                 include_archived=self.catalog_page.show_archived_check.isChecked()
@@ -941,13 +1017,15 @@ class DesktopController:
         )
         if not accepted or name.strip() == project.name:
             return
-        answer = QMessageBox.question(
-            self.shell,
-            "Подтверждение переименования",
-            "Будут согласованно переименованы папки исходных и производных данных. Продолжить?",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
+        is_remote = bool(getattr(self.service, "is_remote_project", lambda _id: False)(project.id))
+        if not is_remote:
+            answer = QMessageBox.question(
+                self.shell,
+                "Подтверждение переименования",
+                "Будут согласованно переименованы папки исходных и производных данных. Продолжить?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         try:
             renamed = self.service.rename_project(
                 principal=self.session.principal,
@@ -1111,6 +1189,7 @@ class DesktopController:
 
     def create_project(self) -> None:
         from PyQt6.QtWidgets import (
+            QComboBox,
             QDialog,
             QDialogButtonBox,
             QFormLayout,
@@ -1120,37 +1199,91 @@ class DesktopController:
             QVBoxLayout,
         )
 
-        roots = _configure_workspace_roots(self.shell, self.service)
-        if roots is None:
-            return
-        source_root, derived_root = roots
+        profiles = list(
+            getattr(self.service, "list_storage_profiles", lambda: (self.service.profile,))()
+        )
         dialog = QDialog(self.shell)
-        dialog.setWindowTitle("Новый локальный проект")
+        dialog.setWindowTitle("Новый проект")
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
         name = QLineEdit()
         name.setObjectName("projectName")
         form.addRow("Имя проекта", name)
+        profile_box = QComboBox(dialog)
+        for profile in profiles:
+            label = profile.name
+            if profile.id == REMOTE_STORAGE_PROFILE.id:
+                label = f"{profile.name} (общая БД)"
+            profile_box.addItem(label, profile.id)
+        form.addRow("Хранилище", profile_box)
         layout.addLayout(form)
-        dimensions = GridDimensionsWidget(maximum_frames=self.service.profile.capabilities.max_frames or 100_000)
-        layout.addWidget(dimensions)
-        storage = QLabel(
-            f"Исходные данные: {source_root}\n"
-            f"Производные данные: {derived_root}"
+        dimensions = GridDimensionsWidget(
+            maximum_frames=max(
+                (profile.capabilities.max_frames or 100_000 for profile in profiles),
+                default=100_000,
+            )
         )
+        layout.addWidget(dimensions)
+        storage = QLabel("")
         storage.setWordWrap(True)
         layout.addWidget(storage)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Создать проект")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
+
+        source_root = None
+        derived_root = None
+
+        def _update_storage_hint(_index: int = 0) -> None:
+            nonlocal source_root, derived_root
+            profile_id = str(profile_box.currentData() or "")
+            if profile_id == REMOTE_STORAGE_PROFILE.id:
+                source_root = None
+                derived_root = None
+                storage.setText(
+                    "Проект будет создан на сервере PostgreSQL через kraken-server.\n"
+                    "Требуется GitLab-токен (KRAKEN_GITLAB_TOKEN) и KRAKEN_SERVER_URL."
+                )
+                return
+            roots = _configure_workspace_roots(self.shell, self.service)
+            if roots is None:
+                storage.setText("Выберите локальные каталоги исходных и производных данных.")
+                source_root = None
+                derived_root = None
+                return
+            source_root, derived_root = roots
+            storage.setText(
+                f"Исходные данные: {source_root}\n"
+                f"Производные данные: {derived_root}"
+            )
+
+        profile_box.currentIndexChanged.connect(_update_storage_hint)
+        _update_storage_hint()
+
         while dialog.exec() == QDialog.DialogCode.Accepted:
             try:
                 size = dimensions.validated_dimensions()
                 if not name.text().strip():
                     raise ValueError("Введите имя проекта")
+                profile_id = str(profile_box.currentData() or self.service.profile.id)
+                if profile_id != REMOTE_STORAGE_PROFILE.id and (
+                    source_root is None or derived_root is None
+                ):
+                    _update_storage_hint()
+                    if source_root is None or derived_root is None:
+                        raise ValueError("Выберите каталоги хранилища для локального проекта")
+                if profile_id == REMOTE_STORAGE_PROFILE.id:
+                    auth = load_remote_auth_from_env()
+                    if auth is None:
+                        raise ValueError(
+                            "Для создания shared-проекта задайте KRAKEN_SERVER_URL и "
+                            "KRAKEN_GITLAB_TOKEN (GitLab access token)."
+                        )
                 project = self.service.create_project(
                     principal=self.session.principal,
                     name=name.text(),
@@ -1161,19 +1294,25 @@ class DesktopController:
                     layer_template=False,
                     source_root=source_root,
                     derived_root=derived_root,
+                    storage_profile_id=profile_id,
                 )
             except Exception as exc:
                 QMessageBox.warning(dialog, "Не удалось создать проект", str(exc))
                 continue
             self.refresh_projects()
+            label = getattr(self.service, "project_storage_label", lambda _id: "Локальный файл")
             self.open_project(
                 ProjectListItem(
                     str(project.id),
                     project.name,
                     project.width,
                     project.height,
-                    "Локальный файл",
-                    metadata={"orientation": project.orientation.value, "revision": project.revision},
+                    label(project.id),
+                    metadata={
+                        "orientation": project.orientation.value,
+                        "revision": project.revision,
+                        "storage_profile": project.storage_profile,
+                    },
                 )
             )
             break
@@ -1184,31 +1323,33 @@ class DesktopController:
             self._error("Проект больше не доступен")
             self.refresh_projects()
             return
+        is_remote = bool(getattr(self.service, "is_remote_project", lambda _id: False)(project.id))
         workspace_binding = self.service.project_workspace(project.id)
-        if workspace_binding is None:
+        if workspace_binding is None and not is_remote:
             self._error(
                 "Этот проект создан до введения двухдискового хранилища. "
                 "Автоматическая миграция отключена; создайте новый проект."
             )
             return
-        unavailable = [
-            path
-            for path in (
-                workspace_binding.source_project_dir,
-                workspace_binding.derived_project_dir,
-            )
-            if not Path(path).is_dir()
-        ]
-        if unavailable:
-            from PyQt6.QtWidgets import QMessageBox
+        if workspace_binding is not None:
+            unavailable = [
+                path
+                for path in (
+                    workspace_binding.source_project_dir,
+                    workspace_binding.derived_project_dir,
+                )
+                if not Path(path).is_dir()
+            ]
+            if unavailable:
+                from PyQt6.QtWidgets import QMessageBox
 
-            QMessageBox.warning(
-                self.shell,
-                "Хранилище недоступно",
-                "Метаданные и история доступны только для просмотра. "
-                "Файловые операции и плагины заблокированы.\n\n"
-                + "\n".join(unavailable),
-            )
+                QMessageBox.warning(
+                    self.shell,
+                    "Хранилище недоступно",
+                    "Метаданные и история доступны только для просмотра. "
+                    "Файловые операции и плагины заблокированы.\n\n"
+                    + "\n".join(unavailable),
+                )
         cache_root = self.service.data_dir / "cache" / "frame-thumbnails"
         store_uri = (
             self.thumbnail_store_uri
@@ -1235,7 +1376,14 @@ class DesktopController:
         )
         workspace = self.shell.open_project_workspace(ProjectWorkspacePage(matrix_view=matrix_view))
         self._workspace = workspace
+        if self._project_id is not None:
+            unsubscribe = getattr(self.service, "unsubscribe_project", None)
+            if callable(unsubscribe):
+                unsubscribe(self._project_id)
         self._project_id = str(project.id)
+        subscribe = getattr(self.service, "subscribe_project", None)
+        if is_remote and callable(subscribe):
+            subscribe(project.id)
         if self._layer_dialog is not None:
             self._layer_dialog.hide()
             self._layer_dialog.deleteLater()
@@ -1280,7 +1428,11 @@ class DesktopController:
         workspace.reviewRequested.connect(self.send_selection_for_review)
         permissions = self.service.project_permissions(
             project.id,
-            self.session.principal,
+            self.session.principal if not is_remote else getattr(
+                getattr(self.service, "remote", None),
+                "auth",
+                type("A", (), {"principal": self.session.principal})(),
+            ).principal,
         )
         workspace.send_review_button.setVisible(
             Permission.ASSIGN_WORK in permissions
@@ -6051,12 +6203,21 @@ def run_manager_gui(
     app = QApplication.instance() or QApplication([])
     configure_application_identity(app, app_id="Kraken.ProjectManager", icon_name="kraken")
     app.setStyleSheet(load_shared_stylesheet("dark_modern.qss"))
-    service = EmbeddedProjectService()
-    session = _development_session(service) or _login(None, service)
+    service = build_workspace_service()
+    local = service.local if isinstance(service, DualCatalogService) else service
+    session = _development_session(local) or _login(None, local)
     if session is None:
         return 1
+    if isinstance(service, DualCatalogService) and service.remote is not None:
+        # Shared mutations use the GitLab principal carried by the remote client.
+        session_summary = (
+            f"{session.principal.display_name}\n"
+            f"Локальная сессия + сервер {service.remote.base_url}"
+        )
+    else:
+        session_summary = f"{session.principal.display_name}\nЛокальная сессия"
     shell = ProjectManagerShell()
-    shell.set_session_summary(f"{session.principal.display_name}\nЛокальная сессия")
+    shell.set_session_summary(session_summary)
     shell._desktop_controller = DesktopController(  # keep Qt slots alive
         shell,
         service,
@@ -6070,16 +6231,16 @@ def run_manager_gui(
         plugins_page.set_content(_plugin_panel(items))
     performers_page = shell.page("performers")
     if performers_page is not None:
-        performers_page.set_content(_performer_panel(service))
+        performers_page.set_content(_performer_panel(local))
     my_work_page = shell.page("my_work")
     if my_work_page is not None:
-        my_work_page.set_content(_my_work_panel(service, session, controller))
+        my_work_page.set_content(_my_work_panel(local, session, controller))
     statistics_page = shell.page("statistics")
     if statistics_page is not None:
-        statistics_page.set_content(_statistics_panel(service))
+        statistics_page.set_content(_statistics_panel(local))
     administration_page = shell.page("administration")
     if administration_page is not None:
-        administration_page.set_content(_administration_panel(service, session))
+        administration_page.set_content(_administration_panel(local, session))
     shell.show()
     return app.exec()
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -33,6 +34,8 @@ def create_app(
     session_resolver: Callable[[str], SessionPrincipal | None] | None = None,
     live_gitlab_verifier: Callable[[SessionPrincipal], bool] | None = None,
     development: bool = False,
+    connection_hub: Any | None = None,
+    outbox_publisher: Any | None = None,
 ) -> Any:
     try:
         from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -46,7 +49,23 @@ def create_app(
     if not development and account_store is None and session_resolver is None:
         raise RuntimeError("Production Kraken Server requires an authenticated session resolver")
     backend = services or InMemoryServerServices()
+    from .outbox import ConnectionHub
+
+    hub = connection_hub or ConnectionHub()
     app = FastAPI(title="Kraken Server", version="1.0.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    app.state.connection_hub = hub
+    app.state.outbox_publisher = outbox_publisher
+
+    @app.on_event("startup")
+    async def _startup() -> None:
+        hub.set_loop(asyncio.get_running_loop())
+        if outbox_publisher is not None:
+            outbox_publisher.start()
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        if outbox_publisher is not None:
+            outbox_publisher.stop()
 
     def problem(status: int, code: str, title: str, detail: str, instance: str | None = None) -> JSONResponse:
         return JSONResponse(
@@ -415,14 +434,47 @@ def create_app(
             await websocket.close(code=4401)
             return
         await websocket.accept()
+        hub.register(websocket)
         await websocket.send_json({"type": "connected", "api_version": "v1"})
         try:
             while True:
                 message = await websocket.receive_json()
-                if message.get("type") == "ping":
+                kind = str(message.get("type", ""))
+                if kind == "ping":
                     await websocket.send_json({"type": "pong"})
+                elif kind == "subscribe":
+                    project_id = message.get("project_id")
+                    hub.subscribe(
+                        websocket,
+                        project_id=None if project_id is None else str(project_id),
+                        catalog=bool(message.get("catalog")),
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "subscribed",
+                            "project_id": None if project_id is None else str(project_id),
+                            "catalog": bool(message.get("catalog")),
+                        }
+                    )
+                elif kind == "unsubscribe":
+                    project_id = message.get("project_id")
+                    hub.unsubscribe(
+                        websocket,
+                        project_id=None if project_id is None else str(project_id),
+                        catalog=bool(message.get("catalog")),
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "unsubscribed",
+                            "project_id": None if project_id is None else str(project_id),
+                            "catalog": bool(message.get("catalog")),
+                        }
+                    )
         except WebSocketDisconnect:
+            hub.unregister(websocket)
             return
+        finally:
+            hub.unregister(websocket)
 
     return app
 

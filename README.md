@@ -87,6 +87,20 @@ If `uv` warns that hardlinks are unavailable, use copy mode:
 uv sync --link-mode=copy
 ```
 
+## Shared catalog (optional)
+
+To list/create shared PostgreSQL projects from Desktop, set:
+
+```powershell
+$env:KRAKEN_SERVER_URL = "http://127.0.0.1:8080"
+$env:KRAKEN_GITLAB_TOKEN = "<gitlab-access-token>"
+$env:KRAKEN_GITLAB_ISSUER = "https://gitlab.example.com"
+```
+
+The create-project dialog then offers **Kraken Server PostgreSQL**. Live updates
+arrive over `/api/v1/ws` (outbox wake + refetch). Local filesystem projects keep
+working without these variables.
+
 ## Plugin UV Setup
 
 Each plugin is also an independent Python project. Initialize a plugin

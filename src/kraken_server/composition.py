@@ -142,11 +142,17 @@ def postgresql_composition() -> dict[str, Any]:
         )
     federated_cache = PostgresFederatedSessionCache(engine)
     resolver = HybridSessionResolver(accounts, identities, oidc, federated_cache, performers)
+    from .outbox import ConnectionHub, OutboxPublisher
+
+    hub = ConnectionHub()
+    publisher = OutboxPublisher(engine, hub)
     return {
         "services": services,
         "account_store": accounts,
         "session_resolver": resolver,
         "live_gitlab_verifier": resolver.verify_live,
+        "connection_hub": hub,
+        "outbox_publisher": publisher,
     }
 
 

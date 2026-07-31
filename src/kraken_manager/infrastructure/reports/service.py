@@ -12,8 +12,9 @@ from __future__ import annotations
 import csv
 import json
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, time, timedelta, tzinfo
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
@@ -131,6 +132,151 @@ class ReportMetrics:
     event_ids_by_metric: Mapping[str, tuple[str, ...]]
 
 
+class MetricValueKind(StrEnum):
+    COUNT = "count"
+    BYTES = "bytes"
+    RATE = "rate"
+    DURATION = "duration"
+
+
+class MetricChartKind(StrEnum):
+    BAR = "bar"
+    LINE = "line"
+
+
+class ReportGranularity(StrEnum):
+    DAY = "day"
+    WEEK = "week"
+    MONTH = "month"
+    YEAR = "year"
+
+
+@dataclass(frozen=True, slots=True)
+class MetricDefinition:
+    key: str
+    label: str
+    description: str
+    value_kind: MetricValueKind = MetricValueKind.COUNT
+    chart_kind: MetricChartKind = MetricChartKind.BAR
+
+
+@dataclass(frozen=True, slots=True)
+class PresentedMetric:
+    definition: MetricDefinition
+    raw_value: int | float
+    formatted_value: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReportBucket:
+    start: datetime
+    end: datetime
+    label: str
+    metrics: ReportMetrics
+
+
+@dataclass(frozen=True, slots=True)
+class ReportSeries:
+    granularity: ReportGranularity
+    buckets: tuple[ReportBucket, ...]
+
+
+METRIC_DEFINITIONS: tuple[MetricDefinition, ...] = (
+    MetricDefinition("imported_files", "Импортировано файлов", "Количество импортированных файлов."),
+    MetricDefinition(
+        "imported_bytes",
+        "Объём импортированных данных",
+        "Суммарный размер импортированных файлов.",
+        MetricValueKind.BYTES,
+    ),
+    MetricDefinition(
+        "created_artifact_versions",
+        "Создано версий артефактов",
+        "Количество созданных версий файлов и результатов обработки.",
+    ),
+    MetricDefinition(
+        "binary_representations",
+        "Создано бинарных представлений",
+        "Количество созданных бинарных представлений изображений.",
+    ),
+    MetricDefinition(
+        "vectorization_operations",
+        "Операций векторизации",
+        "Общее количество выполненных операций векторизации.",
+    ),
+    MetricDefinition(
+        "unique_first_vectorized_frames",
+        "Впервые векторизовано кадров",
+        "Количество кадров, впервые векторизованных в выбранном периоде.",
+    ),
+    MetricDefinition("work_issued", "Выдано заданий", "Количество выданных заданий на проверку."),
+    MetricDefinition(
+        "returned_changed",
+        "Возвращено с изменениями",
+        "Количество результатов, возвращённых исполнителем с изменениями.",
+    ),
+    MetricDefinition(
+        "returned_unchanged",
+        "Возвращено без изменений",
+        "Количество результатов, возвращённых без изменений.",
+    ),
+    MetricDefinition(
+        "returned_missing",
+        "Возвращено как отсутствующие",
+        "Количество результатов, отмеченных исполнителем как отсутствующие.",
+    ),
+    MetricDefinition("accepted", "Принято", "Количество принятых результатов проверки."),
+    MetricDefinition(
+        "changes_requested",
+        "Отправлено на доработку",
+        "Количество результатов, для которых запрошена доработка.",
+    ),
+    MetricDefinition(
+        "backlog",
+        "Ожидают приёмки",
+        "Разница между выданными и принятыми заданиями за выбранный период.",
+    ),
+    MetricDefinition(
+        "rework_rate",
+        "Доля доработок",
+        "Доля запросов на доработку среди принятых и возвращённых на доработку результатов.",
+        MetricValueKind.RATE,
+        MetricChartKind.LINE,
+    ),
+    MetricDefinition(
+        "average_turnaround_seconds",
+        "Среднее время выполнения",
+        "Среднее время от выдачи задания до возврата результата.",
+        MetricValueKind.DURATION,
+        MetricChartKind.LINE,
+    ),
+    MetricDefinition("overdue", "Просрочено", "Количество событий с просроченным статусом."),
+    MetricDefinition(
+        "incomplete_jobs",
+        "Незавершённых заданий",
+        "Количество частично выполненных заданий и заданий, требующих восстановления.",
+    ),
+    MetricDefinition("plugin_failures", "Ошибок плагинов", "Количество завершившихся ошибкой заданий плагинов."),
+)
+
+_METRIC_DEFINITIONS_BY_KEY = {definition.key: definition for definition in METRIC_DEFINITIONS}
+_MONTH_NAMES = (
+    "",
+    "январь",
+    "февраль",
+    "март",
+    "апрель",
+    "май",
+    "июнь",
+    "июль",
+    "август",
+    "сентябрь",
+    "октябрь",
+    "ноябрь",
+    "декабрь",
+)
+
+
 # Dotted values are the stable activity taxonomy. CamelCase values are the
 # corresponding domain events already emitted (or reserved) by application use
 # cases. Generic events receive additional payload-aware classification below.
@@ -225,11 +371,16 @@ def _metric_categories(item: ActivityRecord) -> frozenset[str]:
 class _MetricsAccumulator:
     """One-pass aggregate builder; only required drill-down IDs are retained."""
 
-    def __init__(self, filters: ReportFilters) -> None:
+    def __init__(
+        self,
+        filters: ReportFilters,
+        *,
+        first_vectorization: Mapping[tuple[str, str, str], ActivityRecord] | None = None,
+    ) -> None:
         self.filters = filters
         self.counts: Counter[str] = Counter()
         self.drill_down: dict[str, list[tuple[datetime, str]]] = defaultdict(list)
-        self.first_vectorization: dict[tuple[str, str, str], ActivityRecord] = {}
+        self.first_vectorization = dict(first_vectorization or {})
         self.project_counters: dict[str, Counter[str]] = defaultdict(Counter)
         self.performer_counters: dict[str, Counter[str]] = defaultdict(Counter)
         self.vector_layer_counters: dict[str, Counter[str]] = defaultdict(Counter)
@@ -333,6 +484,107 @@ def _safe_tabular_text(value: object) -> object:
     return value
 
 
+def metric_definition(key: str) -> MetricDefinition:
+    try:
+        return _METRIC_DEFINITIONS_BY_KEY[key]
+    except KeyError as exc:
+        raise KeyError(f"Unknown report metric: {key}") from exc
+
+
+def _format_decimal(value: float) -> str:
+    rendered = f"{value:.1f}".rstrip("0").rstrip(".")
+    return rendered.replace(".", ",")
+
+
+def format_metric_value(definition: MetricDefinition, value: int | float) -> str:
+    if definition.value_kind is MetricValueKind.COUNT:
+        return f"{int(value):,}".replace(",", " ")
+    if definition.value_kind is MetricValueKind.RATE:
+        return f"{_format_decimal(float(value) * 100.0)} %"
+    if definition.value_kind is MetricValueKind.BYTES:
+        amount = max(0.0, float(value))
+        units = ("Б", "КБ", "МБ", "ГБ", "ТБ")
+        unit_index = 0
+        while amount >= 1024.0 and unit_index < len(units) - 1:
+            amount /= 1024.0
+            unit_index += 1
+        rendered = str(int(amount)) if unit_index == 0 else _format_decimal(amount)
+        return f"{rendered} {units[unit_index]}"
+    seconds = max(0, int(round(float(value))))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} ч")
+    if minutes:
+        parts.append(f"{minutes} мин")
+    if seconds or not parts:
+        parts.append(f"{seconds} с")
+    return " ".join(parts)
+
+
+def present_metrics(values: Mapping[str, int | float]) -> tuple[PresentedMetric, ...]:
+    return tuple(
+        PresentedMetric(
+            definition=definition,
+            raw_value=values.get(definition.key, 0),
+            formatted_value=format_metric_value(definition, values.get(definition.key, 0)),
+        )
+        for definition in METRIC_DEFINITIONS
+    )
+
+
+def _period_start(value: datetime, granularity: ReportGranularity) -> datetime:
+    if granularity is ReportGranularity.DAY:
+        period_date = value.date()
+    elif granularity is ReportGranularity.WEEK:
+        period_date = value.date() - timedelta(days=value.weekday())
+    elif granularity is ReportGranularity.MONTH:
+        period_date = value.date().replace(day=1)
+    else:
+        period_date = value.date().replace(month=1, day=1)
+    return datetime.combine(period_date, time.min, value.tzinfo)
+
+
+def _next_period(value: datetime, granularity: ReportGranularity) -> datetime:
+    if granularity is ReportGranularity.DAY:
+        return datetime.combine(value.date() + timedelta(days=1), time.min, value.tzinfo)
+    if granularity is ReportGranularity.WEEK:
+        return datetime.combine(value.date() + timedelta(days=7), time.min, value.tzinfo)
+    if granularity is ReportGranularity.MONTH:
+        year = value.year + (1 if value.month == 12 else 0)
+        month = 1 if value.month == 12 else value.month + 1
+        return datetime(year, month, 1, tzinfo=value.tzinfo)
+    return datetime(value.year + 1, 1, 1, tzinfo=value.tzinfo)
+
+
+def _period_label(start: datetime, end: datetime, granularity: ReportGranularity) -> str:
+    if granularity is ReportGranularity.DAY:
+        return start.strftime("%d.%m.%Y")
+    if granularity is ReportGranularity.WEEK:
+        last_day = (end - timedelta(microseconds=1)).date()
+        return f"{start:%d.%m}–{last_day:%d.%m.%Y}"
+    if granularity is ReportGranularity.MONTH:
+        return f"{_MONTH_NAMES[start.month]} {start.year}"
+    return str(start.year)
+
+
+def _first_vectorizations(records: Iterable[ActivityRecord]) -> dict[tuple[str, str, str], ActivityRecord]:
+    first: dict[tuple[str, str, str], ActivityRecord] = {}
+    for item in records:
+        if (
+            "vectorization_operations" not in _metric_categories(item)
+            or item.frame_id is None
+            or item.layer_id is None
+        ):
+            continue
+        key = (item.project_id, item.representation_id or item.layer_id, item.frame_id)
+        existing = first.get(key)
+        if existing is None or (item.recorded_at, item.event_id) < (existing.recorded_at, existing.event_id):
+            first[key] = item
+    return first
+
+
 class ReportService:
     def iter_selected(self, records: Iterable[ActivityRecord], filters: ReportFilters) -> Iterator[ActivityRecord]:
         """Filter without buffering; callers supply canonical event order."""
@@ -347,6 +599,61 @@ class ReportService:
         for item in records:
             accumulator.add(item)
         return accumulator.finish()
+
+    def aggregate_series(
+        self,
+        records: Iterable[ActivityRecord],
+        filters: ReportFilters,
+        granularity: ReportGranularity,
+        *,
+        timezone: tzinfo,
+    ) -> ReportSeries:
+        source = tuple(records)
+        local_start = filters.start.astimezone(timezone)
+        local_end = filters.end.astimezone(timezone)
+        calendar_start = _period_start(local_start, granularity)
+        seeded_first = _first_vectorizations(source)
+        bucket_data: list[
+            tuple[datetime, datetime, str, _MetricsAccumulator]
+        ] = []
+        accumulators_by_start: dict[datetime, _MetricsAccumulator] = {}
+
+        current = calendar_start
+        while current <= local_end:
+            following = _next_period(current, granularity)
+            bucket_start = max(filters.start, current.astimezone(UTC))
+            bucket_end = min(filters.end, following.astimezone(UTC) - timedelta(microseconds=1))
+            if bucket_start <= bucket_end:
+                accumulator = _MetricsAccumulator(
+                    replace(filters, start=bucket_start, end=bucket_end),
+                    first_vectorization=seeded_first,
+                )
+                bucket_data.append(
+                    (
+                        bucket_start,
+                        bucket_end,
+                        _period_label(current, following, granularity),
+                        accumulator,
+                    )
+                )
+                accumulators_by_start[current] = accumulator
+            current = following
+
+        for item in source:
+            if not filters.start <= item.recorded_at <= filters.end:
+                continue
+            key = _period_start(item.recorded_at.astimezone(timezone), granularity)
+            selected_accumulator = accumulators_by_start.get(key)
+            if selected_accumulator is not None:
+                selected_accumulator.add(item)
+
+        return ReportSeries(
+            granularity=granularity,
+            buckets=tuple(
+                ReportBucket(start, end, label, accumulator.finish())
+                for start, end, label, accumulator in bucket_data
+            ),
+        )
 
     def write_csv(
         self,
@@ -414,6 +721,8 @@ class ReportService:
         filters: ReportFilters,
         *,
         assume_sorted: bool = False,
+        include_series: bool = False,
+        timezone: tzinfo | None = None,
     ) -> Path:
         try:
             from openpyxl import Workbook
@@ -422,13 +731,27 @@ class ReportService:
 
         # write_only avoids retaining worksheet cells.  For an ordered database
         # cursor, assume_sorted also avoids retaining report rows themselves.
+        series_records: tuple[ActivityRecord, ...] = ()
         source: Iterable[ActivityRecord]
-        if assume_sorted:
+        if include_series:
+            series_records = tuple(records)
+            source = (
+                series_records
+                if assume_sorted
+                else sorted(series_records, key=lambda item: (item.recorded_at, item.event_id))
+            )
+        elif assume_sorted:
             source = records
         else:
             source = sorted(records, key=lambda item: (item.recorded_at, item.event_id))
         workbook = Workbook(write_only=True)
-        summary = workbook.create_sheet("Summary")
+        summary = workbook.create_sheet("Сводка")
+        series_sheets = {
+            ReportGranularity.DAY: workbook.create_sheet("По дням"),
+            ReportGranularity.WEEK: workbook.create_sheet("По неделям"),
+            ReportGranularity.MONTH: workbook.create_sheet("По месяцам"),
+            ReportGranularity.YEAR: workbook.create_sheet("По годам"),
+        } if include_series else {}
         projects = workbook.create_sheet("Projects")
         layers_sheet = workbook.create_sheet("Layers")
         vector_layers_sheet = workbook.create_sheet("Vector layers")
@@ -482,9 +805,31 @@ class ReportService:
             )
 
         metrics = accumulator.finish()
-        summary.append(("Metric", "Value"))
-        for key, value in sorted(metrics.values.items()):
-            summary.append((_safe_tabular_text(key), value))
+        summary.append(("Показатель", "Значение"))
+        for metric in present_metrics(metrics.values):
+            summary.append(
+                (
+                    _safe_tabular_text(metric.definition.label),
+                    _safe_tabular_text(metric.formatted_value),
+                )
+            )
+        local_timezone = timezone or datetime.now().astimezone().tzinfo or UTC
+        for granularity, sheet in series_sheets.items():
+            series = self.aggregate_series(
+                series_records,
+                filters,
+                granularity,
+                timezone=local_timezone,
+            )
+            sheet.append(("Период", *(definition.label for definition in METRIC_DEFINITIONS)))
+            for bucket in series.buckets:
+                presented = present_metrics(bucket.metrics.values)
+                sheet.append(
+                    (
+                        bucket.label,
+                        *(metric.formatted_value for metric in presented),
+                    )
+                )
         self._write_counter_sheet(projects, "Project", metrics.by_project)
         self._write_counter_sheet(layers_sheet, "Layer", layer_counters)
         self._write_counter_sheet(

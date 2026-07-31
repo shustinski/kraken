@@ -89,6 +89,14 @@ class LocalIdentityAclStore:
             ).fetchone()
         return None if row is None else self._principal(row)
 
+    def list(self, *, include_inactive: bool = False) -> tuple[Principal, ...]:
+        clause = "" if include_inactive else "WHERE active = 1"
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM principals {clause} ORDER BY display_name COLLATE NOCASE, principal_id"
+            ).fetchall()
+        return tuple(self._principal(row) for row in rows)
+
     def save(self, principal: Principal) -> None:
         with self._connect() as connection:
             connection.execute(

@@ -327,7 +327,13 @@ def test_object_properties_dialog_renders_nested_values_and_local_history(qapp) 
                 "2026-07-28T10:00:00+00:00",
                 "Оператор",
                 "LayerCreated",
-                {"layer_id": "layer-a"},
+                {
+                    "layer_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    "name": "Metal 1",
+                    "type": "binary",
+                    "order": 2,
+                    "state": "active",
+                },
             ),
         ),
     )
@@ -338,9 +344,55 @@ def test_object_properties_dialog_renders_nested_values_and_local_history(qapp) 
     assert dialog.properties_table.item(1, 1).text() == "—"
     assert '"quality": 95' in dialog.properties_table.item(2, 1).text()
     assert dialog.history_table.item(0, 1).text() == "Оператор"
-    assert dialog.history_table.item(0, 2).text() == "LayerCreated"
+    assert dialog.history_table.item(0, 2).text() == "Создан слой"
+    assert dialog.history_table.item(0, 2).toolTip() == "LayerCreated"
+    details = dialog.history_table.item(0, 3).text()
+    assert "Название: Metal 1" in details
+    assert "Тип: binary" in details
+    assert "layer_id" not in details
     assert dialog.history_table.item(0, 0).toolTip() == "2026-07-28T10:00:00+00:00"
     dialog.close()
+
+
+def test_history_payload_summary_prefers_human_fields_over_ids() -> None:
+    from kraken_manager.presentation.qt.layer_management import (
+        _event_type_label,
+        _format_history_payload,
+    )
+
+    assert _event_type_label("ReviewChangesRequested") == "Запрошена доработка"
+    summary = _format_history_payload(
+        "ProjectCreated",
+        {
+            "project_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "name": "Demo",
+            "width": 12,
+            "height": 8,
+            "orientation": "xy",
+            "state": "active",
+        },
+    )
+    assert "Название: Demo" in summary
+    assert "Ширина: 12" in summary
+    assert "Состояние: активен" in summary
+    assert "project_id" not in summary
+
+    rename = _format_history_payload(
+        "ProjectRenamed",
+        {"project": {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "New name", "state": "active"}},
+    )
+    assert "Название: New name" in rename
+
+    review = _format_history_payload(
+        "ReviewChangesRequested",
+        {
+            "review_batch_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "reason": "Нужны правки по контуру",
+            "state": "changes_requested",
+        },
+    )
+    assert "Причина: Нужны правки по контуру" in review
+    assert "Состояние: запрошена доработка" in review
 
 
 def test_matrix_semantic_colors_follow_time_quality_and_review_rules(qapp) -> None:

@@ -8,6 +8,7 @@ from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.dto import (
     ActivateRepresentationCommand,
     ArchiveRepresentationCommand,
+    DeactivateRepresentationCommand,
     RenameRepresentationCommand,
     UpdateRepresentationNoteCommand,
 )
@@ -169,6 +170,17 @@ class ActivateRepresentationHandler(_RepresentationHandler):
         return value.activate(expected_revision=command.expected_representation_revision)
 
 
+class DeactivateRepresentationHandler(_RepresentationHandler):
+    event_type = "RepresentationDeactivated"
+
+    def mutate(self, value: Representation, command: DeactivateRepresentationCommand) -> Representation:
+        if value.state is StructureState.ARCHIVED:
+            raise ConflictError("Archived representation cannot be deactivated")
+        if not value.active:
+            raise ConflictError("Representation is already inactive")
+        return value.deactivate(expected_revision=command.expected_representation_revision)
+
+
 class ArchiveRepresentationHandler(_RepresentationHandler):
     event_type = "RepresentationArchived"
 
@@ -181,6 +193,7 @@ class ArchiveRepresentationHandler(_RepresentationHandler):
 __all__ = [
     "ActivateRepresentationHandler",
     "ArchiveRepresentationHandler",
+    "DeactivateRepresentationHandler",
     "RenameRepresentationHandler",
     "UpdateRepresentationNoteHandler",
 ]

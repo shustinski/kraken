@@ -52,6 +52,8 @@ class ProjectCatalogPage(_TitledPage):
     archiveRequested = pyqtSignal(object)
     restoreRequested = pyqtSignal(object)
     deleteRequested = pyqtSignal(object)
+    participantsRequested = pyqtSignal(object)
+    propertiesRequested = pyqtSignal(object)
 
     def __init__(
         self,
@@ -64,7 +66,8 @@ class ProjectCatalogPage(_TitledPage):
         self.create_button.setObjectName("primaryAction")
         self.refresh_button = QPushButton("Обновить")
         self.rename_button = QPushButton("Переименовать")
-        self.rename_button.hide()
+        self.participants_button = QPushButton("Участники и роли")
+        self.properties_button = QPushButton("Свойства")
         self.archive_button = QPushButton("В архив")
         self.restore_button = QPushButton("Восстановить")
         self.delete_button = QPushButton("Удалить")
@@ -76,6 +79,8 @@ class ProjectCatalogPage(_TitledPage):
         actions.addWidget(self.create_button)
         actions.addWidget(self.refresh_button)
         actions.addWidget(self.rename_button)
+        actions.addWidget(self.participants_button)
+        actions.addWidget(self.properties_button)
         actions.addWidget(self.archive_button)
         actions.addWidget(self.restore_button)
         actions.addWidget(self.delete_button)
@@ -105,6 +110,12 @@ class ProjectCatalogPage(_TitledPage):
         self.archive_button.clicked.connect(lambda: self.archiveRequested.emit(self.selected_project()))
         self.restore_button.clicked.connect(lambda: self.restoreRequested.emit(self.selected_project()))
         self.delete_button.clicked.connect(lambda: self.deleteRequested.emit(self.selected_project()))
+        self.participants_button.clicked.connect(
+            lambda: self.participantsRequested.emit(self.selected_project())
+        )
+        self.properties_button.clicked.connect(
+            lambda: self.propertiesRequested.emit(self.selected_project())
+        )
         self.project_list.doubleClicked.connect(self._activate_index)
         self.project_list.selectionModel().currentChanged.connect(self._selection_changed)
         self.project_model.modelReset.connect(self._sync_empty_state)
@@ -124,6 +135,17 @@ class ProjectCatalogPage(_TitledPage):
     def selected_project(self) -> ProjectListItem | None:
         return self.project_model.item_for_index(self.project_list.currentIndex())
 
+    def set_project_permissions(self, permissions: frozenset[str]) -> None:
+        for button, permission in (
+            (self.rename_button, "rename_project"),
+            (self.participants_button, "manage_acl"),
+            (self.archive_button, "archive_project"),
+            (self.restore_button, "archive_project"),
+            (self.delete_button, "archive_project"),
+            (self.properties_button, "view_project"),
+        ):
+            button.setVisible(permission in permissions)
+
     def _activate_index(self, index: QModelIndex) -> None:
         item = self.project_model.item_for_index(index)
         if item is not None:
@@ -141,6 +163,8 @@ class ProjectCatalogPage(_TitledPage):
         self.archive_button.setEnabled(selected and not archived)
         self.restore_button.setEnabled(selected and archived)
         self.delete_button.setEnabled(selected)
+        self.participants_button.setEnabled(selected)
+        self.properties_button.setEnabled(selected)
 
     def _sync_empty_state(self, *_args: object) -> None:
         empty = self.project_model.rowCount() == 0
@@ -158,6 +182,7 @@ class ProjectWorkspacePage(_TitledPage):
     imageRepresentationChanged = pyqtSignal(str)
     vectorRepresentationChanged = pyqtSignal(str)
     selectionCountChanged = pyqtSignal(int)
+    reviewRequested = pyqtSignal()
 
     def __init__(
         self,
@@ -207,6 +232,9 @@ class ProjectWorkspacePage(_TitledPage):
         self.minimap_checkbox.setChecked(True)
         self.clear_thumbnail_cache_button = QPushButton("Очистить миниатюры")
         self.clear_thumbnail_cache_button.setObjectName("clearThumbnailCacheButton")
+        self.send_review_button = QPushButton("Отправить на проверку")
+        self.send_review_button.setObjectName("sendReviewButton")
+        self.send_review_button.setEnabled(False)
         self.matrix_loading_label = QLabel("")
         self.matrix_loading_label.setObjectName("matrixLoadingLabel")
         for control in (
@@ -217,6 +245,7 @@ class ProjectWorkspacePage(_TitledPage):
             self.matrix_lod_label,
             self.minimap_checkbox,
             self.clear_thumbnail_cache_button,
+            self.send_review_button,
         ):
             matrix_toolbar.addWidget(control)
         matrix_toolbar.addStretch(1)
@@ -287,6 +316,7 @@ class ProjectWorkspacePage(_TitledPage):
             )
         )
         self.matrix_view.selectionChanged.connect(self._show_selection_summary)
+        self.send_review_button.clicked.connect(self.reviewRequested)
         self.zoom_out_button.clicked.connect(
             lambda: self.matrix_view.set_zoom_factor(max(self.matrix_view.MIN_ZOOM, self.matrix_view.zoom_factor() / 1.25))
         )
@@ -340,16 +370,35 @@ class ProjectWorkspacePage(_TitledPage):
         *,
         images: list[tuple[str, str]] = (),
         vectors: list[tuple[str, str]] = (),
+        selected_image_id: str = "",
+        selected_vector_id: str = "",
     ) -> None:
-        self._replace_combo_items(self.image_representation_combo, images)
-        self._replace_combo_items(self.vector_representation_combo, vectors)
+        self._replace_combo_items(
+            self.image_representation_combo,
+            images,
+            selected_id=selected_image_id,
+        )
+        self._replace_combo_items(
+            self.vector_representation_combo,
+            vectors,
+            selected_id=selected_vector_id,
+        )
 
     @staticmethod
-    def _replace_combo_items(combo: QComboBox, items: list[tuple[str, str]]) -> None:
+    def _replace_combo_items(
+        combo: QComboBox,
+        items: list[tuple[str, str]],
+        *,
+        selected_id: str = "",
+    ) -> None:
+        previous_id = selected_id or str(combo.currentData() or "")
         combo.blockSignals(True)
         combo.clear()
         for identifier, name in items:
             combo.addItem(name, identifier)
+        selected = combo.findData(previous_id)
+        if selected >= 0:
+            combo.setCurrentIndex(selected)
         combo.blockSignals(False)
 
     def _activate_layer_tab(self, tab_index: int) -> None:
@@ -359,7 +408,9 @@ class ProjectWorkspacePage(_TitledPage):
             self.layerActivated.emit(item)
 
     def _show_selection_summary(self, selection) -> None:
-        self.selectionCountChanged.emit(sum(1 for _ in selection.coordinates()))
+        count = sum(1 for _ in selection.coordinates())
+        self.send_review_button.setEnabled(count > 0)
+        self.selectionCountChanged.emit(count)
 
     def _update_minimap_summary(self, _visible_rect) -> None:
         width, height = self.matrix_view.matrix_size()

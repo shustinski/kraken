@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Callable
 
 from PyQt6.QtCore import QSettings, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup
@@ -37,6 +38,8 @@ class ProjectManagerShell(QMainWindow):
     navigationRequested = pyqtSignal(str)
     layersRequested = pyqtSignal()
     cellVisualModeChanged = pyqtSignal(str, str)
+    reviewReturnRequested = pyqtSignal()
+    framePropertiesRequested = pyqtSignal()
 
     DEFAULT_NAVIGATION = (
         ("projects", "Проекты"),
@@ -54,6 +57,7 @@ class ProjectManagerShell(QMainWindow):
         self.resize(1280, 800)
         self._pages: dict[str, QWidget] = {}
         self._navigation_items: dict[str, QListWidgetItem] = {}
+        self.close_guard: Callable[[], bool] | None = None
 
         central = QWidget()
         root = QHBoxLayout(central)
@@ -78,6 +82,16 @@ class ProjectManagerShell(QMainWindow):
         self.layers_action.setEnabled(False)
         self.layers_action.triggered.connect(self.layersRequested)
         management.addAction(self.layers_action)
+
+        self.actions_menu = self.menuBar().addMenu("Действия")
+        self.actions_menu.setEnabled(False)
+        self.review_return_action = QAction("Загрузить проверенные файлы…", self)
+        self.review_return_action.triggered.connect(self.reviewReturnRequested)
+        self.actions_menu.addAction(self.review_return_action)
+        self.frame_properties_action = QAction("Статистика выбранного кадра…", self)
+        self.frame_properties_action.setEnabled(False)
+        self.frame_properties_action.triggered.connect(self.framePropertiesRequested)
+        self.actions_menu.addAction(self.frame_properties_action)
 
         self.view_menu = self.menuBar().addMenu("Вид")
         self.view_menu.setEnabled(False)
@@ -221,6 +235,9 @@ class ProjectManagerShell(QMainWindow):
         workspace_active = normalized == "workspace"
         self.layers_action.setEnabled(workspace_active)
         self.view_menu.setEnabled(workspace_active)
+        self.actions_menu.setEnabled(workspace_active)
+        if not workspace_active:
+            self.frame_properties_action.setEnabled(False)
 
     def open_project_workspace(self, workspace: ProjectWorkspacePage | None = None) -> ProjectWorkspacePage:
         """Register or replace the non-sidebar workspace and display it."""
@@ -231,6 +248,9 @@ class ProjectManagerShell(QMainWindow):
             self.register_page("workspace", "Проект", page, navigation=False)
         page.selectionCountChanged.connect(
             lambda count: self.statusBar().showMessage(f"Выбрано кадров: {count:n}")
+        )
+        page.selectionCountChanged.connect(
+            lambda count: self.frame_properties_action.setEnabled(count == 1)
         )
         self.statusBar().showMessage("Выбрано кадров: 0")
         self.show_page("workspace")
@@ -248,6 +268,12 @@ class ProjectManagerShell(QMainWindow):
             return
         self.navigationRequested.emit(key)
         self.show_page(key)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self.close_guard is not None and not self.close_guard():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 __all__ = ["ProjectManagerShell"]

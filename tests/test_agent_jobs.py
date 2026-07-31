@@ -5,10 +5,13 @@ import tempfile
 import unittest
 import json
 import sys
+import threading
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 from kraken_agent.jobs import AgentJobState, DurableJobStore, JobStateError, StagingWorkspace
 from kraken_agent.runner import PluginProcessSpec, PluginRegistry, SubprocessPluginRunner
+from kraken_agent.service import AgentControlServer
 from kraken_core.plugin_protocol import (
     PluginFrameInput,
     PluginFrameOutput,
@@ -40,6 +43,84 @@ def manifest() -> PluginJobManifest:
 
 
 class AgentJobTests(unittest.TestCase):
+    def test_control_api_exposes_result_publications_and_graceful_shutdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            control = AgentControlServer.create(
+                Path(temporary) / "jobs.sqlite3",
+                token="test-token",
+            )
+            httpd = control.build_http_server()
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{control.port}"
+
+            job = control.store.enqueue(manifest())
+            job = control.store.transition(
+                job.job_id,
+                AgentJobState.STAGING,
+                expected_revision=job.revision,
+            )
+            job = control.store.transition(
+                job.job_id,
+                AgentJobState.RUNNING,
+                expected_revision=job.revision,
+            )
+            result = PluginResultManifest(
+                job_id=job.job_id,
+                outcome="succeeded",
+                plugin_id="test",
+                plugin_version="1",
+                outputs=(
+                    PluginFrameOutput(
+                        output_id="output-1",
+                        frame_id="frame-1",
+                        relative_path="outputs/1.cif",
+                        sha256=hashlib.sha256(b"cif").hexdigest(),
+                        media_type="application/x-cif",
+                        role="vector",
+                    ),
+                ),
+            )
+            job, _duplicate = control.store.record_result(
+                result,
+                callback_key="result-1",
+                expected_revision=job.revision,
+            )
+
+            def request(path: str, *, method: str = "GET") -> dict[str, object]:
+                payload = b"{}" if method == "POST" else None
+                with urlopen(
+                    Request(
+                        base_url + path,
+                        data=payload,
+                        method=method,
+                        headers={
+                            "Authorization": "Bearer test-token",
+                            "Content-Type": "application/json",
+                        },
+                    ),
+                    timeout=2,
+                ) as response:
+                    value = json.load(response)
+                self.assertIsInstance(value, dict)
+                return value
+
+            self.assertEqual(
+                "job-1",
+                request("/api/v1/jobs/job-1/result")["job_id"],
+            )
+            self.assertEqual(
+                [],
+                request("/api/v1/jobs/job-1/publications")["publications"],
+            )
+            self.assertEqual(
+                "shutting_down",
+                request("/api/v1/shutdown", method="POST")["status"],
+            )
+            thread.join(timeout=2)
+            httpd.server_close()
+            self.assertFalse(thread.is_alive())
+
     def test_runner_rejects_outputs_for_unknown_frames(self) -> None:
         result = PluginResultManifest(
             job_id="job-1",

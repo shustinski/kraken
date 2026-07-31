@@ -8,13 +8,21 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QApplication,
+    QColorDialog,
+    QComboBox,
     QDialog,
     QFileDialog,
     QInputDialog,
     QLineEdit,
+    QMenu,
     QMessageBox,
+    QPushButton,
+    QTabWidget,
+    QTableWidget,
     QWidget,
 )
 
@@ -28,7 +36,11 @@ from kraken_hub.manager_app import (
     _event_matches_node,
     _history_entries,
     _login,
+    _performer_panel,
+    _statistics_panel,
 )
+from kraken_hub.statistics_widgets import MetricChartWidget
+from kraken_manager.infrastructure.reports import ActivityRecord
 from kraken_manager.domain.project import RepresentationKind
 from kraken_manager.presentation.qt import (
     LayerPipelineSnapshot,
@@ -114,6 +126,190 @@ def test_property_helpers_filter_history_and_deduplicate_files(tmp_path: Path) -
         "PluginJobCreated",
         "LayerRenamed",
     ]
+
+
+def test_performer_dialog_uses_color_picker(qapp, monkeypatch) -> None:
+    created: list[dict[str, str]] = []
+
+    class Service:
+        @staticmethod
+        def list_performers():
+            return ()
+
+        @staticmethod
+        def create_manual_performer(**kwargs):
+            created.append(kwargs)
+
+    monkeypatch.setattr(
+        QColorDialog,
+        "getColor",
+        lambda *_args: QColor("#123ABC"),
+    )
+
+    def complete_dialog(dialog: QDialog):
+        name = dialog.findChild(QLineEdit)
+        color = dialog.findChild(QPushButton, "performerColorPicker")
+        assert name is not None
+        assert color is not None
+        assert color.text() == "#60A5FA"
+        name.setText("Reviewer")
+        color.click()
+        assert color.text() == "#123ABC"
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", complete_dialog)
+    panel = _performer_panel(Service())
+    add_button = panel.findChild(QPushButton)
+    assert add_button is not None
+    add_button.click()
+
+    assert created == [{"name": "Reviewer", "color": "#123ABC"}]
+
+
+def test_performer_table_supports_color_editing_and_context_actions(qapp, monkeypatch) -> None:
+    performers = [
+        SimpleNamespace(
+            id="performer-1",
+            name="Reviewer",
+            color="#60A5FA",
+            principal_id=None,
+        )
+    ]
+    updates: list[dict[str, str]] = []
+    archived: list[str] = []
+
+    class Service:
+        @staticmethod
+        def list_performers():
+            return tuple(performers)
+
+        @staticmethod
+        def update_performer(**kwargs):
+            updates.append(kwargs)
+            current = performers[0]
+            performers[0] = SimpleNamespace(
+                id=current.id,
+                name=kwargs["name"],
+                color=kwargs["color"],
+                principal_id=current.principal_id,
+            )
+
+        @staticmethod
+        def archive_performer(performer_id):
+            archived.append(performer_id)
+            performers.clear()
+
+    monkeypatch.setattr(QColorDialog, "getColor", lambda *_args: QColor("#123ABC"))
+    panel = _performer_panel(Service())
+    table = panel.findChild(QTableWidget)
+    assert table is not None
+    panel.show()
+    qapp.processEvents()
+    assert table.item(0, 1).text() == ""
+    assert table.item(0, 1).data(Qt.ItemDataRole.UserRole) == "#60A5FA"
+    color_center = table.visualItemRect(table.item(0, 1)).center()
+    assert table.viewport().grab().toImage().pixelColor(color_center).name().upper() == "#60A5FA"
+
+    table.cellClicked.emit(0, 1)
+    assert updates[-1] == {
+        "performer_id": "performer-1",
+        "name": "Reviewer",
+        "color": "#123ABC",
+    }
+    assert table.item(0, 1).data(Qt.ItemDataRole.UserRole) == "#123ABC"
+
+    def complete_edit(dialog: QDialog):
+        name = dialog.findChild(QLineEdit)
+        assert name is not None
+        name.setText("Edited reviewer")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", complete_edit)
+    requested_action = {"text": "Изменить"}
+    monkeypatch.setattr(
+        QMenu,
+        "exec",
+        lambda menu, *_args: next(action for action in menu.actions() if action.text() == requested_action["text"]),
+    )
+    qapp.processEvents()
+    position = table.visualItemRect(table.item(0, 0)).center()
+    table.customContextMenuRequested.emit(position)
+    assert updates[-1]["name"] == "Edited reviewer"
+
+    requested_action["text"] = "Удалить"
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    table.customContextMenuRequested.emit(position)
+    assert archived == ["performer-1"]
+    assert table.rowCount() == 0
+
+
+def test_statistics_panel_has_human_readable_project_filtered_charts(qapp) -> None:
+    now = datetime.now(UTC)
+    projects = (
+        SimpleNamespace(
+            id="project-active",
+            name="Active project",
+            state=SimpleNamespace(value="active"),
+        ),
+        SimpleNamespace(
+            id="project-archived",
+            name="Old project",
+            state=SimpleNamespace(value="archived"),
+        ),
+    )
+    records = (
+        ActivityRecord("one", now, "artifact.imported", "project-active", bytes_count=1024),
+        ActivityRecord("two", now, "artifact.imported", "project-archived", bytes_count=2048),
+    )
+
+    class Service:
+        @staticmethod
+        def list_projects(*, include_archived=False):
+            assert include_archived
+            return projects
+
+        @staticmethod
+        def activity_records():
+            return records
+
+    panel = _statistics_panel(Service())
+    tabs = panel.findChild(QTabWidget, "statisticsTabs")
+    table = panel.findChild(QTableWidget, "statisticsSummary")
+    project = panel.findChild(QComboBox, "statisticsProjectFilter")
+    assert tabs is not None
+    assert table is not None
+    assert project is not None
+    assert tuple(tabs.tabText(index) for index in range(tabs.count())) == (
+        "Сводка",
+        "По дням",
+        "По неделям",
+        "По месяцам",
+        "По годам",
+    )
+    assert table.rowCount() == 18
+    assert table.item(0, 0).text() == "Импортировано файлов"
+    assert table.item(0, 1).text() == "2"
+    assert project.itemText(0) == "Все проекты"
+    assert "архивный" in project.itemText(2)
+
+    charts = panel.findChildren(MetricChartWidget)
+    assert len(charts) == 72
+    daily_imports = panel.findChild(MetricChartWidget, "statisticsChart_day_imported_files")
+    assert daily_imports is not None
+    assert daily_imports.total_text == "2"
+    assert daily_imports.point_count >= 30
+
+    project.setCurrentIndex(1)
+    calculate = next(button for button in panel.findChildren(QPushButton) if button.text() == "Рассчитать")
+    calculate.click()
+    assert table.item(0, 1).text() == "1"
+    assert daily_imports.total_text == "1"
+
+    panel.show()
+    tabs.setCurrentIndex(1)
+    qapp.processEvents()
+    assert not daily_imports.grab().isNull()
+    panel.close()
 
 
 def test_delete_project_confirmation_calls_cache_only_service(qapp, monkeypatch, tmp_path: Path) -> None:

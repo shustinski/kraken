@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
 
 from kraken_core.frame_matrix import StoreNamespace
+from kraken_core.plugin_protocol import PluginAsset, PluginResultPublicationV2
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.application.dto import CommandContext, CreateProjectCommand
 from kraken_manager.application.use_cases import CreateProjectHandler
@@ -217,6 +219,24 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
             created = service.create_manual_performer(name="Reviewer", color="#123ABC")
             reopened = EmbeddedProjectService(Path(directory))
             self.assertEqual((created,), reopened.list_performers())
+
+    def test_manual_performer_can_be_updated_and_archived(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service = EmbeddedProjectService(Path(directory))
+            created = service.create_manual_performer(name="Reviewer", color="#123ABC")
+
+            updated = service.update_performer(
+                performer_id=created.id,
+                name="Senior reviewer",
+                color="#60A5FA",
+            )
+
+            self.assertEqual("Senior reviewer", updated.name)
+            self.assertEqual("#60A5FA", updated.color)
+            archived = service.archive_performer(created.id)
+            self.assertFalse(archived.active)
+            self.assertEqual((), service.list_performers())
+            self.assertEqual((archived,), service.list_performers(include_archived=True))
 
     def test_authenticated_local_project_vertical_slice(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -495,6 +515,81 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
             scan = service.scan_integrity()
             self.assertTrue(scan.valid)
             self.assertEqual(2, scan.blobs)
+
+    def test_sparse_managed_vector_keeps_raster_asset_in_viewport(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = EmbeddedProjectService(root / "data")
+            session = service.create_initial_account("owner", "Owner", "")
+            project = service.create_project(
+                principal=session.principal,
+                name="Sparse vector",
+                width=2,
+                height=1,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="project",
+            )
+            layer = service.create_layer(
+                principal=session.principal,
+                project=project,
+                name="Metal",
+                layer_type=LayerType.METAL,
+                order=0,
+                idempotency_key="layer",
+            )
+            images = service.create_representation(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                name="Images",
+                kind=RepresentationKind.IMAGE,
+                source="managed-import",
+                active=True,
+                idempotency_key="images",
+            )
+            vectors = service.create_representation(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                name="CIF",
+                kind=RepresentationKind.VECTOR,
+                source="managed-import",
+                source_image_representation_id=images.id,
+                active=True,
+                idempotency_key="vectors",
+            )
+            source = root / "source"
+            source.mkdir()
+            (source / "1_1.png").write_bytes(b"image")
+            image_plan = service.plan_import_directory(project=project, directory=source)
+            image_result = service.commit_managed_import(
+                principal=session.principal,
+                project=project,
+                layer=layer,
+                representation=images,
+                plan=image_plan,
+                idempotency_key="image-import",
+            )
+
+            viewport = service.matrix_viewport(
+                project.id,
+                layer_id=layer.id,
+                representation_ids=(images.id, vectors.id),
+                x1=1,
+                y1=1,
+                x2=1,
+                y2=1,
+                lod=0,
+            )
+
+            cell = viewport["cells"][0]
+            self.assertTrue(cell["missing"])
+            self.assertEqual("error", cell["status"])
+            self.assertEqual(image_result.versions[0].sha256, cell["asset_sha256"])
+            self.assertEqual(
+                (str(vectors.id),),
+                cell["missing_representation_ids"],
+            )
             backup = root / "backup"
             manifest = service.export_backup(project.id, backup)
             self.assertGreater(manifest.event_count, 0)
@@ -600,6 +695,75 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
             SQLiteProjectionStore(service.catalog_root, str(project.id)).destroy_cache()
             rebuilt = service.list_representations(project.id, layer.id)
             self.assertEqual(("B",), tuple(item.name for item in rebuilt))
+
+    def test_v2_publications_are_merged_before_domain_import(self) -> None:
+        service = object.__new__(EmbeddedProjectService)
+        captured = {}
+
+        def import_result(**kwargs):
+            captured.update(kwargs)
+            return "imported"
+
+        service.import_agent_result = import_result
+        first = PluginResultPublicationV2(
+            job_id="job-1",
+            publication_id="publication-1",
+            sequence=1,
+            plugin_id="plugin",
+            plugin_version="2",
+            outputs=(
+                PluginAsset(
+                    asset_id="dataset-1",
+                    role="dataset",
+                    scope="layer",
+                    relative_path="outputs/dataset.zip",
+                    sha256=hashlib.sha256(b"dataset").hexdigest(),
+                    media_type="application/zip",
+                ),
+            ),
+            applied_parameters={"threshold": 0.5},
+            frame_values={"frame-1": {"confidence": 0.7}},
+        )
+        final = PluginResultPublicationV2(
+            job_id="job-1",
+            publication_id="publication-2",
+            sequence=2,
+            plugin_id="plugin",
+            plugin_version="2",
+            outputs=(
+                PluginAsset(
+                    asset_id="model-1",
+                    role="model",
+                    scope="layer",
+                    relative_path="outputs/model.bin",
+                    sha256=hashlib.sha256(b"model").hexdigest(),
+                    media_type="application/octet-stream",
+                ),
+            ),
+            frame_values={"frame-1": {"quality": 0.9}},
+            final=True,
+        )
+
+        result = service.import_agent_publications(
+            principal=object(),
+            publications=(final.to_dict(), first.to_dict()),
+            staging_root=Path("."),
+        )
+
+        self.assertEqual("imported", result)
+        merged = captured["result_payload"]
+        self.assertEqual(
+            ["dataset-1", "model-1"],
+            [item["asset_id"] for item in merged["outputs"]],
+        )
+        self.assertEqual(
+            {"confidence": 0.7, "quality": 0.9},
+            merged["frame_values"]["frame-1"],
+        )
+        self.assertEqual(
+            ["publication-1", "publication-2"],
+            merged["applied_parameters"]["v2_publication_ids"],
+        )
 
 
 if __name__ == "__main__":

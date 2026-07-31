@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 import os
@@ -14,7 +14,7 @@ from pathlib import Path
 from threading import Event
 from uuid import uuid4
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 
 from kraken_core.frame_matrix import (
     MatrixSession,
@@ -36,9 +36,12 @@ from kraken_core.qt import configure_application_identity
 from kraken_core.styles import load_shared_stylesheet
 from kraken_manager.domain.project import GridOrientation as DomainOrientation
 from kraken_manager.domain.project import RepresentationKind, RepresentationPurpose
+from kraken_manager.domain.artifacts import ArtifactScope
+from kraken_manager.domain.identity import Permission, Performer, ProjectRole
 from kraken_manager.application.imports import ImportMappingMode
 from kraken_manager.workspace import DerivedRunKind
 from kraken_manager.infrastructure.workspace_files import validate_workspace_roots
+from kraken_manager.infrastructure.plugin import AgentPluginGateway
 from kraken_manager.presentation.qt import (
     LayerCreationDialog,
     LayerManagerDialog,
@@ -57,6 +60,7 @@ from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimension
 from . import windows_credentials
 from .composition import DesktopSession, EmbeddedProjectService
 from .matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
+from .agent_runtime import LocalAgentRuntime
 
 
 def _plain_value(value):
@@ -593,6 +597,19 @@ class DesktopController:
         self.session = session
         self.thumbnail_store_uri = str(thumbnail_store_uri)
         self.plugin_items = {item.metadata.id: item for item in (plugin_items or [])}
+        self.agent_runtime = LocalAgentRuntime(
+            self.service.data_dir / "agent",
+            tuple(plugin_items or ()),
+        )
+        self._agent_gateway: AgentPluginGateway | None = None
+        self._agent_poll_error = ""
+        self.my_work_refresh: Callable[[], None] | None = None
+        self._agent_timer = QTimer(self.shell)
+        self._agent_timer.setInterval(2000)
+        self._agent_timer.timeout.connect(self._poll_agent_jobs)
+        self._agent_timer.start()
+        QTimer.singleShot(0, self._resume_agent_jobs)
+        self.shell.close_guard = self._allow_close
         self._workspace = None
         self._project_id = None
         self._layer_dialog: LayerManagerDialog | None = None
@@ -605,9 +622,288 @@ class DesktopController:
         self.catalog_page.archiveRequested.connect(self.archive_project)
         self.catalog_page.restoreRequested.connect(self.restore_project)
         self.catalog_page.deleteRequested.connect(self.delete_project)
+        self.catalog_page.participantsRequested.connect(self.manage_project_participants)
+        self.catalog_page.propertiesRequested.connect(self.show_project_properties)
+        self.catalog_page.selectionChanged.connect(self._sync_project_permissions)
         self.shell.layersRequested.connect(self.open_layer_manager)
         self.shell.cellVisualModeChanged.connect(self._set_matrix_visual_mode)
+        self.shell.reviewReturnRequested.connect(self.load_review_return)
+        self.shell.framePropertiesRequested.connect(self.show_selected_frame)
         self.refresh_projects()
+
+    def _sync_project_permissions(self, item: ProjectListItem | None) -> None:
+        permissions = (
+            frozenset()
+            if item is None
+            else frozenset(
+                permission.value
+                for permission in self.service.project_permissions(
+                    item.project_id,
+                    self.session.principal,
+                )
+            )
+        )
+        self.catalog_page.set_project_permissions(permissions)
+
+    def _has_permission(self, permission: Permission) -> bool:
+        if self._project_id is None:
+            return False
+        return permission in self.service.project_permissions(
+            self._project_id,
+            self.session.principal,
+        )
+
+    def _resume_agent_jobs(self) -> None:
+        active = next(
+            (
+                job
+                for job in self.service.plugin_jobs()
+                if job.state.value not in {"succeeded", "failed", "cancelled"}
+            ),
+            None,
+        )
+        if active is None:
+            return
+        try:
+            self._gateway_for_job(active)
+            self._poll_agent_jobs()
+        except Exception as exc:
+            self.shell.statusBar().showMessage(
+                f"Kraken Agent: {exc}",
+                10000,
+            )
+
+    def _poll_agent_jobs(self) -> None:
+        gateway = self._agent_gateway
+        if gateway is None:
+            return
+        try:
+            jobs = self.service.synchronize_plugin_jobs(
+                principal=self.session.principal,
+                gateway=gateway,
+            )
+            for job in jobs:
+                if job.state.value != "importing":
+                    continue
+                publications = gateway.get_publications(job.id)
+                if publications:
+                    imported = self.service.import_agent_publications(
+                        principal=self.session.principal,
+                        publications=publications,
+                        staging_root=self.service.data_dir / "agent" / "staging",
+                    )
+                else:
+                    payload = gateway.get_result(job.id)
+                    imported = self.service.import_agent_result(
+                        principal=self.session.principal,
+                        result_payload=payload,
+                        staging_root=self.service.data_dir / "agent" / "staging",
+                    )
+                if not imported.requires_partial_confirmation:
+                    gateway.complete_import(job.id)
+                    self._refresh_matrix()
+            if self.my_work_refresh is not None:
+                self.my_work_refresh()
+            self._agent_poll_error = ""
+        except Exception as exc:
+            message = str(exc)
+            if message != self._agent_poll_error:
+                self.shell.statusBar().showMessage(
+                    f"Kraken Agent: {message}",
+                    10000,
+                )
+                self._agent_poll_error = message
+
+    def _allow_close(self) -> bool:
+        from PyQt6.QtWidgets import QMessageBox
+
+        active = tuple(
+            job
+            for job in self.service.plugin_jobs()
+            if job.state.value not in {"succeeded", "failed", "cancelled"}
+        )
+        if active:
+            QMessageBox.information(
+                self.shell,
+                "Есть активные задания",
+                "Дождитесь завершения заданий Kraken Agent или отмените их во вкладке «Моя работа». "
+                "Выход отменён.",
+            )
+            return False
+        try:
+            self.agent_runtime.shutdown()
+        except Exception as exc:
+            QMessageBox.warning(
+                self.shell,
+                "Kraken Agent",
+                f"Не удалось корректно остановить Agent: {exc}",
+            )
+            return False
+        return True
+
+    def _gateway_for_job(self, job) -> AgentPluginGateway:
+        project = self.service.get_project(job.project_id)
+        if project is None:
+            raise ValueError("Проект задания больше не доступен")
+        capabilities = self.agent_runtime.ensure_started()
+        coordinate_by_frame = {
+            str(coordinate.frame_id(project.id)): (coordinate.x, coordinate.y)
+            for coordinate in job.selection.iter_coordinates()
+        }
+
+        def version_path(version_id):
+            return self.service.managed_artifact_path(project.id, version_id)
+
+        def frame_coordinate(frame_id):
+            coordinate = coordinate_by_frame.get(str(frame_id))
+            if coordinate is None:
+                raise ValueError(f"Кадр {frame_id} не входит в задание")
+            return coordinate
+
+        def media_type(version_id):
+            version = self.service.artifact_version(project.id, version_id)
+            if version is None:
+                raise ValueError(f"Версия {version_id} больше не доступна")
+            return version.media_type
+
+        gateway = AgentPluginGateway(
+            base_url=self.agent_runtime.base_url,
+            token=self.agent_runtime.token,
+            staging_root=self.service.data_dir / "agent" / "staging",
+            source_for_version=version_path,
+            coordinate_for_frame=frame_coordinate,
+            media_type_for_version=media_type,
+            capabilities=capabilities,
+            v2_capabilities=frozenset(
+                operation
+                for operation, protocol
+                in self.agent_runtime.protocol_by_capability.items()
+                if protocol == "2.0"
+            ),
+        )
+        self._agent_gateway = gateway
+        return gateway
+
+    def cancel_agent_job(self, job) -> None:
+        gateway = self._gateway_for_job(job)
+        self.service.cancel_plugin_job(
+            principal=self.session.principal,
+            gateway=gateway,
+            job=job,
+            idempotency_key=str(uuid4()),
+        )
+        if self.my_work_refresh is not None:
+            self.my_work_refresh()
+
+    def retry_agent_job(self, job) -> None:
+        gateway = self._gateway_for_job(job)
+        self.service.retry_plugin_job(
+            principal=self.session.principal,
+            gateway=gateway,
+            job=job,
+            idempotency_key=str(uuid4()),
+        )
+        if self.my_work_refresh is not None:
+            self.my_work_refresh()
+
+    def import_partial_agent_job(self, job) -> None:
+        gateway = self._gateway_for_job(job)
+        gateway.confirm_partial(job.id)
+        self._poll_agent_jobs()
+
+    def manage_project_participants(self, item: ProjectListItem | None) -> None:
+        if item is None:
+            return
+        from PyQt6.QtWidgets import (
+            QCheckBox,
+            QDialog,
+            QDialogButtonBox,
+            QMessageBox,
+            QTableWidget,
+            QTableWidgetItem,
+            QVBoxLayout,
+        )
+
+        project = self.service.get_project(item.project_id)
+        if project is None:
+            self._error("Проект больше не доступен.")
+            return
+        principals = self.service.list_principals()
+        roles = (
+            ProjectRole.OWNER,
+            ProjectRole.MANAGER,
+            ProjectRole.CONTRIBUTOR,
+            ProjectRole.REVIEWER,
+            ProjectRole.VIEWER,
+        )
+        role_labels = {
+            ProjectRole.OWNER: "Владелец",
+            ProjectRole.MANAGER: "Руководитель",
+            ProjectRole.CONTRIBUTOR: "Участник",
+            ProjectRole.REVIEWER: "Проверяющий",
+            ProjectRole.VIEWER: "Наблюдатель",
+        }
+        dialog = QDialog(self.shell)
+        dialog.setWindowTitle(f"Участники и роли — {project.name}")
+        dialog.resize(800, 420)
+        layout = QVBoxLayout(dialog)
+        table = QTableWidget(len(principals), 1 + len(roles), dialog)
+        table.setHorizontalHeaderLabels(
+            ("Участник", *(role_labels[role] for role in roles))
+        )
+        table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(table)
+
+        def change(principal, role: ProjectRole, enabled: bool, checkbox: QCheckBox) -> None:
+            try:
+                revision = self.service.project_role_revision(project.id, principal.id)
+                if enabled:
+                    self.service.assign_project_role(
+                        principal=self.session.principal,
+                        project=project,
+                        target_principal_id=principal.id,
+                        role=role,
+                        expected_revision=revision,
+                        idempotency_key=str(uuid4()),
+                    )
+                else:
+                    self.service.revoke_project_role(
+                        principal=self.session.principal,
+                        project=project,
+                        target_principal_id=principal.id,
+                        role=role,
+                        expected_revision=revision,
+                        idempotency_key=str(uuid4()),
+                    )
+            except Exception as exc:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(not enabled)
+                checkbox.blockSignals(False)
+                QMessageBox.warning(dialog, "Не удалось изменить роль", str(exc))
+
+        for row, principal in enumerate(principals):
+            label = principal.display_name
+            if principal.email:
+                label += f"\n{principal.email}"
+            table.setItem(row, 0, QTableWidgetItem(label))
+            assigned = self.service.project_roles(project.id, principal.id)
+            for column, role in enumerate(roles, start=1):
+                checkbox = QCheckBox(table)
+                checkbox.setChecked(role in assigned)
+                checkbox.toggled.connect(
+                    lambda enabled, value=principal, selected=role, control=checkbox: change(
+                        value,
+                        selected,
+                        enabled,
+                        control,
+                    )
+                )
+                table.setCellWidget(row, column, checkbox)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть")
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def refresh_projects(self) -> None:
         items = [
@@ -628,10 +924,43 @@ class DesktopController:
         self.catalog_page.project_model.replace_items(items)
 
     def rename_project(self, item: ProjectListItem | None) -> None:
-        self._error(
-            "Имя проекта совпадает с физическими папками на двух дисках "
-            "и после создания не изменяется."
+        if item is None:
+            return
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+        project = self.service.get_project(item.project_id)
+        if project is None:
+            self._error("Проект больше не доступен.")
+            self.refresh_projects()
+            return
+        name, accepted = QInputDialog.getText(
+            self.shell,
+            "Переименовать проект",
+            "Новое название:",
+            text=project.name,
         )
+        if not accepted or name.strip() == project.name:
+            return
+        answer = QMessageBox.question(
+            self.shell,
+            "Подтверждение переименования",
+            "Будут согласованно переименованы папки исходных и производных данных. Продолжить?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            renamed = self.service.rename_project(
+                principal=self.session.principal,
+                project=project,
+                name=name,
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            self._error(str(exc))
+            return
+        self.refresh_projects()
+        if self._project_id == str(renamed.id) and self._workspace is not None:
+            self._workspace.set_project_title(renamed.name)
 
     def archive_project(self, item: ProjectListItem | None) -> None:
         if item is None:
@@ -948,12 +1277,722 @@ class DesktopController:
         workspace.vectorRepresentationChanged.connect(
             lambda identifier: self._activate_representation(workspace, project.id, identifier)
         )
+        workspace.reviewRequested.connect(self.send_selection_for_review)
+        permissions = self.service.project_permissions(
+            project.id,
+            self.session.principal,
+        )
+        workspace.send_review_button.setVisible(
+            Permission.ASSIGN_WORK in permissions
+        )
+        self.shell.review_return_action.setVisible(
+            Permission.RETURN_REVIEW in permissions
+        )
         layers = self.service.list_layers(project.id)
         if layers:
             first = workspace.layer_model.layer_by_id(str(layers[0].id))
             if first is not None:
                 workspace.layer_tabs.setCurrentIndex(0)
                 self._select_layer(workspace, project.id, first)
+
+    def send_selection_for_review(self) -> None:
+        from datetime import UTC
+
+        from PyQt6.QtCore import QDateTime
+        from PyQt6.QtWidgets import (
+            QCheckBox,
+            QComboBox,
+            QDateTimeEdit,
+            QDialog,
+            QDialogButtonBox,
+            QFileDialog,
+            QFormLayout,
+            QLineEdit,
+            QMessageBox,
+            QPushButton,
+            QVBoxLayout,
+            QWidget,
+        )
+
+        workspace = self._workspace
+        project_id = str(self._project_id or "")
+        layer_id = str(getattr(workspace, "_selected_layer_id", "") if workspace else "")
+        if workspace is None or not project_id or not layer_id:
+            self._error("Сначала откройте проект и выберите слой.")
+            return
+        coordinates = workspace.matrix_view.selected_coordinates(
+            maximum=self.service.profile.capabilities.max_frames or 100_000
+        )
+        if not coordinates:
+            self._error("Выберите хотя бы один кадр.")
+            return
+        image_id = str(workspace.image_representation_combo.currentData() or "")
+        vector_id = str(workspace.vector_representation_combo.currentData() or "")
+        if not image_id or not vector_id:
+            self._error("Выберите связанные репрезентации изображения и CIF.")
+            return
+        performers = self.service.list_performers()
+        if not performers:
+            self._error("Сначала добавьте исполнителя в разделе «Исполнители».")
+            return
+
+        dialog = QDialog(self.shell)
+        dialog.setWindowTitle("Отправить на проверку")
+        root = QVBoxLayout(dialog)
+        form = QFormLayout()
+        assignee = QComboBox(dialog)
+        for performer in performers:
+            assignee.addItem(performer.name, str(performer.id))
+        instructions = QLineEdit(dialog)
+        instructions.setPlaceholderText("Что необходимо проверить")
+        due_enabled = QCheckBox("Установить срок", dialog)
+        due = QDateTimeEdit(QDateTime.currentDateTime().addDays(7), dialog)
+        due.setCalendarPopup(True)
+        due.setDisplayFormat("dd.MM.yyyy HH:mm")
+        due.setEnabled(False)
+        due_enabled.toggled.connect(due.setEnabled)
+        directory_row = QWidget(dialog)
+        directory_layout = QFormLayout(directory_row)
+        directory_layout.setContentsMargins(0, 0, 0, 0)
+        destination_root = QLineEdit(dialog)
+        destination_root.setReadOnly(True)
+        choose = QPushButton("Выбрать…", dialog)
+        choose.clicked.connect(
+            lambda: destination_root.setText(
+                QFileDialog.getExistingDirectory(
+                    dialog,
+                    "Каталог для пакета проверки",
+                    destination_root.text(),
+                )
+                or destination_root.text()
+            )
+        )
+        directory_layout.addRow(destination_root, choose)
+        form.addRow("Исполнитель", assignee)
+        form.addRow("Инструкции", instructions)
+        form.addRow(due_enabled, due)
+        form.addRow("Каталог назначения", directory_row)
+        root.addLayout(form)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            dialog,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Выгрузить")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        root.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not destination_root.text():
+            QMessageBox.warning(dialog, "Каталог не выбран", "Выберите каталог назначения.")
+            return
+        project = self.service.get_project(project_id)
+        timestamp = QDateTime.currentDateTime().toString("yyyyMMdd-HHmmss")
+        safe_project = "".join(
+            character if character.isalnum() or character in "-_" else "_"
+            for character in (project.name if project is not None else "project")
+        ).strip("_") or "project"
+        destination = Path(destination_root.text()) / f"Проверка_{safe_project}_{timestamp}"
+        try:
+            deadline = (
+                due.dateTime().toPyDateTime().astimezone(UTC)
+                if due_enabled.isChecked()
+                else None
+            )
+            batch = self.service.create_review_batch(
+                principal=self.session.principal,
+                project_id=project_id,
+                layer_id=layer_id,
+                image_representation_id=image_id,
+                vector_representation_id=vector_id,
+                coordinates=coordinates,
+                assignee_id=str(assignee.currentData()),
+                instructions=instructions.text(),
+                due_at=deadline,
+                idempotency_key=str(uuid4()),
+            )
+            issued = self.service.export_review_batch(
+                principal=self.session.principal,
+                batch=batch,
+                destination=destination,
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            QMessageBox.warning(dialog, "Не удалось отправить на проверку", str(exc))
+            return
+        QMessageBox.information(
+            self.shell,
+            "Пакет проверки создан",
+            f"Кадров: {len(issued.items)}\nКаталог: {destination}",
+        )
+
+    def load_review_return(self) -> None:
+        from PyQt6.QtWidgets import (
+            QFileDialog,
+            QMessageBox,
+            QTableWidget,
+            QTableWidgetItem,
+        )
+
+        source = QFileDialog.getExistingDirectory(
+            self.shell,
+            "Выберите папку с проверенными файлами",
+        )
+        if not source:
+            return
+        try:
+            batch, plan = self.service.review_return_preflight(
+                principal=self.session.principal,
+                source=source,
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self.shell, "Импорт заблокирован", str(exc))
+            return
+
+        labels = {
+            "changed": "Изменён",
+            "unchanged": "Без изменений",
+            "missing": "Отсутствует",
+            "extra": "Лишний",
+            "duplicate": "Дубликат",
+            "invalid": "Повреждён",
+            "stale_base_conflict": "Конфликт исходной версии",
+        }
+        preview = QMessageBox(self.shell)
+        preview.setWindowTitle("Предварительная проверка")
+        preview.setIcon(QMessageBox.Icon.Information)
+        counts: dict[str, int] = {}
+        for item in plan.report.items:
+            key = item.status.value
+            counts[key] = counts.get(key, 0) + 1
+        preview.setText(
+            "\n".join(
+                f"{labels.get(key, key)}: {value}"
+                for key, value in counts.items()
+            )
+            or "Файлы не найдены."
+        )
+        details = QTableWidget(len(plan.report.items), 2, preview)
+        details.setHorizontalHeaderLabels(("Файл", "Результат"))
+        for row, item in enumerate(plan.report.items):
+            details.setItem(row, 0, QTableWidgetItem(item.relative_path))
+            details.setItem(row, 1, QTableWidgetItem(labels.get(item.status.value, item.status.value)))
+        details.resizeColumnsToContents()
+        preview.layout().addWidget(
+            details,
+            preview.layout().rowCount(),
+            0,
+            1,
+            preview.layout().columnCount(),
+        )
+        import_button = preview.addButton("Создать кандидатные версии", QMessageBox.ButtonRole.AcceptRole)
+        preview.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+        import_button.setEnabled(plan.report.can_commit)
+        preview.exec()
+        if preview.clickedButton() is not import_button:
+            return
+        try:
+            result = self.service.commit_review_return(
+                principal=self.session.principal,
+                batch=batch,
+                source=source,
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self.shell, "Не удалось загрузить результат", str(exc))
+            return
+        if not result.candidate_versions:
+            QMessageBox.information(
+                self.shell,
+                "Проверка загружена",
+                "Изменённых CIF-файлов нет; результат сохранён.",
+            )
+            self._refresh_matrix()
+            return
+        decision = QMessageBox(self.shell)
+        decision.setWindowTitle("Кандидатные версии созданы")
+        decision.setText(
+            f"Создано кандидатных версий: {len(result.candidate_versions)}.\n"
+            "Принять их как активные или вернуть на доработку?"
+        )
+        accept_button = decision.addButton("Принять", QMessageBox.ButtonRole.AcceptRole)
+        changes_button = decision.addButton("На доработку", QMessageBox.ButtonRole.DestructiveRole)
+        decision.addButton("Позже", QMessageBox.ButtonRole.RejectRole)
+        decision.exec()
+        try:
+            if decision.clickedButton() is accept_button:
+                answer = QMessageBox.question(
+                    self.shell,
+                    "Подтверждение",
+                    "Сделать кандидатные версии активными?",
+                )
+                if answer == QMessageBox.StandardButton.Yes:
+                    self.service.accept_review(
+                        principal=self.session.principal,
+                        batch=result.batch,
+                        candidate_version_ids=tuple(
+                            version.id for version in result.candidate_versions
+                        ),
+                        idempotency_key=str(uuid4()),
+                    )
+            elif decision.clickedButton() is changes_button:
+                self._request_review_changes(result.batch)
+        except Exception as exc:
+            QMessageBox.warning(self.shell, "Не удалось изменить состояние проверки", str(exc))
+        self._refresh_matrix()
+
+    def _request_review_changes(self, batch) -> None:
+        from PyQt6.QtWidgets import QInputDialog
+
+        reason, accepted = QInputDialog.getMultiLineText(
+            self.shell,
+            "На доработку",
+            "Причина (обязательно):",
+        )
+        if not accepted:
+            return
+        if not reason.strip():
+            raise ValueError("Укажите причину возврата на доработку.")
+        self.service.request_review_changes(
+            principal=self.session.principal,
+            batch=batch,
+            reason=reason,
+            idempotency_key=str(uuid4()),
+        )
+
+    def _refresh_matrix(self) -> None:
+        workspace = self._workspace
+        project_id = str(self._project_id or "")
+        layer_id = str(getattr(workspace, "_selected_layer_id", "") if workspace else "")
+        if workspace is None or not project_id or not layer_id:
+            return
+        self._load_representations(workspace, project_id, layer_id)
+
+    def show_selected_frame(self) -> None:
+        workspace = self._workspace
+        project_id = str(self._project_id or "")
+        if workspace is None or not project_id:
+            return
+        coordinates = workspace.matrix_view.selected_coordinates(maximum=2)
+        if len(coordinates) != 1:
+            self._error("Для просмотра карточки выберите ровно один кадр.")
+            return
+        x, y = coordinates[0]
+        cell = workspace.matrix_view.cell_data(x, y)
+        payload = cell.payload if isinstance(cell.payload, Mapping) else {}
+        frame_id = str(payload.get("frame_id") or payload.get("key") or "")
+        project = self.service.get_project(project_id)
+        layer_id = str(getattr(workspace, "_selected_layer_id", ""))
+        layer = next(
+            (item for item in self.service.list_layers(project_id) if str(item.id) == layer_id),
+            None,
+        )
+        representations = self.service.list_representations(project_id, layer_id)
+        image_id = str(workspace.image_representation_combo.currentData() or "")
+        vector_id = str(workspace.vector_representation_combo.currentData() or "")
+        image = next((item for item in representations if str(item.id) == image_id), None)
+        vector = next((item for item in representations if str(item.id) == vector_id), None)
+        events = tuple(
+            event
+            for event in self.service.history(project_id)
+            if frame_id and frame_id in str(_event_payload(event))
+        )
+        principals = {
+            str(principal.id): principal.display_name
+            for principal in self.service.list_principals(include_inactive=True)
+        }
+        series_values = tuple(
+            series
+            for series in self.service.list_artifact_series(
+                project_id,
+                layer_id=layer_id,
+                include_archived=True,
+            )
+            if str(series.frame_id or "") == frame_id
+        )
+        notes = self.service.list_notes(
+            project_id,
+            layer_id=layer_id,
+            frame_id=frame_id,
+        )
+        files: list[Mapping[str, object]] = []
+        versions: list[Mapping[str, object]] = []
+        for series in series_values:
+            active = self.service.active_artifact_version(project_id, series.id)
+            files.append(
+                {
+                    "_series": series,
+                    "name": series.name,
+                    "scope": series.scope.value,
+                    "active_version": None if active is None else str(active.id),
+                    "archived": series.archived,
+                }
+            )
+            for version in self.service.artifact_versions(project_id, series.id):
+                if version.size_bytes < 1024:
+                    size = f"{version.size_bytes} байт"
+                elif version.size_bytes < 1024 * 1024:
+                    size = f"{version.size_bytes / 1024:.1f} КБ"
+                else:
+                    size = f"{version.size_bytes / (1024 * 1024):.1f} МБ"
+                versions.append(
+                    {
+                        "_version": version,
+                        "filename": version.filename,
+                        "size": size,
+                        "sha256": version.sha256,
+                        "author": principals.get(
+                            str(version.author_principal_id),
+                            str(version.author_principal_id),
+                        ),
+                        "created_at": version.created_at.isoformat(),
+                        "parent": (
+                            None
+                            if version.parent_version_id is None
+                            else str(version.parent_version_id)
+                        ),
+                        "tool": " ".join(
+                            value
+                            for value in (version.tool_name, version.tool_version)
+                            if value
+                        ),
+                        "provenance": dict(version.parameters),
+                        "active": active is not None and active.id == version.id,
+                    }
+                )
+
+        def add_note() -> None:
+            from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+            body, accepted = QInputDialog.getMultiLineText(
+                self.shell,
+                "Новая заметка",
+                "Текст:",
+            )
+            if not accepted:
+                return
+            try:
+                self.service.create_note(
+                    principal=self.session.principal,
+                    project_id=project_id,
+                    layer_id=layer_id,
+                    frame_id=frame_id,
+                    body=body,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(self.shell, "Не удалось создать заметку", str(exc))
+                return
+            QMessageBox.information(
+                self.shell,
+                "Заметка создана",
+                "Заметка сохранена новой неизменяемой ревизией. Переоткройте карточку.",
+            )
+
+        def revise_latest_note() -> None:
+            from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+            if not notes:
+                QMessageBox.information(self.shell, "Нет заметок", "Сначала создайте заметку.")
+                return
+            current = max(notes, key=lambda value: (value.recorded_at, value.revision))
+            body, accepted = QInputDialog.getMultiLineText(
+                self.shell,
+                "Изменить заметку",
+                "Новая ревизия:",
+                text=current.body,
+            )
+            if not accepted:
+                return
+            try:
+                self.service.revise_note(
+                    principal=self.session.principal,
+                    note=current,
+                    body=body,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(self.shell, "Не удалось изменить заметку", str(exc))
+                return
+            QMessageBox.information(
+                self.shell,
+                "Ревизия сохранена",
+                "Предыдущая ревизия осталась в истории.",
+            )
+
+        def add_version(row: Mapping[str, object], *, external: bool) -> None:
+            from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+            series = row.get("_series")
+            if series is None:
+                return
+            source, _selected_filter = QFileDialog.getOpenFileName(
+                self.shell,
+                "Выберите новую версию файла",
+            )
+            if not source:
+                return
+            try:
+                method = (
+                    self.service.add_external_artifact_version
+                    if external
+                    else self.service.add_managed_artifact_version
+                )
+                method(
+                    principal=self.session.principal,
+                    project_id=project_id,
+                    series_id=series.id,
+                    source=source,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(self.shell, "Не удалось добавить версию", str(exc))
+                return
+            QMessageBox.information(
+                self.shell,
+                "Версия добавлена",
+                "Новая неизменяемая версия сохранена. Переоткройте карточку.",
+            )
+
+        def rename_series(row: Mapping[str, object]) -> None:
+            from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+            series = row.get("_series")
+            if series is None:
+                return
+            name, accepted = QInputDialog.getText(
+                self.shell,
+                "Переименовать файл",
+                "Логическое название:",
+                text=series.name,
+            )
+            if not accepted:
+                return
+            try:
+                self.service.rename_artifact_series(
+                    principal=self.session.principal,
+                    series=series,
+                    name=name,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(self.shell, "Не удалось переименовать файл", str(exc))
+
+        def archive_series(row: Mapping[str, object]) -> None:
+            from PyQt6.QtWidgets import QMessageBox
+
+            series = row.get("_series")
+            if series is None:
+                return
+            if QMessageBox.question(
+                self.shell,
+                "Архивировать файл",
+                f"Архивировать логическую серию «{series.name}»?",
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self.service.archive_artifact_series(
+                    principal=self.session.principal,
+                    series=series,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(self.shell, "Не удалось архивировать файл", str(exc))
+
+        def activate_version(row: Mapping[str, object]) -> None:
+            from PyQt6.QtWidgets import QMessageBox
+
+            version = row.get("_version")
+            if version is None or bool(row.get("active")):
+                return
+            if QMessageBox.question(
+                self.shell,
+                "Активировать прежнюю версию",
+                "Сделать выбранную неизменяемую версию активной? История не будет переписана.",
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self.service.activate_artifact_version(
+                    principal=self.session.principal,
+                    project_id=project_id,
+                    series_id=version.series_id,
+                    version_id=version.id,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(self.shell, "Не удалось активировать версию", str(exc))
+
+        def export_or_open_version(row: Mapping[str, object]) -> None:
+            from PyQt6.QtCore import QUrl
+            from PyQt6.QtGui import QDesktopServices
+            from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+            version = row.get("_version")
+            if version is None:
+                return
+            if version.external is not None:
+                QDesktopServices.openUrl(QUrl(version.external.uri))
+                return
+            destination, _selected_filter = QFileDialog.getSaveFileName(
+                self.shell,
+                "Экспортировать файл",
+                version.filename,
+            )
+            if not destination:
+                return
+            try:
+                self.service.export_managed_artifact(
+                    project_id,
+                    version,
+                    destination,
+                )
+            except Exception as exc:
+                QMessageBox.warning(self.shell, "Не удалось экспортировать файл", str(exc))
+
+        def check_external(row: Mapping[str, object]) -> None:
+            from PyQt6.QtWidgets import QMessageBox
+
+            version = row.get("_version")
+            if version is None or version.external is None:
+                QMessageBox.information(
+                    self.shell,
+                    "Управляемый файл",
+                    "Эта версия хранится в базе и не может измениться снаружи.",
+                )
+                return
+            try:
+                changed = self.service.external_artifact_changed(version)
+            except Exception as exc:
+                QMessageBox.warning(self.shell, "Не удалось проверить файл", str(exc))
+                return
+            QMessageBox.information(
+                self.shell,
+                "Проверка внешнего файла",
+                "Файл изменён или недоступен." if changed else "Файл не изменился.",
+            )
+        properties = (
+            ("Координаты", f"X={x}, Y={y}"),
+            ("Номер кадра", (y - 1) * (project.width if project is not None else 1) + x),
+            ("Идентификатор кадра", frame_id),
+            ("Проект", None if project is None else project.name),
+            ("Слой", None if layer is None else layer.name),
+            ("Статус", cell.status),
+            ("Исполнитель", cell.performer_initials or "—"),
+            ("Качество", payload.get("quality")),
+            ("Проверка", payload.get("review_status")),
+            ("Изображение", None if image is None else image.name),
+            ("Версия изображения", payload.get("asset_revision")),
+            ("SHA-256 изображения", payload.get("asset_sha256")),
+            ("CIF", None if vector is None else vector.name),
+            ("Активная версия CIF", payload.get("artifact_version_id")),
+            ("Изменён", payload.get("modified_at")),
+            (
+                "Отсутствующие данные",
+                "CIF или изображение отсутствует" if payload.get("missing") else "Нет",
+            ),
+        )
+
+        def temporal(entry: ObjectHistoryEntry):
+            from datetime import datetime
+
+            moment = datetime.fromisoformat(entry.recorded_at)
+            historical_project = self.service.get_project(
+                project_id,
+                as_of=moment,
+            )
+            if historical_project is None or layer is None:
+                return None
+            historical_cells = []
+            for representation in (image, vector):
+                if representation is None:
+                    continue
+                historical_cells.extend(
+                    candidate
+                    for candidate in self.service.frame_cells(
+                        project_id,
+                        layer.id,
+                        representation.id,
+                        as_of=moment,
+                    )
+                    if str(candidate.frame_id) == frame_id
+                )
+            historical = historical_cells[-1] if historical_cells else None
+            return ObjectPropertiesSnapshot(
+                title=f"Кадр ({x}, {y}) — на {entry.recorded_at}",
+                object_kind="frame-temporal",
+                properties=(
+                    ("Координаты", f"X={x}, Y={y}"),
+                    ("Идентификатор кадра", frame_id),
+                    ("Проект", historical_project.name),
+                    ("Слой", layer.name),
+                    (
+                        "Статус",
+                        "Нет данных" if historical is None else historical.status,
+                    ),
+                    (
+                        "SHA-256",
+                        None if historical is None else historical.sha256,
+                    ),
+                    (
+                        "Версия",
+                        None
+                        if historical is None
+                        else historical.artifact_version_id,
+                    ),
+                ),
+                history=tuple(
+                    history
+                    for history in _history_entries(events)
+                    if history.recorded_at <= entry.recorded_at
+                ),
+            )
+
+        self._open_properties(
+            ObjectPropertiesSnapshot(
+                title=f"Кадр ({x}, {y})",
+                object_kind="frame",
+                properties=properties,
+                history=_history_entries(events),
+                temporal_loader=temporal,
+                notes=tuple(
+                    {
+                        "revision": note.revision,
+                        "body": note.body,
+                        "author": principals.get(
+                            str(note.author_principal_id),
+                            str(note.author_principal_id),
+                        ),
+                        "recorded_at": note.recorded_at.isoformat(),
+                    }
+                    for note in notes
+                ),
+                files=tuple(files),
+                versions=tuple(versions),
+                actions=(
+                    ("Добавить заметку", add_note),
+                    ("Изменить последнюю заметку", revise_latest_note),
+                ),
+                file_actions=(
+                    (
+                        "Добавить версию в базу",
+                        lambda row: add_version(row, external=False),
+                    ),
+                    (
+                        "Добавить внешнюю версию",
+                        lambda row: add_version(row, external=True),
+                    ),
+                    ("Переименовать", rename_series),
+                    ("Архивировать", archive_series),
+                ),
+                version_actions=(
+                    ("Активировать", activate_version),
+                    ("Экспортировать / открыть", export_or_open_version),
+                    ("Проверить внешний файл", check_external),
+                ),
+            )
+        )
 
     def _load_layers(self, workspace, project) -> None:
         colors = {
@@ -1355,6 +2394,491 @@ class DesktopController:
             self._layer_dialog or self.shell,
         ).exec()
 
+    def _scope_content(
+        self,
+        project_id,
+        *,
+        layer_id=None,
+    ) -> dict[str, tuple]:
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+
+        permission_reader = getattr(self.service, "project_permissions", None)
+        permissions = (
+            frozenset(Permission)
+            if not callable(permission_reader)
+            else permission_reader(project_id, self.session.principal)
+        )
+        list_notes = getattr(self.service, "list_notes", None)
+        notes = (
+            ()
+            if not callable(list_notes)
+            else list_notes(project_id, layer_id=layer_id)
+        )
+        list_principals = getattr(self.service, "list_principals", None)
+        principals = {
+            str(principal.id): principal.display_name
+            for principal in (
+                ()
+                if not callable(list_principals)
+                else list_principals(include_inactive=True)
+            )
+        }
+        wanted_scopes = (
+            {
+                ArtifactScope.PROJECT_ATTACHMENT,
+                ArtifactScope.PROJECT_EXTERNAL_LINK,
+            }
+            if layer_id is None
+            else {
+                ArtifactScope.LAYER_ATTACHMENT,
+                ArtifactScope.LAYER_EXTERNAL_LINK,
+            }
+        )
+        list_series = getattr(self.service, "list_artifact_series", None)
+        available_series = (
+            ()
+            if not callable(list_series)
+            else list_series(
+                project_id,
+                layer_id=layer_id,
+                include_archived=True,
+            )
+        )
+        series_items = tuple(
+            series
+            for series in available_series
+            if series.scope in wanted_scopes
+            and (
+                (layer_id is None and series.layer_id is None)
+                or str(series.layer_id) == str(layer_id)
+            )
+        )
+        files: list[Mapping[str, object]] = []
+        versions: list[Mapping[str, object]] = []
+        for series in series_items:
+            active = self.service.active_artifact_version(project_id, series.id)
+            files.append(
+                {
+                    "name": series.name,
+                    "scope": (
+                        "Вложение"
+                        if series.scope
+                        in {
+                            ArtifactScope.PROJECT_ATTACHMENT,
+                            ArtifactScope.LAYER_ATTACHMENT,
+                        }
+                        else "Внешняя ссылка"
+                    ),
+                    "active_version": (
+                        "—" if active is None else active.filename
+                    ),
+                    "archived": series.archived,
+                    "_series": series,
+                }
+            )
+            for version in self.service.artifact_versions(project_id, series.id):
+                versions.append(
+                    {
+                        "filename": version.filename,
+                        "size": f"{version.size_bytes:,}".replace(",", " ") + " байт",
+                        "sha256": version.sha256,
+                        "author": principals.get(
+                            str(version.author_principal_id),
+                            str(version.author_principal_id),
+                        ),
+                        "created_at": version.created_at.isoformat(),
+                        "parent": (
+                            "—"
+                            if version.parent_version_id is None
+                            else str(version.parent_version_id)
+                        ),
+                        "tool": " ".join(
+                            value
+                            for value in (version.tool_name, version.tool_version)
+                            if value
+                        )
+                        or "—",
+                        "provenance": dict(version.parameters),
+                        "active": active is not None and active.id == version.id,
+                        "_version": version,
+                    }
+                )
+
+        def add_note() -> None:
+            body, accepted = QInputDialog.getMultiLineText(
+                self.shell,
+                "Новая заметка",
+                "Текст:",
+            )
+            if not accepted or not body.strip():
+                return
+            try:
+                self.service.create_note(
+                    principal=self.session.principal,
+                    project_id=project_id,
+                    layer_id=layer_id,
+                    body=body,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось добавить заметку",
+                    str(exc),
+                )
+
+        def revise_note() -> None:
+            if not notes:
+                QMessageBox.information(
+                    self.shell,
+                    "Нет заметок",
+                    "Сначала добавьте заметку.",
+                )
+                return
+            note = max(notes, key=lambda item: (item.recorded_at, item.revision))
+            body, accepted = QInputDialog.getMultiLineText(
+                self.shell,
+                "Новая ревизия заметки",
+                "Текст:",
+                text=note.body,
+            )
+            if not accepted or not body.strip() or body.strip() == note.body:
+                return
+            try:
+                self.service.revise_note(
+                    principal=self.session.principal,
+                    note=note,
+                    body=body,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось изменить заметку",
+                    str(exc),
+                )
+
+        def create_file_series(*, external: bool) -> None:
+            source, _selected_filter = QFileDialog.getOpenFileName(
+                self.shell,
+                "Выберите файл",
+            )
+            if not source:
+                return
+            path = Path(source)
+            scope = (
+                ArtifactScope.PROJECT_EXTERNAL_LINK
+                if layer_id is None and external
+                else ArtifactScope.PROJECT_ATTACHMENT
+                if layer_id is None
+                else ArtifactScope.LAYER_EXTERNAL_LINK
+                if external
+                else ArtifactScope.LAYER_ATTACHMENT
+            )
+            try:
+                series = self.service.create_artifact_series(
+                    principal=self.session.principal,
+                    project_id=project_id,
+                    layer_id=layer_id,
+                    scope=scope,
+                    name=path.name,
+                    idempotency_key=str(uuid4()),
+                )
+                add = (
+                    self.service.add_external_artifact_version
+                    if external
+                    else self.service.add_managed_artifact_version
+                )
+                add(
+                    principal=self.session.principal,
+                    project_id=project_id,
+                    series_id=series.id,
+                    source=path,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось добавить файл",
+                    str(exc),
+                )
+
+        def add_version(row: Mapping[str, object], *, external: bool) -> None:
+            series = row.get("_series")
+            if series is None:
+                return
+            source, _selected_filter = QFileDialog.getOpenFileName(
+                self.shell,
+                "Выберите новую версию",
+            )
+            if not source:
+                return
+            active = self.service.active_artifact_version(project_id, series.id)
+            try:
+                add = (
+                    self.service.add_external_artifact_version
+                    if external
+                    else self.service.add_managed_artifact_version
+                )
+                add(
+                    principal=self.session.principal,
+                    project_id=project_id,
+                    series_id=series.id,
+                    source=source,
+                    parent_version_id=None if active is None else active.id,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось добавить версию",
+                    str(exc),
+                )
+
+        def rename_series(row: Mapping[str, object]) -> None:
+            series = row.get("_series")
+            if series is None:
+                return
+            name, accepted = QInputDialog.getText(
+                self.shell,
+                "Переименовать файл",
+                "Название:",
+                text=series.name,
+            )
+            if not accepted or not name.strip() or name.strip() == series.name:
+                return
+            try:
+                self.service.rename_artifact_series(
+                    principal=self.session.principal,
+                    series=series,
+                    name=name,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось переименовать файл",
+                    str(exc),
+                )
+
+        def archive_series(row: Mapping[str, object]) -> None:
+            series = row.get("_series")
+            if series is None or series.archived:
+                return
+            if QMessageBox.question(
+                self.shell,
+                "Архивировать файл",
+                f"Архивировать логический файл «{series.name}»?",
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self.service.archive_artifact_series(
+                    principal=self.session.principal,
+                    series=series,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось архивировать файл",
+                    str(exc),
+                )
+
+        def activate_version(row: Mapping[str, object]) -> None:
+            version = row.get("_version")
+            if version is None or bool(row.get("active")):
+                return
+            if QMessageBox.question(
+                self.shell,
+                "Активировать версию",
+                "Сделать эту неизменяемую версию активной?",
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self.service.activate_artifact_version(
+                    principal=self.session.principal,
+                    project_id=project_id,
+                    series_id=version.series_id,
+                    version_id=version.id,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось активировать версию",
+                    str(exc),
+                )
+
+        def export_or_open(row: Mapping[str, object]) -> None:
+            version = row.get("_version")
+            if version is None:
+                return
+            if version.external is not None:
+                QDesktopServices.openUrl(QUrl(version.external.uri))
+                return
+            destination, _selected_filter = QFileDialog.getSaveFileName(
+                self.shell,
+                "Экспортировать файл",
+                version.filename,
+            )
+            if not destination:
+                return
+            try:
+                self.service.export_managed_artifact(
+                    project_id,
+                    version,
+                    destination,
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось экспортировать файл",
+                    str(exc),
+                )
+
+        def check_external(row: Mapping[str, object]) -> None:
+            version = row.get("_version")
+            if version is None or version.external is None:
+                QMessageBox.information(
+                    self.shell,
+                    "Управляемый файл",
+                    "Эта версия хранится в базе и не изменяется снаружи.",
+                )
+                return
+            try:
+                changed = self.service.external_artifact_changed(version)
+            except Exception as exc:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось проверить файл",
+                    str(exc),
+                )
+                return
+            QMessageBox.information(
+                self.shell,
+                "Проверка внешнего файла",
+                "Файл изменён или недоступен." if changed else "Файл не изменился.",
+            )
+
+        general_actions: list[tuple[str, Callable[[], None]]] = []
+        if Permission.ADD_NOTE in permissions:
+            general_actions.extend(
+                (
+                    ("Добавить заметку", add_note),
+                    ("Изменить последнюю заметку", revise_note),
+                )
+            )
+        if Permission.IMPORT_ARTIFACT in permissions:
+            general_actions.extend(
+                (
+                    (
+                        "Добавить файл в базу",
+                        lambda: create_file_series(external=False),
+                    ),
+                    (
+                        "Добавить внешнюю ссылку",
+                        lambda: create_file_series(external=True),
+                    ),
+                )
+            )
+        file_actions = (
+            (
+                (
+                    "Добавить версию в базу",
+                    lambda row: add_version(row, external=False),
+                ),
+                (
+                    "Добавить внешнюю версию",
+                    lambda row: add_version(row, external=True),
+                ),
+                ("Переименовать", rename_series),
+                ("Архивировать", archive_series),
+            )
+            if Permission.IMPORT_ARTIFACT in permissions
+            else ()
+        )
+        version_actions = (
+            (
+                ("Сделать активной", activate_version),
+                ("Открыть / экспортировать", export_or_open),
+                ("Проверить внешний файл", check_external),
+            )
+            if Permission.IMPORT_ARTIFACT in permissions
+            else (("Открыть / экспортировать", export_or_open),)
+        )
+        return {
+            "notes": tuple(
+                {
+                    "revision": note.revision,
+                    "body": note.body,
+                    "author": principals.get(
+                        str(note.author_principal_id),
+                        str(note.author_principal_id),
+                    ),
+                    "recorded_at": note.recorded_at.isoformat(),
+                }
+                for note in notes
+            ),
+            "files": tuple(files),
+            "versions": tuple(versions),
+            "actions": tuple(general_actions),
+            "file_actions": file_actions,
+            "version_actions": version_actions,
+        }
+
+    def show_project_properties(self, item: ProjectListItem | None) -> None:
+        if item is None:
+            return
+        project = self.service.get_project(item.project_id)
+        if project is None:
+            self._error("Проект больше не доступен")
+            return
+        events = tuple(self.service.history(project.id))
+        content = self._scope_content(project.id)
+
+        def properties_for(value) -> tuple[tuple[str, object], ...]:
+            return (
+                ("Название", value.name),
+                ("Идентификатор", str(value.id)),
+                ("Размер матрицы", f"{value.width} × {value.height}"),
+                ("Ориентация", value.orientation.value),
+                ("Профиль хранения", value.storage_profile),
+                ("Состояние", value.state.value),
+                ("Ревизия", value.revision),
+                ("Создан", value.created_at.isoformat()),
+            )
+
+        def temporal(entry: ObjectHistoryEntry):
+            from datetime import datetime
+
+            moment = datetime.fromisoformat(entry.recorded_at)
+            value = self.service.get_project(project.id, as_of=moment)
+            if value is None:
+                return None
+            return ObjectPropertiesSnapshot(
+                title=f"{value.name} — на {entry.recorded_at}",
+                object_kind="project-temporal",
+                properties=properties_for(value),
+                history=tuple(
+                    history
+                    for history in _history_entries(events)
+                    if history.recorded_at <= entry.recorded_at
+                ),
+            )
+
+        self._open_properties(
+            ObjectPropertiesSnapshot(
+                title=project.name,
+                object_kind="project",
+                properties=properties_for(project),
+                history=_history_entries(events),
+                temporal_loader=temporal,
+                **content,
+            )
+        )
+
     def _show_layer_properties(self, layer_id: str) -> None:
         layer = next(
             (
@@ -1422,12 +2946,56 @@ class DesktopController:
                     ("Параметры преобразования", _plain_value(binding.conversion)),
                 )
             )
+        content = self._scope_content(
+            self._project_id,
+            layer_id=layer.id,
+        )
+
+        def temporal(entry: ObjectHistoryEntry):
+            from datetime import datetime
+
+            moment = datetime.fromisoformat(entry.recorded_at)
+            value = next(
+                (
+                    candidate
+                    for candidate in self.service.list_layers(
+                        self._project_id,
+                        as_of=moment,
+                        include_archived=True,
+                    )
+                    if candidate.id == layer.id
+                ),
+                None,
+            )
+            if value is None:
+                return None
+            return ObjectPropertiesSnapshot(
+                title=f"{value.name} — на {entry.recorded_at}",
+                object_kind="layer-temporal",
+                properties=(
+                    ("Название", value.name),
+                    ("Идентификатор", str(value.id)),
+                    ("Тип слоя", value.type.value),
+                    ("Порядок", value.order),
+                    ("Состояние", value.state.value),
+                    ("Ревизия", value.revision),
+                    ("Создан", value.created_at.isoformat()),
+                ),
+                history=tuple(
+                    history
+                    for history in _history_entries(events)
+                    if history.recorded_at <= entry.recorded_at
+                ),
+            )
+
         self._open_properties(
             ObjectPropertiesSnapshot(
                 title=layer.name,
                 object_kind="layer",
                 properties=tuple(properties),
                 history=_history_entries(events),
+                temporal_loader=temporal,
+                **content,
             )
         )
 
@@ -1686,6 +3254,106 @@ class DesktopController:
         if action == "archive_representation":
             self._archive_layer_representation(_layer_id, _node)
             return
+        if action in {
+            "rename_representation",
+            "edit_representation_note",
+            "activate_representation",
+            "deactivate_representation",
+        }:
+            from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+            workspace = self._workspace
+            project = self.service.get_project(self._project_id)
+            layer = next(
+                (
+                    item
+                    for item in self.service.list_layers(self._project_id)
+                    if str(item.id) == str(_layer_id)
+                ),
+                None,
+            )
+            representation_id = str(_node.representation_id or _node.node_id)
+            representation = next(
+                (
+                    item
+                    for item in self.service.list_representations(
+                        self._project_id,
+                        _layer_id,
+                    )
+                    if str(item.id) == representation_id
+                ),
+                None,
+            )
+            if workspace is None or project is None or layer is None or representation is None:
+                self._error("Репрезентация больше не доступна.")
+                return
+            try:
+                if action == "rename_representation":
+                    value, accepted = QInputDialog.getText(
+                        self.shell,
+                        "Переименовать репрезентацию",
+                        "Новое название:",
+                        text=representation.name,
+                    )
+                    if not accepted or value.strip() == representation.name:
+                        return
+                    self.service.rename_representation(
+                        principal=self.session.principal,
+                        project=project,
+                        layer=layer,
+                        representation=representation,
+                        name=value,
+                        idempotency_key=str(uuid4()),
+                    )
+                elif action == "edit_representation_note":
+                    value, accepted = QInputDialog.getMultiLineText(
+                        self.shell,
+                        "Заметка репрезентации",
+                        "Заметка:",
+                        text=representation.note,
+                    )
+                    if not accepted or value.strip() == representation.note:
+                        return
+                    self.service.update_representation_note(
+                        principal=self.session.principal,
+                        project=project,
+                        layer=layer,
+                        representation=representation,
+                        note=value,
+                        idempotency_key=str(uuid4()),
+                    )
+                elif action == "activate_representation":
+                    self.service.activate_representation(
+                        principal=self.session.principal,
+                        project=project,
+                        layer=layer,
+                        representation=representation,
+                        idempotency_key=str(uuid4()),
+                    )
+                else:
+                    answer = QMessageBox.question(
+                        self.shell,
+                        "Деактивировать репрезентацию",
+                        f"Деактивировать «{representation.name}»?",
+                    )
+                    if answer != QMessageBox.StandardButton.Yes:
+                        return
+                    self.service.deactivate_representation(
+                        principal=self.session.principal,
+                        project=project,
+                        layer=layer,
+                        representation=representation,
+                        idempotency_key=str(uuid4()),
+                    )
+            except Exception as exc:
+                self._error(str(exc))
+                return
+            self._load_representations(workspace, self._project_id, _layer_id)
+            if self._layer_dialog is not None:
+                self._layer_dialog.set_pipeline(
+                    self._pipeline_snapshot(self._project_id, _layer_id)
+                )
+            return
         if action == "add_external_vector":
             workspace = self._workspace
             if workspace is None:
@@ -1811,6 +3479,39 @@ class DesktopController:
                 "used_sha256": staged.used_sha256,
                 "changed_since_observation": staged.changed_since_observation,
             }
+        try:
+            job = self._submit_agent_action(
+                layer_id=str(_layer_id),
+                source_representation_id=source_representation_id,
+                capability=capability,
+                parameters=parameters,
+            )
+        except Exception as exc:
+            self._error(f"Не удалось передать задание Kraken Agent: {exc}")
+            return
+        self.service.record_layer_pipeline_action(
+            principal=self.session.principal,
+            project_id=self._project_id,
+            layer_id=_layer_id,
+            action=action,
+            node_id=_node.node_id,
+            plugin_id=plugin_id,
+            capability=capability,
+            mode=mode,
+            parameters={**parameters, "plugin_job_id": str(job.id)},
+        )
+        if self._layer_dialog is not None:
+            self._layer_dialog.set_pipeline(
+                self._pipeline_snapshot(self._project_id, _layer_id)
+            )
+        from PyQt6.QtWidgets import QMessageBox
+
+        QMessageBox.information(
+            self.shell,
+            "Задание создано",
+            f"Задание {job.id} передано Kraken Agent и продолжит работу независимо от окна проекта.",
+        )
+        return
         launch_arguments: tuple[str, ...] = ()
         if plugin_id == "contour":
             try:
@@ -1886,6 +3587,62 @@ class DesktopController:
             self._layer_dialog.set_pipeline(self._pipeline_snapshot(self._project_id, _layer_id))
 
     def _layer_manager_layer_action(self, _layer_id: str, action: str) -> None:
+        if action in {"rename_layer", "archive_layer"}:
+            from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+            workspace = self._workspace
+            project = self.service.get_project(self._project_id)
+            if workspace is None or project is None:
+                return
+            layer = next(
+                (
+                    item
+                    for item in self.service.list_layers(project.id)
+                    if str(item.id) == str(_layer_id)
+                ),
+                None,
+            )
+            if layer is None:
+                self._error("Слой больше не доступен.")
+                return
+            try:
+                if action == "rename_layer":
+                    name, accepted = QInputDialog.getText(
+                        self.shell,
+                        "Переименовать слой",
+                        "Новое название:",
+                        text=layer.name,
+                    )
+                    if not accepted or name.strip() == layer.name:
+                        return
+                    self.service.rename_layer(
+                        principal=self.session.principal,
+                        project=project,
+                        layer=layer,
+                        name=name,
+                        idempotency_key=str(uuid4()),
+                    )
+                else:
+                    answer = QMessageBox.question(
+                        self.shell,
+                        "Архивировать слой",
+                        f"Архивировать слой «{layer.name}» без удаления файлов?",
+                    )
+                    if answer != QMessageBox.StandardButton.Yes:
+                        return
+                    self.service.archive_layer(
+                        principal=self.session.principal,
+                        project=project,
+                        layer=layer,
+                        idempotency_key=str(uuid4()),
+                    )
+            except Exception as exc:
+                self._error(str(exc))
+                return
+            latest = self.service.get_project(project.id)
+            if latest is not None:
+                self._load_layers(workspace, latest)
+            return
         if action == "delete_layer":
             from PyQt6.QtWidgets import (
                 QDialog,
@@ -1973,21 +3730,125 @@ class DesktopController:
                 self._error(reason)
                 return
             _plugin, capability, mode = self._action_requirement(action)
-            self.service.record_layer_pipeline_action(
-                principal=self.session.principal,
-                project_id=self._project_id,
-                layer_id=_layer_id,
-                action=action,
-                node_id=_layer_id,
-                plugin_id="karakal",
-                capability=capability,
-                mode=mode,
+            workspace = self._workspace
+            source_id = (
+                ""
+                if workspace is None
+                else str(workspace.image_representation_combo.currentData() or "")
             )
+            try:
+                job = self._submit_agent_action(
+                    layer_id=str(_layer_id),
+                    source_representation_id=source_id,
+                    capability=capability,
+                    parameters={},
+                )
+                self.service.record_layer_pipeline_action(
+                    principal=self.session.principal,
+                    project_id=self._project_id,
+                    layer_id=_layer_id,
+                    action=action,
+                    node_id=_layer_id,
+                    plugin_id="karakal",
+                    capability=capability,
+                    mode=mode,
+                    parameters={"plugin_job_id": str(job.id)},
+                )
+            except Exception as exc:
+                self._error(f"Не удалось передать задание Kraken Agent: {exc}")
+                return
             if self._layer_dialog is not None:
                 self._layer_dialog.set_pipeline(
                     self._pipeline_snapshot(self._project_id, _layer_id)
                 )
-            self._launch_karakal(_layer_id)
+            return
+
+    def _submit_agent_action(
+        self,
+        *,
+        layer_id: str,
+        source_representation_id: str,
+        capability: str,
+        parameters: Mapping[str, object],
+    ):
+        workspace = self._workspace
+        project = self.service.get_project(self._project_id)
+        if workspace is None or project is None or not source_representation_id:
+            raise ValueError("Не выбрана исходная репрезентация")
+        capabilities = self.agent_runtime.ensure_started()
+        if capability not in capabilities:
+            raise ValueError(f"Установленные плагины не поддерживают {capability}")
+        coordinates = workspace.matrix_view.selected_coordinates(
+            maximum=self.service.profile.capabilities.max_frames or 100_000
+        )
+        if not coordinates:
+            coordinates = tuple(
+                (cell.x, cell.y)
+                for cell in self.service.frame_cells(
+                    project.id,
+                    layer_id,
+                    source_representation_id,
+                )
+            )
+        if not coordinates:
+            raise ValueError("В исходной репрезентации нет кадров")
+        coordinate_by_frame = {
+            str(project.frame_id_at(x, y)): (x, y)
+            for x, y in coordinates
+        }
+        if capability == "frames.vectorize.v1":
+            target_id = str(
+                workspace.vector_representation_combo.currentData() or ""
+            )
+            if not target_id:
+                raise ValueError(
+                    "Сначала создайте CIF-репрезентацию, связанную с изображениями"
+                )
+        else:
+            target_id = source_representation_id
+
+        def version_path(version_id):
+            return self.service.managed_artifact_path(project.id, version_id)
+
+        def frame_coordinate(frame_id):
+            coordinate = coordinate_by_frame.get(str(frame_id))
+            if coordinate is None:
+                raise ValueError(f"Кадр {frame_id} не входит в выбранный набор")
+            return coordinate
+
+        def media_type(version_id):
+            version = self.service.artifact_version(project.id, version_id)
+            if version is None:
+                raise ValueError(f"Версия {version_id} больше не доступна")
+            return version.media_type
+
+        gateway = AgentPluginGateway(
+            base_url=self.agent_runtime.base_url,
+            token=self.agent_runtime.token,
+            staging_root=self.service.data_dir / "agent" / "staging",
+            source_for_version=version_path,
+            coordinate_for_frame=frame_coordinate,
+            media_type_for_version=media_type,
+            capabilities=capabilities,
+            v2_capabilities=frozenset(
+                operation
+                for operation, protocol in self.agent_runtime.protocol_by_capability.items()
+                if protocol == "2.0"
+            ),
+        )
+        self._agent_gateway = gateway
+        return self.service.submit_plugin_job(
+            principal=self.session.principal,
+            gateway=gateway,
+            project_id=project.id,
+            layer_id=layer_id,
+            source_representation_id=source_representation_id,
+            target_representation_id=target_id,
+            coordinates=coordinates,
+            capability=capability,
+            parameters=parameters,
+            idempotency_key=str(uuid4()),
+        )
 
     @staticmethod
     def _action_requirement(action: str) -> tuple[str, str, str]:
@@ -2005,10 +3866,20 @@ class DesktopController:
             "add_external_vector",
             "add_image_representation",
             "archive_representation",
+            "rename_representation",
+            "edit_representation_note",
+            "activate_representation",
+            "deactivate_representation",
             "delete_pipeline_step",
             "delete_layer",
+            "rename_layer",
+            "archive_layer",
         }:
+            if not self._has_permission(Permission.MANAGE_STRUCTURE):
+                return False, "Недостаточно прав для изменения структуры проекта"
             return True, ""
+        if not self._has_permission(Permission.RUN_PLUGIN):
+            return False, "Недостаточно прав для запуска плагинов"
         requirement = self._action_requirement(action)
         if not requirement[0]:
             return False, f"Неизвестное действие: {action}"
@@ -2798,6 +4669,18 @@ class DesktopController:
         current_image_id = str(workspace.image_representation_combo.currentData() or "")
         if not any(str(item.id) == current_image_id for item in images):
             current_image_id = str(images[0].id) if images else ""
+        current_vector_id = str(workspace.vector_representation_combo.currentData() or "")
+        vectors = sorted(
+            (
+                value
+                for value in representations
+                if value.kind is RepresentationKind.VECTOR
+                and str(value.source_image_representation_id or "") == current_image_id
+            ),
+            key=lambda value: (not value.active, value.name.casefold()),
+        )
+        if not any(str(item.id) == current_vector_id for item in vectors):
+            current_vector_id = str(vectors[0].id) if vectors else ""
         workspace.set_representations(
             images=[
                 (str(item.id), item.name)
@@ -2805,16 +4688,10 @@ class DesktopController:
             ],
             vectors=[
                 (str(item.id), item.name)
-                for item in sorted(
-                    (
-                        value
-                        for value in representations
-                        if value.kind is RepresentationKind.VECTOR
-                        and str(value.source_image_representation_id or "") == current_image_id
-                    ),
-                    key=lambda value: (not value.active, value.name.casefold()),
-                )
+                for item in vectors
             ],
+            selected_image_id=current_image_id,
+            selected_vector_id=current_vector_id,
         )
         self._refresh_matrix(workspace, project_id)
 
@@ -2841,6 +4718,21 @@ class DesktopController:
         if layer is None or representation is None:
             self._refresh_matrix(workspace, project_id)
             return
+        if representation.kind is RepresentationKind.VECTOR:
+            source_image_id = str(representation.source_image_representation_id or "")
+            image_index = workspace.image_representation_combo.findData(source_image_id)
+            if image_index >= 0:
+                workspace.image_representation_combo.blockSignals(True)
+                workspace.image_representation_combo.setCurrentIndex(image_index)
+                workspace.image_representation_combo.blockSignals(False)
+            self._load_representations(workspace, project_id, layer_id)
+            vector_index = workspace.vector_representation_combo.findData(
+                str(representation.id)
+            )
+            if vector_index >= 0:
+                workspace.vector_representation_combo.blockSignals(True)
+                workspace.vector_representation_combo.setCurrentIndex(vector_index)
+                workspace.vector_representation_combo.blockSignals(False)
         if representation.active:
             self._refresh_matrix(workspace, project_id)
             return
@@ -3019,7 +4911,7 @@ class DesktopController:
                         f"Файлов: {len(import_plan.items)}\n"
                         f"Объём: {import_plan.total_bytes:n} байт\n"
                         f"Пустых кадров: {import_plan.missing_coordinates:n}\n\n"
-                        f"{issue_text}\n\nСкопировать файлы в immutable BlobStore?"
+                        f"{issue_text}\n\nЗаписать файлы в базу?"
                     ),
                 )
                 if answer != QMessageBox.StandardButton.Yes:
@@ -3243,20 +5135,45 @@ def _plugin_panel(items: list[PluginInventoryItem]):
 
 
 def _performer_panel(service: EmbeddedProjectService):
-    from PyQt6.QtGui import QColor
+    from PyQt6.QtCore import QModelIndex, Qt
+    from PyQt6.QtGui import QColor, QPainter
     from PyQt6.QtWidgets import (
+        QColorDialog,
         QDialog,
         QDialogButtonBox,
         QFormLayout,
         QHBoxLayout,
         QLineEdit,
+        QMenu,
         QMessageBox,
         QPushButton,
+        QStyledItemDelegate,
+        QStyleOptionViewItem,
         QTableWidget,
         QTableWidgetItem,
         QVBoxLayout,
         QWidget,
     )
+
+    class ColorSwatchDelegate(QStyledItemDelegate):
+        def paint(
+            self,
+            painter: QPainter | None,
+            option: QStyleOptionViewItem,
+            index: QModelIndex,
+        ) -> None:
+            super().paint(painter, option, index)
+            if painter is None:
+                return
+            color = QColor(str(index.data(Qt.ItemDataRole.UserRole) or ""))
+            if not color.isValid():
+                return
+            painter.save()
+            swatch = option.rect.adjusted(8, 5, -8, -5)
+            painter.setPen(QColor("#64748B"))
+            painter.setBrush(color)
+            painter.drawRoundedRect(swatch, 4, 4)
+            painter.restore()
 
     host = QWidget()
     layout = QVBoxLayout(host)
@@ -3270,49 +5187,181 @@ def _performer_panel(service: EmbeddedProjectService):
     table = QTableWidget(0, 3)
     table.setHorizontalHeaderLabels(("Имя", "Цвет", "Учётная запись"))
     table.horizontalHeader().setStretchLastSection(True)
+    table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+    table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+    table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    table.setItemDelegateForColumn(1, ColorSwatchDelegate(table))
     layout.addWidget(table)
+    performers: list[Performer] = []
 
     def refresh() -> None:
-        values = service.list_performers()
-        table.setRowCount(len(values))
-        for row, performer in enumerate(values):
+        nonlocal performers
+        performers = list(service.list_performers())
+        table.setRowCount(len(performers))
+        for row, performer in enumerate(performers):
             name_item = QTableWidgetItem(performer.name)
-            color_item = QTableWidgetItem(performer.color)
-            color_item.setBackground(QColor(performer.color))
+            color_item = QTableWidgetItem()
+            color_item.setData(Qt.ItemDataRole.UserRole, performer.color)
+            color_item.setToolTip("Нажмите, чтобы изменить цвет")
             account_item = QTableWidgetItem("GitLab" if performer.principal_id is not None else "Ручной")
             table.setItem(row, 0, name_item)
             table.setItem(row, 1, color_item)
             table.setItem(row, 2, account_item)
 
-    def create() -> None:
+    def performer_dialog(
+        *,
+        title: str,
+        initial_name: str = "",
+        initial_color: str = "#60A5FA",
+    ) -> tuple[str, str] | None:
         dialog = QDialog(host)
-        dialog.setWindowTitle("Новый исполнитель")
+        dialog.setWindowTitle(title)
         form = QFormLayout(dialog)
-        name = QLineEdit()
-        color = QLineEdit("#60A5FA")
+        name = QLineEdit(initial_name)
+        selected_color = QColor(initial_color)
+        color = QPushButton()
+        color.setObjectName("performerColorPicker")
+        color.setToolTip("Выбрать цвет исполнителя")
+
+        def update_color_button() -> None:
+            color_value = selected_color.name(QColor.NameFormat.HexRgb).upper()
+            text_color = "#111827" if selected_color.lightnessF() > 0.65 else "#FFFFFF"
+            color.setText(color_value)
+            color.setStyleSheet(f"background-color: {color_value}; color: {text_color};")
+
+        def choose_color() -> None:
+            nonlocal selected_color
+            chosen_color = QColorDialog.getColor(selected_color, dialog, "Цвет исполнителя")
+            if not chosen_color.isValid():
+                return
+            selected_color = chosen_color
+            update_color_button()
+
+        color.clicked.connect(choose_color)
+        update_color_button()
         form.addRow("Имя", name)
-        form.addRow("Цвет #RRGGBB", color)
+        form.addRow("Цвет", color)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         form.addRow(buttons)
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return name.text(), selected_color.name(QColor.NameFormat.HexRgb).upper()
+
+    def create() -> None:
+        values = performer_dialog(title="Новый исполнитель")
+        if values is None:
             return
         try:
-            service.create_manual_performer(name=name.text(), color=color.text())
+            service.create_manual_performer(name=values[0], color=values[1])
         except Exception as exc:
-            QMessageBox.warning(dialog, "Не удалось создать исполнителя", str(exc))
+            QMessageBox.warning(host, "Не удалось создать исполнителя", str(exc))
             return
         refresh()
 
+    def edit(row: int) -> None:
+        if not 0 <= row < len(performers):
+            return
+        performer = performers[row]
+        values = performer_dialog(
+            title="Изменить исполнителя",
+            initial_name=performer.name,
+            initial_color=performer.color,
+        )
+        if values is None:
+            return
+        try:
+            service.update_performer(
+                performer_id=performer.id,
+                name=values[0],
+                color=values[1],
+            )
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось изменить исполнителя", str(exc))
+            return
+        refresh()
+
+    def change_color(row: int, column: int) -> None:
+        if column != 1 or not 0 <= row < len(performers):
+            return
+        performer = performers[row]
+        selected_color = QColorDialog.getColor(
+            QColor(performer.color),
+            host,
+            "Цвет исполнителя",
+        )
+        if not selected_color.isValid():
+            return
+        try:
+            service.update_performer(
+                performer_id=performer.id,
+                name=performer.name,
+                color=selected_color.name(QColor.NameFormat.HexRgb).upper(),
+            )
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось изменить цвет исполнителя", str(exc))
+            return
+        refresh()
+
+    def delete(row: int) -> None:
+        if not 0 <= row < len(performers):
+            return
+        performer = performers[row]
+        answer = QMessageBox.question(
+            host,
+            "Удалить исполнителя",
+            f"Удалить исполнителя «{performer.name}»?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            service.archive_performer(performer.id)
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось удалить исполнителя", str(exc))
+            return
+        refresh()
+
+    def context_menu(position) -> None:
+        row = table.rowAt(position.y())
+        if row < 0:
+            return
+        table.selectRow(row)
+        menu = QMenu(table)
+        edit_action = menu.addAction("Изменить")
+        delete_action = menu.addAction("Удалить")
+        selected_action = menu.exec(table.viewport().mapToGlobal(position))
+        if selected_action is edit_action:
+            edit(row)
+        elif selected_action is delete_action:
+            delete(row)
+
     add.clicked.connect(create)
     refresh_button.clicked.connect(refresh)
+    table.cellClicked.connect(change_color)
+    table.customContextMenuRequested.connect(context_menu)
     refresh()
     return host
 
 
-def _my_work_panel(service: EmbeddedProjectService):
-    from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+def _my_work_panel(
+    service: EmbeddedProjectService,
+    session: DesktopSession,
+    controller: DesktopController,
+):
+    from PyQt6.QtWidgets import (
+        QFileDialog,
+        QHBoxLayout,
+        QInputDialog,
+        QMessageBox,
+        QPushButton,
+        QTableWidget,
+        QTableWidgetItem,
+        QVBoxLayout,
+        QWidget,
+    )
 
     host = QWidget()
     layout = QVBoxLayout(host)
@@ -3321,27 +5370,291 @@ def _my_work_panel(service: EmbeddedProjectService):
     actions.addWidget(refresh_button)
     actions.addStretch(1)
     layout.addLayout(actions)
-    table = QTableWidget(0, 6)
-    table.setHorizontalHeaderLabels(("Проект", "Слой", "Исполнитель", "Статус", "Срок", "Кадров"))
+    table = QTableWidget(0, 8)
+    table.setHorizontalHeaderLabels(
+        (
+            "Тип",
+            "Проект",
+            "Слой",
+            "Исполнитель",
+            "Состояние",
+            "Срок / обновление",
+            "Кадры / прогресс",
+            "Действия",
+        )
+    )
     table.horizontalHeader().setStretchLastSection(True)
     layout.addWidget(table)
 
+    review_states = {
+        "draft": "Черновик",
+        "issued": "Выдано на проверку",
+        "partially_returned": "Возвращено частично",
+        "awaiting_acceptance": "Ожидает принятия",
+        "completed": "Завершено",
+        "changes_requested": "На доработке",
+        "cancelled": "Отменено",
+    }
+    job_states = {
+        "queued": "В очереди",
+        "staging": "Подготовка файлов",
+        "running": "Выполняется",
+        "waiting_for_user": "Ожидает пользователя",
+        "importing": "Импорт результата",
+        "partial": "Частичный результат",
+        "succeeded": "Завершено",
+        "failed": "Ошибка",
+        "cancelled": "Отменено",
+        "awaiting_authorization": "Ожидает разрешения",
+        "recovery_required": "Требуется восстановление",
+    }
+
+    def repeat_export(batch) -> None:
+        parent = QFileDialog.getExistingDirectory(host, "Каталог для повторной выгрузки")
+        if not parent:
+            return
+        destination = Path(parent) / f"Проверка_{batch.id}_{uuid4().hex[:8]}"
+        try:
+            service.export_review_batch(
+                principal=session.principal,
+                batch=batch,
+                destination=destination,
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось выгрузить пакет", str(exc))
+            return
+        QMessageBox.information(host, "Пакет выгружен", str(destination))
+        refresh()
+
+    def accept(batch) -> None:
+        identifiers = service.review_candidate_version_ids(batch)
+        if not identifiers:
+            QMessageBox.information(
+                host,
+                "Нет кандидатов",
+                "Для этого задания нет кандидатных версий.",
+            )
+            return
+        if QMessageBox.question(
+            host,
+            "Принять результат",
+            f"Сделать активными кандидатные версии ({len(identifiers)})?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            service.accept_review(
+                principal=session.principal,
+                batch=batch,
+                candidate_version_ids=identifiers,
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось принять результат", str(exc))
+        refresh()
+
+    def request_changes(batch) -> None:
+        reason, accepted = QInputDialog.getMultiLineText(
+            host,
+            "На доработку",
+            "Причина (обязательно):",
+        )
+        if not accepted:
+            return
+        if not reason.strip():
+            QMessageBox.warning(host, "Причина не указана", "Укажите причину возврата.")
+            return
+        try:
+            service.request_review_changes(
+                principal=session.principal,
+                batch=batch,
+                reason=reason,
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось вернуть на доработку", str(exc))
+        refresh()
+
+    def cancel(batch) -> None:
+        if QMessageBox.question(
+            host,
+            "Отменить проверку",
+            "Отменить это задание на проверку?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            service.cancel_review_batch(
+                principal=session.principal,
+                batch=batch,
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось отменить проверку", str(exc))
+        refresh()
+
+    def cancel_job(job) -> None:
+        if QMessageBox.question(
+            host,
+            "Отменить задание",
+            "Отменить выполнение задания плагина?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            controller.cancel_agent_job(job)
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось отменить задание", str(exc))
+        refresh()
+
+    def retry_job(job) -> None:
+        try:
+            controller.retry_agent_job(job)
+        except Exception as exc:
+            QMessageBox.warning(
+                host,
+                "Не удалось повторить задание",
+                str(exc),
+            )
+        refresh()
+
+    def import_partial_job(job) -> None:
+        if QMessageBox.question(
+            host,
+            "Импортировать частичный результат",
+            "Импортировать доступные результаты задания?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            controller.import_partial_agent_job(job)
+        except Exception as exc:
+            QMessageBox.warning(
+                host,
+                "Не удалось импортировать результат",
+                str(exc),
+            )
+        refresh()
+
     def refresh() -> None:
-        batches = service.active_review_batches()
-        table.setRowCount(len(batches))
+        projects = {
+            str(project.id): project.name
+            for project in service.list_projects(include_archived=True)
+        }
+        project_permissions = {
+            project_id: service.project_permissions(
+                project_id,
+                session.principal,
+            )
+            for project_id in projects
+        }
+        layers = {
+            str(layer.id): layer.name
+            for project_id in projects
+            for layer in service.list_layers(project_id, include_archived=True)
+        }
+        performers = {
+            str(performer.id): performer.name
+            for performer in service.list_performers(include_archived=True)
+        }
+        batches = service.review_batches()
+        jobs = service.plugin_jobs()
+        table.setRowCount(len(batches) + len(jobs))
         for row, batch in enumerate(batches):
             values = (
-                str(batch.project_id),
-                str(batch.layer_id),
-                str(batch.assignee_id),
-                batch.state.value,
-                "" if batch.due_at is None else batch.due_at.astimezone().strftime("%Y-%m-%d %H:%M"),
+                "Проверка",
+                projects.get(str(batch.project_id), str(batch.project_id)),
+                layers.get(str(batch.layer_id), str(batch.layer_id)),
+                performers.get(str(batch.assignee_id), str(batch.assignee_id)),
+                review_states.get(batch.state.value, batch.state.value),
+                "" if batch.due_at is None else batch.due_at.astimezone().strftime("%d.%m.%Y %H:%M"),
                 str(len(batch.items)),
             )
             for column, value in enumerate(values):
                 table.setItem(row, column, QTableWidgetItem(value))
+            action_host = QWidget(table)
+            action_layout = QHBoxLayout(action_host)
+            action_layout.setContentsMargins(0, 0, 0, 0)
+            permissions = project_permissions.get(str(batch.project_id), frozenset())
+            if Permission.ASSIGN_WORK in permissions:
+                repeat = QPushButton("Повторно выгрузить", action_host)
+                repeat.setEnabled(
+                    batch.state.value not in {"completed", "cancelled"}
+                )
+                repeat.clicked.connect(
+                    lambda _checked=False, value=batch: repeat_export(value)
+                )
+                action_layout.addWidget(repeat)
+            if (
+                batch.state.value == "awaiting_acceptance"
+                and Permission.ACCEPT_REVIEW in permissions
+            ):
+                accept_button = QPushButton("Принять", action_host)
+                accept_button.clicked.connect(
+                    lambda _checked=False, value=batch: accept(value)
+                )
+                action_layout.addWidget(accept_button)
+                changes_button = QPushButton("На доработку", action_host)
+                changes_button.clicked.connect(
+                    lambda _checked=False, value=batch: request_changes(value)
+                )
+                action_layout.addWidget(changes_button)
+            if (
+                batch.state.value not in {"completed", "cancelled"}
+                and Permission.MANAGE_REVIEW in permissions
+            ):
+                cancel_button = QPushButton("Отменить", action_host)
+                cancel_button.clicked.connect(
+                    lambda _checked=False, value=batch: cancel(value)
+                )
+                action_layout.addWidget(cancel_button)
+            table.setCellWidget(row, 7, action_host)
+        for offset, job in enumerate(jobs, start=len(batches)):
+            values = (
+                "Плагин",
+                projects.get(str(job.project_id), str(job.project_id)),
+                layers.get(str(job.layer_id), str(job.layer_id)),
+                "—",
+                job_states.get(job.state.value, job.state.value),
+                job.updated_at.astimezone().strftime("%d.%m.%Y %H:%M"),
+                f"{job.progress * 100:.0f} %",
+            )
+            for column, value in enumerate(values):
+                table.setItem(offset, column, QTableWidgetItem(value))
+            action_host = QWidget(table)
+            action_layout = QHBoxLayout(action_host)
+            action_layout.setContentsMargins(0, 0, 0, 0)
+            permissions = project_permissions.get(str(job.project_id), frozenset())
+            if (
+                job.state.value == "recovery_required"
+                and Permission.RUN_PLUGIN in permissions
+            ):
+                retry = QPushButton("Повторить", action_host)
+                retry.clicked.connect(
+                    lambda _checked=False, value=job: retry_job(value)
+                )
+                action_layout.addWidget(retry)
+            if (
+                job.state.value == "partial"
+                and Permission.RUN_PLUGIN in permissions
+            ):
+                partial = QPushButton("Импортировать", action_host)
+                partial.clicked.connect(
+                    lambda _checked=False, value=job: import_partial_job(value)
+                )
+                action_layout.addWidget(partial)
+            if (
+                job.state.value not in {"succeeded", "failed", "cancelled"}
+                and Permission.RUN_PLUGIN in permissions
+            ):
+                cancel_button = QPushButton("Отменить", action_host)
+                cancel_button.clicked.connect(
+                    lambda _checked=False, value=job: cancel_job(value)
+                )
+                action_layout.addWidget(cancel_button)
+            if job.error:
+                action_host.setToolTip(job.error)
+            table.setCellWidget(offset, 7, action_host)
 
     refresh_button.clicked.connect(refresh)
+    controller.my_work_refresh = refresh
     refresh()
     return host
 
@@ -3349,31 +5662,62 @@ def _my_work_panel(service: EmbeddedProjectService):
 def _statistics_panel(service: EmbeddedProjectService):
     from datetime import UTC, datetime
 
-    from PyQt6.QtCore import QDateTime
+    from PyQt6.QtCore import QDateTime, Qt
     from PyQt6.QtWidgets import (
+        QComboBox,
         QDateTimeEdit,
         QFileDialog,
+        QGridLayout,
+        QHeaderView,
         QHBoxLayout,
         QLabel,
         QMessageBox,
         QPushButton,
+        QScrollArea,
+        QTabWidget,
         QTableWidget,
         QTableWidgetItem,
         QVBoxLayout,
         QWidget,
     )
-    from kraken_manager.infrastructure.reports import ReportFilters, ReportService
+    from kraken_manager.infrastructure.reports import (
+        METRIC_DEFINITIONS,
+        ReportFilters,
+        ReportGranularity,
+        ReportService,
+        present_metrics,
+    )
+
+    from .statistics_widgets import MetricChartWidget
 
     host = QWidget()
     layout = QVBoxLayout(host)
     controls = QHBoxLayout()
+    project = QComboBox()
+    project.setObjectName("statisticsProjectFilter")
+    project.addItem("Все проекты", None)
+    for item in sorted(
+        service.list_projects(include_archived=True),
+        key=lambda value: (value.name.casefold(), str(value.id)),
+    ):
+        archived = item.state.value == "archived"
+        project.addItem(
+            f"{item.name} (архивный)" if archived else item.name,
+            str(item.id),
+        )
     start = QDateTimeEdit(QDateTime.currentDateTime().addDays(-30))
     end = QDateTimeEdit(QDateTime.currentDateTime())
+    start.setObjectName("statisticsStart")
+    end.setObjectName("statisticsEnd")
+    start.setDisplayFormat("dd.MM.yyyy HH:mm")
+    end.setDisplayFormat("dd.MM.yyyy HH:mm")
     start.setCalendarPopup(True)
     end.setCalendarPopup(True)
     refresh_button = QPushButton("Рассчитать")
     csv_button = QPushButton("Экспорт CSV")
     xlsx_button = QPushButton("Экспорт XLSX")
+    controls.addWidget(QLabel("Проект"))
+    controls.addWidget(project)
     controls.addWidget(QLabel("С"))
     controls.addWidget(start)
     controls.addWidget(QLabel("По"))
@@ -3383,28 +5727,93 @@ def _statistics_panel(service: EmbeddedProjectService):
     controls.addWidget(xlsx_button)
     controls.addStretch(1)
     layout.addLayout(controls)
+
+    tabs = QTabWidget()
+    tabs.setObjectName("statisticsTabs")
     table = QTableWidget(0, 2)
-    table.setHorizontalHeaderLabels(("Метрика", "Значение"))
-    table.horizontalHeader().setStretchLastSection(True)
-    layout.addWidget(table)
+    table.setObjectName("statisticsSummary")
+    table.setHorizontalHeaderLabels(("Показатель", "Значение"))
+    table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+    table.verticalHeader().setVisible(False)
+    table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+    table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+    tabs.addTab(table, "Сводка")
+
+    granularities = (
+        (ReportGranularity.DAY, "По дням"),
+        (ReportGranularity.WEEK, "По неделям"),
+        (ReportGranularity.MONTH, "По месяцам"),
+        (ReportGranularity.YEAR, "По годам"),
+    )
+    charts: dict[ReportGranularity, dict[str, MetricChartWidget]] = {}
+    for granularity, title in granularities:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        chart_host = QWidget()
+        chart_layout = QGridLayout(chart_host)
+        chart_layout.setContentsMargins(8, 8, 8, 8)
+        chart_layout.setSpacing(10)
+        granularity_charts: dict[str, MetricChartWidget] = {}
+        for index, definition in enumerate(METRIC_DEFINITIONS):
+            chart = MetricChartWidget(definition)
+            chart.setObjectName(f"statisticsChart_{granularity.value}_{definition.key}")
+            chart_layout.addWidget(chart, index // 2, index % 2)
+            granularity_charts[definition.key] = chart
+        chart_layout.setColumnStretch(0, 1)
+        chart_layout.setColumnStretch(1, 1)
+        scroll.setWidget(chart_host)
+        tabs.addTab(scroll, title)
+        charts[granularity] = granularity_charts
+    layout.addWidget(tabs)
     reports = ReportService()
+    local_timezone = datetime.now().astimezone().tzinfo or UTC
 
     def filters() -> ReportFilters:
-        start_at = datetime.fromtimestamp(start.dateTime().toSecsSinceEpoch(), UTC)
-        end_at = datetime.fromtimestamp(end.dateTime().toSecsSinceEpoch(), UTC)
-        return ReportFilters(start_at, end_at)
+        start_at = datetime.fromtimestamp(start.dateTime().toSecsSinceEpoch(), UTC).replace(
+            second=0,
+            microsecond=0,
+        )
+        end_at = datetime.fromtimestamp(end.dateTime().toSecsSinceEpoch(), UTC).replace(
+            second=59,
+            microsecond=999999,
+        )
+        selected_project = project.currentData()
+        project_ids = frozenset((str(selected_project),)) if selected_project else frozenset()
+        return ReportFilters(start_at, end_at, project_ids=project_ids)
 
     def refresh() -> None:
         try:
-            metrics = reports.aggregate(service.activity_records(), filters())
+            records = service.activity_records()
+            selected_filters = filters()
+            metrics = reports.aggregate(records, selected_filters)
+            series_by_granularity = {
+                granularity: reports.aggregate_series(
+                    records,
+                    selected_filters,
+                    granularity,
+                    timezone=local_timezone,
+                )
+                for granularity, _title in granularities
+            }
         except Exception as exc:
             QMessageBox.warning(host, "Не удалось рассчитать статистику", str(exc))
             return
-        values = sorted(metrics.values.items())
-        table.setRowCount(len(values))
-        for row, (name, value) in enumerate(values):
-            table.setItem(row, 0, QTableWidgetItem(name))
-            table.setItem(row, 1, QTableWidgetItem(str(value)))
+        presented = present_metrics(metrics.values)
+        table.setRowCount(len(presented))
+        for row, metric in enumerate(presented):
+            name_item = QTableWidgetItem(metric.definition.label)
+            name_item.setToolTip(metric.definition.description)
+            value_item = QTableWidgetItem(metric.formatted_value)
+            value_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            table.setItem(row, 0, name_item)
+            table.setItem(row, 1, value_item)
+        for granularity, series in series_by_granularity.items():
+            for definition in METRIC_DEFINITIONS:
+                charts[granularity][definition.key].set_series(
+                    series.buckets,
+                    metrics.values.get(definition.key, 0),
+                )
 
     def export(extension: str) -> None:
         destination, _ = QFileDialog.getSaveFileName(
@@ -3420,7 +5829,14 @@ def _statistics_panel(service: EmbeddedProjectService):
             if extension == "csv":
                 reports.write_csv(destination, records, filters(), assume_sorted=True)
             else:
-                reports.write_xlsx(destination, records, filters(), assume_sorted=True)
+                reports.write_xlsx(
+                    destination,
+                    records,
+                    filters(),
+                    assume_sorted=True,
+                    include_series=True,
+                    timezone=local_timezone,
+                )
         except Exception as exc:
             QMessageBox.warning(host, "Не удалось экспортировать отчёт", str(exc))
 
@@ -3431,7 +5847,10 @@ def _statistics_panel(service: EmbeddedProjectService):
     return host
 
 
-def _administration_panel(service: EmbeddedProjectService):
+def _administration_panel(
+    service: EmbeddedProjectService,
+    session: DesktopSession,
+):
     from PyQt6.QtWidgets import (
         QComboBox,
         QFileDialog,
@@ -3440,6 +5859,8 @@ def _administration_panel(service: EmbeddedProjectService):
         QLabel,
         QMessageBox,
         QPushButton,
+        QTableWidget,
+        QTableWidgetItem,
         QWidget,
     )
 
@@ -3447,30 +5868,35 @@ def _administration_panel(service: EmbeddedProjectService):
     layout = QFormLayout(host)
     capabilities = service.profile.capabilities
     layout.addRow("Каталог", QLabel(str(service.catalog_root)))
-    layout.addRow("Metadata backend", QLabel(service.profile.metadata_backend.value))
-    layout.addRow("Blob backend", QLabel(service.profile.blob_backend))
+    layout.addRow("Хранилище метаданных", QLabel(service.profile.metadata_backend.value))
+    layout.addRow("Хранилище файлов", QLabel(service.profile.blob_backend))
     layout.addRow("Режим записи", QLabel("multi-writer" if capabilities.multi_writer else "single-writer"))
     layout.addRow("Максимум кадров", QLabel(str(capabilities.max_frames or "без лимита")))
     project_count = QLabel()
     layout.addRow("Проектов", project_count)
     layout.addRow("Источник истины", QLabel("append-only event log; SQLite — перестраиваемый индекс"))
     projects = QComboBox()
-    layout.addRow("Проект для backup", projects)
+    layout.addRow("Проект для резервной копии", projects)
     actions = QWidget()
     action_layout = QHBoxLayout(actions)
     action_layout.setContentsMargins(0, 0, 0, 0)
     scan_button = QPushButton("Проверить целостность")
     roots_button = QPushButton("Настроить хранилища…")
-    export_button = QPushButton("Создать backup")
-    import_button = QPushButton("Восстановить backup")
-    projects.hide()
-    export_button.hide()
-    import_button.hide()
+    export_button = QPushButton("Создать резервную копию")
+    import_button = QPushButton("Восстановить резервную копию")
+    attach_button = QPushButton("Подключить проект из локального каталога…")
     action_layout.addWidget(scan_button)
     action_layout.addWidget(roots_button)
     action_layout.addWidget(export_button)
     action_layout.addWidget(import_button)
+    action_layout.addWidget(attach_button)
     layout.addRow("Операции", actions)
+    audit_table = QTableWidget(0, 4)
+    audit_table.setHorizontalHeaderLabels(
+        ("Время", "Проект", "Действие", "Кто")
+    )
+    audit_table.horizontalHeader().setStretchLastSection(True)
+    layout.addRow("Журнал аудита", audit_table)
 
     def refresh_projects() -> None:
         values = service.list_projects(include_archived=True)
@@ -3479,6 +5905,51 @@ def _administration_panel(service: EmbeddedProjectService):
             projects.addItem(project.name, str(project.id))
         project_count.setText(str(len(values)))
         export_button.setEnabled(bool(values))
+        event_labels = {
+            "ProjectCreated": "Создан проект",
+            "ProjectRenamed": "Переименован проект",
+            "ProjectArchived": "Проект архивирован",
+            "ProjectRestored": "Проект восстановлен",
+            "LayerCreated": "Создан слой",
+            "LayerRenamed": "Переименован слой",
+            "LayerArchived": "Слой архивирован",
+            "RepresentationCreated": "Создана репрезентация",
+            "RepresentationRenamed": "Переименована репрезентация",
+            "RepresentationActivated": "Репрезентация активирована",
+            "RepresentationDeactivated": "Репрезентация деактивирована",
+            "RepresentationArchived": "Репрезентация архивирована",
+            "ReviewBatchCreated": "Создано задание на проверку",
+            "ReviewBatchIssued": "Задание выдано",
+            "ReviewBatchReexported": "Пакет выдан повторно",
+            "ReviewReturnCommitted": "Результат проверки загружен",
+            "ReviewBatchAccepted": "Результат проверки принят",
+            "ReviewChangesRequested": "Запрошена доработка",
+            "ReviewBatchCancelled": "Проверка отменена",
+            "ProjectRoleAssigned": "Назначена роль",
+            "ProjectRoleRevoked": "Отозвана роль",
+        }
+        events = sorted(
+            (
+                (project, event)
+                for project in values
+                for event in service.history(project.id)
+            ),
+            key=lambda value: value[1].recorded_at,
+            reverse=True,
+        )[:500]
+        audit_table.setRowCount(len(events))
+        for row, (project, event) in enumerate(events):
+            actor = getattr(event, "actor", None)
+            values_row = (
+                event.recorded_at.astimezone().strftime("%d.%m.%Y %H:%M:%S"),
+                project.name,
+                event_labels.get(event.event_type, event.event_type),
+                getattr(actor, "display_name", "") or str(
+                    getattr(actor, "principal_id", "")
+                ),
+            )
+            for column, value in enumerate(values_row):
+                audit_table.setItem(row, column, QTableWidgetItem(str(value)))
 
     def scan() -> None:
         result = service.scan_integrity()
@@ -3492,32 +5963,70 @@ def _administration_panel(service: EmbeddedProjectService):
 
     def export_backup() -> None:
         project_id = str(projects.currentData() or "")
-        destination = QFileDialog.getExistingDirectory(host, "Каталог для backup")
+        destination = QFileDialog.getExistingDirectory(host, "Каталог для резервной копии")
         if not project_id or not destination:
             return
         target = os.path.join(destination, f"kraken-backup-{project_id}")
         try:
-            manifest = service.export_backup(project_id, target)
+            manifest = service.export_backup(
+                project_id,
+                target,
+                principal=session.principal,
+            )
         except Exception as exc:
-            QMessageBox.warning(host, "Не удалось создать backup", str(exc))
+            QMessageBox.warning(host, "Не удалось создать резервную копию", str(exc))
             return
         QMessageBox.information(
             host,
-            "Backup создан",
-            f"Bundle {manifest.bundle_id}\nСобытий: {manifest.event_count}\n{target}",
+            "Резервная копия создана",
+            f"Идентификатор: {manifest.bundle_id}\nСобытий: {manifest.event_count}\n{target}",
         )
 
     def import_backup() -> None:
-        source = QFileDialog.getExistingDirectory(host, "Выберите Kraken migration bundle")
+        source = QFileDialog.getExistingDirectory(host, "Выберите резервную копию Kraken")
         if not source:
             return
+        take_ownership = QMessageBox.question(
+            host,
+            "Владение проектом",
+            "Если на этой рабочей станции нет доступного владельца проекта, принять владение?",
+        ) == QMessageBox.StandardButton.Yes
         try:
-            project = service.import_backup(source)
+            project = service.import_backup(
+                source,
+                principal=session.principal,
+                take_ownership=take_ownership,
+            )
         except Exception as exc:
-            QMessageBox.warning(host, "Не удалось восстановить backup", str(exc))
+            QMessageBox.warning(host, "Не удалось восстановить резервную копию", str(exc))
             return
         refresh_projects()
-        QMessageBox.information(host, "Backup восстановлен", f"Проект: {project.name}")
+        QMessageBox.information(host, "Резервная копия восстановлена", f"Проект: {project.name}")
+
+    def attach_project() -> None:
+        source = QFileDialog.getExistingDirectory(
+            host,
+            "Выберите локальный каталог проекта Kraken",
+            str(service.catalog_root),
+        )
+        if not source:
+            return
+        take_ownership = QMessageBox.question(
+            host,
+            "Владение проектом",
+            "Если локальный владелец недоступен, принять владение проектом?",
+        ) == QMessageBox.StandardButton.Yes
+        try:
+            project = service.attach_project(
+                source,
+                principal=session.principal,
+                take_ownership=take_ownership,
+            )
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось подключить проект", str(exc))
+            return
+        refresh_projects()
+        QMessageBox.information(host, "Проект подключён", project.name)
 
     scan_button.clicked.connect(scan)
     roots_button.clicked.connect(
@@ -3525,6 +6034,7 @@ def _administration_panel(service: EmbeddedProjectService):
     )
     export_button.clicked.connect(export_backup)
     import_button.clicked.connect(import_backup)
+    attach_button.clicked.connect(attach_project)
     refresh_projects()
     return host
 
@@ -3547,6 +6057,14 @@ def run_manager_gui(
         return 1
     shell = ProjectManagerShell()
     shell.set_session_summary(f"{session.principal.display_name}\nЛокальная сессия")
+    shell._desktop_controller = DesktopController(  # keep Qt slots alive
+        shell,
+        service,
+        session,
+        thumbnail_store_uri=thumbnail_store_uri,
+        plugin_items=items,
+    )
+    controller = shell._desktop_controller
     plugins_page = shell.page("plugins")
     if plugins_page is not None:
         plugins_page.set_content(_plugin_panel(items))
@@ -3555,20 +6073,13 @@ def run_manager_gui(
         performers_page.set_content(_performer_panel(service))
     my_work_page = shell.page("my_work")
     if my_work_page is not None:
-        my_work_page.set_content(_my_work_panel(service))
+        my_work_page.set_content(_my_work_panel(service, session, controller))
     statistics_page = shell.page("statistics")
     if statistics_page is not None:
         statistics_page.set_content(_statistics_panel(service))
     administration_page = shell.page("administration")
     if administration_page is not None:
-        administration_page.set_content(_administration_panel(service))
-    shell._desktop_controller = DesktopController(  # keep Qt slots alive
-        shell,
-        service,
-        session,
-        thumbnail_store_uri=thumbnail_store_uri,
-        plugin_items=items,
-    )
+        administration_page.set_content(_administration_panel(service, session))
     shell.show()
     return app.exec()
 

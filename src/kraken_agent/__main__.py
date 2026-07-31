@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -25,6 +27,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--token", help="One-time control token; generated when omitted")
     parser.add_argument("--plugins-config", type=Path, help="JSON operation-to-command registry")
+    parser.add_argument("--connection-file", type=Path)
     args = parser.parse_args()
 
     args.data_dir.mkdir(parents=True, exist_ok=True)
@@ -47,6 +50,34 @@ def main() -> int:
             daemon=True,
         )
         runner_thread.start()
+    if args.connection_file is not None:
+        args.connection_file.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{args.connection_file.name}.",
+            suffix=".tmp",
+            dir=args.connection_file.parent,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(
+                    {
+                        "api_version": "v1",
+                        "pid": os.getpid(),
+                        "url": f"http://{args.host}:{control.port}",
+                        "token": control.token,
+                    },
+                    stream,
+                    ensure_ascii=False,
+                )
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_name, args.connection_file)
+            try:
+                os.chmod(args.connection_file, 0o600)
+            except OSError:
+                pass
+        finally:
+            Path(temporary_name).unlink(missing_ok=True)
     print(f"Kraken Agent listening on http://{args.host}:{control.port}; token={control.token}; recovered={recovered}")
     try:
         httpd.serve_forever(poll_interval=0.5)
@@ -58,6 +89,8 @@ def main() -> int:
         if runner_thread is not None:
             runner_thread.join(timeout=10)
         httpd.server_close()
+        if args.connection_file is not None:
+            args.connection_file.unlink(missing_ok=True)
     return 0
 
 

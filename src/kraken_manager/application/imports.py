@@ -86,6 +86,15 @@ class ImportPlanner:
             if not {"x", "y"}.issubset(pattern.groupindex):
                 raise ValueError("import regex requires named groups 'x' and 'y'")
         explicit = explicit or {}
+        row_major_base = 1
+        if mode is ImportMappingMode.ROW_MAJOR_SUFFIX:
+            suffixes = (
+                match
+                for source in sources
+                if (match := self._SUFFIX.search(source.display_name.rsplit(".", 1)[0]))
+            )
+            if any(int(match["index"]) == 0 for match in suffixes):
+                row_major_base = 0
 
         issues: list[ImportIssue] = []
         items: list[ImportPlanItem] = []
@@ -123,6 +132,7 @@ class ImportPlanner:
                 mode=mode,
                 pattern=pattern,
                 explicit=explicit,
+                row_major_base=row_major_base,
             )
             if coordinate is None:
                 issues.append(
@@ -187,6 +197,7 @@ class ImportPlanner:
         mode: ImportMappingMode,
         pattern: re.Pattern[str] | None,
         explicit: Mapping[str, tuple[int, int]],
+        row_major_base: int,
     ) -> tuple[int, int] | None:
         if mode is ImportMappingMode.EXPLICIT:
             value = explicit.get(source.source_key)
@@ -202,10 +213,10 @@ class ImportPlanner:
             match = self._SUFFIX.search(stem)
             if match is None:
                 return None
-            index = int(match["index"])
-            if index < 1:
+            index = int(match["index"]) - row_major_base
+            if index < 0:
                 return None
-            return ((index - 1) % width + 1, (index - 1) // width + 1)
+            return (index % width + 1, index // width + 1)
         assert pattern is not None
         match = pattern.search(normalized)
         return None if match is None else (int(match["x"]), int(match["y"]))

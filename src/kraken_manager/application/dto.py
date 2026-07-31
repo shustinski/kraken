@@ -246,6 +246,16 @@ class ActivateRepresentationCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class DeactivateRepresentationCommand:
+    context: CommandContext
+    project_id: ProjectId
+    layer_id: LayerId
+    representation_id: RepresentationId
+    expected_layer_revision: int
+    expected_representation_revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveRepresentationCommand:
     context: CommandContext
     project_id: ProjectId
@@ -284,6 +294,65 @@ class CreateArtifactSeriesCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RenameArtifactSeriesCommand:
+    context: CommandContext
+    project_id: ProjectId
+    series_id: ArtifactSeriesId
+    name: str
+    expected_series_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveArtifactSeriesCommand:
+    context: CommandContext
+    project_id: ProjectId
+    series_id: ArtifactSeriesId
+    expected_series_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ActivateArtifactVersionCommand:
+    context: CommandContext
+    project_id: ProjectId
+    series_id: ArtifactSeriesId
+    version_id: ArtifactVersionId
+
+
+@dataclass(frozen=True, slots=True)
+class AddExternalArtifactVersionCommand:
+    context: CommandContext
+    project_id: ProjectId
+    series_id: ArtifactSeriesId
+    filename: str
+    media_type: str
+    uri: str
+    fingerprint_sha256: str
+    observed_size_bytes: int
+    expected_series_revision: int
+    parent_version_id: ArtifactVersionId | None = None
+    parameters: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class CreateNoteCommand:
+    context: CommandContext
+    project_id: ProjectId
+    body: str
+    layer_id: LayerId | None = None
+    frame_id: FrameId | None = None
+    note_id: str = field(default_factory=new_uuid)
+
+
+@dataclass(frozen=True, slots=True)
+class ReviseNoteCommand:
+    context: CommandContext
+    project_id: ProjectId
+    note_id: str
+    body: str
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class SubmitPluginJobCommand:
     context: CommandContext
     project_id: ProjectId
@@ -298,6 +367,33 @@ class SubmitPluginJobCommand:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "inputs", tuple(self.inputs))
+
+
+@dataclass(frozen=True, slots=True)
+class CancelPluginJobCommand:
+    context: CommandContext
+    project_id: ProjectId
+    job_id: PluginJobId
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class RetryPluginJobCommand:
+    context: CommandContext
+    project_id: ProjectId
+    job_id: PluginJobId
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class SynchronizePluginJobCommand:
+    context: CommandContext
+    project_id: ProjectId
+    job_id: PluginJobId
+    expected_revision: int
+    state: str
+    progress: float | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,6 +490,14 @@ class RequestReviewChangesCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class CancelReviewBatchCommand:
+    context: CommandContext
+    project_id: ProjectId
+    batch_id: ReviewBatchId
+    expected_batch_revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewPackagePlan:
     manifest: ReviewPackageManifestV1
     total_size_bytes: int
@@ -475,18 +579,26 @@ class StoredContent:
 __all__ = [
     "AcceptReviewCommand",
     "ActivateRepresentationCommand",
+    "ActivateArtifactVersionCommand",
     "ActiveVersionSnapshot",
     "AddArtifactVersionCommand",
     "ArchiveLayerCommand",
+    "ArchiveArtifactSeriesCommand",
     "ArchiveProjectCommand",
     "ArchiveRepresentationCommand",
     "AssignProjectRoleCommand",
     "CommitReviewReturnCommand",
+    "CancelReviewBatchCommand",
+    "CancelPluginJobCommand",
+    "RetryPluginJobCommand",
     "CommandContext",
     "CreateLayerCommand",
     "CreateProjectCommand",
     "CreateRepresentationCommand",
     "CreateArtifactSeriesCommand",
+    "CreateNoteCommand",
+    "AddExternalArtifactVersionCommand",
+    "DeactivateRepresentationCommand",
     "ImportPluginResultCommand",
     "PluginResultImport",
     "CreateReviewBatchCommand",
@@ -495,12 +607,14 @@ __all__ = [
     "PlanReviewPackageCommand",
     "ProblemDetails",
     "RequestReviewChangesCommand",
+    "RenameArtifactSeriesCommand",
     "RenameLayerCommand",
     "RenameProjectCommand",
     "RenameRepresentationCommand",
     "ReorderLayerCommand",
     "ReorderLayersCommand",
     "RestoreProjectCommand",
+    "ReviseNoteCommand",
     "RevokeProjectRoleCommand",
     "ReturnedFileDigest",
     "ReviewPackagePlan",
@@ -510,5 +624,6 @@ __all__ = [
     "StorageScope",
     "StoredContent",
     "SubmitPluginJobCommand",
+    "SynchronizePluginJobCommand",
     "UpdateRepresentationNoteCommand",
 ]

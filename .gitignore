@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *.pyd
 *.so
+*.sqlite3
 .Python
 .venv/
 venv/

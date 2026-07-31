@@ -179,6 +179,12 @@ class SubprocessPluginRunner:
             if spec is None:
                 raise ValueError(f"No plugin registered for {manifest.operation}")
             job = self.store.transition(job.job_id, AgentJobState.RUNNING, expected_revision=job.revision)
+            if spec.interactive:
+                job = self.store.transition(
+                    job.job_id,
+                    AgentJobState.WAITING_FOR_USER,
+                    expected_revision=job.revision,
+                )
             result_path = workspace.path / "result.json"
             environment = self._plugin_environment()
             environment.update(

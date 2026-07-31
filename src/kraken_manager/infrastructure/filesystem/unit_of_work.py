@@ -84,6 +84,7 @@ class _StagedProjectionStore:
         "artifact_version": "artifact_version",
         "plugin_job": "plugin_job",
         "review_batch": "review_batch",
+        "note": "note",
     }
 
     def __init__(self, backing: SQLiteProjectionStore, events: _StagedEventStore) -> None:
@@ -95,7 +96,10 @@ class _StagedProjectionStore:
     def _save(self, kind: str, model: Any, **options: Any) -> None:
         if self.events._pending:
             options["recorded_at"] = self.events._pending[-1].recorded_at
-        self._current[(kind, str(model.id))] = (model, options)
+        identifier = str(getattr(model, "id", getattr(model, "note_id", "")))
+        if not identifier:
+            raise ValueError(f"{kind} projection has no identity")
+        self._current[(kind, identifier)] = (model, options)
         self._operations.append((kind, model, options))
 
     def _get(self, kind: str, entity_id: Any, *, as_of: datetime | None = None) -> Any | None:
@@ -189,6 +193,17 @@ class _StagedProjectionStore:
                     return model
         return self.backing.get_active_artifact_version(series_id, as_of=as_of)
 
+    def list_artifact_versions(
+        self, series_id: Any, *, as_of: datetime | None = None
+    ) -> tuple[Any, ...]:
+        return self._merge_list(
+            "artifact_version",
+            self.backing.list_artifact_versions(series_id, as_of=as_of),
+            lambda model: str(model.series_id) == str(series_id),
+            include_archived=True,
+            as_of=as_of,
+        )
+
     def save_artifact_version(self, version: Any, *, activate: bool) -> None:
         self._save("artifact_version", version, activate=activate)
 
@@ -197,6 +212,17 @@ class _StagedProjectionStore:
 
     def get_plugin_job(self, job_id: Any, *, as_of: datetime | None = None) -> Any | None:
         return self._get("plugin_job", job_id, as_of=as_of)
+
+    def list_plugin_jobs(
+        self, project_id: Any, *, as_of: datetime | None = None
+    ) -> tuple[Any, ...]:
+        return self._merge_list(
+            "plugin_job",
+            self.backing.list_plugin_jobs(project_id, as_of=as_of),
+            lambda model: str(model.project_id) == str(project_id),
+            include_archived=True,
+            as_of=as_of,
+        )
 
     def get_review_batch(self, batch_id: Any, *, as_of: datetime | None = None) -> Any | None:
         return self._get("review_batch", batch_id, as_of=as_of)
@@ -219,6 +245,59 @@ class _StagedProjectionStore:
             for model in values
             if getattr(model.state, "value", model.state) not in {"completed", "cancelled"}
         )
+
+    def list_review_batches(
+        self,
+        project_id: Any,
+        *,
+        layer_id: Any | None = None,
+        as_of: datetime | None = None,
+    ) -> tuple[Any, ...]:
+        return self._merge_list(
+            "review_batch",
+            self.backing.list_review_batches(
+                project_id,
+                layer_id=layer_id,
+                as_of=as_of,
+            ),
+            lambda model: (
+                str(model.project_id) == str(project_id)
+                and (layer_id is None or str(model.layer_id) == str(layer_id))
+            ),
+            include_archived=True,
+            as_of=as_of,
+        )
+
+    def get_note(self, note_id: str, *, as_of: datetime | None = None) -> Any | None:
+        return self._get("note", note_id, as_of=as_of)
+
+    def list_notes(
+        self,
+        project_id: Any,
+        *,
+        layer_id: Any | None = None,
+        frame_id: str | None = None,
+        as_of: datetime | None = None,
+    ) -> tuple[Any, ...]:
+        return self._merge_list(
+            "note",
+            self.backing.list_notes(
+                project_id,
+                layer_id=layer_id,
+                frame_id=frame_id,
+                as_of=as_of,
+            ),
+            lambda model: (
+                str(model.project_id) == str(project_id)
+                and (layer_id is None or str(model.layer_id) == str(layer_id))
+                and (frame_id is None or str(model.frame_id) == str(frame_id))
+            ),
+            include_archived=True,
+            as_of=as_of,
+        )
+
+    def save_note(self, note: Any) -> None:
+        self._save("note", note)
 
     def commit(self) -> None:
         for kind, model, options in self._operations:

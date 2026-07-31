@@ -506,7 +506,11 @@ REVIEW_BATCH_TRANSITIONS: Final = {
         {ReviewBatchState.AWAITING_ACCEPTANCE, ReviewBatchState.COMPLETED, ReviewBatchState.CANCELLED}
     ),
     ReviewBatchState.AWAITING_ACCEPTANCE: frozenset(
-        {ReviewBatchState.COMPLETED, ReviewBatchState.CHANGES_REQUESTED}
+        {
+            ReviewBatchState.COMPLETED,
+            ReviewBatchState.CHANGES_REQUESTED,
+            ReviewBatchState.CANCELLED,
+        }
     ),
     ReviewBatchState.CHANGES_REQUESTED: frozenset(
         {ReviewBatchState.ISSUED, ReviewBatchState.CANCELLED}

@@ -13,6 +13,8 @@ from kraken_manager.application import (
     ConflictError,
     ImportPluginResultCommand,
     ImportPluginResultHandler,
+    RetryPluginJobCommand,
+    RetryPluginJobHandler,
     StorageBackendKind,
     StorageCapabilities,
     StorageProfile,
@@ -20,6 +22,8 @@ from kraken_manager.application import (
     StoredContent,
     SubmitPluginJobCommand,
     SubmitPluginJobHandler,
+    SynchronizePluginJobCommand,
+    SynchronizePluginJobHandler,
 )
 from kraken_manager.domain import (
     ArtifactSeries,
@@ -392,6 +396,56 @@ class PluginJobApplicationTests(unittest.TestCase):
         created = fixture.factory.uow.event_store.streams[f"plugin-job:{job.id}"][0]
         self.assertTrue(ProjectionRebuilder(rebuilt).apply(created))
         self.assertEqual(rebuilt.get_plugin_job(job.id), job)
+
+    def test_recovery_required_job_reuses_authoritative_manifest(self):
+        fixture = Fixture()
+        job = fixture.submit()
+        recovered = SynchronizePluginJobHandler(
+            fixture.factory,
+            fixture.profiles,
+            Clock(),
+        )(
+            SynchronizePluginJobCommand(
+                context=CommandContext(
+                    actor=fixture.actor,
+                    idempotency_key="agent-lost",
+                ),
+                project_id=fixture.project.id,
+                job_id=job.id,
+                expected_revision=job.revision,
+                state="recovery_required",
+                error="agent restarted",
+            )
+        )
+
+        retried = RetryPluginJobHandler(
+            fixture.factory,
+            fixture.profiles,
+            Clock(),
+            fixture.gateway,
+        )(
+            RetryPluginJobCommand(
+                context=CommandContext(
+                    actor=fixture.actor,
+                    idempotency_key="retry-agent-job",
+                ),
+                project_id=fixture.project.id,
+                job_id=job.id,
+                expected_revision=recovered.revision,
+            )
+        )
+
+        self.assertEqual(PluginJobState.QUEUED, retried.state)
+        self.assertEqual(0, retried.progress)
+        self.assertEqual(2, len(fixture.gateway.submitted))
+        self.assertEqual(
+            fixture.gateway.submitted[0],
+            fixture.gateway.submitted[1],
+        )
+        events = fixture.factory.uow.event_store.streams[
+            f"plugin-job:{job.id}"
+        ]
+        self.assertEqual("PluginJobRetried", events[-1].event_type)
 
     def test_successful_result_creates_immutable_provenance_and_duplicate_is_noop(self):
         fixture = Fixture()

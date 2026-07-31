@@ -252,3 +252,35 @@ def test_kraken_data_source_prefers_image_asset_over_vector_artifact():
     assert result.items[0].asset is not None
     assert result.items[0].asset.source_key == "image-artifact"
     assert result.items[0].asset.source_revision == "image-version"
+
+
+def test_kraken_data_source_does_not_decode_vector_artifact_as_image():
+    class Service:
+        def matrix_viewport(self, *_args, **_kwargs):
+            return {
+                "revision": "viewport-1",
+                "cells": (
+                    {
+                        "x": 1,
+                        "y": 1,
+                        "frame_id": "frame-1",
+                        "status": "vectorized",
+                        "sha256": "cif-artifact",
+                        "artifact_version_id": "vector-version",
+                    },
+                ),
+                "aggregates": (),
+            }
+
+    source = KrakenMatrixDataSource(
+        Service(),
+        project_id="project",
+        layer_id="layer",
+        representation_ids=("vector",),
+    )
+    request = MatrixViewportRequest(MatrixBounds(1, 1, 1, 1))
+
+    result = source.load_viewport(request)
+
+    assert result.items[0].asset is None
+    assert "SHA-256: cif-artifact" in result.items[0].tooltip

@@ -9,34 +9,59 @@ import os
 import re
 import shutil
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from threading import Thread
+from uuid import NAMESPACE_URL, uuid5
 
 from kraken_core.safe_files import ensure_regular_directory, open_regular_read
-from kraken_core.plugin_protocol import WorkspacePluginResultV1
+from kraken_core.plugin_protocol import (
+    PluginResultManifest,
+    PluginResultPublicationV2,
+    WorkspacePluginResultV1,
+    parse_plugin_result_json,
+)
 from kraken_core.frame_matrix import StoreNamespace
 
 from kraken_manager.application.dto import (
     AddArtifactVersionCommand,
+    ActivateArtifactVersionCommand,
+    AddExternalArtifactVersionCommand,
     ActivateRepresentationCommand,
     AssignProjectRoleCommand,
     ArchiveLayerCommand,
     ArchiveProjectCommand,
+    ArchiveArtifactSeriesCommand,
     ArchiveRepresentationCommand,
+    AcceptReviewCommand,
+    CancelReviewBatchCommand,
+    CommitReviewReturnCommand,
     CommandContext,
     CreateLayerCommand,
     CreateArtifactSeriesCommand,
+    CreateNoteCommand,
     CreateProjectCommand,
     CreateRepresentationCommand,
+    CreateReviewBatchCommand,
+    DeactivateRepresentationCommand,
+    DryRunReviewReturnCommand,
+    ExportReviewPackageCommand,
     RenameLayerCommand,
+    RenameArtifactSeriesCommand,
     RenameProjectCommand,
     RenameRepresentationCommand,
     ReorderLayerCommand,
     ReorderLayersCommand,
     RestoreProjectCommand,
+    ReviseNoteCommand,
+    RetryPluginJobCommand,
+    SubmitPluginJobCommand,
+    CancelPluginJobCommand,
+    SynchronizePluginJobCommand,
+    ImportPluginResultCommand,
+    RequestReviewChangesCommand,
     RevokeProjectRoleCommand,
     UpdateRepresentationNoteCommand,
 )
@@ -47,6 +72,7 @@ from kraken_manager.workspace import (
     DerivedRunKind,
     ImageConversionSettings,
     LayerFileBinding,
+    LayerSourceMode,
     LayerSourceScan,
     ProjectWorkspaceBinding,
     WorkspaceValidationError,
@@ -73,16 +99,67 @@ from kraken_manager.application.lifecycle import (
     RestoreProjectHandler,
 )
 from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
+from kraken_manager.application.artifact_lifecycle import (
+    ActivateArtifactVersionHandler,
+    AddExternalArtifactVersionHandler,
+    ArchiveArtifactSeriesHandler,
+    CreateNoteHandler,
+    RenameArtifactSeriesHandler,
+    ReviseNoteHandler,
+)
 from kraken_manager.application.representation_lifecycle import (
     ActivateRepresentationHandler,
     ArchiveRepresentationHandler,
+    DeactivateRepresentationHandler,
     RenameRepresentationHandler,
     UpdateRepresentationNoteHandler,
 )
-from kraken_manager.domain.artifacts import ArtifactScope, ArtifactVersion, deterministic_frame_series_id
-from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, RepresentationId, new_uuid
+from kraken_manager.application.review_workflow import (
+    AcceptReviewHandler,
+    CancelReviewBatchHandler,
+    CommitReviewReturnHandler,
+    CreateReviewBatchHandler,
+    DryRunReviewReturnHandler,
+    ExportReviewPackageHandler,
+    RequestReviewChangesHandler,
+)
+from kraken_manager.application.plugin_jobs import (
+    CancelPluginJobHandler,
+    ImportPluginResultHandler,
+    RetryPluginJobHandler,
+    SubmitPluginJobHandler,
+    SynchronizePluginJobHandler,
+)
+from kraken_manager.domain.artifacts import (
+    ArtifactScope,
+    ArtifactSeries,
+    ArtifactVersion,
+    NoteRevision,
+    deterministic_frame_series_id,
+)
+from kraken_manager.domain.common import (
+    ArtifactSeriesId,
+    ArtifactVersionId,
+    FrameId,
+    LayerId,
+    PerformerId,
+    PluginJobId,
+    PrincipalId,
+    ProjectId,
+    RepresentationId,
+    ReviewBatchId,
+    new_uuid,
+)
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope, ProgramSnapshot
-from kraken_manager.domain.identity import Permission, Performer, Principal, ProjectRole
+from kraken_manager.domain.identity import (
+    Permission,
+    Performer,
+    Principal,
+    ProjectRole,
+    ProjectRoleAssignment,
+    ROLE_PERMISSIONS,
+    SystemRole,
+)
 from kraken_manager.domain.project import (
     GridOrientation,
     Layer,
@@ -92,7 +169,16 @@ from kraken_manager.domain.project import (
     RepresentationKind,
     RepresentationPurpose,
 )
-from kraken_manager.domain.workflows import ReviewBatch
+from kraken_manager.domain.selection import FrameRowRange, FrameSelectionV1
+from kraken_manager.domain.workflows import (
+    PluginFrameOutcome,
+    PluginFrameResultV1,
+    PluginInputV1,
+    PluginResultManifestV1,
+    PluginResultOutcome,
+    ReviewBatch,
+    ReviewItem,
+)
 from kraken_manager.infrastructure.auth.identity_store import LocalIdentityAclStore
 from kraken_manager.infrastructure.auth.local import LocalAccountStore, ScryptPasswordHasher
 from kraken_manager.infrastructure.auth.performer_store import LocalSQLitePerformerStore
@@ -113,7 +199,15 @@ from kraken_manager.infrastructure.migration import (
 )
 from kraken_manager.infrastructure.projections import rebuild_filesystem_index
 from kraken_manager.infrastructure.reports import ActivityRecord
+from kraken_manager.infrastructure.review import ReviewPackageReader, ReviewPackageWriter
+from kraken_manager.infrastructure.review.crypto import Ed25519KeyPair
+from kraken_manager.infrastructure.plugin import (
+    AgentStagingResultContentReader,
+    domain_result_from_transport,
+)
 from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
+
+from .secret_store import KeyringSecretStore
 
 
 def default_data_dir() -> Path:
@@ -213,7 +307,12 @@ class ProjectDeletionResult:
 class EmbeddedProjectService:
     """Autonomous application service for machine-local file projects."""
 
-    def __init__(self, data_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: Path | str | None = None,
+        *,
+        secret_store: object | None = None,
+    ) -> None:
         self.data_dir = Path(data_dir or default_data_dir()).resolve()
         self.catalog_root = self.data_dir / "catalog"
         self.catalog_root.mkdir(parents=True, exist_ok=True)
@@ -232,6 +331,7 @@ class EmbeddedProjectService:
         ] = {}
         self.profiles = DesktopStorageProfiles(self.profile)
         self.clock = SystemClock()
+        self.secrets = secret_store or KeyringSecretStore()
 
     @property
     def has_accounts(self) -> bool:
@@ -259,10 +359,50 @@ class EmbeddedProjectService:
     def create_manual_performer(self, *, name: str, color: str) -> Performer:
         return self.performers.create(Performer.create(name=name, color=color))
 
+    def update_performer(
+        self,
+        *,
+        performer_id: PerformerId | str,
+        name: str,
+        color: str,
+    ) -> Performer:
+        performer = self.performers.get(PerformerId(str(performer_id)))
+        if performer is None:
+            raise ValueError(f"Performer {performer_id} was not found")
+        return self.performers.update(replace(performer, name=name, color=color))
+
+    def archive_performer(self, performer_id: PerformerId | str) -> Performer:
+        return self.performers.archive(PerformerId(str(performer_id)))
+
     def project_roles(
         self, project_id: ProjectId | str, principal_id: PrincipalId | str
     ) -> frozenset[ProjectRole]:
         return self.identities.roles_for(ProjectId(str(project_id)), PrincipalId(str(principal_id)))
+
+    def list_principals(self, *, include_inactive: bool = False) -> tuple[Principal, ...]:
+        return self.identities.list(include_inactive=include_inactive)
+
+    def project_role_revision(
+        self,
+        project_id: ProjectId | str,
+        principal_id: PrincipalId | str,
+    ) -> int:
+        return FilesystemEventStore(
+            self.catalog_root,
+            str(project_id),
+        ).current_revision(f"acl:{project_id}:{principal_id}")
+
+    def project_permissions(
+        self,
+        project_id: ProjectId | str,
+        principal: Principal,
+    ) -> frozenset[Permission]:
+        if SystemRole.SERVER_ADMIN in principal.system_roles:
+            return frozenset(Permission)
+        permissions: set[Permission] = set()
+        for role in self.project_roles(project_id, principal.id):
+            permissions.update(ROLE_PERMISSIONS[role])
+        return frozenset(permissions)
 
     def assign_project_role(
         self,
@@ -294,6 +434,17 @@ class EmbeddedProjectService:
         expected_revision: int,
         idempotency_key: str,
     ) -> frozenset[ProjectRole]:
+        if role is ProjectRole.OWNER:
+            owners = tuple(
+                candidate
+                for candidate in self.identities.list()
+                if ProjectRole.OWNER
+                in self.identities.roles_for(project.id, candidate.id)
+            )
+            if len(owners) <= 1 and any(
+                candidate.id == target_principal_id for candidate in owners
+            ):
+                raise ValueError("Нельзя отозвать роль последнего владельца проекта.")
         return RevokeProjectRoleHandler(self._uow(str(project.id)), self.profiles, self.clock)(
             RevokeProjectRoleCommand(
                 context=CommandContext(actor=principal, idempotency_key=idempotency_key),
@@ -888,6 +1039,23 @@ class EmbeddedProjectService:
             )
         )
 
+    def deactivate_representation(
+        self, *, principal: Principal, project: Project, layer: Layer,
+        representation: Representation, idempotency_key: str
+    ) -> Representation:
+        return DeactivateRepresentationHandler(
+            self._uow(str(project.id)), self.profiles, self.clock
+        )(
+            DeactivateRepresentationCommand(
+                CommandContext(actor=principal, idempotency_key=idempotency_key),
+                project.id,
+                layer.id,
+                representation.id,
+                layer.revision,
+                representation.revision,
+            )
+        )
+
     def archive_representation(
         self, *, principal: Principal, project: Project, layer: Layer,
         representation: Representation, idempotency_key: str
@@ -981,14 +1149,121 @@ class EmbeddedProjectService:
     def rename_project(
         self, *, principal: Principal, project: Project, name: str, idempotency_key: str
     ) -> Project:
-        return RenameProjectHandler(self._uow(str(project.id)), self.profiles, self.clock)(
-            RenameProjectCommand(
-                context=CommandContext(actor=principal, idempotency_key=idempotency_key),
-                project_id=project.id,
-                name=name,
-                expected_revision=project.revision,
+        workspace = self.project_workspace(project.id)
+        if workspace is None:
+            return RenameProjectHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+                RenameProjectCommand(
+                    context=CommandContext(actor=principal, idempotency_key=idempotency_key),
+                    project_id=project.id,
+                    name=name,
+                    expected_revision=project.revision,
+                )
             )
+        normalized = validate_workspace_name(name, field_name="Название проекта")
+        if normalized == workspace.project_name:
+            return project
+        active_runs = tuple(
+            run for run in self.list_derived_runs(project.id) if run.state.value == "running"
         )
+        latest_job_states: dict[str, str] = {}
+        for event in self.history(project.id):
+            payload = getattr(event, "payload", {})
+            job = payload.get("job", {}) if isinstance(payload, Mapping) else {}
+            if not isinstance(job, Mapping):
+                continue
+            job_id = str(payload.get("plugin_job_id", job.get("id", "")))
+            if job_id:
+                latest_job_states[job_id] = str(job.get("state", ""))
+        if active_runs or any(
+            state and state not in {"succeeded", "failed", "cancelled"}
+            for state in latest_job_states.values()
+        ):
+            raise WorkspaceValidationError(
+                "Нельзя переименовать проект, пока выполняются задания."
+            )
+
+        source_old = Path(workspace.source_project_dir).resolve()
+        derived_old = Path(workspace.derived_project_dir).resolve()
+        source_new = Path(workspace.source_root).resolve() / normalized
+        derived_new = Path(workspace.derived_root).resolve() / normalized
+        if source_new.exists() or derived_new.exists():
+            raise FileExistsError(
+                f"Целевая папка проекта «{normalized}» уже существует."
+            )
+        layer_bindings = tuple(
+            binding
+            for layer in self.list_layers(project.id, include_archived=True)
+            if (binding := self.layer_file_binding(project.id, layer.id)) is not None
+        )
+        runs = self.list_derived_runs(project.id)
+
+        def remap(value: str, old_root: Path, new_root: Path) -> str:
+            if not value:
+                return value
+            candidate = Path(value).resolve(strict=False)
+            try:
+                relative = candidate.relative_to(old_root)
+            except ValueError:
+                return value
+            return str(new_root / relative)
+
+        updated_workspace = replace(
+            workspace,
+            project_name=normalized,
+            source_project_dir=str(source_new),
+            derived_project_dir=str(derived_new),
+        )
+        updated_layers = tuple(
+            replace(
+                binding,
+                image_directory=remap(binding.image_directory, source_old, source_new),
+                ssc_directory=remap(binding.ssc_directory, source_old, source_new),
+                prv_directory=remap(binding.prv_directory, source_old, source_new),
+                aux_directory=remap(binding.aux_directory, source_old, source_new),
+                import_root=remap(binding.import_root, source_old, source_new),
+            )
+            for binding in layer_bindings
+        )
+        updated_runs = tuple(
+            replace(run, path=remap(run.path, derived_old, derived_new))
+            for run in runs
+        )
+        moved: list[tuple[Path, Path]] = []
+        try:
+            os.replace(source_old, source_new)
+            moved.append((source_new, source_old))
+            os.replace(derived_old, derived_new)
+            moved.append((derived_new, derived_old))
+            self.workspace_registry.save_project(updated_workspace)
+            for binding in updated_layers:
+                self.workspace_registry.save_layer(str(project.id), binding)
+            for run in updated_runs:
+                self.workspace_registry.save_run(str(project.id), run)
+            renamed = RenameProjectHandler(
+                self._uow(str(project.id)), self.profiles, self.clock
+            )(
+                RenameProjectCommand(
+                    context=CommandContext(
+                        actor=principal,
+                        idempotency_key=idempotency_key,
+                    ),
+                    project_id=project.id,
+                    name=normalized,
+                    expected_revision=project.revision,
+                )
+            )
+        except Exception:
+            for current, original in reversed(moved):
+                if current.exists() and not original.exists():
+                    os.replace(current, original)
+            self.workspace_registry.save_project(workspace)
+            for binding in layer_bindings:
+                self.workspace_registry.save_layer(str(project.id), binding)
+            for run in runs:
+                self.workspace_registry.save_run(str(project.id), run)
+            raise
+        self._external_source_indexes.clear()
+        return renamed
 
     def archive_project(
         self, *, principal: Principal, project: Project, idempotency_key: str
@@ -1155,15 +1430,136 @@ class EmbeddedProjectService:
         name: str,
         idempotency_key: str,
     ) -> Layer:
-        return RenameLayerHandler(self._uow(str(project.id)), self.profiles, self.clock)(
-            RenameLayerCommand(
-                context=CommandContext(actor=principal, idempotency_key=idempotency_key),
-                project_id=project.id,
-                layer_id=layer.id,
-                name=name,
-                expected_revision=layer.revision,
+        binding = self.layer_file_binding(project.id, layer.id)
+        workspace = self.project_workspace(project.id)
+        normalized = validate_workspace_name(name, field_name="Название слоя")
+        if binding is None or workspace is None:
+            return RenameLayerHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+                RenameLayerCommand(
+                    context=CommandContext(actor=principal, idempotency_key=idempotency_key),
+                    project_id=project.id,
+                    layer_id=layer.id,
+                    name=normalized,
+                    expected_revision=layer.revision,
+                )
             )
+        if normalized == binding.layer_name:
+            return layer
+        active_runs = tuple(
+            run
+            for run in self.list_derived_runs(project.id, layer.id)
+            if run.state.value == "running"
         )
+        if active_runs:
+            raise WorkspaceValidationError(
+                "Нельзя переименовать слой, пока выполняются задания."
+            )
+        if binding.mode is LayerSourceMode.EXTERNAL:
+            try:
+                self.workspace_registry.save_layer(
+                    str(project.id),
+                    replace(binding, layer_name=normalized),
+                )
+                renamed = RenameLayerHandler(
+                    self._uow(str(project.id)), self.profiles, self.clock
+                )(
+                    RenameLayerCommand(
+                        context=CommandContext(actor=principal, idempotency_key=idempotency_key),
+                        project_id=project.id,
+                        layer_id=layer.id,
+                        name=normalized,
+                        expected_revision=layer.revision,
+                    )
+                )
+            except (OSError, RuntimeError, ValueError):
+                self.workspace_registry.save_layer(str(project.id), binding)
+                raise
+            return renamed
+
+        source_root = Path(workspace.source_project_dir).resolve()
+        derived_root = Path(workspace.derived_project_dir).resolve()
+        source_paths = tuple(
+            Path(value).resolve()
+            for value in (
+                binding.image_directory,
+                binding.ssc_directory,
+                binding.prv_directory,
+                binding.aux_directory,
+            )
+            if value
+        )
+        moves: list[tuple[Path, Path]] = [
+            (source, source.parent / normalized)
+            for source in source_paths
+        ]
+        moves.extend(
+            (
+                derived_root / kind.value / binding.layer_name,
+                derived_root / kind.value / normalized,
+            )
+            for kind in DerivedRunKind
+        )
+        for source, target in moves:
+            if source.exists() and target.exists():
+                raise FileExistsError(f"Целевая папка слоя уже существует: {target}")
+            try:
+                source.relative_to(source_root if source in source_paths else derived_root)
+                target.relative_to(source_root if source in source_paths else derived_root)
+            except ValueError as exc:
+                raise WorkspaceValidationError(
+                    f"Путь слоя выходит за границы рабочего каталога: {source}"
+                ) from exc
+        updated_binding = replace(
+            binding,
+            layer_name=normalized,
+            image_directory=str(Path(binding.image_directory).parent / normalized),
+            ssc_directory=str(Path(binding.ssc_directory).parent / normalized),
+            prv_directory=str(Path(binding.prv_directory).parent / normalized),
+            aux_directory=str(Path(binding.aux_directory).parent / normalized),
+        )
+        runs = self.list_derived_runs(project.id, layer.id)
+        updated_runs = tuple(
+            replace(
+                run,
+                path=str(
+                    Path(run.path).parent / normalized
+                    if Path(run.path).name == binding.layer_name
+                    else Path(run.path)
+                ),
+            )
+            for run in runs
+        )
+        completed: list[tuple[Path, Path]] = []
+        try:
+            for source, target in moves:
+                if not source.exists():
+                    continue
+                os.replace(source, target)
+                completed.append((target, source))
+            self.workspace_registry.save_layer(str(project.id), updated_binding)
+            for run in updated_runs:
+                self.workspace_registry.save_run(str(project.id), run)
+            renamed = RenameLayerHandler(
+                self._uow(str(project.id)), self.profiles, self.clock
+            )(
+                RenameLayerCommand(
+                    context=CommandContext(actor=principal, idempotency_key=idempotency_key),
+                    project_id=project.id,
+                    layer_id=layer.id,
+                    name=normalized,
+                    expected_revision=layer.revision,
+                )
+            )
+        except Exception:
+            for current, original in reversed(completed):
+                if current.exists() and not original.exists():
+                    os.replace(current, original)
+            self.workspace_registry.save_layer(str(project.id), binding)
+            for run in runs:
+                self.workspace_registry.save_run(str(project.id), run)
+            raise
+        self._external_source_indexes.clear()
+        return renamed
 
     def reorder_layer(
         self,
@@ -1261,6 +1657,347 @@ class EmbeddedProjectService:
         self, project_id: ProjectId | str, layer_id: LayerId | str, *, as_of: datetime | None = None
     ) -> tuple[Representation, ...]:
         return self._projection(project_id).list_representations(LayerId(str(layer_id)), as_of=as_of)
+
+    def list_artifact_series(
+        self,
+        project_id: ProjectId | str,
+        *,
+        layer_id: LayerId | str | None = None,
+        representation_id: RepresentationId | str | None = None,
+        include_archived: bool = False,
+    ) -> tuple[ArtifactSeries, ...]:
+        return self._projection(project_id).list_artifact_series(
+            ProjectId(str(project_id)),
+            layer_id=None if layer_id is None else LayerId(str(layer_id)),
+            representation_id=(
+                None
+                if representation_id is None
+                else RepresentationId(str(representation_id))
+            ),
+            include_archived=include_archived,
+        )
+
+    def create_artifact_series(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        scope: ArtifactScope,
+        name: str,
+        layer_id: LayerId | str | None = None,
+        representation_id: RepresentationId | str | None = None,
+        frame_id: str | None = None,
+        idempotency_key: str,
+    ) -> ArtifactSeries:
+        return CreateArtifactSeriesHandler(
+            self._uow(str(project_id)),
+            self.profiles,
+            self.clock,
+        )(
+            CreateArtifactSeriesCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=ProjectId(str(project_id)),
+                scope=scope,
+                name=name,
+                layer_id=None if layer_id is None else LayerId(str(layer_id)),
+                representation_id=(
+                    None
+                    if representation_id is None
+                    else RepresentationId(str(representation_id))
+                ),
+                frame_id=None if frame_id is None else FrameId(str(frame_id)),
+            )
+        )
+
+    def artifact_stream_revision(
+        self,
+        project_id: ProjectId | str,
+        series_id: ArtifactSeriesId | str,
+    ) -> int:
+        return FilesystemEventStore(
+            self.catalog_root,
+            str(project_id),
+        ).current_revision(f"artifact-series:{series_id}")
+
+    def add_managed_artifact_version(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        series_id: ArtifactSeriesId | str,
+        source: Path | str,
+        parent_version_id: ArtifactVersionId | str | None = None,
+        idempotency_key: str,
+    ) -> ArtifactVersion:
+        path = Path(source).resolve(strict=True)
+        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        with open_regular_read(path, root=path.parent) as stream:
+            return AddArtifactVersionHandler(
+                self._uow(str(project_id)),
+                self.profiles,
+                self.clock,
+            )(
+                AddArtifactVersionCommand(
+                    context=CommandContext(
+                        actor=principal,
+                        idempotency_key=idempotency_key,
+                    ),
+                    project_id=ProjectId(str(project_id)),
+                    series_id=ArtifactSeriesId(str(series_id)),
+                    filename=path.name,
+                    media_type=media_type,
+                    expected_series_revision=self.artifact_stream_revision(
+                        project_id,
+                        series_id,
+                    ),
+                    parent_version_id=(
+                        None
+                        if parent_version_id is None
+                        else ArtifactVersionId(str(parent_version_id))
+                    ),
+                    tool_name="Kraken Desktop",
+                ),
+                iter(lambda: stream.read(1024 * 1024), b""),
+            )
+
+    def add_external_artifact_version(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        series_id: ArtifactSeriesId | str,
+        source: Path | str,
+        parent_version_id: ArtifactVersionId | str | None = None,
+        idempotency_key: str,
+    ) -> ArtifactVersion:
+        path = Path(source).resolve(strict=True)
+        digest = hashlib.sha256()
+        size = 0
+        with open_regular_read(path, root=path.parent) as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+        return AddExternalArtifactVersionHandler(
+            self._uow(str(project_id)),
+            self.profiles,
+            self.clock,
+        )(
+            AddExternalArtifactVersionCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=ProjectId(str(project_id)),
+                series_id=ArtifactSeriesId(str(series_id)),
+                filename=path.name,
+                media_type=mimetypes.guess_type(path.name)[0]
+                or "application/octet-stream",
+                uri=path.as_uri(),
+                fingerprint_sha256=digest.hexdigest(),
+                observed_size_bytes=size,
+                expected_series_revision=self.artifact_stream_revision(
+                    project_id,
+                    series_id,
+                ),
+                parent_version_id=(
+                    None
+                    if parent_version_id is None
+                    else ArtifactVersionId(str(parent_version_id))
+                ),
+                parameters={"local_path": str(path)},
+            )
+        )
+
+    def rename_artifact_series(
+        self,
+        *,
+        principal: Principal,
+        series: ArtifactSeries,
+        name: str,
+        idempotency_key: str,
+    ) -> ArtifactSeries:
+        return RenameArtifactSeriesHandler(
+            self._uow(str(series.project_id)),
+            self.profiles,
+            self.clock,
+        )(
+            RenameArtifactSeriesCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=series.project_id,
+                series_id=series.id,
+                name=name,
+                expected_series_revision=series.revision,
+            )
+        )
+
+    def archive_artifact_series(
+        self,
+        *,
+        principal: Principal,
+        series: ArtifactSeries,
+        idempotency_key: str,
+    ) -> ArtifactSeries:
+        return ArchiveArtifactSeriesHandler(
+            self._uow(str(series.project_id)),
+            self.profiles,
+            self.clock,
+        )(
+            ArchiveArtifactSeriesCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=series.project_id,
+                series_id=series.id,
+                expected_series_revision=series.revision,
+            )
+        )
+
+    def activate_artifact_version(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        series_id: ArtifactSeriesId | str,
+        version_id: ArtifactVersionId | str,
+        idempotency_key: str,
+    ) -> ArtifactVersion:
+        return ActivateArtifactVersionHandler(
+            self._uow(str(project_id)),
+            self.profiles,
+            self.clock,
+        )(
+            ActivateArtifactVersionCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=ProjectId(str(project_id)),
+                series_id=ArtifactSeriesId(str(series_id)),
+                version_id=ArtifactVersionId(str(version_id)),
+            )
+        )
+
+    def external_artifact_changed(self, version: ArtifactVersion) -> bool:
+        if version.external is None:
+            return False
+        from urllib.parse import unquote, urlparse
+
+        parsed = urlparse(version.external.uri)
+        if parsed.scheme != "file":
+            raise ValueError("Desktop supports only local external file links")
+        path = Path(unquote(parsed.path.lstrip("/") if os.name == "nt" else parsed.path))
+        if os.name == "nt" and parsed.netloc:
+            path = Path(f"//{parsed.netloc}/{unquote(parsed.path.lstrip('/'))}")
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError:
+            return True
+        digest = hashlib.sha256()
+        size = 0
+        with open_regular_read(resolved, root=resolved.parent) as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+        return (
+            size != version.external.observed_size_bytes
+            or digest.hexdigest() != version.external.fingerprint_sha256
+        )
+
+    def export_managed_artifact(
+        self,
+        project_id: ProjectId | str,
+        version: ArtifactVersion,
+        destination: Path | str,
+    ) -> Path:
+        if version.blob is None:
+            raise ValueError("The selected artifact version is external")
+        target = Path(destination).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with target.open("xb") as stream:
+                for chunk in FilesystemBlobStore.for_project(
+                    self.catalog_root,
+                    str(project_id),
+                ).iter_bytes(version.blob):
+                    stream.write(chunk)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return target
+
+    def list_notes(
+        self,
+        project_id: ProjectId | str,
+        *,
+        layer_id: LayerId | str | None = None,
+        frame_id: str | None = None,
+    ) -> tuple[NoteRevision, ...]:
+        return self._projection(project_id).list_notes(
+            ProjectId(str(project_id)),
+            layer_id=None if layer_id is None else LayerId(str(layer_id)),
+            frame_id=frame_id,
+        )
+
+    def create_note(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        body: str,
+        layer_id: LayerId | str | None = None,
+        frame_id: str | None = None,
+        idempotency_key: str,
+    ) -> NoteRevision:
+        return CreateNoteHandler(
+            self._uow(str(project_id)),
+            self.profiles,
+            self.clock,
+        )(
+            CreateNoteCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=ProjectId(str(project_id)),
+                body=body,
+                layer_id=None if layer_id is None else LayerId(str(layer_id)),
+                frame_id=None if frame_id is None else FrameId(str(frame_id)),
+            )
+        )
+
+    def revise_note(
+        self,
+        *,
+        principal: Principal,
+        note: NoteRevision,
+        body: str,
+        idempotency_key: str,
+    ) -> NoteRevision:
+        return ReviseNoteHandler(
+            self._uow(str(note.project_id)),
+            self.profiles,
+            self.clock,
+        )(
+            ReviseNoteCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=note.project_id,
+                note_id=note.note_id,
+                body=body,
+                expected_revision=note.revision,
+            )
+        )
 
     def frame_cells(
         self,
@@ -1714,17 +2451,34 @@ class EmbeddedProjectService:
             for y in range(int(y1), int(y2) + 1):
                 for x in range(int(x1), int(x2) + 1):
                     coordinate = (x, y)
-                    if all(coordinate in coverage.get(identifier, set()) for identifier in managed):
+                    missing_identifiers = tuple(
+                        identifier
+                        for identifier in managed
+                        if coordinate not in coverage.get(identifier, set())
+                    )
+                    if not missing_identifiers:
                         continue
-                    merged[coordinate] = {
-                        "artifact_version_id": "",
-                        "frame_id": "",
-                        "sha256": "",
-                        "status": "error",
-                        "missing": True,
-                        "x": x,
-                        "y": y,
-                    }
+                    current = merged.get(coordinate)
+                    if current is None:
+                        current = {
+                            "artifact_version_id": "",
+                            "frame_id": str(project.frame_id_at(x, y)),
+                            "sha256": "",
+                            "x": x,
+                            "y": y,
+                        }
+                        merged[coordinate] = current
+                    # A sparse managed vector representation must not erase the
+                    # raster asset already merged into this coordinate.  The
+                    # missing state is orthogonal to the image used for the
+                    # thumbnail.
+                    current.update(
+                        {
+                            "status": "error",
+                            "missing": True,
+                            "missing_representation_ids": missing_identifiers,
+                        }
+                    )
 
         revision = str(self._projection(project.id).checkpoint)
         if int(lod) == 0:
@@ -1931,6 +2685,753 @@ class EmbeddedProjectService:
                     batches[str(batch.id)] = batch
         return tuple(sorted(batches.values(), key=lambda item: (item.due_at is None, item.due_at, str(item.id))))
 
+    def review_batches(self) -> tuple[ReviewBatch, ...]:
+        batches: dict[str, ReviewBatch] = {}
+        for project in self.list_projects(include_archived=True):
+            projection = self._projection(project.id)
+            for batch in projection.list_review_batches(project.id):
+                batches[str(batch.id)] = batch
+        return tuple(
+            sorted(
+                batches.values(),
+                key=lambda item: (item.updated_at, str(item.id)),
+                reverse=True,
+            )
+        )
+
+    def plugin_jobs(self) -> tuple[object, ...]:
+        jobs: dict[str, object] = {}
+        for project in self.list_projects(include_archived=True):
+            for job in self._projection(project.id).list_plugin_jobs(project.id):
+                jobs[str(job.id)] = job
+        return tuple(
+            sorted(
+                jobs.values(),
+                key=lambda item: (getattr(item, "updated_at", None), str(item.id)),
+                reverse=True,
+            )
+        )
+
+    def submit_plugin_job(
+        self,
+        *,
+        principal: Principal,
+        gateway: object,
+        project_id: ProjectId | str,
+        layer_id: LayerId | str,
+        source_representation_id: RepresentationId | str,
+        target_representation_id: RepresentationId | str,
+        coordinates: Iterable[tuple[int, int]],
+        capability: str,
+        parameters: Mapping[str, object],
+        idempotency_key: str,
+    ):
+        project = self.get_project(project_id)
+        if project is None:
+            raise ValueError("Project was not found")
+        projection = self._projection(project.id)
+        source_id = RepresentationId(str(source_representation_id))
+        target_id = RepresentationId(str(target_representation_id))
+        source = projection.get_representation(source_id)
+        target = projection.get_representation(target_id)
+        if source is None or str(source.layer_id) != str(layer_id):
+            raise ValueError("Source representation was not found in the layer")
+        if target is None or str(target.layer_id) != str(layer_id):
+            raise ValueError("Target representation was not found in the layer")
+        selection = self._domain_selection(coordinates)
+        inputs: list[PluginInputV1] = []
+        missing: list[str] = []
+        for coordinate in selection.iter_coordinates():
+            frame_id = coordinate.frame_id(project.id)
+            series_id = deterministic_frame_series_id(source.id, frame_id)
+            version = projection.get_active_artifact_version(series_id)
+            if version is None:
+                missing.append(f"({coordinate.x}, {coordinate.y})")
+                continue
+            suffix = Path(version.filename).suffix or ".bin"
+            inputs.append(
+                PluginInputV1(
+                    frame_id=frame_id,
+                    artifact_version_id=version.id,
+                    sha256=version.sha256,
+                    relative_path=f"inputs/{coordinate.x}_{coordinate.y}{suffix}",
+                )
+            )
+        if missing:
+            raise ValueError(
+                "Для запуска отсутствуют входные версии кадров: "
+                + ", ".join(missing)
+            )
+        return SubmitPluginJobHandler(
+            self._uow(str(project.id)),
+            self.profiles,
+            self.clock,
+            gateway,
+        )(
+            SubmitPluginJobCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=project.id,
+                layer_id=LayerId(str(layer_id)),
+                target_representation_id=target.id,
+                selection=selection,
+                capability=capability,
+                inputs=tuple(inputs),
+                parameters=dict(parameters),
+            )
+        )
+
+    def cancel_plugin_job(
+        self,
+        *,
+        principal: Principal,
+        gateway: object,
+        job: object,
+        idempotency_key: str,
+    ):
+        return CancelPluginJobHandler(
+            self._uow(str(job.project_id)),
+            self.profiles,
+            self.clock,
+            gateway,
+        )(
+            CancelPluginJobCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=job.project_id,
+                job_id=job.id,
+                expected_revision=job.revision,
+            )
+        )
+
+    def retry_plugin_job(
+        self,
+        *,
+        principal: Principal,
+        gateway: object,
+        job: object,
+        idempotency_key: str,
+    ):
+        return RetryPluginJobHandler(
+            self._uow(str(job.project_id)),
+            self.profiles,
+            self.clock,
+            gateway,
+        )(
+            RetryPluginJobCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=job.project_id,
+                job_id=job.id,
+                expected_revision=job.revision,
+            )
+        )
+
+    def synchronize_plugin_jobs(
+        self,
+        *,
+        principal: Principal,
+        gateway: object,
+    ) -> tuple[object, ...]:
+        synchronized: list[object] = []
+        for job in self.plugin_jobs():
+            if job.state.value in {"succeeded", "failed", "cancelled"}:
+                synchronized.append(job)
+                continue
+            try:
+                agent = gateway.get_job(job.id)
+            except Exception:
+                target = "recovery_required"
+                error = "Kraken Agent недоступен или потерял состояние задания"
+                progress = job.progress
+            else:
+                target = str(agent.get("state", job.state.value))
+                error = (
+                    None
+                    if agent.get("error") in {None, ""}
+                    else str(agent.get("error"))
+                )
+                progress = job.progress
+            if target == job.state.value:
+                synchronized.append(job)
+                continue
+            updated = SynchronizePluginJobHandler(
+                self._uow(str(job.project_id)),
+                self.profiles,
+                self.clock,
+            )(
+                SynchronizePluginJobCommand(
+                    context=CommandContext(
+                        actor=principal,
+                        idempotency_key=f"agent-sync:{job.id}:{job.revision}:{target}",
+                    ),
+                    project_id=job.project_id,
+                    job_id=job.id,
+                    expected_revision=job.revision,
+                    state=target,
+                    progress=progress,
+                    error=error,
+                )
+            )
+            synchronized.append(updated)
+        return tuple(synchronized)
+
+    def import_agent_result(
+        self,
+        *,
+        principal: Principal,
+        result_payload: Mapping[str, object],
+        staging_root: Path | str,
+        confirm_partial: bool = False,
+    ):
+        parsed = parse_plugin_result_json(
+            json.dumps(dict(result_payload), ensure_ascii=False)
+        )
+        publication: PluginResultPublicationV2 | None = None
+        if isinstance(parsed, PluginResultManifest):
+            manifest = domain_result_from_transport(parsed)
+        elif isinstance(parsed, PluginResultPublicationV2):
+            publication = parsed
+            frame_results = tuple(
+                PluginFrameResultV1(
+                    output_id=str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"kraken:v2-output:{parsed.job_id}:{asset.asset_id}",
+                        )
+                    ),
+                    frame_id=FrameId(str(asset.frame_id)),
+                    outcome=PluginFrameOutcome.SUCCEEDED,
+                    relative_path=asset.relative_path,
+                    sha256=asset.sha256,
+                    media_type=asset.media_type,
+                    role=asset.role,
+                )
+                for asset in parsed.outputs
+                if asset.scope.value == "frame" and asset.frame_id is not None
+            )
+            manifest = PluginResultManifestV1(
+                job_id=PluginJobId(parsed.job_id),
+                plugin_name=parsed.plugin_id,
+                plugin_version=parsed.plugin_version,
+                results=frame_results,
+                parameters_applied={
+                    **dict(parsed.applied_parameters),
+                    "v2_publication_id": parsed.publication_id,
+                    "v2_sequence": parsed.sequence,
+                },
+                outcome=PluginResultOutcome(parsed.outcome),
+                # The authoritative domain job keeps the backwards-compatible
+                # V1 command contract while the transport may be V2.
+                protocol_version="1.0",
+            )
+        else:
+            raise TypeError("Unsupported Agent result")
+        source_job = next(
+            (
+                job
+                for job in self.plugin_jobs()
+                if str(job.id) == str(manifest.job_id)
+            ),
+            None,
+        )
+        if source_job is None:
+            raise ValueError("Agent result belongs to an unknown plugin job")
+        result = ImportPluginResultHandler(
+            self._uow(str(source_job.project_id)),
+            self.profiles,
+            self.clock,
+            AgentStagingResultContentReader(staging_root),
+        )(
+            ImportPluginResultCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=f"agent-import:{manifest.job_id}",
+                ),
+                manifest=manifest,
+                confirm_partial=confirm_partial or publication is not None,
+            )
+        )
+        if publication is None:
+            return result
+        job = result.job
+        for asset in publication.outputs:
+            if asset.scope.value != "layer":
+                continue
+            series = self.create_artifact_series(
+                principal=principal,
+                project_id=job.project_id,
+                layer_id=job.layer_id,
+                scope=ArtifactScope.LAYER_ATTACHMENT,
+                name=asset.role,
+                idempotency_key=(
+                    f"agent-v2-series:{publication.publication_id}:{asset.asset_id}"
+                ),
+            )
+            source = (
+                Path(staging_root)
+                / str(publication.job_id)
+                / Path(asset.relative_path)
+            )
+            self.add_managed_artifact_version(
+                principal=principal,
+                project_id=job.project_id,
+                series_id=series.id,
+                source=source,
+                idempotency_key=(
+                    f"agent-v2-version:{publication.publication_id}:{asset.asset_id}"
+                ),
+            )
+        if publication.frame_values:
+            self._record_workspace_event(
+                principal=principal,
+                project_id=job.project_id,
+                stream_id=f"plugin-job:{job.id}",
+                event_type="PluginFrameValuesPublishedV2",
+                payload={
+                    "plugin_job_id": str(job.id),
+                    "publication_id": publication.publication_id,
+                    "frame_values": {
+                        frame_id: dict(values)
+                        for frame_id, values in publication.frame_values.items()
+                    },
+                },
+                idempotency_key=f"agent-v2-values:{publication.publication_id}",
+            )
+        return result
+
+    def import_agent_publications(
+        self,
+        *,
+        principal: Principal,
+        publications: Iterable[Mapping[str, object]],
+        staging_root: Path | str,
+    ):
+        parsed = tuple(
+            PluginResultPublicationV2.from_dict(publication)
+            for publication in publications
+        )
+        if not parsed:
+            raise ValueError("Agent did not publish any V2 results")
+        ordered = tuple(sorted(parsed, key=lambda item: item.sequence))
+        first = ordered[0]
+        if any(
+            item.job_id != first.job_id
+            or item.plugin_id != first.plugin_id
+            or item.plugin_version != first.plugin_version
+            for item in ordered
+        ):
+            raise ValueError("V2 publications do not belong to one plugin job")
+        sequences = tuple(item.sequence for item in ordered)
+        if len(sequences) != len(set(sequences)):
+            raise ValueError("V2 publication sequence contains duplicates")
+        if not ordered[-1].final:
+            raise ValueError("The final V2 publication has not arrived yet")
+        outputs = tuple(
+            asset
+            for publication in ordered
+            for asset in publication.outputs
+        )
+        asset_ids = tuple(asset.asset_id for asset in outputs)
+        if len(asset_ids) != len(set(asset_ids)):
+            raise ValueError("V2 publications contain duplicate output asset IDs")
+        frame_values: dict[str, dict[str, float]] = {}
+        parameters: dict[str, object] = {}
+        report: dict[str, object] = {}
+        for publication in ordered:
+            parameters.update(publication.applied_parameters)
+            report.update(publication.report)
+            for frame_id, measurements in publication.frame_values.items():
+                frame_values.setdefault(frame_id, {}).update(measurements)
+        parameters["v2_publication_ids"] = [
+            publication.publication_id for publication in ordered
+        ]
+        final = ordered[-1]
+        combined = PluginResultPublicationV2(
+            job_id=final.job_id,
+            publication_id=final.publication_id,
+            sequence=final.sequence,
+            plugin_id=final.plugin_id,
+            plugin_version=final.plugin_version,
+            outputs=outputs,
+            outcome=final.outcome,
+            applied_parameters=parameters,
+            frame_values=frame_values,
+            report=report,
+            final=True,
+        )
+        return self.import_agent_result(
+            principal=principal,
+            result_payload=combined.to_dict(),
+            staging_root=staging_root,
+        )
+
+    def artifact_versions(
+        self,
+        project_id: ProjectId | str,
+        series_id: ArtifactSeriesId | str,
+    ) -> tuple[ArtifactVersion, ...]:
+        return self._projection(project_id).list_artifact_versions(
+            ArtifactSeriesId(str(series_id))
+        )
+
+    def active_artifact_version(
+        self,
+        project_id: ProjectId | str,
+        series_id: ArtifactSeriesId | str,
+    ) -> ArtifactVersion | None:
+        return self._projection(project_id).get_active_artifact_version(
+            ArtifactSeriesId(str(series_id))
+        )
+
+    def artifact_version(
+        self,
+        project_id: ProjectId | str,
+        version_id: ArtifactVersionId | str,
+    ) -> ArtifactVersion | None:
+        return self._projection(project_id).get_artifact_version(
+            ArtifactVersionId(str(version_id))
+        )
+
+    def managed_artifact_path(
+        self,
+        project_id: ProjectId | str,
+        version_id: ArtifactVersionId | str,
+    ) -> Path:
+        version = self.artifact_version(project_id, version_id)
+        if version is None or version.blob is None:
+            raise ValueError("Plugin inputs must be managed immutable versions")
+        store = FilesystemBlobStore.for_project(self.catalog_root, str(project_id))
+        path = store._path(version.blob.sha256)
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return path
+
+    def _review_keys(self) -> Ed25519KeyPair:
+        private_name = f"review-signing:{self.profile.id}:private"
+        public_name = f"review-signing:{self.profile.id}:public"
+        get_secret = getattr(self.secrets, "get")
+        set_secret = getattr(self.secrets, "set")
+        private_key = get_secret(private_name)
+        public_key = get_secret(public_name)
+        if private_key is None or public_key is None:
+            pair = Ed25519KeyPair.generate()
+            set_secret(private_name, pair.private_key)
+            set_secret(public_name, pair.public_key)
+            return pair
+        return Ed25519KeyPair(private_key=private_key, public_key=public_key)
+
+    @staticmethod
+    def _domain_selection(coordinates: Iterable[tuple[int, int]]) -> FrameSelectionV1:
+        unique = sorted(
+            {(int(x), int(y)) for x, y in coordinates},
+            key=lambda item: (item[1], item[0]),
+        )
+        if not unique:
+            raise ValueError("Select at least one frame")
+        return FrameSelectionV1(
+            row_ranges=tuple(
+                FrameRowRange(y=y, x_start=x, x_end=x)
+                for x, y in unique
+            )
+        )
+
+    def create_review_batch(
+        self,
+        *,
+        principal: Principal,
+        project_id: ProjectId | str,
+        layer_id: LayerId | str,
+        image_representation_id: RepresentationId | str,
+        vector_representation_id: RepresentationId | str,
+        coordinates: Iterable[tuple[int, int]],
+        assignee_id: PerformerId | str,
+        instructions: str = "",
+        due_at: datetime | None = None,
+        idempotency_key: str,
+    ) -> ReviewBatch:
+        project = self.get_project(project_id)
+        if project is None:
+            raise ValueError("Project was not found")
+        layer = next(
+            (
+                item
+                for item in self.list_layers(project.id)
+                if str(item.id) == str(layer_id)
+            ),
+            None,
+        )
+        if layer is None:
+            raise ValueError("Layer was not found")
+        representations = {
+            str(item.id): item
+            for item in self.list_representations(project.id, layer.id)
+        }
+        image_representation = representations.get(str(image_representation_id))
+        vector_representation = representations.get(str(vector_representation_id))
+        if (
+            image_representation is None
+            or image_representation.kind is not RepresentationKind.IMAGE
+        ):
+            raise ValueError("Select an image representation")
+        if (
+            vector_representation is None
+            or vector_representation.kind is not RepresentationKind.VECTOR
+            or vector_representation.source_image_representation_id
+            != image_representation.id
+        ):
+            raise ValueError("The CIF representation is not linked to the selected images")
+
+        selection = self._domain_selection(coordinates)
+        projection = self._projection(project.id)
+        items: list[ReviewItem] = []
+        missing: list[str] = []
+        for coordinate in selection.iter_coordinates():
+            frame_id = coordinate.frame_id(project.id)
+            image_series = deterministic_frame_series_id(
+                image_representation.id,
+                frame_id,
+            )
+            vector_series = deterministic_frame_series_id(
+                vector_representation.id,
+                frame_id,
+            )
+            image_version = projection.get_active_artifact_version(image_series)
+            vector_version = projection.get_active_artifact_version(vector_series)
+            if image_version is None or vector_version is None:
+                absent = []
+                if image_version is None:
+                    absent.append("изображение")
+                if vector_version is None:
+                    absent.append("CIF")
+                missing.append(
+                    f"({coordinate.x}, {coordinate.y}): {', '.join(absent)}"
+                )
+                continue
+            items.append(
+                ReviewItem(
+                    frame_id=frame_id,
+                    vector_version_id=vector_version.id,
+                    vector_sha256=vector_version.sha256,
+                    image_version_id=image_version.id,
+                )
+            )
+        if missing:
+            raise ValueError(
+                "Нельзя выдать кадры без обязательных файлов:\n"
+                + "\n".join(missing)
+            )
+        return CreateReviewBatchHandler(
+            self._uow(str(project.id)),
+            self.profiles,
+            self.clock,
+            self.performers,
+        )(
+            CreateReviewBatchCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=project.id,
+                layer_id=layer.id,
+                selection=selection,
+                items=tuple(items),
+                assignee_id=PerformerId(str(assignee_id)),
+                expected_layer_revision=layer.revision,
+                instructions=instructions,
+                due_at=due_at,
+            )
+        )
+
+    def export_review_batch(
+        self,
+        *,
+        principal: Principal,
+        batch: ReviewBatch,
+        destination: Path | str,
+        idempotency_key: str,
+    ) -> ReviewBatch:
+        writer = ReviewPackageWriter(self._review_keys().private_key)
+        return ExportReviewPackageHandler(
+            self._uow(str(batch.project_id)),
+            self.profiles,
+            self.clock,
+            writer,
+        )(
+            ExportReviewPackageCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=batch.project_id,
+                batch_id=batch.id,
+                expected_batch_revision=batch.revision,
+                destination=str(destination),
+                include_images=True,
+            )
+        )
+
+    def review_return_preflight(
+        self,
+        *,
+        principal: Principal,
+        source: Path | str,
+        idempotency_key: str,
+    ):
+        reader = ReviewPackageReader(self._review_keys().public_key)
+        manifest = reader.read_manifest(source)
+        batch_id = manifest.batch_id or manifest.package_id
+        projection = self._projection(manifest.project_id)
+        batch = projection.get_review_batch(batch_id)
+        if batch is None:
+            raise ValueError("Manifest does not match a known review batch")
+        plan = DryRunReviewReturnHandler(
+            self._uow(str(manifest.project_id)),
+            self.profiles,
+            self.clock,
+            reader,
+        )(
+            DryRunReviewReturnCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=manifest.project_id,
+                batch_id=batch.id,
+                expected_batch_revision=batch.revision,
+                source=str(source),
+            )
+        )
+        return batch, plan
+
+    def commit_review_return(
+        self,
+        *,
+        principal: Principal,
+        batch: ReviewBatch,
+        source: Path | str,
+        idempotency_key: str,
+    ):
+        reader = ReviewPackageReader(self._review_keys().public_key)
+        return CommitReviewReturnHandler(
+            self._uow(str(batch.project_id)),
+            self.profiles,
+            self.clock,
+            reader,
+        )(
+            CommitReviewReturnCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=batch.project_id,
+                batch_id=batch.id,
+                expected_batch_revision=batch.revision,
+                source=str(source),
+            )
+        )
+
+    def accept_review(
+        self,
+        *,
+        principal: Principal,
+        batch: ReviewBatch,
+        candidate_version_ids: Iterable[ArtifactVersionId | str],
+        idempotency_key: str,
+    ) -> ReviewBatch:
+        return AcceptReviewHandler(
+            self._uow(str(batch.project_id)),
+            self.profiles,
+            self.clock,
+        )(
+            AcceptReviewCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=batch.project_id,
+                batch_id=batch.id,
+                expected_batch_revision=batch.revision,
+                candidate_version_ids=tuple(
+                    ArtifactVersionId(str(value))
+                    for value in candidate_version_ids
+                ),
+            )
+        )
+
+    def request_review_changes(
+        self,
+        *,
+        principal: Principal,
+        batch: ReviewBatch,
+        reason: str,
+        idempotency_key: str,
+    ) -> ReviewBatch:
+        return RequestReviewChangesHandler(
+            self._uow(str(batch.project_id)),
+            self.profiles,
+            self.clock,
+        )(
+            RequestReviewChangesCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=batch.project_id,
+                batch_id=batch.id,
+                expected_batch_revision=batch.revision,
+                reason=reason,
+            )
+        )
+
+    def cancel_review_batch(
+        self,
+        *,
+        principal: Principal,
+        batch: ReviewBatch,
+        idempotency_key: str,
+    ) -> ReviewBatch:
+        return CancelReviewBatchHandler(
+            self._uow(str(batch.project_id)),
+            self.profiles,
+            self.clock,
+        )(
+            CancelReviewBatchCommand(
+                context=CommandContext(
+                    actor=principal,
+                    idempotency_key=idempotency_key,
+                ),
+                project_id=batch.project_id,
+                batch_id=batch.id,
+                expected_batch_revision=batch.revision,
+            )
+        )
+
+    def review_candidate_version_ids(
+        self,
+        batch: ReviewBatch,
+    ) -> tuple[ArtifactVersionId, ...]:
+        latest_by_series: dict[str, ArtifactVersionId] = {}
+        projection = self._projection(batch.project_id)
+        for event in self.history(batch.project_id):
+            if (
+                event.event_type != "ReviewReturnCommitted"
+                or str(event.payload.get("review_batch_id", "")) != str(batch.id)
+            ):
+                continue
+            for value in event.payload.get("candidate_version_ids", ()):
+                identifier = ArtifactVersionId(str(value))
+                version = projection.get_artifact_version(identifier)
+                if version is not None:
+                    latest_by_series[str(version.series_id)] = identifier
+        return tuple(latest_by_series[key] for key in sorted(latest_by_series))
+
     def scan_integrity(self) -> IntegrityScanResult:
         event_count = 0
         blob_count = 0
@@ -1949,22 +3450,58 @@ class EmbeddedProjectService:
         return IntegrityScanResult(len(projects), event_count, blob_count, tuple(errors))
 
     def export_backup(
-        self, project_id: ProjectId | str, destination: Path | str
+        self,
+        project_id: ProjectId | str,
+        destination: Path | str,
+        *,
+        principal: Principal | None = None,
     ) -> KrakenMigrationBundleV1:
         project = self.get_project(project_id)
         if project is None:
             raise ValueError("Project was not found")
+        if principal is not None:
+            AuthorizationPolicy().require(
+                principal=principal,
+                storage=self.profile,
+                permission=Permission.MIGRATE_PROJECT,
+                roles=self.project_roles(project.id, principal.id),
+            )
         events = FilesystemEventStore(self.catalog_root, str(project.id))
         blobs = FilesystemBlobStore.for_project(self.catalog_root, str(project.id))
         return CanonicalBundleExporter(
             events, blobs, source_profile=self.profile.id
         ).export(destination)
 
-    def import_backup(self, bundle_root: Path | str) -> Project:
+    def import_backup(
+        self,
+        bundle_root: Path | str,
+        *,
+        principal: Principal | None = None,
+        take_ownership: bool = False,
+    ) -> Project:
         root = Path(bundle_root).resolve(strict=True)
         report = BundleVerifier().verify(root)
         report.raise_for_errors()
         manifest = load_bundle_manifest(root)
+        available_owners = tuple(
+            candidate
+            for candidate in self.identities.list()
+            if ProjectRole.OWNER
+            in self.project_roles(manifest.project_id, candidate.id)
+        )
+        if principal is not None:
+            if available_owners:
+                AuthorizationPolicy().require(
+                    principal=principal,
+                    storage=self.profile,
+                    permission=Permission.MIGRATE_PROJECT,
+                    roles=self.project_roles(manifest.project_id, principal.id),
+                )
+            elif not take_ownership:
+                raise ValueError(
+                    "В локальном хранилище нет доступного владельца. "
+                    "Для восстановления явно подтвердите принятие владения."
+                )
         events = FilesystemEventStore(self.catalog_root, manifest.project_id)
         blobs = FilesystemBlobStore.for_project(self.catalog_root, manifest.project_id)
         CanonicalBundleImporter(events, blobs).import_bundle(root, verify_first=False)
@@ -1972,9 +3509,25 @@ class EmbeddedProjectService:
         project = self.get_project(manifest.project_id)
         if project is None:
             raise RuntimeError("Imported backup has no project projection")
+        if principal is not None and not available_owners:
+            self.identities.assign(
+                ProjectRoleAssignment.create(
+                    project_id=project.id,
+                    principal_id=principal.id,
+                    role=ProjectRole.OWNER,
+                    assigned_by=principal.id,
+                    assigned_at=self.clock.now(),
+                )
+            )
         return project
 
-    def attach_project(self, project_directory: Path | str) -> Project:
+    def attach_project(
+        self,
+        project_directory: Path | str,
+        *,
+        principal: Principal | None = None,
+        take_ownership: bool = False,
+    ) -> Project:
         source = Path(project_directory).resolve(strict=True)
         descriptor = json.loads((source / "project.json").read_text(encoding="utf-8"))
         project_id = str(descriptor["project_id"])
@@ -1984,6 +3537,34 @@ class EmbeddedProjectService:
         project = self.get_project(project_id)
         if project is None:
             raise ValueError("Project cannot be reconstructed from its authoritative event log")
+        if principal is not None:
+            available_owners = tuple(
+                candidate
+                for candidate in self.identities.list()
+                if ProjectRole.OWNER in self.project_roles(project.id, candidate.id)
+            )
+            if available_owners:
+                AuthorizationPolicy().require(
+                    principal=principal,
+                    storage=self.profile,
+                    permission=Permission.MIGRATE_PROJECT,
+                    roles=self.project_roles(project.id, principal.id),
+                )
+            elif not take_ownership:
+                raise ValueError(
+                    "В локальном хранилище нет доступного владельца. "
+                    "Для подключения явно подтвердите принятие владения."
+                )
+            else:
+                self.identities.assign(
+                    ProjectRoleAssignment.create(
+                        project_id=project.id,
+                        principal_id=principal.id,
+                        role=ProjectRole.OWNER,
+                        assigned_by=principal.id,
+                        assigned_at=self.clock.now(),
+                    )
+                )
         return project
 
 

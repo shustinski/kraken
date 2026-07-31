@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QGraphicsSceneMouseEvent,
     QGraphicsSimpleTextItem,
     QGraphicsView,
+    QHBoxLayout,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -79,6 +80,24 @@ class ObjectPropertiesSnapshot:
     object_kind: str
     properties: tuple[tuple[str, object], ...]
     history: tuple[ObjectHistoryEntry, ...] = ()
+    notes: tuple[Mapping[str, object], ...] = ()
+    files: tuple[Mapping[str, object], ...] = ()
+    versions: tuple[Mapping[str, object], ...] = ()
+    actions: tuple[tuple[str, Callable[[], None]], ...] = field(
+        default=(),
+        compare=False,
+        repr=False,
+    )
+    file_actions: tuple[
+        tuple[str, Callable[[Mapping[str, object]], None]], ...
+    ] = field(default=(), compare=False, repr=False)
+    version_actions: tuple[
+        tuple[str, Callable[[Mapping[str, object]], None]], ...
+    ] = field(default=(), compare=False, repr=False)
+    temporal_loader: Callable[
+        [ObjectHistoryEntry],
+        ObjectPropertiesSnapshot | None,
+    ] | None = field(default=None, compare=False, repr=False)
 
 
 def _display_value(value: object) -> str:
@@ -105,6 +124,420 @@ def _local_timestamp(value: str) -> str:
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone()
     return parsed.strftime("%d.%m.%Y %H:%M:%S")
+
+
+_EVENT_TYPE_LABELS: dict[str, str] = {
+    "ProjectCreated": "Создан проект",
+    "ProjectRenamed": "Переименован проект",
+    "ProjectArchived": "Проект архивирован",
+    "ProjectRestored": "Проект восстановлен",
+    "ProjectRoleAssigned": "Назначена роль",
+    "ProjectRoleRevoked": "Отозвана роль",
+    "LayerCreated": "Создан слой",
+    "LayerRenamed": "Переименован слой",
+    "LayerReordered": "Изменён порядок слоя",
+    "LayersReordered": "Изменён порядок слоёв",
+    "LayerArchived": "Слой архивирован",
+    "RepresentationCreated": "Создана репрезентация",
+    "RepresentationRenamed": "Переименована репрезентация",
+    "RepresentationNoteUpdated": "Обновлено примечание репрезентации",
+    "RepresentationActivated": "Репрезентация активирована",
+    "RepresentationDeactivated": "Репрезентация деактивирована",
+    "RepresentationArchived": "Репрезентация архивирована",
+    "ArtifactSeriesCreated": "Создана серия артефактов",
+    "ArtifactSeriesRenamed": "Переименована серия артефактов",
+    "ArtifactSeriesArchived": "Серия артефактов архивирована",
+    "ArtifactVersionCreated": "Создана версия артефакта",
+    "ArtifactVersionActivated": "Активирована версия артефакта",
+    "ExternalArtifactVersionAdded": "Добавлена внешняя версия артефакта",
+    "NoteCreated": "Добавлена заметка",
+    "NoteRevised": "Изменена заметка",
+    "ReviewBatchCreated": "Создано задание на проверку",
+    "ReviewBatchIssued": "Задание выдано",
+    "ReviewBatchReexported": "Пакет выдан повторно",
+    "ReviewReturnCommitted": "Результат проверки загружен",
+    "ReviewBatchAccepted": "Результат проверки принят",
+    "ReviewChangesRequested": "Запрошена доработка",
+    "ReviewBatchCancelled": "Проверка отменена",
+    "PluginJobCreated": "Создано задание плагина",
+    "PluginResultAwaitingAuthorization": "Результат плагина ожидает подтверждения",
+    "PluginPartialResultReceived": "Получен частичный результат плагина",
+    "PluginResultImported": "Результат плагина импортирован",
+    "PluginJobFailed": "Задание плагина завершилось ошибкой",
+    "PluginJobCancelled": "Задание плагина отменено",
+    "PluginJobRetried": "Задание плагина запущено повторно",
+    "PluginJobSynchronized": "Состояние задания плагина синхронизировано",
+    "LayerPipelineActionRequested": "Запущено действие конвейера",
+    "LayerPipelineActionRemoved": "Удалено действие конвейера",
+    "KarakalAnalysisPublished": "Опубликован анализ Karakal",
+}
+
+_FIELD_LABELS: dict[str, str] = {
+    "name": "Название",
+    "width": "Ширина",
+    "height": "Высота",
+    "orientation": "Ориентация",
+    "storage_profile": "Профиль хранения",
+    "state": "Состояние",
+    "type": "Тип",
+    "kind": "Вид",
+    "purpose": "Назначение",
+    "note": "Примечание",
+    "source": "Источник",
+    "active": "Активна",
+    "order": "Порядок",
+    "role": "Роль",
+    "instructions": "Инструкции",
+    "reason": "Причина",
+    "filename": "Файл",
+    "media_type": "Тип файла",
+    "size_bytes": "Размер",
+    "sha256": "SHA-256",
+    "capability": "Capability",
+    "progress": "Прогресс",
+    "error": "Ошибка",
+    "plugin_id": "Плагин",
+    "plugin_version": "Версия плагина",
+    "action": "Действие",
+    "mode": "Режим",
+    "agent_state": "Состояние агента",
+    "scope": "Область",
+    "body": "Текст",
+    "revision": "Ревизия",
+    "batch_revision": "Ревизия задания",
+    "file_count": "Файлов",
+    "total_size_bytes": "Общий размер",
+    "publication_sequence": "Номер публикации",
+    "partial": "Частичный результат",
+    "due_at": "Срок",
+    "created_at": "Создано",
+    "updated_at": "Обновлено",
+    "finished_at": "Завершено",
+    "recorded_at": "Записано",
+}
+
+_STATE_LABELS: dict[str, str] = {
+    "active": "активен",
+    "archived": "архивирован",
+    "draft": "черновик",
+    "issued": "выдано",
+    "awaiting_acceptance": "ожидает приёмки",
+    "changes_requested": "запрошена доработка",
+    "completed": "завершено",
+    "cancelled": "отменено",
+    "queued": "в очереди",
+    "running": "выполняется",
+    "succeeded": "успешно",
+    "failed": "ошибка",
+    "cancelled_by_user": "отменено пользователем",
+    "launched": "запущено",
+}
+
+_ROLE_LABELS: dict[str, str] = {
+    "owner": "владелец",
+    "editor": "редактор",
+    "viewer": "наблюдатель",
+    "reviewer": "проверяющий",
+}
+
+_ID_FIELD_SUFFIXES = (
+    "_id",
+    "_ids",
+    "principal_id",
+    "performer_id",
+    "assignee_id",
+    "created_by",
+    "assigned_by",
+    "author_principal_id",
+    "actor_principal_id",
+    "target_representation_id",
+    "source_image_representation_id",
+    "plugin_job_id",
+    "review_batch_id",
+    "artifact_series_id",
+    "artifact_version_id",
+    "candidate_version_ids",
+    "deactivated_representation_ids",
+    "action_event_id",
+    "package_id",
+    "run_id",
+    "node_id",
+    "frame_id",
+    "series_id",
+    "layer_id",
+    "project_id",
+    "representation_id",
+    "note_id",
+    "manifest_fingerprint",
+    "request_fingerprint",
+    "return_fingerprint",
+)
+
+
+def _event_type_label(event_type: str) -> str:
+    label = _EVENT_TYPE_LABELS.get(event_type)
+    if label:
+        return label
+    spaced = "".join(f" {char}" if char.isupper() else char for char in event_type).strip()
+    return spaced or event_type or "—"
+
+
+def _is_uuid_like(value: object) -> bool:
+    text = str(value or "").strip()
+    if len(text) != 36:
+        return False
+    parts = text.split("-")
+    return len(parts) == 5 and all(
+        part and all(character in "0123456789abcdefABCDEF" for character in part)
+        for part in parts
+    )
+
+
+def _format_bytes(value: object) -> str | None:
+    try:
+        size = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if size < 0:
+        return None
+    units = ("Б", "КБ", "МБ", "ГБ", "ТБ")
+    amount = float(size)
+    unit = units[0]
+    for candidate in units:
+        unit = candidate
+        if amount < 1024 or candidate == units[-1]:
+            break
+        amount /= 1024
+    if unit == "Б":
+        return f"{size} {unit}"
+    return f"{amount:.1f} {unit}"
+
+
+def _format_scalar(key: str, value: object) -> str:
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, bool):
+        return "Да" if value else "Нет"
+    if key.endswith("_at") or key in {"due_at", "created_at", "updated_at", "finished_at", "recorded_at"}:
+        return _local_timestamp(str(value))
+    if key in {"size_bytes", "total_size_bytes"}:
+        formatted = _format_bytes(value)
+        if formatted is not None:
+            return formatted
+    if key == "progress":
+        try:
+            return f"{float(value) * 100:.0f}%"
+        except (TypeError, ValueError):
+            pass
+    if key == "role":
+        return _ROLE_LABELS.get(str(value), str(value))
+    if key == "state" or key.endswith("_state"):
+        return _STATE_LABELS.get(str(value), str(value))
+    if key in {"width", "height", "order", "revision", "batch_revision", "file_count", "publication_sequence"}:
+        return str(value)
+    if key == "sha256":
+        text = str(value)
+        return text if len(text) <= 16 else f"{text[:12]}…"
+    return str(value)
+
+
+def _field_label(key: str) -> str:
+    return _FIELD_LABELS.get(key, key.replace("_", " "))
+
+
+def _should_skip_key(key: str) -> bool:
+    if key in _ID_FIELD_SUFFIXES:
+        return True
+    if key.endswith("_id") or key.endswith("_ids"):
+        return True
+    if key.endswith("_fingerprint"):
+        return True
+    return key in {
+        "blob",
+        "external",
+        "comparisons",
+        "frame_confidence",
+        "report",
+        "parameters",
+        "manifest",
+        "result",
+        "items",
+        "selection",
+        "deactivated",
+    }
+
+
+def _append_lines(lines: list[str], key: str, value: object) -> None:
+    if isinstance(value, (Mapping, list, tuple, set)):
+        return
+    text = _format_scalar(key, value)
+    if text and text != "—":
+        lines.append(f"{_field_label(key)}: {text}")
+
+
+def _append_mapping_fields(lines: list[str], payload: Mapping[str, object], keys: tuple[str, ...]) -> None:
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        if isinstance(value, Mapping):
+            continue
+        if _is_uuid_like(value):
+            continue
+        _append_lines(lines, key, value)
+
+
+def _selection_summary(selection: object) -> str | None:
+    if not isinstance(selection, Mapping):
+        return None
+    mode = str(selection.get("mode") or selection.get("kind") or "").strip()
+    frames = selection.get("frames") or selection.get("frame_ids") or selection.get("items")
+    count: int | None = None
+    if isinstance(frames, (list, tuple, set)):
+        count = len(frames)
+    elif "count" in selection:
+        try:
+            count = int(selection["count"])  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            count = None
+    parts: list[str] = []
+    if mode:
+        parts.append(mode)
+    if count is not None:
+        parts.append(f"{count} кадр(ов)")
+    return ", ".join(parts) if parts else None
+
+
+def _format_history_payload(event_type: str, payload: object) -> str:
+    if not isinstance(payload, Mapping) or not payload:
+        return "—"
+
+    lines: list[str] = []
+    data = dict(payload)
+
+    nested_keys = (
+        ("project", ("name", "width", "height", "orientation", "storage_profile", "state")),
+        ("layer", ("name", "type", "order", "state")),
+        ("representation", ("name", "kind", "purpose", "note", "source", "active", "state")),
+        ("job", ("capability", "state", "progress", "error")),
+    )
+    for nested_key, fields in nested_keys:
+        nested = data.get(nested_key)
+        if isinstance(nested, Mapping):
+            _append_mapping_fields(lines, nested, fields)
+            selection = _selection_summary(nested.get("selection"))
+            if selection:
+                lines.append(f"Выборка: {selection}")
+
+    _append_mapping_fields(
+        lines,
+        data,
+        (
+            "name",
+            "width",
+            "height",
+            "orientation",
+            "storage_profile",
+            "state",
+            "type",
+            "kind",
+            "purpose",
+            "note",
+            "source",
+            "active",
+            "order",
+            "role",
+            "instructions",
+            "reason",
+            "filename",
+            "media_type",
+            "size_bytes",
+            "sha256",
+            "capability",
+            "progress",
+            "error",
+            "plugin_id",
+            "plugin_version",
+            "action",
+            "mode",
+            "agent_state",
+            "scope",
+            "body",
+            "revision",
+            "batch_revision",
+            "file_count",
+            "total_size_bytes",
+            "publication_sequence",
+            "partial",
+            "due_at",
+            "created_at",
+            "updated_at",
+            "finished_at",
+        ),
+    )
+
+    selection = _selection_summary(data.get("selection"))
+    if selection:
+        lines.append(f"Выборка: {selection}")
+
+    items = data.get("items")
+    if isinstance(items, (list, tuple)):
+        lines.append(f"Элементов: {len(items)}")
+
+    deactivated = data.get("deactivated") or data.get("deactivated_representation_ids")
+    if isinstance(deactivated, (list, tuple)) and deactivated:
+        names = [
+            str(item.get("name"))
+            for item in deactivated
+            if isinstance(item, Mapping) and item.get("name")
+        ]
+        if names:
+            lines.append(f"Деактивированы: {', '.join(names)}")
+        else:
+            lines.append(f"Деактивировано: {len(deactivated)}")
+
+    candidates = data.get("candidate_version_ids")
+    if isinstance(candidates, (list, tuple)) and candidates:
+        lines.append(f"Кандидатов версий: {len(candidates)}")
+
+    artifact_ids = data.get("artifact_version_ids")
+    if isinstance(artifact_ids, (list, tuple)) and artifact_ids:
+        lines.append(f"Версий артефактов: {len(artifact_ids)}")
+
+    parameters = data.get("parameters")
+    if isinstance(parameters, Mapping) and parameters:
+        preview = ", ".join(
+            f"{key}={value}"
+            for key, value in list(parameters.items())[:4]
+            if not isinstance(value, (Mapping, list, tuple, set))
+        )
+        if preview:
+            lines.append(f"Параметры: {preview}")
+
+    if not lines:
+        for key, value in data.items():
+            if _should_skip_key(key) or isinstance(value, (Mapping, list, tuple, set)):
+                continue
+            if _is_uuid_like(value):
+                continue
+            _append_lines(lines, key, value)
+            if len(lines) >= 6:
+                break
+
+    if not lines:
+        return "Подробности недоступны"
+
+    # Deduplicate while preserving order.
+    unique: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        if line in seen:
+            continue
+        seen.add(line)
+        unique.append(line)
+    return "\n".join(unique)
 
 
 class ObjectPropertiesDialog(QDialog):
@@ -135,7 +568,9 @@ class ObjectPropertiesDialog(QDialog):
         self.properties_table.resizeRowsToContents()
         tabs.addTab(self.properties_table, "Свойства")
 
-        self.history_table = self._table(("Дата и время", "Пользователь", "Событие", "Данные"))
+        self.history_table = self._table(
+            ("Дата и время", "Пользователь", "Событие", "Подробности")
+        )
         self.history_table.setObjectName("objectHistoryTable")
         self.history_table.setRowCount(len(snapshot.history))
         for row, entry in enumerate(snapshot.history):
@@ -143,12 +578,82 @@ class ObjectPropertiesDialog(QDialog):
             timestamp.setToolTip(entry.recorded_at)
             self.history_table.setItem(row, 0, timestamp)
             self.history_table.setItem(row, 1, QTableWidgetItem(entry.actor or "—"))
-            self.history_table.setItem(row, 2, QTableWidgetItem(entry.event_type))
-            payload = QTableWidgetItem(_display_value(entry.payload))
-            payload.setToolTip(payload.text())
-            self.history_table.setItem(row, 3, payload)
+            event_item = QTableWidgetItem(_event_type_label(entry.event_type))
+            event_item.setToolTip(entry.event_type)
+            self.history_table.setItem(row, 2, event_item)
+            summary = _format_history_payload(entry.event_type, entry.payload)
+            details = QTableWidgetItem(summary)
+            details.setToolTip(_display_value(entry.payload))
+            self.history_table.setItem(row, 3, details)
         self.history_table.resizeRowsToContents()
+        if snapshot.temporal_loader is not None:
+            self.history_table.setToolTip(
+                "Дважды щёлкните событие, чтобы открыть состояние объекта на этот момент"
+            )
+            self.history_table.cellDoubleClicked.connect(
+                self._open_temporal_state
+            )
         tabs.addTab(self.history_table, f"История изменений ({len(snapshot.history)})")
+        self.notes_table = self._mapping_table(
+            snapshot.notes,
+            (
+                ("revision", "Ревизия"),
+                ("body", "Текст"),
+                ("author", "Автор"),
+                ("recorded_at", "Дата и время"),
+            ),
+        )
+        self.notes_table.setObjectName("objectNotesTable")
+        tabs.addTab(
+            self._action_tab(
+                self.notes_table,
+                snapshot.notes,
+                (),
+                general_actions=snapshot.actions,
+            ),
+            f"Заметки ({len(snapshot.notes)})",
+        )
+        self.files_table = self._mapping_table(
+            snapshot.files,
+            (
+                ("name", "Название"),
+                ("scope", "Тип"),
+                ("active_version", "Активная версия"),
+                ("archived", "Архив"),
+            ),
+        )
+        self.files_table.setObjectName("objectFilesTable")
+        tabs.addTab(
+            self._action_tab(
+                self.files_table,
+                snapshot.files,
+                snapshot.file_actions,
+            ),
+            f"Файлы ({len(snapshot.files)})",
+        )
+        self.versions_table = self._mapping_table(
+            snapshot.versions,
+            (
+                ("filename", "Имя"),
+                ("size", "Размер"),
+                ("sha256", "SHA-256"),
+                ("author", "Автор"),
+                ("created_at", "Дата"),
+                ("parent", "Родитель"),
+                ("tool", "Инструмент"),
+                ("provenance", "Provenance"),
+                ("active", "Активная"),
+            ),
+        )
+        self.versions_table.setObjectName("objectVersionsTable")
+        tabs.addTab(
+            self._action_tab(
+                self.versions_table,
+                snapshot.versions,
+                snapshot.version_actions,
+            ),
+            f"Версии ({len(snapshot.versions)})",
+        )
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть")
@@ -157,6 +662,15 @@ class ObjectPropertiesDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(tabs, 1)
         layout.addWidget(buttons)
+
+    def _open_temporal_state(self, row: int, _column: int) -> None:
+        loader = self.snapshot.temporal_loader
+        if loader is None or not 0 <= row < len(self.snapshot.history):
+            return
+        historical = loader(self.snapshot.history[row])
+        if historical is None:
+            return
+        ObjectPropertiesDialog(historical, self).exec()
 
     def _table(self, headers: tuple[str, ...]) -> QTableWidget:
         table = QTableWidget(0, len(headers), self)
@@ -169,6 +683,64 @@ class ObjectPropertiesDialog(QDialog):
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(len(headers) - 1, QHeaderView.ResizeMode.Stretch)
         return table
+
+    def _mapping_table(
+        self,
+        rows: tuple[Mapping[str, object], ...],
+        columns: tuple[tuple[str, str], ...],
+    ) -> QTableWidget:
+        table = self._table(tuple(label for _key, label in columns))
+        table.setRowCount(len(rows))
+        for row, values in enumerate(rows):
+            for column, (key, _label) in enumerate(columns):
+                value = values.get(key)
+                if key in {"recorded_at", "created_at"} and value:
+                    text = _local_timestamp(str(value))
+                else:
+                    text = _display_value(value)
+                item = QTableWidgetItem(text)
+                item.setToolTip(text)
+                table.setItem(row, column, item)
+        table.resizeRowsToContents()
+        return table
+
+    def _action_tab(
+        self,
+        table: QTableWidget,
+        rows: tuple[Mapping[str, object], ...],
+        row_actions: tuple[
+            tuple[str, Callable[[Mapping[str, object]], None]], ...
+        ],
+        *,
+        general_actions: tuple[tuple[str, Callable[[], None]], ...] = (),
+    ) -> QWidget:
+        host = QWidget(self)
+        layout = QVBoxLayout(host)
+        action_layout = QHBoxLayout()
+        for label, callback in general_actions:
+            button = QPushButton(label, host)
+            button.clicked.connect(lambda _checked=False, action=callback: action())
+            action_layout.addWidget(button)
+        for label, callback in row_actions:
+            button = QPushButton(label, host)
+
+            def invoke(
+                _checked: bool = False,
+                *,
+                action=callback,
+                source=table,
+                values=rows,
+            ) -> None:
+                row = source.currentRow()
+                if 0 <= row < len(values):
+                    action(values[row])
+
+            button.clicked.connect(invoke)
+            action_layout.addWidget(button)
+        action_layout.addStretch(1)
+        layout.addLayout(action_layout)
+        layout.addWidget(table, 1)
+        return host
 
 
 class LayerOrderList(QListWidget):
@@ -232,17 +804,23 @@ class LayerOrderList(QListWidget):
         add_images = menu.addAction("Добавить слой изображений…")
         karakal = menu.addAction("Отправить слой в Karakal")
         menu.addSeparator()
+        rename_layer = menu.addAction("Переименовать…")
+        archive_layer = menu.addAction("Архивировать")
         delete_layer = menu.addAction("Удалить слой…")
         menu.addSeparator()
         properties = menu.addAction("Свойства")
         by_action = {
             add_images: "add_image_representation",
             karakal: "karakal",
+            rename_layer: "rename_layer",
+            archive_layer: "archive_layer",
             delete_layer: "delete_layer",
         }
         for menu_action, code in by_action.items():
             enabled, reason = self._action_availability(code)
             menu_action.setEnabled(enabled)
+            if not enabled and reason.startswith("Недостаточно прав"):
+                menu_action.setVisible(False)
             if reason:
                 menu_action.setToolTip(reason)
                 menu_action.setStatusTip(reason)
@@ -347,6 +925,10 @@ class PipelineNodeItem(QGraphicsRectItem):
                 ("Подготовить выборку в Contour", "prepare_dataset"),
                 ("Распознать готовой моделью", "recognize_external"),
                 ("Получить CIF в Contour", "vectorize"),
+                (
+                    "Удалить слой изображений из проекта",
+                    "archive_representation",
+                ),
             ),
             "dataset": (("Обучить модель в NeuralImage", "train"),),
             "model": (("Распознать исходники", "recognize"),),
@@ -354,10 +936,19 @@ class PipelineNodeItem(QGraphicsRectItem):
             "vector": (("Добавить CIF из внешнего источника…", "add_external_vector"),),
             "missing": (("Добавить CIF из внешнего источника…", "add_external_vector"),),
         }.get(self.node.kind, ())
-        if self.node.kind == "source":
-            actions = (*actions, ("Удалить слой изображений из проекта", "archive_representation"))
         if bool(self.node.details.get("deletable", False)):
             actions = (*actions, ("Удалить шаг из pipeline", "delete_pipeline_step"))
+        if self.node.representation_id:
+            lifecycle = (
+                ("Переименовать…", "rename_representation"),
+                ("Изменить заметку…", "edit_representation_note"),
+                (
+                    "Деактивировать" if self.node.active else "Активировать",
+                    "deactivate_representation" if self.node.active else "activate_representation",
+                ),
+                ("Архивировать", "archive_representation"),
+            )
+            actions = (*actions, *lifecycle)
         if self._collapse is not None:
             actions = (*actions, ("Свернуть", "collapse_pipeline"))
         menu = QMenu()
@@ -370,6 +961,8 @@ class PipelineNodeItem(QGraphicsRectItem):
                 else self._action_availability(code)
             )
             menu_action.setEnabled(enabled)
+            if not enabled and reason.startswith("Недостаточно прав"):
+                menu_action.setVisible(False)
             if reason:
                 menu_action.setToolTip(reason)
                 menu_action.setStatusTip(reason)

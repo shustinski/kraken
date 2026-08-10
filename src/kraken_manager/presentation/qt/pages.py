@@ -225,7 +225,7 @@ class ProjectWorkspacePage(_TitledPage):
         self.zoom_fit_button.setObjectName("matrixZoomFitButton")
         self.zoom_reset_button = QPushButton("1:1")
         self.zoom_reset_button.setObjectName("matrixZoomResetButton")
-        self.matrix_lod_label = QLabel("LOD: cells")
+        self.matrix_lod_label = QLabel("LOD: ячейки")
         self.matrix_lod_label.setObjectName("matrixLodLabel")
         self.minimap_checkbox = QCheckBox("Мини-карта")
         self.minimap_checkbox.setObjectName("matrixMinimapCheck")
@@ -325,7 +325,16 @@ class ProjectWorkspacePage(_TitledPage):
         )
         self.zoom_fit_button.clicked.connect(self.matrix_view.zoom_to_fit)
         self.zoom_reset_button.clicked.connect(self.matrix_view.reset_zoom)
-        self.matrix_view.lodChanged.connect(lambda lod: self.matrix_lod_label.setText(f"LOD: {lod}"))
+        lod_labels = {
+            "overview": "обзор",
+            "cells": "ячейки",
+            "details": "детали",
+        }
+        self.matrix_view.lodChanged.connect(
+            lambda lod: self.matrix_lod_label.setText(
+                f"LOD: {lod_labels.get(lod, lod)}"
+            )
+        )
         self.minimap_checkbox.toggled.connect(self.matrix_minimap.setVisible)
         if isinstance(self.matrix_view, FrameMatrixWidget):
             self.clear_thumbnail_cache_button.clicked.connect(self.matrix_view.clear_thumbnail_cache)

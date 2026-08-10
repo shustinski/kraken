@@ -35,8 +35,8 @@ from kraken_core.plugin_protocol import (
 from kraken_core.qt import configure_application_identity
 from kraken_core.styles import load_shared_stylesheet
 from kraken_manager.domain.project import GridOrientation as DomainOrientation
-from kraken_manager.domain.project import RepresentationKind, RepresentationPurpose
-from kraken_manager.domain.artifacts import ArtifactScope
+from kraken_manager.domain.project import LayerType, RepresentationKind, RepresentationPurpose
+from kraken_manager.domain.artifacts import ArtifactScope, ArtifactSeries, ArtifactVersion
 from kraken_manager.domain.identity import Permission, Performer, ProjectRole
 from kraken_manager.application.imports import ImportMappingMode
 from kraken_manager.workspace import DerivedRunKind
@@ -895,7 +895,16 @@ class DesktopController:
         if project is None:
             self._error("Проект больше не доступен.")
             return
-        principals = self.service.list_principals()
+        project_principals = getattr(
+            self.service,
+            "list_project_principals",
+            None,
+        )
+        principals = (
+            project_principals(project.id)
+            if callable(project_principals)
+            else self.service.list_principals()
+        )
         roles = (
             ProjectRole.OWNER,
             ProjectRole.MANAGER,
@@ -1426,6 +1435,9 @@ class DesktopController:
             lambda identifier: self._activate_representation(workspace, project.id, identifier)
         )
         workspace.reviewRequested.connect(self.send_selection_for_review)
+        workspace.matrix_view.contextMenuRequested.connect(
+            self._show_matrix_context_menu
+        )
         permissions = self.service.project_permissions(
             project.id,
             self.session.principal if not is_remote else getattr(
@@ -1722,6 +1734,275 @@ class DesktopController:
             return
         self._load_representations(workspace, project_id, layer_id)
 
+    def _active_frame_files(
+        self,
+        x: int,
+        y: int,
+    ) -> tuple[tuple[str, ArtifactSeries, ArtifactVersion], ...]:
+        workspace = self._workspace
+        project_id = str(self._project_id or "")
+        layer_id = str(
+            getattr(workspace, "_selected_layer_id", "") if workspace else ""
+        )
+        project = self.service.get_project(project_id) if project_id else None
+        if workspace is None or project is None or not layer_id:
+            return ()
+        frame_id = str(project.frame_id_at(int(x), int(y)))
+        representation_ids = tuple(
+            identifier
+            for identifier in (
+                str(workspace.image_representation_combo.currentData() or ""),
+                str(workspace.vector_representation_combo.currentData() or ""),
+            )
+            if identifier
+        )
+        representations = {
+            str(representation.id): representation.name
+            for representation in self.service.list_representations(
+                project.id,
+                layer_id,
+            )
+            if str(representation.id) in representation_ids
+        }
+        files: list[tuple[str, ArtifactSeries, ArtifactVersion]] = []
+        for representation_id in representation_ids:
+            series = next(
+                (
+                    candidate
+                    for candidate in self.service.list_artifact_series(
+                        project.id,
+                        layer_id=layer_id,
+                        representation_id=representation_id,
+                    )
+                    if str(candidate.frame_id or "") == frame_id
+                    and not candidate.archived
+                ),
+                None,
+            )
+            if series is None:
+                continue
+            version = self.service.active_artifact_version(project.id, series.id)
+            if version is not None:
+                files.append(
+                    (
+                        representations.get(representation_id, series.name),
+                        series,
+                        version,
+                    )
+                )
+        return tuple(files)
+
+    def _show_frame_file_properties(
+        self,
+        label: str,
+        series: ArtifactSeries,
+        active: ArtifactVersion,
+    ) -> None:
+        project_id = series.project_id
+        principals = {
+            str(principal.id): principal.display_name
+            for principal in self.service.list_principals(include_inactive=True)
+        }
+        versions = self.service.artifact_versions(project_id, series.id)
+        history = tuple(
+            event
+            for event in self.service.history(project_id)
+            if str(series.id) in str(_event_payload(event))
+        )
+
+        def export_version(row: Mapping[str, object]) -> None:
+            from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+            version = row.get("_version")
+            if not isinstance(version, ArtifactVersion):
+                return
+            destination, _selected_filter = QFileDialog.getSaveFileName(
+                self.shell,
+                "Выгрузить файл",
+                version.filename,
+            )
+            if not destination:
+                return
+            try:
+                self.service.export_artifact_version(
+                    project_id,
+                    version,
+                    destination,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось выгрузить файл",
+                    str(exc),
+                )
+
+        version_rows = tuple(
+            {
+                "_version": version,
+                "filename": version.filename,
+                "size": f"{version.size_bytes:,}".replace(",", " ") + " байт",
+                "sha256": version.sha256,
+                "author": principals.get(
+                    str(version.author_principal_id),
+                    str(version.author_principal_id),
+                ),
+                "created_at": version.created_at.isoformat(),
+                "parent": (
+                    "—"
+                    if version.parent_version_id is None
+                    else str(version.parent_version_id)
+                ),
+                "tool": " ".join(
+                    value
+                    for value in (version.tool_name, version.tool_version)
+                    if value
+                )
+                or "—",
+                "provenance": dict(version.parameters),
+                "active": version.id == active.id,
+            }
+            for version in versions
+        )
+        self._open_properties(
+            ObjectPropertiesSnapshot(
+                title=f"{label}: {active.filename}",
+                object_kind="artifact-version",
+                properties=(
+                    ("Логическое название", series.name),
+                    ("Идентификатор серии", str(series.id)),
+                    ("Область", series.scope.value),
+                    ("Имя файла", active.filename),
+                    ("MIME-тип", active.media_type),
+                    ("Размер", active.size_bytes),
+                    ("SHA-256", active.sha256),
+                    (
+                        "Хранение",
+                        "В базе" if active.blob is not None else "Внешняя ссылка",
+                    ),
+                    (
+                        "Внешний путь",
+                        None if active.external is None else active.external.uri,
+                    ),
+                    ("Автор", principals.get(str(active.author_principal_id))),
+                    ("Создан", active.created_at.isoformat()),
+                    (
+                        "Родительская версия",
+                        None
+                        if active.parent_version_id is None
+                        else str(active.parent_version_id),
+                    ),
+                    ("Инструмент", active.tool_name),
+                    ("Версия инструмента", active.tool_version),
+                    ("Provenance", dict(active.parameters)),
+                ),
+                history=_history_entries(history),
+                versions=version_rows,
+                version_actions=(("Выгрузить", export_version),),
+            )
+        )
+
+    def _export_selected_frame_files(self, context) -> None:
+        from datetime import UTC, datetime
+
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+        parent = QFileDialog.getExistingDirectory(
+            self.shell,
+            "Каталог для выгрузки файлов",
+        )
+        if not parent:
+            return
+        coordinates = tuple(context.selection.coordinates(maximum=10_000))
+        destination = Path(parent) / (
+            "Кадры_"
+            + datetime.now(UTC).astimezone().strftime("%Y%m%d-%H%M%S-")
+            + uuid4().hex[:6]
+        )
+        exported = 0
+        try:
+            destination.mkdir(parents=False, exist_ok=False)
+            for x, y in coordinates:
+                files = self._active_frame_files(x, y)
+                if not files:
+                    continue
+                frame_directory = destination / f"{x}_{y}"
+                frame_directory.mkdir(exist_ok=False)
+                used_names: set[str] = set()
+                for label, _series, version in files:
+                    filename = version.filename
+                    if filename.casefold() in used_names:
+                        prefix = "".join(
+                            character
+                            if character.isalnum() or character in "-_"
+                            else "_"
+                            for character in label
+                        ).strip("_") or "file"
+                        filename = f"{prefix}_{filename}"
+                    used_names.add(filename.casefold())
+                    self.service.export_artifact_version(
+                        self._project_id,
+                        version,
+                        frame_directory / filename,
+                    )
+                    exported += 1
+            if exported == 0:
+                destination.rmdir()
+                QMessageBox.information(
+                    self.shell,
+                    "Нет файлов",
+                    "У выбранных кадров нет активных файлов для выгрузки.",
+                )
+                return
+        except (OSError, RuntimeError, ValueError) as exc:
+            QMessageBox.warning(
+                self.shell,
+                "Не удалось выгрузить файлы",
+                str(exc),
+            )
+            return
+        QMessageBox.information(
+            self.shell,
+            "Файлы выгружены",
+            f"Файлов: {exported}\nКаталог: {destination}",
+        )
+
+    def _show_matrix_context_menu(self, context, global_position) -> None:
+        from PyQt6.QtWidgets import QMenu
+
+        menu = QMenu(self.shell)
+        selected_count = len(tuple(context.selection.coordinates(maximum=10_000)))
+        export_action = menu.addAction(
+            "Выгрузить файлы кадра…"
+            if selected_count == 1
+            else f"Выгрузить файлы выбранных кадров ({selected_count})…"
+        )
+        properties_menu = menu.addMenu("Свойства файла")
+        files = self._active_frame_files(context.x, context.y)
+        if files:
+            file_actions = {}
+            for label, series, version in files:
+                action = properties_menu.addAction(
+                    f"{label}: {version.filename}"
+                )
+                file_actions[action] = (label, series, version)
+        else:
+            unavailable = properties_menu.addAction("Нет активных файлов")
+            unavailable.setEnabled(False)
+            file_actions = {}
+        frame_properties = menu.addAction("Свойства кадра…")
+        selected = menu.exec(global_position)
+        if selected is export_action:
+            self._export_selected_frame_files(context)
+        elif selected is frame_properties:
+            workspace = self._workspace
+            if workspace is not None:
+                workspace.matrix_view.set_selection(
+                    type(context.selection).single(context.x, context.y)
+                )
+            self.show_selected_frame()
+        elif selected in file_actions:
+            self._show_frame_file_properties(*file_actions[selected])
+
     def show_selected_frame(self) -> None:
         workspace = self._workspace
         project_id = str(self._project_id or "")
@@ -1736,6 +2017,10 @@ class DesktopController:
         payload = cell.payload if isinstance(cell.payload, Mapping) else {}
         frame_id = str(payload.get("frame_id") or payload.get("key") or "")
         project = self.service.get_project(project_id)
+        permissions = self.service.project_permissions(
+            project_id,
+            self.session.principal,
+        )
         layer_id = str(getattr(workspace, "_selected_layer_id", ""))
         layer = next(
             (item for item in self.service.list_layers(project_id) if str(item.id) == layer_id),
@@ -2123,25 +2408,39 @@ class DesktopController:
                 files=tuple(files),
                 versions=tuple(versions),
                 actions=(
-                    ("Добавить заметку", add_note),
-                    ("Изменить последнюю заметку", revise_latest_note),
+                    (
+                        ("Добавить заметку", add_note),
+                        ("Изменить последнюю заметку", revise_latest_note),
+                    )
+                    if Permission.ADD_NOTE in permissions
+                    else ()
                 ),
                 file_actions=(
                     (
-                        "Добавить версию в базу",
-                        lambda row: add_version(row, external=False),
-                    ),
-                    (
-                        "Добавить внешнюю версию",
-                        lambda row: add_version(row, external=True),
-                    ),
-                    ("Переименовать", rename_series),
-                    ("Архивировать", archive_series),
+                        (
+                            "Добавить версию в базу",
+                            lambda row: add_version(row, external=False),
+                        ),
+                        (
+                            "Добавить внешнюю версию",
+                            lambda row: add_version(row, external=True),
+                        ),
+                        ("Переименовать", rename_series),
+                        ("Архивировать", archive_series),
+                    )
+                    if Permission.IMPORT_ARTIFACT in permissions
+                    else ()
                 ),
                 version_actions=(
-                    ("Активировать", activate_version),
-                    ("Экспортировать / открыть", export_or_open_version),
-                    ("Проверить внешний файл", check_external),
+                    (
+                        (("Активировать", activate_version),)
+                        if Permission.IMPORT_ARTIFACT in permissions
+                        else ()
+                    )
+                    + (
+                        ("Экспортировать / открыть", export_or_open_version),
+                        ("Проверить внешний файл", check_external),
+                    )
                 ),
             )
         )
@@ -3663,80 +3962,6 @@ class DesktopController:
             "Задание создано",
             f"Задание {job.id} передано Kraken Agent и продолжит работу независимо от окна проекта.",
         )
-        return
-        launch_arguments: tuple[str, ...] = ()
-        if plugin_id == "contour":
-            try:
-                launch_arguments, contour_parameters = (
-                    self._contour_launch_arguments(
-                        layer_id=_layer_id,
-                        node=_node,
-                        action=action,
-                        source_representation_id=source_representation_id,
-                    )
-                )
-            except (OSError, ValueError) as exc:
-                self._error(f"Не удалось подготовить данные для Contour: {exc}")
-                return
-            parameters.update(contour_parameters)
-        elif plugin_id == "neuralimage" and action == "train":
-            try:
-                launch_arguments, neural_parameters = (
-                    self._neural_train_launch_arguments(
-                        layer_id=_layer_id,
-                        node=_node,
-                    )
-                )
-            except (OSError, ValueError) as exc:
-                self._error(f"Не удалось подготовить обучение NeuralImage: {exc}")
-                return
-            parameters.update(neural_parameters)
-        elif plugin_id == "neuralimage" and action in {
-            "recognize",
-            "recognize_external",
-        }:
-            try:
-                launch_arguments, recognition_parameters = (
-                    self._neural_recognition_launch_arguments(
-                        layer_id=_layer_id,
-                        source_representation_id=source_representation_id,
-                        stage_root=stage_root,
-                        staged_model=staged,
-                    )
-                )
-            except (OSError, ValueError) as exc:
-                self._error(f"Не удалось подготовить распознавание NeuralImage: {exc}")
-                return
-            parameters.update(recognition_parameters)
-        self.service.record_layer_pipeline_action(
-            principal=self.session.principal,
-            project_id=self._project_id,
-            layer_id=_layer_id,
-            action=action,
-            node_id=_node.node_id,
-            plugin_id=plugin_id,
-            capability=capability,
-            mode=mode,
-            parameters=parameters,
-        )
-        process = self._launch_managed_plugin(plugin_id, arguments=launch_arguments)
-        if process is not None and parameters.get("workspace_result_manifest"):
-            self._monitor_workspace_result(
-                process,
-                result_manifest=str(parameters["workspace_result_manifest"]),
-                workspace_run_id=str(parameters["workspace_run_id"]),
-                layer_id=str(_layer_id),
-            )
-        elif process is not None and parameters.get("agent_result_manifest"):
-            self._monitor_agent_result(
-                process,
-                result_manifest=str(parameters["agent_result_manifest"]),
-                staging_root=str(parameters["agent_staging_root"]),
-                workspace_run_id=str(parameters["workspace_run_id"]),
-                layer_id=str(_layer_id),
-            )
-        if self._layer_dialog is not None:
-            self._layer_dialog.set_pipeline(self._pipeline_snapshot(self._project_id, _layer_id))
 
     def _layer_manager_layer_action(self, _layer_id: str, action: str) -> None:
         if action in {"rename_layer", "archive_layer"}:
@@ -5122,7 +5347,12 @@ class DesktopController:
             return
 
     def _add_layer(self, workspace, project_id) -> None:
-        from PyQt6.QtWidgets import QDialog, QMessageBox, QProgressDialog
+        from PyQt6.QtWidgets import (
+            QDialog,
+            QInputDialog,
+            QMessageBox,
+            QProgressDialog,
+        )
 
         project = self.service.get_project(project_id)
         if project is None:
@@ -5130,7 +5360,53 @@ class DesktopController:
             return
         project_binding = self.service.project_workspace(project.id)
         if project_binding is None:
-            self._error("Проект не привязан к двухдисковому хранилищу.")
+            is_remote = bool(
+                getattr(self.service, "is_remote_project", lambda _id: False)(
+                    project.id
+                )
+            )
+            if not is_remote:
+                self._error("Проект не привязан к двухдисковому хранилищу.")
+                return
+            name, accepted = QInputDialog.getText(
+                self.shell,
+                "Новый слой",
+                "Название:",
+            )
+            if not accepted or not name.strip():
+                return
+            layer_labels = {
+                "Металл": LayerType.METAL,
+                "Контакт": LayerType.CONTACT,
+                "Затвор": LayerType.GATE,
+                "Диффузия": LayerType.DIFFUSION,
+            }
+            layer_label, accepted = QInputDialog.getItem(
+                self.shell,
+                "Новый слой",
+                "Тип:",
+                tuple(layer_labels),
+                editable=False,
+            )
+            if not accepted:
+                return
+            try:
+                layer = self.service.create_layer(
+                    principal=self.session.principal,
+                    project=project,
+                    name=name,
+                    layer_type=layer_labels[layer_label],
+                    order=len(self.service.list_layers(project.id)),
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:  # noqa: BLE001 - Qt boundary reports domain/transport failures
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось добавить слой",
+                    str(exc),
+                )
+                return
+            self._show_created_layer(workspace, project.id, layer)
             return
         missing = [
             value

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -74,7 +77,7 @@ class ConnectionHub:
         for websocket in unique:
             try:
                 await websocket.send_json(envelope)
-            except Exception:
+            except Exception:  # noqa: BLE001 - transports expose backend-specific disconnect errors
                 self.unregister(websocket)
 
 
@@ -168,7 +171,7 @@ class OutboxPublisher:
             try:
                 self.publish_once()
             except Exception:
-                pass
+                LOGGER.exception("Failed to publish Kraken transactional outbox batch")
             if self._stop.wait(self.interval_seconds):
                 break
 

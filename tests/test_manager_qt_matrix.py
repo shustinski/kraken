@@ -6,8 +6,8 @@ pytest.importorskip("PyQt6")
 
 from PyQt6.QtCore import QBuffer, QIODevice, QPoint, QPointF, Qt
 from PyQt6.QtGui import QContextMenuEvent, QImage, QWheelEvent
-from PyQt6.QtWidgets import QApplication
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication
 
 from kraken_core.frame_matrix import (
     MatrixAssetRef,
@@ -19,7 +19,6 @@ from kraken_core.frame_matrix import (
 )
 from kraken_core.frame_matrix.adapters.memory import MemoryThumbnailStore
 from kraken_hub.matrix_source import KrakenMatrixDataSource
-
 from kraken_manager.presentation.qt import (
     FrameCellData,
     FrameMatrixView,
@@ -133,6 +132,10 @@ def test_shared_widget_loads_only_the_visible_viewport(qapp):
     assert requests
     assert requests[-1].bounds.width < 10_000_000
     assert view.materialized_cell_count() == 1
+    assert view.cell_data(
+        requests[-1].bounds.x1,
+        requests[-1].bounds.y1,
+    ).payload["request_lod"] == requests[-1].lod
 
 
 def _send_wheel(view, delta, modifiers=Qt.KeyboardModifier.NoModifier):

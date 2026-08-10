@@ -9,14 +9,187 @@ from kraken_core.frame_matrix import StoreNamespace
 from kraken_core.plugin_protocol import PluginAsset, PluginResultPublicationV2
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.application.dto import CommandContext, CreateProjectCommand
+from kraken_manager.application.errors import StorageCapabilityError
 from kraken_manager.application.use_cases import CreateProjectHandler
+from kraken_manager.domain.artifacts import ArtifactScope, deterministic_frame_series_id
 from kraken_manager.domain.identity import ProjectRole
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
-from kraken_manager.domain.artifacts import deterministic_frame_series_id
 from kraken_manager.infrastructure.filesystem import LocalProjectUnitOfWorkFactory, SQLiteProjectionStore
 
 
 class EmbeddedProjectServiceTests(unittest.TestCase):
+    @staticmethod
+    def _memory_secret_store():
+        class MemorySecretStore:
+            def __init__(self) -> None:
+                self.values: dict[str, bytes] = {}
+
+            def get(self, key: str) -> bytes | None:
+                return self.values.get(key)
+
+            def set(self, key: str, value: bytes) -> None:
+                self.values[key] = value
+
+        return MemorySecretStore()
+
+    def test_export_artifact_version_supports_managed_and_verified_external_files(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            service = EmbeddedProjectService(root / "data")
+            session = service.create_initial_account("owner", "Owner", "")
+            project = service.create_project(
+                principal=session.principal,
+                name="Files",
+                width=1,
+                height=1,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="project",
+            )
+            managed_source = root / "managed.bin"
+            external_source = root / "external.bin"
+            managed_source.write_bytes(b"managed")
+            external_source.write_bytes(b"external")
+
+            managed_series = service.create_artifact_series(
+                principal=session.principal,
+                project_id=project.id,
+                scope=ArtifactScope.PROJECT_ATTACHMENT,
+                name="Managed",
+                idempotency_key="managed-series",
+            )
+            managed = service.add_managed_artifact_version(
+                principal=session.principal,
+                project_id=project.id,
+                series_id=managed_series.id,
+                source=managed_source,
+                idempotency_key="managed-version",
+            )
+            external_series = service.create_artifact_series(
+                principal=session.principal,
+                project_id=project.id,
+                scope=ArtifactScope.PROJECT_EXTERNAL_LINK,
+                name="External",
+                idempotency_key="external-series",
+            )
+            external = service.add_external_artifact_version(
+                principal=session.principal,
+                project_id=project.id,
+                series_id=external_series.id,
+                source=external_source,
+                idempotency_key="external-version",
+            )
+
+            managed_target = root / "managed-export.bin"
+            external_target = root / "external-export.bin"
+            service.export_artifact_version(project.id, managed, managed_target)
+            service.export_artifact_version(project.id, external, external_target)
+            self.assertEqual(b"managed", managed_target.read_bytes())
+            self.assertEqual(b"external", external_target.read_bytes())
+
+            external_source.write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "изменён"):
+                service.export_artifact_version(
+                    project.id,
+                    external,
+                    root / "blocked.bin",
+                )
+
+    def test_notes_and_artifact_lifecycle_are_rebuildable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            service = EmbeddedProjectService(root / "data")
+            session = service.create_initial_account("owner", "Owner", "")
+            project = service.create_project(
+                principal=session.principal,
+                name="Lifecycle",
+                width=1,
+                height=1,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="project",
+            )
+            source = root / "attachment.txt"
+            source.write_text("first", encoding="utf-8")
+            series = service.create_artifact_series(
+                principal=session.principal,
+                project_id=project.id,
+                scope=ArtifactScope.PROJECT_ATTACHMENT,
+                name="Документ",
+                idempotency_key="series",
+            )
+            first = service.add_managed_artifact_version(
+                principal=session.principal,
+                project_id=project.id,
+                series_id=series.id,
+                source=source,
+                idempotency_key="version-1",
+            )
+            source.write_text("second", encoding="utf-8")
+            second = service.add_managed_artifact_version(
+                principal=session.principal,
+                project_id=project.id,
+                series_id=series.id,
+                source=source,
+                parent_version_id=first.id,
+                idempotency_key="version-2",
+            )
+            service.activate_artifact_version(
+                principal=session.principal,
+                project_id=project.id,
+                series_id=series.id,
+                version_id=first.id,
+                idempotency_key="activate-first",
+            )
+            series = service.rename_artifact_series(
+                principal=session.principal,
+                series=service.list_artifact_series(project.id)[0],
+                name="Переименованный документ",
+                idempotency_key="rename-series",
+            )
+            service.archive_artifact_series(
+                principal=session.principal,
+                series=series,
+                idempotency_key="archive-series",
+            )
+            note = service.create_note(
+                principal=session.principal,
+                project_id=project.id,
+                body="Первая редакция",
+                idempotency_key="note",
+            )
+            revised = service.revise_note(
+                principal=session.principal,
+                note=note,
+                body="Вторая редакция",
+                idempotency_key="revise-note",
+            )
+
+            projection = SQLiteProjectionStore(service.catalog_root, str(project.id))
+            projection.destroy_cache()
+
+            rebuilt_series = service.list_artifact_series(
+                project.id,
+                include_archived=True,
+            )
+            self.assertEqual(1, len(rebuilt_series))
+            self.assertEqual("Переименованный документ", rebuilt_series[0].name)
+            self.assertTrue(rebuilt_series[0].archived)
+            self.assertEqual(
+                {first.id, second.id},
+                {
+                    version.id
+                    for version in service.artifact_versions(project.id, series.id)
+                },
+            )
+            self.assertEqual(
+                first.id,
+                service.active_artifact_version(project.id, series.id).id,
+            )
+            rebuilt_notes = service.list_notes(project.id)
+            self.assertEqual((revised.note_id,), tuple(item.note_id for item in rebuilt_notes))
+            self.assertEqual((2, "Вторая редакция"), (rebuilt_notes[0].revision, rebuilt_notes[0].body))
+
     def test_delete_project_removes_kraken_cache_but_preserves_workspace_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -271,7 +444,7 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
             account = service.accounts.create_account("operator", "Operator", "correct horse battery staple")
             session = service.login(account.username, "correct horse battery staple")
             assert session is not None
-            with self.assertRaises(Exception):
+            with self.assertRaises(StorageCapabilityError):
                 service.create_project(
                     principal=session.principal,
                     name="Too large",
@@ -644,6 +817,210 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
             self.assertEqual(frozenset(), roles)
             event_types = {event.event_type for event in service.history(project.id)}
             self.assertTrue({"ProjectRoleAssigned", "ProjectRoleRevoked"}.issubset(event_types))
+
+    def test_last_project_owner_cannot_be_revoked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = EmbeddedProjectService(Path(temporary))
+            owner = service.create_initial_account("owner", "Owner", "")
+            project = service.create_project(
+                principal=owner.principal,
+                name="Protected owner",
+                width=1,
+                height=1,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="project",
+            )
+
+            with self.assertRaisesRegex(ValueError, "последнего владельца"):
+                service.revoke_project_role(
+                    principal=owner.principal,
+                    project=project,
+                    target_principal_id=owner.principal.id,
+                    role=ProjectRole.OWNER,
+                    expected_revision=service.project_role_revision(
+                        project.id,
+                        owner.principal.id,
+                    ),
+                    idempotency_key="revoke-last-owner",
+                )
+
+            self.assertEqual(
+                frozenset({ProjectRole.OWNER}),
+                service.project_roles(project.id, owner.principal.id),
+            )
+
+    def test_desktop_review_package_round_trip_uses_manifest_routing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            service = EmbeddedProjectService(
+                root / "data",
+                secret_store=self._memory_secret_store(),
+            )
+            owner = service.create_initial_account("owner", "Owner", "")
+            performer = service.create_manual_performer(
+                name="Reviewer",
+                color="#336699",
+            )
+            project = service.create_project(
+                principal=owner.principal,
+                name="Review",
+                width=1,
+                height=1,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="project",
+            )
+            layer = service.create_layer(
+                principal=owner.principal,
+                project=project,
+                name="Metal",
+                layer_type=LayerType.METAL,
+                order=0,
+                idempotency_key="layer",
+            )
+            images = service.create_representation(
+                principal=owner.principal,
+                project=service.get_project(project.id),
+                layer=layer,
+                name="Images",
+                kind=RepresentationKind.IMAGE,
+                active=True,
+                idempotency_key="images",
+            )
+            layer = service.list_layers(project.id)[0]
+            vectors = service.create_representation(
+                principal=owner.principal,
+                project=service.get_project(project.id),
+                layer=layer,
+                name="CIF",
+                kind=RepresentationKind.VECTOR,
+                source_image_representation_id=images.id,
+                active=True,
+                idempotency_key="vectors",
+            )
+            source_images = root / "images"
+            source_vectors = root / "vectors"
+            source_images.mkdir()
+            source_vectors.mkdir()
+            (source_images / "1_1.png").write_bytes(b"image")
+            (source_vectors / "1_1.cif").write_text("DS 1 1 1;\nDF;\nE\n", encoding="utf-8")
+            service.commit_managed_import(
+                principal=owner.principal,
+                project=service.get_project(project.id),
+                layer=layer,
+                representation=images,
+                plan=service.plan_import_directory(
+                    project=project,
+                    directory=source_images,
+                ),
+                idempotency_key="import-images",
+            )
+            service.commit_managed_import(
+                principal=owner.principal,
+                project=service.get_project(project.id),
+                layer=layer,
+                representation=vectors,
+                plan=service.plan_import_directory(
+                    project=project,
+                    directory=source_vectors,
+                ),
+                idempotency_key="import-vectors",
+            )
+            batch = service.create_review_batch(
+                principal=owner.principal,
+                project_id=project.id,
+                layer_id=layer.id,
+                image_representation_id=images.id,
+                vector_representation_id=vectors.id,
+                coordinates=((1, 1),),
+                assignee_id=performer.id,
+                instructions="Check",
+                due_at=None,
+                idempotency_key="review",
+            )
+            package = root / "review-package"
+            issued = service.export_review_batch(
+                principal=owner.principal,
+                batch=batch,
+                destination=package,
+                idempotency_key="export",
+            )
+            returned_cif = next(package.rglob("*.cif"))
+            returned_cif.write_text("DS 1 1 1;\nP 0 0 1 0 1 1;\nDF;\nE\n", encoding="utf-8")
+
+            matched_batch, preflight = service.review_return_preflight(
+                principal=owner.principal,
+                source=package,
+                idempotency_key="preflight",
+            )
+            self.assertEqual(issued.id, matched_batch.id)
+            self.assertTrue(preflight.report.can_commit)
+            committed = service.commit_review_return(
+                principal=owner.principal,
+                batch=matched_batch,
+                source=package,
+                idempotency_key="commit",
+            )
+            self.assertEqual(1, len(committed.candidate_versions))
+            accepted = service.accept_review(
+                principal=owner.principal,
+                batch=committed.batch,
+                candidate_version_ids=tuple(
+                    version.id for version in committed.candidate_versions
+                ),
+                idempotency_key="accept",
+            )
+            self.assertEqual("completed", accepted.state.value)
+
+    def test_backup_restore_requires_explicit_ownership_on_new_workstation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_service = EmbeddedProjectService(root / "source-data")
+            source_owner = source_service.create_initial_account(
+                "source-owner",
+                "Source Owner",
+                "",
+            )
+            project = source_service.create_project(
+                principal=source_owner.principal,
+                name="Portable",
+                width=1,
+                height=1,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="project",
+            )
+            bundle = root / "bundle"
+            source_service.export_backup(
+                project.id,
+                bundle,
+                principal=source_owner.principal,
+            )
+
+            restored_service = EmbeddedProjectService(root / "restored-data")
+            new_owner = restored_service.create_initial_account(
+                "new-owner",
+                "New Owner",
+                "",
+            )
+            with self.assertRaisesRegex(ValueError, "принятие владения"):
+                restored_service.import_backup(
+                    bundle,
+                    principal=new_owner.principal,
+                    take_ownership=False,
+                )
+
+            restored = restored_service.import_backup(
+                bundle,
+                principal=new_owner.principal,
+                take_ownership=True,
+            )
+            self.assertEqual(project.id, restored.id)
+            self.assertEqual(
+                frozenset({ProjectRole.OWNER}),
+                restored_service.project_roles(
+                    restored.id,
+                    new_owner.principal.id,
+                ),
+            )
 
     def test_representation_lifecycle_switches_active_variant_and_rebuilds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

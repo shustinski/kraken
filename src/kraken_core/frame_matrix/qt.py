@@ -658,6 +658,7 @@ class FrameMatrixView(QGraphicsView):
             for column in range(start_column, end_column):
                 x = column + 1
                 cell = self._cells.get((x, y), FrameCellData(x, y))
+                payload = cell.payload if isinstance(cell.payload, Mapping) else {}
                 rect = QRectF(
                     column * self.CELL_PITCH,
                     row * self.CELL_PITCH,
@@ -695,6 +696,17 @@ class FrameMatrixView(QGraphicsView):
                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                         coordinate_text,
                     )
+                    request_lod = int(payload.get("request_lod", 0))
+                    painter.save()
+                    lod_font = painter.font()
+                    lod_font.setPixelSize(7)
+                    painter.setFont(lod_font)
+                    painter.drawText(
+                        rect.adjusted(4.0, 3.0, -4.0, -3.0),
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
+                        f"LOD {request_lod}",
+                    )
+                    painter.restore()
                     if cell.performer_initials:
                         painter.drawText(
                             rect.adjusted(4.0, 3.0, -4.0, -3.0),
@@ -703,7 +715,6 @@ class FrameMatrixView(QGraphicsView):
                         )
                 renderers = getattr(self, "_renderers", ())
                 if renderers:
-                    payload = cell.payload if isinstance(cell.payload, Mapping) else {}
                     matrix_item = MatrixItem(
                         key=str(payload.get("key") or f"{x}:{y}"),
                         x=x,
@@ -1179,7 +1190,11 @@ class FrameMatrixWidget(FrameMatrixView):
                 performer_initials=str(item.metadata.get("performer_initials") or ""),
                 label=item.label,
                 tooltip=item.tooltip,
-                payload={"key": item.key, **dict(item.metadata)},
+                payload={
+                    "key": item.key,
+                    "request_lod": result.request.lod,
+                    **dict(item.metadata),
+                },
             )
             for item in result.items
         ]

@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image
 
 from kraken_core.plugin_protocol import WorkspacePluginResultV1
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_hub.manager_app import DesktopController
+from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
 from kraken_manager.workspace import (
     DerivedRunKind,
     ImageConversionSettings,
     LayerSourceMode,
+    WorkspaceValidationError,
 )
-from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
 
 
 def _project(tmp_path: Path):
@@ -123,6 +125,170 @@ def test_disk_import_registers_copied_directory_as_image_representation(
     assert representation.active
     assert representation.name == "Исходные изображения"
     assert service.list_representations(project.id, layer.id) == (representation,)
+
+
+def test_project_rename_rolls_back_both_workspace_roots_on_domain_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service, session, project = _project(tmp_path)
+    original = service.project_workspace(project.id)
+    assert original is not None
+    source_before = Path(original.source_project_dir)
+    derived_before = Path(original.derived_project_dir)
+    assert source_before.is_dir()
+    assert derived_before.is_dir()
+
+    class FailingRenameHandler:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __call__(self, _command):
+            raise RuntimeError("forced domain failure")
+
+    monkeypatch.setattr(
+        "kraken_hub.composition.RenameProjectHandler",
+        FailingRenameHandler,
+    )
+
+    try:
+        service.rename_project(
+            principal=session.principal,
+            project=project,
+            name="Renamed",
+            idempotency_key="rename",
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "forced domain failure"
+    else:
+        raise AssertionError("rename_project must propagate the domain failure")
+
+    restored = service.project_workspace(project.id)
+    assert restored == original
+    assert source_before.is_dir()
+    assert derived_before.is_dir()
+    assert not (source_before.parent / "Renamed").exists()
+    assert not (derived_before.parent / "Renamed").exists()
+    assert service.get_project(project.id).name == "Chip"
+
+
+def test_managed_layer_rename_rolls_back_files_and_registry_on_domain_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    microscope = tmp_path / "microscope"
+    microscope.mkdir()
+    Image.new("RGB", (2, 2), "red").save(microscope / "frame_0.jpg")
+    service, session, project = _project(tmp_path)
+    layer, binding, _representation = service.create_layer_from_disk(
+        principal=session.principal,
+        project=project,
+        name="Metal",
+        layer_type=LayerType.METAL,
+        order=1,
+        scan=service.scan_layer_source(
+            microscope,
+            maximum_frames=project.frame_count,
+        ),
+        conversion=ImageConversionSettings(),
+        idempotency_key="managed-layer",
+    )
+
+    class FailingRenameHandler:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __call__(self, _command):
+            raise RuntimeError("forced layer failure")
+
+    monkeypatch.setattr(
+        "kraken_hub.composition.RenameLayerHandler",
+        FailingRenameHandler,
+    )
+    try:
+        service.rename_layer(
+            principal=session.principal,
+            project=service.get_project(project.id),
+            layer=layer,
+            name="Metal renamed",
+            idempotency_key="rename-layer",
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "forced layer failure"
+    else:
+        raise AssertionError("rename_layer must propagate the domain failure")
+
+    restored = service.layer_file_binding(project.id, layer.id)
+    assert restored == binding
+    for value in (
+        binding.image_directory,
+        binding.ssc_directory,
+        binding.prv_directory,
+        binding.aux_directory,
+    ):
+        assert Path(value).is_dir()
+        assert not (Path(value).parent / "Metal renamed").exists()
+    assert service.list_layers(project.id)[0].name == "Metal"
+
+
+def test_managed_layer_mutations_are_blocked_by_active_agent_job(tmp_path: Path) -> None:
+    microscope = tmp_path / "microscope"
+    microscope.mkdir()
+    Image.new("RGB", (2, 2), "red").save(microscope / "frame_0.jpg")
+    service, session, project = _project(tmp_path)
+    layer, binding, _representation = service.create_layer_from_disk(
+        principal=session.principal,
+        project=project,
+        name="Metal",
+        layer_type=LayerType.METAL,
+        order=1,
+        scan=service.scan_layer_source(
+            microscope,
+            maximum_frames=project.frame_count,
+        ),
+        conversion=ImageConversionSettings(),
+        idempotency_key="managed-layer",
+    )
+    service.plugin_jobs = lambda: (
+        SimpleNamespace(
+            project_id=project.id,
+            layer_id=layer.id,
+            state=SimpleNamespace(value="running"),
+        ),
+    )
+
+    try:
+        service.rename_layer(
+            principal=session.principal,
+            project=service.get_project(project.id),
+            layer=layer,
+            name="Metal renamed",
+            idempotency_key="rename-layer",
+        )
+    except WorkspaceValidationError as exc:
+        assert "выполняются задания" in str(exc)
+    else:
+        raise AssertionError("active Agent jobs must block managed layer renames")
+
+    assert service.layer_file_binding(project.id, layer.id) == binding
+    assert Path(binding.image_directory).is_dir()
+    assert not (Path(binding.image_directory).parent / "Metal renamed").exists()
+
+    try:
+        service.delete_layer(
+            principal=session.principal,
+            project=service.get_project(project.id),
+            layer=layer,
+            confirmation_name=layer.name,
+            idempotency_key="delete-layer",
+        )
+    except WorkspaceValidationError as exc:
+        assert "active plugin job" in str(exc)
+    else:
+        raise AssertionError("active Agent jobs must block managed layer deletion")
+
+    assert service.layer_file_binding(project.id, layer.id) == binding
+    assert Path(binding.image_directory).is_dir()
 
 
 def test_vector_run_publication_creates_versioned_representation(

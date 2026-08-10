@@ -45,6 +45,14 @@ class ServerServiceTests(unittest.TestCase):
         values = service.list_representations(project["project_id"], layer["layer_id"])
         self.assertEqual([False, True], [item["active"] for item in values])
         self.assertEqual("raw scan", representation["note"])
+        second = service.update_representation(
+            project["project_id"],
+            layer["layer_id"],
+            second["representation_id"],
+            {"active": False, "expected_representation_revision": second["revision"]},
+            CommandContext("actor", "representation-deactivate", 4),
+        )
+        self.assertFalse(second["active"])
 
     def test_create_is_idempotent_and_grid_is_sparse(self) -> None:
         service = InMemoryServerServices()

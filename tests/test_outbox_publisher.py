@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 from kraken_server.outbox import ConnectionHub, OutboxPublisher
@@ -71,5 +70,5 @@ def test_outbox_publisher_marks_rows_published_and_notifies_hub() -> None:
     assert count == 1
     assert published[0]["type"] == "project_event"
     assert published[0]["position"] == 10
-    assert any("UPDATE transactional_outbox" in sql.upper() for sql, _ in engine.connection.executed)
+    assert any("UPDATE TRANSACTIONAL_OUTBOX" in sql.upper() for sql, _ in engine.connection.executed)
     assert published[1]["type"] == "catalog_changed"

@@ -21,8 +21,8 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QTabWidget,
     QTableWidget,
+    QTabWidget,
     QWidget,
 )
 
@@ -36,13 +36,16 @@ from kraken_hub.manager_app import (
     _event_matches_node,
     _history_entries,
     _login,
+    _my_work_panel,
     _performer_panel,
     _statistics_panel,
 )
 from kraken_hub.statistics_widgets import MetricChartWidget
+from kraken_manager.domain.identity import Permission
+from kraken_manager.domain.project import LayerType, RepresentationKind
 from kraken_manager.infrastructure.reports import ActivityRecord
-from kraken_manager.domain.project import RepresentationKind
 from kraken_manager.presentation.qt import (
+    FrameSelection,
     LayerPipelineSnapshot,
     PipelineLane,
     PipelineNode,
@@ -50,6 +53,54 @@ from kraken_manager.presentation.qt import (
     ProjectManagerShell,
 )
 from kraken_manager.presentation.qt.widgets import ClickableLabel
+
+
+def test_matrix_context_menu_exports_and_opens_file_properties(
+    qapp,
+    monkeypatch,
+) -> None:
+    controller = object.__new__(DesktopController)
+    controller.shell = QWidget()
+    series = SimpleNamespace(name="frame.cif")
+    version = SimpleNamespace(filename="frame.cif")
+    controller._active_frame_files = lambda _x, _y: (
+        ("CIF", series, version),
+    )
+    exported = []
+    opened = []
+    controller._export_selected_frame_files = exported.append
+    controller._show_frame_file_properties = (
+        lambda *values: opened.append(values)
+    )
+    context = SimpleNamespace(
+        x=2,
+        y=3,
+        selection=FrameSelection.single(2, 3),
+    )
+
+    monkeypatch.setattr(
+        QMenu,
+        "exec",
+        lambda menu, *_args: next(
+            action
+            for action in menu.actions()
+            if action.text().startswith("Выгрузить файлы")
+        ),
+    )
+    controller._show_matrix_context_menu(context, controller.shell.pos())
+    assert exported == [context]
+
+    def select_file_properties(menu: QMenu, *_args):
+        submenu = next(
+            action.menu()
+            for action in menu.actions()
+            if action.text() == "Свойства файла"
+        )
+        return submenu.actions()[0]
+
+    monkeypatch.setattr(QMenu, "exec", select_file_properties)
+    controller._show_matrix_context_menu(context, controller.shell.pos())
+    assert opened == [("CIF", series, version)]
 
 
 @pytest.fixture(scope="module")
@@ -507,6 +558,205 @@ def test_controller_builds_layer_and_representation_properties(tmp_path: Path) -
     ]
 
 
+def test_frame_card_hides_mutating_actions_without_permissions() -> None:
+    class Combo:
+        @staticmethod
+        def currentData():
+            return None
+
+    class Matrix:
+        @staticmethod
+        def selected_coordinates(*, maximum):
+            assert maximum == 2
+            return ((1, 1),)
+
+        @staticmethod
+        def cell_data(_x, _y):
+            return SimpleNamespace(
+                payload={"frame_id": "frame-1"},
+                status="ready",
+                performer_initials="",
+            )
+
+    class Service:
+        permissions = frozenset()
+
+        @staticmethod
+        def get_project(_project_id, *, as_of=None):
+            del as_of
+            return SimpleNamespace(name="Project", width=1)
+
+        @classmethod
+        def project_permissions(cls, _project_id, _principal):
+            return cls.permissions
+
+        @staticmethod
+        def list_layers(_project_id):
+            return (SimpleNamespace(id="layer-1", name="Layer"),)
+
+        @staticmethod
+        def list_representations(_project_id, _layer_id):
+            return ()
+
+        @staticmethod
+        def history(_project_id):
+            return ()
+
+        @staticmethod
+        def list_principals(*, include_inactive):
+            assert include_inactive
+            return ()
+
+        @staticmethod
+        def list_artifact_series(
+            _project_id,
+            *,
+            layer_id,
+            include_archived,
+        ):
+            assert layer_id == "layer-1"
+            assert include_archived
+            return ()
+
+        @staticmethod
+        def list_notes(_project_id, *, layer_id, frame_id):
+            assert (layer_id, frame_id) == ("layer-1", "frame-1")
+            return ()
+
+    workspace = SimpleNamespace(
+        _selected_layer_id="layer-1",
+        matrix_view=Matrix(),
+        image_representation_combo=Combo(),
+        vector_representation_combo=Combo(),
+    )
+    controller = object.__new__(DesktopController)
+    controller.service = Service()
+    controller.session = SimpleNamespace(principal=SimpleNamespace(id="viewer"))
+    controller._workspace = workspace
+    controller._project_id = "project-1"
+    snapshots = []
+    controller._open_properties = snapshots.append
+
+    controller.show_selected_frame()
+    viewer_snapshot = snapshots[-1]
+    assert viewer_snapshot.actions == ()
+    assert viewer_snapshot.file_actions == ()
+    assert [label for label, _callback in viewer_snapshot.version_actions] == [
+        "Экспортировать / открыть",
+        "Проверить внешний файл",
+    ]
+
+    Service.permissions = frozenset(
+        {Permission.ADD_NOTE, Permission.IMPORT_ARTIFACT}
+    )
+    controller.show_selected_frame()
+    editor_snapshot = snapshots[-1]
+    assert len(editor_snapshot.actions) == 2
+    assert len(editor_snapshot.file_actions) == 4
+    assert [label for label, _callback in editor_snapshot.version_actions] == [
+        "Активировать",
+        "Экспортировать / открыть",
+        "Проверить внешний файл",
+    ]
+
+
+def test_my_work_exposes_review_and_agent_recovery_actions(qapp) -> None:
+    now = datetime.now(UTC)
+    batch = SimpleNamespace(
+        id="batch-1",
+        project_id="project-1",
+        layer_id="layer-1",
+        assignee_id="performer-1",
+        state=SimpleNamespace(value="awaiting_acceptance"),
+        due_at=None,
+        items=(object(),),
+    )
+    recovery_job = SimpleNamespace(
+        id="job-1",
+        project_id="project-1",
+        layer_id="layer-1",
+        state=SimpleNamespace(value="recovery_required"),
+        updated_at=now,
+        progress=0.5,
+        error="agent stopped",
+    )
+    partial_job = SimpleNamespace(
+        id="job-2",
+        project_id="project-1",
+        layer_id="layer-1",
+        state=SimpleNamespace(value="partial"),
+        updated_at=now,
+        progress=0.75,
+        error="",
+    )
+
+    class Service:
+        @staticmethod
+        def list_projects(*, include_archived):
+            assert include_archived
+            return (SimpleNamespace(id="project-1", name="Project"),)
+
+        @staticmethod
+        def project_permissions(_project_id, _principal):
+            return frozenset(
+                {
+                    Permission.ASSIGN_WORK,
+                    Permission.ACCEPT_REVIEW,
+                    Permission.MANAGE_REVIEW,
+                    Permission.RUN_PLUGIN,
+                }
+            )
+
+        @staticmethod
+        def list_layers(_project_id, *, include_archived):
+            assert include_archived
+            return (SimpleNamespace(id="layer-1", name="Layer"),)
+
+        @staticmethod
+        def list_performers(*, include_archived):
+            assert include_archived
+            return (SimpleNamespace(id="performer-1", name="Worker"),)
+
+        @staticmethod
+        def review_batches():
+            return (batch,)
+
+        @staticmethod
+        def plugin_jobs():
+            return (recovery_job, partial_job)
+
+    controller = SimpleNamespace(
+        cancel_agent_job=lambda _job: None,
+        retry_agent_job=lambda _job: None,
+        import_partial_agent_job=lambda _job: None,
+        my_work_refresh=None,
+    )
+    panel = _my_work_panel(
+        Service(),
+        SimpleNamespace(principal=SimpleNamespace(id="owner")),
+        controller,
+    )
+    table = panel.findChild(QTableWidget)
+    assert table is not None
+    assert table.rowCount() == 3
+    assert table.item(0, 4).text() == "Ожидает принятия"
+    assert table.item(1, 4).text() == "Требуется восстановление"
+    assert table.item(2, 4).text() == "Частичный результат"
+    assert {
+        button.text()
+        for button in table.cellWidget(0, 7).findChildren(QPushButton)
+    } == {"Повторно выгрузить", "Принять", "На доработку", "Отменить"}
+    assert {
+        button.text()
+        for button in table.cellWidget(1, 7).findChildren(QPushButton)
+    } == {"Повторить", "Отменить"}
+    assert {
+        button.text()
+        for button in table.cellWidget(2, 7).findChildren(QPushButton)
+    } == {"Импортировать", "Отменить"}
+    assert controller.my_work_refresh is not None
+
+
 def test_controller_builds_derived_job_karakal_and_virtual_properties(tmp_path: Path) -> None:
     output = tmp_path / "output"
     output.mkdir()
@@ -765,6 +1015,55 @@ def test_image_representation_source_picker_fills_selected_folder(qapp, monkeypa
     monkeypatch.setattr(QDialog, "exec", use_picker_and_cancel)
 
     controller._add_representation(workspace, "project-1", RepresentationKind.IMAGE)
+
+
+def test_remote_project_can_create_logical_layer(qapp, monkeypatch) -> None:
+    project = SimpleNamespace(id="project-1")
+    created = SimpleNamespace(id="layer-1")
+    calls = []
+
+    class ServiceStub:
+        @staticmethod
+        def get_project(_project_id):
+            return project
+
+        @staticmethod
+        def project_workspace(_project_id):
+            return None
+
+        @staticmethod
+        def is_remote_project(_project_id):
+            return True
+
+        @staticmethod
+        def list_layers(_project_id):
+            return ()
+
+        @staticmethod
+        def create_layer(**kwargs):
+            calls.append(kwargs)
+            return created
+
+    controller = object.__new__(DesktopController)
+    controller.service = ServiceStub()
+    controller.session = SimpleNamespace(principal=object())
+    controller.shell = QWidget()
+    shown = []
+    controller._show_created_layer = lambda *args: shown.append(args)
+    workspace = QWidget()
+
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_args, **_kwargs: ("Metal", True))
+    monkeypatch.setattr(
+        QInputDialog,
+        "getItem",
+        lambda *_args, **_kwargs: (_args[3][0], True),
+    )
+
+    controller._add_layer(workspace, project.id)
+
+    assert calls[0]["layer_type"] is LayerType.METAL
+    assert calls[0]["order"] == 0
+    assert shown == [(workspace, project.id, created)]
 
 
 def test_external_cif_import_uses_source_from_clicked_pipeline_lane(monkeypatch) -> None:

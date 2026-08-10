@@ -4,20 +4,22 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any, Mapping
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
 from kraken_manager.application.dto import (
+    ActivateRepresentationCommand,
     ArchiveLayerCommand,
     ArchiveProjectCommand,
-    ActivateRepresentationCommand,
     ArchiveRepresentationCommand,
     AssignProjectRoleCommand,
-    CommandContext as ApplicationCommandContext,
     CreateLayerCommand,
     CreateProjectCommand,
     CreateRepresentationCommand,
+    DeactivateRepresentationCommand,
     RenameLayerCommand,
     RenameProjectCommand,
     RenameRepresentationCommand,
@@ -25,19 +27,28 @@ from kraken_manager.application.dto import (
     ReorderLayersCommand,
     RestoreProjectCommand,
     RevokeProjectRoleCommand,
-    UpdateRepresentationNoteCommand,
     StorageBackendKind,
     StorageScope,
+    UpdateRepresentationNoteCommand,
+)
+from kraken_manager.application.dto import (
+    CommandContext as ApplicationCommandContext,
 )
 from kraken_manager.application.errors import (
     AuthorizationError as ApplicationAuthorizationError,
+)
+from kraken_manager.application.errors import (
     ConcurrencyError as ApplicationConcurrencyError,
+)
+from kraken_manager.application.errors import (
     ConflictError as ApplicationConflictError,
+)
+from kraken_manager.application.errors import (
     NotFoundError as ApplicationNotFoundError,
+)
+from kraken_manager.application.errors import (
     StorageCapabilityError,
 )
-from kraken_manager.application.ports import StorageCapabilities, StorageProfile
-from kraken_manager.application.use_cases import CreateLayerHandler, CreateProjectHandler, CreateRepresentationHandler
 from kraken_manager.application.lifecycle import (
     ArchiveLayerHandler,
     ArchiveProjectHandler,
@@ -47,13 +58,15 @@ from kraken_manager.application.lifecycle import (
     ReorderLayersHandler,
     RestoreProjectHandler,
 )
-from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
+from kraken_manager.application.ports import StorageCapabilities, StorageProfile
 from kraken_manager.application.representation_lifecycle import (
     ActivateRepresentationHandler,
     ArchiveRepresentationHandler,
+    DeactivateRepresentationHandler,
     RenameRepresentationHandler,
     UpdateRepresentationNoteHandler,
 )
+from kraken_manager.application.use_cases import CreateLayerHandler, CreateProjectHandler, CreateRepresentationHandler
 from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, RepresentationId, validate_uuid
 from kraken_manager.domain.identity import ProjectRole
 from kraken_manager.domain.project import (
@@ -182,6 +195,11 @@ class PostgresServerServices:
         self._assign_project_role = AssignProjectRoleHandler(uow_factory, self.profiles, SystemClock())
         self._revoke_project_role = RevokeProjectRoleHandler(uow_factory, self.profiles, SystemClock())
         self._activate_representation = ActivateRepresentationHandler(uow_factory, self.profiles, SystemClock())
+        self._deactivate_representation = DeactivateRepresentationHandler(
+            uow_factory,
+            self.profiles,
+            SystemClock(),
+        )
         self._archive_representation = ArchiveRepresentationHandler(uow_factory, self.profiles, SystemClock())
         self._rename_representation = RenameRepresentationHandler(uow_factory, self.profiles, SystemClock())
         self._update_representation_note = UpdateRepresentationNoteHandler(uow_factory, self.profiles, SystemClock())
@@ -198,6 +216,25 @@ class PostgresServerServices:
 
     def list_projects(self) -> list[dict[str, Any]]:
         return [_project_dict(project) for project in self.projections.list_projects()]
+
+    def list_principals(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+        return [
+            {
+                "principal_id": str(principal.id),
+                "provider": principal.provider.value,
+                "subject": principal.subject,
+                "issuer": principal.issuer,
+                "display_name": principal.display_name,
+                "email": principal.email,
+                "active": principal.active,
+                "system_roles": sorted(
+                    role.value for role in principal.system_roles
+                ),
+            }
+            for principal in self.identities.list(
+                include_inactive=include_inactive
+            )
+        ]
 
     def _actor(self, actor_id: str) -> Any:
         try:
@@ -592,9 +629,15 @@ class PostgresServerServices:
                     UpdateRepresentationNoteCommand(note=str(payload["note"]), **common)
                 )
             elif operation == "active":
-                if not bool(payload["active"]):
-                    raise ValueError("Only activation is supported")
-                value = self._activate_representation(ActivateRepresentationCommand(**common))
+                value = (
+                    self._activate_representation(
+                        ActivateRepresentationCommand(**common)
+                    )
+                    if bool(payload["active"])
+                    else self._deactivate_representation(
+                        DeactivateRepresentationCommand(**common)
+                    )
+                )
             else:
                 if not bool(payload["archive"]):
                     raise ValueError("archive must be true")

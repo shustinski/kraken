@@ -1,10 +1,9 @@
 """FastAPI application factory; all adapter selection happens here."""
 
-from __future__ import annotations
-
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from .services import (
     CommandContext,
@@ -15,7 +14,6 @@ from .services import (
     ServerServices,
     ValidationError,
 )
-
 
 API_PREFIX = "/api/v1"
 
@@ -184,6 +182,17 @@ def create_app(
     @app.get(f"{API_PREFIX}/projects")
     async def list_projects(_: SessionPrincipal = Depends(principal)) -> dict[str, Any]:
         return {"items": backend.list_projects()}
+
+    @app.get(f"{API_PREFIX}/principals")
+    async def list_principals(
+        include_inactive: bool = False,
+        _: SessionPrincipal = Depends(principal),  # noqa: B008 - FastAPI dependency declaration
+    ) -> dict[str, Any]:
+        return {
+            "items": backend.list_principals(
+                include_inactive=include_inactive,
+            )
+        }
 
     @app.post(f"{API_PREFIX}/projects", status_code=201)
     async def create_project(

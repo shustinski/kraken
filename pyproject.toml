@@ -12,6 +12,8 @@ dependencies = []
 
 [project.optional-dependencies]
 desktop = [
+    "cryptography>=43.0",
+    "openpyxl>=3.1",
     "Pillow>=10.0",
     "PyQt6>=6.6",
     "keyring>=25.0",

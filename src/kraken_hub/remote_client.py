@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import urllib.error
@@ -16,17 +17,31 @@ from typing import Any
 from kraken_manager.application.ports import StorageProfile
 from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.identity import (
+    Permission,
     Principal,
+    PrincipalProvider,
     ProjectRole,
+    SystemRole,
     permissions_for_roles,
 )
-from kraken_manager.domain.project import GridOrientation, Layer, LayerType, Project, StructureState
+from kraken_manager.domain.project import (
+    GridOrientation,
+    Layer,
+    LayerType,
+    Project,
+    Representation,
+    RepresentationKind,
+    RepresentationPurpose,
+    StructureState,
+)
 
 from .workspace_service import (
     REMOTE_STORAGE_PROFILE,
     ProjectEventWake,
     project_from_server_dict,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RemoteServerError(RuntimeError):
@@ -81,8 +96,8 @@ class RemoteHttpClient:
             try:
                 parsed = json.loads(detail)
                 message = str(parsed.get("detail") or parsed.get("title") or detail)
-            except Exception:
-                pass
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                message = detail
             raise RemoteServerError(message, status=exc.code, body=detail) from exc
         except urllib.error.URLError as exc:
             raise RemoteServerError(f"Cannot reach Kraken Server at {self.base_url}: {exc.reason}") from exc
@@ -131,8 +146,8 @@ class RemoteSyncClient:
         if ws is not None:
             try:
                 ws.close()
-            except Exception:
-                pass
+            except (OSError, RuntimeError):
+                LOGGER.exception("Failed to close Kraken remote WebSocket")
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
@@ -156,8 +171,8 @@ class RemoteSyncClient:
         with self._send_lock:
             try:
                 ws.send(json.dumps(dict(message)))
-            except Exception:
-                pass
+            except (OSError, RuntimeError):
+                LOGGER.exception("Failed to send Kraken remote subscription")
 
     def _run(self) -> None:
         try:
@@ -169,7 +184,7 @@ class RemoteSyncClient:
         def on_message(_ws: Any, message: str) -> None:
             try:
                 payload = json.loads(message)
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 return
             kind = str(payload.get("type", ""))
             if kind == "project_event":
@@ -215,8 +230,8 @@ class RemoteSyncClient:
             )
             try:
                 app.run_forever(ping_interval=20, ping_timeout=10)
-            except Exception:
-                pass
+            except (OSError, RuntimeError):
+                LOGGER.exception("Kraken remote WebSocket loop failed")
             if self._stop.wait(2.0):
                 break
 
@@ -253,6 +268,40 @@ class RemoteServerProjectService:
 
     def list_storage_profiles(self) -> tuple[StorageProfile, ...]:
         return (self.profile,)
+
+    def list_principals(
+        self,
+        *,
+        include_inactive: bool = False,
+    ) -> tuple[Principal, ...]:
+        suffix = "?include_inactive=true" if include_inactive else ""
+        payload = self._call("GET", f"/api/v1/principals{suffix}")
+        values = payload.get("items", ()) if isinstance(payload, Mapping) else ()
+        return tuple(
+            Principal(
+                id=str(item.get("principal_id") or item.get("id")),
+                provider=PrincipalProvider(str(item.get("provider", "gitlab"))),
+                subject=str(item.get("subject", "")),
+                issuer=None if item.get("issuer") is None else str(item["issuer"]),
+                display_name=str(item.get("display_name", "")),
+                email=None if item.get("email") is None else str(item["email"]),
+                active=bool(item.get("active", True)),
+                system_roles=frozenset(
+                    SystemRole(str(role)) for role in item.get("system_roles", ())
+                ),
+            )
+            for item in values
+            if isinstance(item, Mapping)
+        )
+
+    def list_project_principals(
+        self,
+        project_id: object,
+        *,
+        include_inactive: bool = False,
+    ) -> tuple[Principal, ...]:
+        del project_id
+        return self.list_principals(include_inactive=include_inactive)
 
     def add_wake_handler(self, handler: Callable[[ProjectEventWake], None]) -> None:
         self._wake_handlers.append(handler)
@@ -446,7 +495,7 @@ class RemoteServerProjectService:
                 continue
             created = item.get("created_at")
             created_at = (
-                datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+                datetime.fromisoformat(str(created))
                 if created
                 else datetime.now().astimezone()
             )
@@ -464,6 +513,256 @@ class RemoteServerProjectService:
             )
         return tuple(layers)
 
+    @staticmethod
+    def _layer(project_id: object, item: Mapping[str, object]) -> Layer:
+        created = item.get("created_at")
+        return Layer(
+            id=str(item.get("layer_id") or item.get("id")),
+            project_id=ProjectId(str(project_id)),
+            name=str(item["name"]),
+            type=LayerType(str(item.get("type", LayerType.METAL.value))),
+            order=int(item.get("order", 0)),
+            state=StructureState(str(item.get("state", "active"))),
+            revision=int(item.get("revision", 0)),
+            created_at=(
+                datetime.fromisoformat(str(created))
+                if created
+                else datetime.now().astimezone()
+            ),
+        )
+
+    @staticmethod
+    def _representation(
+        project_id: object,
+        layer_id: object,
+        item: Mapping[str, object],
+    ) -> Representation:
+        created = item.get("created_at")
+        kind = RepresentationKind(str(item.get("kind", "image")))
+        return Representation(
+            id=str(item.get("representation_id") or item.get("id")),
+            project_id=ProjectId(str(project_id)),
+            layer_id=str(layer_id),
+            name=str(item["name"]),
+            kind=kind,
+            purpose=RepresentationPurpose(
+                str(
+                    item.get(
+                        "purpose",
+                        "vector" if kind is RepresentationKind.VECTOR else "source",
+                    )
+                )
+            ),
+            note=str(item.get("note", "")),
+            source=None if item.get("source") is None else str(item["source"]),
+            source_image_representation_id=(
+                None
+                if item.get("source_image_representation_id") is None
+                else str(item["source_image_representation_id"])
+            ),
+            active=bool(item.get("active", False)),
+            state=StructureState(str(item.get("state", "active"))),
+            revision=int(item.get("revision", 0)),
+            created_at=(
+                datetime.fromisoformat(str(created))
+                if created
+                else datetime.now().astimezone()
+            ),
+        )
+
+    def create_layer(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        name: str,
+        layer_type: LayerType,
+        order: int,
+        idempotency_key: str,
+        layer_id: object | None = None,
+    ) -> Layer:
+        del principal, layer_id
+        payload = self._call(
+            "POST",
+            f"/api/v1/projects/{project.id}/layers",
+            payload={"name": name, "type": layer_type.value, "order": order},
+            idempotency_key=idempotency_key,
+            if_match=project.revision,
+        )
+        if not isinstance(payload, Mapping):
+            raise TypeError("Server returned an invalid layer")
+        return self._layer(project.id, payload)
+
+    def rename_layer(self, *, principal: Principal, project: Project, layer: Layer, name: str, idempotency_key: str) -> Layer:
+        del principal
+        payload = self._call(
+            "POST",
+            f"/api/v1/projects/{project.id}/layers/{layer.id}/rename",
+            payload={"name": name},
+            idempotency_key=idempotency_key,
+            if_match=layer.revision,
+        )
+        if not isinstance(payload, Mapping):
+            raise TypeError("Server returned an invalid layer")
+        return self._layer(project.id, payload)
+
+    def reorder_layers(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layers: tuple[Layer, ...] | list[Layer],
+        layer_ids: tuple[str, ...],
+        idempotency_key: str,
+    ) -> tuple[Layer, ...]:
+        del principal
+        payload = self._call(
+            "POST",
+            f"/api/v1/projects/{project.id}/layers/reorder",
+            payload={
+                "layer_ids": list(layer_ids),
+                "expected_revisions": {
+                    str(layer.id): layer.revision for layer in layers
+                },
+            },
+            idempotency_key=idempotency_key,
+        )
+        values = payload.get("items", ()) if isinstance(payload, Mapping) else ()
+        return tuple(
+            self._layer(project.id, item)
+            for item in values
+            if isinstance(item, Mapping)
+        )
+
+    def archive_layer(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        idempotency_key: str,
+    ) -> Layer:
+        del principal
+        payload = self._call(
+            "POST",
+            f"/api/v1/projects/{project.id}/layers/{layer.id}/archive",
+            payload={},
+            idempotency_key=idempotency_key,
+            if_match=layer.revision,
+        )
+        if not isinstance(payload, Mapping):
+            raise TypeError("Server returned an invalid layer")
+        return self._layer(project.id, payload)
+
+    def list_representations(
+        self,
+        project_id: object,
+        layer_id: object,
+        *,
+        include_archived: bool = False,
+    ) -> tuple[Representation, ...]:
+        payload = self._call(
+            "GET",
+            f"/api/v1/projects/{project_id}/layers/{layer_id}/representations",
+        )
+        values = payload.get("items", ()) if isinstance(payload, Mapping) else ()
+        representations = tuple(
+            self._representation(project_id, layer_id, item)
+            for item in values
+            if isinstance(item, Mapping)
+        )
+        if include_archived:
+            return representations
+        return tuple(
+            item for item in representations if item.state is not StructureState.ARCHIVED
+        )
+
+    def create_representation(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        name: str,
+        kind: RepresentationKind,
+        idempotency_key: str,
+        note: str = "",
+        source: str | None = None,
+        source_image_representation_id: object | None = None,
+        active: bool = False,
+        purpose: RepresentationPurpose = RepresentationPurpose.SOURCE,
+    ) -> Representation:
+        del principal
+        payload = self._call(
+            "POST",
+            f"/api/v1/projects/{project.id}/layers/{layer.id}/representations",
+            payload={
+                "name": name,
+                "kind": kind.value,
+                "purpose": (
+                    RepresentationPurpose.VECTOR.value
+                    if kind is RepresentationKind.VECTOR
+                    else purpose.value
+                ),
+                "note": note,
+                "source": source,
+                "source_image_representation_id": (
+                    None
+                    if source_image_representation_id is None
+                    else str(source_image_representation_id)
+                ),
+                "active": active,
+            },
+            idempotency_key=idempotency_key,
+            if_match=layer.revision,
+        )
+        if not isinstance(payload, Mapping):
+            raise TypeError("Server returned an invalid representation")
+        return self._representation(project.id, layer.id, payload)
+
+    def _update_representation(
+        self,
+        *,
+        project: Project,
+        layer: Layer,
+        representation: Representation,
+        operation: Mapping[str, object],
+        idempotency_key: str,
+    ) -> Representation:
+        payload = self._call(
+            "PATCH",
+            f"/api/v1/projects/{project.id}/layers/{layer.id}/representations/{representation.id}",
+            payload={
+                **operation,
+                "expected_representation_revision": representation.revision,
+            },
+            idempotency_key=idempotency_key,
+            if_match=layer.revision,
+        )
+        if not isinstance(payload, Mapping):
+            raise TypeError("Server returned an invalid representation")
+        return self._representation(project.id, layer.id, payload)
+
+    def rename_representation(self, *, principal: Principal, project: Project, layer: Layer, representation: Representation, name: str, idempotency_key: str) -> Representation:
+        del principal
+        return self._update_representation(project=project, layer=layer, representation=representation, operation={"name": name}, idempotency_key=idempotency_key)
+
+    def update_representation_note(self, *, principal: Principal, project: Project, layer: Layer, representation: Representation, note: str, idempotency_key: str) -> Representation:
+        del principal
+        return self._update_representation(project=project, layer=layer, representation=representation, operation={"note": note}, idempotency_key=idempotency_key)
+
+    def activate_representation(self, *, principal: Principal, project: Project, layer: Layer, representation: Representation, idempotency_key: str) -> Representation:
+        del principal
+        return self._update_representation(project=project, layer=layer, representation=representation, operation={"active": True}, idempotency_key=idempotency_key)
+
+    def deactivate_representation(self, *, principal: Principal, project: Project, layer: Layer, representation: Representation, idempotency_key: str) -> Representation:
+        del principal
+        return self._update_representation(project=project, layer=layer, representation=representation, operation={"active": False}, idempotency_key=idempotency_key)
+
+    def archive_representation(self, *, principal: Principal, project: Project, layer: Layer, representation: Representation, idempotency_key: str) -> Representation:
+        del principal
+        return self._update_representation(project=project, layer=layer, representation=representation, operation={"archive": True}, idempotency_key=idempotency_key)
+
     def project_permissions(self, project_id: object, principal: Principal) -> frozenset[Permission]:
         try:
             payload = self._call(
@@ -480,6 +779,89 @@ class RemoteServerProjectService:
             except ValueError:
                 continue
         return permissions_for_roles(roles)
+
+    def project_roles(
+        self,
+        project_id: object,
+        principal_id: object,
+    ) -> frozenset[ProjectRole]:
+        payload = self._call(
+            "GET",
+            f"/api/v1/projects/{project_id}/acl/{principal_id}",
+        )
+        raw_roles = payload.get("roles", ()) if isinstance(payload, Mapping) else ()
+        return frozenset(ProjectRole(str(role)) for role in raw_roles)
+
+    def project_role_revision(
+        self,
+        project_id: object,
+        principal_id: object,
+    ) -> int:
+        payload = self._call(
+            "GET",
+            f"/api/v1/projects/{project_id}/acl/{principal_id}",
+        )
+        return int(payload.get("revision", 0)) if isinstance(payload, Mapping) else 0
+
+    def _change_project_role(
+        self,
+        *,
+        method: str,
+        project: Project,
+        target_principal_id: object,
+        role: ProjectRole,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> frozenset[ProjectRole]:
+        payload = self._call(
+            method,
+            f"/api/v1/projects/{project.id}/acl/{target_principal_id}/{role.value}",
+            payload={} if method == "PUT" else None,
+            idempotency_key=idempotency_key,
+            if_match=expected_revision,
+        )
+        raw_roles = payload.get("roles", ()) if isinstance(payload, Mapping) else ()
+        return frozenset(ProjectRole(str(value)) for value in raw_roles)
+
+    def assign_project_role(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        target_principal_id: object,
+        role: ProjectRole,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> frozenset[ProjectRole]:
+        del principal
+        return self._change_project_role(
+            method="PUT",
+            project=project,
+            target_principal_id=target_principal_id,
+            role=role,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
+
+    def revoke_project_role(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        target_principal_id: object,
+        role: ProjectRole,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> frozenset[ProjectRole]:
+        del principal
+        return self._change_project_role(
+            method="DELETE",
+            project=project,
+            target_principal_id=target_principal_id,
+            role=role,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
 
     def project_workspace(self, project_id: object) -> None:
         return None
@@ -538,7 +920,7 @@ class _RemoteHistoryEvent:
         value = self._payload.get("recorded_at")
         if isinstance(value, datetime):
             return value
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return datetime.fromisoformat(str(value))
 
     @property
     def payload(self) -> Mapping[str, object]:

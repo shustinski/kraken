@@ -78,7 +78,10 @@ def main() -> int:
                 pass
         finally:
             Path(temporary_name).unlink(missing_ok=True)
-    print(f"Kraken Agent listening on http://{args.host}:{control.port}; token={control.token}; recovered={recovered}")
+    print(
+        f"Kraken Agent listening on http://{args.host}:{control.port}; "
+        f"recovered={recovered}"
+    )
     try:
         httpd.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

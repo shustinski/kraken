@@ -382,6 +382,15 @@ class EmbeddedProjectService:
     def list_principals(self, *, include_inactive: bool = False) -> tuple[Principal, ...]:
         return self.identities.list(include_inactive=include_inactive)
 
+    def list_project_principals(
+        self,
+        project_id: ProjectId | str,
+        *,
+        include_inactive: bool = False,
+    ) -> tuple[Principal, ...]:
+        del project_id
+        return self.list_principals(include_inactive=include_inactive)
+
     def project_role_revision(
         self,
         project_id: ProjectId | str,
@@ -829,8 +838,15 @@ class EmbeddedProjectService:
             for run in self.workspace_registry.list_runs(str(project.id), str(layer.id))
             if run.state.value == "running"
         ]
-        if active_runs:
-            raise WorkspaceValidationError("layer has an active plugin run")
+        active_jobs = [
+            job
+            for job in self.plugin_jobs()
+            if str(job.project_id) == str(project.id)
+            and str(job.layer_id) == str(layer.id)
+            and job.state.value not in {"succeeded", "failed", "cancelled"}
+        ]
+        if active_runs or active_jobs:
+            raise WorkspaceValidationError("layer has an active plugin job")
         stage = self.workspace_files.stage_layer_deletion(
             project=workspace,
             binding=binding,
@@ -1474,7 +1490,14 @@ class EmbeddedProjectService:
             for run in self.list_derived_runs(project.id, layer.id)
             if run.state.value == "running"
         )
-        if active_runs:
+        active_jobs = tuple(
+            job
+            for job in self.plugin_jobs()
+            if str(job.project_id) == str(project.id)
+            and str(job.layer_id) == str(layer.id)
+            and job.state.value not in {"succeeded", "failed", "cancelled"}
+        )
+        if active_runs or active_jobs:
             raise WorkspaceValidationError(
                 "Нельзя переименовать слой, пока выполняются задания."
             )
@@ -1953,6 +1976,51 @@ class EmbeddedProjectService:
                     stream.write(chunk)
                 stream.flush()
                 os.fsync(stream.fileno())
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return target
+
+    def export_artifact_version(
+        self,
+        project_id: ProjectId | str,
+        version: ArtifactVersion,
+        destination: Path | str,
+    ) -> Path:
+        """Export managed bytes or a verified local external reference."""
+
+        if version.blob is not None:
+            return self.export_managed_artifact(project_id, version, destination)
+        if version.external is None:
+            raise ValueError("Artifact version has no content reference")
+        if self.external_artifact_changed(version):
+            raise ValueError(
+                "Внешний файл изменён или недоступен; выгрузка заблокирована."
+            )
+        from urllib.parse import unquote, urlparse
+
+        parsed = urlparse(version.external.uri)
+        if parsed.scheme != "file":
+            raise ValueError("Desktop supports only local external file links")
+        source = Path(
+            unquote(parsed.path.lstrip("/") if os.name == "nt" else parsed.path)
+        )
+        if os.name == "nt" and parsed.netloc:
+            source = Path(
+                f"//{parsed.netloc}/{unquote(parsed.path.lstrip('/'))}"
+            )
+        source = source.resolve(strict=True)
+        target = Path(destination).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with (
+                open_regular_read(source, root=source.parent) as input_stream,
+                target.open("xb") as output_stream,
+            ):
+                while chunk := input_stream.read(1024 * 1024):
+                    output_stream.write(chunk)
+                output_stream.flush()
+                os.fsync(output_stream.fileno())
         except Exception:
             target.unlink(missing_ok=True)
             raise

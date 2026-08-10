@@ -6,8 +6,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
-
 from kraken_hub.dual_catalog import DualCatalogService
 from kraken_hub.remote_client import (
     RemoteAuth,
@@ -17,7 +15,12 @@ from kraken_hub.remote_client import (
 )
 from kraken_hub.workspace_service import REMOTE_STORAGE_PROFILE, project_from_server_dict
 from kraken_manager.domain.identity import Principal
-from kraken_manager.domain.project import GridOrientation, ProjectState
+from kraken_manager.domain.project import (
+    GridOrientation,
+    LayerType,
+    ProjectState,
+    RepresentationKind,
+)
 
 
 class _FakeHttp(RemoteHttpClient):
@@ -180,3 +183,134 @@ def test_dual_catalog_routes_create_by_storage_profile(tmp_path: Path) -> None:
     assert dual.project_storage_label(remote_project.id) == "Сервер PostgreSQL"
     names = {project.name for project in dual.list_projects()}
     assert names == {"LocalOne", "Remote"}
+
+
+def test_remote_structure_routes_do_not_fall_back_to_local_catalog(
+    tmp_path: Path,
+) -> None:
+    from kraken_hub.composition import EmbeddedProjectService
+
+    local = EmbeddedProjectService(data_dir=tmp_path / "local")
+    account = local.create_initial_account("admin", "Admin", "secret")
+    remote_principal = Principal.gitlab(
+        issuer="https://gitlab.example",
+        subject="1",
+        display_name="Git",
+    )
+    project_id = str(uuid4())
+    layer_id = str(uuid4())
+    representation_id = str(uuid4())
+    project_payload = {
+        "project_id": project_id,
+        "name": "Remote",
+        "width": 1,
+        "height": 1,
+        "orientation": "y_down",
+        "state": "active",
+        "revision": 0,
+        "storage_profile": REMOTE_STORAGE_PROFILE.id,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    layer_payload = {
+        "layer_id": layer_id,
+        "project_id": project_id,
+        "name": "Metal",
+        "type": "metal",
+        "order": 0,
+        "state": "active",
+        "revision": 0,
+    }
+    representation_payload = {
+        "representation_id": representation_id,
+        "project_id": project_id,
+        "layer_id": layer_id,
+        "name": "Images",
+        "kind": "image",
+        "purpose": "source",
+        "active": True,
+        "state": "active",
+        "revision": 0,
+    }
+    http = _FakeHttp()
+    http.responses[("GET", "/api/v1/projects")] = {"items": [project_payload]}
+    http.responses[("GET", "/api/v1/principals")] = {
+        "items": [
+            {
+                "principal_id": str(remote_principal.id),
+                "provider": "gitlab",
+                "issuer": remote_principal.issuer,
+                "subject": remote_principal.subject,
+                "display_name": remote_principal.display_name,
+                "email": None,
+                "active": True,
+                "system_roles": [],
+            }
+        ]
+    }
+    http.responses[("POST", f"/api/v1/projects/{project_id}/layers")] = layer_payload
+    http.responses[("GET", f"/api/v1/projects/{project_id}/layers")] = {
+        "items": [layer_payload]
+    }
+    http.responses[
+        ("POST", f"/api/v1/projects/{project_id}/layers/{layer_id}/representations")
+    ] = representation_payload
+    http.responses[
+        ("GET", f"/api/v1/projects/{project_id}/layers/{layer_id}/representations")
+    ] = {"items": [representation_payload]}
+    http.responses[
+        (
+            "PATCH",
+            f"/api/v1/projects/{project_id}/layers/{layer_id}/representations/{representation_id}",
+        )
+    ] = {**representation_payload, "active": False, "revision": 1}
+    remote = RemoteServerProjectService(
+        "http://example.test",
+        auth=RemoteAuth(access_token="t", principal=remote_principal),
+        data_dir=tmp_path / "remote-cache",
+        http=http,
+    )
+    dual = DualCatalogService(local, remote)
+    project = project_from_server_dict(project_payload)
+
+    layer = dual.create_layer(
+        principal=account.principal,
+        project=project,
+        name="Metal",
+        layer_type=LayerType.METAL,
+        order=0,
+        idempotency_key="layer",
+    )
+    representation = dual.create_representation(
+        principal=account.principal,
+        project=project,
+        layer=layer,
+        name="Images",
+        kind=RepresentationKind.IMAGE,
+        active=True,
+        idempotency_key="representation",
+    )
+
+    assert layer.id == layer_id
+    assert representation.id == representation_id
+    listed_representations = dual.list_representations(project.id, layer.id)
+    assert tuple(item.id for item in listed_representations) == (representation.id,)
+    assert listed_representations[0].active
+    deactivated = dual.deactivate_representation(
+        principal=account.principal,
+        project=project,
+        layer=layer,
+        representation=representation,
+        idempotency_key="deactivate",
+    )
+    assert not deactivated.active
+    assert dual.list_project_principals(project.id) == (remote_principal,)
+    patch_call = next(call for call in http.calls if call[0] == "PATCH")
+    assert patch_call[2] == {
+        "active": False,
+        "expected_representation_revision": 0,
+    }
+    assert local.list_layers(project.id) == ()
+    layer_call = next(
+        call for call in http.calls if call[1].endswith(f"/{project_id}/layers") and call[0] == "POST"
+    )
+    assert layer_call[3] == {"Idempotency-Key": "layer", "If-Match": "0"}

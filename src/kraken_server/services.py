@@ -10,9 +10,10 @@ from __future__ import annotations
 import base64
 import json
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 
@@ -43,6 +44,8 @@ class ServerServices(Protocol):
     def health(self) -> dict[str, Any]: ...
 
     def list_projects(self) -> list[dict[str, Any]]: ...
+
+    def list_principals(self, *, include_inactive: bool = False) -> list[dict[str, Any]]: ...
 
     def create_project(self, payload: Mapping[str, Any], context: CommandContext) -> dict[str, Any]: ...
 
@@ -137,6 +140,32 @@ class InMemoryServerServices:
     def list_projects(self) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(item) for item in sorted(self._projects.values(), key=lambda value: value["name"].casefold())]
+
+    def list_principals(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+        del include_inactive
+        with self._lock:
+            identifiers = {
+                principal_id for _project_id, principal_id in self._acl
+            }
+            identifiers.update(
+                str(event.get("actor_id", ""))
+                for events in self._events.values()
+                for event in events
+                if event.get("actor_id")
+            )
+        return [
+            {
+                "principal_id": identifier,
+                "provider": "gitlab",
+                "subject": identifier,
+                "issuer": None,
+                "display_name": identifier,
+                "email": None,
+                "active": True,
+                "system_roles": [],
+            }
+            for identifier in sorted(identifiers)
+        ]
 
     def create_project(self, payload: Mapping[str, Any], context: CommandContext) -> dict[str, Any]:
         key = (context.actor_id, context.idempotency_key)
@@ -559,15 +588,15 @@ class InMemoryServerServices:
             elif operation == "note":
                 representation["note"] = str(payload["note"])
             elif operation == "active":
-                if not bool(payload["active"]):
-                    raise ValidationError("Use archive instead of deactivating the selected representation")
-                if representation["active"]:
-                    raise ConflictError("Representation is already active")
-                for previous in values:
-                    if previous is not representation and previous["kind"] == representation["kind"] and previous["active"]:
-                        previous["active"] = False
-                        previous["revision"] += 1
-                representation["active"] = True
+                activate = bool(payload["active"])
+                if activate:
+                    if representation["active"]:
+                        raise ConflictError("Representation is already active")
+                    for previous in values:
+                        if previous is not representation and previous["kind"] == representation["kind"] and previous["active"]:
+                            previous["active"] = False
+                            previous["revision"] += 1
+                representation["active"] = activate
             else:
                 representation["state"] = "archived"
                 representation["active"] = False

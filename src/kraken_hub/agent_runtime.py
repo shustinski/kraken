@@ -47,6 +47,19 @@ class LocalAgentRuntime:
         self.token = ""
         self.protocol_by_capability: dict[str, str] = {}
 
+    def _discard_process(self) -> None:
+        process = self.process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        self.process = None
+        self.base_url = ""
+        self.token = ""
+
     def _registry(self) -> tuple[Path, frozenset[str]]:
         from .app import build_launch_command
 
@@ -123,27 +136,33 @@ class LocalAgentRuntime:
             try:
                 health = self._request("GET", "/api/v1/health")
             except (OSError, ValueError, TypeError):
-                self.base_url = ""
-                self.token = ""
+                self._discard_process()
             else:
                 if health.get("status") == "ok":
                     return self._registry()[1]
         registry, capabilities = self._registry()
         connection = self.data_dir / f"connection-{secrets.token_hex(8)}.json"
-        token = secrets.token_urlsafe(32)
         command = [
             sys.executable,
             "-m",
             "kraken_agent",
             "--data-dir",
             str(self.data_dir),
-            "--token",
-            token,
             "--plugins-config",
             str(registry),
             "--connection-file",
             str(connection),
         ]
+        environment = os.environ.copy()
+        source_root = str(Path(__file__).resolve().parents[1])
+        python_path = environment.get("PYTHONPATH", "")
+        python_path_entries = tuple(
+            entry for entry in python_path.split(os.pathsep) if entry
+        )
+        if source_root not in python_path_entries:
+            environment["PYTHONPATH"] = os.pathsep.join(
+                (source_root, *python_path_entries)
+            )
         creation_flags = (
             int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if os.name == "nt"
@@ -155,6 +174,7 @@ class LocalAgentRuntime:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=creation_flags,
+            env=environment,
         )
         deadline = time.monotonic() + 12.0
         payload: dict[str, Any] | None = None
@@ -173,13 +193,20 @@ class LocalAgentRuntime:
             time.sleep(0.05)
         connection.unlink(missing_ok=True)
         if payload is None:
+            self._discard_process()
             raise RuntimeError("Kraken Agent did not publish a connection file")
         self.base_url = str(payload.get("url", ""))
         self.token = str(payload.get("token", ""))
-        if self.token != token:
-            raise RuntimeError("Kraken Agent connection token does not match")
-        health = self._request("GET", "/api/v1/health")
+        if not self.base_url or not self.token:
+            self._discard_process()
+            raise RuntimeError("Kraken Agent published an incomplete connection file")
+        try:
+            health = self._request("GET", "/api/v1/health")
+        except (OSError, ValueError, TypeError) as exc:
+            self._discard_process()
+            raise RuntimeError("Kraken Agent health check failed") from exc
         if health.get("status") != "ok":
+            self._discard_process()
             raise RuntimeError("Kraken Agent health check failed")
         return capabilities
 
@@ -199,6 +226,7 @@ class LocalAgentRuntime:
                     ) from exc
             self.base_url = ""
             self.token = ""
+            self.process = None
 
 
 __all__ = ["LocalAgentRuntime"]

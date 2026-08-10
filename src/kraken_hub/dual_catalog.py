@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -12,8 +13,10 @@ from kraken_manager.domain.identity import Principal
 from kraken_manager.domain.project import GridOrientation, Project
 
 from .composition import EmbeddedProjectService
-from .remote_client import RemoteServerProjectService
+from .remote_client import RemoteServerError, RemoteServerProjectService
 from .workspace_service import REMOTE_STORAGE_PROFILE, ProjectEventWake
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DualCatalogService:
@@ -33,8 +36,9 @@ class DualCatalogService:
             try:
                 for project in remote.list_projects(include_archived=True):
                     self._remote_ids.add(str(project.id))
-            except Exception:
+            except (OSError, RemoteServerError, ValueError):
                 # Server may be temporarily unreachable; catalog refresh will retry.
+                LOGGER.exception("Could not load the initial remote project catalog")
                 self._remote_ids = set()
 
     @property
@@ -106,7 +110,8 @@ class DualCatalogService:
                     str(project.id)
                     for project in self.remote.list_projects(include_archived=True)
                 }
-            except Exception:
+            except (OSError, RemoteServerError, ValueError):
+                LOGGER.exception("Could not refresh the remote project catalog")
                 remote_projects = []
         merged = {str(project.id): project for project in local_projects}
         for project in remote_projects:
@@ -226,11 +231,96 @@ class DualCatalogService:
     def list_layers(self, project_id, *, include_archived: bool = False):
         return self._backend(project_id).list_layers(project_id, include_archived=include_archived)
 
+    def create_layer(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).create_layer(**kwargs)
+
+    def rename_layer(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).rename_layer(**kwargs)
+
+    def reorder_layers(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).reorder_layers(**kwargs)
+
+    def archive_layer(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).archive_layer(**kwargs)
+
+    def list_representations(
+        self,
+        project_id,
+        layer_id,
+        *,
+        include_archived: bool = False,
+    ):
+        return self._backend(project_id).list_representations(
+            project_id,
+            layer_id,
+            include_archived=include_archived,
+        )
+
+    def create_representation(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).create_representation(**kwargs)
+
+    def rename_representation(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).rename_representation(**kwargs)
+
+    def update_representation_note(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).update_representation_note(**kwargs)
+
+    def activate_representation(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).activate_representation(**kwargs)
+
+    def deactivate_representation(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).deactivate_representation(**kwargs)
+
+    def archive_representation(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).archive_representation(**kwargs)
+
     def project_permissions(self, project_id, principal):
         backend = self._backend(project_id)
         if backend is self.remote and self.remote is not None:
             return self.remote.project_permissions(project_id, self.remote.auth.principal)
         return self.local.project_permissions(project_id, principal)
+
+    def project_roles(self, project_id, principal_id):
+        return self._backend(project_id).project_roles(project_id, principal_id)
+
+    def list_project_principals(
+        self,
+        project_id,
+        *,
+        include_inactive: bool = False,
+    ):
+        backend = self._backend(project_id)
+        reader = getattr(backend, "list_project_principals", None)
+        if callable(reader):
+            return reader(
+                project_id,
+                include_inactive=include_inactive,
+            )
+        return backend.list_principals(include_inactive=include_inactive)
+
+    def project_role_revision(self, project_id, principal_id):
+        return self._backend(project_id).project_role_revision(
+            project_id,
+            principal_id,
+        )
+
+    def assign_project_role(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).assign_project_role(**kwargs)
+
+    def revoke_project_role(self, **kwargs):
+        project = kwargs.get("project")
+        return self._backend(project.id).revoke_project_role(**kwargs)
 
     def history(self, project_id, *, as_of=None):
         return self._backend(project_id).history(project_id, as_of=as_of)
@@ -265,11 +355,12 @@ def build_workspace_service(
     data_dir: Path | str | None = None,
 ) -> DualCatalogService | EmbeddedProjectService:
     local = EmbeddedProjectService(data_dir=data_dir)
-    from .remote_client import RemoteServerError, build_remote_service
+    from .remote_client import build_remote_service
 
     try:
         remote = build_remote_service(data_dir=local.data_dir)
-    except Exception:
+    except (OSError, RemoteServerError, ValueError):
+        LOGGER.exception("Could not configure the remote Kraken service")
         remote = None
     if remote is None:
         return local

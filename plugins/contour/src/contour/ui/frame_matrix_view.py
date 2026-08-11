@@ -76,6 +76,9 @@ class FrameMatrixGraphicsView(QGraphicsView):
         self._columns = 1
         self._current_row = -1
         self._signals_blocked = False
+        self._middle_pan_active = False
+        self._middle_pan_origin = QPoint()
+        self._middle_pan_scroll_origin = QPoint()
         self._layout_dirty = False
         self._matrix_zoom = 1.0
         self._matrix_target_zoom = 1.0
@@ -457,6 +460,16 @@ class FrameMatrixGraphicsView(QGraphicsView):
         super().wheelEvent(event)
 
     def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._middle_pan_active = True
+            self._middle_pan_origin = event.position().toPoint()
+            self._middle_pan_scroll_origin = QPoint(
+                self.horizontalScrollBar().value(),
+                self.verticalScrollBar().value(),
+            )
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
         item = self._item_at_viewport_pos(event.position().toPoint())
         if item is not None:
             try:
@@ -469,6 +482,29 @@ class FrameMatrixGraphicsView(QGraphicsView):
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._middle_pan_active:
+            if not (event.buttons() & Qt.MouseButton.MiddleButton):
+                self._finish_middle_pan()
+                return
+            delta = event.position().toPoint() - self._middle_pan_origin
+            self.horizontalScrollBar().setValue(self._middle_pan_scroll_origin.x() - delta.x())
+            self.verticalScrollBar().setValue(self._middle_pan_scroll_origin.y() - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton and self._middle_pan_active:
+            self._finish_middle_pan()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _finish_middle_pan(self) -> None:
+        self._middle_pan_active = False
+        self.viewport().unsetCursor()
 
     def _item_at_viewport_pos(self, point: QPoint) -> QListWidgetItem | None:
         scene_pos = self.mapToScene(point)

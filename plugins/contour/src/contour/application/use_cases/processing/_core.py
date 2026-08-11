@@ -1579,14 +1579,16 @@ def _use_structural_metal_recovery(settings: ContourExtractionSettings) -> bool:
 
 
 def _run_structural_metal_recovery(
+    source: Any,
     preprocessed: Any,
     contour_settings: ContourExtractionSettings,
 ) -> tuple[list[PolygonData], np.ndarray, dict[str, np.ndarray], dict[str, list[PolygonData]]]:
     from ....vision.metal_recovery import detect_metalization, metal_recovery_config_from_settings
 
     gray = ensure_uint8(_via_grayscale(preprocessed))
+    source_gray = ensure_uint8(_via_grayscale(source))
     cfg = metal_recovery_config_from_settings(contour_settings)
-    mr = detect_metalization(gray, cfg)
+    mr = detect_metalization(gray, cfg, source_image=source_gray)
     mask = mr.debug_images.get("metal_filtered_mask")
     if mask is None:
         mask = mr.debug_images["metal_binary_mask"]
@@ -1829,7 +1831,7 @@ def _process_image_path_impl(
         raise_if_preview_cancelled()
         phase_started = perf_counter()
         polygons, mask, metal_debug_extra, metal_overlays = _run_structural_metal_recovery(
-            preprocessed, contour_settings
+            source, preprocessed, contour_settings
         )
         if timing is not None:
             timing.contour_extraction_ms += (perf_counter() - phase_started) * 1000.0

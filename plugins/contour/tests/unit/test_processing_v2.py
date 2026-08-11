@@ -22,6 +22,11 @@ def test_v2_request_round_trip_keeps_discriminated_settings() -> None:
     assert isinstance(restored.recognition, MetalRecoverySettings)
 
 
+def test_metal_minimum_contrast_defaults_to_fifty_and_clamps_zero() -> None:
+    assert MetalRecoverySettings().min_contrast == 50.0
+    assert MetalRecoverySettings(min_contrast=0.0).min_contrast == 1.0
+
+
 def test_legacy_migrator_reports_unknown_fields() -> None:
     request, report = ProcessingRequestV2.migrate_legacy(
         {

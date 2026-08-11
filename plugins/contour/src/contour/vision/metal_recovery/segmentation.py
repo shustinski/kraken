@@ -36,28 +36,18 @@ def normalize_metal_segmentation_strategy(value: Any) -> str:
     return "auto"
 
 
-def contrast_bias_to_otsu_offset(contrast_bias: float) -> float:
-    """Map UI contrast bias (-50..+50) to Otsu threshold offset."""
-    bias = max(-50.0, min(50.0, float(contrast_bias)))
-    t = (bias + 50.0) / 100.0
-    return float((t - 0.5) * 18.0)
-
-
-def contrast_bias_to_threshold_params(contrast_bias: float) -> dict[str, float]:
-    """Backward-compatible helper; only ``otsu_offset`` is used by the pipeline."""
-    offset = contrast_bias_to_otsu_offset(contrast_bias)
-    return {"c_adaptive": 0.0, "sauvola_k": 0.0, "otsu_offset": offset}
-
-
 def migrate_legacy_metal_settings(payload: dict[str, Any]) -> dict[str, Any]:
     """Convert deprecated sensitivity/segmentation fields to the Otsu pipeline."""
     out = dict(payload)
+    if "metal_min_contrast" not in payload and "metal_contrast_bias" in payload:
+        out["metal_min_contrast"] = max(1.0, float(payload.get("metal_contrast_bias", 1.0)))
     if "metal_contrast_bias" not in payload and "metal_sensitivity_0_100" in payload:
         sens = max(0, min(100, int(payload.get("metal_sensitivity_0_100", 50))))
         tok = str(payload.get("metal_sensitivity", "medium") or "medium").lower()
         mid = {"low": 35, "medium": 50, "high": 65}.get(tok, 50)
         blend = 0.35 * mid + 0.65 * sens
         out["metal_contrast_bias"] = round((blend - 50.0) * 0.6)
+        out["metal_min_contrast"] = max(1.0, float(out["metal_contrast_bias"]))
     if "metal_gap_bridge_px" not in payload and "metal_morph_close_radius" in payload:
         out["metal_gap_bridge_px"] = int(payload.get("metal_morph_close_radius", 2) or 2)
     if "metal_speckle_removal_px" not in payload and "metal_morph_open_radius" in payload:
@@ -75,6 +65,8 @@ def migrate_legacy_metal_settings(payload: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(slots=True)
 class MetalSegmentationConfig:
+    min_contrast: float = 50.0
+    # Deprecated compatibility field; no longer shifts the segmentation threshold.
     contrast_bias: float = 0.0
     gap_bridge_px: int = 2
     speckle_removal_px: int = 0

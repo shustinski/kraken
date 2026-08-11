@@ -924,7 +924,9 @@ class WidgetPipelineMixin:
         keys = (
             "metal_preset",
             "metal_noise_suppression",
-            "metal_contrast_bias",
+            "metal_min_contrast",
+            "metal_min_hole_source_contrast",
+            "metal_min_hole_source_contrast_fraction",
             "metal_segmentation_strategy",
             "metal_gap_bridge_px",
             "metal_speckle_removal_px",
@@ -943,7 +945,15 @@ class WidgetPipelineMixin:
         return {key: payload[key] for key in keys if key in payload}
 
     def _apply_metal_preset_payload(self, payload: dict[str, object]) -> None:
-        merged = ContourExtractionSettings.from_dict(self._current_contour_settings().to_dict() | dict(payload))
+        normalized_payload = dict(payload)
+        if "metal_min_contrast" not in normalized_payload and "metal_contrast_bias" in normalized_payload:
+            normalized_payload["metal_min_contrast"] = max(
+                1.0,
+                float(normalized_payload.get("metal_contrast_bias", 0.0)),
+            )
+        merged = ContourExtractionSettings.from_dict(
+            self._current_contour_settings().to_dict() | normalized_payload
+        )
         self._set_extraction_settings(merged)
         self._on_extraction_settings_changed()
 

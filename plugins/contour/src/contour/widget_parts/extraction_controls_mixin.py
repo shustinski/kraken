@@ -666,12 +666,29 @@ class WidgetExtractionControlsMixin:
                     "SEM noise suppression before segmentation.",
                 )
             )
-        if getattr(self, "metal_contrast_bias_spin", None) is not None:
-            self.metal_contrast_bias_spin.setToolTip(
+        if getattr(self, "metal_min_contrast_slider", None) is not None:
+            self.metal_min_contrast_slider.setToolTip(
                 tt(
-                    "Смещение порога выделения металла: положительные значения добавляют слабые проводники, "
-                    "отрицательные — убирают ложные срабатывания. Изменение плавное, без скачков.",
-                    "Continuous contrast bias for local segmentation.",
+                    "Минимальная разница яркости проводника и фона (1–255). "
+                    "Распознаются области с таким или большим контрастом. При уменьшении порога "
+                    "соседние фрагменты могут объединиться, поэтому площадь маски растёт, а число контуров иногда уменьшается.",
+                    "Minimum conductor-to-background brightness difference (1–255). "
+                    "Areas at or above the threshold are recognized. Lowering the threshold can merge adjacent fragments, "
+                    "so mask area grows even though the contour count can decrease.",
+                )
+            )
+        if getattr(self, "metal_min_hole_source_contrast_spin", None) is not None:
+            self.metal_min_hole_source_contrast_spin.setToolTip(
+                tt(
+                    "Минимальная разница яркости между проводником и внутренним отверстием.",
+                    "Minimum brightness difference between a conductor and an inner hole.",
+                )
+            )
+        if getattr(self, "metal_min_hole_source_contrast_fraction_spin", None) is not None:
+            self.metal_min_hole_source_contrast_fraction_spin.setToolTip(
+                tt(
+                    "Минимальный контраст отверстия как доля общего разделения светлого и тёмного классов.",
+                    "Minimum hole contrast as a fraction of the source class separation.",
                 )
             )
         if getattr(self, "metal_segmentation_strategy_combo", None) is not None:

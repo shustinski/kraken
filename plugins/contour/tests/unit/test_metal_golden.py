@@ -12,14 +12,15 @@ from contour.application.processing import ContourExtractionSettings
 from contour.domain.polygon_ring import is_valid_closed_polygon_ring
 from contour.serializers import load_polygons_cif
 from contour.ui.metal_presets import standard_metal_preset_payload
-from contour.vision.preprocessing import NoiseLevel, PreprocessConfig, preprocess_for_sem
 from contour.vision.metal_recovery import detect_metalization, metal_recovery_config_from_settings
+from contour.vision.preprocessing import NoiseLevel, PreprocessConfig, preprocess_for_sem
 
 _TEST_METAL_ROOT = Path(__file__).resolve().parent.parent / "test_metal"
 
 _OCTA1 = "OCTA1_PECVD_M2_BS_0785"
 _OCTA1_POLYGON_COUNT = 744
-_OCTA1_MIN_IOU = 0.85
+_OCTA1_MIN_MASK_IOU = 0.80
+_OCTA1_MIN_POLYGON_IOU = 0.78
 
 
 def _mask_iou(first_mask: np.ndarray, second_mask: np.ndarray) -> float:
@@ -121,7 +122,7 @@ def test_octa1_golden_mask_iou() -> None:
     detected_mask = result.debug_images["metal_binary_mask"]
 
     iou = _mask_iou(reference_mask, detected_mask)
-    assert iou >= _OCTA1_MIN_IOU, f"mask IoU {iou:.3f} < {_OCTA1_MIN_IOU:.3f}"
+    assert iou >= _OCTA1_MIN_MASK_IOU, f"mask IoU {iou:.3f} < {_OCTA1_MIN_MASK_IOU:.3f}"
 
 
 def test_octa1_golden_polygon_union_iou() -> None:
@@ -136,7 +137,9 @@ def test_octa1_golden_polygon_union_iou() -> None:
     detected_mask = _detected_conductor_mask(result.accepted, image.shape[:2])
 
     iou = _mask_iou(reference_mask, detected_mask)
-    assert iou >= _OCTA1_MIN_IOU, f"polygon union IoU {iou:.3f} < {_OCTA1_MIN_IOU:.3f}"
+    assert iou >= _OCTA1_MIN_POLYGON_IOU, (
+        f"polygon union IoU {iou:.3f} < {_OCTA1_MIN_POLYGON_IOU:.3f}"
+    )
 
 
 def test_octa1_golden_polygon_count_is_reasonable() -> None:

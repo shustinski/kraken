@@ -385,7 +385,11 @@ class ContourExtractionSettings:
     metal_structural_pipeline: bool = False
     metal_preset: str = "standard"
     metal_noise_suppression: int = 20
+    metal_min_contrast: float = 50.0
+    # Deprecated persisted setting; retained only for backward-compatible loading.
     metal_contrast_bias: float = 0.0
+    metal_min_hole_source_contrast: float = 8.0
+    metal_min_hole_source_contrast_fraction: float = 0.35
     metal_segmentation_strategy: str = "legacy_otsu"
     metal_gap_bridge_px: int = 2
     metal_speckle_removal_px: int = 0
@@ -577,7 +581,10 @@ class ContourExtractionSettings:
             "metal_structural_pipeline": self.metal_structural_pipeline,
             "metal_preset": self.metal_preset,
             "metal_noise_suppression": self.metal_noise_suppression,
+            "metal_min_contrast": self.metal_min_contrast,
             "metal_contrast_bias": self.metal_contrast_bias,
+            "metal_min_hole_source_contrast": self.metal_min_hole_source_contrast,
+            "metal_min_hole_source_contrast_fraction": self.metal_min_hole_source_contrast_fraction,
             "metal_segmentation_strategy": normalize_metal_segmentation_strategy(self.metal_segmentation_strategy),
             "metal_gap_bridge_px": self.metal_gap_bridge_px,
             "metal_speckle_removal_px": self.metal_speckle_removal_px,
@@ -881,7 +888,27 @@ class ContourExtractionSettings:
             metal_structural_pipeline=bool(payload.get("metal_structural_pipeline", False)),
             metal_preset=str(payload.get("metal_preset", "standard") or "standard"),
             metal_noise_suppression=max(0, min(100, int(payload.get("metal_noise_suppression", 20)))),
+            metal_min_contrast=max(
+                1.0,
+                min(
+                    255.0,
+                    float(
+                        payload.get(
+                            "metal_min_contrast",
+                            max(1.0, float(payload.get("metal_contrast_bias", 50.0))),
+                        )
+                    ),
+                ),
+            ),
             metal_contrast_bias=max(-50.0, min(50.0, float(payload.get("metal_contrast_bias", 0.0)))),
+            metal_min_hole_source_contrast=max(
+                0.0,
+                min(255.0, float(payload.get("metal_min_hole_source_contrast", 8.0))),
+            ),
+            metal_min_hole_source_contrast_fraction=max(
+                0.0,
+                min(1.0, float(payload.get("metal_min_hole_source_contrast_fraction", 0.35))),
+            ),
             metal_segmentation_strategy=normalize_metal_segmentation_strategy(
                 payload.get("metal_segmentation_strategy", "legacy_otsu")
             ),

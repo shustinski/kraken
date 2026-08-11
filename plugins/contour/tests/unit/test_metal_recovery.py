@@ -6,7 +6,7 @@ import pytest
 from contour.application.processing import ContourExtractionSettings
 from contour.contour_extractor import extract_polygons
 from contour.domain.polygon_ring import is_valid_closed_polygon_ring
-from contour.ui.metal_presets import noisy_sem_metal_preset_payload
+from contour.ui.metal_presets import noisy_sem_metal_preset_payload, standard_metal_preset_payload
 from contour.vision.metal_recovery import MetalRecoveryConfig, detect_metalization
 from contour.vision.metal_recovery.detector import (
     build_metal_extraction_mask,
@@ -51,6 +51,88 @@ def test_hierarchy_mode_full_preserves_holes() -> None:
     holes = [polygon for polygon in full.accepted if polygon.is_hole]
     assert holes
     assert all(hole.parent_id is not None for hole in holes)
+
+
+def test_full_hierarchy_setting_uses_tree_retrieval() -> None:
+    settings = ContourExtractionSettings(
+        metal_hierarchy_mode="full",
+        retrieval_mode="RETR_EXTERNAL",
+    )
+
+    cfg = metal_recovery_config_from_settings(settings)
+
+    assert not cfg.retrieval_external_only
+    assert cfg.retrieval_mode == "RETR_TREE"
+
+
+def test_full_hierarchy_rejects_dark_metal_interior_but_keeps_true_hole() -> None:
+    segmentation = np.zeros((140, 260), dtype=np.uint8)
+    source = np.full_like(segmentation, 20)
+    for x_start in (20, 140):
+        segmentation[20:120, x_start : x_start + 100] = 240
+        segmentation[45:95, x_start + 25 : x_start + 75] = 0
+        source[20:120, x_start : x_start + 100] = 220
+    source[45:95, 45:95] = 20
+    source[45:95, 165:215] = 170
+    config = MetalRecoveryConfig(
+        segmentation_strategy="legacy_otsu",
+        min_width_px=2.0,
+        min_area=20.0,
+        min_perimeter=20.0,
+        gap_bridge_px=0,
+        min_polygon_angle_deg=0.0,
+        min_inner_hole_area=20.0,
+    )
+
+    result = detect_metalization(segmentation, config, source_image=source)
+
+    holes = [polygon for polygon in result.accepted if polygon.is_hole]
+    assert len(holes) == 1
+    assert holes[0].bbox[0] < 100
+
+
+def test_hole_source_contrast_settings_change_accepted_holes() -> None:
+    segmentation = np.zeros((140, 140), dtype=np.uint8)
+    source = np.full_like(segmentation, 20)
+    segmentation[20:120, 20:120] = 240
+    segmentation[45:95, 45:95] = 0
+    source[20:120, 20:120] = 220
+    source[45:95, 45:95] = 20
+    base = dict(
+        segmentation_strategy="legacy_otsu",
+        min_width_px=2.0,
+        min_area=20.0,
+        min_perimeter=20.0,
+        gap_bridge_px=0,
+        min_polygon_angle_deg=0.0,
+        min_inner_hole_area=20.0,
+    )
+
+    strict = detect_metalization(
+        segmentation,
+        MetalRecoveryConfig(**base, min_hole_source_contrast=250.0),
+        source_image=source,
+    )
+    permissive = detect_metalization(
+        segmentation,
+        MetalRecoveryConfig(**base, min_hole_source_contrast=8.0),
+        source_image=source,
+    )
+
+    assert sum(polygon.is_hole for polygon in strict.accepted) == 0
+    assert sum(polygon.is_hole for polygon in permissive.accepted) == 1
+
+
+def test_hole_source_contrast_settings_reach_recovery_config() -> None:
+    settings = ContourExtractionSettings(
+        metal_min_hole_source_contrast=12.5,
+        metal_min_hole_source_contrast_fraction=0.2,
+    )
+
+    config = metal_recovery_config_from_settings(settings)
+
+    assert config.min_hole_source_contrast == pytest.approx(12.5)
+    assert config.min_hole_source_contrast_fraction == pytest.approx(0.2)
 
 
 def test_metal_recovery_config_preserves_zero_gap_bridge() -> None:
@@ -135,15 +217,102 @@ def _noisy_sem_synthetic() -> np.ndarray:
     return np.clip(img.astype(np.int16) + noise.astype(np.int16), 0, 255).astype(np.uint8)
 
 
-def test_contrast_bias_changes_mask_monotonically() -> None:
+def test_minimum_contrast_recovers_otsu_omissions_at_or_above_threshold() -> None:
+    from contour.vision.metal_recovery.pipeline_stages import _apply_minimum_contrast
+    from contour.vision.schemas import SemPolarity
+
+    gray = np.array([[100, 100, 130, 170]], dtype=np.uint8)
+    raw_mask = np.array([[0, 0, 0, 255]], dtype=np.uint8)
+
+    filtered = _apply_minimum_contrast(
+        gray,
+        raw_mask,
+        polarity=SemPolarity.BRIGHT_FOREGROUND,
+        min_contrast=30.0,
+    )
+
+    assert filtered.tolist() == [[0, 0, 255, 255]]
+
+
+def test_minimum_contrast_recovers_textured_low_contrast_region() -> None:
+    from contour.vision.metal_recovery.pipeline_stages import _apply_minimum_contrast
+    from contour.vision.schemas import SemPolarity
+
+    gray = np.full((80, 120), 100, dtype=np.uint8)
+    texture = np.indices((40, 80)).sum(axis=0) % 2
+    gray[20:60, 20:100] = np.where(texture == 0, 98, 108)
+    raw_mask = np.zeros_like(gray)
+    raw_mask[20:60, 99] = 255
+
+    filtered = _apply_minimum_contrast(
+        gray,
+        raw_mask,
+        polarity=SemPolarity.BRIGHT_FOREGROUND,
+        min_contrast=2.0,
+    )
+
+    assert np.count_nonzero(filtered[24:56, 24:96]) / (32 * 72) > 0.95
+
+
+def test_minimum_contrast_discards_unseeded_noise_components() -> None:
+    from contour.vision.metal_recovery.pipeline_stages import _retain_seeded_contrast_components
+
+    candidates = np.zeros((30, 60), dtype=np.uint8)
+    candidates[5:20, 5:25] = 255
+    candidates[5:20, 35:55] = 255
+    raw_mask = np.zeros_like(candidates)
+    raw_mask[10, 10:13] = 255
+
+    filtered = _retain_seeded_contrast_components(candidates, raw_mask)
+
+    assert np.all(filtered[5:20, 5:25] == 255)
+    assert np.all(filtered[5:20, 35:55] == 0)
+
+
+def test_lower_minimum_contrast_grows_mask_even_when_fragments_merge() -> None:
+    import cv2
+
+    from contour.vision.metal_recovery.pipeline_stages import _apply_minimum_contrast
+    from contour.vision.schemas import SemPolarity
+
+    gray = np.full((40, 80), 100, dtype=np.uint8)
+    gray[10:30, 10:30] = 170
+    gray[10:30, 50:70] = 170
+    gray[18:22, 30:50] = 120
+    raw_mask = np.zeros_like(gray)
+    raw_mask[10:30, 10:30] = 255
+    raw_mask[10:30, 50:70] = 255
+
+    strict = _apply_minimum_contrast(
+        gray,
+        raw_mask,
+        polarity=SemPolarity.BRIGHT_FOREGROUND,
+        min_contrast=50.0,
+    )
+    permissive = _apply_minimum_contrast(
+        gray,
+        raw_mask,
+        polarity=SemPolarity.BRIGHT_FOREGROUND,
+        min_contrast=10.0,
+    )
+
+    strict_components, _ = cv2.connectedComponents((strict > 0).astype(np.uint8), connectivity=8)
+    permissive_components, _ = cv2.connectedComponents(
+        (permissive > 0).astype(np.uint8), connectivity=8
+    )
+    assert np.count_nonzero(permissive) > np.count_nonzero(strict)
+    assert permissive_components - 1 < strict_components - 1
+
+
+def test_minimum_contrast_makes_recognition_mask_monotonically_smaller() -> None:
     from contour.vision.metal_recovery.pipeline_stages import clear_metal_segmentation_cache
 
     clear_metal_segmentation_cache()
     img = _noisy_sem_synthetic()
     areas: list[int] = []
-    for bias in (-10, -9):
+    for min_contrast in (1, 180, 230):
         cfg = MetalRecoveryConfig(
-            contrast_bias=float(bias),
+            min_contrast=float(min_contrast),
             gap_bridge_px=4,
             speckle_removal_px=2,
             min_width_px=3.0,
@@ -151,8 +320,8 @@ def test_contrast_bias_changes_mask_monotonically() -> None:
         mask, _ = build_metal_extraction_mask(img, cfg)
         areas.append(int(np.count_nonzero(mask)))
     assert areas[0] > 0
-    delta = abs(areas[1] - areas[0]) / max(areas[0], 1)
-    assert delta < 0.15
+    assert areas[0] >= areas[1] >= areas[2]
+    assert areas[0] > areas[2]
 
 
 def test_topology_stage_reuses_otsu_cache() -> None:
@@ -163,14 +332,14 @@ def test_topology_stage_reuses_otsu_cache() -> None:
 
     clear_metal_segmentation_cache()
     img = _noisy_sem_synthetic()
-    base = MetalRecoveryConfig(contrast_bias=0.0, gap_bridge_px=1, speckle_removal_px=0, min_width_px=3.0)
+    base = MetalRecoveryConfig(min_contrast=1.0, gap_bridge_px=1, speckle_removal_px=0, min_width_px=3.0)
     build_metal_extraction_mask(img, base)
     sig = next(iter(_SEGMENTATION_CACHE))
     entry = _SEGMENTATION_CACHE[sig]
     raw_before = entry.raw_segmentation.copy()
     build_metal_extraction_mask(
         img,
-        MetalRecoveryConfig(contrast_bias=0.0, gap_bridge_px=5, speckle_removal_px=0, min_width_px=3.0),
+        MetalRecoveryConfig(min_contrast=1.0, gap_bridge_px=5, speckle_removal_px=0, min_width_px=3.0),
     )
     assert entry.raw_segmentation is not None
     assert np.array_equal(entry.raw_segmentation, raw_before)
@@ -191,5 +360,25 @@ def test_legacy_settings_migration_in_contour_settings() -> None:
     settings = ContourExtractionSettings.from_dict(
         {"metal_sensitivity_0_100": 78, "metal_sensitivity": "low", "metal_segmentation_method": "otsu"}
     )
-    assert hasattr(settings, "metal_contrast_bias")
+    assert hasattr(settings, "metal_min_contrast")
     assert settings.metal_segmentation_strategy == "legacy_otsu"
+
+
+def test_legacy_positive_contrast_bias_migrates_to_minimum_contrast() -> None:
+    settings = ContourExtractionSettings.from_dict({"metal_contrast_bias": 25.0})
+
+    config = metal_recovery_config_from_settings(settings)
+
+    assert settings.metal_min_contrast == pytest.approx(25.0)
+    assert config.min_contrast == pytest.approx(25.0)
+
+
+def test_conductor_minimum_contrast_defaults_to_fifty_and_rejects_zero() -> None:
+    defaults = ContourExtractionSettings()
+    restored = ContourExtractionSettings.from_dict({"metal_min_contrast": 0.0})
+
+    assert defaults.metal_min_contrast == pytest.approx(50.0)
+    assert standard_metal_preset_payload()["metal_min_contrast"] == pytest.approx(50.0)
+    assert noisy_sem_metal_preset_payload()["metal_min_contrast"] == pytest.approx(50.0)
+    assert restored.metal_min_contrast == pytest.approx(1.0)
+    assert metal_recovery_config_from_settings(restored).min_contrast == pytest.approx(1.0)

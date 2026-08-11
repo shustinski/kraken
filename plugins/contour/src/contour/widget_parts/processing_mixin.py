@@ -1232,7 +1232,7 @@ class WidgetProcessingMixin:
     def _via_debug_inspection_enabled(self: Any) -> bool:
         return bool(
             hasattr(self, "recognition_mode_combo")
-            and str(self.recognition_mode_combo.currentData() or "") == "via"
+            and str(self.recognition_mode_combo.currentData() or "") in {"via", "conductors"}
         )
 
     def _neighbor_preview_max_dimension(self: Any) -> int:

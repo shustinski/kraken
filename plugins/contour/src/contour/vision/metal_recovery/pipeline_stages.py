@@ -15,7 +15,6 @@ from .segmentation import (
     MetalSegmentationConfig,
     MetalSegmentationResult,
     apply_topology_repair,
-    contrast_bias_to_otsu_offset,
     filter_mask_components,
     normalize_metal_segmentation_strategy,
     otsu_segmentation_mask,
@@ -30,11 +29,13 @@ def image_signature(gray: np.ndarray) -> str:
 @dataclass(slots=True)
 class _SegmentationStageCache:
     image_sig: str = ""
-    contrast_bias: float | None = None
     polarity: SemPolarity | None = None
+    requested_strategy: str | None = None
     strategy: str | None = None
     gray: np.ndarray | None = None
     raw_segmentation: np.ndarray | None = None
+    min_contrast: float | None = None
+    contrast_filtered: np.ndarray | None = None
     gap_bridge_px: int | None = None
     speckle_removal_px: int | None = None
     min_component_area: int | None = None
@@ -66,7 +67,13 @@ def _segmentation_cache_bytes() -> int:
     seen: set[int] = set()
     total = 0
     for entry in _SEGMENTATION_CACHE.values():
-        for array in (entry.gray, entry.raw_segmentation, entry.after_topology, entry.mask):
+        for array in (
+            entry.gray,
+            entry.raw_segmentation,
+            entry.contrast_filtered,
+            entry.after_topology,
+            entry.mask,
+        ):
             if array is not None and id(array) not in seen:
                 seen.add(id(array))
                 total += int(array.nbytes)
@@ -81,10 +88,15 @@ def _invalidate_topology(entry: _SegmentationStageCache) -> None:
     entry.mask = None
 
 
+def _invalidate_contrast(entry: _SegmentationStageCache) -> None:
+    entry.min_contrast = None
+    entry.contrast_filtered = None
+    _invalidate_topology(entry)
+
+
 def _adaptive_segmentation_mask(
     gray: np.ndarray,
     *,
-    contrast_bias: float,
     dark_foreground: bool,
 ) -> np.ndarray:
     shortest = max(3, min(gray.shape[:2]))
@@ -92,7 +104,6 @@ def _adaptive_segmentation_mask(
     if block_size >= shortest:
         block_size = max(3, (shortest - 1) | 1)
     mode = cv2.THRESH_BINARY_INV if dark_foreground else cv2.THRESH_BINARY
-    c_value = float(-contrast_bias) * 0.12
     return ensure_binary_mask(
         cv2.adaptiveThreshold(
             gray,
@@ -100,7 +111,7 @@ def _adaptive_segmentation_mask(
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             mode,
             block_size,
-            c_value,
+            0.0,
         )
     )
 
@@ -128,9 +139,7 @@ def _segment(
     gray: np.ndarray,
     *,
     strategy: str,
-    contrast_bias: float,
 ) -> tuple[np.ndarray, SemPolarity, str]:
-    otsu_offset = contrast_bias_to_otsu_offset(contrast_bias)
     strategies = ("legacy_otsu", "local_adaptive") if strategy == "auto" else (strategy,)
     candidates: list[tuple[float, np.ndarray, SemPolarity, str]] = []
     for candidate_strategy in strategies:
@@ -146,18 +155,68 @@ def _segment(
             if candidate_strategy == "local_adaptive":
                 mask = _adaptive_segmentation_mask(
                     gray,
-                    contrast_bias=contrast_bias,
                     dark_foreground=dark_foreground,
                 )
             else:
                 mask = otsu_segmentation_mask(
                     gray,
-                    otsu_offset=otsu_offset,
+                    otsu_offset=0.0,
                     dark_foreground=dark_foreground,
                 )
             candidates.append((_segmentation_quality(gray, mask), mask, polarity, candidate_strategy))
     _score, selected_mask, selected_polarity, selected_strategy = max(candidates, key=lambda item: item[0])
     return selected_mask, selected_polarity, selected_strategy
+
+
+def _apply_minimum_contrast(
+    gray: np.ndarray,
+    raw_mask: np.ndarray,
+    *,
+    polarity: SemPolarity,
+    min_contrast: float,
+) -> np.ndarray:
+    """Build pixel candidates from the requested source-to-background contrast."""
+    threshold = max(1.0, min(255.0, float(min_contrast)))
+    mask = ensure_binary_mask(raw_mask)
+    foreground = mask > 0
+    background_values = gray[~foreground]
+    if background_values.size == 0:
+        return np.zeros_like(mask)
+    background = float(np.median(background_values))
+    gray_float = gray.astype(np.float32, copy=False)
+    # A small blur stabilizes weak, textured conductors.  Keep the stronger of
+    # the source and smoothed responses so thin high-contrast traces are not
+    # weakened by smoothing.
+    smoothed = cv2.GaussianBlur(gray, (9, 9), 0).astype(np.float32, copy=False)
+    if polarity == SemPolarity.DARK_FOREGROUND:
+        contrast = np.maximum(background - gray_float, background - smoothed)
+    else:
+        contrast = np.maximum(gray_float - background, smoothed - background)
+    return np.where(contrast >= threshold, 255, 0).astype(np.uint8)
+
+
+def _retain_seeded_contrast_components(
+    contrast_mask: np.ndarray,
+    raw_mask: np.ndarray,
+    *,
+    min_seed_pixels: int = 3,
+) -> np.ndarray:
+    """Keep weak-contrast regions connected to a reliable segmentation seed."""
+    candidate = ensure_binary_mask(contrast_mask)
+    component_count, labels = cv2.connectedComponents(
+        (candidate > 0).astype(np.uint8),
+        connectivity=8,
+    )
+    if component_count <= 1:
+        return candidate
+    seed_counts = np.bincount(
+        labels.ravel(),
+        weights=(ensure_binary_mask(raw_mask) > 0).ravel(),
+        minlength=component_count,
+    )
+    keep = seed_counts >= max(1, int(min_seed_pixels))
+    keep[0] = False
+    return np.where(keep[labels], 255, 0).astype(np.uint8)
 
 
 def build_metal_segmentation_mask_staged(
@@ -185,23 +244,33 @@ def build_metal_segmentation_mask_staged(
     elif entry.gray is None:
         entry.gray = g0.copy()
 
-    contrast_bias = float(config.contrast_bias)
     requested_strategy = normalize_metal_segmentation_strategy(config.segmentation_strategy)
     if (
         entry.raw_segmentation is None
-        or entry.contrast_bias != contrast_bias
-        or entry.strategy != requested_strategy
+        or entry.requested_strategy != requested_strategy
     ):
         raise_if_preview_cancelled()
         raw, polarity, selected_strategy = _segment(
             g0,
             strategy=requested_strategy,
-            contrast_bias=contrast_bias,
         )
-        entry.contrast_bias = contrast_bias
         entry.polarity = polarity
+        entry.requested_strategy = requested_strategy
         entry.strategy = selected_strategy
         entry.raw_segmentation = raw
+        _invalidate_contrast(entry)
+
+    assert entry.polarity is not None
+    min_contrast = max(1.0, min(255.0, float(config.min_contrast)))
+    if entry.contrast_filtered is None or entry.min_contrast != min_contrast:
+        raise_if_preview_cancelled()
+        entry.contrast_filtered = _apply_minimum_contrast(
+            g0,
+            entry.raw_segmentation,
+            polarity=entry.polarity,
+            min_contrast=min_contrast,
+        )
+        entry.min_contrast = min_contrast
         _invalidate_topology(entry)
 
     topo_key = (
@@ -216,7 +285,11 @@ def build_metal_segmentation_mask_staged(
         or entry.min_component_area != topo_key[2]
     ):
         raise_if_preview_cancelled()
-        after_topo = apply_topology_repair(entry.raw_segmentation, config)
+        after_topo = apply_topology_repair(entry.contrast_filtered, config)
+        after_topo = _retain_seeded_contrast_components(
+            after_topo,
+            entry.raw_segmentation,
+        )
         mask = filter_mask_components(after_topo, int(config.min_component_area))
         entry.gap_bridge_px = topo_key[0]
         entry.speckle_removal_px = topo_key[1]
@@ -226,6 +299,7 @@ def build_metal_segmentation_mask_staged(
 
     assert entry.gray is not None
     assert entry.raw_segmentation is not None
+    assert entry.contrast_filtered is not None
     assert entry.after_topology is not None
     assert entry.mask is not None
     assert entry.polarity is not None
@@ -235,7 +309,7 @@ def build_metal_segmentation_mask_staged(
         "metal_preprocessed": entry.gray,
         "metal_raw_segmentation": ensure_binary_mask(entry.raw_segmentation),
         "metal_after_topology": ensure_binary_mask(entry.after_topology),
-        "metal_threshold_mask": ensure_binary_mask(entry.raw_segmentation),
+        "metal_threshold_mask": ensure_binary_mask(entry.contrast_filtered),
     }
     return MetalSegmentationResult(
         mask=ensure_binary_mask(entry.mask),

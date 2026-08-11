@@ -444,7 +444,6 @@ def build_files_tab(self) -> QWidget:
     )
     self.thumbnail_grid.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    self.thumbnail_grid.itemClicked.connect(self._on_thumbnail_item_clicked)
     self.thumbnail_grid.frameNavigationRequested.connect(self._on_frame_navigation_requested)
     self.thumbnail_grid.installEventFilter(self)
     self.thumbnail_grid.viewport().installEventFilter(self)
@@ -1615,9 +1614,20 @@ def build_extraction_tab(self) -> QWidget:
     _metal_preset_layout.addWidget(self.delete_metal_preset_button, 1, 2)
     self._refresh_metal_preset_combo()
 
-    self.metal_contrast_bias_spin = QSpinBox()
-    self.metal_contrast_bias_spin.setRange(-50, 50)
-    self.metal_contrast_bias_spin.setValue(0)
+    self.metal_min_contrast_slider = QSlider(Qt.Orientation.Horizontal)
+    self.metal_min_contrast_slider.setRange(1, 255)
+    self.metal_min_contrast_slider.setPageStep(5)
+    self.metal_min_contrast_slider.setTickInterval(25)
+    self.metal_min_contrast_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+    self.metal_min_contrast_slider.setValue(50)
+    self.metal_min_contrast_value_label = QLabel("50")
+    self.metal_min_contrast_value_label.setMinimumWidth(28)
+    self.metal_min_contrast_value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    self.metal_min_contrast_widget = QWidget()
+    _metal_contrast_layout = QHBoxLayout(self.metal_min_contrast_widget)
+    _metal_contrast_layout.setContentsMargins(0, 0, 0, 0)
+    _metal_contrast_layout.addWidget(self.metal_min_contrast_slider, 1)
+    _metal_contrast_layout.addWidget(self.metal_min_contrast_value_label)
 
     self.metal_gap_bridge_spin = QSpinBox()
     self.metal_gap_bridge_spin.setRange(0, 25)
@@ -1649,7 +1659,7 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_epsilon_spin.setValue(2.0)
 
     _metal_basic_form.addRow("Пресет", self.metal_preset_widget)
-    _metal_basic_form.addRow("Контраст проводника", self.metal_contrast_bias_spin)
+    _metal_basic_form.addRow("Мин. контраст проводника", self.metal_min_contrast_widget)
     _metal_basic_form.addRow("Сшивка разрывов, px", self.metal_gap_bridge_spin)
     _metal_basic_form.addRow("Удаление шума (opening), px", self.metal_speckle_removal_spin)
     _metal_basic_form.addRow("Ширина проводника, px", self.metal_width_row)
@@ -1725,6 +1735,15 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_min_angle_spin = QDoubleSpinBox()
     self.metal_min_angle_spin.setRange(0.0, 180.0)
     self.metal_min_angle_spin.setValue(30.0)
+    self.metal_min_hole_source_contrast_spin = QDoubleSpinBox()
+    self.metal_min_hole_source_contrast_spin.setRange(0.0, 255.0)
+    self.metal_min_hole_source_contrast_spin.setDecimals(1)
+    self.metal_min_hole_source_contrast_spin.setValue(8.0)
+    self.metal_min_hole_source_contrast_fraction_spin = QDoubleSpinBox()
+    self.metal_min_hole_source_contrast_fraction_spin.setRange(0.0, 1.0)
+    self.metal_min_hole_source_contrast_fraction_spin.setDecimals(2)
+    self.metal_min_hole_source_contrast_fraction_spin.setSingleStep(0.05)
+    self.metal_min_hole_source_contrast_fraction_spin.setValue(0.35)
     self.metal_approximation_checkbox = QCheckBox("Режим аппроксимации контуров")
     self.metal_approximation_checkbox.setChecked(True)
     self.metal_hierarchy_combo = QComboBox()
@@ -1747,6 +1766,11 @@ def build_extraction_tab(self) -> QWidget:
     _metal_adv_form.addRow("Режим иерархии", self.metal_hierarchy_combo)
     _metal_adv_form.addRow("Мин. площадь отверстия для заливки, px²", self.min_inner_hole_area_spin)
     self.min_inner_hole_area_label_widget = _metal_adv_form.labelForField(self.min_inner_hole_area_spin)
+    _metal_adv_form.addRow("Мин. контраст отверстия", self.metal_min_hole_source_contrast_spin)
+    _metal_adv_form.addRow(
+        "Доля контраста классов для отверстия",
+        self.metal_min_hole_source_contrast_fraction_spin,
+    )
     _metal_adv_form.addRow("Обработка объектов на границе", self.metal_border_handling_combo)
     _adv_box_l = QVBoxLayout()
     _adv_box_l.setContentsMargins(8, 4, 8, 4)
@@ -1770,7 +1794,10 @@ def build_extraction_tab(self) -> QWidget:
     self.apply_metal_preset_button.clicked.connect(self._apply_selected_metal_preset)
     self.save_metal_preset_button.clicked.connect(self._save_current_metal_preset)
     self.delete_metal_preset_button.clicked.connect(self._delete_selected_metal_preset)
-    self.metal_contrast_bias_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.metal_min_contrast_slider.valueChanged.connect(
+        lambda value: self.metal_min_contrast_value_label.setText(str(value))
+    )
+    self.metal_min_contrast_slider.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_gap_bridge_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_speckle_removal_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_epsilon_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -1794,6 +1821,8 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_min_length_spin,
         self.metal_min_points_spin,
         self.metal_min_angle_spin,
+        self.metal_min_hole_source_contrast_spin,
+        self.metal_min_hole_source_contrast_fraction_spin,
     ):
         _w.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_approximation_checkbox.stateChanged.connect(self._on_extraction_settings_changed)

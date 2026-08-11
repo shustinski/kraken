@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QSlider,
     QSpinBox,
 )
 
@@ -596,6 +597,20 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertEqual(process_calls[-1], False)
 
+    def test_conductor_contrast_slider_and_hole_settings_feed_recognition_settings(self) -> None:
+        self.assertIsInstance(self.widget.metal_min_contrast_slider, QSlider)
+        self.assertEqual(self.widget.metal_min_contrast_slider.minimum(), 1)
+        self.assertEqual(self.widget.metal_min_contrast_slider.value(), 50)
+        self.widget.metal_min_contrast_slider.setValue(37)
+        self.widget.metal_min_hole_source_contrast_spin.setValue(12.5)
+        self.widget.metal_min_hole_source_contrast_fraction_spin.setValue(0.2)
+
+        settings = self.widget._current_contour_settings()
+
+        self.assertEqual(settings.metal_min_contrast, 37.0)
+        self.assertEqual(settings.metal_min_hole_source_contrast, 12.5)
+        self.assertEqual(settings.metal_min_hole_source_contrast_fraction, 0.2)
+
     def test_every_heuristic_expert_parameter_schedules_via_rerecognition(self) -> None:
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))
         self.widget.auto_apply_checkbox.setChecked(True)
@@ -947,6 +962,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.assertEqual(self.widget.thumbnail_grid.item(0).text(), "")
             self.assertEqual(self.widget.thumbnail_grid.item(0).toolTip(), "frame_001")
             self.widget._on_thumbnail_item_clicked(self.widget.thumbnail_grid.item(1))
+            QTest.qWait(300)
 
             self.assertEqual(self.widget._last_loaded_from_thumb, paths[1])
 
@@ -1688,6 +1704,24 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertEqual(loaded, [(paths[2], True)])
         self.assertEqual(str(Path(self.widget._workspace.current_image_path or "")), paths[2])
+
+    def test_frame_matrix_navigation_uses_image_list_signal_and_starts_loading(self) -> None:
+        paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(3)]
+        self.widget._workspace._image_paths = paths
+        self.widget._set_image_list_paths(paths)
+        loaded: list[tuple[str, bool]] = []
+        self.widget.load_image = lambda path, **kwargs: loaded.append(  # type: ignore[method-assign]
+            (str(Path(path)), bool(kwargs.get("preserve_editor_view_position")))
+        )
+
+        self.widget.thumbnail_grid.frameNavigationRequested.emit(2)
+        QTest.qWait(300)
+
+        self.assertEqual(
+            str(Path(self.widget._image_list_path_from_proxy_index(self.widget.image_list.currentIndex()) or "")),
+            paths[2],
+        )
+        self.assertEqual(loaded, [(paths[2], False)])
 
     def test_frame_matrix_navigation_does_not_center_editor_scene(self) -> None:
         paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(3)]
@@ -2573,6 +2607,10 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
     def test_middle_button_temporarily_hides_vectors_while_panning(self) -> None:
         self.view.set_tool(EditorTool.ADD_POLYGON)
+        overlay = np.zeros((100, 100, 3), dtype=np.uint8)
+        overlay[..., 1] = 200
+        self.view.set_gradient_overlay(overlay, opacity=0.6)
+        overlay_item = self.view._editor_scene._gradient_overlay_item
         origin = self.view.mapFromScene(QPointF(50.0, 50.0))
         h_before = self.view.horizontalScrollBar().value()
 
@@ -2583,6 +2621,9 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
             origin,
         )
         self._app.processEvents()
+        self.assertFalse(self.view._editor_scene.polygon_overlays_visible())
+        self.assertFalse(overlay_item.isVisible())
+        self.view.set_polygon_overlays_visible(True)
         self.assertFalse(self.view._editor_scene.polygon_overlays_visible())
 
         QTest.mouseMove(self.view.viewport(), origin + QPoint(30, -12), delay=10)
@@ -2597,6 +2638,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self._app.processEvents()
 
         self.assertTrue(self.view._editor_scene.polygon_overlays_visible())
+        self.assertTrue(overlay_item.isVisible())
         self.assertEqual(len(self.view.get_polygons()), 1)
         self.assertEqual(self.view.current_tool, EditorTool.ADD_POLYGON)
         self.assertLessEqual(self.view.horizontalScrollBar().value(), h_before - 25)

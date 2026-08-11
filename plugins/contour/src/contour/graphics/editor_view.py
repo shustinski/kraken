@@ -183,7 +183,7 @@ class PolygonEditorView(QGraphicsView):
         self._middle_pan_last_viewport: QPointF | None = None
         self._polygon_overlay_hide_holds: set[str] = set()
         self._polygon_overlays_visible_before_holds: bool | None = None
-        self._gradient_overlay_visible_before_space_hold: bool | None = None
+        self._gradient_overlay_visible_before_holds: bool | None = None
         self._filter_preview_hold_active = False
         self._last_pointer_viewport_pos: QPointF | None = None
         self._image_click_mode = False
@@ -794,6 +794,10 @@ class PolygonEditorView(QGraphicsView):
         self._editor_scene.set_polygon_category_visible(category, visible)
 
     def set_polygon_overlays_visible(self, visible: bool) -> None:
+        if self._polygon_overlay_hide_holds:
+            self._polygon_overlays_visible_before_holds = bool(visible)
+            self._editor_scene.set_polygon_overlays_visible(False)
+            return
         self._editor_scene.set_polygon_overlays_visible(visible)
 
     def polygon_overlays_visible(self) -> bool:
@@ -828,8 +832,12 @@ class PolygonEditorView(QGraphicsView):
                 return
             if not self._polygon_overlay_hide_holds:
                 self._polygon_overlays_visible_before_holds = self._editor_scene.polygon_overlays_visible()
+                self._gradient_overlay_visible_before_holds = (
+                    self._editor_scene.gradient_overlay_user_visible()
+                )
             self._polygon_overlay_hide_holds.add(source)
             self._editor_scene.set_polygon_overlays_visible(False)
+            self._editor_scene.set_gradient_overlay_visible(False)
             return
         if source not in self._polygon_overlay_hide_holds:
             return
@@ -839,6 +847,11 @@ class PolygonEditorView(QGraphicsView):
         if self._polygon_overlays_visible_before_holds is not None:
             self._editor_scene.set_polygon_overlays_visible(self._polygon_overlays_visible_before_holds)
         self._polygon_overlays_visible_before_holds = None
+        if self._gradient_overlay_visible_before_holds is not None:
+            self._editor_scene.set_gradient_overlay_visible(
+                self._gradient_overlay_visible_before_holds
+            )
+        self._gradient_overlay_visible_before_holds = None
 
     def center_main_image(self) -> None:
         rect = self._editor_scene.main_image_rect()
@@ -1803,11 +1816,7 @@ class PolygonEditorView(QGraphicsView):
                 event.accept()
                 return
             if "space" not in self._polygon_overlay_hide_holds:
-                self._gradient_overlay_visible_before_space_hold = (
-                    self._editor_scene.gradient_overlay_user_visible()
-                )
                 self._set_polygon_overlay_hide_hold("space", True)
-                self._editor_scene.set_gradient_overlay_visible(False)
             event.accept()
             return
         if (
@@ -1923,9 +1932,6 @@ class PolygonEditorView(QGraphicsView):
             and "space" in self._polygon_overlay_hide_holds
         ):
             self._set_polygon_overlay_hide_hold("space", False)
-            if self._gradient_overlay_visible_before_space_hold is not None:
-                self._editor_scene.set_gradient_overlay_visible(self._gradient_overlay_visible_before_space_hold)
-                self._gradient_overlay_visible_before_space_hold = None
             event.accept()
             return
         if (

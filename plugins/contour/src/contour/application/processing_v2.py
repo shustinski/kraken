@@ -33,7 +33,11 @@ class CommonContourSettings:
 class MetalRecoverySettings:
     kind: Literal["metal"] = "metal"
     segmentation_strategy: Literal["auto", "global_otsu", "local_adaptive"] = "auto"
+    min_contrast: float = 50.0
+    # Deprecated schema-v2 field retained for compatibility with saved requests.
     contrast_bias: float = 0.0
+    min_hole_source_contrast: float = 8.0
+    min_hole_source_contrast_fraction: float = 0.35
     gap_bridge_px: int = 2
     speckle_removal_px: int = 0
     min_trace_width_px: float = 8.0
@@ -42,6 +46,9 @@ class MetalRecoverySettings:
     min_object_area: float = 60.0
     hierarchy_mode: Literal["full", "external"] = "full"
     border_handling: Literal["mark", "ignore", "accept"] = "mark"
+
+    def __post_init__(self) -> None:
+        self.min_contrast = max(1.0, min(255.0, float(self.min_contrast)))
 
 
 @dataclass(slots=True)
@@ -120,6 +127,11 @@ class ProcessingRequestV2:
         recognition_payload = dict(payload.get("recognition") or {})
         kind = str(recognition_payload.get("kind") or "")
         if kind == "metal":
+            if "min_contrast" not in recognition_payload and "contrast_bias" in recognition_payload:
+                recognition_payload["min_contrast"] = max(
+                    0.0,
+                    float(recognition_payload.get("contrast_bias", 0.0)),
+                )
             recognition_payload["segmentation_strategy"] = _normalized_v2_metal_strategy(
                 recognition_payload.get("segmentation_strategy", "auto")
             )
@@ -151,7 +163,10 @@ class ProcessingRequestV2:
                     if metal_mode.segmentation_strategy == "global_otsu"
                     else metal_mode.segmentation_strategy
                 ),
+                metal_min_contrast=metal_mode.min_contrast,
                 metal_contrast_bias=metal_mode.contrast_bias,
+                metal_min_hole_source_contrast=metal_mode.min_hole_source_contrast,
+                metal_min_hole_source_contrast_fraction=metal_mode.min_hole_source_contrast_fraction,
                 metal_gap_bridge_px=metal_mode.gap_bridge_px,
                 metal_speckle_removal_px=metal_mode.speckle_removal_px,
                 metal_min_trace_width_px=metal_mode.min_trace_width_px,
@@ -238,7 +253,10 @@ class ProcessingRequestV2:
         else:
             recognition = MetalRecoverySettings(
                 segmentation_strategy=_normalized_v2_metal_strategy(legacy.metal_segmentation_strategy),
+                min_contrast=legacy.metal_min_contrast,
                 contrast_bias=legacy.metal_contrast_bias,
+                min_hole_source_contrast=legacy.metal_min_hole_source_contrast,
+                min_hole_source_contrast_fraction=legacy.metal_min_hole_source_contrast_fraction,
                 gap_bridge_px=legacy.metal_gap_bridge_px,
                 speckle_removal_px=legacy.metal_speckle_removal_px,
                 min_trace_width_px=legacy.metal_min_trace_width_px,

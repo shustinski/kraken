@@ -249,6 +249,25 @@ class _LayerCreateThread(QThread):
         self.succeeded.emit(result)
 
 
+class _BackgroundCallThread(QThread):
+    """Run one blocking service call without occupying the Qt event loop."""
+
+    succeeded = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, function, *, parent=None) -> None:
+        super().__init__(parent)
+        self._function = function
+
+    def run(self) -> None:
+        try:
+            result = self._function()
+        except Exception as exc:  # noqa: BLE001 - Qt boundary reports service failures
+            self.failed.emit(str(exc))
+            return
+        self.succeeded.emit(result)
+
+
 def _volume_key(path: Path) -> str:
     text = str(path)
     if text.startswith("\\\\"):
@@ -616,6 +635,8 @@ class DesktopController:
         self._workspace = None
         self._project_id = None
         self._layer_dialog: LayerManagerDialog | None = None
+        self._background_workers: set[QThread] = set()
+        self._source_preparation_keys: set[tuple[str, str]] = set()
         self._pending_wakes: list[ProjectEventWake] = []
         self._sync_timer = QTimer(self.shell)
         self._sync_timer.setSingleShot(True)
@@ -784,6 +805,16 @@ class DesktopController:
     def _allow_close(self) -> bool:
         from PyQt6.QtWidgets import QMessageBox
 
+        if any(
+            worker.isRunning()
+            for worker in getattr(self, "_background_workers", ())
+        ):
+            QMessageBox.information(
+                self.shell,
+                "Сохранение файлов ещё не завершено",
+                "Дождитесь окончания сохранения файлов. Выход отменён, чтобы данные не были повреждены.",
+            )
+            return False
         active = tuple(
             job
             for job in self.service.plugin_jobs()
@@ -1434,7 +1465,6 @@ class DesktopController:
         workspace.vectorRepresentationChanged.connect(
             lambda identifier: self._activate_representation(workspace, project.id, identifier)
         )
-        workspace.reviewRequested.connect(self.send_selection_for_review)
         workspace.matrix_view.contextMenuRequested.connect(
             self._show_matrix_context_menu
         )
@@ -1445,9 +1475,6 @@ class DesktopController:
                 "auth",
                 type("A", (), {"principal": self.session.principal})(),
             ).principal,
-        )
-        workspace.send_review_button.setVisible(
-            Permission.ASSIGN_WORK in permissions
         )
         self.shell.review_return_action.setVisible(
             Permission.RETURN_REVIEW in permissions
@@ -1651,7 +1678,7 @@ class DesktopController:
             1,
             preview.layout().columnCount(),
         )
-        import_button = preview.addButton("Создать кандидатные версии", QMessageBox.ButtonRole.AcceptRole)
+        import_button = preview.addButton("Загрузить изменённые файлы", QMessageBox.ButtonRole.AcceptRole)
         preview.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
         import_button.setEnabled(plan.report.can_commit)
         preview.exec()
@@ -1676,10 +1703,10 @@ class DesktopController:
             self._refresh_matrix()
             return
         decision = QMessageBox(self.shell)
-        decision.setWindowTitle("Кандидатные версии созданы")
+        decision.setWindowTitle("Изменённые файлы загружены")
         decision.setText(
-            f"Создано кандидатных версий: {len(result.candidate_versions)}.\n"
-            "Принять их как активные или вернуть на доработку?"
+            f"Загружено изменённых файлов: {len(result.candidate_versions)}.\n"
+            "Использовать их в проекте или вернуть на доработку?"
         )
         accept_button = decision.addButton("Принять", QMessageBox.ButtonRole.AcceptRole)
         changes_button = decision.addButton("На доработку", QMessageBox.ButtonRole.DestructiveRole)
@@ -1690,7 +1717,7 @@ class DesktopController:
                 answer = QMessageBox.question(
                     self.shell,
                     "Подтверждение",
-                    "Сделать кандидатные версии активными?",
+                    "Использовать загруженные файлы как текущие?",
                 )
                 if answer == QMessageBox.StandardButton.Yes:
                     self.service.accept_review(
@@ -1976,32 +2003,50 @@ class DesktopController:
             if selected_count == 1
             else f"Выгрузить файлы выбранных кадров ({selected_count})…"
         )
-        properties_menu = menu.addMenu("Свойства файла")
-        files = self._active_frame_files(context.x, context.y)
-        if files:
-            file_actions = {}
-            for label, series, version in files:
-                action = properties_menu.addAction(
-                    f"{label}: {version.filename}"
-                )
-                file_actions[action] = (label, series, version)
-        else:
-            unavailable = properties_menu.addAction("Нет активных файлов")
-            unavailable.setEnabled(False)
-            file_actions = {}
-        frame_properties = menu.addAction("Свойства кадра…")
+        review_action = None
+        if (
+            selected_count
+            and getattr(self, "_project_id", None) is not None
+            and self._has_permission(Permission.ASSIGN_WORK)
+        ):
+            review_action = menu.addAction("Отправить выбранное на проверку…")
+        vector_properties = None
+        vector_file = None
+        frame_properties = None
+        if selected_count == 1:
+            workspace = getattr(self, "_workspace", None)
+            vector_representation_id = (
+                str(workspace.vector_representation_combo.currentData() or "")
+                if workspace is not None
+                else ""
+            )
+            vector_file = next(
+                (
+                    item
+                    for item in self._active_frame_files(context.x, context.y)
+                    if str(item[1].representation_id or "")
+                    == vector_representation_id
+                ),
+                None,
+            )
+            if vector_file is not None:
+                vector_properties = menu.addAction("Свойства вектора…")
+            frame_properties = menu.addAction("Свойства кадра…")
         selected = menu.exec(global_position)
         if selected is export_action:
             self._export_selected_frame_files(context)
-        elif selected is frame_properties:
+        elif review_action is not None and selected is review_action:
+            self.send_selection_for_review()
+        elif frame_properties is not None and selected is frame_properties:
             workspace = self._workspace
             if workspace is not None:
                 workspace.matrix_view.set_selection(
                     type(context.selection).single(context.x, context.y)
                 )
             self.show_selected_frame()
-        elif selected in file_actions:
-            self._show_frame_file_properties(*file_actions[selected])
+        elif vector_properties is not None and selected is vector_properties:
+            assert vector_file is not None
+            self._show_frame_file_properties(*vector_file)
 
     def show_selected_frame(self) -> None:
         workspace = self._workspace
@@ -2635,7 +2680,14 @@ class DesktopController:
                     "Исходные изображения",
                     str(source.id),
                     source.active,
-                    details={"источник": source.source or "BlobStore", "создан": source.created_at.isoformat()},
+                    details={
+                        "источник": (
+                            "Файлы сохранены в проекте"
+                            if source.source == "managed-import" or not source.source
+                            else source.source
+                        ),
+                        "создан": source.created_at.isoformat(),
+                    },
                 )
             ]
             lane_edges: list[tuple[str, str]] = []
@@ -3866,6 +3918,12 @@ class DesktopController:
         )
         if source_representation_id:
             parameters["source_representation_id"] = source_representation_id
+            if not self._ensure_agent_source_ready(
+                layer_id=str(_layer_id),
+                source_representation_id=source_representation_id,
+                retry=lambda: self._layer_manager_action(_layer_id, _node, action),
+            ):
+                return
         if action in {"recognize", "recognize_external"}:
             from PyQt6.QtCore import QSettings
             from PyQt6.QtWidgets import QFileDialog
@@ -3938,7 +3996,7 @@ class DesktopController:
                 parameters=parameters,
             )
         except Exception as exc:
-            self._error(f"Не удалось передать задание Kraken Agent: {exc}")
+            self._error(f"Не удалось запустить задание: {exc}")
             return
         self.service.record_layer_pipeline_action(
             principal=self.session.principal,
@@ -4113,6 +4171,12 @@ class DesktopController:
                 if workspace is None
                 else str(workspace.image_representation_combo.currentData() or "")
             )
+            if source_id and not self._ensure_agent_source_ready(
+                layer_id=str(_layer_id),
+                source_representation_id=source_id,
+                retry=lambda: self._layer_manager_layer_action(_layer_id, action),
+            ):
+                return
             try:
                 job = self._submit_agent_action(
                     layer_id=str(_layer_id),
@@ -4132,13 +4196,131 @@ class DesktopController:
                     parameters={"plugin_job_id": str(job.id)},
                 )
             except Exception as exc:
-                self._error(f"Не удалось передать задание Kraken Agent: {exc}")
+                self._error(f"Не удалось запустить задание: {exc}")
                 return
             if self._layer_dialog is not None:
                 self._layer_dialog.set_pipeline(
                     self._pipeline_snapshot(self._project_id, _layer_id)
                 )
             return
+
+    def _ensure_agent_source_ready(
+        self,
+        *,
+        layer_id: str,
+        source_representation_id: str,
+        retry: Callable[[], None],
+    ) -> bool:
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+
+        project = self.service.get_project(self._project_id)
+        if project is None:
+            self._error("Проект больше не доступен")
+            return False
+        if self.service.frame_cells(
+            project.id,
+            layer_id,
+            source_representation_id,
+        ):
+            return True
+        layer = next(
+            (
+                item
+                for item in self.service.list_layers(project.id)
+                if str(item.id) == str(layer_id)
+            ),
+            None,
+        )
+        representation = next(
+            (
+                item
+                for item in self.service.list_representations(project.id, layer_id)
+                if str(item.id) == str(source_representation_id)
+            ),
+            None,
+        )
+        prepare = getattr(self.service, "materialize_representation_inputs", None)
+        if layer is None or representation is None or not callable(prepare):
+            self._error("Не удалось подготовить изображения для задания")
+            return False
+        key = (str(project.id), str(representation.id))
+        pending = getattr(self, "_source_preparation_keys", None)
+        if pending is None:
+            pending = set()
+            self._source_preparation_keys = pending
+        if key in pending:
+            self.shell.statusBar().showMessage(
+                "Изображения уже подготавливаются для задания…",
+                5000,
+            )
+            return False
+        pending.add(key)
+        progress_dialog = QProgressDialog(
+            "Изображения сохраняются для запуска задания…",
+            "",
+            0,
+            0,
+            self.shell,
+        )
+        progress_dialog.setObjectName("agentSourcePreparationProgress")
+        progress_dialog.setWindowTitle("Подготовка задания")
+        progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
+        progress_dialog.setCancelButton(None)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+
+        def perform_preparation():
+            return prepare(
+                principal=self.session.principal,
+                project=project,
+                layer=layer,
+                representation=representation,
+            )
+
+        worker = _BackgroundCallThread(perform_preparation, parent=self.shell)
+        workers = getattr(self, "_background_workers", None)
+        if workers is None:
+            workers = set()
+            self._background_workers = workers
+        workers.add(worker)
+
+        def preparation_succeeded(cells: object) -> None:
+            progress_dialog.close()
+            pending.discard(key)
+            if not cells:
+                QMessageBox.warning(
+                    self.shell,
+                    "Не удалось подготовить задание",
+                    "В каталоге исходных изображений не найдено кадров проекта.",
+                )
+                return
+            self.shell.statusBar().showMessage(
+                "Изображения подготовлены. Задание запускается…",
+                5000,
+            )
+            QTimer.singleShot(0, retry)
+
+        def preparation_failed(message: str) -> None:
+            progress_dialog.close()
+            pending.discard(key)
+            QMessageBox.warning(
+                self.shell,
+                "Не удалось подготовить задание",
+                message,
+            )
+
+        def release_worker() -> None:
+            workers.discard(worker)
+
+        worker.succeeded.connect(preparation_succeeded)
+        worker.failed.connect(preparation_failed)
+        worker.finished.connect(release_worker)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        progress_dialog.show()
+        return False
 
     def _submit_agent_action(
         self,
@@ -4151,7 +4333,7 @@ class DesktopController:
         workspace = self._workspace
         project = self.service.get_project(self._project_id)
         if workspace is None or project is None or not source_representation_id:
-            raise ValueError("Не выбрана исходная репрезентация")
+            raise ValueError("Не выбраны исходные изображения")
         capabilities = self.agent_runtime.ensure_started()
         if capability not in capabilities:
             raise ValueError(f"Установленные плагины не поддерживают {capability}")
@@ -4168,7 +4350,7 @@ class DesktopController:
                 )
             )
         if not coordinates:
-            raise ValueError("В исходной репрезентации нет кадров")
+            raise ValueError("В выбранном слое нет изображений для запуска задания")
         coordinate_by_frame = {
             str(project.frame_id_at(x, y)): (x, y)
             for x, y in coordinates
@@ -4179,7 +4361,7 @@ class DesktopController:
             )
             if not target_id:
                 raise ValueError(
-                    "Сначала создайте CIF-репрезентацию, связанную с изображениями"
+                    "Сначала создайте слой CIF, связанный с исходными изображениями"
                 )
         else:
             target_id = source_representation_id
@@ -4699,6 +4881,28 @@ class DesktopController:
             timer.deleteLater()
             manifest_path = Path(result_manifest)
             if not manifest_path.is_file():
+                return_code = process.poll()
+                message = (
+                    "Плагин закрыт без публикации результата"
+                    if return_code == 0
+                    else f"Плагин завершился с кодом {return_code} и не опубликовал результат"
+                )
+                try:
+                    self.service.fail_derived_run(
+                        principal=self.session.principal,
+                        project_id=self._project_id,
+                        run_id=workspace_run_id,
+                        error=message,
+                    )
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Could not mark workspace plugin run as failed"
+                    )
+                QMessageBox.warning(
+                    self.shell,
+                    "Плагин не вернул результат",
+                    message,
+                )
                 return
             try:
                 result = WorkspacePluginResultV1.read(manifest_path)
@@ -5220,6 +5424,107 @@ class DesktopController:
                 self._pipeline_snapshot(self._project_id, layer_id)
             )
 
+    def _start_representation_import(
+        self,
+        *,
+        workspace,
+        project_id,
+        layer_id: str,
+        project,
+        layer,
+        representation,
+        import_plan,
+        kind: RepresentationKind,
+    ) -> None:
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+
+        progress_dialog = QProgressDialog(
+            "Файлы сохраняются в проекте в фоновом режиме…",
+            "",
+            0,
+            0,
+            self.shell,
+        )
+        progress_dialog.setObjectName("representationImportProgress")
+        progress_dialog.setWindowTitle("Сохранение файлов")
+        progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
+        progress_dialog.setCancelButton(None)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        operation_id = str(uuid4())
+
+        def perform_import():
+            return self.service.commit_managed_import(
+                principal=self.session.principal,
+                project=project,
+                layer=layer,
+                representation=representation,
+                plan=import_plan,
+                idempotency_key=operation_id,
+            )
+
+        worker = _BackgroundCallThread(perform_import, parent=self.shell)
+        workers = getattr(self, "_background_workers", None)
+        if workers is None:
+            workers = set()
+            self._background_workers = workers
+        workers.add(worker)
+
+        def refresh_created_representation() -> None:
+            if (
+                self._workspace is not workspace
+                or self._project_id != str(project_id)
+                or getattr(workspace, "_selected_layer_id", None) != layer_id
+            ):
+                return
+            self._load_representations(workspace, project_id, layer_id)
+            combo = (
+                workspace.image_representation_combo
+                if kind is RepresentationKind.IMAGE
+                else workspace.vector_representation_combo
+            )
+            combo.setCurrentIndex(combo.findData(str(representation.id)))
+            if self._layer_dialog is not None:
+                self._layer_dialog.set_pipeline(
+                    self._pipeline_snapshot(project_id, layer_id)
+                )
+
+        def import_succeeded(result: object) -> None:
+            progress_dialog.close()
+            refresh_created_representation()
+            saved_count = len(result.versions)
+            message = f"Сохранено файлов: {saved_count:n}."
+            if import_plan.missing_coordinates:
+                message += (
+                    f" Не найдено файлов для кадров: "
+                    f"{import_plan.missing_coordinates:n}."
+                )
+            self.shell.statusBar().showMessage(message, 15000)
+
+        def import_failed(message: str) -> None:
+            progress_dialog.close()
+            refresh_created_representation()
+            QMessageBox.warning(
+                self.shell,
+                "Не удалось сохранить файлы",
+                (
+                    "Слой изображений создан, но не все файлы удалось сохранить.\n\n"
+                    f"{message}"
+                ),
+            )
+
+        def release_worker() -> None:
+            workers.discard(worker)
+
+        worker.succeeded.connect(import_succeeded)
+        worker.failed.connect(import_failed)
+        worker.finished.connect(release_worker)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        progress_dialog.show()
+
     def _add_representation(
         self,
         workspace,
@@ -5278,12 +5583,12 @@ class DesktopController:
                     QMessageBox.warning(
                         form.dialog,
                         "Импорт заблокирован",
-                        f"Preflight не пройден:\n{issue_text}",
+                        f"Проверка файлов не пройдена:\n{issue_text}",
                     )
                     continue
                 answer = QMessageBox.question(
                     form.dialog,
-                    "Подтверждение managed import",
+                    "Подтверждение импорта файлов",
                     (
                         f"Файлов: {len(import_plan.items)}\n"
                         f"Объём: {import_plan.total_bytes:n} байт\n"
@@ -5306,33 +5611,23 @@ class DesktopController:
                     source_image_representation_id=source_image_id,
                     active=form.active.isChecked(),
                 )
-                if import_plan is not None:
-                    imported = self.service.commit_managed_import(
-                        principal=self.session.principal,
-                        project=project,
-                        layer=layer,
-                        representation=representation,
-                        plan=import_plan,
-                        idempotency_key=str(uuid4()),
-                    )
-                    QMessageBox.information(
-                        form.dialog,
-                        "Импорт завершён",
-                        f"Создано immutable версий: {len(imported.versions)}",
-                    )
-                    if import_plan.missing_coordinates:
-                        QMessageBox.warning(
-                            form.dialog,
-                            "Неполный набор файлов",
-                            (
-                                f"Не найдено файлов для кадров: "
-                                f"{import_plan.missing_coordinates:n}. "
-                                "Соответствующие ячейки отмечены красным."
-                            ),
-                        )
             except Exception as exc:
                 QMessageBox.warning(form.dialog, f"Не удалось добавить {label}", str(exc))
                 continue
+
+            if import_plan is not None:
+                self._start_representation_import(
+                    workspace=workspace,
+                    project_id=project_id,
+                    layer_id=layer_id,
+                    project=project,
+                    layer=layer,
+                    representation=representation,
+                    import_plan=import_plan,
+                    kind=kind,
+                )
+                return
+
             self._load_representations(workspace, project_id, layer_id)
             combo = (
                 workspace.image_representation_combo
@@ -5860,14 +6155,14 @@ def _my_work_panel(
         if not identifiers:
             QMessageBox.information(
                 host,
-                "Нет кандидатов",
-                "Для этого задания нет кандидатных версий.",
+                "Нет файлов для подтверждения",
+                "Для этого задания нет файлов, ожидающих подтверждения.",
             )
             return
         if QMessageBox.question(
             host,
             "Принять результат",
-            f"Сделать активными кандидатные версии ({len(identifiers)})?",
+            f"Использовать загруженные файлы как текущие ({len(identifiers)})?",
         ) != QMessageBox.StandardButton.Yes:
             return
         try:

@@ -191,7 +191,7 @@ METRIC_DEFINITIONS: tuple[MetricDefinition, ...] = (
     ),
     MetricDefinition(
         "created_artifact_versions",
-        "Создано версий артефактов",
+        "Создано версий файлов",
         "Количество созданных версий файлов и результатов обработки.",
     ),
     MetricDefinition(

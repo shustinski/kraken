@@ -3,6 +3,7 @@
 from kraken_core.frame_matrix.qt import (
     FrameCellData,
     FrameContext,
+    FrameMatrixMinimap,
     FrameMatrixView,
     FrameMatrixWidget,
     FrameRect,
@@ -13,6 +14,7 @@ from kraken_core.frame_matrix.qt import (
 __all__ = [
     "FrameCellData",
     "FrameContext",
+    "FrameMatrixMinimap",
     "FrameMatrixView",
     "FrameMatrixWidget",
     "FrameRect",

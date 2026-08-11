@@ -144,12 +144,12 @@ _EVENT_TYPE_LABELS: dict[str, str] = {
     "RepresentationActivated": "Репрезентация активирована",
     "RepresentationDeactivated": "Репрезентация деактивирована",
     "RepresentationArchived": "Репрезентация архивирована",
-    "ArtifactSeriesCreated": "Создана серия артефактов",
-    "ArtifactSeriesRenamed": "Переименована серия артефактов",
-    "ArtifactSeriesArchived": "Серия артефактов архивирована",
-    "ArtifactVersionCreated": "Создана версия артефакта",
-    "ArtifactVersionActivated": "Активирована версия артефакта",
-    "ExternalArtifactVersionAdded": "Добавлена внешняя версия артефакта",
+    "ArtifactSeriesCreated": "Добавлен файл",
+    "ArtifactSeriesRenamed": "Файл переименован",
+    "ArtifactSeriesArchived": "Файл перенесён в архив",
+    "ArtifactVersionCreated": "Создана версия файла",
+    "ArtifactVersionActivated": "Выбрана версия файла",
+    "ExternalArtifactVersionAdded": "Добавлена версия внешнего файла",
     "NoteCreated": "Добавлена заметка",
     "NoteRevised": "Изменена заметка",
     "ReviewBatchCreated": "Создано задание на проверку",
@@ -500,11 +500,11 @@ def _format_history_payload(event_type: str, payload: object) -> str:
 
     candidates = data.get("candidate_version_ids")
     if isinstance(candidates, (list, tuple)) and candidates:
-        lines.append(f"Кандидатов версий: {len(candidates)}")
+        lines.append(f"Файлов на подтверждение: {len(candidates)}")
 
     artifact_ids = data.get("artifact_version_ids")
     if isinstance(artifact_ids, (list, tuple)) and artifact_ids:
-        lines.append(f"Версий артефактов: {len(artifact_ids)}")
+        lines.append(f"Сохранённых версий файлов: {len(artifact_ids)}")
 
     parameters = data.get("parameters")
     if isinstance(parameters, Mapping) and parameters:

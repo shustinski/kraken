@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event, get_ident
+from time import monotonic, sleep
 from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QApplication,
@@ -18,6 +20,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QInputDialog,
     QLineEdit,
+    QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -26,7 +29,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from kraken_hub import windows_credentials
+from kraken_core.frame_matrix.qt import FrameRect
+from kraken_hub import manager_app, windows_credentials
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_hub.manager_app import (
     DesktopController,
@@ -55,16 +59,19 @@ from kraken_manager.presentation.qt import (
 from kraken_manager.presentation.qt.widgets import ClickableLabel
 
 
-def test_matrix_context_menu_exports_and_opens_file_properties(
+def test_matrix_context_menu_exports_and_opens_vector_properties(
     qapp,
     monkeypatch,
 ) -> None:
     controller = object.__new__(DesktopController)
     controller.shell = QWidget()
-    series = SimpleNamespace(name="frame.cif")
+    series = SimpleNamespace(name="frame.cif", representation_id="vector-1")
     version = SimpleNamespace(filename="frame.cif")
     controller._active_frame_files = lambda _x, _y: (
         ("CIF", series, version),
+    )
+    controller._workspace = SimpleNamespace(
+        vector_representation_combo=SimpleNamespace(currentData=lambda: "vector-1"),
     )
     exported = []
     opened = []
@@ -90,17 +97,76 @@ def test_matrix_context_menu_exports_and_opens_file_properties(
     controller._show_matrix_context_menu(context, controller.shell.pos())
     assert exported == [context]
 
-    def select_file_properties(menu: QMenu, *_args):
-        submenu = next(
-            action.menu()
+    def select_vector_properties(menu: QMenu, *_args):
+        return next(
+            action
             for action in menu.actions()
-            if action.text() == "Свойства файла"
+            if action.text() == "Свойства вектора…"
         )
-        return submenu.actions()[0]
 
-    monkeypatch.setattr(QMenu, "exec", select_file_properties)
+    monkeypatch.setattr(QMenu, "exec", select_vector_properties)
     controller._show_matrix_context_menu(context, controller.shell.pos())
     assert opened == [("CIF", series, version)]
+
+
+def test_matrix_context_menu_hides_properties_for_multiple_frames(qapp, monkeypatch) -> None:
+    controller = object.__new__(DesktopController)
+    controller.shell = QWidget()
+    controller._project_id = "project-1"
+    controller._workspace = SimpleNamespace(
+        vector_representation_combo=SimpleNamespace(currentData=lambda: "vector-1"),
+    )
+    controller._has_permission = lambda _permission: False
+    controller._active_frame_files = lambda _x, _y: pytest.fail(
+        "properties must not inspect one frame when several frames are selected"
+    )
+    context = SimpleNamespace(
+        x=2,
+        y=3,
+        selection=FrameSelection((FrameRect(2, 3, 3, 3),)),
+    )
+
+    def inspect_menu(menu: QMenu, *_args):
+        labels = tuple(action.text() for action in menu.actions())
+        assert "Свойства вектора…" not in labels
+        assert "Свойства кадра…" not in labels
+
+    monkeypatch.setattr(QMenu, "exec", inspect_menu)
+
+    controller._show_matrix_context_menu(context, controller.shell.pos())
+
+
+def test_matrix_context_menu_preserves_review_action(qapp, monkeypatch) -> None:
+    controller = object.__new__(DesktopController)
+    controller.shell = QWidget()
+    controller._project_id = "project-1"
+    controller._active_frame_files = lambda _x, _y: ()
+    controller._has_permission = lambda permission: permission is Permission.ASSIGN_WORK
+    requested = []
+    controller.send_selection_for_review = lambda: requested.append(True)
+    context = SimpleNamespace(
+        x=2,
+        y=3,
+        selection=FrameSelection.single(2, 3),
+    )
+    monkeypatch.setattr(
+        QMenu,
+        "exec",
+        lambda menu, *_args: next(
+            action
+            for action in menu.actions()
+            if action.text().startswith("Отправить выбранное")
+        ),
+    )
+
+    controller._show_matrix_context_menu(context, controller.shell.pos())
+
+    assert requested == [True]
+
+    requested.clear()
+    monkeypatch.setattr(QMenu, "exec", lambda *_args: None)
+    controller._show_matrix_context_menu(context, controller.shell.pos())
+    assert requested == []
 
 
 @pytest.fixture(scope="module")
@@ -1015,6 +1081,190 @@ def test_image_representation_source_picker_fills_selected_folder(qapp, monkeypa
     monkeypatch.setattr(QDialog, "exec", use_picker_and_cancel)
 
     controller._add_representation(workspace, "project-1", RepresentationKind.IMAGE)
+
+
+def test_representation_files_are_saved_without_blocking_qt(qapp, monkeypatch) -> None:
+    started = Event()
+    release = Event()
+    commit_thread_ids = []
+    project = SimpleNamespace(id="project-1")
+    layer = SimpleNamespace(id="layer-1")
+    representation = SimpleNamespace(id="representation-1")
+    import_result = SimpleNamespace(versions=(object(), object()))
+    plan = SimpleNamespace(
+        ready=True,
+        issues=(),
+        items=(object(), object()),
+        total_bytes=123,
+        missing_coordinates=0,
+    )
+
+    class ServiceStub:
+        @staticmethod
+        def get_project(_project_id):
+            return project
+
+        @staticmethod
+        def list_layers(_project_id):
+            return (layer,)
+
+        @staticmethod
+        def plan_import_directory(**_kwargs):
+            return plan
+
+        @staticmethod
+        def create_representation(**_kwargs):
+            return representation
+
+        @staticmethod
+        def commit_managed_import(**_kwargs):
+            commit_thread_ids.append(get_ident())
+            started.set()
+            if not release.wait(3):
+                raise TimeoutError("test did not release the import")
+            return import_result
+
+    class FieldStub:
+        def __init__(self, value):
+            self.value = value
+
+        def text(self):
+            return self.value
+
+        def toPlainText(self):
+            return self.value
+
+        def isChecked(self):
+            return bool(self.value)
+
+    class FormStub:
+        def __init__(self, parent, _kind):
+            self.dialog = parent
+            self.name = FieldStub("Исходные изображения")
+            self.note = FieldStub("")
+            self.active = FieldStub(True)
+            self.source_directory = "C:/frames"
+
+        @staticmethod
+        def exec():
+            return QDialog.DialogCode.Accepted
+
+    shell = QMainWindow()
+    workspace = QWidget()
+    workspace._selected_layer_id = "layer-1"
+    workspace.image_representation_combo = QComboBox(workspace)
+    workspace.vector_representation_combo = QComboBox(workspace)
+    controller = object.__new__(DesktopController)
+    controller.shell = shell
+    controller.service = ServiceStub()
+    controller.session = SimpleNamespace(principal=object())
+    controller._workspace = workspace
+    controller._project_id = "project-1"
+    controller._layer_dialog = None
+    controller._background_workers = set()
+    controller._load_representations = lambda *_args: None
+
+    monkeypatch.setattr(manager_app, "RepresentationDialog", FormStub)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: pytest.fail("background import must succeed"),
+    )
+    close_messages = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, title, message, *_args, **_kwargs: close_messages.append(
+            (title, message)
+        ),
+    )
+
+    main_thread_id = get_ident()
+    controller._add_representation(
+        workspace,
+        project.id,
+        RepresentationKind.IMAGE,
+    )
+    try:
+        assert started.wait(1)
+        assert commit_thread_ids != [main_thread_id]
+        assert controller._background_workers
+        assert controller._allow_close() is False
+        assert close_messages[0][0] == "Сохранение файлов ещё не завершено"
+
+        qt_callback_ran = []
+        QTimer.singleShot(0, lambda: qt_callback_ran.append(True))
+        qapp.processEvents()
+        assert qt_callback_ran == [True]
+    finally:
+        release.set()
+        deadline = monotonic() + 3
+        while controller._background_workers and monotonic() < deadline:
+            qapp.processEvents()
+            sleep(0.01)
+
+    assert not controller._background_workers
+    assert shell.statusBar().currentMessage() == "Сохранено файлов: 2."
+
+
+def test_missing_agent_inputs_are_prepared_in_background_and_retried(qapp) -> None:
+    project = SimpleNamespace(id="project-1")
+    layer = SimpleNamespace(id="layer-1")
+    representation = SimpleNamespace(id="representation-1")
+    prepared_cells = []
+
+    class ServiceStub:
+        @staticmethod
+        def get_project(_project_id):
+            return project
+
+        @staticmethod
+        def frame_cells(*_args):
+            return tuple(prepared_cells)
+
+        @staticmethod
+        def list_layers(_project_id):
+            return (layer,)
+
+        @staticmethod
+        def list_representations(_project_id, _layer_id):
+            return (representation,)
+
+        @staticmethod
+        def materialize_representation_inputs(**_kwargs):
+            prepared_cells.append(SimpleNamespace(x=1, y=1))
+            return tuple(prepared_cells)
+
+    shell = QMainWindow()
+    controller = object.__new__(DesktopController)
+    controller.shell = shell
+    controller.service = ServiceStub()
+    controller.session = SimpleNamespace(principal=object())
+    controller._project_id = project.id
+    controller._background_workers = set()
+    controller._source_preparation_keys = set()
+    retried = []
+
+    ready = controller._ensure_agent_source_ready(
+        layer_id=layer.id,
+        source_representation_id=representation.id,
+        retry=lambda: retried.append(True),
+    )
+
+    assert ready is False
+    deadline = monotonic() + 3
+    while not retried and monotonic() < deadline:
+        qapp.processEvents()
+        sleep(0.01)
+
+    assert retried == [True]
+    assert prepared_cells
+    assert not controller._source_preparation_keys
 
 
 def test_remote_project_can_create_logical_layer(qapp, monkeypatch) -> None:

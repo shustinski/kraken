@@ -17,6 +17,7 @@ from kraken_core.plugins import (
     load_plugin_catalog,
     merge_plugin_sources,
     scan_plugin_directory,
+    scan_windows_plugin_registry,
 )
 from kraken_core.qt import configure_application_identity
 from kraken_core.runtime import current_platform, workspace_root
@@ -29,6 +30,19 @@ def bundled_catalog_path() -> Path:
 
 def default_plugins_dir() -> Path:
     return Path(os.getenv("KRAKEN_PLUGINS_DIR", "")).expanduser().resolve() if os.getenv("KRAKEN_PLUGINS_DIR") else workspace_root() / "plugins"
+
+
+def registered_plugins_dir() -> Path:
+    explicit = os.getenv("KRAKEN_REGISTERED_PLUGINS_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    if os.name == "nt":
+        base = os.getenv("LOCALAPPDATA", "").strip() or os.getenv("APPDATA", "").strip()
+        if base:
+            return Path(base).resolve() / "Kraken" / "plugins"
+    data_home = os.getenv("XDG_DATA_HOME", "").strip()
+    base = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
+    return base.resolve() / "Kraken" / "plugins"
 
 
 def application_version() -> str:
@@ -103,7 +117,12 @@ def launch_plugin(
 ) -> subprocess.Popen:
     root = workspace_root()
     plugin_root = root / "plugins" / plugin.id
-    cwd = plugin_root if plugin_root.exists() and not plugin.executable_for().path else root
+    executable_path = plugin.executable_for().path
+    cwd = (
+        Path(executable_path).expanduser().resolve(strict=False).parent
+        if executable_path
+        else plugin_root if plugin_root.exists() else root
+    )
     env = None
     if not plugin.executable_for().path:
         env = dict(**os.environ)
@@ -324,7 +343,12 @@ def load_plugins(catalog_path: str, plugins_dir: Path) -> list[PluginMetadata]:
     if not catalog_plugins and catalog_path != str(bundled_catalog_path()):
         catalog_plugins = load_plugin_catalog(bundled_catalog_path())
     scanned_plugins = scan_plugin_directory(plugins_dir)
-    return merge_plugin_sources(scanned_plugins, catalog_plugins)
+    registered_plugins = merge_plugin_sources(
+        scan_plugin_directory(registered_plugins_dir()),
+        scan_windows_plugin_registry(),
+    )
+    discovered = merge_plugin_sources(scanned_plugins, catalog_plugins)
+    return merge_plugin_sources(registered_plugins, discovered)
 
 
 def main(argv: list[str] | None = None) -> None:

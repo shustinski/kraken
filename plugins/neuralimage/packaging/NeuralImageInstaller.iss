@@ -72,5 +72,11 @@ Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
+[Registry]
+Root: HKLM; Subkey: "Software\Kraken\Plugins\neuralimage"; ValueType: string; ValueName: "Executable"; ValueData: "{app}\{#AppExeName}"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\Kraken\Plugins\neuralimage"; ValueType: string; ValueName: "DisplayName"; ValueData: "{#AppName}"
+Root: HKLM; Subkey: "Software\Kraken\Plugins\neuralimage"; ValueType: string; ValueName: "Version"; ValueData: "{#AppVersion}"
+Root: HKLM; Subkey: "Software\Kraken\Plugins\neuralimage"; ValueType: string; ValueName: "ProtocolVersion"; ValueData: "2.0"
+
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent

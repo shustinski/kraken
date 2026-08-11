@@ -663,6 +663,12 @@ class EmbeddedProjectService:
                 active=True,
                 purpose=RepresentationPurpose.SOURCE,
             )
+            self.materialize_representation_inputs(
+                principal=principal,
+                project=latest_project,
+                layer=layer,
+                representation=representation,
+            )
             self._record_workspace_event(
                 principal=principal,
                 project_id=project.id,
@@ -1178,13 +1184,48 @@ class EmbeddedProjectService:
                         filename=source_path.name,
                         media_type=media_type,
                         expected_series_revision=1,
-                        tool_name="Kraken managed import",
+                        tool_name="Импорт файлов Kraken",
                         parameters={"x": item.x, "y": item.y, "mapping": "preflight"},
                     ),
                     chunks,
                 )
             versions.append(version)
         return ManagedImportResult(plan, tuple(versions))
+
+    def materialize_representation_inputs(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        representation: Representation,
+    ) -> tuple[FrameCellSnapshot, ...]:
+        """Create stable project versions for directory-backed plugin inputs."""
+
+        existing = self.frame_cells(project.id, layer.id, representation.id)
+        if existing:
+            return existing
+        source = str(representation.source or "").strip()
+        if not source:
+            raise ValueError("У исходного слоя не указан каталог с изображениями")
+        plan = self.plan_import_directory(
+            project=project,
+            directory=source,
+            mode=ImportMappingMode.ROW_MAJOR_SUFFIX,
+        )
+        if not plan.ready or not plan.items:
+            details = "; ".join(issue.message for issue in plan.issues)
+            message = "Не удалось сопоставить изображения с кадрами проекта"
+            raise ValueError(f"{message}: {details}" if details else message)
+        self.commit_managed_import(
+            principal=principal,
+            project=project,
+            layer=layer,
+            representation=representation,
+            plan=plan,
+            idempotency_key=f"agent-inputs:{representation.id}",
+        )
+        return self.frame_cells(project.id, layer.id, representation.id)
 
     def rename_project(
         self, *, principal: Principal, project: Project, name: str, idempotency_key: str
@@ -2496,7 +2537,13 @@ class EmbeddedProjectService:
                     "quality": item.quality,
                 }
                 if current is not None:
-                    for field in ("asset_sha256", "asset_revision"):
+                    for field in (
+                        "asset_sha256",
+                        "asset_source_key",
+                        "asset_revision",
+                        "asset_path",
+                        "asset_media_type",
+                    ):
                         if field in current:
                             replacement[field] = current[field]
                 replacement.update(image_asset)
@@ -3198,7 +3245,7 @@ class EmbeddedProjectService:
     ) -> Path:
         version = self.artifact_version(project_id, version_id)
         if version is None or version.blob is None:
-            raise ValueError("Plugin inputs must be managed immutable versions")
+            raise ValueError("Для запуска нужны файлы, сохранённые в проекте")
         store = FilesystemBlobStore.for_project(self.catalog_root, str(project_id))
         path = store._path(version.blob.sha256)
         if not path.is_file():

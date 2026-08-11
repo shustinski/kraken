@@ -4,8 +4,8 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QBuffer, QIODevice, QPoint, QPointF, Qt
-from PyQt6.QtGui import QContextMenuEvent, QImage, QWheelEvent
+from PyQt6.QtCore import QBuffer, QEvent, QIODevice, QPoint, QPointF, Qt
+from PyQt6.QtGui import QContextMenuEvent, QImage, QKeyEvent, QPixmap, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
@@ -21,6 +21,7 @@ from kraken_core.frame_matrix.adapters.memory import MemoryThumbnailStore
 from kraken_hub.matrix_source import KrakenMatrixDataSource
 from kraken_manager.presentation.qt import (
     FrameCellData,
+    FrameMatrixMinimap,
     FrameMatrixView,
     FrameMatrixWidget,
     FrameRect,
@@ -58,6 +59,20 @@ def test_matrix_coordinates_follow_project_y_orientation(qapp):
     top_left = view.scene_rect_for_frame(1, 3).center()
     assert view.frame_at_scene_pos(top_left) == (1, 3)
     assert view.scene_rect_for_frame(1, 1).top() > top_left.y()
+
+
+def test_matrix_cells_are_adjacent_without_gaps(qapp):
+    view = FrameMatrixView(2, 2, GridOrientation.Y_DOWN)
+
+    first = view.scene_rect_for_frame(1, 1)
+    right = view.scene_rect_for_frame(2, 1)
+    below = view.scene_rect_for_frame(1, 2)
+
+    assert view.CELL_PITCH == view.CELL_SIZE
+    assert first.right() == right.left()
+    assert first.bottom() == below.top()
+    assert view.frame_at_scene_pos(right.center()) == (2, 1)
+    assert view.frame_at_scene_pos(below.center()) == (1, 2)
 
 
 def test_matrix_uses_sparse_presentation_data_and_compact_selection(qapp):
@@ -221,6 +236,81 @@ def test_shared_widget_deduplicates_viewport_and_loads_thumbnail(qapp):
     assert view.cell_data(1, 1).thumbnail is not None
     assert not view.cell_data(1, 1).thumbnail.isNull()
     assert loading == [True, False]
+
+
+def test_cell_lod_paints_loaded_thumbnail_instead_of_status_fill(qapp):
+    view = FrameMatrixView(1, 1)
+    thumbnail = QPixmap(16, 16)
+    thumbnail.fill(Qt.GlobalColor.red)
+    view.set_cells(
+        (
+            FrameCellData(
+                1,
+                1,
+                status="image_ready",
+                thumbnail=thumbnail,
+            ),
+        )
+    )
+    view.resize(240, 240)
+    view.show()
+    view.set_zoom_factor(0.5)
+    view.centerOn(view.CELL_SIZE / 2, view.CELL_SIZE / 2)
+    qapp.processEvents()
+
+    center = view.mapFromScene(view.CELL_SIZE / 2, view.CELL_SIZE / 2)
+    pixel = view.grab().toImage().pixelColor(center)
+
+    assert pixel.red() > 200
+    assert pixel.red() > pixel.blue() * 2
+
+
+def test_fit_shortcut_accepts_english_and_russian_layout(qapp):
+    view = FrameMatrixView(100, 100)
+    view.resize(320, 240)
+    view.show()
+
+    view.set_zoom_factor(1.0)
+    QTest.keyClick(view, Qt.Key.Key_F)
+    english_zoom = view.zoom_factor()
+
+    view.set_zoom_factor(1.0)
+    russian_event = QKeyEvent(
+        QEvent.Type.KeyPress,
+        0,
+        Qt.KeyboardModifier.NoModifier,
+        "а",
+    )
+    QApplication.sendEvent(view, russian_event)
+
+    assert english_zoom < 1.0
+    assert view.zoom_factor() == pytest.approx(english_zoom)
+
+
+def test_minimap_overlays_viewport_and_navigates_on_click(qapp):
+    view = FrameMatrixView(100, 100)
+    view.resize(480, 320)
+    view.show()
+    minimap = FrameMatrixMinimap(view)
+    qapp.processEvents()
+
+    assert minimap.parentWidget() is view.viewport()
+    assert minimap.x() + minimap.width() <= view.viewport().width()
+    assert minimap.y() + minimap.height() <= view.viewport().height()
+
+    before = (
+        view.horizontalScrollBar().value(),
+        view.verticalScrollBar().value(),
+    )
+    QTest.mouseClick(
+        minimap,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(minimap.width() - 10, minimap.height() - 10),
+    )
+    qapp.processEvents()
+
+    assert view.horizontalScrollBar().value() > before[0]
+    assert view.verticalScrollBar().value() > before[1]
 
 
 def test_kraken_data_source_prefers_image_asset_over_vector_artifact():

@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .models import LayerListItem, LayerListModel, ProjectListItem, ProjectListModel
-from .widgets import FrameMatrixView, FrameMatrixWidget
+from .widgets import FrameMatrixMinimap, FrameMatrixView, FrameMatrixWidget
 
 
 class _TitledPage(QWidget):
@@ -213,45 +213,6 @@ class ProjectWorkspacePage(_TitledPage):
             compatibility_control.hide()
 
         self.layer_model = layer_model or LayerListModel(parent=self)
-        matrix_toolbar = QHBoxLayout()
-        matrix_toolbar.setContentsMargins(0, 0, 0, 0)
-        self.zoom_out_button = QPushButton("−")
-        self.zoom_out_button.setObjectName("matrixZoomOutButton")
-        self.zoom_out_button.setToolTip("Уменьшить")
-        self.zoom_in_button = QPushButton("+")
-        self.zoom_in_button.setObjectName("matrixZoomInButton")
-        self.zoom_in_button.setToolTip("Увеличить")
-        self.zoom_fit_button = QPushButton("Вписать")
-        self.zoom_fit_button.setObjectName("matrixZoomFitButton")
-        self.zoom_reset_button = QPushButton("1:1")
-        self.zoom_reset_button.setObjectName("matrixZoomResetButton")
-        self.matrix_lod_label = QLabel("LOD: ячейки")
-        self.matrix_lod_label.setObjectName("matrixLodLabel")
-        self.minimap_checkbox = QCheckBox("Мини-карта")
-        self.minimap_checkbox.setObjectName("matrixMinimapCheck")
-        self.minimap_checkbox.setChecked(True)
-        self.clear_thumbnail_cache_button = QPushButton("Очистить миниатюры")
-        self.clear_thumbnail_cache_button.setObjectName("clearThumbnailCacheButton")
-        self.send_review_button = QPushButton("Отправить на проверку")
-        self.send_review_button.setObjectName("sendReviewButton")
-        self.send_review_button.setEnabled(False)
-        self.matrix_loading_label = QLabel("")
-        self.matrix_loading_label.setObjectName("matrixLoadingLabel")
-        for control in (
-            self.zoom_out_button,
-            self.zoom_in_button,
-            self.zoom_fit_button,
-            self.zoom_reset_button,
-            self.matrix_lod_label,
-            self.minimap_checkbox,
-            self.clear_thumbnail_cache_button,
-            self.send_review_button,
-        ):
-            matrix_toolbar.addWidget(control)
-        matrix_toolbar.addStretch(1)
-        matrix_toolbar.addWidget(self.matrix_loading_label)
-        self.root_layout.addLayout(matrix_toolbar)
-
         self.matrix_view = matrix_view or FrameMatrixWidget()
         self.matrix_view.setMinimumSize(320, 240)
         matrix_host = QFrame()
@@ -259,12 +220,10 @@ class ProjectWorkspacePage(_TitledPage):
         matrix_host_layout = QHBoxLayout(matrix_host)
         matrix_host_layout.setContentsMargins(0, 0, 0, 0)
         matrix_host_layout.addWidget(self.matrix_view, 1)
-        self.matrix_minimap = QLabel("Мини-карта")
-        self.matrix_minimap.setObjectName("matrixMinimap")
-        self.matrix_minimap.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.matrix_minimap.setFixedWidth(150)
-        self.matrix_minimap.setStyleSheet("background:#111827; border:1px solid #475569; color:#94a3b8;")
-        matrix_host_layout.addWidget(self.matrix_minimap)
+        self.matrix_minimap = FrameMatrixMinimap(self.matrix_view)
+        self.matrix_loading_label = QLabel("", self.matrix_view.viewport())
+        self.matrix_loading_label.setObjectName("matrixLoadingLabel")
+        self.matrix_loading_label.move(12, 12)
         self.root_layout.addWidget(matrix_host, 1)
 
         layer_row = QHBoxLayout()
@@ -316,40 +275,23 @@ class ProjectWorkspacePage(_TitledPage):
             )
         )
         self.matrix_view.selectionChanged.connect(self._show_selection_summary)
-        self.send_review_button.clicked.connect(self.reviewRequested)
-        self.zoom_out_button.clicked.connect(
-            lambda: self.matrix_view.set_zoom_factor(max(self.matrix_view.MIN_ZOOM, self.matrix_view.zoom_factor() / 1.25))
-        )
-        self.zoom_in_button.clicked.connect(
-            lambda: self.matrix_view.set_zoom_factor(min(self.matrix_view.MAX_ZOOM, self.matrix_view.zoom_factor() * 1.25))
-        )
-        self.zoom_fit_button.clicked.connect(self.matrix_view.zoom_to_fit)
-        self.zoom_reset_button.clicked.connect(self.matrix_view.reset_zoom)
-        lod_labels = {
-            "overview": "обзор",
-            "cells": "ячейки",
-            "details": "детали",
-        }
-        self.matrix_view.lodChanged.connect(
-            lambda lod: self.matrix_lod_label.setText(
-                f"LOD: {lod_labels.get(lod, lod)}"
-            )
-        )
-        self.minimap_checkbox.toggled.connect(self.matrix_minimap.setVisible)
         if isinstance(self.matrix_view, FrameMatrixWidget):
-            self.clear_thumbnail_cache_button.clicked.connect(self.matrix_view.clear_thumbnail_cache)
             self.matrix_view.loadingChanged.connect(
-                lambda loading: self.matrix_loading_label.setText("Загрузка…" if loading else "")
+                lambda loading: self._set_matrix_message("Загрузка…" if loading else "")
             )
             self.matrix_view.errorOccurred.connect(
-                lambda message: self.matrix_loading_label.setText(f"Ошибка: {message}")
+                lambda message: self._set_matrix_message(f"Ошибка: {message}")
             )
-            self.matrix_view.viewportChanged.connect(self._update_minimap_summary)
 
     def set_project_title(self, name: str) -> None:
         project_name = str(name).strip()
         window = self.window()
         window.setWindowTitle(f"Kraken — {project_name}" if project_name else "Kraken")
+
+    def _set_matrix_message(self, message: str) -> None:
+        self.matrix_loading_label.setText(message)
+        self.matrix_loading_label.adjustSize()
+        self.matrix_loading_label.raise_()
 
     def set_layer_model(self, model: LayerListModel) -> None:
         self.layer_model = model
@@ -418,14 +360,7 @@ class ProjectWorkspacePage(_TitledPage):
 
     def _show_selection_summary(self, selection) -> None:
         count = sum(1 for _ in selection.coordinates())
-        self.send_review_button.setEnabled(count > 0)
         self.selectionCountChanged.emit(count)
-
-    def _update_minimap_summary(self, _visible_rect) -> None:
-        width, height = self.matrix_view.matrix_size()
-        self.matrix_minimap.setText(
-            f"{width:n} × {height:n}\n{self.matrix_view.lod_level().value}"
-        )
 
 
 class _PlaceholderPage(_TitledPage):

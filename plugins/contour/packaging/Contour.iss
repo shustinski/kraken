@@ -40,5 +40,11 @@ Source: "{#MyAppDistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
+[Registry]
+Root: HKLM; Subkey: "Software\Kraken\Plugins\contour"; ValueType: string; ValueName: "Executable"; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\Kraken\Plugins\contour"; ValueType: string; ValueName: "DisplayName"; ValueData: "{#MyAppName}"
+Root: HKLM; Subkey: "Software\Kraken\Plugins\contour"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"
+Root: HKLM; Subkey: "Software\Kraken\Plugins\contour"; ValueType: string; ValueName: "ProtocolVersion"; ValueData: "1.0"
+
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent

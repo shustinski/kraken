@@ -102,6 +102,15 @@ def test_workspace_uses_bottom_layer_tabs_and_status_bar_selection(qapp):
 
     assert workspace.layer_tabs.count() == 2
     assert not workspace.add_layer_button.icon().isNull()
+    assert workspace.findChild(QWidget, "matrixLodLabel") is None
+    assert workspace.findChild(QWidget, "matrixZoomOutButton") is None
+    assert workspace.findChild(QWidget, "matrixZoomInButton") is None
+    assert workspace.findChild(QWidget, "matrixZoomFitButton") is None
+    assert workspace.findChild(QWidget, "matrixZoomResetButton") is None
+    assert workspace.findChild(QWidget, "matrixMinimapCheck") is None
+    assert workspace.findChild(QWidget, "clearThumbnailCacheButton") is None
+    assert workspace.findChild(QWidget, "sendReviewButton") is None
+    assert workspace.matrix_minimap.parentWidget() is workspace.matrix_view.viewport()
     assert shell.statusBar().currentMessage() == "Выбрано кадров: 1"
     assert shell.windowTitle() == "Kraken"
 

@@ -58,6 +58,14 @@ def test_external_layer_uses_numbered_positions_and_delete_keeps_source(
     assert representation.active
     assert representation.name == "Исходные изображения"
     assert service.list_representations(project.id, layer.id) == (representation,)
+    assert service.frame_cells(project.id, layer.id, representation.id) == ()
+    prepared = service.materialize_representation_inputs(
+        principal=session.principal,
+        project=project,
+        layer=layer,
+        representation=representation,
+    )
+    assert {(cell.x, cell.y) for cell in prepared} == {(1, 1), (1, 2)}
     controller = object.__new__(DesktopController)
     controller.service = service
     snapshot = controller._pipeline_snapshot(project.id, layer.id)
@@ -125,6 +133,12 @@ def test_disk_import_registers_copied_directory_as_image_representation(
     assert representation.active
     assert representation.name == "Исходные изображения"
     assert service.list_representations(project.id, layer.id) == (representation,)
+    cells = service.frame_cells(project.id, layer.id, representation.id)
+    assert {(cell.x, cell.y) for cell in cells} == {(1, 1)}
+    assert service.managed_artifact_path(
+        project.id,
+        cells[0].artifact_version_id,
+    ).is_file()
 
 
 def test_project_rename_rolls_back_both_workspace_roots_on_domain_failure(

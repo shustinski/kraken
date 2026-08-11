@@ -24,6 +24,7 @@ from .shell import ProjectManagerShell
 from .widgets import (
     FrameCellData,
     FrameContext,
+    FrameMatrixMinimap,
     FrameMatrixView,
     FrameMatrixWidget,
     FrameRect,
@@ -38,6 +39,7 @@ __all__ = [
     "AdministrationPage",
     "FrameCellData",
     "FrameContext",
+    "FrameMatrixMinimap",
     "FrameMatrixView",
     "FrameMatrixWidget",
     "FrameRect",

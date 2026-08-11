@@ -73,6 +73,7 @@ class LocalAgentRuntime:
             if not plugin.capabilities:
                 continue
             plugin_root = Path(plugin.source_dir).resolve() if plugin.source_dir else None
+            executable_path = plugin.executable_for().path
             command = build_launch_command(
                 plugin,
                 root=None if plugin_root is None else plugin_root.parent.parent,
@@ -89,7 +90,9 @@ class LocalAgentRuntime:
                         "operation": capability.operation,
                         "command": command,
                         "working_directory": (
-                            None if plugin_root is None else str(plugin_root)
+                            str(Path(executable_path).expanduser().resolve(strict=False).parent)
+                            if executable_path
+                            else None if plugin_root is None else str(plugin_root)
                         ),
                         "interactive": (
                             "interactive" in capability.modes

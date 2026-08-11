@@ -11,6 +11,7 @@ from typing import Any
 from kraken_manager.application.ports import StorageProfile
 from kraken_manager.domain.identity import Principal
 from kraken_manager.domain.project import GridOrientation, Project
+from kraken_manager.infrastructure.review.manifest import manifest_from_json
 
 from .composition import EmbeddedProjectService
 from .remote_client import RemoteServerError, RemoteServerProjectService
@@ -82,10 +83,7 @@ class DualCatalogService:
         return self.local.workspace_registry
 
     def list_storage_profiles(self) -> tuple[StorageProfile, ...]:
-        profiles = [self.local.profile]
-        if self.remote is not None:
-            profiles.append(REMOTE_STORAGE_PROFILE)
-        return tuple(profiles)
+        return (self.local.profile, REMOTE_STORAGE_PROFILE)
 
     def is_remote_project(self, project_id: object) -> bool:
         return str(project_id) in self._remote_ids
@@ -210,6 +208,10 @@ class DualCatalogService:
         if self.remote is not None:
             self.remote.add_catalog_handler(handler)
 
+    def add_status_handler(self, handler: Callable[[str], None]) -> None:
+        if self.remote is not None:
+            self.remote.add_status_handler(handler)
+
     def rename_project(self, **kwargs):
         project = kwargs.get("project")
         if project is not None and self.is_remote_project(project.id) and self.remote is not None:
@@ -308,6 +310,25 @@ class DualCatalogService:
             )
         return backend.list_principals(include_inactive=include_inactive)
 
+    def list_performers(self, *, include_archived: bool = False):
+        local = self.local.list_performers(include_archived=include_archived)
+        remote = (
+            ()
+            if self.remote is None
+            else self.remote.list_performers(include_archived=include_archived)
+        )
+        merged = {str(item.id): item for item in (*local, *remote)}
+        return tuple(
+            sorted(merged.values(), key=lambda item: (item.name.casefold(), str(item.id)))
+        )
+
+    def list_project_performers(
+        self, project_id, *, include_archived: bool = False
+    ):
+        return self._backend(project_id).list_performers(
+            include_archived=include_archived
+        )
+
     def project_role_revision(self, project_id, principal_id):
         return self._backend(project_id).project_role_revision(
             project_id,
@@ -325,6 +346,214 @@ class DualCatalogService:
     def history(self, project_id, *, as_of=None):
         return self._backend(project_id).history(project_id, as_of=as_of)
 
+    def activity_records(self):
+        local_records = self.local.activity_records()
+        remote_records = () if self.remote is None else self.remote.activity_records()
+        return tuple(
+            sorted(
+                (*local_records, *remote_records),
+                key=lambda item: (item.recorded_at, item.event_id),
+            )
+        )
+
+    def statistics(self, project_id, **kwargs):
+        if self.is_remote_project(project_id) and self.remote is not None:
+            return self.remote.statistics(project_id, **kwargs)
+        from kraken_manager.infrastructure.reports import (
+            ReportFilters,
+            ReportGranularity,
+            ReportService,
+        )
+
+        records = self.local.activity_records()
+        filters = ReportFilters(
+            kwargs["start"],
+            kwargs["end"],
+            project_ids=frozenset((str(project_id),)),
+        )
+        reports = ReportService()
+        return reports.aggregate(records, filters), {
+            granularity.value: reports.aggregate_series(
+                records, filters, granularity, timezone=kwargs["timezone"]
+            )
+            for granularity in ReportGranularity
+        }
+
+    def latest_karakal_analysis(self, project_id, layer_id, **kwargs):
+        return self._backend(project_id).latest_karakal_analysis(
+            project_id, layer_id, **kwargs
+        )
+
+    def publish_karakal_analysis(self, **kwargs):
+        return self._backend(kwargs.get("project_id")).publish_karakal_analysis(**kwargs)
+
+    def record_layer_pipeline_action(self, **kwargs):
+        return self._backend(kwargs.get("project_id")).record_layer_pipeline_action(**kwargs)
+
+    def remove_layer_pipeline_action(self, **kwargs):
+        return self._backend(kwargs.get("project_id")).remove_layer_pipeline_action(**kwargs)
+
+    def list_derived_runs(self, project_id, layer_id=""):
+        if self.is_remote_project(project_id):
+            # Server execution is represented by durable plugin jobs; legacy
+            # workstation derived-run folders are deliberately local-only.
+            return ()
+        return self.local.list_derived_runs(project_id, layer_id)
+
+    def list_artifact_series(self, project_id, **kwargs):
+        return self._backend(project_id).list_artifact_series(project_id, **kwargs)
+
+    def create_artifact_series(self, **kwargs):
+        project_id = kwargs.get("project_id")
+        return self._backend(project_id).create_artifact_series(**kwargs)
+
+    def artifact_stream_revision(self, project_id, series_id):
+        return self._backend(project_id).artifact_stream_revision(project_id, series_id)
+
+    def artifact_versions(self, project_id, series_id):
+        return self._backend(project_id).artifact_versions(project_id, series_id)
+
+    def active_artifact_version(self, project_id, series_id):
+        return self._backend(project_id).active_artifact_version(project_id, series_id)
+
+    def artifact_version(self, project_id, version_id):
+        return self._backend(project_id).artifact_version(project_id, version_id)
+
+    def add_managed_artifact_version(self, **kwargs):
+        return self._backend(kwargs.get("project_id")).add_managed_artifact_version(**kwargs)
+
+    def add_external_artifact_version(self, **kwargs):
+        return self._backend(kwargs.get("project_id")).add_external_artifact_version(**kwargs)
+
+    def rename_artifact_series(self, **kwargs):
+        series = kwargs.get("series")
+        return self._backend(series.project_id).rename_artifact_series(**kwargs)
+
+    def archive_artifact_series(self, **kwargs):
+        series = kwargs.get("series")
+        return self._backend(series.project_id).archive_artifact_series(**kwargs)
+
+    def activate_artifact_version(self, **kwargs):
+        return self._backend(kwargs.get("project_id")).activate_artifact_version(**kwargs)
+
+    def export_managed_artifact(self, project_id, version, destination):
+        return self._backend(project_id).export_managed_artifact(project_id, version, destination)
+
+    def export_artifact_version(self, project_id, version, destination):
+        return self._backend(project_id).export_artifact_version(project_id, version, destination)
+
+    def managed_artifact_path(self, project_id, version_id):
+        return self._backend(project_id).managed_artifact_path(project_id, version_id)
+
+    def read_project_blob(self, project_id, source_key):
+        return self._backend(project_id).read_project_blob(project_id, source_key)
+
+    def external_artifact_changed(self, version):
+        series = None
+        for project in self.list_projects(include_archived=True):
+            candidate = self.artifact_version(project.id, version.id)
+            if candidate is not None:
+                series = project.id
+                break
+        if series is None:
+            raise ValueError("Artifact version was not found")
+        return self._backend(series).external_artifact_changed(version)
+
+    def list_notes(self, project_id, **kwargs):
+        return self._backend(project_id).list_notes(project_id, **kwargs)
+
+    def create_note(self, **kwargs):
+        return self._backend(kwargs.get("project_id")).create_note(**kwargs)
+
+    def revise_note(self, **kwargs):
+        note = kwargs.get("note")
+        return self._backend(note.project_id).revise_note(**kwargs)
+
+    def review_batches(self):
+        local_batches = list(self.local.review_batches())
+        remote_batches = [] if self.remote is None else list(self.remote.review_batches())
+        return tuple(
+            sorted(
+                (*local_batches, *remote_batches),
+                key=lambda item: (item.updated_at, str(item.id)),
+                reverse=True,
+            )
+        )
+
+    def active_review_batches(self):
+        local_batches = list(self.local.active_review_batches())
+        remote_batches = (
+            [] if self.remote is None else list(self.remote.active_review_batches())
+        )
+        return tuple(
+            sorted(
+                (*local_batches, *remote_batches),
+                key=lambda item: (item.updated_at, str(item.id)),
+                reverse=True,
+            )
+        )
+
+    def create_review_batch(self, **kwargs):
+        return self._backend(kwargs.get("project_id")).create_review_batch(**kwargs)
+
+    def accept_review(self, **kwargs):
+        batch = kwargs.get("batch")
+        return self._backend(batch.project_id).accept_review(**kwargs)
+
+    def request_review_changes(self, **kwargs):
+        batch = kwargs.get("batch")
+        return self._backend(batch.project_id).request_review_changes(**kwargs)
+
+    def cancel_review_batch(self, **kwargs):
+        batch = kwargs.get("batch")
+        return self._backend(batch.project_id).cancel_review_batch(**kwargs)
+
+    def review_candidate_version_ids(self, batch):
+        return self._backend(batch.project_id).review_candidate_version_ids(batch)
+
+    def export_review_batch(self, **kwargs):
+        batch = kwargs.get("batch")
+        return self._backend(batch.project_id).export_review_batch(**kwargs)
+
+    def review_return_preflight(self, **kwargs):
+        source = Path(kwargs["source"]).resolve(strict=True)
+        raw = (source / "kraken-review.json").read_bytes()
+        if len(raw) > 16 * 1024**2:
+            raise ValueError("Review manifest exceeds the size limit")
+        manifest = manifest_from_json(raw.decode("utf-8"))
+        if self.is_remote_project(manifest.project_id):
+            if self.remote is None:
+                raise RuntimeError("Kraken Server is not configured")
+            return self.remote.review_return_preflight(**kwargs)
+        return self.local.review_return_preflight(**kwargs)
+
+    def commit_review_return(self, **kwargs):
+        batch = kwargs.get("batch")
+        return self._backend(batch.project_id).commit_review_return(**kwargs)
+
+    def plugin_jobs(self):
+        local_jobs = list(self.local.plugin_jobs())
+        remote_jobs = [] if self.remote is None else list(self.remote.plugin_jobs())
+        return tuple(
+            sorted(
+                (*local_jobs, *remote_jobs),
+                key=lambda item: (getattr(item, "updated_at", None), str(item.id)),
+                reverse=True,
+            )
+        )
+
+    def submit_plugin_job(self, **kwargs):
+        return self._backend(kwargs.get("project_id")).submit_plugin_job(**kwargs)
+
+    def cancel_plugin_job(self, **kwargs):
+        job = kwargs.get("job")
+        return self._backend(job.project_id).cancel_plugin_job(**kwargs)
+
+    def synchronize_plugin_jobs(self, **kwargs):
+        local_jobs = self.local.synchronize_plugin_jobs(**kwargs)
+        remote_jobs = () if self.remote is None else self.remote.synchronize_plugin_jobs(**kwargs)
+        return (*local_jobs, *remote_jobs)
+
     def matrix_viewport(self, project_id, **kwargs):
         backend = self._backend(project_id)
         if backend is self.remote and self.remote is not None:
@@ -340,6 +569,18 @@ class DualCatalogService:
             )
         return self.local.matrix_viewport(project_id, **kwargs)
 
+    def frame_cells(self, project_id, layer_id, representation_id, **kwargs):
+        return self._backend(project_id).frame_cells(
+            project_id, layer_id, representation_id, **kwargs
+        )
+
+    def frame_management_states(
+        self, project_id, layer_id, representation_id, **kwargs
+    ):
+        return self._backend(project_id).frame_management_states(
+            project_id, layer_id, representation_id, **kwargs
+        )
+
     def create_initial_account(self, username: str, display_name: str, password: str):
         return self.local.create_initial_account(username, display_name, password)
 
@@ -353,7 +594,7 @@ class DualCatalogService:
 def build_workspace_service(
     *,
     data_dir: Path | str | None = None,
-) -> DualCatalogService | EmbeddedProjectService:
+) -> DualCatalogService:
     local = EmbeddedProjectService(data_dir=data_dir)
     from .remote_client import build_remote_service
 
@@ -362,12 +603,10 @@ def build_workspace_service(
     except (OSError, RemoteServerError, ValueError):
         LOGGER.exception("Could not configure the remote Kraken service")
         remote = None
-    if remote is None:
-        return local
     try:
         return DualCatalogService(local, remote)
     except RemoteServerError:
-        return local
+        return DualCatalogService(local)
 
 
 __all__ = ["DualCatalogService", "build_workspace_service"]

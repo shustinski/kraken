@@ -43,6 +43,9 @@ class PluginRegistry:
     def get(self, operation: str) -> PluginProcessSpec | None:
         return self._specs.get(operation)
 
+    def operations(self) -> frozenset[str]:
+        return frozenset(self._specs)
+
     @classmethod
     def from_json(cls, path: Path | str) -> "PluginRegistry":
         payload = json.loads(Path(path).read_text(encoding="utf-8"))

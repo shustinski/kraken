@@ -161,6 +161,11 @@ class ProjectManagerShell(QMainWindow):
         self.session_label.setObjectName("sessionSummary")
         self.session_label.setWordWrap(True)
         layout.addWidget(self.session_label)
+        self.sync_status_label = QLabel("")
+        self.sync_status_label.setObjectName("syncStatus")
+        self.sync_status_label.setWordWrap(True)
+        self.sync_status_label.hide()
+        layout.addWidget(self.sync_status_label)
         return sidebar
 
     def _register_default_pages(self) -> None:
@@ -258,6 +263,18 @@ class ProjectManagerShell(QMainWindow):
 
     def set_session_summary(self, text: str) -> None:
         self.session_label.setText(str(text) or "Нет активной сессии")
+
+    def set_sync_status(self, status: str) -> None:
+        labels = {
+            "synchronized": "● Синхронизировано",
+            "reconnecting": "● Переподключение…",
+            "offline": "● Офлайн",
+        }
+        self.sync_status_label.setText(labels.get(str(status), str(status)))
+        self.sync_status_label.setProperty("status", str(status))
+        self.sync_status_label.setVisible(bool(status))
+        self.sync_status_label.style().unpolish(self.sync_status_label)
+        self.sync_status_label.style().polish(self.sync_status_label)
 
     def _on_navigation_row_changed(self, row: int) -> None:
         item = self.navigation_list.item(row)

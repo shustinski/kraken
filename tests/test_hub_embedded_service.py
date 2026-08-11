@@ -9,7 +9,6 @@ from kraken_core.frame_matrix import StoreNamespace
 from kraken_core.plugin_protocol import PluginAsset, PluginResultPublicationV2
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.application.dto import CommandContext, CreateProjectCommand
-from kraken_manager.application.errors import StorageCapabilityError
 from kraken_manager.application.use_cases import CreateProjectHandler
 from kraken_manager.domain.artifacts import ArtifactScope, deterministic_frame_series_id
 from kraken_manager.domain.identity import ProjectRole
@@ -438,21 +437,21 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
             self.assertEqual(project.name, rebuilt.name)
             self.assertEqual(4, len(service.list_layers(project.id)))
 
-    def test_local_profile_rejects_more_than_one_hundred_thousand_frames(self) -> None:
+    def test_local_profile_accepts_more_than_one_million_frames(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             service = EmbeddedProjectService(Path(temporary))
             account = service.accounts.create_account("operator", "Operator", "correct horse battery staple")
             session = service.login(account.username, "correct horse battery staple")
             assert session is not None
-            with self.assertRaises(StorageCapabilityError):
-                service.create_project(
-                    principal=session.principal,
-                    name="Too large",
-                    width=1001,
-                    height=100,
-                    orientation=GridOrientation.Y_DOWN,
-                    idempotency_key="too-large",
-                )
+            project = service.create_project(
+                principal=session.principal,
+                name="Large sparse project",
+                width=10_001,
+                height=100,
+                orientation=GridOrientation.Y_DOWN,
+                idempotency_key="large-project",
+            )
+            self.assertEqual(1_000_100, project.frame_count)
 
     def test_event_first_commit_failure_is_recovered_before_next_read(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

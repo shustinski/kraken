@@ -26,7 +26,7 @@ REMOTE_STORAGE_PROFILE = StorageProfile(
         snapshots=True,
         streaming=True,
         external_references=True,
-        max_frames=1_000_000,
+        max_frames=None,
     ),
 )
 
@@ -40,6 +40,9 @@ class ProjectEventWake:
     event_id: str
     position: int | None = None
     revision: int | None = None
+    stream_id: str = ""
+    entity_kind: str = ""
+    entity_id: str = ""
 
 
 @runtime_checkable

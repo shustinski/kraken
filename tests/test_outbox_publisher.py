@@ -62,6 +62,7 @@ def test_outbox_publisher_marks_rows_published_and_notifies_hub() -> None:
             "payload": {},
             "position": 10,
             "revision": 0,
+            "stream_id": "project:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         }
     ]
     engine = _Engine(rows)
@@ -70,5 +71,7 @@ def test_outbox_publisher_marks_rows_published_and_notifies_hub() -> None:
     assert count == 1
     assert published[0]["type"] == "project_event"
     assert published[0]["position"] == 10
+    assert published[0]["entity_kind"] == "project"
+    assert published[0]["entity_id"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     assert any("UPDATE TRANSACTIONAL_OUTBOX" in sql.upper() for sql, _ in engine.connection.executed)
     assert published[1]["type"] == "catalog_changed"

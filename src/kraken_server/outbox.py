@@ -122,7 +122,7 @@ class OutboxPublisher:
                 text(
                     """
                     SELECT o.outbox_id, o.event_id, o.project_id, o.event_type, o.payload,
-                           e.position, e.revision
+                           e.position, e.revision, e.stream_id
                     FROM transactional_outbox AS o
                     LEFT JOIN domain_events AS e ON e.event_id = o.event_id
                     WHERE o.published_at IS NULL
@@ -135,6 +135,8 @@ class OutboxPublisher:
             ).mappings().all()
             now = datetime.now(UTC)
             for row in rows:
+                stream_id = "" if row["stream_id"] is None else str(row["stream_id"])
+                entity_kind, separator, entity_id = stream_id.partition(":")
                 envelope = {
                     "type": "project_event",
                     "project_id": str(row["project_id"]),
@@ -142,6 +144,9 @@ class OutboxPublisher:
                     "event_id": str(row["event_id"]),
                     "position": None if row["position"] is None else int(row["position"]),
                     "revision": None if row["revision"] is None else int(row["revision"]),
+                    "stream_id": stream_id,
+                    "entity_kind": entity_kind if separator else "",
+                    "entity_id": entity_id if separator else "",
                 }
                 self.hub.publish(envelope)
                 if str(row["event_type"]).startswith("Project"):

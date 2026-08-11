@@ -83,7 +83,7 @@ class _ChainLinkButton(QToolButton):
 
 
 class GridDimensionsWidget(QWidget):
-    """Edit width, height and Y orientation with a frame-count cap.
+    """Edit width, height and Y orientation with an optional frame-count cap.
 
     Values may temporarily exceed ``maximum_frames`` so a wizard can explain
     the problem instead of silently changing user input. Call ``is_valid`` or
@@ -94,8 +94,8 @@ class GridDimensionsWidget(QWidget):
     orientationChanged = pyqtSignal(str)
     validityChanged = pyqtSignal(bool, str)
 
-    DEFAULT_MAXIMUM_FRAMES = 100_000
-    MAXIMUM_AXIS = 10_000_000
+    DEFAULT_MAXIMUM_FRAMES: int | None = None
+    MAXIMUM_AXIS = 2_147_483_647
     PREVIEW_MAX_WIDTH = 210
     PREVIEW_MAX_HEIGHT = 135
     PREVIEW_MIN_WIDTH = 112
@@ -115,6 +115,7 @@ class GridDimensionsWidget(QWidget):
         "y_down": "Y вниз · начало сверху",
         "y_up": "Y вверх · начало снизу",
         "frame_count": "Всего кадров: {count:n}",
+        "unlimited": "Размер допустим: {count:n} кадров · без ограничения",
         "valid": "Размер допустим: {count:n} из {maximum:n} кадров",
         "cap_exceeded": "Превышен лимит: {count:n} из {maximum:n} кадров",
     }
@@ -126,19 +127,19 @@ class GridDimensionsWidget(QWidget):
         orientation: GridOrientation | str = GridOrientation.Y_DOWN,
         parent: QWidget | None = None,
         *,
-        maximum_frames: int = DEFAULT_MAXIMUM_FRAMES,
+        maximum_frames: int | None = DEFAULT_MAXIMUM_FRAMES,
         maximum_axis: int = MAXIMUM_AXIS,
         link_dimensions: bool | None = None,
     ) -> None:
         super().__init__(parent)
         self._validate_positive(width, height)
-        if int(maximum_frames) <= 0:
+        if maximum_frames is not None and int(maximum_frames) <= 0:
             raise ValueError("maximum_frames must be positive")
         if int(maximum_axis) <= 0:
             raise ValueError("maximum_axis must be positive")
         if width > maximum_axis or height > maximum_axis:
             raise ValueError("grid dimensions must not exceed maximum_axis")
-        self._maximum_frames = int(maximum_frames)
+        self._maximum_frames = None if maximum_frames is None else int(maximum_frames)
         self._maximum_axis = int(maximum_axis)
         self._texts = dict(self.DEFAULT_TEXTS)
         self._last_validity: tuple[bool, str] | None = None
@@ -429,13 +430,15 @@ class GridDimensionsWidget(QWidget):
     def frame_count(self) -> int:
         return self.width_spinbox.value() * self.height_spinbox.value()
 
-    def maximum_frames(self) -> int:
+    def maximum_frames(self) -> int | None:
         return self._maximum_frames
 
     def is_valid(self) -> bool:
-        return self.frame_count() <= self._maximum_frames
+        return self._maximum_frames is None or self.frame_count() <= self._maximum_frames
 
     def validation_message(self) -> str:
+        if self._maximum_frames is None:
+            return self._texts["unlimited"].format(count=self.frame_count())
         key = "valid" if self.is_valid() else "cap_exceeded"
         return self._texts[key].format(
             count=self.frame_count(),
@@ -470,10 +473,10 @@ class GridDimensionsWidget(QWidget):
 
     set_target_size = set_dimensions
 
-    def set_maximum_frames(self, maximum_frames: int) -> None:
-        if int(maximum_frames) <= 0:
+    def set_maximum_frames(self, maximum_frames: int | None) -> None:
+        if maximum_frames is not None and int(maximum_frames) <= 0:
             raise ValueError("maximum_frames must be positive")
-        self._maximum_frames = int(maximum_frames)
+        self._maximum_frames = None if maximum_frames is None else int(maximum_frames)
         self._publish()
 
     def set_orientation(self, orientation: GridOrientation | str) -> None:

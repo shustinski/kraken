@@ -28,9 +28,33 @@ def main() -> int:
     parser.add_argument("--token", help="One-time control token; generated when omitted")
     parser.add_argument("--plugins-config", type=Path, help="JSON operation-to-command registry")
     parser.add_argument("--connection-file", type=Path)
+    parser.add_argument("--server-url", help="Kraken Server URL for remote worker mode")
+    parser.add_argument("--server-token", help="Revocable machine token (or KRAKEN_AGENT_TOKEN)")
+    parser.add_argument("--lease-seconds", type=int, default=60)
     args = parser.parse_args()
 
     args.data_dir.mkdir(parents=True, exist_ok=True)
+    if args.server_url:
+        if args.plugins_config is None:
+            raise SystemExit("--plugins-config is required in server worker mode")
+        token = (args.server_token or os.environ.get("KRAKEN_AGENT_TOKEN") or "").strip()
+        if not token:
+            raise SystemExit("--server-token or KRAKEN_AGENT_TOKEN is required")
+        from .server_worker import ServerAgentWorker
+
+        worker = ServerAgentWorker(
+            server_url=args.server_url,
+            token=token,
+            data_dir=args.data_dir,
+            registry=PluginRegistry.from_json(args.plugins_config),
+            lease_seconds=args.lease_seconds,
+        )
+        try:
+            worker.run_forever()
+        except KeyboardInterrupt:
+            worker.stop()
+        return 0
+
     control = AgentControlServer.create(args.data_dir / "jobs.sqlite3", token=args.token)
     control.host = args.host
     control.port = args.port

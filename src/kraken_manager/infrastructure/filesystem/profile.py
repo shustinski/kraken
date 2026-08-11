@@ -10,7 +10,7 @@ FILESYSTEM_CAPABILITIES = StorageCapabilities(
     snapshots=True,
     streaming=True,
     external_references=True,
-    max_frames=100_000,
+    max_frames=None,
 )
 
 

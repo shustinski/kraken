@@ -43,6 +43,15 @@ def test_grid_dimensions_reports_cap_without_silently_clamping(qapp):
         widget.validated_dimensions()
 
 
+def test_grid_dimensions_are_unlimited_by_default(qapp):
+    widget = GridDimensionsWidget(2_000_000, 2_000_000)
+
+    assert widget.maximum_frames() is None
+    assert widget.is_valid()
+    assert widget.frame_count() == 4_000_000_000_000
+    assert "без ограничения" in widget.validation_message()
+
+
 def test_set_dimensions_publishes_one_complete_snapshot(qapp):
     widget = GridDimensionsWidget()
     emissions: list[tuple[int, int, str]] = []

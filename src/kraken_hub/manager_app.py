@@ -14,7 +14,7 @@ from pathlib import Path
 from threading import Event
 from uuid import uuid4
 
-from PyQt6.QtCore import QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 
 from kraken_core.frame_matrix import (
     MatrixSession,
@@ -66,6 +66,13 @@ from .remote_client import load_remote_auth_from_env
 from .workspace_service import REMOTE_STORAGE_PROFILE, ProjectEventWake
 
 
+class _RemoteSignalBridge(QObject):
+    """Marshal transport-thread callbacks onto the Qt event loop."""
+
+    wakeReceived = pyqtSignal(object)
+    statusChanged = pyqtSignal(str)
+
+
 def _plain_value(value):
     if is_dataclass(value):
         return _plain_value(asdict(value))
@@ -78,6 +85,39 @@ def _plain_value(value):
     if isinstance(value, Path):
         return str(value)
     return value
+
+
+def _is_network_path(path: Path | str) -> bool:
+    raw = str(path)
+    if raw.startswith(("\\\\", "//")):
+        return True
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        anchor = Path(raw).anchor
+        return bool(anchor) and ctypes.windll.kernel32.GetDriveTypeW(anchor) == 4
+    except (AttributeError, OSError):
+        return False
+
+
+def _confirm_server_external_path(parent, service, project_id: object, path: Path | str) -> bool:
+    if not bool(getattr(service, "is_remote_project", lambda _value: False)(project_id)):
+        return True
+    if _is_network_path(path):
+        return True
+    from PyQt6.QtWidgets import QMessageBox
+
+    answer = QMessageBox.warning(
+        parent,
+        "Локальный файл в серверном проекте",
+        "Выбран файл с локального диска. Ссылка сохранится, но файл будет недоступен "
+        "другим пользователям и серверным агентам. Продолжить?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        QMessageBox.StandardButton.Cancel,
+    )
+    return answer == QMessageBox.StandardButton.Yes
 
 
 def _event_payload(event) -> dict[str, object]:
@@ -637,7 +677,11 @@ class DesktopController:
         self._layer_dialog: LayerManagerDialog | None = None
         self._background_workers: set[QThread] = set()
         self._source_preparation_keys: set[tuple[str, str]] = set()
-        self._pending_wakes: list[ProjectEventWake] = []
+        self._pending_wakes: dict[tuple[str, str, str], ProjectEventWake] = {}
+        self._pending_catalog_refresh = False
+        self._remote_bridge = _RemoteSignalBridge(self.shell)
+        self._remote_bridge.wakeReceived.connect(self._on_remote_wake)
+        self._remote_bridge.statusChanged.connect(self.shell.set_sync_status)
         self._sync_timer = QTimer(self.shell)
         self._sync_timer.setSingleShot(True)
         self._sync_timer.timeout.connect(self._drain_live_wakes)
@@ -663,11 +707,14 @@ class DesktopController:
     def _wire_live_sync(self) -> None:
         add_wake = getattr(self.service, "add_wake_handler", None)
         add_catalog = getattr(self.service, "add_catalog_handler", None)
+        add_status = getattr(self.service, "add_status_handler", None)
         start_sync = getattr(self.service, "start_sync", None)
         if callable(add_wake):
-            add_wake(self._on_remote_wake)
+            add_wake(lambda wake: self._remote_bridge.wakeReceived.emit(wake))
         if callable(add_catalog):
-            add_catalog(lambda: self._on_remote_wake(None))
+            add_catalog(lambda: self._remote_bridge.wakeReceived.emit(None))
+        if callable(add_status):
+            add_status(lambda status: self._remote_bridge.statusChanged.emit(status))
         if callable(start_sync):
             try:
                 start_sync()
@@ -675,18 +722,26 @@ class DesktopController:
                 logging.getLogger(__name__).exception("Failed to start remote live sync")
 
     def _on_remote_wake(self, wake: ProjectEventWake | None) -> None:
-        if wake is not None:
-            self._pending_wakes.append(wake)
+        if wake is None:
+            self._pending_catalog_refresh = True
+        else:
+            key = (
+                wake.project_id,
+                wake.entity_kind or wake.stream_id,
+                wake.entity_id or wake.stream_id,
+            )
+            self._pending_wakes[key] = wake
         if not self._sync_timer.isActive():
             self._sync_timer.start(50)
 
     def _drain_live_wakes(self) -> None:
-        wakes = list(self._pending_wakes)
+        wakes = list(self._pending_wakes.values())
         self._pending_wakes.clear()
-        catalog_changed = not wakes or any(
+        catalog_changed = self._pending_catalog_refresh or any(
             wake.event_type.startswith("Project") or wake.event_type.startswith("project.")
             for wake in wakes
         )
+        self._pending_catalog_refresh = False
         if catalog_changed:
             self.refresh_projects()
         if self._project_id is None or self._workspace is None:
@@ -696,7 +751,7 @@ class DesktopController:
             for wake in wakes
             if wake is not None and wake.project_id == self._project_id
         ]
-        if not wakes or relevant:
+        if catalog_changed or relevant:
             project = self.service.get_project(self._project_id)
             if project is None:
                 return
@@ -1251,18 +1306,11 @@ class DesktopController:
         form.addRow("Имя проекта", name)
         profile_box = QComboBox(dialog)
         for profile in profiles:
-            label = profile.name
-            if profile.id == REMOTE_STORAGE_PROFILE.id:
-                label = f"{profile.name} (общая БД)"
+            label = "Сервер" if profile.id == REMOTE_STORAGE_PROFILE.id else "Локальный"
             profile_box.addItem(label, profile.id)
         form.addRow("Хранилище", profile_box)
         layout.addLayout(form)
-        dimensions = GridDimensionsWidget(
-            maximum_frames=max(
-                (profile.capabilities.max_frames or 100_000 for profile in profiles),
-                default=100_000,
-            )
-        )
+        dimensions = GridDimensionsWidget(maximum_frames=None)
         layout.addWidget(dimensions)
         storage = QLabel("")
         storage.setWordWrap(True)
@@ -1512,7 +1560,7 @@ class DesktopController:
             self._error("Сначала откройте проект и выберите слой.")
             return
         coordinates = workspace.matrix_view.selected_coordinates(
-            maximum=self.service.profile.capabilities.max_frames or 100_000
+            maximum=self.service.profile.capabilities.max_frames
         )
         if not coordinates:
             self._error("Выберите хотя бы один кадр.")
@@ -1522,7 +1570,14 @@ class DesktopController:
         if not image_id or not vector_id:
             self._error("Выберите связанные репрезентации изображения и CIF.")
             return
-        performers = self.service.list_performers()
+        performer_reader = getattr(
+            self.service, "list_project_performers", None
+        )
+        performers = (
+            performer_reader(project_id)
+            if callable(performer_reader)
+            else self.service.list_performers()
+        )
         if not performers:
             self._error("Сначала добавьте исполнителя в разделе «Исполнители».")
             return
@@ -2215,6 +2270,10 @@ class DesktopController:
                 "Выберите новую версию файла",
             )
             if not source:
+                return
+            if external and not _confirm_server_external_path(
+                self.shell, self.service, project_id, source
+            ):
                 return
             try:
                 method = (
@@ -3070,6 +3129,10 @@ class DesktopController:
             )
             if not source:
                 return
+            if external and not _confirm_server_external_path(
+                self.shell, self.service, project_id, source
+            ):
+                return
             path = Path(source)
             scope = (
                 ArtifactScope.PROJECT_EXTERNAL_LINK
@@ -3117,6 +3180,10 @@ class DesktopController:
                 "Выберите новую версию",
             )
             if not source:
+                return
+            if external and not _confirm_server_external_path(
+                self.shell, self.service, project_id, source
+            ):
                 return
             active = self.service.active_artifact_version(project_id, series.id)
             try:
@@ -4334,13 +4401,20 @@ class DesktopController:
         project = self.service.get_project(self._project_id)
         if workspace is None or project is None or not source_representation_id:
             raise ValueError("Не выбраны исходные изображения")
-        capabilities = self.agent_runtime.ensure_started()
-        if capability not in capabilities:
-            raise ValueError(f"Установленные плагины не поддерживают {capability}")
+        is_remote = bool(
+            getattr(self.service, "is_remote_project", lambda _value: False)(project.id)
+        )
+        capabilities = frozenset()
+        if not is_remote:
+            capabilities = self.agent_runtime.ensure_started()
+            if capability not in capabilities:
+                raise ValueError(f"Установленные плагины не поддерживают {capability}")
         coordinates = workspace.matrix_view.selected_coordinates(
-            maximum=self.service.profile.capabilities.max_frames or 100_000
+            maximum=self.service.profile.capabilities.max_frames
         )
         if not coordinates:
+            if is_remote:
+                raise ValueError("Для серверного задания выберите кадры в матрице")
             coordinates = tuple(
                 (cell.x, cell.y)
                 for cell in self.service.frame_cells(
@@ -4381,21 +4455,23 @@ class DesktopController:
                 raise ValueError(f"Версия {version_id} больше не доступна")
             return version.media_type
 
-        gateway = AgentPluginGateway(
-            base_url=self.agent_runtime.base_url,
-            token=self.agent_runtime.token,
-            staging_root=self.service.data_dir / "agent" / "staging",
-            source_for_version=version_path,
-            coordinate_for_frame=frame_coordinate,
-            media_type_for_version=media_type,
-            capabilities=capabilities,
-            v2_capabilities=frozenset(
-                operation
-                for operation, protocol in self.agent_runtime.protocol_by_capability.items()
-                if protocol == "2.0"
-            ),
-        )
-        self._agent_gateway = gateway
+        gateway = None
+        if not is_remote:
+            gateway = AgentPluginGateway(
+                base_url=self.agent_runtime.base_url,
+                token=self.agent_runtime.token,
+                staging_root=self.service.data_dir / "agent" / "staging",
+                source_for_version=version_path,
+                coordinate_for_frame=frame_coordinate,
+                media_type_for_version=media_type,
+                capabilities=capabilities,
+                v2_capabilities=frozenset(
+                    operation
+                    for operation, protocol in self.agent_runtime.protocol_by_capability.items()
+                    if protocol == "2.0"
+                ),
+            )
+            self._agent_gateway = gateway
         return self.service.submit_plugin_job(
             principal=self.session.principal,
             gateway=gateway,
@@ -6507,18 +6583,36 @@ def _statistics_panel(service: EmbeddedProjectService):
 
     def refresh() -> None:
         try:
-            records = service.activity_records()
             selected_filters = filters()
-            metrics = reports.aggregate(records, selected_filters)
-            series_by_granularity = {
-                granularity: reports.aggregate_series(
-                    records,
-                    selected_filters,
-                    granularity,
+            selected_project = project.currentData()
+            server_statistics = getattr(service, "statistics", None)
+            if (
+                selected_project
+                and callable(server_statistics)
+                and service.is_remote_project(selected_project)
+            ):
+                metrics, remote_series = server_statistics(
+                    selected_project,
+                    start=selected_filters.start,
+                    end=selected_filters.end,
                     timezone=local_timezone,
                 )
-                for granularity, _title in granularities
-            }
+                series_by_granularity = {
+                    granularity: remote_series[granularity.value]
+                    for granularity, _title in granularities
+                }
+            else:
+                records = service.activity_records()
+                metrics = reports.aggregate(records, selected_filters)
+                series_by_granularity = {
+                    granularity: reports.aggregate_series(
+                        records,
+                        selected_filters,
+                        granularity,
+                        timezone=local_timezone,
+                    )
+                    for granularity, _title in granularities
+                }
         except Exception as exc:
             QMessageBox.warning(host, "Не удалось рассчитать статистику", str(exc))
             return
@@ -6808,7 +6902,7 @@ def run_manager_gui(
         my_work_page.set_content(_my_work_panel(local, session, controller))
     statistics_page = shell.page("statistics")
     if statistics_page is not None:
-        statistics_page.set_content(_statistics_panel(local))
+        statistics_page.set_content(_statistics_panel(service))
     administration_page = shell.page("administration")
     if administration_page is not None:
         administration_page.set_content(_administration_panel(local, session))

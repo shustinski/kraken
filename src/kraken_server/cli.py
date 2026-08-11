@@ -29,6 +29,17 @@ def main() -> int:
     )
     local.add_argument("--username", required=True)
     local.add_argument("--display-name", required=True)
+    create_agent = subcommands.add_parser(
+        "create-agent-token", help="Create a revocable Kraken Agent machine token"
+    )
+    create_agent.add_argument("--database-url", required=True)
+    create_agent.add_argument("--name", required=True)
+    create_agent.add_argument("--capability", action="append", required=True)
+    revoke_agent = subcommands.add_parser(
+        "revoke-agent-token", help="Revoke a Kraken Agent machine token"
+    )
+    revoke_agent.add_argument("--database-url", required=True)
+    revoke_agent.add_argument("--token-id", required=True)
     args = parser.parse_args()
     if args.command == "bootstrap-admin":
         password = getpass.getpass("New administrator password: ")
@@ -67,6 +78,23 @@ def main() -> int:
             )
         )
         print(f"Created workstation-local account {account.account_id}")
+    elif args.command in {"create-agent-token", "revoke-agent-token"}:
+        try:
+            from sqlalchemy import create_engine
+        except ImportError as exc:
+            raise SystemExit("Install Kraken with the 'postgres' extra") from exc
+        from .agent_auth import PostgresAgentTokenStore
+
+        store = PostgresAgentTokenStore(create_engine(args.database_url, pool_pre_ping=True))
+        if args.command == "create-agent-token":
+            identity, token = store.create(args.name, frozenset(args.capability))
+            print(f"Agent token id: {identity.token_id}")
+            print("Copy this token now; it cannot be shown again:")
+            print(token)
+        elif not store.revoke(args.token_id):
+            raise SystemExit("Agent token was not found or was already revoked")
+        else:
+            print(f"Revoked agent token {args.token_id}")
     return 0
 
 

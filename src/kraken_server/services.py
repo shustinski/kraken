@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -43,9 +43,11 @@ class CommandContext:
 class ServerServices(Protocol):
     def health(self) -> dict[str, Any]: ...
 
-    def list_projects(self) -> list[dict[str, Any]]: ...
+    def list_projects(self, *, include_archived: bool = False) -> list[dict[str, Any]]: ...
 
     def list_principals(self, *, include_inactive: bool = False) -> list[dict[str, Any]]: ...
+
+    def list_performers(self, *, include_archived: bool = False) -> list[dict[str, Any]]: ...
 
     def create_project(self, payload: Mapping[str, Any], context: CommandContext) -> dict[str, Any]: ...
 
@@ -59,7 +61,9 @@ class ServerServices(Protocol):
 
     def restore_project(self, project_id: str, context: CommandContext) -> dict[str, Any]: ...
 
-    def list_layers(self, project_id: str) -> list[dict[str, Any]]: ...
+    def list_layers(
+        self, project_id: str, *, include_archived: bool = False
+    ) -> list[dict[str, Any]]: ...
 
     def create_layer(
         self, project_id: str, payload: Mapping[str, Any], context: CommandContext
@@ -99,7 +103,9 @@ class ServerServices(Protocol):
         context: CommandContext,
     ) -> dict[str, Any]: ...
 
-    def list_representations(self, project_id: str, layer_id: str) -> list[dict[str, Any]]: ...
+    def list_representations(
+        self, project_id: str, layer_id: str, *, include_archived: bool = False
+    ) -> list[dict[str, Any]]: ...
 
     def create_representation(
         self,
@@ -115,10 +121,114 @@ class ServerServices(Protocol):
     ) -> dict[str, Any]: ...
 
     def matrix_viewport(
-        self, project_id: str, *, layer_id: str, x1: int, y1: int, x2: int, y2: int, lod: int
+        self, project_id: str, *, layer_id: str, representation_ids: Iterable[str],
+        x1: int, y1: int, x2: int, y2: int, lod: int, include_missing: bool = True
     ) -> dict[str, Any]: ...
 
     def history(self, project_id: str, *, cursor: str | None, limit: int) -> dict[str, Any]: ...
+
+    def statistics(
+        self, project_id: str, *, start: datetime, end: datetime, timezone: Any
+    ) -> dict[str, Any]: ...
+
+    def publish_karakal_analysis(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def append_pipeline_event(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def list_artifact_series(
+        self, project_id: str, *, layer_id: str | None = None,
+        representation_id: str | None = None, frame_id: str | None = None,
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]: ...
+
+    def list_artifact_versions(self, project_id: str, series_id: str) -> list[dict[str, Any]]: ...
+
+    def artifact_stream_revision(self, project_id: str, series_id: str) -> int: ...
+
+    def get_active_artifact_version(self, project_id: str, series_id: str) -> dict[str, Any] | None: ...
+
+    def get_artifact_version(self, project_id: str, version_id: str) -> dict[str, Any]: ...
+
+    def create_artifact_series(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def add_managed_artifact_version(
+        self, project_id: str, series_id: str, payload: Mapping[str, Any],
+        chunks: Iterable[bytes], context: CommandContext,
+    ) -> dict[str, Any]: ...
+
+    def add_external_artifact_version(
+        self, project_id: str, series_id: str, payload: Mapping[str, Any],
+        context: CommandContext,
+    ) -> dict[str, Any]: ...
+
+    def mutate_artifact_series(
+        self, project_id: str, series_id: str, payload: Mapping[str, Any],
+        context: CommandContext,
+    ) -> dict[str, Any]: ...
+
+    def list_notes(
+        self, project_id: str, *, layer_id: str | None = None, frame_id: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    def create_note(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def revise_note(
+        self, project_id: str, note_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def iter_artifact_bytes(
+        self, project_id: str, version_id: str, *, chunk_size: int = 1024 * 1024
+    ) -> Iterator[bytes]: ...
+
+    def list_review_batches(
+        self, project_id: str, *, active_only: bool = False
+    ) -> list[dict[str, Any]]: ...
+
+    def create_review_batch(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def mutate_review_batch(
+        self, project_id: str, batch_id: str, payload: Mapping[str, Any],
+        context: CommandContext,
+    ) -> dict[str, Any]: ...
+
+    def export_review_package(
+        self, project_id: str, batch_id: str, destination: str,
+        context: CommandContext,
+    ) -> dict[str, Any]: ...
+
+    def inspect_review_return(
+        self, project_id: str, batch_id: str, source: str,
+        context: CommandContext,
+    ) -> dict[str, Any]: ...
+
+    def commit_review_return(
+        self, project_id: str, batch_id: str, source: str,
+        context: CommandContext,
+    ) -> dict[str, Any]: ...
+
+    def list_plugin_jobs(self, project_id: str | None = None) -> list[dict[str, Any]]: ...
+
+    def submit_plugin_job(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def cancel_plugin_job(
+        self, project_id: str, job_id: str, context: CommandContext
+    ) -> dict[str, Any]: ...
+
+    def fail_agent_job(self, job_id: str, error: str) -> dict[str, Any]: ...
+
+    def import_agent_result(self, job_id: str, agent: Any) -> dict[str, Any]: ...
 
 
 class InMemoryServerServices:
@@ -137,9 +247,15 @@ class InMemoryServerServices:
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "metadata": "memory", "api_version": "v1"}
 
-    def list_projects(self) -> list[dict[str, Any]]:
+    def list_projects(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
         with self._lock:
-            return [dict(item) for item in sorted(self._projects.values(), key=lambda value: value["name"].casefold())]
+            return [
+                dict(item)
+                for item in sorted(
+                    self._projects.values(), key=lambda value: value["name"].casefold()
+                )
+                if include_archived or item["state"] != "archived"
+            ]
 
     def list_principals(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
         del include_inactive
@@ -166,6 +282,10 @@ class InMemoryServerServices:
             }
             for identifier in sorted(identifiers)
         ]
+
+    def list_performers(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
+        del include_archived
+        return []
 
     def create_project(self, payload: Mapping[str, Any], context: CommandContext) -> dict[str, Any]:
         key = (context.actor_id, context.idempotency_key)
@@ -273,10 +393,16 @@ class InMemoryServerServices:
     def restore_project(self, project_id: str, context: CommandContext) -> dict[str, Any]:
         return self._project_lifecycle(project_id, context, operation="restore")
 
-    def list_layers(self, project_id: str) -> list[dict[str, Any]]:
+    def list_layers(
+        self, project_id: str, *, include_archived: bool = False
+    ) -> list[dict[str, Any]]:
         self.get_project(project_id)
         with self._lock:
-            return [dict(item) for item in self._layers[project_id]]
+            return [
+                dict(item)
+                for item in self._layers[project_id]
+                if include_archived or item["state"] != "archived"
+            ]
 
     def create_layer(
         self, project_id: str, payload: Mapping[str, Any], context: CommandContext
@@ -495,12 +621,18 @@ class InMemoryServerServices:
     ) -> dict[str, Any]:
         return self._change_project_role(project_id, principal_id, role, context, revoke=True)
 
-    def list_representations(self, project_id: str, layer_id: str) -> list[dict[str, Any]]:
+    def list_representations(
+        self, project_id: str, layer_id: str, *, include_archived: bool = False
+    ) -> list[dict[str, Any]]:
         self.get_project(project_id)
         if layer_id not in self._representations:
             raise NotFoundError(layer_id)
         with self._lock:
-            return [dict(item) for item in self._representations[layer_id]]
+            return [
+                dict(item)
+                for item in self._representations[layer_id]
+                if include_archived or item["state"] != "archived"
+            ]
 
     def create_representation(
         self,
@@ -607,8 +739,10 @@ class InMemoryServerServices:
             return result
 
     def matrix_viewport(
-        self, project_id: str, *, layer_id: str, x1: int, y1: int, x2: int, y2: int, lod: int
+        self, project_id: str, *, layer_id: str, representation_ids: Iterable[str] = (),
+        x1: int, y1: int, x2: int, y2: int, lod: int, include_missing: bool = True
     ) -> dict[str, Any]:
+        del representation_ids, include_missing
         project = self.get_project(project_id)
         if not (1 <= x1 <= x2 <= project["width"] and 1 <= y1 <= y2 <= project["height"]):
             raise ValidationError("Viewport is outside the project grid")
@@ -655,6 +789,97 @@ class InMemoryServerServices:
             "items": page,
             "next_cursor": self._encode_cursor(next_offset) if next_offset < len(events) else None,
         }
+
+    def _append_auxiliary_event(
+        self,
+        project_id: str,
+        *,
+        stream_id: str,
+        event_type: str,
+        payload: Mapping[str, object],
+        context: CommandContext,
+    ) -> dict[str, Any]:
+        self.get_project(project_id)
+        key = (f"event:{project_id}:{context.actor_id}", context.idempotency_key)
+        with self._lock:
+            if key in self._idempotency:
+                return dict(self._idempotency[key])
+            revision = max(
+                (
+                    int(event.get("revision", 0))
+                    for event in self._events[project_id]
+                    if event.get("stream_id") == stream_id
+                ),
+                default=0,
+            )
+            if context.expected_revision != revision:
+                raise ConflictError(
+                    f"Expected stream revision {context.expected_revision}, found {revision}"
+                )
+            event = {
+                "event_id": str(uuid4()),
+                "stream_id": stream_id,
+                "event_type": event_type,
+                "revision": revision + 1,
+                "recorded_at": datetime.now(UTC).isoformat(),
+                "actor": {
+                    "principal_id": context.actor_id,
+                    "display_name": context.actor_id,
+                },
+                "payload": dict(payload),
+            }
+            self._events[project_id].append(event)
+            self._idempotency[key] = event
+            return dict(event)
+
+    def publish_karakal_analysis(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]:
+        layer_id = str(payload.get("layer_id", ""))
+        if not any(item["layer_id"] == layer_id for item in self._layers.get(project_id, ())):
+            raise NotFoundError("Layer was not found")
+        confidence = {
+            str(frame_id): float(value)
+            for frame_id, value in dict(payload.get("frame_confidence", {})).items()
+        }
+        if any(value < 0.0 or value > 1.0 for value in confidence.values()):
+            raise ValidationError("Karakal confidence must be in range 0..1")
+        revision = max(
+            (
+                int(event.get("revision", 0))
+                for event in self._events.get(project_id, ())
+                if event.get("stream_id") == f"karakal:{layer_id}"
+            ),
+            default=0,
+        )
+        return self._append_auxiliary_event(
+            project_id,
+            stream_id=f"karakal:{layer_id}",
+            event_type="KarakalAnalysisPublished",
+            payload={
+                **dict(payload),
+                "frame_confidence": confidence,
+                "publication_sequence": revision + 1,
+            },
+            context=context,
+        )
+
+    def append_pipeline_event(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]:
+        event_type = str(payload.get("event_type", ""))
+        if event_type not in {"LayerPipelineActionRequested", "LayerPipelineActionRemoved"}:
+            raise ValidationError("Unsupported pipeline event type")
+        layer_id = str(payload.get("layer_id", ""))
+        if not any(item["layer_id"] == layer_id for item in self._layers.get(project_id, ())):
+            raise NotFoundError("Layer was not found")
+        return self._append_auxiliary_event(
+            project_id,
+            stream_id=f"layer-pipeline:{layer_id}",
+            event_type=event_type,
+            payload={key: value for key, value in payload.items() if key != "event_type"},
+            context=context,
+        )
 
 
 __all__ = [

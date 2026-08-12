@@ -470,6 +470,23 @@ class RemoteServerProjectService:
     def list_storage_profiles(self) -> tuple[StorageProfile, ...]:
         return (self.profile,)
 
+    def current_principal(self) -> Principal:
+        payload = self._call("GET", "/api/v1/session")
+        if not isinstance(payload, Mapping):
+            raise RemoteServerError("Kraken Server returned an invalid session")
+        return Principal(
+            id=str(payload.get("principal_id", "")),
+            provider=PrincipalProvider(str(payload.get("provider", "gitlab"))),
+            subject=str(payload.get("subject", "")),
+            issuer=None if payload.get("issuer") is None else str(payload["issuer"]),
+            display_name=str(payload.get("display_name", "")),
+            email=None if payload.get("email") is None else str(payload["email"]),
+            active=bool(payload.get("active", True)),
+            system_roles=frozenset(
+                SystemRole(str(role)) for role in payload.get("system_roles", ())
+            ),
+        )
+
     def list_principals(
         self,
         *,

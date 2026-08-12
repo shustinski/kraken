@@ -185,6 +185,82 @@ def test_dual_catalog_routes_create_by_storage_profile(tmp_path: Path) -> None:
     assert names == {"LocalOne", "Remote"}
 
 
+def test_dual_catalog_can_configure_remote_during_desktop_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from kraken_hub import dual_catalog
+    from kraken_hub.composition import EmbeddedProjectService
+
+    local = EmbeddedProjectService(data_dir=tmp_path / "local")
+    account = local.create_initial_account("admin", "Admin", "secret")
+    server_principal = Principal.gitlab(
+        issuer="https://gitlab.example",
+        subject="server-user",
+        display_name="Server User",
+    )
+    instances = []
+
+    class ConfiguredRemote:
+        supports_live_sync = True
+
+        def __init__(self, base_url, *, auth, data_dir):
+            self.base_url = base_url
+            self.auth = auth
+            self.data_dir = data_dir
+            self.started = False
+            self.wake_handlers = []
+            self.catalog_handlers = []
+            self.status_handlers = []
+            instances.append(self)
+
+        def current_principal(self):
+            return server_principal
+
+        def list_projects(self, *, include_archived=False):
+            del include_archived
+            return ()
+
+        def add_wake_handler(self, handler):
+            self.wake_handlers.append(handler)
+
+        def add_catalog_handler(self, handler):
+            self.catalog_handlers.append(handler)
+
+        def add_status_handler(self, handler):
+            self.status_handlers.append(handler)
+
+        def start_sync(self):
+            self.started = True
+
+        def stop_sync(self):
+            self.started = False
+
+    monkeypatch.setattr(dual_catalog, "RemoteServerProjectService", ConfiguredRemote)
+    service = DualCatalogService(local)
+    wake = lambda _event: None
+    catalog = lambda: None
+    status = lambda _value: None
+    service.add_wake_handler(wake)
+    service.add_catalog_handler(catalog)
+    service.add_status_handler(status)
+    service.start_sync()
+
+    remote = service.configure_remote(
+        base_url="https://kraken.example/",
+        access_token="secret-token",
+        principal=account.principal,
+    )
+
+    assert remote is instances[0]
+    assert remote.base_url == "https://kraken.example"
+    assert remote.auth.access_token == "secret-token"
+    assert remote.auth.principal == server_principal
+    assert remote.started
+    assert remote.wake_handlers == [wake]
+    assert remote.catalog_handlers == [catalog]
+    assert remote.status_handlers == [status]
+
+
 def test_remote_structure_routes_do_not_fall_back_to_local_catalog(
     tmp_path: Path,
 ) -> None:

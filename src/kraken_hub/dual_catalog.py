@@ -14,7 +14,7 @@ from kraken_manager.domain.project import GridOrientation, Project
 from kraken_manager.infrastructure.review.manifest import manifest_from_json
 
 from .composition import EmbeddedProjectService
-from .remote_client import RemoteServerError, RemoteServerProjectService
+from .remote_client import RemoteAuth, RemoteServerError, RemoteServerProjectService
 from .workspace_service import REMOTE_STORAGE_PROFILE, ProjectEventWake
 
 LOGGER = logging.getLogger(__name__)
@@ -33,6 +33,10 @@ class DualCatalogService:
         self.data_dir = local.data_dir
         self.profile = local.profile
         self._remote_ids: set[str] = set()
+        self._wake_handlers: list[Callable[[ProjectEventWake], None]] = []
+        self._catalog_handlers: list[Callable[[], None]] = []
+        self._status_handlers: list[Callable[[str], None]] = []
+        self._sync_requested = False
         if remote is not None:
             try:
                 for project in remote.list_projects(include_archived=True):
@@ -152,8 +156,8 @@ class DualCatalogService:
         if profile_id == REMOTE_STORAGE_PROFILE.id:
             if self.remote is None:
                 raise RuntimeError(
-                    "Shared PostgreSQL catalog is not configured. "
-                    "Set KRAKEN_SERVER_URL and KRAKEN_GITLAB_TOKEN."
+                    "Kraken Server не настроен. Укажите адрес сервера и GitLab-токен "
+                    "в форме создания проекта."
                 )
             actor = self.remote.auth.principal
             project = self.remote.create_project(
@@ -185,10 +189,12 @@ class DualCatalogService:
         return self.local.project_workspace(project_id)
 
     def start_sync(self) -> None:
+        self._sync_requested = True
         if self.remote is not None:
             self.remote.start_sync()
 
     def stop_sync(self) -> None:
+        self._sync_requested = False
         if self.remote is not None:
             self.remote.stop_sync()
 
@@ -201,16 +207,58 @@ class DualCatalogService:
             self.remote.unsubscribe_project(project_id)
 
     def add_wake_handler(self, handler: Callable[[ProjectEventWake], None]) -> None:
+        self._wake_handlers.append(handler)
         if self.remote is not None:
             self.remote.add_wake_handler(handler)
 
     def add_catalog_handler(self, handler: Callable[[], None]) -> None:
+        self._catalog_handlers.append(handler)
         if self.remote is not None:
             self.remote.add_catalog_handler(handler)
 
     def add_status_handler(self, handler: Callable[[str], None]) -> None:
+        self._status_handlers.append(handler)
         if self.remote is not None:
             self.remote.add_status_handler(handler)
+
+    def configure_remote(
+        self,
+        *,
+        base_url: str,
+        access_token: str,
+        principal: Principal,
+    ) -> RemoteServerProjectService:
+        url = str(base_url).strip().rstrip("/")
+        token = str(access_token).strip()
+        if not url or not token:
+            raise ValueError("Укажите адрес Kraken Server и GitLab-токен доступа")
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("Адрес Kraken Server должен начинаться с http:// или https://")
+        candidate = RemoteServerProjectService(
+            url,
+            auth=RemoteAuth(access_token=token, principal=principal),
+            data_dir=self.local.data_dir,
+        )
+        authenticated = candidate.current_principal()
+        if not authenticated.active:
+            raise RemoteServerError("Серверная учётная запись отключена")
+        candidate.auth = RemoteAuth(access_token=token, principal=authenticated)
+        projects = candidate.list_projects(include_archived=True)
+
+        previous = self.remote
+        if previous is not None:
+            previous.stop_sync()
+        self.remote = candidate
+        self._remote_ids = {str(project.id) for project in projects}
+        for handler in self._wake_handlers:
+            candidate.add_wake_handler(handler)
+        for handler in self._catalog_handlers:
+            candidate.add_catalog_handler(handler)
+        for handler in self._status_handlers:
+            candidate.add_status_handler(handler)
+        if self._sync_requested:
+            candidate.start_sync()
+        return candidate
 
     def rename_project(self, **kwargs):
         project = kwargs.get("project")

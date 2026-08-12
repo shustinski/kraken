@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .services import (
@@ -173,7 +173,11 @@ def create_app(
                 raise HTTPException(status_code=401, detail="Session expired or revoked")
             return SessionPrincipal(str(account.account_id), "local", token)
         if development and token:
-            return SessionPrincipal(token, "development", token)
+            return SessionPrincipal(
+                str(uuid5(NAMESPACE_URL, f"kraken:development:{token}")),
+                "development",
+                token,
+            )
         raise HTTPException(status_code=401, detail="Authentication required")
 
     def shared_mutation_actor(subject: SessionPrincipal = Depends(principal)) -> SessionPrincipal:
@@ -216,6 +220,33 @@ def create_app(
         if identity is None:
             raise HTTPException(status_code=401, detail="Agent token is invalid or revoked")
         return identity
+
+    @app.get(f"{API_PREFIX}/session")
+    async def current_session(subject: SessionPrincipal = Depends(principal)) -> dict[str, Any]:
+        actor = next(
+            (
+                item
+                for item in backend.list_principals(include_inactive=True)
+                if str(item.get("principal_id")) == subject.principal_id
+            ),
+            None,
+        )
+        if actor is None:
+            return {
+                "principal_id": subject.principal_id,
+                "provider": (
+                    subject.provider
+                    if subject.provider in {"local", "gitlab"}
+                    else "local"
+                ),
+                "subject": subject.principal_id,
+                "issuer": None,
+                "display_name": subject.principal_id,
+                "email": None,
+                "active": True,
+                "system_roles": [],
+            }
+        return dict(actor)
 
     def command_context(
         actor: SessionPrincipal,

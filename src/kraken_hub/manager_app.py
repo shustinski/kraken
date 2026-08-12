@@ -62,7 +62,6 @@ from .composition import DesktopSession, EmbeddedProjectService
 from .dual_catalog import DualCatalogService, build_workspace_service
 from .matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
 from .agent_runtime import LocalAgentRuntime
-from .remote_client import load_remote_auth_from_env
 from .workspace_service import REMOTE_STORAGE_PROFILE, ProjectEventWake
 
 
@@ -1283,6 +1282,7 @@ class DesktopController:
         )
 
     def create_project(self) -> None:
+        from PyQt6.QtCore import QSettings
         from PyQt6.QtWidgets import (
             QComboBox,
             QDialog,
@@ -1309,6 +1309,26 @@ class DesktopController:
             label = "Сервер" if profile.id == REMOTE_STORAGE_PROFILE.id else "Локальный"
             profile_box.addItem(label, profile.id)
         form.addRow("Хранилище", profile_box)
+        settings = QSettings("Kraken", "KrakenHub")
+        configured_remote = getattr(self.service, "remote", None)
+        server_url = QLineEdit(dialog)
+        server_url.setObjectName("serverUrl")
+        server_url.setPlaceholderText("https://kraken.example.ru")
+        server_url.setText(
+            str(
+                getattr(configured_remote, "base_url", "")
+                or settings.value("server/url", "")
+                or os.environ.get("KRAKEN_SERVER_URL", "")
+            ).strip()
+        )
+        server_token = QLineEdit(dialog)
+        server_token.setObjectName("serverToken")
+        server_token.setEchoMode(QLineEdit.EchoMode.Password)
+        server_token.setPlaceholderText(
+            "уже настроен" if configured_remote is not None else "GitLab access token"
+        )
+        form.addRow("Адрес сервера", server_url)
+        form.addRow("Токен доступа", server_token)
         layout.addLayout(form)
         dimensions = GridDimensionsWidget(maximum_frames=None)
         layout.addWidget(dimensions)
@@ -1328,15 +1348,24 @@ class DesktopController:
         derived_root = None
 
         def _update_storage_hint(_index: int = 0) -> None:
-            nonlocal source_root, derived_root
+            nonlocal source_root, derived_root, configured_remote
             profile_id = str(profile_box.currentData() or "")
-            if profile_id == REMOTE_STORAGE_PROFILE.id:
+            is_server = profile_id == REMOTE_STORAGE_PROFILE.id
+            form.setRowVisible(server_url, is_server)
+            form.setRowVisible(server_token, is_server)
+            if is_server:
                 source_root = None
                 derived_root = None
-                storage.setText(
-                    "Проект будет создан на сервере PostgreSQL через kraken-server.\n"
-                    "Требуется GitLab-токен (KRAKEN_GITLAB_TOKEN) и KRAKEN_SERVER_URL."
-                )
+                if configured_remote is not None:
+                    storage.setText(
+                        "Сервер настроен. PostgreSQL хранит данные проекта, "
+                        "а изменения синхронизируются автоматически."
+                    )
+                else:
+                    storage.setText(
+                        "Введите адрес Kraken Server и GitLab-токен. "
+                        "Токен используется только в текущем сеансе и не сохраняется на диске."
+                    )
                 return
             roots = _configure_workspace_roots(self.shell, self.service)
             if roots is None:
@@ -1366,12 +1395,29 @@ class DesktopController:
                     if source_root is None or derived_root is None:
                         raise ValueError("Выберите каталоги хранилища для локального проекта")
                 if profile_id == REMOTE_STORAGE_PROFILE.id:
-                    auth = load_remote_auth_from_env()
-                    if auth is None:
-                        raise ValueError(
-                            "Для создания shared-проекта задайте KRAKEN_SERVER_URL и "
-                            "KRAKEN_GITLAB_TOKEN (GitLab access token)."
+                    current_remote = getattr(self.service, "remote", None)
+                    entered_url = server_url.text().strip().rstrip("/")
+                    entered_token = server_token.text().strip()
+                    remote_url = str(getattr(current_remote, "base_url", "")).rstrip("/")
+                    must_connect = (
+                        current_remote is None
+                        or entered_url != remote_url
+                        or bool(entered_token)
+                    )
+                    if must_connect:
+                        token = entered_token or os.environ.get("KRAKEN_GITLAB_TOKEN", "").strip()
+                        configure = getattr(self.service, "configure_remote", None)
+                        if not callable(configure):
+                            raise ValueError("Настройка Kraken Server недоступна в этой сборке")
+                        configure(
+                            base_url=entered_url,
+                            access_token=token,
+                            principal=self.session.principal,
                         )
+                        settings.setValue("server/url", entered_url)
+                        configured_remote = getattr(self.service, "remote", None)
+                        server_token.clear()
+                        server_token.setPlaceholderText("уже настроен")
                 project = self.service.create_project(
                     principal=self.session.principal,
                     name=name.text(),

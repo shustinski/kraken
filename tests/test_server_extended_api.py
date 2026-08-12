@@ -172,3 +172,21 @@ def test_user_and_agent_tokens_are_not_interchangeable() -> None:
         headers={"Authorization": "Bearer agent-token"},
         json={"capabilities": ["vectorize"]},
     ).status_code == 200
+
+
+def test_session_endpoint_returns_authenticated_principal() -> None:
+    principal_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    app = create_app(
+        services=InMemoryServerServices(),
+        session_resolver=lambda token: (
+            SessionPrincipal(principal_id, "gitlab", token)
+            if token == "user-token"
+            else None
+        ),
+    )
+    response = TestClient(app).get(
+        "/api/v1/session", headers={"Authorization": "Bearer user-token"}
+    )
+    assert response.status_code == 200
+    assert response.json()["principal_id"] == principal_id
+    assert response.json()["provider"] == "gitlab"

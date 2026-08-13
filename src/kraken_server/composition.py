@@ -9,7 +9,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from kraken_manager.application.performers import ensure_gitlab_performer
 from kraken_manager.domain.common import PrincipalId
-from kraken_manager.domain.identity import Principal
+from kraken_manager.domain.identity import Principal, PrincipalProvider, SystemRole
 from kraken_manager.infrastructure.auth.gitlab import (
     GitLabAuthenticationError,
     GitLabOidcClient,
@@ -17,14 +17,14 @@ from kraken_manager.infrastructure.auth.gitlab import (
 )
 from kraken_manager.infrastructure.auth.local import Argon2PasswordHasher
 from kraken_manager.infrastructure.blob import FilesystemBlobStore
-from kraken_manager.infrastructure.review.crypto import Ed25519KeyPair
 from kraken_manager.infrastructure.postgres import (
-    PostgresFederatedSessionCache,
     PostgresAccountStore,
+    PostgresFederatedSessionCache,
     PostgresIdentityAclStore,
     PostgresPerformerStore,
     PostgresUnitOfWorkFactory,
 )
+from kraken_manager.infrastructure.review.crypto import Ed25519KeyPair
 
 from .app import SessionPrincipal
 from .persistent_services import PostgresServerServices, ServerStorageProfiles
@@ -95,6 +95,15 @@ class HybridSessionResolver:
             return None
         local = self.accounts.resolve_session(token)
         if local is not None:
+            principal = Principal(
+                id=PrincipalId(local.account_id),
+                provider=PrincipalProvider.LOCAL,
+                subject=local.username,
+                display_name=local.display_name,
+                active=local.enabled,
+                system_roles=frozenset(SystemRole(role) for role in self.accounts.global_roles_for(local.account_id)),
+            )
+            self.identities.save(principal)
             return SessionPrincipal(local.account_id, "local", token)
         if self.oidc is None:
             return None
@@ -188,6 +197,7 @@ def postgresql_composition() -> dict[str, Any]:
         "account_store": accounts,
         "session_resolver": resolver,
         "live_gitlab_verifier": resolver.verify_live,
+        "project_access_mode": os.environ.get("KRAKEN_PROJECT_ACCESS_MODE", "acl"),
         "connection_hub": hub,
         "outbox_publisher": publisher,
         "agent_token_store": agent_tokens,

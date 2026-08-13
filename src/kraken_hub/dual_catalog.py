@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from kraken_manager.application.ports import StorageProfile
 from kraken_manager.domain.identity import Principal
@@ -234,15 +235,48 @@ class DualCatalogService:
             raise ValueError("Укажите адрес Kraken Server и GitLab-токен доступа")
         if not url.startswith(("http://", "https://")):
             raise ValueError("Адрес Kraken Server должен начинаться с http:// или https://")
+        parsed = urlparse(url)
+        if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
+            raise ValueError("Network connections to Kraken Server require HTTPS")
         candidate = RemoteServerProjectService(
             url,
             auth=RemoteAuth(access_token=token, principal=principal),
             data_dir=self.local.data_dir,
         )
+        return self._install_remote(candidate)
+
+    def configure_remote_local(
+        self,
+        *,
+        base_url: str,
+        username: str,
+        password: str,
+    ) -> RemoteServerProjectService:
+        url = str(base_url).strip().rstrip("/")
+        if not url or not username.strip() or not password:
+            raise ValueError("Укажите адрес Kraken Server, логин и пароль")
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("Адрес Kraken Server должен начинаться с http:// или https://")
+        parsed = urlparse(url)
+        if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
+            raise ValueError("Network sign-in to Kraken Server requires HTTPS")
+        candidate = RemoteServerProjectService.authenticate_local(
+            url,
+            username=username.strip(),
+            password=password,
+            data_dir=self.local.data_dir,
+        )
+        return self._install_remote(candidate)
+
+    def _install_remote(
+        self, candidate: RemoteServerProjectService
+    ) -> RemoteServerProjectService:
         authenticated = candidate.current_principal()
         if not authenticated.active:
             raise RemoteServerError("Серверная учётная запись отключена")
-        candidate.auth = RemoteAuth(access_token=token, principal=authenticated)
+        candidate.auth = RemoteAuth(
+            access_token=candidate.auth.access_token, principal=authenticated
+        )
         projects = candidate.list_projects(include_archived=True)
 
         previous = self.remote

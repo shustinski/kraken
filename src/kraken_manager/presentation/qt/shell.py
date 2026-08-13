@@ -244,6 +244,14 @@ class ProjectManagerShell(QMainWindow):
         if not workspace_active:
             self.frame_properties_action.setEnabled(False)
 
+    def set_page_visible(self, key: str, visible: bool) -> None:
+        item = self._navigation_items.get(str(key))
+        if item is None:
+            raise KeyError(str(key))
+        item.setHidden(not bool(visible))
+        if not visible and self.current_page_key() == str(key):
+            self.show_page("projects")
+
     def open_project_workspace(self, workspace: ProjectWorkspacePage | None = None) -> ProjectWorkspacePage:
         """Register or replace the non-sidebar workspace and display it."""
         page = workspace or ProjectWorkspacePage()

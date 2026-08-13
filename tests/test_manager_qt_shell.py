@@ -52,6 +52,19 @@ def test_project_manager_shell_has_stable_navigation_and_replaceable_pages(qapp)
     assert shell.current_page_key() == "statistics"
 
 
+def test_project_manager_shell_can_hide_administration_navigation(qapp):
+    shell = ProjectManagerShell()
+    administration_item = shell._navigation_items["administration"]
+
+    shell.show_page("administration")
+    shell.set_page_visible("administration", False)
+
+    assert administration_item.isHidden()
+    assert shell.current_page_key() == "projects"
+    shell.set_page_visible("administration", True)
+    assert not administration_item.isHidden()
+
+
 def test_project_catalog_delete_action_emits_selected_project(qapp):
     shell = ProjectManagerShell()
     page = shell.page("projects")
@@ -113,4 +126,3 @@ def test_workspace_uses_bottom_layer_tabs_and_status_bar_selection(qapp):
     assert workspace.matrix_minimap.parentWidget() is workspace.matrix_view.viewport()
     assert shell.statusBar().currentMessage() == "Выбрано кадров: 1"
     assert shell.windowTitle() == "Kraken"
-

@@ -142,6 +142,12 @@ built-in composition as documented in
 [`docs/deployment/server.md`](docs/deployment/server.md). Ephemeral state is
 available only with an explicit `kraken-server --development`.
 
+Windows production packages are built with `packaging/build_windows.ps1`.
+`KrakenServerSetup` initializes migrations, a DPAPI-protected configuration,
+the first Server Administrator and the Windows service; workstation users only
+install `KrakenDesktopSetup` and enter the HTTPS server address and their
+Kraken credentials. Neither package requires Python or `uv` at runtime.
+
 Kraken Agent uses a durable local SQLite queue and authenticated loopback
 channel. Start it with `kraken-agent`; its registry determines which V1 plugin
 operations may run.

@@ -2,45 +2,40 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-import os
-import threading
-import hashlib
 import mimetypes
+import os
 import shutil
 import stat
 import tempfile
+import threading
 import urllib.error
-import urllib.request
 import urllib.parse
-from urllib.parse import unquote, urlparse
+import urllib.request
+import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 from types import SimpleNamespace
+from typing import Any
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
-import zipfile
 
-from kraken_manager.application.ports import StorageProfile
 from kraken_manager.application.dto import ReviewReturnCommitResult, ReviewReturnPlan
-from kraken_manager.infrastructure.filesystem._codec import decode_model
-from kraken_manager.domain.artifacts import ArtifactScope, ArtifactSeries, ArtifactVersion, NoteRevision
-from kraken_manager.domain.workflows import (
-    PluginJob,
-    ReviewBatch,
-)
-from kraken_manager.infrastructure.review.manifest import manifest_from_json
-from kraken_manager.infrastructure.reports import (
-    ReportMetrics,
-    ReportSeries,
+from kraken_manager.application.ports import StorageProfile
+from kraken_manager.domain.artifacts import (
+    ArtifactScope,
+    ArtifactSeries,
+    ArtifactVersion,
+    NoteRevision,
 )
 from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.identity import (
-    Permission,
     Performer,
+    Permission,
     Principal,
     PrincipalProvider,
     ProjectRole,
@@ -57,6 +52,16 @@ from kraken_manager.domain.project import (
     RepresentationPurpose,
     StructureState,
 )
+from kraken_manager.domain.workflows import (
+    PluginJob,
+    ReviewBatch,
+)
+from kraken_manager.infrastructure.filesystem._codec import decode_model
+from kraken_manager.infrastructure.reports import (
+    ReportMetrics,
+    ReportSeries,
+)
+from kraken_manager.infrastructure.review.manifest import manifest_from_json
 
 from .workspace_service import (
     REMOTE_STORAGE_PROFILE,
@@ -81,7 +86,9 @@ def _review_archive(source: Path, destination: Path) -> None:
 
 
 def _extract_review_archive(archive: Path, destination: Path) -> None:
-    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent)
+    )
     try:
         total = 0
         with zipfile.ZipFile(archive) as package:
@@ -116,7 +123,9 @@ def _extract_review_archive(archive: Path, destination: Path) -> None:
                     while chunk := input_stream.read(1024 * 1024):
                         observed += len(chunk)
                         if observed > entry.file_size:
-                            raise ValueError("Review archive member expanded unexpectedly")
+                            raise ValueError(
+                                "Review archive member expanded unexpectedly"
+                            )
                         output.write(chunk)
                 if observed != entry.file_size:
                     raise ValueError("Review archive member size differs")
@@ -167,7 +176,11 @@ class RemoteHttpClient:
         headers: Mapping[str, str] | None = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
-        body = None if payload is None else json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
+        body = (
+            None
+            if payload is None
+            else json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
+        )
         request_headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
@@ -176,7 +189,9 @@ class RemoteHttpClient:
             request_headers["Content-Type"] = "application/json"
         if headers:
             request_headers.update(headers)
-        request = urllib.request.Request(url, data=body, headers=request_headers, method=method.upper())
+        request = urllib.request.Request(
+            url, data=body, headers=request_headers, method=method.upper()
+        )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
@@ -198,7 +213,9 @@ class RemoteHttpClient:
                 message, status=exc.code, body=detail, problem=parsed
             ) from exc
         except urllib.error.URLError as exc:
-            raise RemoteServerError(f"Cannot reach Kraken Server at {self.base_url}: {exc.reason}") from exc
+            raise RemoteServerError(
+                f"Cannot reach Kraken Server at {self.base_url}: {exc.reason}"
+            ) from exc
 
     def upload(
         self,
@@ -241,7 +258,9 @@ class RemoteHttpClient:
                 message, status=exc.code, body=detail, problem=parsed
             ) from exc
         except urllib.error.URLError as exc:
-            raise RemoteServerError(f"Cannot reach Kraken Server at {self.base_url}: {exc.reason}") from exc
+            raise RemoteServerError(
+                f"Cannot reach Kraken Server at {self.base_url}: {exc.reason}"
+            ) from exc
 
     def download(
         self,
@@ -264,7 +283,10 @@ class RemoteHttpClient:
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response, destination.open("xb") as output:
+            with (
+                urllib.request.urlopen(request, timeout=self.timeout) as response,
+                destination.open("xb") as output,
+            ):
                 shutil.copyfileobj(response, output, length=1024 * 1024)
         except urllib.error.HTTPError as exc:
             destination.unlink(missing_ok=True)
@@ -314,7 +336,9 @@ class RemoteSyncClient:
     @staticmethod
     def _to_ws_url(base_url: str) -> str:
         if base_url.startswith("https://"):
-            return "wss://" + base_url.removeprefix("https://").rstrip("/") + "/api/v1/ws"
+            return (
+                "wss://" + base_url.removeprefix("https://").rstrip("/") + "/api/v1/ws"
+            )
         if base_url.startswith("http://"):
             return "ws://" + base_url.removeprefix("http://").rstrip("/") + "/api/v1/ws"
         return base_url.rstrip("/") + "/api/v1/ws"
@@ -324,7 +348,9 @@ class RemoteSyncClient:
             return
         self._stop.clear()
         self._status("reconnecting")
-        self._thread = threading.Thread(target=self._run, name="kraken-remote-ws", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name="kraken-remote-ws", daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -459,6 +485,39 @@ class RemoteServerProjectService:
         self._catalog_handlers: list[Callable[[], None]] = []
         self._status_handlers: list[Callable[[str], None]] = []
 
+    @classmethod
+    def authenticate_local(
+        cls,
+        base_url: str,
+        *,
+        username: str,
+        password: str,
+        data_dir: Path | str | None = None,
+        http: RemoteHttpClient | None = None,
+    ) -> RemoteServerProjectService:
+        client = http or RemoteHttpClient(base_url)
+        payload = client.request(
+            "POST",
+            "/api/v1/auth/sessions",
+            token="",
+            payload={"username": username, "password": password},
+        )
+        if not isinstance(payload, Mapping) or not str(payload.get("access_token", "")):
+            raise RemoteServerError("Kraken Server returned an invalid local session")
+        raw = payload.get("principal", {})
+        principal_data = raw if isinstance(raw, Mapping) else {}
+        principal = Principal.local(
+            principal_id=str(principal_data.get("id", "")),
+            subject=str(principal_data.get("username") or username),
+            display_name=str(principal_data.get("display_name") or username),
+        )
+        return cls(
+            base_url,
+            auth=RemoteAuth(str(payload["access_token"]), principal),
+            data_dir=data_dir,
+            http=client,
+        )
+
     @property
     def supports_workspace_roots(self) -> bool:
         return False
@@ -511,6 +570,69 @@ class RemoteServerProjectService:
             for item in values
             if isinstance(item, Mapping)
         )
+
+    def list_server_accounts(
+        self, *, include_disabled: bool = True
+    ) -> tuple[dict[str, object], ...]:
+        suffix = (
+            "?include_disabled=true" if include_disabled else "?include_disabled=false"
+        )
+        payload = self._call("GET", f"/api/v1/admin/accounts{suffix}")
+        values = payload.get("items", ()) if isinstance(payload, Mapping) else ()
+        return tuple(dict(value) for value in values if isinstance(value, Mapping))
+
+    def create_server_account(
+        self, *, username: str, display_name: str, password: str
+    ) -> dict[str, object]:
+        payload = self._call(
+            "POST",
+            "/api/v1/admin/accounts",
+            payload={
+                "username": username,
+                "display_name": display_name,
+                "password": password,
+            },
+        )
+        return dict(payload) if isinstance(payload, Mapping) else {}
+
+    def set_server_administrator(
+        self, account_id: str, enabled: bool
+    ) -> dict[str, object]:
+        payload = self._call(
+            "PUT" if enabled else "DELETE",
+            f"/api/v1/admin/accounts/{account_id}/roles/server_admin",
+            payload={} if enabled else None,
+        )
+        return dict(payload) if isinstance(payload, Mapping) else {}
+
+    def set_server_account_enabled(
+        self, account_id: str, enabled: bool
+    ) -> dict[str, object]:
+        payload = self._call(
+            "POST",
+            f"/api/v1/admin/accounts/{account_id}/{'enable' if enabled else 'disable'}",
+            payload={},
+        )
+        return dict(payload) if isinstance(payload, Mapping) else {}
+
+    def revoke_server_account_sessions(self, account_id: str) -> None:
+        self._call(
+            "POST", f"/api/v1/admin/accounts/{account_id}/revoke-sessions", payload={}
+        )
+
+    def reset_server_account_password(self, account_id: str, password: str) -> None:
+        self._call(
+            "PUT",
+            f"/api/v1/admin/accounts/{account_id}/password",
+            payload={"password": password},
+        )
+
+    def administration_audit(
+        self, *, limit: int = 500
+    ) -> tuple[dict[str, object], ...]:
+        payload = self._call("GET", f"/api/v1/admin/audit?limit={int(limit)}")
+        values = payload.get("items", ()) if isinstance(payload, Mapping) else ()
+        return tuple(dict(value) for value in values if isinstance(value, Mapping))
 
     def list_project_principals(
         self,
@@ -625,8 +747,7 @@ class RemoteServerProjectService:
                 for handler in list(self._wake_handlers):
                     handler(wake)
                 raise RemoteServerError(
-                    "Другой пользователь уже сохранил изменение. "
-                    "Экран обновлён; повторите текущую операцию.",
+                    "Другой пользователь уже сохранил изменение. Экран обновлён; повторите текущую операцию.",
                     status=exc.status,
                     body=exc.body,
                     problem=exc.problem,
@@ -654,7 +775,9 @@ class RemoteServerProjectService:
         *,
         as_of: datetime | None = None,
     ) -> Project | None:
-        del as_of  # server temporal get is history-based; catalog uses current projection
+        del (
+            as_of
+        )  # server temporal get is history-based; catalog uses current projection
         try:
             payload = self._call("GET", f"/api/v1/projects/{project_id}")
         except RemoteServerError as exc:
@@ -695,7 +818,9 @@ class RemoteServerProjectService:
             },
             idempotency_key=idempotency_key,
         )
-        project = project_from_server_dict(payload if isinstance(payload, Mapping) else {})
+        project = project_from_server_dict(
+            payload if isinstance(payload, Mapping) else {}
+        )
         self._remote_ids.add(str(project.id))
         return project
 
@@ -751,10 +876,18 @@ class RemoteServerProjectService:
         )
         return project_from_server_dict(payload if isinstance(payload, Mapping) else {})
 
-    def list_layers(self, project_id: object, *, include_archived: bool = False) -> tuple[Layer, ...]:
+    def list_layers(
+        self, project_id: object, *, include_archived: bool = False
+    ) -> tuple[Layer, ...]:
         suffix = "?include_archived=true" if include_archived else ""
         payload = self._call("GET", f"/api/v1/projects/{project_id}/layers{suffix}")
-        items = payload if isinstance(payload, list) else payload.get("items", []) if isinstance(payload, Mapping) else []
+        items = (
+            payload
+            if isinstance(payload, list)
+            else payload.get("items", [])
+            if isinstance(payload, Mapping)
+            else []
+        )
         layers: list[Layer] = []
         for item in items:
             if not isinstance(item, Mapping):
@@ -862,7 +995,15 @@ class RemoteServerProjectService:
             raise TypeError("Server returned an invalid layer")
         return self._layer(project.id, payload)
 
-    def rename_layer(self, *, principal: Principal, project: Project, layer: Layer, name: str, idempotency_key: str) -> Layer:
+    def rename_layer(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        name: str,
+        idempotency_key: str,
+    ) -> Layer:
         del principal
         payload = self._call(
             "POST",
@@ -944,7 +1085,9 @@ class RemoteServerProjectService:
         if include_archived:
             return representations
         return tuple(
-            item for item in representations if item.state is not StructureState.ARCHIVED
+            item
+            for item in representations
+            if item.state is not StructureState.ARCHIVED
         )
 
     def create_representation(
@@ -1013,27 +1156,101 @@ class RemoteServerProjectService:
             raise TypeError("Server returned an invalid representation")
         return self._representation(project.id, layer.id, payload)
 
-    def rename_representation(self, *, principal: Principal, project: Project, layer: Layer, representation: Representation, name: str, idempotency_key: str) -> Representation:
+    def rename_representation(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        representation: Representation,
+        name: str,
+        idempotency_key: str,
+    ) -> Representation:
         del principal
-        return self._update_representation(project=project, layer=layer, representation=representation, operation={"name": name}, idempotency_key=idempotency_key)
+        return self._update_representation(
+            project=project,
+            layer=layer,
+            representation=representation,
+            operation={"name": name},
+            idempotency_key=idempotency_key,
+        )
 
-    def update_representation_note(self, *, principal: Principal, project: Project, layer: Layer, representation: Representation, note: str, idempotency_key: str) -> Representation:
+    def update_representation_note(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        representation: Representation,
+        note: str,
+        idempotency_key: str,
+    ) -> Representation:
         del principal
-        return self._update_representation(project=project, layer=layer, representation=representation, operation={"note": note}, idempotency_key=idempotency_key)
+        return self._update_representation(
+            project=project,
+            layer=layer,
+            representation=representation,
+            operation={"note": note},
+            idempotency_key=idempotency_key,
+        )
 
-    def activate_representation(self, *, principal: Principal, project: Project, layer: Layer, representation: Representation, idempotency_key: str) -> Representation:
+    def activate_representation(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        representation: Representation,
+        idempotency_key: str,
+    ) -> Representation:
         del principal
-        return self._update_representation(project=project, layer=layer, representation=representation, operation={"active": True}, idempotency_key=idempotency_key)
+        return self._update_representation(
+            project=project,
+            layer=layer,
+            representation=representation,
+            operation={"active": True},
+            idempotency_key=idempotency_key,
+        )
 
-    def deactivate_representation(self, *, principal: Principal, project: Project, layer: Layer, representation: Representation, idempotency_key: str) -> Representation:
+    def deactivate_representation(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        representation: Representation,
+        idempotency_key: str,
+    ) -> Representation:
         del principal
-        return self._update_representation(project=project, layer=layer, representation=representation, operation={"active": False}, idempotency_key=idempotency_key)
+        return self._update_representation(
+            project=project,
+            layer=layer,
+            representation=representation,
+            operation={"active": False},
+            idempotency_key=idempotency_key,
+        )
 
-    def archive_representation(self, *, principal: Principal, project: Project, layer: Layer, representation: Representation, idempotency_key: str) -> Representation:
+    def archive_representation(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        representation: Representation,
+        idempotency_key: str,
+    ) -> Representation:
         del principal
-        return self._update_representation(project=project, layer=layer, representation=representation, operation={"archive": True}, idempotency_key=idempotency_key)
+        return self._update_representation(
+            project=project,
+            layer=layer,
+            representation=representation,
+            operation={"archive": True},
+            idempotency_key=idempotency_key,
+        )
 
-    def project_permissions(self, project_id: object, principal: Principal) -> frozenset[Permission]:
+    def project_permissions(
+        self, project_id: object, principal: Principal
+    ) -> frozenset[Permission]:
         try:
             payload = self._call(
                 "GET",
@@ -1146,7 +1363,9 @@ class RemoteServerProjectService:
                 key: value
                 for key, value in {
                     "layer_id": None if layer_id is None else str(layer_id),
-                    "representation_id": None if representation_id is None else str(representation_id),
+                    "representation_id": None
+                    if representation_id is None
+                    else str(representation_id),
                     "include_archived": "true" if include_archived else None,
                 }.items()
                 if value is not None
@@ -1180,7 +1399,9 @@ class RemoteServerProjectService:
                 "scope": scope.value,
                 "name": name,
                 "layer_id": None if layer_id is None else str(layer_id),
-                "representation_id": None if representation_id is None else str(representation_id),
+                "representation_id": None
+                if representation_id is None
+                else str(representation_id),
                 "frame_id": None if frame_id is None else str(frame_id),
             },
             idempotency_key=idempotency_key,
@@ -1213,18 +1434,27 @@ class RemoteServerProjectService:
             "GET", f"/api/v1/projects/{project_id}/artifacts/{series_id}/active"
         )
         item = payload.get("item") if isinstance(payload, Mapping) else None
-        return decode_model(ArtifactVersion, item) if isinstance(item, Mapping) else None
+        return (
+            decode_model(ArtifactVersion, item) if isinstance(item, Mapping) else None
+        )
 
-    def artifact_version(self, project_id: object, version_id: object) -> ArtifactVersion | None:
+    def artifact_version(
+        self, project_id: object, version_id: object
+    ) -> ArtifactVersion | None:
         try:
             payload = self._call(
-                "GET", f"/api/v1/projects/{project_id}/artifacts/versions/{version_id}/metadata"
+                "GET",
+                f"/api/v1/projects/{project_id}/artifacts/versions/{version_id}/metadata",
             )
         except RemoteServerError as exc:
             if exc.status == 404:
                 return None
             raise
-        return decode_model(ArtifactVersion, payload) if isinstance(payload, Mapping) else None
+        return (
+            decode_model(ArtifactVersion, payload)
+            if isinstance(payload, Mapping)
+            else None
+        )
 
     def add_managed_artifact_version(
         self,
@@ -1245,7 +1475,8 @@ class RemoteServerProjectService:
         query = urllib.parse.urlencode(
             {
                 "filename": path.name,
-                "media_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                "media_type": mimetypes.guess_type(path.name)[0]
+                or "application/octet-stream",
                 "sha256": digest.hexdigest(),
                 **(
                     {}
@@ -1283,8 +1514,7 @@ class RemoteServerProjectService:
                 for handler in list(self._wake_handlers):
                     handler(wake)
                 raise RemoteServerError(
-                    "Другой пользователь уже сохранил изменение. "
-                    "Экран обновлён; повторите текущую операцию.",
+                    "Другой пользователь уже сохранил изменение. Экран обновлён; повторите текущую операцию.",
                     status=exc.status,
                     body=exc.body,
                     problem=exc.problem,
@@ -1315,11 +1545,14 @@ class RemoteServerProjectService:
             f"/api/v1/projects/{project_id}/artifacts/{series_id}/external",
             payload={
                 "filename": path.name,
-                "media_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                "media_type": mimetypes.guess_type(path.name)[0]
+                or "application/octet-stream",
                 "uri": path.as_uri(),
                 "sha256": digest.hexdigest(),
                 "size_bytes": size,
-                "parent_version_id": None if parent_version_id is None else str(parent_version_id),
+                "parent_version_id": None
+                if parent_version_id is None
+                else str(parent_version_id),
                 "parameters": {"source_path": str(path)},
             },
             idempotency_key=idempotency_key,
@@ -1328,7 +1561,12 @@ class RemoteServerProjectService:
         return decode_model(ArtifactVersion, payload)
 
     def rename_artifact_series(
-        self, *, principal: Principal, series: ArtifactSeries, name: str, idempotency_key: str
+        self,
+        *,
+        principal: Principal,
+        series: ArtifactSeries,
+        name: str,
+        idempotency_key: str,
     ) -> ArtifactSeries:
         del principal
         payload = self._call(
@@ -1472,7 +1710,9 @@ class RemoteServerProjectService:
                 size += len(chunk)
         if digest.hexdigest() != version.blob.sha256 or size != version.blob.size_bytes:
             temporary.unlink(missing_ok=True)
-            raise ValueError("Сервер вернул blob с неверной контрольной суммой или размером")
+            raise ValueError(
+                "Сервер вернул blob с неверной контрольной суммой или размером"
+            )
         temporary.replace(target)
         return target
 
@@ -1488,7 +1728,9 @@ class RemoteServerProjectService:
             raise ValueError(
                 f"Внешний файл недоступен на этой рабочей станции: {version.external.uri}"
             )
-        path = Path(unquote(parsed.path.lstrip("/") if os.name == "nt" else parsed.path))
+        path = Path(
+            unquote(parsed.path.lstrip("/") if os.name == "nt" else parsed.path)
+        )
         if os.name == "nt" and parsed.netloc:
             path = Path(f"//{parsed.netloc}/{unquote(parsed.path.lstrip('/'))}")
         try:
@@ -1518,7 +1760,9 @@ class RemoteServerProjectService:
                 f"Внешний файл изменён после регистрации: {version.external.uri}"
             )
         parsed = urlparse(version.external.uri)
-        source = Path(unquote(parsed.path.lstrip("/") if os.name == "nt" else parsed.path))
+        source = Path(
+            unquote(parsed.path.lstrip("/") if os.name == "nt" else parsed.path)
+        )
         if os.name == "nt" and parsed.netloc:
             source = Path(f"//{parsed.netloc}/{unquote(parsed.path.lstrip('/'))}")
         target = Path(destination).resolve()
@@ -1538,7 +1782,11 @@ class RemoteServerProjectService:
                 for item in items
                 if isinstance(item, Mapping)
             )
-        return tuple(sorted(batches, key=lambda item: (item.updated_at, str(item.id)), reverse=True))
+        return tuple(
+            sorted(
+                batches, key=lambda item: (item.updated_at, str(item.id)), reverse=True
+            )
+        )
 
     def active_review_batches(self) -> tuple[ReviewBatch, ...]:
         batches: list[ReviewBatch] = []
@@ -1552,7 +1800,11 @@ class RemoteServerProjectService:
                 for item in items
                 if isinstance(item, Mapping)
             )
-        return tuple(sorted(batches, key=lambda item: (item.updated_at, str(item.id)), reverse=True))
+        return tuple(
+            sorted(
+                batches, key=lambda item: (item.updated_at, str(item.id)), reverse=True
+            )
+        )
 
     def create_review_batch(
         self,
@@ -1570,7 +1822,11 @@ class RemoteServerProjectService:
     ) -> ReviewBatch:
         del principal
         layer = next(
-            (item for item in self.list_layers(project_id) if str(item.id) == str(layer_id)),
+            (
+                item
+                for item in self.list_layers(project_id)
+                if str(item.id) == str(layer_id)
+            ),
             None,
         )
         if layer is None:
@@ -1651,10 +1907,9 @@ class RemoteServerProjectService:
     def review_candidate_version_ids(self, batch: ReviewBatch) -> tuple[object, ...]:
         latest_by_series: dict[str, object] = {}
         for event in self.history(batch.project_id):
-            if (
-                event.event_type != "ReviewReturnCommitted"
-                or str(event.payload.get("review_batch_id", "")) != str(batch.id)
-            ):
+            if event.event_type != "ReviewReturnCommitted" or str(
+                event.payload.get("review_batch_id", "")
+            ) != str(batch.id):
                 continue
             for value in event.payload.get("candidate_version_ids", ()):
                 version = self.artifact_version(batch.project_id, value)
@@ -1690,11 +1945,7 @@ class RemoteServerProjectService:
         finally:
             temporary.unlink(missing_ok=True)
         return next(
-            (
-                item
-                for item in self.review_batches()
-                if str(item.id) == str(batch.id)
-            ),
+            (item for item in self.review_batches() if str(item.id) == str(batch.id)),
             batch,
         )
 
@@ -1794,7 +2045,9 @@ class RemoteServerProjectService:
                 for item in items
                 if isinstance(item, Mapping)
             )
-        return tuple(sorted(jobs, key=lambda item: (item.updated_at, str(item.id)), reverse=True))
+        return tuple(
+            sorted(jobs, key=lambda item: (item.updated_at, str(item.id)), reverse=True)
+        )
 
     def submit_plugin_job(
         self,
@@ -1844,7 +2097,9 @@ class RemoteServerProjectService:
         )
         return decode_model(PluginJob, payload)
 
-    def synchronize_plugin_jobs(self, *, principal: Principal, gateway: object) -> tuple[PluginJob, ...]:
+    def synchronize_plugin_jobs(
+        self, *, principal: Principal, gateway: object
+    ) -> tuple[PluginJob, ...]:
         del principal, gateway
         return self.plugin_jobs()
 
@@ -1857,7 +2112,9 @@ class RemoteServerProjectService:
     def is_remote_project(self, project_id: object) -> bool:
         return str(project_id) in self._remote_ids or True
 
-    def history(self, project_id: object, *, as_of: datetime | None = None) -> tuple[object, ...]:
+    def history(
+        self, project_id: object, *, as_of: datetime | None = None
+    ) -> tuple[object, ...]:
         del as_of
         events = []
         cursor: str | None = None
@@ -1870,13 +2127,12 @@ class RemoteServerProjectService:
             )
             items = payload.get("items", []) if isinstance(payload, Mapping) else []
             events.extend(
-                _RemoteHistoryEvent(item)
-                for item in items
-                if isinstance(item, Mapping)
+                _RemoteHistoryEvent(item) for item in items if isinstance(item, Mapping)
             )
             cursor = (
                 None
-                if not isinstance(payload, Mapping) or payload.get("next_cursor") is None
+                if not isinstance(payload, Mapping)
+                or payload.get("next_cursor") is None
                 else str(payload["next_cursor"])
             )
             if cursor is None:
@@ -1891,7 +2147,9 @@ class RemoteServerProjectService:
             for project in self.list_projects(include_archived=True)
             for event in self.history(project.id)
         ]
-        return tuple(sorted(records, key=lambda item: (item.recorded_at, item.event_id)))
+        return tuple(
+            sorted(records, key=lambda item: (item.recorded_at, item.event_id))
+        )
 
     def statistics(
         self,
@@ -1908,9 +2166,7 @@ class RemoteServerProjectService:
                 "timezone": str(getattr(timezone, "key", "UTC")),
             }
         )
-        payload = self._call(
-            "GET", f"/api/v1/projects/{project_id}/statistics?{query}"
-        )
+        payload = self._call("GET", f"/api/v1/projects/{project_id}/statistics?{query}")
         metrics = decode_model(ReportMetrics, payload["metrics"])
         series = {
             str(key): decode_model(ReportSeries, value)
@@ -2201,12 +2457,21 @@ class _RemoteHistoryEvent:
 
 
 def load_remote_auth_from_env() -> RemoteAuth | None:
-    token = os.environ.get("KRAKEN_GITLAB_TOKEN") or os.environ.get("KRAKEN_SERVER_TOKEN") or ""
+    token = (
+        os.environ.get("KRAKEN_GITLAB_TOKEN")
+        or os.environ.get("KRAKEN_SERVER_TOKEN")
+        or ""
+    )
     token = token.strip()
     if not token:
         return None
-    subject = os.environ.get("KRAKEN_GITLAB_SUBJECT", "remote-user").strip() or "remote-user"
-    display = os.environ.get("KRAKEN_GITLAB_DISPLAY_NAME", "Remote User").strip() or "Remote User"
+    subject = (
+        os.environ.get("KRAKEN_GITLAB_SUBJECT", "remote-user").strip() or "remote-user"
+    )
+    display = (
+        os.environ.get("KRAKEN_GITLAB_DISPLAY_NAME", "Remote User").strip()
+        or "Remote User"
+    )
     issuer = os.environ.get("KRAKEN_GITLAB_ISSUER", "https://gitlab.local").strip()
     principal = Principal.gitlab(
         issuer=issuer,

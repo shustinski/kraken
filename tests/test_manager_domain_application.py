@@ -256,16 +256,15 @@ def profile(scope: StorageScope, *, profile_id: str) -> StorageProfile:
 
 
 class AuthorizationPolicyTests(unittest.TestCase):
-    def test_local_account_is_hard_denied_shared_mutation_even_as_owner(self) -> None:
-        decision = AuthorizationPolicy().decide(
+    def test_local_account_uses_kraken_acl_for_shared_mutation(self) -> None:
+        decision = AuthorizationPolicy("acl").decide(
             principal=Principal.local(subject="alice", display_name="Alice"),
             storage=profile(StorageScope.SHARED, profile_id="shared"),
             permission=Permission.MANAGE_STRUCTURE,
             roles={ProjectRole.OWNER},
         )
 
-        self.assertFalse(decision.allowed)
-        self.assertEqual(decision.code, "local_shared_mutation_denied")
+        self.assertTrue(decision.allowed)
 
     def test_authenticated_read_is_global_but_gitlab_shared_write_needs_live_check(self) -> None:
         principal = Principal.gitlab(

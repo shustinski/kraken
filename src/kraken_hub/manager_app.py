@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
+import os
+import shutil
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, is_dataclass
 from enum import Enum
-import os
-import sys
-import logging
-import shutil
-import hashlib
 from pathlib import Path
 from threading import Event
 from uuid import uuid4
 
 from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 
+from kraken_core.external_model import ExternalModelLink
 from kraken_core.frame_matrix import (
     MatrixSession,
     StoreNamespace,
@@ -23,8 +24,6 @@ from kraken_core.frame_matrix import (
     ThumbnailStoreFactory,
 )
 from kraken_core.frame_matrix.qt import FrameMatrixWidget
-from kraken_core.external_model import ExternalModelLink
-from kraken_core.plugins import PluginInventoryItem
 from kraken_core.plugin_protocol import (
     PluginFrameInput,
     PluginJobManifest,
@@ -32,16 +31,16 @@ from kraken_core.plugin_protocol import (
     WorkspacePluginContextV1,
     WorkspacePluginResultV1,
 )
+from kraken_core.plugins import PluginInventoryItem
 from kraken_core.qt import configure_application_identity
 from kraken_core.styles import load_shared_stylesheet
+from kraken_manager.application.imports import ImportMappingMode
+from kraken_manager.domain.artifacts import ArtifactScope, ArtifactSeries, ArtifactVersion
+from kraken_manager.domain.identity import Performer, Permission, ProjectRole, SystemRole
 from kraken_manager.domain.project import GridOrientation as DomainOrientation
 from kraken_manager.domain.project import LayerType, RepresentationKind, RepresentationPurpose
-from kraken_manager.domain.artifacts import ArtifactScope, ArtifactSeries, ArtifactVersion
-from kraken_manager.domain.identity import Permission, Performer, ProjectRole
-from kraken_manager.application.imports import ImportMappingMode
-from kraken_manager.workspace import DerivedRunKind
-from kraken_manager.infrastructure.workspace_files import validate_workspace_roots
 from kraken_manager.infrastructure.plugin import AgentPluginGateway
+from kraken_manager.infrastructure.workspace_files import validate_workspace_roots
 from kraken_manager.presentation.qt import (
     LayerCreationDialog,
     LayerManagerDialog,
@@ -56,12 +55,13 @@ from kraken_manager.presentation.qt import (
 )
 from kraken_manager.presentation.qt.models import LayerListItem, ProjectListItem
 from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimensionsWidget
+from kraken_manager.workspace import DerivedRunKind
 
 from . import windows_credentials
+from .agent_runtime import LocalAgentRuntime
 from .composition import DesktopSession, EmbeddedProjectService
 from .dual_catalog import DualCatalogService, build_workspace_service
 from .matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
-from .agent_runtime import LocalAgentRuntime
 from .workspace_service import REMOTE_STORAGE_PROFILE, ProjectEventWake
 
 
@@ -215,7 +215,7 @@ def _history_entries(events) -> tuple[ObjectHistoryEntry, ...]:
     )
     return tuple(
         ObjectHistoryEntry(
-            recorded_at=getattr(event, "recorded_at").isoformat(),
+            recorded_at=event.recorded_at.isoformat(),
             actor=str(getattr(getattr(event, "actor", None), "display_name", "") or "—"),
             event_type=str(getattr(event, "event_type", "")),
             payload=_event_payload(event),
@@ -1327,7 +1327,24 @@ class DesktopController:
         server_token.setPlaceholderText(
             "уже настроен" if configured_remote is not None else "GitLab access token"
         )
+        server_auth = QComboBox(dialog)
+        server_auth.setObjectName("serverAuthentication")
+        server_auth.addItem("Учётная запись Kraken", "local")
+        server_auth.addItem("GitLab-токен", "gitlab")
+        if str(
+            getattr(
+                getattr(getattr(configured_remote, "auth", None), "principal", None),
+                "provider",
+                "",
+            )
+        ) == "gitlab":
+            server_auth.setCurrentIndex(1)
+        server_username = QLineEdit(dialog)
+        server_username.setObjectName("serverUsername")
+        server_username.setPlaceholderText("Логин")
         form.addRow("Адрес сервера", server_url)
+        form.addRow("Способ входа", server_auth)
+        form.addRow("Логин", server_username)
         form.addRow("Токен доступа", server_token)
         layout.addLayout(form)
         dimensions = GridDimensionsWidget(maximum_frames=None)
@@ -1352,7 +1369,14 @@ class DesktopController:
             profile_id = str(profile_box.currentData() or "")
             is_server = profile_id == REMOTE_STORAGE_PROFILE.id
             form.setRowVisible(server_url, is_server)
+            form.setRowVisible(server_auth, is_server)
+            form.setRowVisible(
+                server_username, is_server and server_auth.currentData() == "local"
+            )
             form.setRowVisible(server_token, is_server)
+            server_token.setPlaceholderText(
+                "Пароль" if server_auth.currentData() == "local" else "GitLab access token"
+            )
             if is_server:
                 source_root = None
                 derived_root = None
@@ -1363,8 +1387,8 @@ class DesktopController:
                     )
                 else:
                     storage.setText(
-                        "Введите адрес Kraken Server и GitLab-токен. "
-                        "Токен используется только в текущем сеансе и не сохраняется на диске."
+                        "Введите адрес Kraken Server и данные для входа. "
+                        "Пароль или токен используется только в текущем сеансе и не сохраняется на диске."
                     )
                 return
             roots = _configure_workspace_roots(self.shell, self.service)
@@ -1380,6 +1404,7 @@ class DesktopController:
             )
 
         profile_box.currentIndexChanged.connect(_update_storage_hint)
+        server_auth.currentIndexChanged.connect(_update_storage_hint)
         _update_storage_hint()
 
         while dialog.exec() == QDialog.DialogCode.Accepted:
@@ -1405,19 +1430,36 @@ class DesktopController:
                         or bool(entered_token)
                     )
                     if must_connect:
-                        token = entered_token or os.environ.get("KRAKEN_GITLAB_TOKEN", "").strip()
-                        configure = getattr(self.service, "configure_remote", None)
-                        if not callable(configure):
-                            raise ValueError("Настройка Kraken Server недоступна в этой сборке")
-                        configure(
-                            base_url=entered_url,
-                            access_token=token,
-                            principal=self.session.principal,
-                        )
+                        if server_auth.currentData() == "local":
+                            configure_local = getattr(
+                                self.service, "configure_remote_local", None
+                            )
+                            if not callable(configure_local):
+                                raise ValueError("Вход в Kraken Server недоступен в этой сборке")
+                            configure_local(
+                                base_url=entered_url,
+                                username=server_username.text().strip(),
+                                password=entered_token,
+                            )
+                        else:
+                            token = entered_token or os.environ.get(
+                                "KRAKEN_GITLAB_TOKEN", ""
+                            ).strip()
+                            configure = getattr(self.service, "configure_remote", None)
+                            if not callable(configure):
+                                raise ValueError("Настройка Kraken Server недоступна в этой сборке")
+                            configure(
+                                base_url=entered_url,
+                                access_token=token,
+                                principal=self.session.principal,
+                            )
                         settings.setValue("server/url", entered_url)
                         configured_remote = getattr(self.service, "remote", None)
                         server_token.clear()
                         server_token.setPlaceholderText("уже настроен")
+                        _configure_administration_page(
+                            self.shell, self.service, self.session
+                        )
                 project = self.service.create_project(
                     principal=self.session.principal,
                     name=name.text(),
@@ -4217,11 +4259,9 @@ class DesktopController:
             confirmation_dialog = QInputDialog(self.shell)
             confirmation_dialog.setWindowTitle("Удалить слой")
             confirmation_dialog.setLabelText(
-                (
-                    "Управляемые файлы будут перемещены в корзину Kraken, "
-                    "внешние папки останутся без изменений.\n\n"
-                    f"Для подтверждения введите: {layer.name}"
-                )
+                "Управляемые файлы будут перемещены в корзину Kraken, "
+                "внешние папки останутся без изменений.\n\n"
+                f"Для подтверждения введите: {layer.name}"
             )
             confirmation_dialog.setInputMode(QInputDialog.InputMode.TextInput)
             confirmation_dialog.setTextEchoMode(QLineEdit.EchoMode.Normal)
@@ -5183,11 +5223,11 @@ class DesktopController:
             self._error("Плагин karakal не установлен")
             return
         try:
+            from karakal.core.domain import FolderSpec
+            from karakal.plugin.plugin import KarakalPlugin
             from PyQt6.QtCore import QSettings, Qt, QUrl
             from PyQt6.QtGui import QDesktopServices
             from PyQt6.QtWidgets import QDialog, QVBoxLayout
-            from karakal.core.domain import FolderSpec
-            from karakal.plugin.plugin import KarakalPlugin
         except ImportError as exc:
             self._error(f"Не удалось загрузить Karakal: {exc}")
             return
@@ -6513,18 +6553,19 @@ def _statistics_panel(service: EmbeddedProjectService):
         QDateTimeEdit,
         QFileDialog,
         QGridLayout,
-        QHeaderView,
         QHBoxLayout,
+        QHeaderView,
         QLabel,
         QMessageBox,
         QPushButton,
         QScrollArea,
-        QTabWidget,
         QTableWidget,
         QTableWidgetItem,
+        QTabWidget,
         QVBoxLayout,
         QWidget,
     )
+
     from kraken_manager.infrastructure.reports import (
         METRIC_DEFINITIONS,
         ReportFilters,
@@ -6708,6 +6749,312 @@ def _statistics_panel(service: EmbeddedProjectService):
     xlsx_button.clicked.connect(lambda: export("xlsx"))
     refresh()
     return host
+
+
+def _server_administration_panel(remote):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import (
+        QCheckBox,
+        QDialog,
+        QDialogButtonBox,
+        QFormLayout,
+        QHBoxLayout,
+        QInputDialog,
+        QLabel,
+        QLineEdit,
+        QMessageBox,
+        QPushButton,
+        QTableWidget,
+        QTableWidgetItem,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    host = QWidget()
+    host.setObjectName("serverAdministrationPanel")
+    layout = QVBoxLayout(host)
+    title = QLabel(f"Администрирование Kraken Server — {remote.base_url}")
+    title.setObjectName("serverAdministrationTitle")
+    layout.addWidget(title)
+    accounts = QTableWidget(0, 5, host)
+    accounts.setObjectName("serverAccountsTable")
+    accounts.setHorizontalHeaderLabels(
+        ("Пользователь", "Логин", "Активен", "Server Admin", "Создан")
+    )
+    accounts.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+    accounts.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+    accounts.horizontalHeader().setStretchLastSection(True)
+    layout.addWidget(accounts, 2)
+
+    actions = QWidget(host)
+    action_layout = QHBoxLayout(actions)
+    action_layout.setContentsMargins(0, 0, 0, 0)
+    create_button = QPushButton("Создать пользователя…", actions)
+    reset_button = QPushButton("Сбросить пароль…", actions)
+    sessions_button = QPushButton("Завершить все сеансы", actions)
+    refresh_button = QPushButton("Обновить", actions)
+    for button in (create_button, reset_button, sessions_button, refresh_button):
+        action_layout.addWidget(button)
+    action_layout.addStretch(1)
+    layout.addWidget(actions)
+
+    audit_label = QLabel("Журнал административных действий", host)
+    layout.addWidget(audit_label)
+    audit = QTableWidget(0, 4, host)
+    audit.setObjectName("serverAdministrationAuditTable")
+    audit.setHorizontalHeaderLabels(("Время", "Действие", "Инициатор", "Пользователь"))
+    audit.horizontalHeader().setStretchLastSection(True)
+    layout.addWidget(audit, 1)
+
+    refreshing = False
+
+    def selected_account_id() -> str:
+        row = accounts.currentRow()
+        if row < 0:
+            return ""
+        item = accounts.item(row, 0)
+        return "" if item is None else str(item.data(Qt.ItemDataRole.UserRole) or "")
+
+    def report_error(title_text: str, exc: Exception) -> None:
+        QMessageBox.warning(host, title_text, str(exc))
+
+    def change_enabled(account_id: str, checked: bool) -> None:
+        if refreshing:
+            return
+        try:
+            remote.set_server_account_enabled(account_id, checked)
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
+            report_error("Не удалось изменить состояние пользователя", exc)
+        refresh()
+
+    def change_admin(account_id: str, checked: bool) -> None:
+        if refreshing:
+            return
+        try:
+            remote.set_server_administrator(account_id, checked)
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
+            report_error("Не удалось изменить роль администратора", exc)
+        refresh()
+
+    def refresh() -> None:
+        nonlocal refreshing
+        refreshing = True
+        try:
+            values = remote.list_server_accounts(include_disabled=True)
+            accounts.setRowCount(len(values))
+            for row, value in enumerate(values):
+                account_id = str(value.get("account_id", ""))
+                name_item = QTableWidgetItem(str(value.get("display_name", "")))
+                name_item.setData(Qt.ItemDataRole.UserRole, account_id)
+                accounts.setItem(row, 0, name_item)
+                accounts.setItem(row, 1, QTableWidgetItem(str(value.get("username", ""))))
+                enabled = QCheckBox(accounts)
+                enabled.setChecked(bool(value.get("enabled", False)))
+                enabled.stateChanged.connect(
+                    lambda state, target=account_id: change_enabled(
+                        target, state == Qt.CheckState.Checked.value
+                    )
+                )
+                accounts.setCellWidget(row, 2, enabled)
+                administrator = QCheckBox(accounts)
+                administrator.setChecked("server_admin" in value.get("system_roles", ()))
+                administrator.stateChanged.connect(
+                    lambda state, target=account_id: change_admin(
+                        target, state == Qt.CheckState.Checked.value
+                    )
+                )
+                accounts.setCellWidget(row, 3, administrator)
+                accounts.setItem(row, 4, QTableWidgetItem(str(value.get("created_at", ""))))
+            events = remote.administration_audit(limit=500)
+            audit.setRowCount(len(events))
+            labels = {
+                "account.created": "Создан пользователь",
+                "account.enabled": "Пользователь включён",
+                "account.disabled": "Пользователь отключён",
+                "account.password_reset": "Сброшен пароль",
+                "sessions.revoked": "Завершены сеансы",
+                "global_role.granted": "Назначен Server Admin",
+                "global_role.revoked": "Отозван Server Admin",
+            }
+            for row, event in enumerate(events):
+                values_row = (
+                    event.get("recorded_at", ""),
+                    labels.get(str(event.get("action", "")), event.get("action", "")),
+                    event.get("actor_id", "") or "локальное восстановление",
+                    event.get("target_account_id", "") or "",
+                )
+                for column, value in enumerate(values_row):
+                    audit.setItem(row, column, QTableWidgetItem(str(value)))
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
+            report_error("Не удалось загрузить данные администрирования", exc)
+        finally:
+            refreshing = False
+
+    def create_account() -> None:
+        dialog = QDialog(host)
+        dialog.setWindowTitle("Новый пользователь Kraken Server")
+        form = QFormLayout(dialog)
+        username = QLineEdit(dialog)
+        display_name = QLineEdit(dialog)
+        password = QLineEdit(dialog)
+        password.setEchoMode(QLineEdit.EchoMode.Password)
+        confirmation = QLineEdit(dialog)
+        confirmation.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Логин", username)
+        form.addRow("Отображаемое имя", display_name)
+        form.addRow("Пароль", password)
+        form.addRow("Повтор пароля", confirmation)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if password.text() != confirmation.text():
+            QMessageBox.warning(host, "Пароли не совпадают", "Повторите ввод пароля.")
+            return
+        try:
+            remote.create_server_account(
+                username=username.text(),
+                display_name=display_name.text(),
+                password=password.text(),
+            )
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
+            report_error("Не удалось создать пользователя", exc)
+        refresh()
+
+    def reset_password() -> None:
+        account_id = selected_account_id()
+        if not account_id:
+            QMessageBox.information(host, "Kraken", "Выберите пользователя.")
+            return
+        password, accepted = QInputDialog.getText(
+            host,
+            "Новый пароль",
+            "Пароль:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not accepted or not password:
+            return
+        confirmation, accepted = QInputDialog.getText(
+            host,
+            "Подтверждение пароля",
+            "Повтор пароля:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not accepted:
+            return
+        if password != confirmation:
+            QMessageBox.warning(host, "Пароли не совпадают", "Повторите операцию.")
+            return
+        try:
+            remote.reset_server_account_password(account_id, password)
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
+            report_error("Не удалось сбросить пароль", exc)
+        refresh()
+
+    def revoke_sessions() -> None:
+        account_id = selected_account_id()
+        if not account_id:
+            QMessageBox.information(host, "Kraken", "Выберите пользователя.")
+            return
+        try:
+            remote.revoke_server_account_sessions(account_id)
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
+            report_error("Не удалось завершить сеансы", exc)
+        refresh()
+
+    create_button.clicked.connect(create_account)
+    reset_button.clicked.connect(reset_password)
+    sessions_button.clicked.connect(revoke_sessions)
+    refresh_button.clicked.connect(refresh)
+    refresh()
+    return host
+
+
+def _configure_administration_page(shell, service, session: DesktopSession) -> None:
+    del session
+    remote = getattr(service, "remote", None)
+    is_admin = (
+        remote is not None
+        and SystemRole.SERVER_ADMIN in remote.auth.principal.system_roles
+    )
+    shell.set_page_visible("administration", is_admin)
+    page = shell.page("administration")
+    if is_admin and page is not None:
+        page.set_content(_server_administration_panel(remote))
+
+
+def _connect_saved_server(parent, service, principal) -> None:
+    from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import (
+        QComboBox,
+        QDialog,
+        QDialogButtonBox,
+        QFormLayout,
+        QLineEdit,
+        QMessageBox,
+    )
+
+    if not isinstance(service, DualCatalogService) or service.remote is not None:
+        return
+    settings = QSettings("Kraken", "KrakenHub")
+    configured_url = str(settings.value("server/url", "") or "").strip()
+    if not configured_url:
+        return
+    dialog = QDialog(parent)
+    dialog.setWindowTitle("Вход в Kraken Server")
+    form = QFormLayout(dialog)
+    server_url = QLineEdit(configured_url, dialog)
+    provider = QComboBox(dialog)
+    provider.addItem("Учётная запись Kraken", "local")
+    provider.addItem("GitLab-токен", "gitlab")
+    username = QLineEdit(dialog)
+    secret = QLineEdit(dialog)
+    secret.setEchoMode(QLineEdit.EchoMode.Password)
+    form.addRow("Адрес сервера", server_url)
+    form.addRow("Способ входа", provider)
+    form.addRow("Логин", username)
+    form.addRow("Пароль", secret)
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        dialog,
+    )
+    buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Подключиться")
+    buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Работать локально")
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    form.addRow(buttons)
+
+    def provider_changed() -> None:
+        local = provider.currentData() == "local"
+        form.setRowVisible(username, local)
+        secret.setPlaceholderText("Пароль" if local else "GitLab access token")
+
+    provider.currentIndexChanged.connect(provider_changed)
+    provider_changed()
+    while dialog.exec() == QDialog.DialogCode.Accepted:
+        try:
+            url = server_url.text().strip().rstrip("/")
+            if provider.currentData() == "local":
+                service.configure_remote_local(
+                    base_url=url,
+                    username=username.text(),
+                    password=secret.text(),
+                )
+            else:
+                service.configure_remote(
+                    base_url=url,
+                    access_token=secret.text(),
+                    principal=principal,
+                )
+            settings.setValue("server/url", url)
+            return
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
+            QMessageBox.warning(dialog, "Не удалось подключиться к серверу", str(exc))
 
 
 def _administration_panel(
@@ -6919,6 +7266,7 @@ def run_manager_gui(
     session = _development_session(local) or _login(None, local)
     if session is None:
         return 1
+    _connect_saved_server(None, service, session.principal)
     if isinstance(service, DualCatalogService) and service.remote is not None:
         # Shared mutations use the GitLab principal carried by the remote client.
         session_summary = (
@@ -6949,9 +7297,7 @@ def run_manager_gui(
     statistics_page = shell.page("statistics")
     if statistics_page is not None:
         statistics_page.set_content(_statistics_panel(service))
-    administration_page = shell.page("administration")
-    if administration_page is not None:
-        administration_page.set_content(_administration_panel(local, session))
+    _configure_administration_page(shell, service, session)
     shell.show()
     return app.exec()
 

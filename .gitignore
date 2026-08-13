@@ -22,6 +22,7 @@ htmlcov/
 *.tmp
 *.bak
 *.ini
+!alembic.ini
 *.AppImage
 *.tar.gz
 *.exe

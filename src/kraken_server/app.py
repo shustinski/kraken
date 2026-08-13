@@ -4,6 +4,7 @@
 # ruff: noqa: B008
 
 import asyncio
+import os
 import re
 import shutil
 import stat
@@ -43,6 +44,7 @@ def create_app(
     account_store: Any | None = None,
     session_resolver: Callable[[str], SessionPrincipal | None] | None = None,
     live_gitlab_verifier: Callable[[SessionPrincipal], bool] | None = None,
+    project_access_mode: str | None = None,
     development: bool = False,
     connection_hub: Any | None = None,
     outbox_publisher: Any | None = None,
@@ -61,6 +63,9 @@ def create_app(
     if not development and account_store is None and session_resolver is None:
         raise RuntimeError("Production Kraken Server requires an authenticated session resolver")
     backend = services or InMemoryServerServices()
+    access_mode = (project_access_mode or os.environ.get("KRAKEN_PROJECT_ACCESS_MODE", "acl")).strip().lower()
+    if access_mode not in {"acl", "trusted_network"}:
+        raise RuntimeError("KRAKEN_PROJECT_ACCESS_MODE must be 'acl' or 'trusted_network'")
     from .outbox import ConnectionHub
 
     hub = connection_hub or ConnectionHub()
@@ -140,9 +145,7 @@ def create_app(
             str(request.url.path),
             entity_kind=entity_kind,
             entity_id=entity_id,
-            actual_revision=(
-                None if revision_match is None else int(revision_match.group(2))
-            ),
+            actual_revision=(None if revision_match is None else int(revision_match.group(2))),
         )
 
     @app.exception_handler(ForbiddenError)
@@ -183,14 +186,39 @@ def create_app(
     def shared_mutation_actor(subject: SessionPrincipal = Depends(principal)) -> SessionPrincipal:
         if development and subject.provider == "development":
             return subject
-        if subject.provider != "gitlab":
-            raise HTTPException(status_code=403, detail="Shared mutations require a GitLab principal")
-        if live_gitlab_verifier is None or not live_gitlab_verifier(subject):
-            raise HTTPException(status_code=503, detail="Live GitLab identity verification failed")
+        if subject.provider == "gitlab":
+            if live_gitlab_verifier is None or not live_gitlab_verifier(subject):
+                raise HTTPException(status_code=503, detail="Live GitLab identity verification failed")
+        elif subject.provider != "local":
+            raise HTTPException(status_code=403, detail="Unsupported identity provider")
+        return subject
+
+    def system_roles(subject: SessionPrincipal) -> frozenset[str]:
+        if subject.provider == "local" and account_store is not None and hasattr(account_store, "global_roles_for"):
+            return frozenset(account_store.global_roles_for(subject.principal_id))
+        actor = next(
+            (
+                item
+                for item in backend.list_principals(include_inactive=False)
+                if str(item.get("principal_id")) == subject.principal_id
+            ),
+            None,
+        )
+        return frozenset(() if actor is None else actor.get("system_roles", ()))
+
+    def server_administrator(
+        subject: SessionPrincipal = Depends(principal),
+    ) -> SessionPrincipal:
+        if development and subject.provider == "development":
+            return subject
+        if "server_admin" not in system_roles(subject):
+            raise ForbiddenError("Server Administrator permission is required")
         return subject
 
     def has_project_access(project_id: str, subject: SessionPrincipal) -> bool:
         if development and subject.provider == "development":
+            return True
+        if access_mode == "trusted_network" or "server_admin" in system_roles(subject):
             return True
         roles = backend.project_roles(project_id, subject.principal_id).get("roles", ())
         if roles:
@@ -203,7 +231,14 @@ def create_app(
             ),
             None,
         )
-        return actor is not None and "administrator" in actor.get("system_roles", ())
+        return actor is not None and "server_admin" in actor.get("system_roles", ())
+
+    def acl_mutation_actor(
+        subject: SessionPrincipal = Depends(principal),
+    ) -> SessionPrincipal:
+        if "server_admin" in system_roles(subject):
+            return subject
+        return shared_mutation_actor(subject)
 
     def project_reader(
         project_id: str,
@@ -234,19 +269,17 @@ def create_app(
         if actor is None:
             return {
                 "principal_id": subject.principal_id,
-                "provider": (
-                    subject.provider
-                    if subject.provider in {"local", "gitlab"}
-                    else "local"
-                ),
+                "provider": (subject.provider if subject.provider in {"local", "gitlab"} else "local"),
                 "subject": subject.principal_id,
                 "issuer": None,
                 "display_name": subject.principal_id,
                 "email": None,
                 "active": True,
-                "system_roles": [],
+                "system_roles": sorted(system_roles(subject)),
             }
-        return dict(actor)
+        payload = dict(actor)
+        payload["system_roles"] = sorted(system_roles(subject))
+        return payload
 
     def command_context(
         actor: SessionPrincipal,
@@ -286,13 +319,8 @@ def create_app(
                     raise ValidationError(f"Unsafe review archive member: {entry.filename}")
                 if entry.file_size > 2 * 1024**3:
                     raise ValidationError(f"Review archive member is too large: {entry.filename}")
-                if (
-                    entry.file_size >= 1024 * 1024
-                    and entry.file_size / max(1, entry.compress_size) > 200
-                ):
-                    raise ValidationError(
-                        f"Review archive compression ratio is unsafe: {entry.filename}"
-                    )
+                if entry.file_size >= 1024 * 1024 and entry.file_size / max(1, entry.compress_size) > 200:
+                    raise ValidationError(f"Review archive compression ratio is unsafe: {entry.filename}")
                 total += entry.file_size
                 if total > 16 * 1024**3:
                     raise ValidationError("Review archive is too large")
@@ -306,14 +334,10 @@ def create_app(
                     while chunk := source.read(1024 * 1024):
                         observed += len(chunk)
                         if observed > entry.file_size:
-                            raise ValidationError(
-                                f"Review archive member expanded unexpectedly: {entry.filename}"
-                            )
+                            raise ValidationError(f"Review archive member expanded unexpectedly: {entry.filename}")
                         output.write(chunk)
                 if observed != entry.file_size:
-                    raise ValidationError(
-                        f"Review archive member size differs: {entry.filename}"
-                    )
+                    raise ValidationError(f"Review archive member size differs: {entry.filename}")
 
     @app.get(f"{API_PREFIX}/health")
     async def health() -> Any:
@@ -327,9 +351,7 @@ def create_app(
         if account_store is None:
             return {"provider": "development", "access_token": str(payload.get("username", "developer"))}
         try:
-            session = account_store.authenticate(
-                str(payload.get("username", "")), str(payload.get("password", ""))
-            )
+            session = account_store.authenticate(str(payload.get("username", "")), str(payload.get("password", "")))
         except ValueError:
             session = None
         if session is None:
@@ -344,24 +366,161 @@ def create_app(
             },
         }
 
+    def account_payload(account: Any) -> dict[str, Any]:
+        return {
+            "account_id": str(account.account_id),
+            "username": str(account.username),
+            "display_name": str(account.display_name),
+            "enabled": bool(account.enabled),
+            "created_at": str(account.created_at),
+            "system_roles": sorted(account_store.global_roles_for(account.account_id)),
+        }
+
+    def require_account_store() -> Any:
+        if account_store is None or not hasattr(account_store, "list_accounts"):
+            raise HTTPException(status_code=503, detail="Server account administration is not configured")
+        return account_store
+
+    @app.get(f"{API_PREFIX}/admin/accounts")
+    async def list_server_accounts(
+        include_disabled: bool = True,
+        _: SessionPrincipal = Depends(server_administrator),
+    ) -> dict[str, Any]:
+        store = require_account_store()
+        return {
+            "items": [account_payload(account) for account in store.list_accounts(include_disabled=include_disabled)]
+        }
+
+    @app.post(f"{API_PREFIX}/admin/accounts", status_code=201)
+    async def create_server_account(
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(server_administrator),
+    ) -> dict[str, Any]:
+        store = require_account_store()
+        password = str(payload.get("password", ""))
+        if not password:
+            raise ValidationError("Password is required")
+        try:
+            account = store.create_account(
+                str(payload.get("username", "")),
+                str(payload.get("display_name", "")),
+                password,
+                actor_id=actor.principal_id,
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        except Exception as exc:
+            if exc.__class__.__name__ == "IntegrityError":
+                raise ConflictError("Username is already registered") from exc
+            raise
+        return account_payload(account)
+
+    @app.put(f"{API_PREFIX}/admin/accounts/{{account_id}}/roles/server_admin")
+    async def grant_server_administrator(
+        account_id: str,
+        actor: SessionPrincipal = Depends(server_administrator),
+    ) -> dict[str, Any]:
+        store = require_account_store()
+        try:
+            store.grant_global_role(account_id, "server_admin", actor_id=actor.principal_id)
+            account = store.get_account(account_id)
+        except KeyError as exc:
+            raise NotFoundError(account_id) from exc
+        if account is None:
+            raise NotFoundError(account_id)
+        return account_payload(account)
+
+    @app.delete(f"{API_PREFIX}/admin/accounts/{{account_id}}/roles/server_admin")
+    async def revoke_server_administrator(
+        account_id: str,
+        actor: SessionPrincipal = Depends(server_administrator),
+    ) -> dict[str, Any]:
+        store = require_account_store()
+        if account_id == actor.principal_id:
+            raise ConflictError("An administrator cannot revoke their own server role")
+        try:
+            store.revoke_global_role(
+                account_id,
+                "server_admin",
+                actor_id=actor.principal_id,
+                preserve_last_enabled=True,
+            )
+            account = store.get_account(account_id)
+        except KeyError as exc:
+            raise NotFoundError(account_id) from exc
+        except ValueError as exc:
+            raise ConflictError(str(exc)) from exc
+        if account is None:
+            raise NotFoundError(account_id)
+        return account_payload(account)
+
+    @app.post(f"{API_PREFIX}/admin/accounts/{{account_id}}/{{operation}}")
+    async def mutate_server_account(
+        account_id: str,
+        operation: str,
+        actor: SessionPrincipal = Depends(server_administrator),
+    ) -> dict[str, Any]:
+        store = require_account_store()
+        try:
+            if operation == "disable":
+                if account_id == actor.principal_id:
+                    raise ConflictError("An administrator cannot disable their own account")
+                account = store.set_enabled(
+                    account_id,
+                    False,
+                    actor_id=actor.principal_id,
+                    preserve_last_admin=True,
+                )
+            elif operation == "enable":
+                account = store.set_enabled(account_id, True, actor_id=actor.principal_id)
+            elif operation == "revoke-sessions":
+                store.revoke_all_sessions(account_id, actor_id=actor.principal_id)
+                account = store.get_account(account_id)
+            else:
+                raise NotFoundError(operation)
+        except KeyError as exc:
+            raise NotFoundError(account_id) from exc
+        except ValueError as exc:
+            raise ConflictError(str(exc)) from exc
+        if account is None:
+            raise NotFoundError(account_id)
+        return account_payload(account)
+
+    @app.put(f"{API_PREFIX}/admin/accounts/{{account_id}}/password")
+    async def reset_server_account_password(
+        account_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(server_administrator),
+    ) -> dict[str, str]:
+        store = require_account_store()
+        password = str(payload.get("password", ""))
+        if not password:
+            raise ValidationError("Password is required")
+        try:
+            store.reset_password(account_id, password, actor_id=actor.principal_id)
+        except KeyError as exc:
+            raise NotFoundError(account_id) from exc
+        return {"status": "password_reset"}
+
+    @app.get(f"{API_PREFIX}/admin/audit")
+    async def administration_audit(
+        limit: int = Query(default=500, ge=1, le=2000),
+        _: SessionPrincipal = Depends(server_administrator),
+    ) -> dict[str, Any]:
+        return {"items": list(require_account_store().administration_audit(limit=limit))}
+
     @app.get(f"{API_PREFIX}/projects")
     async def list_projects(
         include_archived: bool = False,
         subject: SessionPrincipal = Depends(principal),
     ) -> dict[str, Any]:
         items = backend.list_projects(include_archived=include_archived)
-        return {
-            "items": [
-                item
-                for item in items
-                if has_project_access(str(item["project_id"]), subject)
-            ]
-        }
+        return {"items": [item for item in items if has_project_access(str(item["project_id"]), subject)]}
 
     @app.get(f"{API_PREFIX}/principals")
     async def list_principals(
         include_inactive: bool = False,
-        _: SessionPrincipal = Depends(principal),  # noqa: B008 - FastAPI dependency declaration
+        _: SessionPrincipal = Depends(principal),
     ) -> dict[str, Any]:
         return {
             "items": backend.list_principals(
@@ -374,9 +533,7 @@ def create_app(
         include_archived: bool = False,
         _: SessionPrincipal = Depends(principal),
     ) -> dict[str, Any]:
-        return {
-            "items": backend.list_performers(include_archived=include_archived)
-        }
+        return {"items": backend.list_performers(include_archived=include_archived)}
 
     @app.post(f"{API_PREFIX}/projects", status_code=201)
     async def create_project(
@@ -436,11 +593,7 @@ def create_app(
         include_archived: bool = False,
         _: SessionPrincipal = Depends(project_reader),
     ) -> dict[str, Any]:
-        return {
-            "items": backend.list_layers(
-                project_id, include_archived=include_archived
-            )
-        }
+        return {"items": backend.list_layers(project_id, include_archived=include_archived)}
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/acl/{{principal_id}}")
     async def project_roles(
@@ -455,7 +608,7 @@ def create_app(
         project_id: str,
         principal_id: str,
         role: str,
-        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        actor: SessionPrincipal = Depends(acl_mutation_actor),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         if_match: str | None = Header(default=None, alias="If-Match"),
     ) -> dict[str, Any]:
@@ -471,7 +624,7 @@ def create_app(
         project_id: str,
         principal_id: str,
         role: str,
-        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        actor: SessionPrincipal = Depends(acl_mutation_actor),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         if_match: str | None = Header(default=None, alias="If-Match"),
     ) -> dict[str, Any]:
@@ -564,11 +717,7 @@ def create_app(
         include_archived: bool = False,
         _: SessionPrincipal = Depends(project_reader),
     ) -> dict[str, Any]:
-        return {
-            "items": backend.list_representations(
-                project_id, layer_id, include_archived=include_archived
-            )
-        }
+        return {"items": backend.list_representations(project_id, layer_id, include_archived=include_archived)}
 
     @app.post(
         f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/representations",
@@ -600,7 +749,10 @@ def create_app(
         if_match: str | None = Header(default=None, alias="If-Match"),
     ) -> dict[str, Any]:
         return backend.update_representation(
-            project_id, layer_id, representation_id, payload,
+            project_id,
+            layer_id,
+            representation_id,
+            payload,
             command_context(actor, idempotency_key, if_match, revision_required=True),
         )
 
@@ -673,9 +825,7 @@ def create_app(
             report_timezone = ZoneInfo(timezone)
         except ZoneInfoNotFoundError as exc:
             raise ValidationError(f"Unknown statistics timezone: {timezone}") from exc
-        return backend.statistics(
-            project_id, start=start, end=end, timezone=report_timezone
-        )
+        return backend.statistics(project_id, start=start, end=end, timezone=report_timezone)
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/analyses/karakal", status_code=201)
     async def publish_karakal_analysis(
@@ -806,9 +956,7 @@ def create_app(
                 received += len(chunk)
                 staged.write(chunk)
             if content_length is None or received != content_length:
-                raise ValidationError(
-                    "Content-Length is required and must match the uploaded blob size"
-                )
+                raise ValidationError("Content-Length is required and must match the uploaded blob size")
             staged.seek(0)
 
             def chunks() -> Any:
@@ -965,9 +1113,7 @@ def create_app(
                 str(package_dir),
                 command_context(actor, idempotency_key, if_match, revision_required=True),
             )
-            with zipfile.ZipFile(
-                archive, "x", compression=zipfile.ZIP_DEFLATED, allowZip64=True
-            ) as output:
+            with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as output:
                 for source in sorted(package_dir.rglob("*")):
                     if source.is_file():
                         output.write(source, source.relative_to(package_dir).as_posix())
@@ -1015,22 +1161,14 @@ def create_app(
                     output.write(chunk)
             source.mkdir()
             extract_review_archive(archive, source)
-            context = command_context(
-                actor, idempotency_key, if_match, revision_required=True
-            )
+            context = command_context(actor, idempotency_key, if_match, revision_required=True)
             if commit:
-                return backend.commit_review_return(
-                    project_id, batch_id, str(source), context
-                )
-            return backend.inspect_review_return(
-                project_id, batch_id, str(source), context
-            )
+                return backend.commit_review_return(project_id, batch_id, str(source), context)
+            return backend.inspect_review_return(project_id, batch_id, str(source), context)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
-    @app.post(
-        f"{API_PREFIX}/projects/{{project_id}}/reviews/{{batch_id}}/return/preflight"
-    )
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/reviews/{{batch_id}}/return/preflight")
     async def review_return_preflight(
         project_id: str,
         batch_id: str,
@@ -1049,9 +1187,7 @@ def create_app(
             commit=False,
         )
 
-    @app.post(
-        f"{API_PREFIX}/projects/{{project_id}}/reviews/{{batch_id}}/return/commit"
-    )
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/reviews/{{batch_id}}/return/commit")
     async def commit_review_return(
         project_id: str,
         batch_id: str,
@@ -1126,11 +1262,7 @@ def create_app(
     ) -> dict[str, Any]:
         if agent_gateway is None:
             raise HTTPException(status_code=503, detail="Server agent queue is not configured")
-        return {
-            "lease_until": agent_gateway.heartbeat(
-                job_id, agent, seconds=int(payload.get("lease_seconds", 60))
-            )
-        }
+        return {"lease_until": agent_gateway.heartbeat(job_id, agent, seconds=int(payload.get("lease_seconds", 60)))}
 
     @app.get(f"{API_PREFIX}/agent/jobs/{{job_id}}/inputs/{{version_id}}")
     async def agent_job_input(
@@ -1180,9 +1312,7 @@ def create_app(
                 received += len(chunk)
                 staged.write(chunk)
             if content_length is None or received != content_length:
-                raise ValidationError(
-                    "Content-Length is required and must match the uploaded blob size"
-                )
+                raise ValidationError("Content-Length is required and must match the uploaded blob size")
             staged.seek(0)
 
             def chunks() -> Any:
@@ -1247,9 +1377,7 @@ def create_app(
         try:
             while True:
                 try:
-                    message = await asyncio.wait_for(
-                        websocket.receive_json(), timeout=10.0
-                    )
+                    message = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
                 except TimeoutError:
                     if session_resolver is not None:
                         still_valid = session_resolver(token) is not None
@@ -1266,9 +1394,7 @@ def create_app(
                     await websocket.send_json({"type": "pong"})
                 elif kind == "subscribe":
                     project_id = message.get("project_id")
-                    if project_id is not None and not has_project_access(
-                        str(project_id), session
-                    ):
+                    if project_id is not None and not has_project_access(str(project_id), session):
                         await websocket.send_json(
                             {
                                 "type": "error",

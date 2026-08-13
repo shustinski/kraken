@@ -1,7 +1,9 @@
-# -*- mode: python ; coding: utf-8 -*-
+# ruff: noqa: F821 - PyInstaller injects its build API and DISTPATH into spec files
+
+import shutil
+from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
-
 
 common_hidden = (
     collect_submodules("kraken_server")
@@ -73,3 +75,7 @@ coll = COLLECT(
     upx=True,
     name="KrakenServer",
 )
+
+portable_root = Path(DISTPATH) / "KrakenServer"
+shutil.copytree("scripts", portable_root / "scripts", dirs_exist_ok=True)
+shutil.copytree("config", portable_root / "config", dirs_exist_ok=True)

@@ -148,6 +148,12 @@ the first Server Administrator and the Windows service; workstation users only
 install `KrakenDesktopSetup` and enter the HTTPS server address and their
 Kraken credentials. Neither package requires Python or `uv` at runtime.
 
+For a local test, no SQL or connection URL is required: run
+`KrakenAdmin.exe init`. Ready-to-run PowerShell workflows and
+annotated local/production configuration examples are shipped in the
+`scripts` and `config` directories. `KrakenAdmin.exe --help` lists every
+operator command with arguments and examples.
+
 Kraken Agent uses a durable local SQLite queue and authenticated loopback
 channel. Start it with `kraken-agent`; its registry determines which V1 plugin
 operations may run.

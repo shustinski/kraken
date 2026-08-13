@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from kraken_manager.infrastructure.auth.local import LocalAccountStore, ScryptPasswordHasher
 from kraken_server.app import SessionPrincipal, create_app
+from kraken_server.cli import _database_url
 from kraken_server.configuration import ServerConfig, protect_secret, unprotect_secret, write_config
 from kraken_server.services import InMemoryServerServices
 
@@ -142,3 +144,14 @@ def test_packaged_configuration_round_trip(tmp_path: Path) -> None:
     assert loaded.database_url == database_url
     assert loaded.port == 9080
     assert loaded.blob_root == (tmp_path / "blobs").resolve()
+    generated = config.path.read_text(encoding="utf-8")
+    assert "никогда не записывайте пароль" in generated
+    assert "Windows DPAPI" in generated
+    assert "Неизменяемые файлы сервера" in generated
+
+
+def test_initial_setup_accepts_a_new_config_path(monkeypatch, tmp_path: Path) -> None:
+    prompted_url = "postgresql+psycopg://kraken@localhost/kraken"
+    monkeypatch.setattr("kraken_server.cli.getpass.getpass", lambda _prompt: prompted_url)
+
+    assert _database_url(Namespace(config=tmp_path / "new-server.toml", database_url=None)) == prompted_url

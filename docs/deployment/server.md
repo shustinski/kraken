@@ -1,80 +1,193 @@
-# Kraken Server deployment
+# Развёртывание Kraken Server
 
-Kraken Desktop clients connect to Kraken Server over HTTPS. They never receive
-the PostgreSQL password and never access the managed blob directory directly.
+Для обычной локальной установки не требуются SQL, `psql`, Python или `uv`.
+Достаточно установленной и запущенной PostgreSQL и команды `KrakenAdmin`.
 
-## Packaged Windows installation
+## Самый простой локальный запуск
 
-The normal operator workflow does not require Python or `uv`:
+В каталоге установленного Kraken Server выполните:
 
-1. Install PostgreSQL and create an empty database owned by a dedicated Kraken
-   database user.
-2. Run `KrakenServerSetup-<version>.exe` as a Windows administrator.
-3. At the end of installation, start **Configure Kraken Server** and supply:
-   the PostgreSQL URL, blob directory, first administrator login and password.
-4. The setup command runs all schema migrations, stores the database URL with
-   machine-scoped Windows DPAPI, writes
-   `C:\ProgramData\Kraken\Server\server.toml`, installs the `KrakenServer`
-   Windows service and starts it.
-5. Publish the service through an approved HTTPS endpoint. Either configure a
-   reverse proxy with WebSocket support or provide `tls_cert_file` and
-   `tls_key_file` in `server.toml` and bind Kraken Server to the approved
-   network interface.
-
-Only HTTPS/WSS (normally TCP 443) is exposed to workstations. PostgreSQL and
-the blob directory are accessible only to the Kraken Server service account.
-
-An unattended equivalent is:
-
-```text
-KrakenAdmin.exe setup-server --database-url <postgres-url> --blob-root D:\KrakenData\blobs --username admin --display-name Administrator --install-service --server-executable "C:\Program Files\Kraken Server\KrakenServer.exe"
+```powershell
+.\KrakenAdmin.exe init
 ```
 
-Passwords are prompted interactively. Omitting `--database-url` also prompts
-for it without placing the secret in the command history.
+CLI откроет пошаговый мастер и запросит:
 
-If every administrator loses access, a local Windows administrator may run:
+1. адрес и порт PostgreSQL;
+2. логин и пароль администратора PostgreSQL;
+3. имя создаваемой БД;
+4. логин и пароль служебного пользователя БД;
+5. логин, отображаемое имя и пароль первого администратора Kraken.
 
-```text
-KrakenAdmin.exe recover-admin --username admin
+Для несекретных значений мастер показывает безопасные локальные значения по
+умолчанию. Их можно принять клавишей Enter. Пароли вводятся скрыто и требуют
+подтверждения там, где создаётся новая учётная запись.
+
+Остальное выполняется автоматически:
+
+- создаётся отдельный служебный пользователь PostgreSQL;
+- используется заданный в мастере пароль доступа к БД;
+- создаётся БД `kraken_local`;
+- выполняются все миграции;
+- создаётся файловое хранилище;
+- записывается комментированный `server.toml`;
+- строка подключения шифруется Windows DPAPI;
+- создаётся первый пользователь Kraken с ролью `server_admin`.
+
+Запуск сервера:
+
+```powershell
+.\KrakenServer.exe --config "$env:LOCALAPPDATA\Kraken\LocalServer\server.toml"
 ```
 
-Recovery only restores an existing account. It never creates an unknown
-remote administrator.
+Проверка:
 
-## Desktop connection
-
-Install `KrakenDesktopSetup-<version>.exe` on each workstation. On first
-connection enter the HTTPS address, Kraken login and password. The address is
-remembered; the password is not. The **Administration** page is visible only
-when the authenticated server principal has the `server_admin` system role.
-
-The page creates/disables accounts, resets passwords, revokes sessions and
-grants/revokes `server_admin`. Every operation is authorized by Kraken Server
-and appended to the administration audit log. An administrator cannot disable
-or demote themselves, so the last active administrator cannot be removed from
-the UI.
-
-## Source/development operation
-
-Source deployments remain supported. Run Alembic before the first start and
-select the built-in persistent composition:
-
-```text
-KRAKEN_SERVER_COMPOSITION=kraken_server.composition:postgresql_composition
-KRAKEN_DATABASE_URL=postgresql+psycopg://...
-KRAKEN_BLOB_ROOT=/srv/kraken/blobs
-KRAKEN_PROJECT_ACCESS_MODE=acl
-alembic upgrade head
-kraken-server
+```powershell
+.\KrakenAdmin.exe doctor
 ```
 
-`--development` is the only way to enable the ephemeral backend. Production
-startup fails closed when persistent storage or authentication is missing.
+Создание проекта без Desktop:
 
-## Backups
+```powershell
+.\KrakenAdmin.exe project-create --name "Тестовый проект" --width 20 --height 30
+```
 
-A complete backup includes PostgreSQL, managed blobs, the `.server` signing
-key directory and `server.toml` plus its DPAPI-protected secret. Machine-scoped
-DPAPI data must be decrypted/re-protected during a migration to another host.
-A backup is operational only after an isolated restore drill succeeds.
+CLI запросит пароль Kraken и выведет идентификатор проекта. Список проектов:
+
+```powershell
+.\KrakenAdmin.exe project-list
+```
+
+## Готовые PowerShell-сценарии
+
+В поставку входят сценарии из каталога `scripts`:
+
+| Сценарий | Назначение |
+|---|---|
+| `Initialize-KrakenLocal.ps1` | Создать БД, конфигурацию и первого администратора |
+| `Start-KrakenLocal.ps1` | Запустить локальный сервер в текущем окне |
+| `Test-KrakenLocal.ps1` | Проверить конфигурацию, БД и хранилище |
+| `New-KrakenProject.ps1` | Создать проект без ручной работы в UI |
+
+Пример полного сценария:
+
+```powershell
+.\scripts\Initialize-KrakenLocal.ps1
+.\scripts\Start-KrakenLocal.ps1
+```
+
+Во втором окне:
+
+```powershell
+.\scripts\New-KrakenProject.ps1 -Name "Демонстрация" -Width 10 -Height 10
+```
+
+## Автоматизация без интерактивных вопросов
+
+Секреты не следует передавать аргументами командной строки. Для CI или
+установочного скрипта используются переменные окружения:
+
+```powershell
+$env:KRAKEN_POSTGRES_ADMIN_PASSWORD = "..."
+$env:KRAKEN_DATABASE_PASSWORD = "..."
+$env:KRAKEN_INITIAL_ADMIN_PASSWORD = "..."
+
+.\KrakenAdmin.exe init `
+  --database-host 127.0.0.1 `
+  --database-port 5432 `
+  --postgres-admin postgres `
+  --database-name kraken_local `
+  --database-user kraken_local_app `
+  --username admin `
+  --display-name Administrator `
+  --non-interactive
+```
+
+Для операций с проектами:
+
+```powershell
+$env:KRAKEN_ACCOUNT_PASSWORD = "..."
+
+.\KrakenAdmin.exe project-create `
+  --name "CI project" `
+  --width 5 `
+  --height 5 `
+  --non-interactive `
+  --json
+```
+
+`--json` выдаёт машиночитаемый результат. Нулевой код возврата означает
+успех, `2` — ошибку проверки или операции, `130` — отмену пользователем.
+
+## Справка CLI
+
+Список команд и их назначение:
+
+```powershell
+.\KrakenAdmin.exe --help
+```
+
+Аргументы, значения по умолчанию и примеры конкретной команды:
+
+```powershell
+.\KrakenAdmin.exe init --help
+.\KrakenAdmin.exe project-create --help
+.\KrakenAdmin.exe doctor --help
+```
+
+## Конфигурация
+
+Сгенерированный `server.toml` содержит пояснение каждого параметра. Пароля
+PostgreSQL в нём нет: поле `database.url_secret` ссылается на отдельный файл,
+зашифрованный Windows DPAPI.
+
+В каталоге `config` поставляются два справочных файла:
+
+- `server.local.example.toml` — безопасные настройки локального теста;
+- `server.production.example.toml` — TLS, reverse proxy, хранилище и GitLab.
+
+Это справочные шаблоны. Рабочую конфигурацию создаёт `init` или
+расширенная команда `setup-server`.
+
+## Установка Windows-службы
+
+Установщик Kraken Server запускает автоматическую настройку и передаёт
+`--install-service`. Для ручной регистрации уже настроенного сервера:
+
+```powershell
+.\KrakenAdmin.exe install-service `
+  --config "C:\ProgramData\Kraken\Server\server.toml" `
+  --server-executable "C:\Program Files\Kraken Server\KrakenServer.exe"
+```
+
+## Подключение Kraken Desktop
+
+Для Desktop на том же компьютере укажите:
+
+```text
+http://127.0.0.1:8080
+```
+
+Способ входа — «Учётная запись Kraken», логин по умолчанию — `admin`.
+Пароль Desktop не сохраняет. Раздел «Администрирование» отображается только
+пользователю с ролью `server_admin`.
+
+Для сетевого доступа используйте HTTPS/WSS. PostgreSQL и файловое хранилище
+не публикуются в сеть и доступны только Kraken Server.
+
+## Расширенный режим
+
+Если БД создаёт внешняя инфраструктура, используйте:
+
+```powershell
+.\KrakenAdmin.exe setup-server --help
+```
+
+Эта команда принимает URL уже существующей PostgreSQL. Для обычной локальной
+установки она не нужна.
+
+## Резервные копии
+
+Полная резервная копия включает PostgreSQL, каталог blobs, каталог `.server`,
+`server.toml` и защищённый `database-url.secret`. Перенос DPAPI-секрета на
+другой компьютер требует повторной генерации конфигурации.

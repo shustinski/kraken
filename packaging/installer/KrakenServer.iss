@@ -20,10 +20,11 @@ UninstallDisplayIcon={app}\KrakenServer.exe
 Source: "{#RepoRoot}\dist\windows\KrakenServer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Настройка Kraken Server"; Filename: "{app}\KrakenAdmin.exe"; Parameters: "setup-server --install-service --server-executable ""{app}\KrakenServer.exe"""; WorkingDir: "{app}"
+Name: "{group}\Настроить Kraken Server"; Filename: "{app}\KrakenAdmin.exe"; Parameters: "init --config ""{commonappdata}\Kraken\Server\server.toml"" --blob-root ""{commonappdata}\Kraken\Server\blobs"" --install-service --server-executable ""{app}\KrakenServer.exe"""; WorkingDir: "{app}"
+Name: "{group}\Проверить Kraken Server"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\Test-KrakenLocal.ps1"" -Config ""{commonappdata}\Kraken\Server\server.toml"""; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\KrakenAdmin.exe"; Parameters: "setup-server --install-service --server-executable ""{app}\KrakenServer.exe"""; Description: "Настроить базу данных и первого администратора"; Flags: postinstall waituntilterminated skipifsilent
+Filename: "{app}\KrakenAdmin.exe"; Parameters: "init --config ""{commonappdata}\Kraken\Server\server.toml"" --blob-root ""{commonappdata}\Kraken\Server\blobs"" --install-service --server-executable ""{app}\KrakenServer.exe"""; Description: "Создать базу, настроить сервер и первого администратора"; Flags: postinstall waituntilterminated skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\sc.exe"; Parameters: "stop KrakenServer"; Flags: runhidden waituntilterminated; RunOnceId: "StopKrakenServer"

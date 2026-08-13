@@ -18,6 +18,13 @@ def default_config_path() -> Path:
     return Path("/etc/kraken/server.toml")
 
 
+def default_local_config_path() -> Path:
+    if os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return root / "Kraken" / "LocalServer" / "server.toml"
+    return Path.home() / ".config" / "kraken" / "local-server.toml"
+
+
 class _DataBlob(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
 
@@ -206,9 +213,18 @@ def write_config(
     blob_root = blob_root.expanduser().resolve()
     blob_root.mkdir(parents=True, exist_ok=True)
     server_lines = [
+        "# Конфигурация Kraken Server.",
+        "# Создана KrakenAdmin. Данные подключения к БД хранятся отдельно",
+        "# и защищены Windows DPAPI; никогда не записывайте пароль в этот файл.",
+        "",
         "[server]",
+        "# Сетевой интерфейс Kraken Server.",
+        "# 127.0.0.1 безопасен для локального теста. Сетевой интерфейс используйте только с HTTPS.",
         f"host = {json.dumps(host)}",
+        "# HTTP(S)-порт Kraken Server.",
         f"port = {int(port)}",
+        "# acl проверяет роли проекта. trusted_network допустим только в изолированной сети,",
+        "# где каждый вошедший пользователь считается полностью доверенным.",
         f"project_access_mode = {json.dumps(project_access_mode)}",
     ]
     if tls_cert_file is not None:
@@ -220,9 +236,11 @@ def write_config(
             *server_lines,
             "",
             "[database]",
+            "# Относительный путь к защищённому DPAPI-секрету подключения PostgreSQL.",
             f"url_secret = {json.dumps(secret_path.name)}",
             "",
             "[storage]",
+            "# Неизменяемые файлы сервера. Рабочие станции не открывают этот каталог напрямую.",
             f"blob_root = {json.dumps(str(blob_root))}",
             "",
         )
@@ -270,6 +288,7 @@ def run_migrations(database_url: str) -> None:
 __all__ = [
     "ServerConfig",
     "default_config_path",
+    "default_local_config_path",
     "protect_secret",
     "run_migrations",
     "unprotect_secret",

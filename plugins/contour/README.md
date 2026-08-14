@@ -3,7 +3,7 @@
 [![CI](https://github.com/shustinski/ViaLaNet/actions/workflows/ci.yml/badge.svg)](https://github.com/shustinski/ViaLaNet/actions/workflows/ci.yml)
 [![Release](https://github.com/shustinski/ViaLaNet/actions/workflows/release.yml/badge.svg)](https://github.com/shustinski/ViaLaNet/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
 
 Standalone PyQt6 application and embeddable widget for polygon extraction,
 editing, and export from microscope imagery and similar grayscale inputs.
@@ -26,7 +26,7 @@ editing, and export from microscope imagery and similar grayscale inputs.
 
 - Windows 10 or newer (for the installer build). The widget itself is
   cross-platform but only Windows is CI-tested.
-- Python 3.13 for development.
+- Python 3.14 for development.
 - Optional: Inno Setup 6 (`iscc` on `PATH`) to build the installer.
 
 ## Installation

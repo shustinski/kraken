@@ -7,7 +7,7 @@ name = "karakal"
 version = "1.0.0"
 description = "Kraken Qt plugin for frame-matrix validation, model comparison, and cell-defect inspection."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "kraken",
     "numpy>=1.26",

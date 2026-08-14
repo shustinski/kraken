@@ -7,7 +7,7 @@ name = "kategb"
 dynamic = ["version"]
 description = "Формирование CIF-выборок и расчет результатов проверки."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "kraken",
     "openpyxl>=3.1",
@@ -37,4 +37,4 @@ include = ["kategb", "kategb.*"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+target-version = "py314"

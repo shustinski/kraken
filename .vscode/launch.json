@@ -29,7 +29,7 @@
       "name": "Krona",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/plugins/krona/__main__.py",
+      "module": "krona",
       "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "cwd": "${workspaceFolder}/plugins/krona",
       "console": "integratedTerminal",

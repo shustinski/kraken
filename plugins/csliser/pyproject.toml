@@ -7,7 +7,7 @@ name = "csliser"
 dynamic = ["version"]
 description = "Frame-based file copy, move, and cleanup tool."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "kraken",
     "PyQt6>=6.6",
@@ -40,5 +40,5 @@ include = ["csliser", "csliser.*"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+target-version = "py314"
 extend-exclude = ["build", "dist", ".venv", "packaging"]

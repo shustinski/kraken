@@ -1,5 +1,6 @@
 from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.application.services.workflow_mapper import build_workflow_parameters, resolve_work_mode
+from neuralimage.configuration import get_sem_preset
 from tests.helpers import make_test_dir
 
 
@@ -23,6 +24,28 @@ def test_resolve_work_mode_legacy_value_aliases():
     mode = resolve_work_mode('recognintion_only')
     assert mode is not None
     assert mode.value == 'recognition_only'
+
+
+def test_sem_topology_config_maps_to_training_and_recognition_runtime():
+    root = make_test_dir('workflow_sem_topology')
+    main = MainWindowState(
+        work_mode='train_only',
+        source_folder=str(root),
+        result_folder=str(root),
+        sample_folder=str(root),
+        label_folder=str(root),
+        epochs=1,
+    )
+    config = get_sem_preset('sem_topology_experimental_v1')
+    settings = SettingsState(sem_segmentation_config=config.to_dict())
+
+    _mode, training, recognition = build_workflow_parameters(main, settings)
+
+    assert training.supervision_targets.basic.skeleton
+    assert training.preprocessing.stable_hash() == recognition.preprocessing.stable_hash()
+    assert training.loss_weighting_strategy == 'static'
+    assert recognition.sem_config_hash == config.stable_hash()
+    assert training.hard_mining.enabled
 
 
 def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():

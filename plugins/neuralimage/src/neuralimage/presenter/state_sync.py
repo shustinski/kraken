@@ -337,6 +337,8 @@ def apply_settings_to_panel(presenter) -> None:
     panel.hard_mining_check_box.setChecked(state.hard_mining_enabled)
     panel.hard_pixel_mining_check_box.setChecked(bool(getattr(state, 'hard_pixel_mining_enabled', False)))
     panel.hard_pixel_mining_ratio_spinbox.setValue(float(getattr(state, 'hard_pixel_mining_ratio', 0.25)))
+    if hasattr(panel, 'set_sem_segmentation_config'):
+        panel.set_sem_segmentation_config(getattr(state, 'sem_segmentation_config', {}))
     panel.skip_uniform_labels_check_box.setChecked(state.skip_uniform_labels)
     panel.rare_patch_oversampling_check_box.setChecked(
         bool(getattr(state, 'rare_patch_oversampling_enabled', False))
@@ -534,6 +536,11 @@ def update_settings_window_state(presenter) -> None:
     hard_mining_enabled = panel.hard_mining_check_box.isChecked()
     hard_pixel_mining_enabled = panel.hard_pixel_mining_check_box.isChecked()
     hard_pixel_mining_ratio = panel.hard_pixel_mining_ratio_spinbox.value()
+    sem_segmentation_config = (
+        panel.get_sem_segmentation_config()
+        if hasattr(panel, 'get_sem_segmentation_config')
+        else dict(getattr(current_state, 'sem_segmentation_config', {}))
+    )
     skip_uniform_labels = panel.skip_uniform_labels_check_box.isChecked()
     rare_patch_oversampling_enabled = panel.rare_patch_oversampling_check_box.isChecked()
     rare_patch_oversampling_factor = panel.rare_patch_oversampling_factor_spinbox.value()
@@ -663,6 +670,7 @@ def update_settings_window_state(presenter) -> None:
         hard_mining_enabled=hard_mining_enabled,
         hard_pixel_mining_enabled=hard_pixel_mining_enabled,
         hard_pixel_mining_ratio=hard_pixel_mining_ratio,
+        sem_segmentation_config=sem_segmentation_config,
         log_update_frequency=log_update_frequency,
         skip_uniform_labels=skip_uniform_labels,
         rare_patch_oversampling_enabled=rare_patch_oversampling_enabled,

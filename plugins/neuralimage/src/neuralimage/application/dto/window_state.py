@@ -83,6 +83,9 @@ class SettingsState:
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
     early_stopping_enabled: bool = False
+    early_stopping_patience: int = 10
+    early_stopping_min_delta: float = 0.0
+    early_stopping_restore_best_weights: bool = True
     warmup_enabled: bool = False
     warmup_epochs: int = 3
     warmup_start_factor: float = 0.1
@@ -103,6 +106,10 @@ class SettingsState:
     scheduler_step_lr_step_size: int = 10
     scheduler_step_lr_gamma: float = 0.1
     hard_mining_enabled: bool = False
+    # Retained for old workflow/state snapshots. New topology configurations
+    # use hard_mining.score_clip and hard_mining.ema_alpha.
+    hard_mining_strength: float = 2.0
+    hard_mining_ema_alpha: float = 0.3
     random_patch_size_enabled: bool = False
     random_patch_min_size: tuple[int, int] = (128, 128)
     random_patch_max_size: tuple[int, int] = (512, 512)
@@ -142,6 +149,7 @@ class SettingsState:
     synthetic_defect_generator: dict[str, Any] = field(default_factory=dict)
     tech_aug: dict[str, Any] = field(default_factory=dict)
     pcb_defects: dict[str, Any] = field(default_factory=dict)
+    sem_segmentation_config: dict[str, Any] = field(default_factory=dict)
 
 
 _MODE_STATE_SUPPORTED_MODES = {

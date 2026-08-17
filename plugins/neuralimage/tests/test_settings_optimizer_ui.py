@@ -11,6 +11,7 @@ from PIL import Image
 from PyQt6.QtWidgets import QApplication
 
 from neuralimage.lib.data_interfaces import WorkMode, build_synthetic_defect_generator_parameters
+from neuralimage.configuration import get_sem_preset
 from neuralimage.model.NeuralNetwork.registrator import ModelType
 from tests.helpers import make_test_dir
 from neuralimage.view.settings_panel import SettingsPanel
@@ -38,6 +39,17 @@ def _import_main_presenter_with_stubs():
     sys.modules['model.general_neural_handler'] = handler_stub
     sys.modules['lib.images'] = images_stub
     return importlib.import_module('presenter.main_presenter')
+
+
+def test_settings_panel_round_trips_sem_topology_configuration(qapp):
+    panel = SettingsPanel()
+    payload = get_sem_preset('sem_topology_experimental_v1').to_dict()
+
+    panel.set_sem_segmentation_config(payload)
+
+    assert panel.get_sem_segmentation_config() == payload
+    panel.sem_segmentation_validate_button.click()
+    assert 'SHA-256' in panel.sem_segmentation_validation_label.text()
 
 
 def test_settings_panel_emits_optimizer_settings_changed(qapp):

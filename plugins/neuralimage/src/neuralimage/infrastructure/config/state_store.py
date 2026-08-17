@@ -127,6 +127,12 @@ def _build_settings_state(
         dice_weight=dice_loss_weight,
         iou_weight=iou_loss_weight,
     )
+    try:
+        sem_segmentation_config = json.loads(read_str('sem_segmentation_config_json', '{}'))
+    except (TypeError, json.JSONDecodeError):
+        sem_segmentation_config = {}
+    if not isinstance(sem_segmentation_config, dict):
+        sem_segmentation_config = {}
     return SettingsState(
         step=read_int('cut_step', defaults.step),
         vertical_rotation=read_bool('vertical_rotation', defaults.vertical_rotation),
@@ -275,6 +281,16 @@ def _build_settings_state(
         learning_rate=read_float('learning_rate', defaults.learning_rate),
         weight_decay=read_float('weight_decay', defaults.weight_decay),
         early_stopping_enabled=read_bool('early_stopping_enabled', defaults.early_stopping_enabled),
+        early_stopping_patience=read_int(
+            'early_stopping_patience', getattr(defaults, 'early_stopping_patience', 10)
+        ),
+        early_stopping_min_delta=read_float(
+            'early_stopping_min_delta', getattr(defaults, 'early_stopping_min_delta', 0.0)
+        ),
+        early_stopping_restore_best_weights=read_bool(
+            'early_stopping_restore_best_weights',
+            getattr(defaults, 'early_stopping_restore_best_weights', True),
+        ),
         warmup_enabled=read_bool('warmup_enabled', defaults.warmup_enabled),
         deep_supervision=read_bool(
             'deep_supervision',
@@ -346,6 +362,13 @@ def _build_settings_state(
             getattr(defaults, 'scheduler_step_lr_gamma', 0.1),
         ),
         hard_mining_enabled=read_bool('hard_mining_enabled', defaults.hard_mining_enabled),
+        hard_mining_strength=read_float(
+            'hard_mining_strength', getattr(defaults, 'hard_mining_strength', 2.0)
+        ),
+        hard_mining_ema_alpha=read_float(
+            'hard_mining_ema_alpha', getattr(defaults, 'hard_mining_ema_alpha', 0.3)
+        ),
+        sem_segmentation_config=sem_segmentation_config,
         random_patch_size_enabled=read_bool(
             'random_patch_size_enabled', getattr(defaults, 'random_patch_size_enabled', False)
         ),
@@ -568,6 +591,11 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'learning_rate': float(state.learning_rate),
         'weight_decay': float(state.weight_decay),
         'early_stopping_enabled': bool(state.early_stopping_enabled),
+        'early_stopping_patience': int(getattr(state, 'early_stopping_patience', 10)),
+        'early_stopping_min_delta': float(getattr(state, 'early_stopping_min_delta', 0.0)),
+        'early_stopping_restore_best_weights': bool(
+            getattr(state, 'early_stopping_restore_best_weights', True)
+        ),
         'warmup_enabled': bool(state.warmup_enabled),
         'deep_supervision': bool(getattr(state, 'deep_supervision', False)),
         'warmup_epochs': int(state.warmup_epochs),
@@ -593,6 +621,11 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'scheduler_step_lr_step_size': int(getattr(state, 'scheduler_step_lr_step_size', 10)),
         'scheduler_step_lr_gamma': float(getattr(state, 'scheduler_step_lr_gamma', 0.1)),
         'hard_mining_enabled': bool(state.hard_mining_enabled),
+        'hard_mining_strength': float(getattr(state, 'hard_mining_strength', 2.0)),
+        'hard_mining_ema_alpha': float(getattr(state, 'hard_mining_ema_alpha', 0.3)),
+        'sem_segmentation_config_json': json.dumps(
+            getattr(state, 'sem_segmentation_config', {}), ensure_ascii=False, sort_keys=True
+        ),
         'random_patch_size_enabled': bool(getattr(state, 'random_patch_size_enabled', False)),
         'random_patch_min_width': int(getattr(state, 'random_patch_min_size', (128, 128))[0]),
         'random_patch_min_height': int(getattr(state, 'random_patch_min_size', (128, 128))[1]),

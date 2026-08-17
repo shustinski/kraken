@@ -6,6 +6,7 @@ from django import forms
 from django.core.exceptions import ValidationError
 
 from neuralimage.application.dto import MainWindowState, SettingsState
+from neuralimage.configuration import build_sem_segmentation_config
 from neuralimage.lib.data_interfaces import (
     build_synthetic_defect_generator_parameters,
     ConfidenceSaveMode,
@@ -75,7 +76,7 @@ class MainWindowForm(forms.Form):
     def __init__(self, *args, **kwargs):
         language = kwargs.pop('language', None)
         ui_texts = kwargs.pop('ui_texts', None)
-        self._texts = ui_texts if isinstance(ui_texts, dict) else get_ui_section('neuralimage.webui', language)
+        self._texts = ui_texts if isinstance(ui_texts, dict) else get_ui_section('webui', language)
         self._main_form_texts = _copy_dict(self._texts.get('main_form', {}))
         args, kwargs = self._normalize_legacy_work_mode_payload(args, kwargs)
         super().__init__(*args, **kwargs)
@@ -395,6 +396,13 @@ class SettingsForm(forms.Form):
     hard_pixel_mining_ratio = forms.FloatField(
         label='Hard pixel keep ratio', min_value=0.01, max_value=1.0, required=False
     )
+    sem_segmentation_config = forms.JSONField(
+        label='SEM topology configuration',
+        required=False,
+        initial=dict,
+        widget=forms.Textarea(attrs={'rows': 18, 'spellcheck': 'false', 'class': 'code-editor'}),
+        help_text='Versioned preprocessing, targets, heads, losses, uncertainty and validation configuration.',
+    )
     cutout_enabled = forms.BooleanField(label='Enable cutout', required=False)
     cutout_probability = forms.FloatField(label='Cutout probability', min_value=0.0, max_value=1.0, required=False)
     cutout_holes = forms.IntegerField(label='Cutout holes', min_value=1, max_value=32, required=False)
@@ -448,7 +456,7 @@ class SettingsForm(forms.Form):
     def __init__(self, *args, **kwargs):
         language = kwargs.pop('language', None)
         ui_texts = kwargs.pop('ui_texts', None)
-        self._texts = ui_texts if isinstance(ui_texts, dict) else get_ui_section('neuralimage.webui', language)
+        self._texts = ui_texts if isinstance(ui_texts, dict) else get_ui_section('webui', language)
         self._settings_form_texts = _copy_dict(self._texts.get('settings_form', {}))
         super().__init__(*args, **kwargs)
         for field in self.fields.values():
@@ -633,6 +641,12 @@ class SettingsForm(forms.Form):
         cleaned['validation_image_folder'] = validation_image_folder
         cleaned['validation_label_folder'] = validation_label_folder
 
+        sem_config = cleaned.get('sem_segmentation_config') or {}
+        try:
+            build_sem_segmentation_config(sem_config)
+        except (TypeError, ValueError) as error:
+            self.add_error('sem_segmentation_config', str(error))
+
         if cleaned.get('random_patch_size_enabled') and cleaned.get('sample_cut_mode') == SampleCutMode.online.value:
             ranges = (
                 ('random_patch_min_x', 'random_patch_max_x', 'width'),
@@ -769,6 +783,7 @@ class SettingsForm(forms.Form):
             scheduler_step_lr_step_size=_with_default('scheduler_step_lr_step_size'),
             scheduler_step_lr_gamma=_with_default('scheduler_step_lr_gamma'),
             hard_mining_enabled=cleaned.get('hard_mining_enabled', False),
+            sem_segmentation_config=dict(cleaned.get('sem_segmentation_config') or {}),
             hard_pixel_mining_enabled=cleaned.get('hard_pixel_mining_enabled', False),
             hard_pixel_mining_ratio=_with_default('hard_pixel_mining_ratio'),
             cutout_enabled=cleaned.get('cutout_enabled', False),
@@ -918,6 +933,7 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'scheduler_step_lr_step_size': getattr(state, 'scheduler_step_lr_step_size', 10),
         'scheduler_step_lr_gamma': getattr(state, 'scheduler_step_lr_gamma', 0.1),
         'hard_mining_enabled': state.hard_mining_enabled,
+        'sem_segmentation_config': getattr(state, 'sem_segmentation_config', {}),
         'hard_pixel_mining_enabled': getattr(state, 'hard_pixel_mining_enabled', False),
         'hard_pixel_mining_ratio': getattr(state, 'hard_pixel_mining_ratio', 0.25),
         'cutout_enabled': getattr(state, 'cutout_enabled', False),

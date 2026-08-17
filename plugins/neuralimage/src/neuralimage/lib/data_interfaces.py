@@ -230,6 +230,9 @@ class OptimizerParameters:
 @dataclass
 class EarlyStoppingParameters:
     enabled: bool = False
+    patience: int = 10
+    min_delta: float = 0.0
+    restore_best_weights: bool = True
 
 
 @dataclass(frozen=True)
@@ -285,8 +288,17 @@ class SchedulerParameters:
 @dataclass
 class HardMiningParameters:
     enabled: bool = False
+    strength: float = 2.0
     pixel_enabled: bool = False
     pixel_keep_ratio: float = 0.25
+    mode: str = 'online'
+    geometry_weight: float = 0.5
+    loss_weight: float = 0.5
+    exploration_floor: float = 0.1
+    ema_alpha: float = 0.1
+    score_clip: float = 5.0
+    refresh_epochs: int = 1
+    offline_manifest: Path | None = None
 
 
 @dataclass
@@ -1416,6 +1428,12 @@ class TrainingParameters:
     uncertainty: UncertaintyConfig = field(default_factory=_default_uncertainty_config)
     active_learning: ActiveLearningConfig = field(default_factory=_default_active_learning_config)
     advanced_validation: bool = True
+    advanced_validation_full_frame: bool = True
+    advanced_validation_boundary_tolerance: int = 2
+    advanced_validation_include_hd95: bool = True
+    advanced_validation_confidence_bins: int = 10
+    loss_weighting_strategy: str = 'static'
+    mask_loss_weight_floor: float = 0.25
 
 @dataclass
 class RecognitionParameters:
@@ -1447,6 +1465,7 @@ class RecognitionParameters:
     preprocessing: PreprocessingConfig = field(default_factory=_default_preprocessing_config)
     uncertainty: UncertaintyConfig = field(default_factory=_default_uncertainty_config)
     active_learning: ActiveLearningConfig = field(default_factory=_default_active_learning_config)
+    sem_config_hash: str | None = None
 
 
 @dataclass

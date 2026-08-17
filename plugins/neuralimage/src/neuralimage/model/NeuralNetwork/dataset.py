@@ -245,6 +245,23 @@ class NoCutDataset(Dataset):
         )
         self._pcb_defects = build_pcb_defect_parameters(getattr(settings, 'pcb_defects', None))
         self._apply_train_only_transforms = bool(apply_train_only_transforms)
+        self._supervision_targets = getattr(settings, 'supervision_targets', None)
+        self._preprocessing = getattr(settings, 'preprocessing', None)
+        self._sem_augmentation = getattr(settings, 'sem_augmentation', None)
+        self._uncertainty = getattr(settings, 'uncertainty', None)
+        self._advanced_validation = bool(getattr(settings, 'advanced_validation', True))
+        self._advanced_validation_full_frame = bool(
+            getattr(settings, 'advanced_validation_full_frame', True)
+        )
+        self._advanced_validation_boundary_tolerance = max(
+            0, int(getattr(settings, 'advanced_validation_boundary_tolerance', 2))
+        )
+        self._advanced_validation_include_hd95 = bool(
+            getattr(settings, 'advanced_validation_include_hd95', True)
+        )
+        self._advanced_validation_confidence_bins = max(
+            2, int(getattr(settings, 'advanced_validation_confidence_bins', 10))
+        )
         self._tech_augmentor = (
             TechVariationAugmentor(self._tech_aug_config)
             if self._apply_train_only_transforms and self._tech_aug_config.enabled
@@ -255,10 +272,6 @@ class NoCutDataset(Dataset):
             if self._apply_train_only_transforms and self._pcb_defects.enabled
             else None
         )
-        self._supervision_targets = getattr(settings, 'supervision_targets', None)
-        self._preprocessing = getattr(settings, 'preprocessing', None)
-        self._sem_augmentation = getattr(settings, 'sem_augmentation', None)
-        self._advanced_validation = bool(getattr(settings, 'advanced_validation', True))
         self._use_defect_mask_as_label = bool(self._pcb_defects.use_defect_mask_as_label)
         self.shuffle_patches_in_frame = bool(
             getattr(self._cut_settings, 'shuffle_patches_in_frame', self.shuffle_frames)
@@ -319,9 +332,6 @@ class NoCutDataset(Dataset):
             frame=frame,
             part=part,
         )
-        if self._apply_train_only_transforms:
-            image, label = apply_dataset_sem_augmentation(image, label, self._sem_augmentation)
-        image = apply_dataset_preprocessing(image, self._preprocessing)
         label = maybe_build_supervision_target(label, self._supervision_targets)
         if not self._use_context_branch:
             return image, label
@@ -474,6 +484,15 @@ class NoCutDataset(Dataset):
                 self._tech_augmentor,
                 binary_tolerance=self._tech_aug_binary_tolerance,
             )
+            if self._apply_train_only_transforms:
+                image_matrix, label_matrix = apply_dataset_sem_augmentation(
+                    image_matrix,
+                    label_matrix,
+                    self._sem_augmentation,
+                )
+            # Deterministic SEM preprocessing is frame-scoped so local patches
+            # and every context view are sampled from the identical signal.
+            image_matrix = apply_dataset_preprocessing(image_matrix, self._preprocessing)
             rare_mask_matrix = None
             if prepared_rare_mask is not None:
                 rare_mask_matrix = SampleFastCutter.get_matrix_from_image(prepared_rare_mask, 1)
@@ -720,6 +739,23 @@ class SyntheticDefectDataset(Dataset):
             getattr(settings, 'context_input_size', None),
             fallback=self._local_crop_size,
         )
+        self._supervision_targets = getattr(settings, 'supervision_targets', None)
+        self._preprocessing = getattr(settings, 'preprocessing', None)
+        self._sem_augmentation = getattr(settings, 'sem_augmentation', None)
+        self._uncertainty = getattr(settings, 'uncertainty', None)
+        self._advanced_validation = bool(getattr(settings, 'advanced_validation', True))
+        self._advanced_validation_full_frame = bool(
+            getattr(settings, 'advanced_validation_full_frame', True)
+        )
+        self._advanced_validation_boundary_tolerance = max(
+            0, int(getattr(settings, 'advanced_validation_boundary_tolerance', 2))
+        )
+        self._advanced_validation_include_hd95 = bool(
+            getattr(settings, 'advanced_validation_include_hd95', True)
+        )
+        self._advanced_validation_confidence_bins = max(
+            2, int(getattr(settings, 'advanced_validation_confidence_bins', 10))
+        )
         self._frame_size_xy = (
             max(int(self._local_crop_size[0]), int(self._config.image_size_xy[0])),
             max(int(self._local_crop_size[1]), int(self._config.image_size_xy[1])),
@@ -808,7 +844,8 @@ class SyntheticDefectDataset(Dataset):
                 size_xy=requested_size,
             )
         image_tensor = torch.from_numpy(np.ascontiguousarray(image)).float()
-        label_tensor = torch.from_numpy(np.ascontiguousarray(label)).float()
+        base_label_tensor = torch.from_numpy(np.ascontiguousarray(label)).float()
+        label_tensor = maybe_build_supervision_target(base_label_tensor, self._supervision_targets)
 
         if not self._use_context_branch:
             return image_tensor, label_tensor
@@ -892,6 +929,13 @@ class SyntheticDefectDataset(Dataset):
             base_label,
             seed=self._sample_seed(resolved_frame, salt=1),
         )
+        if self._apply_train_only_transforms:
+            augmented_image, augmented_label = apply_dataset_sem_augmentation(
+                augmented_image,
+                augmented_label,
+                self._sem_augmentation,
+            )
+        augmented_image = apply_dataset_preprocessing(augmented_image, self._preprocessing)
         random_state = random.getstate()
         np_random_state = np.random.get_state()
         frame_seed = self._sample_seed(resolved_frame, salt=2)

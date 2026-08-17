@@ -17,6 +17,7 @@ from neuralimage.model.NeuralNetwork.recognition_pipeline import (
     sew,
 )
 from neuralimage.model.NeuralNetwork import recognition_pipeline as recognition_pipeline_module
+from neuralimage.uncertainty.config import UncertaintyConfig
 
 
 class _NaNModel(torch.nn.Module):
@@ -36,6 +37,15 @@ class _DirectionalTtaModel(torch.nn.Module):
         }
 
 
+class _DropoutModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.dropout = torch.nn.Dropout2d(p=0.1)
+
+    def forward(self, x):
+        return self.dropout(x)
+
+
 def test_gpu_predict_sanitizes_non_finite_outputs():
     payload = {
         'cutted_image': np.zeros((2, 1, 8, 8), dtype=np.float32),
@@ -51,7 +61,8 @@ def test_gpu_predict_sanitizes_non_finite_outputs():
     assert output.shape == (2, 1, 8, 8)
     assert confidence.shape == (2, 1, 8, 8)
     assert np.allclose(output, 0.5, atol=1e-6)
-    assert np.allclose(confidence, 1.0, atol=1e-6)
+    # A 0.5 probability is maximally ambiguous and therefore has zero confidence.
+    assert np.allclose(confidence, 0.0, atol=1e-6)
 
     stats = predicted.get('_prediction_stats')
     assert isinstance(stats, dict)
@@ -86,6 +97,31 @@ def test_gpu_predict_applies_tta_independently_for_mask_and_confidence():
     assert np.allclose(recognition_tta['confidence_image'], base['confidence_image'])
     assert np.allclose(confidence_tta['predicted_image'], base['predicted_image'])
     assert not np.allclose(confidence_tta['confidence_image'], base['confidence_image'])
+
+
+def test_gpu_predict_mc_dropout_exports_variance_and_restores_model_state():
+    payload = {'cutted_image': np.ones((2, 1, 8, 8), dtype=np.float32)}
+    model = _DropoutModel().eval()
+    original_rate = model.dropout.p
+
+    predicted = gpu_predict(
+        payload,
+        model,
+        torch.device('cpu'),
+        batch_size=2,
+        uncertainty=UncertaintyConfig(
+            enabled=True,
+            method='mc_dropout',
+            mc_dropout_samples=8,
+            mc_dropout_rate=0.5,
+        ),
+    )
+
+    assert float(np.max(predicted['variance_image'])) > 0.0
+    assert np.isfinite(predicted['confidence_image']).all()
+    assert model.training is False
+    assert model.dropout.training is False
+    assert model.dropout.p == pytest.approx(original_rate)
 
 
 def test_shared_memory_payload_roundtrip_for_cut_batches():

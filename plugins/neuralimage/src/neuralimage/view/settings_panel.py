@@ -1,3 +1,4 @@
+import json
 from typing import Any, Iterable
 from collections.abc import Mapping
 from copy import deepcopy
@@ -19,6 +20,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QPlainTextEdit,
 )
 
 from neuralimage.UI import ClickableLabel
@@ -57,6 +59,7 @@ from neuralimage.view.settings_panel_widgets import (
     create_slider,
     create_spinbox,
 )
+from neuralimage.configuration import build_sem_segmentation_config, get_sem_preset
 
 FIELD_DESCRIPTION_ROW_SPACING = 8
 FORM_DEFAULT_MARGINS = (8, 6, 8, 8)
@@ -1400,6 +1403,21 @@ class SettingsPanel(QDockWidget):
         self.warmup_groupbox, self.warmup_form = _build_subgroup()
         self.scheduler_groupbox, self.scheduler_form = _build_subgroup()
         self.hard_mining_groupbox, self.hard_mining_form = _build_subgroup()
+        self.sem_segmentation_groupbox, self.sem_segmentation_form = _build_subgroup()
+        self.sem_segmentation_preset_combo = NoWheelComboBox()
+        self.sem_segmentation_preset_combo.addItem('Legacy v1', 'legacy_v1')
+        self.sem_segmentation_preset_combo.addItem('SEM topology experimental v1', 'sem_topology_experimental_v1')
+        self.sem_segmentation_apply_preset_button = QPushButton('Apply preset')
+        self.sem_segmentation_validate_button = QPushButton('Validate configuration')
+        self.sem_segmentation_config_editor = QPlainTextEdit()
+        self.sem_segmentation_config_editor.setMinimumHeight(220)
+        self.sem_segmentation_validation_label = QLabel('')
+        self.sem_segmentation_validation_label.setWordWrap(True)
+        self.sem_segmentation_form.addRow(self.sem_segmentation_preset_combo, self.sem_segmentation_apply_preset_button)
+        self.sem_segmentation_form.addRow(self.sem_segmentation_config_editor)
+        self.sem_segmentation_form.addRow(self.sem_segmentation_validate_button)
+        self.sem_segmentation_form.addRow(self.sem_segmentation_validation_label)
+        self.set_sem_segmentation_config({})
         self.early_stopping_groupbox, self.early_stopping_form = _build_subgroup()
 
         # Keep backward compatibility for code that may inspect this attr.
@@ -1523,6 +1541,7 @@ class SettingsPanel(QDockWidget):
         nn_sections_layout.addWidget(self.warmup_groupbox)
         nn_sections_layout.addWidget(self.scheduler_groupbox)
         nn_sections_layout.addWidget(self.hard_mining_groupbox)
+        nn_sections_layout.addWidget(self.sem_segmentation_groupbox)
         nn_sections_layout.addWidget(self.runtime_groupbox)
         nn_sections_layout.addStretch(1)
 
@@ -1531,6 +1550,8 @@ class SettingsPanel(QDockWidget):
         self.scheduler_type_combo.currentIndexChanged.connect(self._sync_scheduler_controls)
         self.hard_mining_check_box.toggled.connect(self._sync_hard_mining_controls)
         self.hard_pixel_mining_check_box.toggled.connect(self._sync_hard_mining_controls)
+        self.sem_segmentation_apply_preset_button.clicked.connect(self._apply_sem_segmentation_preset)
+        self.sem_segmentation_validate_button.clicked.connect(self._validate_sem_segmentation_editor)
         self.early_stopping_check_box.toggled.connect(self._sync_early_stopping_controls)
         self.rare_patch_oversampling_check_box.toggled.connect(self._sync_rare_patch_oversampling_controls)
         self.recognition_binarize_output_check_box.toggled.connect(self._sync_recognition_output_controls)
@@ -1881,6 +1902,7 @@ class SettingsPanel(QDockWidget):
         self.expert_content_layout.addWidget(self.warmup_groupbox)
         self.expert_content_layout.addWidget(self.scheduler_groupbox)
         self.expert_content_layout.addWidget(self.hard_mining_groupbox)
+        self.expert_content_layout.addWidget(self.sem_segmentation_groupbox)
         self.expert_content_layout.addWidget(self.runtime_groupbox)
         self.expert_groupbox_layout.addWidget(self.expert_content_widget)
         self.training_page_layout.addWidget(self.expert_groupbox)
@@ -2698,6 +2720,42 @@ class SettingsPanel(QDockWidget):
             is_visible = field in visible_fields
             self._set_field_visible(field, is_visible)
             self._set_field_enabled(field, scheduler_enabled and is_visible)
+
+    def set_sem_segmentation_config(self, payload: Mapping[str, Any] | None) -> None:
+        value = dict(payload or {})
+        self.sem_segmentation_config_editor.setPlainText(
+            json.dumps(value, indent=2, ensure_ascii=False) if value else '{}'
+        )
+        if value:
+            self._validate_sem_segmentation_editor()
+        else:
+            self.sem_segmentation_validation_label.clear()
+
+    def get_sem_segmentation_config(self) -> dict[str, Any]:
+        text = self.sem_segmentation_config_editor.toPlainText().strip() or '{}'
+        payload = json.loads(text)
+        if not isinstance(payload, dict):
+            raise ValueError('SEM segmentation configuration must be a JSON object.')
+        if payload:
+            build_sem_segmentation_config(payload)
+        return payload
+
+    def _apply_sem_segmentation_preset(self) -> None:
+        preset_name = str(self.sem_segmentation_preset_combo.currentData() or 'legacy_v1')
+        config = get_sem_preset(preset_name)
+        self.set_sem_segmentation_config({} if preset_name == 'legacy_v1' else config.to_dict())
+        self._validate_sem_segmentation_editor()
+
+    def _validate_sem_segmentation_editor(self) -> None:
+        try:
+            payload = self.get_sem_segmentation_config()
+            config_hash = build_sem_segmentation_config(payload).stable_hash()
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            self.sem_segmentation_validation_label.setText(f'Invalid configuration: {error}')
+            self.sem_segmentation_validation_label.setStyleSheet('color: #c62828;')
+            return
+        self.sem_segmentation_validation_label.setText(f'Configuration is valid. SHA-256: {config_hash[:16]}…')
+        self.sem_segmentation_validation_label.setStyleSheet('color: #2e7d32;')
 
     def _sync_hard_mining_controls(self, enabled: bool) -> None:
         pixel_control_enabled = self._training_controls_applicable and bool(self.hard_pixel_mining_check_box.isChecked())

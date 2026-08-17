@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage
+from skimage.morphology import skeletonize as skimage_skeletonize
 
 try:
     from scipy import ndimage as ndi
@@ -4752,60 +4753,28 @@ _NEIGHBOR_SLICE_ORDER = (
 
 
 def _neighbor_count(mask: np.ndarray) -> np.ndarray:
-    padded = np.pad(np.asarray(mask, dtype=np.uint8), 1, mode="constant", constant_values=0)
+    image = np.asarray(mask, dtype=np.uint8)
+    if cv2 is not None:
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        kernel[1, 1] = 0
+        return cv2.filter2D(image, cv2.CV_8U, kernel, borderType=cv2.BORDER_CONSTANT)
+    padded = np.pad(image, 1, mode="constant", constant_values=0)
     neighbors = np.zeros_like(mask, dtype=np.uint8)
     for row_slice, column_slice in _NEIGHBOR_SLICE_ORDER:
         neighbors += padded[row_slice, column_slice]
     return neighbors
 
 
-def _transition_count(mask: np.ndarray) -> np.ndarray:
-    padded = np.pad(np.asarray(mask, dtype=np.uint8), 1, mode="constant", constant_values=0)
-    p2 = padded[:-2, 1:-1]
-    p3 = padded[:-2, 2:]
-    p4 = padded[1:-1, 2:]
-    p5 = padded[2:, 2:]
-    p6 = padded[2:, 1:-1]
-    p7 = padded[2:, :-2]
-    p8 = padded[1:-1, :-2]
-    p9 = padded[:-2, :-2]
-    sequence = (p2, p3, p4, p5, p6, p7, p8, p9, p2)
-    transitions = np.zeros_like(mask, dtype=np.uint8)
-    for left, right in zip(sequence[:-1], sequence[1:]):
-        transitions += ((left == 0) & (right == 1)).astype(np.uint8)
-    return transitions
-
-
 def skeletonize(mask: np.ndarray) -> np.ndarray:
-    image = np.asarray(mask, dtype=np.uint8).copy()
+    """Return the canonical scikit-image Zhang skeleton.
+
+    The wrapper keeps the validation module's existing local API while avoiding
+    a second, subtly different implementation of the thinning algorithm.
+    """
+    image = np.asarray(mask, dtype=bool)
     if image.size == 0:
-        return image.astype(bool)
-    changed = True
-    while changed:
-        changed = False
-        neighbors = _neighbor_count(image)
-        transitions = _transition_count(image)
-        padded = np.pad(image, 1, mode="constant", constant_values=0)
-        p2 = padded[:-2, 1:-1]
-        p4 = padded[1:-1, 2:]
-        p6 = padded[2:, 1:-1]
-        p8 = padded[1:-1, :-2]
-        remove = (image == 1) & (neighbors >= 2) & (neighbors <= 6) & (transitions == 1) & ((p2 * p4 * p6) == 0) & ((p4 * p6 * p8) == 0)
-        if np.any(remove):
-            image[remove] = 0
-            changed = True
-        neighbors = _neighbor_count(image)
-        transitions = _transition_count(image)
-        padded = np.pad(image, 1, mode="constant", constant_values=0)
-        p2 = padded[:-2, 1:-1]
-        p4 = padded[1:-1, 2:]
-        p6 = padded[2:, 1:-1]
-        p8 = padded[1:-1, :-2]
-        remove = (image == 1) & (neighbors >= 2) & (neighbors <= 6) & (transitions == 1) & ((p2 * p4 * p8) == 0) & ((p2 * p6 * p8) == 0)
-        if np.any(remove):
-            image[remove] = 0
-            changed = True
-    return image.astype(bool)
+        return image.copy()
+    return np.asarray(skimage_skeletonize(image, method="zhang"), dtype=bool)
 
 
 def _endpoint_count(skeleton: np.ndarray) -> int:

@@ -6,32 +6,28 @@ import numpy as np
 from neuralimage.preprocessing.config import PreprocessingConfig
 
 
-def _ensure_uint8(image: np.ndarray) -> np.ndarray:
-    array = np.asarray(image)
-    if array.dtype == np.uint8:
-        return array
-    normalized = array.astype(np.float32)
-    if normalized.max() <= 1.0:
-        normalized = normalized * 255.0
-    return np.clip(normalized, 0, 255).astype(np.uint8)
-
-
 def _to_float01(image: np.ndarray) -> np.ndarray:
-    array = np.asarray(image, dtype=np.float32)
-    if array.max() > 1.0:
-        array = array / 255.0
-    return np.clip(array, 0.0, 1.0)
-
-
-def _normalize_odd_kernel(size: int) -> int:
-    resolved = max(3, int(size))
-    if resolved % 2 == 0:
-        resolved += 1
-    return resolved
+    array = np.asarray(image)
+    if array.size == 0:
+        return array.astype(np.float32)
+    if np.issubdtype(array.dtype, np.integer):
+        scale = float(np.iinfo(array.dtype).max)
+        return np.clip(array.astype(np.float32) / scale, 0.0, 1.0)
+    values = array.astype(np.float32)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        raise ValueError('SEM image contains no finite values.')
+    if float(finite.min()) >= 0.0 and float(finite.max()) <= 1.0:
+        return np.nan_to_num(values, nan=0.0, posinf=1.0, neginf=0.0)
+    # Float microscopy readers commonly expose the native integer range as
+    # floats. Scale by that range without quantising to eight bits.
+    maximum = float(finite.max())
+    scale = 65535.0 if maximum > 255.0 else 255.0
+    return np.clip(np.nan_to_num(values, nan=0.0) / scale, 0.0, 1.0)
 
 
 class SemPreprocessingPipeline:
-    """Deterministic preprocessing pipeline for SEM IC layout images."""
+    """Validated deterministic preprocessing in a float32 [0, 1] domain."""
 
     def __init__(self, config: PreprocessingConfig | None = None):
         self.config = config or PreprocessingConfig()
@@ -40,65 +36,66 @@ class SemPreprocessingPipeline:
         return self.apply(image)
 
     def apply(self, image: np.ndarray) -> np.ndarray:
+        working = _to_float01(image)
         if not self.config.any_enabled():
-            return _to_float01(image)
-
-        working = _ensure_uint8(image)
-        if self.config.background_subtraction:
-            working = self._background_subtraction(working)
-        if self.config.illumination_correction:
-            working = self._illumination_correction(working)
-        if self.config.scan_line_suppression:
-            working = self._scan_line_suppression(working)
-        if self.config.denoise:
-            working = self._denoise(working)
-        if self.config.percentile_normalization:
-            working = self._percentile_normalization(working)
-        if self.config.clahe:
-            working = self._clahe(working)
-        return _to_float01(working)
+            return working
+        operations = {
+            'background_subtraction': self._background_subtraction,
+            'illumination_correction': self._illumination_correction,
+            'scan_line_suppression': self._scan_line_suppression,
+            'denoise': self._denoise,
+            'percentile_normalization': self._percentile_normalization,
+            'clahe': self._clahe,
+        }
+        for name in self.config.operation_order:
+            if bool(getattr(self.config, name)):
+                working = operations[name](working)
+        return np.clip(working, 0.0, 1.0).astype(np.float32, copy=False)
 
     def _percentile_normalization(self, image: np.ndarray) -> np.ndarray:
-        low = float(np.percentile(image, self.config.percentile_low))
-        high = float(np.percentile(image, self.config.percentile_high))
+        low, high = np.percentile(image, (self.config.percentile_low, self.config.percentile_high))
         if high <= low:
             return image
-        normalized = (image.astype(np.float32) - low) / (high - low)
-        return np.clip(normalized * 255.0, 0, 255).astype(np.uint8)
+        return np.clip((image - float(low)) / float(high - low), 0.0, 1.0)
 
     def _clahe(self, image: np.ndarray) -> np.ndarray:
-        tile_x, tile_y = self.config.clahe_tile_grid_size
+        # OpenCV CLAHE accepts uint16, preserving SEM detector precision.
+        native = np.round(np.clip(image, 0.0, 1.0) * 65535.0).astype(np.uint16)
         clahe = cv2.createCLAHE(
             clipLimit=float(self.config.clahe_clip_limit),
-            tileGridSize=(max(1, int(tile_x)), max(1, int(tile_y))),
+            tileGridSize=tuple(int(value) for value in self.config.clahe_tile_grid_size),
         )
-        return clahe.apply(image)
+        return clahe.apply(native).astype(np.float32) / 65535.0
 
     def _illumination_correction(self, image: np.ndarray) -> np.ndarray:
-        kernel = _normalize_odd_kernel(self.config.illumination_kernel_size)
+        kernel = int(self.config.illumination_kernel_size)
         background = cv2.GaussianBlur(image, (kernel, kernel), 0)
-        corrected = cv2.divide(image, background, scale=128)
-        return np.clip(corrected, 0, 255).astype(np.uint8)
+        reference = max(float(np.median(background)), 1e-6)
+        return np.clip(image * reference / np.maximum(background, 1e-6), 0.0, 1.0)
 
     def _background_subtraction(self, image: np.ndarray) -> np.ndarray:
-        kernel = _normalize_odd_kernel(self.config.background_blur_kernel)
+        kernel = int(self.config.background_blur_kernel)
         background = cv2.GaussianBlur(image, (kernel, kernel), 0)
-        subtracted = cv2.subtract(image, background)
-        return np.clip(subtracted, 0, 255).astype(np.uint8)
+        return np.clip(image - background + float(np.median(background)), 0.0, 1.0)
 
     def _scan_line_suppression(self, image: np.ndarray) -> np.ndarray:
-        strength = float(min(max(self.config.scan_line_strength, 0.0), 1.0))
+        strength = float(self.config.scan_line_strength)
         if strength <= 0.0:
             return image
-        float_image = image.astype(np.float32)
-        row_means = float_image.mean(axis=1, keepdims=True)
-        global_mean = float(float_image.mean())
-        corrected = float_image - strength * (row_means - global_mean)
-        return np.clip(corrected, 0, 255).astype(np.uint8)
+        axis = 1 if self.config.scan_axis == 'rows' else 0
+        profile = np.median(image, axis=axis).astype(np.float32)
+        smooth = cv2.GaussianBlur(
+            profile.reshape(-1, 1),
+            (1, int(self.config.scan_profile_kernel)),
+            0,
+        ).reshape(-1)
+        residual = profile - smooth
+        correction = residual[:, None] if self.config.scan_axis == 'rows' else residual[None, :]
+        return np.clip(image - strength * correction, 0.0, 1.0)
 
     def _denoise(self, image: np.ndarray) -> np.ndarray:
-        strength = float(max(1.0, self.config.denoise_strength))
-        return cv2.fastNlMeansDenoising(image, None, h=strength, templateWindowSize=7, searchWindowSize=21)
+        sigma_color = max(1e-4, float(self.config.denoise_strength) / 255.0)
+        return cv2.bilateralFilter(image.astype(np.float32), d=5, sigmaColor=sigma_color, sigmaSpace=2.0)
 
 
 def apply_preprocessing(image: np.ndarray, config: PreprocessingConfig | None = None) -> np.ndarray:

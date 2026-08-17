@@ -29,6 +29,7 @@ from neuralimage.lib.data_interfaces import (
 )
 from neuralimage.active_learning.config import build_active_learning_config
 from neuralimage.augmentations.sem_config import build_sem_augmentation_config
+from neuralimage.configuration import build_sem_segmentation_config
 from neuralimage.preprocessing.config import build_preprocessing_config
 from neuralimage.targets.config import build_supervision_targets_parameters
 from neuralimage.uncertainty.config import build_uncertainty_config
@@ -77,6 +78,8 @@ def _to_work_mode(value: str) -> WorkMode:
 
 
 def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = None) -> TrainingParameters:
+    sem_raw = raw.get('sem_segmentation_config')
+    sem_config = build_sem_segmentation_config(sem_raw) if isinstance(sem_raw, dict) and sem_raw else None
     generation_raw = raw.get('generation', {})
     prepare_raw = raw.get('prepare', {})
     optimizer_raw = raw.get('optimizer', {})
@@ -93,7 +96,7 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
     default_context_branch = resolved_model_name in {'FrameUnet', 'quasi_dual_scale_unet', 'UNetWithContextBranch'}
     local_crop_size = _to_tuple2(
         raw.get('local_crop_size', generation_raw.get('segment_size', [256, 256])),
-        'tranining_parameters.local_crop_size',
+        'training_parameters.local_crop_size',
     )
 
     generation = SampleGenerationSettings(
@@ -167,6 +170,14 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
         enabled=bool(hard_mining_raw.get('enabled', False)),
         pixel_enabled=bool(hard_mining_raw.get('pixel_enabled', False)),
         pixel_keep_ratio=float(hard_mining_raw.get('pixel_keep_ratio', 0.25)),
+        mode=str(hard_mining_raw.get('mode', 'online')),
+        geometry_weight=float(hard_mining_raw.get('geometry_weight', 0.5)),
+        loss_weight=float(hard_mining_raw.get('loss_weight', 0.5)),
+        exploration_floor=float(hard_mining_raw.get('exploration_floor', 0.1)),
+        ema_alpha=float(hard_mining_raw.get('ema_alpha', 0.1)),
+        score_clip=float(hard_mining_raw.get('score_clip', 5.0)),
+        refresh_epochs=max(1, int(hard_mining_raw.get('refresh_epochs', 1))),
+        offline_manifest=(Path(hard_mining_raw['offline_manifest']) if hard_mining_raw.get('offline_manifest') else None),
     )
     legacy_use_multi_gpu = bool(raw.get('use_multi_gpu', False))
     multi_gpu_mode = normalize_multi_gpu_mode(
@@ -227,12 +238,12 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
         log_update_frequency=int(raw.get('log_update_frequency', 0)),
         local_crop_size=local_crop_size,
         context_crop_size=(
-            _to_tuple2(raw.get('context_crop_size'), 'tranining_parameters.context_crop_size')
+            _to_tuple2(raw.get('context_crop_size'), 'training_parameters.context_crop_size')
             if raw.get('context_crop_size') is not None
             else None
         ),
         context_input_size=(
-            _to_tuple2(raw.get('context_input_size'), 'tranining_parameters.context_input_size')
+            _to_tuple2(raw.get('context_input_size'), 'training_parameters.context_input_size')
             if raw.get('context_input_size') is not None
             else None
         ),
@@ -247,12 +258,38 @@ def _build_training_parameters(raw: dict[str, Any], *, model_name: str | None = 
         dataloader_num_workers=int(raw.get('dataloader_num_workers', -1)),
         recursive_file_search=bool(raw.get('recursive_file_search', False)),
         pcb_defects=build_pcb_defect_parameters(pcb_defects_raw),
-        supervision_targets=build_supervision_targets_parameters(raw.get('targets', raw.get('supervision_targets'))),
-        preprocessing=build_preprocessing_config(raw.get('preprocessing')),
-        sem_augmentation=build_sem_augmentation_config(raw.get('sem_augmentation')),
-        uncertainty=build_uncertainty_config(raw.get('uncertainty')),
-        active_learning=build_active_learning_config(raw.get('active_learning')),
-        advanced_validation=bool(raw.get('advanced_validation', True)),
+        supervision_targets=(
+            sem_config.targets
+            if sem_config is not None
+            else build_supervision_targets_parameters(raw.get('targets', raw.get('supervision_targets')))
+        ),
+        preprocessing=(
+            sem_config.preprocessing if sem_config is not None else build_preprocessing_config(raw.get('preprocessing'))
+        ),
+        sem_augmentation=(
+            sem_config.augmentation if sem_config is not None else build_sem_augmentation_config(raw.get('sem_augmentation'))
+        ),
+        uncertainty=(
+            sem_config.uncertainty if sem_config is not None else build_uncertainty_config(raw.get('uncertainty'))
+        ),
+        active_learning=(
+            sem_config.active_learning if sem_config is not None else build_active_learning_config(raw.get('active_learning'))
+        ),
+        advanced_validation=(sem_config.validation.enabled if sem_config is not None else bool(raw.get('advanced_validation', True))),
+        advanced_validation_full_frame=(
+            sem_config.validation.full_frame if sem_config is not None else bool(raw.get('advanced_validation_full_frame', True))
+        ),
+        advanced_validation_boundary_tolerance=(
+            sem_config.validation.boundary_tolerance if sem_config is not None else int(raw.get('advanced_validation_boundary_tolerance', 2))
+        ),
+        advanced_validation_include_hd95=(
+            sem_config.validation.include_hd95 if sem_config is not None else bool(raw.get('advanced_validation_include_hd95', True))
+        ),
+        advanced_validation_confidence_bins=(
+            sem_config.validation.confidence_bins if sem_config is not None else int(raw.get('advanced_validation_confidence_bins', 10))
+        ),
+        loss_weighting_strategy=(sem_config.losses.weighting_strategy if sem_config is not None else 'static'),
+        mask_loss_weight_floor=(sem_config.losses.mask_weight_floor if sem_config is not None else 0.25),
     )
 
 
@@ -267,7 +304,7 @@ def _build_recognition_parameters(raw: dict[str, Any]) -> RecognitionParameters:
         model=model,
         part_size=_to_tuple2(
             raw.get('part_size', raw.get('local_crop_size', [256, 256])),
-            'recogniton_parameters.part_size',
+            'recognition_parameters.part_size',
         ),
         batch_size=int(raw.get('batch_size', 16)),
         overlap=int(raw.get('overlap', 8)),
@@ -283,12 +320,12 @@ def _build_recognition_parameters(raw: dict[str, Any]) -> RecognitionParameters:
             else None
         ),
         context_crop_size=(
-            _to_tuple2(raw.get('context_crop_size'), 'recogniton_parameters.context_crop_size')
+            _to_tuple2(raw.get('context_crop_size'), 'recognition_parameters.context_crop_size')
             if raw.get('context_crop_size') is not None
             else None
         ),
         context_input_size=(
-            _to_tuple2(raw.get('context_input_size'), 'recogniton_parameters.context_input_size')
+            _to_tuple2(raw.get('context_input_size'), 'recognition_parameters.context_input_size')
             if raw.get('context_input_size') is not None
             else None
         ),
@@ -302,7 +339,7 @@ def _build_recognition_parameters(raw: dict[str, Any]) -> RecognitionParameters:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description='CLI runner using direct business settings: work_mode, recogniton_parameters, tranining_parameters.'
+        description='CLI runner using direct business settings: work_mode, recognition_parameters, training_parameters.'
     )
     parser.add_argument('--config', type=Path, help='JSON config path.')
     parser.add_argument('--print-config-template', action='store_true', help='Print JSON template and exit.')
@@ -313,7 +350,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _config_template() -> dict[str, Any]:
     return {
         'work_mode': 'train_and_recognition',
-        'recogniton_parameters': {
+        'recognition_parameters': {
             'source_files': ['D:/data/inference/source_1.jpg'],
             'result_folder': 'D:/data/inference/results',
             'model_name': 'quasi_dual_scale_unet',
@@ -326,7 +363,7 @@ def _config_template() -> dict[str, Any]:
             'overlap': 16,
             'jpeg_quality': 95,
         },
-        'tranining_parameters': {
+        'training_parameters': {
             'image_path': 'D:/data/train/images',
             'label_path': 'D:/data/train/labels',
             'shuffle': True,
@@ -465,10 +502,18 @@ def _load_settings(path: Path, work_mode_override: str | None = None) -> tuple[W
 
     work_mode_raw = work_mode_override if work_mode_override else payload.get('work_mode', 'train_and_recognition')
     work_mode = _to_work_mode(work_mode_raw)
-    recognition_payload = payload.get('recogniton_parameters', {})
+    recognition_payload = payload.get('recognition_parameters', payload.get('recogniton_parameters', {}))
     model_name = str(recognition_payload.get('model', recognition_payload.get('model_name', ''))).strip() or None
-    training_parameters = _build_training_parameters(payload.get('tranining_parameters', {}), model_name=model_name)
+    training_payload = payload.get('training_parameters', payload.get('tranining_parameters', {}))
+    training_parameters = _build_training_parameters(training_payload, model_name=model_name)
     recognition_parameters = _build_recognition_parameters(recognition_payload)
+    sem_raw = training_payload.get('sem_segmentation_config') if isinstance(training_payload, dict) else None
+    if isinstance(sem_raw, dict) and sem_raw:
+        sem_config = build_sem_segmentation_config(sem_raw)
+        recognition_parameters.preprocessing = sem_config.preprocessing
+        recognition_parameters.uncertainty = sem_config.uncertainty
+        recognition_parameters.active_learning = sem_config.active_learning
+        recognition_parameters.sem_config_hash = sem_config.stable_hash()
     return work_mode, training_parameters, recognition_parameters
 
 

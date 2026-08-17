@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
+from dataclasses import asdict
+import hashlib
+import json
+import threading
 from typing import Any
 
 import numpy as np
@@ -61,6 +66,25 @@ def _register_builtin_generators() -> None:
 
 _register_builtin_generators()
 
+_TARGET_CACHE: OrderedDict[str, dict[str, np.ndarray]] = OrderedDict()
+_TARGET_CACHE_LOCK = threading.Lock()
+
+
+def _target_cache_key(
+    mask: np.ndarray,
+    basic: SupervisionTargetConfig,
+    geometry: GeometrySupervisionConfig,
+    enabled_targets: tuple[str, ...],
+) -> str:
+    binary = np.ascontiguousarray(np.asarray(mask))
+    digest = hashlib.sha256(binary.view(np.uint8)).hexdigest()
+    config = json.dumps(
+        {'basic': asdict(basic), 'geometry': asdict(geometry), 'targets': enabled_targets},
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    return hashlib.sha256(f'{digest}:{binary.shape}:{binary.dtype}:{config}'.encode('utf-8')).hexdigest()
+
 
 def _generator_kwargs(
     target_name: str,
@@ -74,15 +98,56 @@ def _generator_kwargs(
         return {'iterations': basic_config.skeleton_iterations}
     if target_name == 'sdf':
         return {'clip': basic_config.sdf_clip}
+    if target_name == 'distance_transform':
+        return {'clip': basic_config.distance_clip}
     if target_name == 'thickness':
         return {'max_thickness': basic_config.thickness_max}
+    if target_name == 'vertex':
+        return {'border_ignore': geometry_config.border_ignore}
     if target_name == 'corner':
-        return {'sigma': geometry_config.corner_sigma}
+        return {'sigma': geometry_config.corner_sigma, 'border_ignore': geometry_config.border_ignore}
+    if target_name == 'endpoint':
+        return {'border_ignore': geometry_config.border_ignore}
     if target_name == 'junction':
-        return {'min_degree': geometry_config.junction_min_degree}
+        return {
+            'min_degree': geometry_config.junction_min_degree,
+            'border_ignore': geometry_config.border_ignore,
+        }
     if target_name == 'orientation':
-        return {'bins': geometry_config.orientation_bins}
+        return {'bins': geometry_config.orientation_bins, 'radius': geometry_config.orientation_radius}
+    if target_name in {'tangent', 'curvature'}:
+        return {'radius': geometry_config.orientation_radius}
     return {}
+
+
+def _target_validity(
+    target_name: str,
+    mask: np.ndarray,
+    generated: np.ndarray,
+    *,
+    basic_config: SupervisionTargetConfig,
+    geometry_config: GeometrySupervisionConfig,
+) -> np.ndarray:
+    binary = (np.asarray(mask) >= 0.5).astype(np.float32)
+    if binary.ndim == 3:
+        binary = np.squeeze(binary)
+    channels = int(generated.shape[-1]) if generated.ndim == 3 else 1
+    valid = np.ones((*binary.shape, channels), dtype=np.float32) if channels > 1 else np.ones_like(binary)
+    if target_name in {'thickness', 'orientation'}:
+        valid = binary[..., None] if channels > 1 else binary
+    elif target_name in {'tangent', 'curvature'}:
+        skeleton = (generate_skeleton_map(binary) > 0.5).astype(np.float32)
+        valid = skeleton[..., None] if channels > 1 else skeleton
+    border = (
+        geometry_config.border_ignore
+        if target_name in {'vertex', 'corner', 'endpoint', 'junction', 'orientation', 'tangent', 'curvature', 'topology'}
+        else basic_config.border_ignore
+    )
+    border = min(max(0, int(border)), max(0, min(binary.shape) // 2))
+    if border:
+        valid[:border, ...] = valid[-border:, ...] = 0.0
+        valid[:, :border, ...] = valid[:, -border:, ...] = 0.0
+    return valid.astype(np.float32)
 
 
 def generate_supervision_targets(
@@ -91,11 +156,20 @@ def generate_supervision_targets(
     basic_config: SupervisionTargetConfig | None = None,
     geometry_config: GeometrySupervisionConfig | None = None,
     enabled_targets: tuple[str, ...] | None = None,
+    cache: bool = False,
+    cache_size: int = 256,
 ) -> dict[str, np.ndarray]:
     basic = basic_config or SupervisionTargetConfig()
     geometry = geometry_config or GeometrySupervisionConfig()
     if enabled_targets is None:
         enabled_targets = basic.enabled_basic_targets() + geometry.enabled_geometry_targets()
+    cache_key = _target_cache_key(mask, basic, geometry, enabled_targets) if cache else None
+    if cache_key is not None:
+        with _TARGET_CACHE_LOCK:
+            cached = _TARGET_CACHE.get(cache_key)
+            if cached is not None:
+                _TARGET_CACHE.move_to_end(cache_key)
+                return {name: value.copy() for name, value in cached.items()}
 
     targets: dict[str, np.ndarray] = {'mask': np.asarray(mask, dtype=np.float32)}
     for target_name in enabled_targets:
@@ -105,6 +179,19 @@ def generate_supervision_targets(
         kwargs = _generator_kwargs(target_name, basic_config=basic, geometry_config=geometry)
         generated = generator(mask, **kwargs)
         targets[target_name] = np.asarray(generated, dtype=np.float32)
+        targets[f'{target_name}__valid'] = _target_validity(
+            target_name,
+            mask,
+            targets[target_name],
+            basic_config=basic,
+            geometry_config=geometry,
+        )
+    if cache_key is not None:
+        with _TARGET_CACHE_LOCK:
+            _TARGET_CACHE[cache_key] = {name: value.copy() for name, value in targets.items()}
+            _TARGET_CACHE.move_to_end(cache_key)
+            while len(_TARGET_CACHE) > max(1, int(cache_size)):
+                _TARGET_CACHE.popitem(last=False)
     return targets
 
 

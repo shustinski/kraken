@@ -13,9 +13,11 @@ def score_prediction_uncertainty(
     *,
     confidence: np.ndarray | None = None,
     ensemble_variance: np.ndarray | None = None,
+    disagreement: np.ndarray | None = None,
     low_confidence_threshold: float = 0.35,
     high_entropy_threshold: float = 0.65,
     instability_threshold: float = 0.15,
+    disagreement_threshold: float = 0.2,
 ) -> dict[str, np.ndarray | float]:
     probs = np.asarray(probabilities, dtype=np.float32)
     entropy = _binary_entropy(probs)
@@ -29,10 +31,14 @@ def score_prediction_uncertainty(
     unstable = np.zeros_like(probs, dtype=bool)
     if ensemble_variance is not None:
         unstable = np.asarray(ensemble_variance, dtype=np.float32) > float(instability_threshold)
+    disagreeing = np.zeros_like(probs, dtype=bool)
+    if disagreement is not None:
+        disagreeing = np.asarray(disagreement, dtype=np.float32) > float(disagreement_threshold)
     score = (
-        low_confidence.astype(np.float32) * 0.4
-        + high_entropy.astype(np.float32) * 0.35
-        + unstable.astype(np.float32) * 0.25
+        low_confidence.astype(np.float32) * 0.35
+        + high_entropy.astype(np.float32) * 0.30
+        + unstable.astype(np.float32) * 0.20
+        + disagreeing.astype(np.float32) * 0.15
     )
     return {
         'score': score,
@@ -41,6 +47,7 @@ def score_prediction_uncertainty(
         'low_confidence': low_confidence,
         'high_entropy': high_entropy,
         'unstable': unstable,
+        'disagreement': disagreeing,
         'mean_entropy': mean_entropy,
         'mean_confidence': float(confidence_map.mean()),
     }

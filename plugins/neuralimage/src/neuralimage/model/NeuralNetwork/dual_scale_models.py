@@ -8,6 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from neuralimage.heads.multi_target import resolve_head_output_channels
+
 from .blocks import DeepSupervisionMixin, Down, ResDSBlock, Up
 from .context_utils import normalize_channel_sequence, normalize_size_pair
 from .registrator import ModelType, register_model
@@ -205,6 +207,7 @@ class QuasiDualScaleUNet(DeepSupervisionMixin, nn.Module):
         attention_heads: int = 4,
         attention_max_global_tokens: int = 1024,
         deep_supervision: bool = False,
+        supervision_heads: tuple[str, ...] = (),
         local_base_channels: int = 32,
         dropout_stem: float = 0.0,
         dropout_down: float = 0.08,
@@ -213,6 +216,7 @@ class QuasiDualScaleUNet(DeepSupervisionMixin, nn.Module):
     ) -> None:
         super().__init__()
         self._init_deep_supervision(deep_supervision)
+        self._supervision_head_names = tuple(str(name) for name in supervision_heads)
         base_size = normalize_size_pair(local_crop_size, fallback=(256, 256))
         self.local_crop_size = base_size
         self.context_crop_size = normalize_size_pair(
@@ -305,6 +309,12 @@ class QuasiDualScaleUNet(DeepSupervisionMixin, nn.Module):
         self.up1 = Up(c2, c1, c1, gn_groups=_resolve_group_norm_groups(c1), dropout=dropout_up)
         self.head = nn.Conv2d(c1, 1, kernel_size=1)
         self.confidence_head = nn.Conv2d(c1, 1, kernel_size=1)
+        self.supervision_heads = nn.ModuleDict(
+            {
+                name: nn.Conv2d(c1, resolve_head_output_channels(name), kernel_size=1)
+                for name in self._supervision_head_names
+            }
+        )
         self.ds_up2_head = nn.Conv2d(c2, 1, kernel_size=1)
         self.ds_up3_head = nn.Conv2d(c3, 1, kernel_size=1)
         self.ds_up4_head = nn.Conv2d(c4, 1, kernel_size=1)
@@ -387,6 +397,11 @@ class QuasiDualScaleUNet(DeepSupervisionMixin, nn.Module):
         x = self.up1(x, s1)
         primary = self.head(x)
         confidence = self.confidence_head(x)
+        supervision_outputs = (
+            {name: head(x) for name, head in self.supervision_heads.items()}
+            if self.training
+            else None
+        )
         return self._build_model_outputs(
             primary,
             auxiliary_outputs=(
@@ -395,4 +410,5 @@ class QuasiDualScaleUNet(DeepSupervisionMixin, nn.Module):
                 self.ds_up4_head(u4),
             ),
             confidence=confidence,
+            supervision_outputs=supervision_outputs,
         )

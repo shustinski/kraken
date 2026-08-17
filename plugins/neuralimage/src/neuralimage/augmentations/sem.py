@@ -30,6 +30,22 @@ class SemAugmentor:
                 array = array / 255.0
             return array, label
         augmented = np.asarray(image, dtype=np.float32)
+        if self.config.plan == 'sem_v2':
+            if augmented.max(initial=0.0) > 1.0:
+                augmented = augmented / (65535.0 if augmented.max() > 255.0 else 255.0)
+            if self.config.charging_artifacts and random.random() < self.config.charging_probability:
+                augmented = self._charging_bloom(augmented)
+            if self.config.scan_drift and random.random() < self.config.scan_drift_probability:
+                augmented = self._row_dependent_drift(augmented)
+            if self.config.local_focus_variation and random.random() < self.config.focus_variation_probability:
+                augmented = self._continuous_focus_variation(augmented)
+            if self.config.detector_noise and random.random() < self.config.detector_noise_probability:
+                augmented = self._poisson_read_noise(augmented)
+            if self.config.brightness_gradients and random.random() < self.config.brightness_gradient_probability:
+                augmented = self._smooth_gain_field(augmented)
+            if self.config.realistic_defects and random.random() < self.config.realistic_defect_probability:
+                augmented = self._contamination_and_scan_defects(augmented)
+            return np.clip(augmented, 0.0, 1.0).astype(np.float32), label
         if augmented.max() <= 1.0:
             augmented = augmented * 255.0
         augmented = augmented.astype(np.uint8)
@@ -52,6 +68,71 @@ class SemAugmentor:
         else:
             augmented = augmented.astype(np.float32)
         return augmented, label
+
+    def _charging_bloom(self, image: np.ndarray) -> np.ndarray:
+        height, width = image.shape[:2]
+        yy, xx = np.mgrid[:height, :width]
+        field = np.zeros((height, width), dtype=np.float32)
+        for _ in range(random.randint(1, 3)):
+            cx, cy = random.uniform(0, width), random.uniform(0, height)
+            sigma = random.uniform(max(2.0, min(height, width) * 0.03), max(3.0, min(height, width) * 0.15))
+            field += np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * sigma * sigma)).astype(np.float32)
+        field = np.clip(field, 0.0, 1.0)
+        strength = max(0.0, float(self.config.charging_strength))
+        return np.clip(image + strength * field * (1.0 - image), 0.0, 1.0)
+
+    def _row_dependent_drift(self, image: np.ndarray) -> np.ndarray:
+        height, width = image.shape[:2]
+        increments = np.random.normal(0.0, 0.12, size=height).astype(np.float32)
+        shifts = np.cumsum(increments)
+        shifts -= shifts.mean()
+        maximum = float(np.max(np.abs(shifts), initial=0.0))
+        if maximum > 0.0:
+            shifts *= max(0.0, float(self.config.drift_max_pixels)) / maximum
+        map_x = np.broadcast_to(np.arange(width, dtype=np.float32), (height, width)).copy()
+        map_x -= shifts[:, None]
+        map_y = np.broadcast_to(np.arange(height, dtype=np.float32)[:, None], (height, width)).copy()
+        return cv2.remap(image, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+
+    def _continuous_focus_variation(self, image: np.ndarray) -> np.ndarray:
+        height, width = image.shape[:2]
+        center = (random.randrange(max(1, width)), random.randrange(max(1, height)))
+        radius = random.uniform(max(3.0, min(height, width) * 0.08), max(4.0, min(height, width) * 0.35))
+        mask = np.zeros((height, width), dtype=np.float32)
+        cv2.circle(mask, center, max(1, int(radius)), 1.0, -1)
+        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=max(1.0, radius * 0.4))
+        blurred = cv2.GaussianBlur(image, (0, 0), sigmaX=random.uniform(0.5, max(0.5, self.config.focus_sigma_max)))
+        return image * (1.0 - mask) + blurred * mask
+
+    def _poisson_read_noise(self, image: np.ndarray) -> np.ndarray:
+        peak = max(1.0, float(self.config.detector_peak_electrons))
+        shot = np.random.poisson(np.clip(image, 0.0, 1.0) * peak).astype(np.float32) / peak
+        read = np.random.normal(0.0, max(0.0, self.config.read_noise_sigma), image.shape).astype(np.float32)
+        return np.clip(shot + read, 0.0, 1.0)
+
+    def _smooth_gain_field(self, image: np.ndarray) -> np.ndarray:
+        height, width = image.shape[:2]
+        coarse = np.random.normal(0.0, 1.0, size=(3, 3)).astype(np.float32)
+        field = cv2.resize(coarse, (width, height), interpolation=cv2.INTER_CUBIC)
+        field /= max(float(np.max(np.abs(field), initial=0.0)), 1e-6)
+        gain = 1.0 + max(0.0, float(self.config.gain_field_strength)) * field
+        return np.clip(image * gain, 0.0, 1.0)
+
+    def _contamination_and_scan_defects(self, image: np.ndarray) -> np.ndarray:
+        result = image.copy()
+        height, width = result.shape[:2]
+        if random.random() < 0.5:
+            y = random.randrange(max(1, height))
+            thickness = random.randint(1, max(1, min(4, height)))
+            attenuation = random.uniform(0.55, 0.9)
+            result[y:min(height, y + thickness)] *= attenuation
+        else:
+            center = (random.randrange(max(1, width)), random.randrange(max(1, height)))
+            radius = random.randint(1, max(2, min(height, width) // 32))
+            overlay = result.copy()
+            cv2.circle(overlay, center, radius, random.uniform(0.0, 0.4), -1)
+            result = cv2.addWeighted(result, 0.65, overlay, 0.35, 0.0)
+        return np.clip(result, 0.0, 1.0)
 
     def _charging_artifacts(self, image: np.ndarray) -> np.ndarray:
         result = image.copy()
@@ -108,5 +189,6 @@ class SemAugmentor:
             y = random.randint(0, height - 1)
             radius = random.randint(1, max(2, min(height, width) // 64))
             intensity = random.randint(-40, 40)
-            cv2.circle(result, (x, y), radius, int(np.clip(result[y, x] + intensity, 0, 255)), -1)
+            value = int(result[y, x]) + intensity
+            cv2.circle(result, (x, y), radius, int(np.clip(value, 0, 255)), -1)
         return result

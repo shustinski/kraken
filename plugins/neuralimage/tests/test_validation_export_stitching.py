@@ -1,7 +1,9 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import torch
+from PIL import Image
 
 import neuralimage.model.NeuralNetwork.model_train_and_recognition as target
 from neuralimage.model.NeuralNetwork.dataset import NoCutDataset
@@ -143,3 +145,48 @@ def test_validation_binary_export_uses_cached_predictions_without_second_inferen
     assert all(call[0].name == 'epoch_0002' for call in sew_calls)
     assert sorted(call[1]['name'] for call in sew_calls) == ['frame_a.jpg', 'frame_b.jpg']
     assert all(call[2] == 0.65 for call in sew_calls)
+
+
+def test_advanced_validation_detects_wire_break_after_full_frame_stitching():
+    root = make_test_dir('validation_metrics_stitched')
+    dataset = NoCutDataset.__new__(NoCutDataset)
+    target_mask = np.zeros((3, 7), dtype=np.uint8)
+    target_mask[1, :] = 255
+    prepared_label = Image.fromarray(target_mask, mode='L')
+    dataset._prepare_frame_images = lambda _index: (
+        root / 'frame.png',
+        Image.new('L', (7, 3)),
+        prepared_label,
+        None,
+    )
+
+    left = np.zeros((1, 4, 4), dtype=np.float32)
+    right = np.zeros((1, 4, 4), dtype=np.float32)
+    left[0, 1, :3] = 1.0
+    right[0, 1, 1:] = 1.0
+    confidence = np.ones((1, 4, 4), dtype=np.float32)
+    frame = target._ValidationNoCutFrameExportCache(
+        frame_index=0,
+        image_path=root / 'frame.png',
+        baseim_size=(7, 3),
+        overlap=0,
+        parts_count=2,
+        part_lookup=None,
+        patches={0: left, 1: right},
+        confidence_patches={0: confidence, 1: confidence},
+    )
+    cache = target._ValidationExportCache(
+        mode='no_cut',
+        dataset=dataset,
+        frame_predictions={0: frame},
+    )
+    trainer = target.TrainerProcess.__new__(target.TrainerProcess)
+
+    metrics, frame_count = trainer._compute_stitched_validation_metrics(cache, threshold=0.5)
+
+    assert frame_count == 1
+    assert metrics['wire_break_count'] == 1
+    assert metrics['false_bridge_count'] == 0
+    assert sum(
+        value for name, value in metrics.items() if name.startswith('confidence_histogram/')
+    ) == 21

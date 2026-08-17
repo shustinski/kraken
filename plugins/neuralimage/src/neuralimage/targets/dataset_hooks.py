@@ -94,13 +94,15 @@ def maybe_build_supervision_target(
         label_array,
         basic_config=config.basic,
         geometry_config=config.geometry,
+        cache=bool(getattr(config, 'cache_enabled', False)),
+        cache_size=int(getattr(config, 'cache_size', 256)),
     )
     tensor_targets: dict[str, torch.Tensor] = {}
     for name, array in targets.items():
         values = np.asarray(array, dtype=np.float32)
         if values.ndim == 2:
             values = values[None, ...]
-        elif values.ndim == 3 and name == 'tangent':
+        elif values.ndim == 3 and values.shape[-1] in {2, 3}:
             values = np.transpose(values, (2, 0, 1))
         tensor_targets[name] = torch.from_numpy(values)
     return tensor_targets

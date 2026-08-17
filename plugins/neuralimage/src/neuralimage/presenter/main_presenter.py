@@ -548,6 +548,8 @@ class MainPresenter(QObject):
         s.hard_mining_check_box.setChecked(state.hard_mining_enabled)
         s.hard_pixel_mining_check_box.setChecked(bool(getattr(state, 'hard_pixel_mining_enabled', False)))
         s.hard_pixel_mining_ratio_spinbox.setValue(float(getattr(state, 'hard_pixel_mining_ratio', 0.25)))
+        if hasattr(s, 'set_sem_segmentation_config'):
+            s.set_sem_segmentation_config(getattr(state, 'sem_segmentation_config', {}))
         s.skip_uniform_labels_check_box.setChecked(state.skip_uniform_labels)
         s.rare_patch_oversampling_check_box.setChecked(
             bool(getattr(state, 'rare_patch_oversampling_enabled', False))
@@ -718,6 +720,11 @@ class MainPresenter(QObject):
         hard_mining_enabled = s.hard_mining_check_box.isChecked()
         hard_pixel_mining_enabled = s.hard_pixel_mining_check_box.isChecked()
         hard_pixel_mining_ratio = s.hard_pixel_mining_ratio_spinbox.value()
+        sem_segmentation_config = (
+            s.get_sem_segmentation_config()
+            if hasattr(s, 'get_sem_segmentation_config')
+            else dict(getattr(self.settings_state, 'sem_segmentation_config', {}))
+        )
         skip_uniform_labels = s.skip_uniform_labels_check_box.isChecked()
         rare_patch_oversampling_enabled = s.rare_patch_oversampling_check_box.isChecked()
         rare_patch_oversampling_factor = s.rare_patch_oversampling_factor_spinbox.value()
@@ -843,6 +850,7 @@ class MainPresenter(QObject):
                               hard_mining_enabled=hard_mining_enabled,
                               hard_pixel_mining_enabled=hard_pixel_mining_enabled,
                               hard_pixel_mining_ratio=hard_pixel_mining_ratio,
+                              sem_segmentation_config=sem_segmentation_config,
                               log_update_frequency=log_update_frequency,
                               skip_uniform_labels=skip_uniform_labels,
                               rare_patch_oversampling_enabled=rare_patch_oversampling_enabled,

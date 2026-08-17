@@ -1147,6 +1147,16 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.warmup_groupbox.setTitle(str(t.get('warmup_group', 'Warmup')))
     panel.scheduler_groupbox.setTitle(str(t.get('scheduler_group', 'Scheduler')))
     panel.hard_mining_groupbox.setTitle(str(t.get('hard_mining_group', 'Hard mining')))
+    if hasattr(panel, 'sem_segmentation_groupbox'):
+        panel.sem_segmentation_groupbox.setTitle(
+            str(t.get('sem_segmentation_group', 'SEM topology segmentation'))
+        )
+        panel.sem_segmentation_apply_preset_button.setText(
+            str(t.get('sem_segmentation_apply_preset', 'Apply preset'))
+        )
+        panel.sem_segmentation_validate_button.setText(
+            str(t.get('sem_segmentation_validate', 'Validate configuration'))
+        )
     panel.early_stopping_groupbox.setTitle(str(t.get('early_stopping_group', 'Early stopping')))
     if hasattr(panel, 'settings_tabs'):
         training_index = panel._page_indexes.get('training')

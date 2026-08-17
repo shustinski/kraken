@@ -13,6 +13,7 @@ import pytest
 from PIL import Image
 
 from neuralimage.augmentations import TechVariationAugmentor
+from neuralimage.augmentations.tech_variations import _binary_dilation, _binary_erosion
 from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.application.services.workflow_mapper import build_workflow_parameters
 from neuralimage.lib.data_interfaces import (
@@ -44,6 +45,22 @@ def _tech_aug_config(**overrides):
     }
     config.update(overrides)
     return config
+
+
+def test_binary_morphology_matches_opencv_constant_border():
+    mask = np.zeros((11, 13), dtype=bool)
+    mask[0:5, 3:9] = True
+    kernel = np.ones((5, 5), dtype=np.uint8)
+
+    expected_dilation = cv2.dilate(
+        mask.astype(np.uint8), kernel, borderType=cv2.BORDER_CONSTANT, borderValue=0
+    ) > 0
+    expected_erosion = cv2.erode(
+        mask.astype(np.uint8), kernel, borderType=cv2.BORDER_CONSTANT, borderValue=0
+    ) > 0
+
+    assert np.array_equal(_binary_dilation(mask, 2), expected_dilation)
+    assert np.array_equal(_binary_erosion(mask, 2), expected_erosion)
 
 
 def test_tech_variation_augmentor_debug_mode_returns_original_and_augmented_pair():

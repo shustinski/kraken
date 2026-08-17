@@ -16,9 +16,12 @@ import torch.nn.functional as F
 from multiprocessing.synchronize import Event as MpEvent
 from PIL import Image
 
+from neuralimage.active_learning.config import ActiveLearningConfig
+from neuralimage.active_learning.export import ActiveLearningExporter
 from neuralimage.lib.file_retry import retry_file_read
 from neuralimage.lib.image_processing import cut_image, sew_image
 from neuralimage.preprocessing.config import PreprocessingConfig
+from neuralimage.uncertainty.config import UncertaintyConfig
 from neuralimage.preprocessing.pipeline import SemPreprocessingPipeline
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact
 from neuralimage.model.NeuralNetwork.context_utils import (
@@ -86,6 +89,9 @@ class RecognitionWorkload:
     compression_factor: int = 1
     source_root: Path | None = None
     preprocessing: PreprocessingConfig | None = None
+    active_learning: ActiveLearningConfig | None = None
+    active_learning_metadata: dict[str, object] | None = None
+    uncertainty: UncertaintyConfig | None = None
 
     @property
     def frame_count(self) -> int:
@@ -252,6 +258,7 @@ def _run_predict_worker(
     stop_event: MpEvent,
     recognition_tta_enabled: bool = False,
     confidence_tta_enabled: bool = False,
+    uncertainty: UncertaintyConfig | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
     try:
@@ -264,6 +271,7 @@ def _run_predict_worker(
             stop_event,
             recognition_tta_enabled,
             confidence_tta_enabled,
+            uncertainty,
             stop_token,
         )
     except Exception:
@@ -281,6 +289,8 @@ def _run_sew_worker(
     threshold: float | None = None,
     postprocess_kernel_size: int = 0,
     confidence_save_mode: str = 'off',
+    active_learning: ActiveLearningConfig | None = None,
+    active_learning_metadata: dict[str, object] | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
     try:
@@ -293,6 +303,8 @@ def _run_sew_worker(
             threshold,
             postprocess_kernel_size,
             confidence_save_mode,
+            active_learning,
+            active_learning_metadata,
             stop_token,
         )
     except Exception:
@@ -432,6 +444,7 @@ class MultiprocessingRecognitionRunner:
                     self._stop_event,
                     self._config.workload.recognition_tta_enabled,
                     self._config.workload.confidence_tta_enabled,
+                    self._config.workload.uncertainty,
                     self._config.stop_token,
                 ),
             )
@@ -459,6 +472,8 @@ class MultiprocessingRecognitionRunner:
                         else 0
                     ),
                     self._config.workload.confidence_save_mode,
+                    self._config.workload.active_learning,
+                    self._config.workload.active_learning_metadata,
                     self._config.stop_token,
                 ),
             )
@@ -623,6 +638,10 @@ def run_single_thread_recognition(
     compression_factor: int = 1,
     source_root: Path | None = None,
     preprocessing: PreprocessingConfig | None = None,
+    lossless_binary_png: bool = False,
+    active_learning: ActiveLearningConfig | None = None,
+    active_learning_metadata: dict[str, object] | None = None,
+    uncertainty: UncertaintyConfig | None = None,
 ) -> None:
     model.eval()
     model.to(device)
@@ -656,6 +675,7 @@ def run_single_thread_recognition(
             batch_size,
             recognition_tta_enabled=recognition_tta_enabled,
             confidence_tta_enabled=confidence_tta_enabled,
+            uncertainty=uncertainty,
         )
         # Some torch.compile configurations can produce degenerate outputs on inference.
         if (not compile_fallback_checked) and hasattr(model, '_orig_mod'):
@@ -684,6 +704,7 @@ def run_single_thread_recognition(
                     batch_size,
                     recognition_tta_enabled=recognition_tta_enabled,
                     confidence_tta_enabled=confidence_tta_enabled,
+                    uncertainty=uncertainty,
                 )
                 fallback_stats = fallback_predicted.get('_prediction_stats')
                 fallback_max = (
@@ -734,6 +755,8 @@ def run_single_thread_recognition(
             postprocess_kernel_size=(int(postprocess_kernel_size) if postprocess_enabled else 0),
             confidence_save_mode=confidence_save_mode,
             lossless_binary_png=lossless_binary_png,
+            active_learning=active_learning,
+            active_learning_metadata=active_learning_metadata,
         )
         _publish_recognition_preview(
             publish=publish,
@@ -947,6 +970,7 @@ def imgpredict(
     stop_event: MpEvent,
     recognition_tta_enabled: bool = False,
     confidence_tta_enabled: bool = False,
+    uncertainty: UncertaintyConfig | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
     model = load_model_artifact(model_path, map_location='cpu')
@@ -974,6 +998,7 @@ def imgpredict(
             batch_size,
             recognition_tta_enabled=recognition_tta_enabled,
             confidence_tta_enabled=confidence_tta_enabled,
+            uncertainty=uncertainty,
         )
         predicted.pop('cutted_image', None)
         predicted.pop('context_image', None)
@@ -983,6 +1008,8 @@ def imgpredict(
         predicted.pop('source_size_hw', None)
         _store_payload_array_for_multiprocessing(predicted, 'predicted_image')
         _store_payload_array_for_multiprocessing(predicted, 'confidence_image')
+        _store_payload_array_for_multiprocessing(predicted, 'variance_image')
+        _store_payload_array_for_multiprocessing(predicted, 'disagreement_image')
         predicted_queue.put(predicted)
 
 
@@ -994,9 +1021,12 @@ def gpu_predict(
     *,
     recognition_tta_enabled: bool = False,
     confidence_tta_enabled: bool = False,
+    uncertainty: UncertaintyConfig | None = None,
 ) -> dict[str, Any]:
     predicted_image = np.empty_like(img['cutted_image'])
     confidence_image = np.empty_like(img['cutted_image'])
+    variance_image = np.zeros_like(img['cutted_image'])
+    disagreement_image = np.zeros_like(img['cutted_image'])
     parts_in_image = len(img['cutted_image'])
 
     source_batches = img['cutted_image']
@@ -1044,7 +1074,14 @@ def gpu_predict(
     processed_batches = 0
     non_finite_values = 0
     fp32_retries = 0
-    tta_flip = bool(recognition_tta_enabled or confidence_tta_enabled)
+    tta_uncertainty_enabled = bool(
+        confidence_tta_enabled
+        or (uncertainty is not None and uncertainty.uses_tta_variance())
+    )
+    tta_flip = bool(
+        recognition_tta_enabled
+        or tta_uncertainty_enabled
+    )
     multiscale_values = str(os.getenv('NEURALIMAGE_MS_SCALES', '1.0')).strip()
     ms_scales: list[float] = []
     for token in multiscale_values.split(','):
@@ -1128,6 +1165,9 @@ def gpu_predict(
         mask_acc = None
         confidence_acc: torch.Tensor | None = None
         confidence_from_mask_acc: torch.Tensor | None = None
+        uncertainty_probability_acc: torch.Tensor | None = None
+        uncertainty_probability_sq_acc: torch.Tensor | None = None
+        uncertainty_weight = 0.0
         mask_weight = 0.0
         confidence_weight = 0.0
         for scale in ms_scales:
@@ -1154,6 +1194,13 @@ def gpu_predict(
                 mask_acc = torch.zeros_like(logits)
             mask_acc += logits
             mask_weight += 1.0
+            probability = torch.sigmoid(logits)
+            if uncertainty_probability_acc is None:
+                uncertainty_probability_acc = torch.zeros_like(probability)
+                uncertainty_probability_sq_acc = torch.zeros_like(probability)
+            uncertainty_probability_acc += probability
+            uncertainty_probability_sq_acc += probability.square()
+            uncertainty_weight += 1.0
             if confidence_logits is not None and confidence_logits.shape[-2:] != (base_h, base_w):
                 confidence_logits = F.interpolate(
                     confidence_logits,
@@ -1192,6 +1239,11 @@ def gpu_predict(
                 if bool(recognition_tta_enabled):
                     mask_acc += logits_h
                     mask_weight += 1.0
+                if tta_uncertainty_enabled:
+                    probability_h = torch.sigmoid(logits_h)
+                    uncertainty_probability_acc += probability_h
+                    uncertainty_probability_sq_acc += probability_h.square()
+                    uncertainty_weight += 1.0
                 if confidence_h is not None:
                     confidence_h = torch.flip(confidence_h, dims=[-1])
                     if confidence_h.shape[-2:] != (base_h, base_w):
@@ -1201,7 +1253,7 @@ def gpu_predict(
                             mode='bilinear',
                             align_corners=False,
                         )
-                if bool(confidence_tta_enabled):
+                if tta_uncertainty_enabled:
                     if confidence_h is not None:
                         if confidence_acc is None:
                             confidence_acc = torch.zeros_like(logits_h)
@@ -1214,13 +1266,36 @@ def gpu_predict(
         if mask_acc is None:
             raise RuntimeError('Recognition TTA accumulator is empty.')
         averaged_mask = mask_acc / max(mask_weight, 1.0)
-        if confidence_acc is not None:
+        if (
+            tta_uncertainty_enabled
+            and uncertainty_probability_acc is not None
+            and uncertainty_probability_sq_acc is not None
+            and uncertainty_weight > 1.0
+        ):
+            mean_probability = uncertainty_probability_acc / uncertainty_weight
+            variance = torch.clamp(
+                uncertainty_probability_sq_acc / uncertainty_weight - mean_probability.square(),
+                min=0.0,
+            )
+            confidence_probability = torch.clamp(1.0 - 4.0 * variance, min=1e-6, max=1.0 - 1e-6)
+            averaged_confidence = torch.logit(confidence_probability)
+            tta_variance = variance
+        elif confidence_acc is not None:
             averaged_confidence = confidence_acc / max(confidence_weight, 1.0)
+            tta_variance = None
         elif confidence_from_mask_acc is not None:
-            averaged_confidence = confidence_from_mask_acc / max(confidence_weight, 1.0)
+            fallback_probability = torch.sigmoid(confidence_from_mask_acc / max(confidence_weight, 1.0))
+            fallback_confidence = torch.clamp(
+                torch.abs(fallback_probability - 0.5) * 2.0,
+                min=1e-6,
+                max=1.0 - 1e-6,
+            )
+            averaged_confidence = torch.logit(fallback_confidence)
+            tta_variance = None
         else:
             averaged_confidence = None
-        return averaged_mask, averaged_confidence
+            tta_variance = None
+        return averaged_mask, averaged_confidence, tta_variance
 
     with torch.inference_mode():
         for batch_index, start in enumerate(range(0, parts_in_image, batch_size)):
@@ -1235,12 +1310,68 @@ def gpu_predict(
             coords_batch = None
             if coords_tensor_data is not None:
                 coords_batch = coords_tensor_data[start:end].to(device, non_blocking=use_amp)
-            outputs, confidence_outputs = _predict_with_multi_scale_and_tta(
+            outputs, confidence_outputs, tta_variance = _predict_with_multi_scale_and_tta(
                 batch,
                 context_batch,
                 global_batch,
                 coords_batch,
             )
+
+            uncertainty_method = (
+                str(getattr(uncertainty, 'method', '')).strip().lower()
+                if uncertainty is not None and uncertainty.enabled
+                else ''
+            )
+            batch_variance = tta_variance
+            batch_disagreement = None
+            if uncertainty_method in {'mc_dropout', 'combined'}:
+                module_states = {
+                    module: (module.training, getattr(module, 'p', None))
+                    for module in model.modules()
+                }
+                model.eval()
+                for module in model.modules():
+                    if isinstance(module, nn.modules.dropout._DropoutNd):
+                        module.p = float(min(max(uncertainty.mc_dropout_rate, 0.0), 0.999))
+                        module.train(True)
+                mc_probabilities: list[torch.Tensor] = []
+                try:
+                    for _ in range(max(2, int(uncertainty.mc_dropout_samples))):
+                        mc_logits, _mc_confidence, _mc_tta_variance = _predict_with_multi_scale_and_tta(
+                            batch,
+                            context_batch,
+                            global_batch,
+                            coords_batch,
+                        )
+                        mc_probabilities.append(torch.sigmoid(mc_logits))
+                finally:
+                    for module, (training, dropout_rate) in module_states.items():
+                        if dropout_rate is not None and hasattr(module, 'p'):
+                            module.p = dropout_rate
+                        module.train(training)
+                stacked_mc = torch.stack(mc_probabilities, dim=0)
+                mc_mean = stacked_mc.mean(dim=0)
+                mc_variance = stacked_mc.var(dim=0, unbiased=False)
+                mc_confidence = torch.clamp(1.0 - 4.0 * mc_variance, min=1e-6, max=1.0 - 1e-6)
+                regular_probability = torch.sigmoid(outputs)
+                batch_disagreement = torch.abs(mc_mean - regular_probability)
+                batch_variance = (
+                    mc_variance
+                    if batch_variance is None
+                    else 0.5 * (batch_variance + mc_variance)
+                )
+                if uncertainty_method == 'mc_dropout':
+                    outputs = torch.logit(torch.clamp(mc_mean, min=1e-6, max=1.0 - 1e-6))
+                    confidence_outputs = torch.logit(mc_confidence)
+                else:
+                    existing_confidence = (
+                        torch.sigmoid(confidence_outputs)
+                        if confidence_outputs is not None
+                        else torch.abs(regular_probability - 0.5) * 2.0
+                    )
+                    confidence_outputs = torch.logit(
+                        torch.clamp(0.5 * (existing_confidence + mc_confidence), min=1e-6, max=1.0 - 1e-6)
+                    )
 
             if not bool(torch.isfinite(outputs).all()):
                 fp32_retries += 1
@@ -1262,7 +1393,7 @@ def gpu_predict(
                 non_finite_values += int((~finite_after_sigmoid).sum().item())
                 outputs = torch.nan_to_num(outputs, nan=0.0, posinf=1.0, neginf=0.0)
             if confidence_outputs is None:
-                confidence_outputs = 1.0 - (torch.abs(outputs - 0.5) * 2.0)
+                confidence_outputs = torch.abs(outputs - 0.5) * 2.0
             else:
                 confidence_outputs = torch.sigmoid(confidence_outputs)
             if not bool(torch.isfinite(confidence_outputs).all()):
@@ -1280,9 +1411,20 @@ def gpu_predict(
             processed_batches += 1
             predicted_image[start:end] = predictions[: end - start]
             confidence_image[start:end] = confidence_predictions[: end - start]
+            if batch_variance is not None:
+                variance_image[start:end] = batch_variance.detach().cpu().numpy()[: end - start]
+            if batch_disagreement is not None:
+                disagreement_image[start:end] = batch_disagreement.detach().cpu().numpy()[: end - start]
 
     img['predicted_image'] = predicted_image
     img['confidence_image'] = confidence_image
+    if (
+        uncertainty is not None
+        and uncertainty.enabled
+        and str(uncertainty.method).strip().lower() in {'tta_variance', 'mc_dropout', 'combined'}
+    ):
+        img['variance_image'] = variance_image
+        img['disagreement_image'] = disagreement_image
     if processed_batches > 0:
         img['_prediction_stats'] = {
             'min': float(min_prob),
@@ -1317,6 +1459,8 @@ def imgsew(
     threshold: float | None = None,
     postprocess_kernel_size: int = 0,
     confidence_save_mode: str = 'off',
+    active_learning: ActiveLearningConfig | None = None,
+    active_learning_metadata: dict[str, object] | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
     while not stop_event.is_set():
@@ -1327,6 +1471,8 @@ def imgsew(
             break
         restored_item = _restore_payload_array_from_multiprocessing(item, 'predicted_image')
         restored_item = _restore_payload_array_from_multiprocessing(restored_item, 'confidence_image')
+        restored_item = _restore_payload_array_from_multiprocessing(restored_item, 'variance_image')
+        restored_item = _restore_payload_array_from_multiprocessing(restored_item, 'disagreement_image')
         output_path = sew(
             output_dir,
             restored_item,
@@ -1334,6 +1480,8 @@ def imgsew(
             threshold=threshold,
             postprocess_kernel_size=postprocess_kernel_size,
             confidence_save_mode=confidence_save_mode,
+            active_learning=active_learning,
+            active_learning_metadata=active_learning_metadata,
         )
         sewed_queue.put(
             {
@@ -1352,6 +1500,8 @@ def sew_from_queue(
     threshold: float | None = None,
     postprocess_kernel_size: int = 0,
     confidence_save_mode: str = 'off',
+    active_learning: ActiveLearningConfig | None = None,
+    active_learning_metadata: dict[str, object] | None = None,
 ) -> None:
     item = _try_get_queue_item(sew_queue, timeout=0.2)
     if item is _QUEUE_EMPTY:
@@ -1363,6 +1513,8 @@ def sew_from_queue(
         threshold=threshold,
         postprocess_kernel_size=postprocess_kernel_size,
         confidence_save_mode=confidence_save_mode,
+        active_learning=active_learning,
+        active_learning_metadata=active_learning_metadata,
     )
     sewed_queue.put(
         {
@@ -1400,21 +1552,35 @@ def sew(
     postprocess_kernel_size: int = 0,
     confidence_save_mode: str = 'off',
     lossless_binary_png: bool = False,
+    active_learning: ActiveLearningConfig | None = None,
+    active_learning_metadata: dict[str, object] | None = None,
 ) -> Path:
     save_binary_png = bool(lossless_binary_png and threshold is not None)
     output_name = Path(str(item['name'])).with_suffix('.png' if save_binary_png else '.jpg')
     output_path = Path(save_dir) / output_name
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    image = cast(
+    probability_image = cast(
         Image.Image,
         sew_image(
             base_image=item['baseim_size'],
             predictions=item['predicted_image'],
             overlap=item['overlap'],
-            threshold=threshold,
-            postprocess_kernel_size=postprocess_kernel_size,
+            threshold=None,
+            postprocess_kernel_size=0,
         ),
     )
+    image = probability_image
+    if threshold is not None:
+        image = cast(
+            Image.Image,
+            sew_image(
+                base_image=item['baseim_size'],
+                predictions=item['predicted_image'],
+                overlap=item['overlap'],
+                threshold=threshold,
+                postprocess_kernel_size=postprocess_kernel_size,
+            ),
+        )
     quality = max(1, min(100, int(jpeg_quality)))
     if save_binary_png:
         if image.mode != 'L':
@@ -1422,25 +1588,78 @@ def sew(
         _save_png_atomic(image, output_path)
     else:
         _save_jpeg_atomic(image, output_path, quality=quality)
-    if str(confidence_save_mode).strip().lower() != 'separate_grayscale':
-        return output_path
     confidence_predictions = item.get('confidence_image')
-    if confidence_predictions is None:
-        return output_path
-    confidence_name = Path(str(item['name'])).with_suffix('.jpg')
-    confidence_path = _confidence_output_root(save_dir) / confidence_name
-    confidence_path.parent.mkdir(parents=True, exist_ok=True)
-    confidence_image = cast(
-        Image.Image,
-        sew_image(
-            base_image=item['baseim_size'],
-            predictions=confidence_predictions,
-            overlap=item['overlap'],
-            threshold=None,
-            postprocess_kernel_size=0,
-        ),
-    )
-    _save_jpeg_atomic(confidence_image, confidence_path, quality=quality)
+    confidence_image: Image.Image | None = None
+    if confidence_predictions is not None:
+        confidence_image = cast(
+            Image.Image,
+            sew_image(
+                base_image=item['baseim_size'],
+                predictions=confidence_predictions,
+                overlap=item['overlap'],
+                threshold=None,
+                postprocess_kernel_size=0,
+            ),
+        )
+    if str(confidence_save_mode).strip().lower() == 'separate_grayscale' and confidence_image is not None:
+        confidence_name = Path(str(item['name'])).with_suffix('.jpg')
+        confidence_path = _confidence_output_root(save_dir) / confidence_name
+        confidence_path.parent.mkdir(parents=True, exist_ok=True)
+        _save_jpeg_atomic(confidence_image, confidence_path, quality=quality)
+    variance_predictions = item.get('variance_image')
+    variance_image: Image.Image | None = None
+    if variance_predictions is not None:
+        variance_image = cast(
+            Image.Image,
+            sew_image(
+                base_image=item['baseim_size'],
+                predictions=variance_predictions,
+                overlap=item['overlap'],
+                threshold=None,
+                postprocess_kernel_size=0,
+            ),
+        )
+    disagreement_predictions = item.get('disagreement_image')
+    disagreement_image: Image.Image | None = None
+    if disagreement_predictions is not None:
+        disagreement_image = cast(
+            Image.Image,
+            sew_image(
+                base_image=item['baseim_size'],
+                predictions=disagreement_predictions,
+                overlap=item['overlap'],
+                threshold=None,
+                postprocess_kernel_size=0,
+            ),
+        )
+    if active_learning is not None and active_learning.enabled:
+        source_path = item.get('source_path')
+        source_image = _load_preview_array(source_path)
+        if source_image is not None:
+            metadata = dict(active_learning_metadata or {})
+            metadata['source_path'] = str(source_path)
+            ActiveLearningExporter(active_learning).export_sample(
+                export_root=active_learning.resolved_export_dir(Path(save_dir)),
+                sample_id=str(item['name']),
+                image=source_image,
+                probabilities=np.asarray(probability_image, dtype=np.float32) / 255.0,
+                confidence=(
+                    np.asarray(confidence_image, dtype=np.float32) / 255.0
+                    if confidence_image is not None
+                    else None
+                ),
+                ensemble_variance=(
+                    np.asarray(variance_image, dtype=np.float32) / 255.0
+                    if variance_image is not None
+                    else None
+                ),
+                disagreement=(
+                    np.asarray(disagreement_image, dtype=np.float32) / 255.0
+                    if disagreement_image is not None
+                    else None
+                ),
+                metadata=metadata,
+            )
     return output_path
 
 

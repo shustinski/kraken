@@ -374,6 +374,7 @@
                     <button type="button" class="settings-nav-btn" data-target="#settings-section-spatial">{{ settings_panel_texts.spatial_group }}</button>
                     <button type="button" class="settings-nav-btn" data-target="#settings-section-rare">{{ settings_panel_texts.rare_patch_group }}</button>
                     <button type="button" class="settings-nav-btn" data-target="#settings-section-preprocessing">{{ texts.preprocessing_section }}</button>
+                    <button type="button" class="settings-nav-btn" data-target="#settings-section-sem-topology">{{ texts.sem_topology_section }}</button>
                 </nav>
 
                 <section class="section" id="settings-section-sample">
@@ -867,6 +868,15 @@
                             {{ settings_form.target_y }}
                             {% if settings_form.target_y.errors %}<div class="field-error">{{ settings_form.target_y.errors|striptags }}</div>{% endif %}
                         </div>
+                    </div>
+                </section>
+                <section class="section" id="settings-section-sem-topology">
+                    <h3>{{ texts.sem_topology_section }}</h3>
+                    <p class="field-help">{{ texts.sem_topology_help }}</p>
+                    <div class="field">
+                        <label>{{ settings_form.sem_segmentation_config.label }}</label>
+                        {{ settings_form.sem_segmentation_config }}
+                        {% if settings_form.sem_segmentation_config.errors %}<div class="field-error">{{ settings_form.sem_segmentation_config.errors|striptags }}</div>{% endif %}
                     </div>
                 </section>
                 <div class="settings-footer">

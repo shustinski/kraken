@@ -32,6 +32,7 @@ from neuralimage.lib.data_interfaces import (
     parse_work_mode,
 )
 from neuralimage.lib.loss_config import resolve_loss_term_weights
+from neuralimage.configuration import build_sem_segmentation_config
 
 
 def resolve_work_mode(value: str) -> WorkMode | None:
@@ -59,6 +60,11 @@ def build_workflow_parameters(
     context_crop_size = getattr(settings, 'context_crop_size', None)
     context_input_size = getattr(settings, 'context_input_size', None)
     requested_context_branch = getattr(settings, 'use_context_branch', None)
+    sem_raw = getattr(settings, 'sem_segmentation_config', {})
+    sem_config = build_sem_segmentation_config(sem_raw)
+    sem_enabled = bool(sem_raw)
+    if sem_enabled:
+        requested_context_branch = sem_config.context.enabled
     if requested_context_branch is None:
         requested_context_branch = settings.model in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}
     model = (
@@ -178,6 +184,11 @@ def build_workflow_parameters(
         iou_loss_weight=settings.iou_loss_weight,
         early_stopping=EarlyStoppingParameters(
             enabled=settings.early_stopping_enabled,
+            patience=int(getattr(settings, 'early_stopping_patience', 10)),
+            min_delta=float(getattr(settings, 'early_stopping_min_delta', 0.0)),
+            restore_best_weights=bool(
+                getattr(settings, 'early_stopping_restore_best_weights', True)
+            ),
         ),
         warmup=WarmupParameters(
             enabled=settings.warmup_enabled,
@@ -210,9 +221,22 @@ def build_workflow_parameters(
             step_lr_gamma=float(min(max(getattr(settings, 'scheduler_step_lr_gamma', 0.1), 0.0), 1.0)),
         ),
         hard_mining=HardMiningParameters(
-            enabled=settings.hard_mining_enabled,
+            enabled=(settings.hard_mining_enabled or (sem_enabled and sem_config.hard_mining.mode != 'off')),
+            strength=float(getattr(settings, 'hard_mining_strength', 2.0)),
             pixel_enabled=getattr(settings, 'hard_pixel_mining_enabled', False),
             pixel_keep_ratio=float(getattr(settings, 'hard_pixel_mining_ratio', 0.25)),
+            mode=sem_config.hard_mining.mode if sem_enabled else 'online',
+            geometry_weight=sem_config.hard_mining.geometry_weight if sem_enabled else 0.5,
+            loss_weight=sem_config.hard_mining.loss_weight if sem_enabled else 0.5,
+            exploration_floor=sem_config.hard_mining.exploration_floor if sem_enabled else 0.1,
+            ema_alpha=(
+                sem_config.hard_mining.ema_alpha
+                if sem_enabled
+                else float(getattr(settings, 'hard_mining_ema_alpha', 0.3))
+            ),
+            score_clip=sem_config.hard_mining.score_clip if sem_enabled else 5.0,
+            refresh_epochs=sem_config.hard_mining.refresh_epochs if sem_enabled else 1,
+            offline_manifest=sem_config.hard_mining.offline_manifest if sem_enabled else None,
         ),
         random_patch_size=RandomPatchSizeParameters(
             enabled=(
@@ -260,13 +284,29 @@ def build_workflow_parameters(
         context_crop_size=tuple(context_crop_size) if context_crop_size is not None else None,
         context_input_size=tuple(context_input_size) if context_input_size is not None else None,
         context_branch_channels=tuple(getattr(settings, 'context_branch_channels', (16, 32, 64, 128))),
-        fusion_type=str(getattr(settings, 'fusion_type', 'concat')),
+        fusion_type=(sem_config.context.fusion_type if sem_enabled else str(getattr(settings, 'fusion_type', 'concat'))),
         use_context_branch=bool(requested_context_branch),
+        use_cross_attention=(sem_config.context.cross_attention if sem_enabled else True),
+        attention_dim=(sem_config.context.attention_dim if sem_enabled else 128),
+        attention_heads=(sem_config.context.attention_heads if sem_enabled else 4),
+        attention_max_global_tokens=(sem_config.context.max_global_tokens if sem_enabled else 1024),
         deep_supervision=bool(getattr(settings, 'deep_supervision', False)),
         dataloader_num_workers=int(getattr(settings, 'dataloader_num_workers', -1)),
         recursive_file_search=bool(getattr(settings, 'recursive_file_search', False)),
         pcb_defects=pcb_defects,
         synthetic_defect_generator=synthetic_defect_generator,
+        supervision_targets=sem_config.targets,
+        preprocessing=sem_config.preprocessing,
+        sem_augmentation=sem_config.augmentation,
+        uncertainty=sem_config.uncertainty,
+        active_learning=sem_config.active_learning,
+        advanced_validation=sem_config.validation.enabled,
+        advanced_validation_full_frame=sem_config.validation.full_frame,
+        advanced_validation_boundary_tolerance=sem_config.validation.boundary_tolerance,
+        advanced_validation_include_hd95=sem_config.validation.include_hd95,
+        advanced_validation_confidence_bins=sem_config.validation.confidence_bins,
+        loss_weighting_strategy=sem_config.losses.weighting_strategy,
+        mask_loss_weight_floor=sem_config.losses.mask_weight_floor,
     )
 
     recognition = RecognitionParameters(
@@ -303,10 +343,15 @@ def build_workflow_parameters(
             if getattr(settings, 'use_context_branch', None) is not None
             else None
         ),
+        use_cross_attention=(sem_config.context.cross_attention if sem_enabled else None),
         context_crop_size=tuple(context_crop_size) if context_crop_size is not None else None,
         context_input_size=tuple(context_input_size) if context_input_size is not None else None,
         recursive_file_search=bool(getattr(settings, 'recursive_file_search', False)),
         compression_factor=max(1, int(getattr(settings, 'compression_factor', 1))),
+        preprocessing=sem_config.preprocessing,
+        uncertainty=sem_config.uncertainty,
+        active_learning=sem_config.active_learning,
+        sem_config_hash=sem_config.stable_hash() if sem_enabled else None,
     )
 
     return work_mode, training, recognition

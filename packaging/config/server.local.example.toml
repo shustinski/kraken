@@ -19,3 +19,13 @@ url_secret = "database-url.secret"
 [storage]
 # Неизменяемые файлы Kraken Server. Desktop не открывает этот каталог напрямую.
 blob_root = "blobs"
+
+[blob_gateway]
+# Rust-шлюз принимает гигабайтные файлы напрямую, не пропуская их через Python API.
+enabled = true
+public_url = "http://127.0.0.1:8081"
+bind = "127.0.0.1:8081"
+executable = "KrakenBlobGateway.exe"
+# Создаётся KrakenAdmin и защищается DPAPI так же, как секрет подключения к БД.
+secret = "blob-gateway.secret"
+ticket_lifetime_seconds = 900

@@ -51,6 +51,7 @@ from kraken_manager.application.dto import (
     RequestReviewChangesCommand,
     StorageBackendKind,
     StorageScope,
+    StoredContent,
     UpdateRepresentationNoteCommand,
 )
 from kraken_manager.application.dto import (
@@ -117,7 +118,7 @@ from kraken_manager.application.use_cases import (
     CreateProjectHandler,
     CreateRepresentationHandler,
 )
-from kraken_manager.domain.artifacts import ArtifactScope
+from kraken_manager.domain.artifacts import ArtifactScope, BlobRef
 from kraken_manager.domain.common import (
     ArtifactSeriesId,
     ArtifactVersionId,
@@ -1177,30 +1178,73 @@ class PostgresServerServices:
     ) -> dict[str, Any]:
         try:
             value = self._add_artifact_version(
-                AddArtifactVersionCommand(
-                    context=self._application_context(context),
-                    project_id=_project_id(project_id),
-                    series_id=ArtifactSeriesId(validate_uuid(series_id, field="series_id")),
-                    filename=str(payload.get("filename", "")),
-                    media_type=str(payload.get("media_type", "application/octet-stream")),
-                    expected_series_revision=self._require_revision(context),
-                    parent_version_id=(
-                        None
-                        if payload.get("parent_version_id") is None
-                        else ArtifactVersionId(
-                            validate_uuid(str(payload["parent_version_id"]), field="parent_version_id")
-                        )
-                    ),
-                    expected_sha256=(
-                        None if payload.get("sha256") is None else str(payload["sha256"])
-                    ),
-                ),
+                self._managed_artifact_command(project_id, series_id, payload, context),
                 chunks,
             )
             return encode_model(value)
         except Exception as exc:
             self._translate_lifecycle_error(exc)
             raise AssertionError("unreachable")
+
+    def prepare_managed_artifact_upload(
+        self,
+        project_id: str,
+        series_id: str,
+        payload: Mapping[str, Any],
+        context: CommandContext,
+    ) -> dict[str, Any] | None:
+        try:
+            value = self._add_artifact_version.preflight(
+                self._managed_artifact_command(project_id, series_id, payload, context)
+            )
+            return None if value is None else encode_model(value)
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
+    def register_managed_artifact_upload(
+        self,
+        project_id: str,
+        series_id: str,
+        payload: Mapping[str, Any],
+        context: CommandContext,
+    ) -> dict[str, Any]:
+        try:
+            digest = str(payload.get("sha256", ""))
+            size_bytes = int(payload.get("size_bytes", -1))
+            reference = self.uow_factory.blobs.stat(BlobRef(sha256=digest, size_bytes=size_bytes))
+            if reference.size_bytes != size_bytes:
+                raise ApplicationConflictError("Stored blob size does not match the completed upload")
+            value = self._add_artifact_version(
+                self._managed_artifact_command(project_id, series_id, payload, context),
+                stored=StoredContent(blob=reference, already_existed=True),
+            )
+            return encode_model(value)
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
+    def _managed_artifact_command(
+        self,
+        project_id: str,
+        series_id: str,
+        payload: Mapping[str, Any],
+        context: CommandContext,
+    ) -> AddArtifactVersionCommand:
+        return AddArtifactVersionCommand(
+            context=self._application_context(context),
+            project_id=_project_id(project_id),
+            series_id=ArtifactSeriesId(validate_uuid(series_id, field="series_id")),
+            filename=str(payload.get("filename", "")),
+            media_type=str(payload.get("media_type", "application/octet-stream")),
+            expected_series_revision=self._require_revision(context),
+            parent_version_id=(
+                None
+                if payload.get("parent_version_id") is None
+                else ArtifactVersionId(validate_uuid(str(payload["parent_version_id"]), field="parent_version_id"))
+            ),
+            expected_sha256=(None if payload.get("sha256") is None else str(payload["sha256"])),
+        )
 
     def add_external_artifact_version(
         self,

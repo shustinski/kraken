@@ -14,6 +14,7 @@ from kraken_manager.application.dto import (
     CreateProjectCommand,
     CreateRepresentationCommand,
     ReturnedFileDigest,
+    StoredContent,
 )
 from kraken_manager.application.errors import ConcurrencyError, ConflictError, NotFoundError, StorageCapabilityError
 from kraken_manager.application.ports import Clock, StorageProfile, StorageProfileCatalog, UnitOfWork, UnitOfWorkFactory
@@ -382,45 +383,30 @@ class CreateRepresentationHandler(_ProjectHandler):
 class AddArtifactVersionHandler(_ProjectHandler):
     """Store content immutably and create a branch instead of stale overwrite."""
 
-    def __call__(self, command: AddArtifactVersionCommand, chunks: Iterable[bytes]) -> ArtifactVersion:
+    def preflight(self, command: AddArtifactVersionCommand) -> ArtifactVersion | None:
+        """Authorize and validate before a potentially very large direct upload."""
         with self._uow_factory() as uow:
-            project, _ = self._load_project_and_authorize(
-                uow,
-                project_id=command.project_id,
-                actor=command.context.actor,
-                permission=Permission.IMPORT_ARTIFACT,
-                gitlab_identity_verified=command.context.gitlab_identity_verified,
-            )
-            previous_id = _prior_entity_id(
-                uow,
-                project.id,
-                command.context.idempotency_key,
-                "ArtifactVersionCreated",
-                "artifact_version_id",
-            )
-            if previous_id is not None:
-                existing = uow.projections.get_artifact_version(ArtifactVersionId(previous_id))
-                if existing is not None:
-                    return existing
-            series = uow.projections.get_artifact_series(command.series_id)
-            if series is None or series.project_id != project.id:
-                raise NotFoundError("Artifact series was not found in the project")
-            stream_id = _series_stream(str(series.id))
-            actual_revision = uow.event_store.current_revision(stream_id)
-            if actual_revision != command.expected_series_revision:
-                raise ConcurrencyError(
-                    f"Expected artifact series revision {command.expected_series_revision}, found {actual_revision}"
-                )
-            active = uow.projections.get_active_artifact_version(series.id)
-            parent_id = command.parent_version_id or (active.id if active is not None else None)
-            if parent_id is not None:
-                parent = uow.projections.get_artifact_version(parent_id)
-                if parent is None or parent.series_id != series.id:
-                    raise ConflictError("Parent artifact version does not belong to this series")
-            for input_version_id in command.input_version_ids:
-                if uow.projections.get_artifact_version(input_version_id) is None:
-                    raise NotFoundError(f"Input artifact version {input_version_id} was not found")
-            stored = uow.blobs.put(chunks, expected_sha256=command.expected_sha256)
+            existing, *_ = self._prepare(uow, command)
+            return existing
+
+    def __call__(
+        self,
+        command: AddArtifactVersionCommand,
+        chunks: Iterable[bytes] | None = None,
+        *,
+        stored: StoredContent | None = None,
+    ) -> ArtifactVersion:
+        if (chunks is None) == (stored is None):
+            raise ValueError("Exactly one of chunks or stored content is required")
+        with self._uow_factory() as uow:
+            existing, project, series, active, parent_id, stream_id, actual_revision = self._prepare(uow, command)
+            if existing is not None:
+                return existing
+            if stored is None:
+                assert chunks is not None
+                stored = uow.blobs.put(chunks, expected_sha256=command.expected_sha256)
+            elif command.expected_sha256 is not None and stored.blob.sha256 != command.expected_sha256:
+                raise ConflictError("Stored blob digest does not match the artifact command")
             now = self._clock.now()
             version = ArtifactVersion.managed(
                 series_id=series.id,
@@ -476,6 +462,49 @@ class AddArtifactVersionHandler(_ProjectHandler):
             uow.projections.save_artifact_version(version, activate=activate)
             uow.commit()
             return version
+
+    def _prepare(
+        self,
+        uow: UnitOfWork,
+        command: AddArtifactVersionCommand,
+    ) -> tuple[ArtifactVersion | None, Project, ArtifactSeries, ArtifactVersion | None, ArtifactVersionId | None, str, int]:
+        project, _ = self._load_project_and_authorize(
+            uow,
+            project_id=command.project_id,
+            actor=command.context.actor,
+            permission=Permission.IMPORT_ARTIFACT,
+            gitlab_identity_verified=command.context.gitlab_identity_verified,
+        )
+        previous_id = _prior_entity_id(
+            uow,
+            project.id,
+            command.context.idempotency_key,
+            "ArtifactVersionCreated",
+            "artifact_version_id",
+        )
+        series = uow.projections.get_artifact_series(command.series_id)
+        if series is None or series.project_id != project.id:
+            raise NotFoundError("Artifact series was not found in the project")
+        stream_id = _series_stream(str(series.id))
+        actual_revision = uow.event_store.current_revision(stream_id)
+        active = uow.projections.get_active_artifact_version(series.id)
+        parent_id = command.parent_version_id or (active.id if active is not None else None)
+        if previous_id is not None:
+            existing = uow.projections.get_artifact_version(ArtifactVersionId(previous_id))
+            if existing is not None:
+                return existing, project, series, active, parent_id, stream_id, actual_revision
+        if actual_revision != command.expected_series_revision:
+            raise ConcurrencyError(
+                f"Expected artifact series revision {command.expected_series_revision}, found {actual_revision}"
+            )
+        if parent_id is not None:
+            parent = uow.projections.get_artifact_version(parent_id)
+            if parent is None or parent.series_id != series.id:
+                raise ConflictError("Parent artifact version does not belong to this series")
+        for input_version_id in command.input_version_ids:
+            if uow.projections.get_artifact_version(input_version_id) is None:
+                raise NotFoundError(f"Input artifact version {input_version_id} was not found")
+        return None, project, series, active, parent_id, stream_id, actual_revision
 
 
 class CreateArtifactSeriesHandler(_ProjectHandler):

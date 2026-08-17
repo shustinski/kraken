@@ -174,6 +174,20 @@ def _default_server_executable() -> Path:
     return Path(sys.executable)
 
 
+def _default_blob_gateway_executable() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).with_name("KrakenBlobGateway.exe")
+    return Path(__file__).resolve().parents[2] / "blob_gateway" / "target" / "release" / "kraken-blob-gateway.exe"
+
+
+def _blob_gateway_public_url(args: argparse.Namespace) -> str:
+    if args.blob_gateway_public_url:
+        return str(args.blob_gateway_public_url)
+    if args.blob_gateway_host in {"127.0.0.1", "::1", "localhost"}:
+        return f"http://127.0.0.1:{args.blob_gateway_port}"
+    raise SystemExit("Для сетевого Blob Gateway укажите --blob-gateway-public-url с HTTPS-адресом")
+
+
 def _install_service(server_executable: Path, config: Path, *, start: bool) -> None:
     if os.name != "nt":
         raise SystemExit("Windows Service installation is available only on Windows")
@@ -296,6 +310,11 @@ def _initialize_local_server(args: argparse.Namespace) -> None:
             host=args.host,
             port=args.port,
             project_access_mode="acl",
+            blob_gateway_public_url=_blob_gateway_public_url(args),
+            blob_gateway_bind=f"{args.blob_gateway_host}:{args.blob_gateway_port}",
+            blob_gateway_executable=args.blob_gateway_executable,
+            tls_cert_file=args.tls_cert_file,
+            tls_key_file=args.tls_key_file,
         )
         print("[4/5] Создание первого администратора Kraken...")
         account_id = _bootstrap(
@@ -307,6 +326,7 @@ def _initialize_local_server(args: argparse.Namespace) -> None:
     except BaseException:
         config_path.unlink(missing_ok=True)
         secret_path.unlink(missing_ok=True)
+        (config_path.parent / "blob-gateway.secret").unlink(missing_ok=True)
         try:
             remove_provisioned_postgres(request)
         except Exception as cleanup_error:  # noqa: BLE001 - preserve original setup failure
@@ -358,6 +378,21 @@ def _doctor(args: argparse.Namespace) -> int:
             blob_ready,
             str(configuration.blob_root) if blob_ready else "каталог не существует",
         )
+        if configuration.blob_gateway_public_url is not None:
+            gateway_ready = (
+                configuration.blob_gateway_executable is not None
+                and configuration.blob_gateway_executable.is_file()
+                and configuration.blob_gateway_secret_value is not None
+            )
+            record(
+                "blob_gateway",
+                gateway_ready,
+                (
+                    f"{configuration.blob_gateway_public_url} ({configuration.blob_gateway_executable})"
+                    if gateway_ready
+                    else "исполняемый файл или защищённый секрет Blob Gateway отсутствует"
+                ),
+            )
     if args.json:
         print(json.dumps({"ok": all(bool(item["ok"]) for item in checks), "checks": checks}, ensure_ascii=False))
     else:
@@ -545,6 +580,22 @@ def _parser() -> argparse.ArgumentParser:
     local_setup.add_argument("--host", default="127.0.0.1", help="Интерфейс Kraken Server")
     local_setup.add_argument("--port", type=int, default=8080, help="Порт Kraken Server")
     local_setup.add_argument(
+        "--blob-gateway-host", default="127.0.0.1", help="Интерфейс высокоскоростного файлового шлюза"
+    )
+    local_setup.add_argument("--blob-gateway-port", type=int, default=8081, help="Порт файлового шлюза")
+    local_setup.add_argument(
+        "--blob-gateway-public-url",
+        help="Публичный HTTPS-адрес файлового шлюза; для локального теста вычисляется автоматически",
+    )
+    local_setup.add_argument(
+        "--blob-gateway-executable",
+        type=Path,
+        default=_default_blob_gateway_executable(),
+        help="Путь к KrakenBlobGateway.exe",
+    )
+    local_setup.add_argument("--tls-cert-file", type=Path, help="PEM-сертификат TLS для сетевого доступа")
+    local_setup.add_argument("--tls-key-file", type=Path, help="Закрытый PEM-ключ TLS для сетевого доступа")
+    local_setup.add_argument(
         "--database-host",
         help="Адрес PostgreSQL; при пустом вводе 127.0.0.1",
     )
@@ -609,6 +660,17 @@ def _parser() -> argparse.ArgumentParser:
         )
         target.add_argument("--json", action="store_true", help="Машиночитаемый JSON для скриптов")
 
+    blob_benchmark = command(
+        "blob-benchmark",
+        help="Проверить суммарную скорость Blob Gateway параллельными потоками",
+        description="Запускает воспроизводимую потоковую загрузку без создания проектов и SQL-запросов.",
+        epilog="Примеры:\n  KrakenAdmin blob-benchmark\n  KrakenAdmin blob-benchmark --clients 30 --size-mib 1024 --json",
+    )
+    blob_benchmark.add_argument("--config", type=Path, default=default_local_config_path(), help="Файл server.toml")
+    blob_benchmark.add_argument("--clients", type=int, default=30, help="Количество одновременных загрузок")
+    blob_benchmark.add_argument("--size-mib", type=int, default=64, help="Объём одного потока в МиБ")
+    blob_benchmark.add_argument("--json", action="store_true", help="Машиночитаемый результат")
+
     create_project = command(
         "project-create",
         help="Создать серверный проект из CLI или скрипта",
@@ -656,6 +718,15 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument("--username", help="Логин первого администратора Kraken")
     setup.add_argument("--display-name", help="Отображаемое имя администратора")
     setup.add_argument("--install-service", action="store_true", help="Установить и запустить Windows-службу")
+    setup.add_argument("--blob-gateway-host", default="127.0.0.1", help="Интерфейс файлового шлюза")
+    setup.add_argument("--blob-gateway-port", type=int, default=8081, help="Порт файлового шлюза")
+    setup.add_argument("--blob-gateway-public-url", help="Публичный HTTPS-адрес файлового шлюза")
+    setup.add_argument(
+        "--blob-gateway-executable",
+        type=Path,
+        default=_default_blob_gateway_executable(),
+        help="Путь к KrakenBlobGateway.exe",
+    )
     setup.add_argument(
         "--server-executable",
         type=Path,
@@ -739,6 +810,19 @@ def _execute(args: argparse.Namespace) -> int:
         _initialize_local_server(args)
     elif args.command == "doctor":
         return _doctor(args)
+    elif args.command == "blob-benchmark":
+        from .blob_benchmark import run_blob_benchmark
+
+        result = run_blob_benchmark(args.config, clients=args.clients, size_mib=args.size_mib)
+        payload = result.to_dict()
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False))
+        else:
+            print(
+                f"Blob Gateway: {payload['gigabits_per_second']:.3f} Гбит/с, "
+                f"{payload['clients']} потоков, {payload['elapsed_seconds']:.3f} с"
+            )
+        return 0
     elif args.command == "project-create":
         _create_project(args)
     elif args.command == "project-list":
@@ -757,6 +841,9 @@ def _execute(args: argparse.Namespace) -> int:
             project_access_mode="acl",
             tls_cert_file=args.tls_cert_file,
             tls_key_file=args.tls_key_file,
+            blob_gateway_public_url=_blob_gateway_public_url(args),
+            blob_gateway_bind=f"{args.blob_gateway_host}:{args.blob_gateway_port}",
+            blob_gateway_executable=args.blob_gateway_executable,
         )
         username = str(args.username or input("Administrator username: ")).strip()
         display_name = str(args.display_name or input("Administrator display name: ")).strip()

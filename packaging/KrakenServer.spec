@@ -77,5 +77,9 @@ coll = COLLECT(
 )
 
 portable_root = Path(DISTPATH) / "KrakenServer"
+blob_gateway = Path("../blob_gateway/target/release/kraken-blob-gateway.exe")
+if not blob_gateway.is_file():
+    raise FileNotFoundError("Build blob_gateway with cargo --release before packaging Kraken Server")
+shutil.copy2(blob_gateway, portable_root / "KrakenBlobGateway.exe")
 shutil.copytree("scripts", portable_root / "scripts", dirs_exist_ok=True)
 shutil.copytree("config", portable_root / "config", dirs_exist_ok=True)

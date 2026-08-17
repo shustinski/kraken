@@ -843,7 +843,7 @@ class DesktopController:
                     )
                 if not imported.requires_partial_confirmation:
                     gateway.complete_import(job.id)
-                    self._refresh_matrix()
+                    self._refresh_current_matrix()
             if self.my_work_refresh is not None:
                 self.my_work_refresh()
             self._agent_poll_error = ""
@@ -872,7 +872,8 @@ class DesktopController:
         active = tuple(
             job
             for job in self.service.plugin_jobs()
-            if job.state.value not in {"succeeded", "failed", "cancelled"}
+            if job.state.value
+            in {"queued", "staging", "running", "waiting_for_user"}
         )
         if active:
             QMessageBox.information(
@@ -1762,11 +1763,17 @@ class DesktopController:
         )
 
     def load_review_return(self) -> None:
+        from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
             QFileDialog,
+            QHeaderView,
+            QLabel,
             QMessageBox,
             QTableWidget,
             QTableWidgetItem,
+            QVBoxLayout,
         )
 
         source = QFileDialog.getExistingDirectory(
@@ -1794,38 +1801,49 @@ class DesktopController:
             "invalid": "Повреждён",
             "stale_base_conflict": "Конфликт исходной версии",
         }
-        preview = QMessageBox(self.shell)
+        preview = QDialog(self.shell)
         preview.setWindowTitle("Предварительная проверка")
-        preview.setIcon(QMessageBox.Icon.Information)
+        preview.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+        preview.setMinimumSize(560, 320)
+        preview.resize(760, 500)
+        preview_layout = QVBoxLayout(preview)
         counts: dict[str, int] = {}
         for item in plan.report.items:
             key = item.status.value
             counts[key] = counts.get(key, 0) + 1
-        preview.setText(
-            "\n".join(
-                f"{labels.get(key, key)}: {value}"
-                for key, value in counts.items()
-            )
-            or "Файлы не найдены."
+        summary = QLabel(
+            "\n".join(f"{labels.get(key, key)}: {value}" for key, value in counts.items())
+            or "Файлы не найдены.",
+            preview,
         )
+        preview_layout.addWidget(summary)
         details = QTableWidget(len(plan.report.items), 2, preview)
         details.setHorizontalHeaderLabels(("Файл", "Результат"))
         for row, item in enumerate(plan.report.items):
             details.setItem(row, 0, QTableWidgetItem(item.relative_path))
-            details.setItem(row, 1, QTableWidgetItem(labels.get(item.status.value, item.status.value)))
-        details.resizeColumnsToContents()
-        preview.layout().addWidget(
-            details,
-            preview.layout().rowCount(),
-            0,
-            1,
-            preview.layout().columnCount(),
+            details.setItem(
+                row,
+                1,
+                QTableWidgetItem(labels.get(item.status.value, item.status.value)),
+            )
+        details.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
         )
-        import_button = preview.addButton("Загрузить изменённые файлы", QMessageBox.ButtonRole.AcceptRole)
-        preview.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+        details.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        preview_layout.addWidget(details, 1)
+        buttons = QDialogButtonBox(preview)
+        import_button = buttons.addButton(
+            "Загрузить изменённые файлы",
+            QDialogButtonBox.ButtonRole.AcceptRole,
+        )
+        buttons.addButton("Отмена", QDialogButtonBox.ButtonRole.RejectRole)
         import_button.setEnabled(plan.report.can_commit)
-        preview.exec()
-        if preview.clickedButton() is not import_button:
+        buttons.accepted.connect(preview.accept)
+        buttons.rejected.connect(preview.reject)
+        preview_layout.addWidget(buttons)
+        if preview.exec() != QDialog.DialogCode.Accepted:
             return
         try:
             result = self.service.commit_review_return(
@@ -1843,7 +1861,7 @@ class DesktopController:
                 "Проверка загружена",
                 "Изменённых CIF-файлов нет; результат сохранён.",
             )
-            self._refresh_matrix()
+            self._refresh_current_matrix()
             return
         decision = QMessageBox(self.shell)
         decision.setWindowTitle("Изменённые файлы загружены")
@@ -1875,7 +1893,7 @@ class DesktopController:
                 self._request_review_changes(result.batch)
         except Exception as exc:
             QMessageBox.warning(self.shell, "Не удалось изменить состояние проверки", str(exc))
-        self._refresh_matrix()
+        self._refresh_current_matrix()
 
     def _request_review_changes(self, batch) -> None:
         from PyQt6.QtWidgets import QInputDialog
@@ -1896,7 +1914,7 @@ class DesktopController:
             idempotency_key=str(uuid4()),
         )
 
-    def _refresh_matrix(self) -> None:
+    def _refresh_current_matrix(self) -> None:
         workspace = self._workspace
         project_id = str(self._project_id or "")
         layer_id = str(getattr(workspace, "_selected_layer_id", "") if workspace else "")

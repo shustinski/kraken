@@ -10,6 +10,7 @@ from typing import Any
 
 from kraken_manager.domain.workflows import PluginJobManifestV1
 from kraken_manager.domain.artifacts import BlobRef
+from kraken_manager.application.dto import StoredContent
 from kraken_manager.infrastructure.filesystem._codec import decode_model, encode_model
 
 from .agent_auth import AgentIdentity, PostgresAgentTokenStore
@@ -59,7 +60,6 @@ class PostgresAgentGateway:
         return protocol_version == "1.0" and self.tokens.has_capability(capability)
 
     def submit(self, manifest: PluginJobManifestV1) -> None:
-        import sqlalchemy as sa
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         now = datetime.now(UTC)
@@ -226,6 +226,24 @@ class PostgresAgentGateway:
     ) -> dict[str, Any]:
         self.manifest(job_id, agent)
         stored = self.blobs.put(chunks, expected_sha256=expected_sha256)
+        return self._record_output(job_id, output_id, stored)
+
+    def register_output(
+        self,
+        job_id: str,
+        output_id: str,
+        agent: AgentIdentity,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+    ) -> dict[str, Any]:
+        self.manifest(job_id, agent)
+        reference = self.blobs.stat(BlobRef(expected_sha256, expected_size))
+        if reference.size_bytes != expected_size:
+            raise RuntimeError("Stored Agent output size does not match the completed upload")
+        return self._record_output(job_id, output_id, StoredContent(reference, already_existed=True))
+
+    def _record_output(self, job_id: str, output_id: str, stored: StoredContent) -> dict[str, Any]:
         import sqlalchemy as sa
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 

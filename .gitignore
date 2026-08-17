@@ -9,6 +9,7 @@ __pycache__/
 venv/
 build/
 dist/
+blob_gateway/target/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/

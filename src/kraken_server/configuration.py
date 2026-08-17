@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import ctypes
 import os
+import secrets
 import sys
 import tomllib
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
+
+from .blob_gateway import validate_public_gateway_url
 
 
 def default_config_path() -> Path:
@@ -137,6 +140,13 @@ class ServerConfig:
     gitlab_ca_file: Path | None = None
     tls_cert_file: Path | None = None
     tls_key_file: Path | None = None
+    blob_gateway_public_url: str | None = None
+    blob_gateway_bind: str | None = None
+    blob_gateway_executable: Path | None = None
+    blob_gateway_secret: Path | None = None
+    blob_gateway_tls_cert_file: Path | None = None
+    blob_gateway_tls_key_file: Path | None = None
+    blob_ticket_lifetime_seconds: int = 900
 
     @classmethod
     def load(cls, path: Path | str) -> ServerConfig:
@@ -147,6 +157,7 @@ class ServerConfig:
         database = document.get("database", {})
         storage = document.get("storage", {})
         identity = document.get("identity", {})
+        gateway = document.get("blob_gateway", {})
 
         def resolve(value: object, *, required: bool = True) -> Path | None:
             text = str(value or "").strip()
@@ -165,6 +176,19 @@ class ServerConfig:
         port = int(server.get("port", 8080))
         if not 1 <= port <= 65535:
             raise ValueError("server.port must be between 1 and 65535")
+        gateway_enabled = bool(gateway.get("enabled", False))
+        gateway_public_url = (
+            validate_public_gateway_url(str(gateway.get("public_url", ""))) if gateway_enabled else None
+        )
+        gateway_tls_cert = resolve(gateway.get("tls_cert_file"), required=False) if gateway_enabled else None
+        gateway_tls_key = resolve(gateway.get("tls_key_file"), required=False) if gateway_enabled else None
+        if (gateway_tls_cert is None) != (gateway_tls_key is None):
+            raise ValueError("blob_gateway TLS certificate and key must be configured together")
+        if gateway_public_url is not None and gateway_public_url.startswith("https://") != (gateway_tls_cert is not None):
+            raise ValueError("blob_gateway public URL scheme must match its TLS configuration")
+        ticket_lifetime = int(gateway.get("ticket_lifetime_seconds", 900))
+        if not 30 <= ticket_lifetime <= 86_400:
+            raise ValueError("blob_gateway.ticket_lifetime_seconds must be between 30 and 86400")
         return cls(
             path=config_path,
             database_url_secret=resolve(database.get("url_secret")),  # type: ignore[arg-type]
@@ -176,11 +200,22 @@ class ServerConfig:
             gitlab_ca_file=resolve(identity.get("gitlab_ca_file"), required=False),
             tls_cert_file=resolve(server.get("tls_cert_file"), required=False),
             tls_key_file=resolve(server.get("tls_key_file"), required=False),
+            blob_gateway_public_url=gateway_public_url,
+            blob_gateway_bind=(str(gateway.get("bind", "")).strip() or None) if gateway_enabled else None,
+            blob_gateway_executable=(resolve(gateway.get("executable")) if gateway_enabled else None),
+            blob_gateway_secret=(resolve(gateway.get("secret")) if gateway_enabled else None),
+            blob_gateway_tls_cert_file=gateway_tls_cert,
+            blob_gateway_tls_key_file=gateway_tls_key,
+            blob_ticket_lifetime_seconds=ticket_lifetime,
         )
 
     @property
     def database_url(self) -> str:
         return unprotect_secret(self.database_url_secret)
+
+    @property
+    def blob_gateway_secret_value(self) -> str | None:
+        return None if self.blob_gateway_secret is None else unprotect_secret(self.blob_gateway_secret)
 
     def apply_to_environment(self) -> None:
         os.environ["KRAKEN_SERVER_COMPOSITION"] = "kraken_server.composition:postgresql_composition"
@@ -191,6 +226,32 @@ class ServerConfig:
             os.environ["KRAKEN_GITLAB_ISSUER"] = self.gitlab_issuer
         if self.gitlab_ca_file:
             os.environ["KRAKEN_GITLAB_CA_FILE"] = str(self.gitlab_ca_file)
+        if self.blob_gateway_public_url is not None:
+            if self.blob_gateway_bind is None or self.blob_gateway_executable is None:
+                raise ValueError("Enabled Blob Gateway configuration is incomplete")
+            secret = self.blob_gateway_secret_value
+            if secret is None:
+                raise ValueError("Enabled Blob Gateway secret is missing")
+            os.environ["KRAKEN_BLOB_GATEWAY_PUBLIC_URL"] = self.blob_gateway_public_url
+            os.environ["KRAKEN_BLOB_GATEWAY_BIND"] = self.blob_gateway_bind
+            os.environ["KRAKEN_BLOB_GATEWAY_EXECUTABLE"] = str(self.blob_gateway_executable)
+            os.environ["KRAKEN_BLOB_GATEWAY_SECRET"] = secret
+            os.environ["KRAKEN_BLOB_TICKET_LIFETIME"] = str(self.blob_ticket_lifetime_seconds)
+            if self.blob_gateway_tls_cert_file is not None:
+                os.environ["KRAKEN_BLOB_GATEWAY_TLS_CERT"] = str(self.blob_gateway_tls_cert_file)
+            if self.blob_gateway_tls_key_file is not None:
+                os.environ["KRAKEN_BLOB_GATEWAY_TLS_KEY"] = str(self.blob_gateway_tls_key_file)
+        else:
+            for name in (
+                "KRAKEN_BLOB_GATEWAY_PUBLIC_URL",
+                "KRAKEN_BLOB_GATEWAY_BIND",
+                "KRAKEN_BLOB_GATEWAY_EXECUTABLE",
+                "KRAKEN_BLOB_GATEWAY_SECRET",
+                "KRAKEN_BLOB_TICKET_LIFETIME",
+                "KRAKEN_BLOB_GATEWAY_TLS_CERT",
+                "KRAKEN_BLOB_GATEWAY_TLS_KEY",
+            ):
+                os.environ.pop(name, None)
 
 
 def write_config(
@@ -203,6 +264,10 @@ def write_config(
     project_access_mode: str = "acl",
     tls_cert_file: Path | None = None,
     tls_key_file: Path | None = None,
+    blob_gateway_public_url: str | None = None,
+    blob_gateway_bind: str = "127.0.0.1:8081",
+    blob_gateway_executable: Path | None = None,
+    blob_ticket_lifetime_seconds: int = 900,
 ) -> ServerConfig:
     import json
 
@@ -210,6 +275,24 @@ def write_config(
     path.parent.mkdir(parents=True, exist_ok=True)
     secret_path = path.parent / "database-url.secret"
     protect_secret(database_url, secret_path)
+    gateway_enabled = blob_gateway_public_url is not None
+    gateway_secret_path = path.parent / "blob-gateway.secret"
+    if gateway_enabled:
+        blob_gateway_public_url = validate_public_gateway_url(str(blob_gateway_public_url))
+        gateway_uses_tls = blob_gateway_public_url.startswith("https://")
+        if gateway_uses_tls and (tls_cert_file is None or tls_key_file is None):
+            raise ValueError(
+                "HTTPS Blob Gateway requires both TLS certificate and private key files"
+            )
+        if blob_gateway_executable is None:
+            raise ValueError("Blob Gateway executable is required when the gateway is enabled")
+        if not 30 <= int(blob_ticket_lifetime_seconds) <= 86_400:
+            raise ValueError("Blob ticket lifetime must be between 30 and 86400 seconds")
+        if gateway_secret_path.is_file():
+            gateway_secret = unprotect_secret(gateway_secret_path)
+        else:
+            gateway_secret = secrets.token_urlsafe(48)
+        protect_secret(gateway_secret, gateway_secret_path)
     blob_root = blob_root.expanduser().resolve()
     blob_root.mkdir(parents=True, exist_ok=True)
     server_lines = [
@@ -231,8 +314,7 @@ def write_config(
         server_lines.append(f"tls_cert_file = {json.dumps(str(tls_cert_file.resolve()))}")
     if tls_key_file is not None:
         server_lines.append(f"tls_key_file = {json.dumps(str(tls_key_file.resolve()))}")
-    content = "\n".join(
-        (
+    sections = [
             *server_lines,
             "",
             "[database]",
@@ -243,8 +325,29 @@ def write_config(
             "# Неизменяемые файлы сервера. Рабочие станции не открывают этот каталог напрямую.",
             f"blob_root = {json.dumps(str(blob_root))}",
             "",
+    ]
+    sections.extend(
+        (
+            "[blob_gateway]",
+            "# Rust data plane streams large immutable files without routing their bytes through Python.",
+            f"enabled = {'true' if gateway_enabled else 'false'}",
         )
     )
+    if gateway_enabled:
+        sections.extend(
+            (
+                f"public_url = {json.dumps(str(blob_gateway_public_url).rstrip('/'))}",
+                f"bind = {json.dumps(blob_gateway_bind)}",
+                f"executable = {json.dumps(str(blob_gateway_executable.resolve()))}",
+                f"secret = {json.dumps(gateway_secret_path.name)}",
+                f"ticket_lifetime_seconds = {int(blob_ticket_lifetime_seconds)}",
+            )
+        )
+        if gateway_uses_tls:
+            sections.append(f"tls_cert_file = {json.dumps(str(tls_cert_file.resolve()))}")
+            sections.append(f"tls_key_file = {json.dumps(str(tls_key_file.resolve()))}")
+    sections.append("")
+    content = "\n".join(sections)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         with temporary.open("x", encoding="utf-8", newline="\n") as stream:

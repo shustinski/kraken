@@ -154,6 +154,26 @@ class AgentJobTests(unittest.TestCase):
             else:
                 os.environ["KRAKEN_DATABASE_URL"] = previous
 
+    def test_runner_environment_preserves_user_directories(self) -> None:
+        import os
+
+        keys = ("HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA")
+        previous = {key: os.environ.get(key) for key in keys}
+        try:
+            for key in keys:
+                os.environ[key] = f"test-{key.casefold()}"
+            environment = SubprocessPluginRunner._plugin_environment()
+            self.assertEqual(
+                {key: os.environ[key] for key in keys},
+                {key: environment[key] for key in keys},
+            )
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_job_state_is_durable_and_optimistic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "agent.sqlite3"

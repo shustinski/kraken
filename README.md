@@ -15,6 +15,8 @@ src/
   kraken_agent/
   kraken_core/           # technical runtime and plugin wire protocol
 
+blob_gateway/            # Rust high-throughput immutable blob data plane
+
 plugins/
   neuralimage/
     pyproject.toml
@@ -143,6 +145,8 @@ built-in composition as documented in
 available only with an explicit `kraken-server --development`.
 
 Windows production packages are built with `packaging/build_windows.ps1`.
+The build script compiles the Rust Blob Gateway in release mode and includes
+`KrakenBlobGateway.exe` in the server package.
 `KrakenServerSetup` initializes migrations, a DPAPI-protected configuration,
 the first Server Administrator and the Windows service; workstation users only
 install `KrakenDesktopSetup` and enter the HTTPS server address and their

@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
+    QHeaderView,
     QInputDialog,
     QLineEdit,
     QMainWindow,
@@ -57,6 +58,128 @@ from kraken_manager.presentation.qt import (
     ProjectManagerShell,
 )
 from kraken_manager.presentation.qt.widgets import ClickableLabel
+
+
+def test_review_return_preview_is_resizable(qapp, monkeypatch) -> None:
+    controller = object.__new__(DesktopController)
+    controller.shell = QWidget()
+    controller.session = SimpleNamespace(principal=object())
+    report = SimpleNamespace(
+        items=tuple(
+            SimpleNamespace(
+                relative_path=f"frames/frame-{index:03d}.cif",
+                status=SimpleNamespace(value="unchanged"),
+            )
+            for index in range(50)
+        ),
+        can_commit=False,
+    )
+
+    class Service:
+        def review_return_preflight(self, **_kwargs):
+            return object(), SimpleNamespace(report=report)
+
+    controller.service = Service()
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: "review")
+
+    def inspect_preview(dialog: QDialog) -> QDialog.DialogCode:
+        assert dialog.minimumWidth() == 560
+        assert dialog.minimumHeight() == 320
+        assert dialog.width() >= 760
+        assert dialog.height() >= 500
+        assert dialog.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint
+        assert dialog.maximumWidth() > dialog.minimumWidth()
+        assert dialog.maximumHeight() > dialog.minimumHeight()
+        table = dialog.findChild(QTableWidget)
+        assert table is not None
+        assert table.rowCount() == 50
+        assert (
+            table.horizontalHeader().sectionResizeMode(0)
+            is QHeaderView.ResizeMode.Stretch
+        )
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(QDialog, "exec", inspect_preview)
+
+    controller.load_review_return()
+
+
+def test_review_return_without_changed_files_refreshes_current_matrix(
+    qapp, monkeypatch
+) -> None:
+    controller = object.__new__(DesktopController)
+    controller.shell = QWidget()
+    controller.session = SimpleNamespace(principal=object())
+    controller._project_id = "project-1"
+    controller._workspace = SimpleNamespace(_selected_layer_id="layer-1")
+    refreshed = []
+    controller._load_representations = lambda *args: refreshed.append(args)
+    report = SimpleNamespace(
+        items=(
+            SimpleNamespace(
+                relative_path="frames/frame-001.cif",
+                status=SimpleNamespace(value="unchanged"),
+            ),
+        ),
+        can_commit=True,
+    )
+
+    class Service:
+        def review_return_preflight(self, **_kwargs):
+            return object(), SimpleNamespace(report=report)
+
+        def commit_review_return(self, **_kwargs):
+            return SimpleNamespace(candidate_versions=())
+
+    controller.service = Service()
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: "review")
+    monkeypatch.setattr(QDialog, "exec", lambda _dialog: QDialog.DialogCode.Accepted)
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+
+    controller.load_review_return()
+
+    assert refreshed == [(controller._workspace, "project-1", "layer-1")]
+
+
+@pytest.mark.parametrize(
+    "state",
+    ("recovery_required", "partial", "awaiting_authorization", "importing"),
+)
+def test_non_running_agent_jobs_do_not_block_close(qapp, state) -> None:
+    shutdown = []
+    controller = object.__new__(DesktopController)
+    controller.shell = QWidget()
+    controller.service = SimpleNamespace(
+        plugin_jobs=lambda: (SimpleNamespace(state=SimpleNamespace(value=state)),)
+    )
+    controller.agent_runtime = SimpleNamespace(shutdown=lambda: shutdown.append(True))
+    controller._background_workers = set()
+
+    assert controller._allow_close() is True
+    assert shutdown == [True]
+
+
+def test_running_agent_job_still_blocks_close(qapp, monkeypatch) -> None:
+    messages = []
+    controller = object.__new__(DesktopController)
+    controller.shell = QWidget()
+    controller.service = SimpleNamespace(
+        plugin_jobs=lambda: (
+            SimpleNamespace(state=SimpleNamespace(value="waiting_for_user")),
+        )
+    )
+    controller.agent_runtime = SimpleNamespace(
+        shutdown=lambda: pytest.fail("active Agent must not be stopped")
+    )
+    controller._background_workers = set()
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+
+    assert controller._allow_close() is False
+    assert messages[0][0] == "Есть активные задания"
 
 
 def test_matrix_context_menu_exports_and_opens_vector_properties(

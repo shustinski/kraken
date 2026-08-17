@@ -192,6 +192,20 @@ def postgresql_composition() -> dict[str, Any]:
 
     hub = ConnectionHub()
     publisher = OutboxPublisher(engine, hub)
+    blob_gateway = None
+    if public_url := os.environ.get("KRAKEN_BLOB_GATEWAY_PUBLIC_URL", "").strip():
+        from .blob_gateway import BlobGatewayManager
+
+        blob_gateway = BlobGatewayManager(
+            public_url=public_url,
+            bind=_required("KRAKEN_BLOB_GATEWAY_BIND"),
+            blob_root=blob_root,
+            executable=Path(_required("KRAKEN_BLOB_GATEWAY_EXECUTABLE")),
+            secret=_required("KRAKEN_BLOB_GATEWAY_SECRET"),
+            ticket_lifetime_seconds=int(os.environ.get("KRAKEN_BLOB_TICKET_LIFETIME", "900")),
+            tls_cert_file=(Path(value) if (value := os.environ.get("KRAKEN_BLOB_GATEWAY_TLS_CERT")) else None),
+            tls_key_file=(Path(value) if (value := os.environ.get("KRAKEN_BLOB_GATEWAY_TLS_KEY")) else None),
+        )
     return {
         "services": services,
         "account_store": accounts,
@@ -200,6 +214,7 @@ def postgresql_composition() -> dict[str, Any]:
         "project_access_mode": os.environ.get("KRAKEN_PROJECT_ACCESS_MODE", "acl"),
         "connection_hub": hub,
         "outbox_publisher": publisher,
+        "blob_gateway": blob_gateway,
         "agent_token_store": agent_tokens,
         "agent_gateway": agent_gateway,
     }

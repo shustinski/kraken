@@ -262,6 +262,25 @@ class RemoteHttpClient:
                 f"Cannot reach Kraken Server at {self.base_url}: {exc.reason}"
             ) from exc
 
+    def upload_url(self, url: str, *, token: str, source: Path) -> Any:
+        request_headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(source.stat().st_size),
+        }
+        try:
+            with source.open("rb") as stream:
+                request = urllib.request.Request(url, data=stream, headers=request_headers, method="PUT")
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    raw = response.read()
+            return None if not raw else json.loads(raw.decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RemoteServerError(detail, status=exc.code, body=detail) from exc
+        except urllib.error.URLError as exc:
+            raise RemoteServerError(f"Cannot reach Kraken Blob Gateway at {url}: {exc.reason}") from exc
+
     def download(
         self,
         path: str,
@@ -303,6 +322,21 @@ class RemoteHttpClient:
             raise RemoteServerError(
                 message, status=exc.code, body=detail, problem=parsed
             ) from exc
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+        return destination
+
+    def download_url(self, url: str, *, token: str, destination: Path) -> Path:
+        request = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/octet-stream"},
+            method="GET",
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response, destination.open("xb") as output:
+                shutil.copyfileobj(response, output, length=1024 * 1024)
         except Exception:
             destination.unlink(missing_ok=True)
             raise
@@ -1456,7 +1490,7 @@ class RemoteServerProjectService:
             else None
         )
 
-    def add_managed_artifact_version(
+    def _add_managed_artifact_version_proxy(
         self,
         *,
         principal: Principal,
@@ -1521,6 +1555,65 @@ class RemoteServerProjectService:
                 ) from exc
             raise
         return decode_model(ArtifactVersion, payload)
+
+    def add_managed_artifact_version(
+        self,
+        *,
+        principal: Principal,
+        project_id: object,
+        series_id: object,
+        source: Path | str,
+        parent_version_id: object | None = None,
+        idempotency_key: str,
+    ) -> ArtifactVersion:
+        path = Path(source).resolve(strict=True)
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        revision = self.artifact_stream_revision(project_id, series_id)
+        artifact_payload: dict[str, object] = {
+            "filename": path.name,
+            "media_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+            "sha256": digest.hexdigest(),
+            "size_bytes": path.stat().st_size,
+            **({} if parent_version_id is None else {"parent_version_id": str(parent_version_id)}),
+        }
+        try:
+            transfer = self._call(
+                "POST",
+                f"/api/v1/projects/{project_id}/artifacts/{series_id}/uploads",
+                payload=artifact_payload,
+                idempotency_key=idempotency_key,
+                if_match=revision,
+            )
+        except RemoteServerError as exc:
+            if exc.status != 404:
+                raise
+            transfer = {"mode": "proxy"}
+        mode = str(transfer.get("mode", "")) if isinstance(transfer, Mapping) else ""
+        if mode == "completed" and isinstance(transfer.get("artifact"), Mapping):
+            return decode_model(ArtifactVersion, transfer["artifact"])
+        if mode == "gateway":
+            self._http.upload_url(str(transfer["url"]), token=str(transfer["token"]), source=path)
+            payload = self._call(
+                "POST",
+                f"/api/v1/projects/{project_id}/artifacts/{series_id}/uploads/complete",
+                payload={**artifact_payload, "upload_token": str(transfer["token"])},
+                idempotency_key=idempotency_key,
+                if_match=revision,
+            )
+            return decode_model(ArtifactVersion, payload)
+        if mode == "proxy":
+            return self._add_managed_artifact_version_proxy(
+                principal=principal,
+                project_id=project_id,
+                series_id=series_id,
+                source=path,
+                parent_version_id=parent_version_id,
+                idempotency_key=idempotency_key,
+            )
+        raise RemoteServerError("Kraken Server returned an unsupported blob transfer mode")
 
     def add_external_artifact_version(
         self,
@@ -1676,16 +1769,35 @@ class RemoteServerProjectService:
         )
         return decode_model(NoteRevision, payload)
 
+    def _download_managed_artifact(self, project_id: object, version_id: object, destination: Path) -> Path:
+        try:
+            transfer = self._call(
+                "GET",
+                f"/api/v1/projects/{project_id}/artifacts/versions/{version_id}/download-ticket",
+            )
+        except RemoteServerError as exc:
+            if exc.status != 404:
+                raise
+            transfer = {"mode": "proxy"}
+        mode = str(transfer.get("mode", "")) if isinstance(transfer, Mapping) else ""
+        if mode == "gateway":
+            return self._http.download_url(
+                str(transfer["url"]), token=str(transfer["token"]), destination=destination
+            )
+        if mode == "proxy":
+            return self._http.download(
+                f"/api/v1/projects/{project_id}/artifacts/versions/{version_id}",
+                token=self.auth.access_token,
+                destination=destination,
+            )
+        raise RemoteServerError("Kraken Server returned an unsupported blob transfer mode")
+
     def export_managed_artifact(
         self, project_id: object, version: ArtifactVersion, destination: Path | str
     ) -> Path:
         if version.blob is None:
             raise ValueError("The selected artifact version is external")
-        return self._http.download(
-            f"/api/v1/projects/{project_id}/artifacts/versions/{version.id}",
-            token=self.auth.access_token,
-            destination=Path(destination).resolve(),
-        )
+        return self._download_managed_artifact(project_id, version.id, Path(destination).resolve())
 
     def managed_artifact_path(self, project_id: object, version_id: object) -> Path:
         version = self.artifact_version(project_id, version_id)
@@ -1697,11 +1809,7 @@ class RemoteServerProjectService:
         target.unlink(missing_ok=True)
         temporary = target.with_name(f"{target.name}.part-{threading.get_ident()}")
         temporary.unlink(missing_ok=True)
-        self._http.download(
-            f"/api/v1/projects/{project_id}/artifacts/versions/{version.id}",
-            token=self.auth.access_token,
-            destination=temporary,
-        )
+        self._download_managed_artifact(project_id, version.id, temporary)
         digest = hashlib.sha256()
         size = 0
         with temporary.open("rb") as stream:

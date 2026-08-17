@@ -162,6 +162,14 @@ class ServerServices(Protocol):
         chunks: Iterable[bytes], context: CommandContext,
     ) -> dict[str, Any]: ...
 
+    def prepare_managed_artifact_upload(
+        self, project_id: str, series_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any] | None: ...
+
+    def register_managed_artifact_upload(
+        self, project_id: str, series_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]: ...
+
     def add_external_artifact_version(
         self, project_id: str, series_id: str, payload: Mapping[str, Any],
         context: CommandContext,

@@ -20,6 +20,17 @@ url_secret = "database-url.secret"
 # Резервируйте каталог вместе с PostgreSQL и конфигурацией сервера.
 blob_root = "D:/KrakenData/blobs"
 
+[blob_gateway]
+# Клиенты подключаются к этому адресу напрямую. В сети разрешён только HTTPS.
+enabled = true
+public_url = "https://kraken-files.example.org"
+bind = "0.0.0.0:8081"
+executable = "C:/Program Files/Kraken Server/KrakenBlobGateway.exe"
+secret = "blob-gateway.secret"
+ticket_lifetime_seconds = 900
+tls_cert_file = "C:/ProgramData/Kraken/Server/tls/server.crt"
+tls_key_file = "C:/ProgramData/Kraken/Server/tls/server.key"
+
 [identity]
 # Необязательный провайдер GitLab для входа через корпоративную учётную запись.
 # gitlab_issuer = "https://gitlab.example.org"

@@ -4,6 +4,7 @@ Kraken is split into independently deployable composition roots:
 
 - `kraken_hub` composes the PyQt desktop and embedded local services;
 - `kraken_server` composes HTTP/WebSocket transport, PostgreSQL adapters and workers;
+- `KrakenBlobGateway` is the Rust data plane for large immutable upload/download streams;
 - `kraken_agent` runs durable plugin jobs against isolated staging workspaces;
 - plugins consume versioned manifests and cannot open project storage or databases.
 
@@ -34,6 +35,11 @@ For a shared project, PostgreSQL is authoritative for events, projections,
 identity, ACL and jobs. Blob bytes are supplied by a separate `BlobStore`.
 The transactional outbox decouples projection and notification work without an
 external broker at the supported v1 scale.
+
+The Python server authorizes a transfer and issues a short-lived HMAC ticket.
+Desktop or Agent then talks directly to the Rust gateway. A completed upload is
+registered in PostgreSQL only after its size and SHA-256 object are present in
+the shared BlobStore. Legacy clients retain the Python proxy endpoints.
 
 Coordinates and dimensions are immutable. Empty grid cells do not become rows;
 only artifacts, work state and other facts about a frame are projected.

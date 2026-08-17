@@ -74,9 +74,18 @@ class ServerAgentWorker:
         return {} if not raw else json.loads(raw.decode("utf-8"))
 
     def _download(self, path: str, destination: Path, *, expected_sha256: str) -> str:
+        try:
+            transfer = self._request("GET", path + "/download-ticket")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            transfer = {"mode": "proxy"}
+        mode = str(transfer.get("mode", "proxy"))
+        url = str(transfer["url"]) if mode == "gateway" else self.server_url + path
+        token = str(transfer["token"]) if mode == "gateway" else self.token
         request = urllib.request.Request(
-            self.server_url + path,
-            headers={"Authorization": f"Bearer {self.token}"},
+            url,
+            headers={"Authorization": f"Bearer {token}"},
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256()
@@ -95,13 +104,28 @@ class ServerAgentWorker:
         return media_type
 
     def _upload(self, path: str, source: Path) -> None:
+        parsed = urllib.parse.urlsplit(path)
+        query = urllib.parse.parse_qs(parsed.query)
+        digest = str(query.get("sha256", [""])[0])
+        endpoint = parsed.path
+        try:
+            transfer = self._request(
+                "POST",
+                endpoint + "/upload-ticket",
+                {"sha256": digest, "size_bytes": source.stat().st_size},
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            transfer = {"mode": "proxy"}
+        mode = str(transfer.get("mode", "proxy"))
         with source.open("rb") as stream:
             request = urllib.request.Request(
-                self.server_url + path,
+                str(transfer["url"]) if mode == "gateway" else self.server_url + path,
                 data=stream,
-                method="POST",
+                method="PUT" if mode == "gateway" else "POST",
                 headers={
-                    "Authorization": f"Bearer {self.token}",
+                    "Authorization": f"Bearer {transfer['token'] if mode == 'gateway' else self.token}",
                     "Accept": "application/json",
                     "Content-Type": "application/octet-stream",
                 },
@@ -109,6 +133,16 @@ class ServerAgentWorker:
             request.add_header("Content-Length", str(source.stat().st_size))
             with urllib.request.urlopen(request, timeout=120) as response:
                 response.read()
+        if mode == "gateway":
+            self._request(
+                "POST",
+                endpoint + "/upload-complete",
+                {
+                    "sha256": digest,
+                    "size_bytes": source.stat().st_size,
+                    "upload_token": str(transfer["token"]),
+                },
+            )
 
     def _transport_manifest(self, manifest: PluginJobManifestV1, workspace: StagingWorkspace) -> PluginJobManifest:
         coordinates = {

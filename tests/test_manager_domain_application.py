@@ -44,7 +44,7 @@ from kraken_manager.domain import (
     ReviewPackageFileV1,
     ReviewPackageManifestV1,
 )
-from kraken_manager.domain.common import ArtifactSeriesId, ArtifactVersionId, RepresentationId
+from kraken_manager.domain.common import ArtifactVersionId
 
 
 NOW = datetime(2026, 4, 5, 8, tzinfo=timezone.utc)
@@ -408,6 +408,27 @@ class CommandHandlerTests(unittest.TestCase):
 
         self.assertEqual(version.sha256, hashlib.sha256(content).hexdigest())
         self.assertEqual(factory.uow.projections.get_active_artifact_version(series.id), version)
+
+        direct_content = b"stored by rust gateway"
+        direct_digest = hashlib.sha256(direct_content).hexdigest()
+        factory.uow.blobs.values[direct_digest] = direct_content
+        direct_command = AddArtifactVersionCommand(
+            context=CommandContext(actor=actor, idempotency_key="add-direct-version"),
+            project_id=project.id,
+            series_id=series.id,
+            filename="1_1-direct.cif",
+            media_type="application/x-cif",
+            expected_series_revision=1,
+            expected_sha256=direct_digest,
+        )
+        handler = AddArtifactVersionHandler(*common)
+        self.assertIsNone(handler.preflight(direct_command))
+        direct = handler(
+            direct_command,
+            stored=StoredContent(BlobRef(direct_digest, len(direct_content)), already_existed=True),
+        )
+        self.assertEqual(direct.sha256, direct_digest)
+        self.assertEqual(factory.uow.projections.get_active_artifact_version(series.id), direct)
 
 
 class ReviewComparatorTests(unittest.TestCase):

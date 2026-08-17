@@ -1742,9 +1742,18 @@ class EmbeddedProjectService:
         )
 
     def list_representations(
-        self, project_id: ProjectId | str, layer_id: LayerId | str, *, as_of: datetime | None = None
+        self,
+        project_id: ProjectId | str,
+        layer_id: LayerId | str,
+        *,
+        include_archived: bool = False,
+        as_of: datetime | None = None,
     ) -> tuple[Representation, ...]:
-        return self._projection(project_id).list_representations(LayerId(str(layer_id)), as_of=as_of)
+        return self._projection(project_id).list_representations(
+            LayerId(str(layer_id)),
+            include_archived=include_archived,
+            as_of=as_of,
+        )
 
     def list_artifact_series(
         self,

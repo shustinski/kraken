@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -15,6 +16,9 @@ from kraken_hub.remote_client import (
 )
 from kraken_hub.workspace_service import REMOTE_STORAGE_PROFILE, project_from_server_dict
 from kraken_manager.domain.identity import Principal
+from kraken_manager.domain.artifacts import ArtifactVersion, BlobRef
+from kraken_manager.domain.common import ArtifactSeriesId, PrincipalId
+from kraken_manager.infrastructure.filesystem._codec import encode_model
 from kraken_manager.domain.project import (
     GridOrientation,
     LayerType,
@@ -28,6 +32,7 @@ class _FakeHttp(RemoteHttpClient):
         super().__init__("http://example.test")
         self.calls: list[tuple[str, str, dict | None, dict]] = []
         self.responses: dict[tuple[str, str], object] = {}
+        self.gateway_uploads: list[tuple[str, str, Path]] = []
 
     def request(self, method, path, *, token, payload=None, headers=None):
         self.calls.append((method.upper(), path, None if payload is None else dict(payload), dict(headers or {})))
@@ -38,6 +43,10 @@ class _FakeHttp(RemoteHttpClient):
         if isinstance(value, Exception):
             raise value
         return value
+
+    def upload_url(self, url, *, token, source):
+        self.gateway_uploads.append((url, token, source))
+        return {"sha256": "uploaded"}
 
 
 def test_project_from_server_dict_maps_fields() -> None:
@@ -60,6 +69,51 @@ def test_project_from_server_dict_maps_fields() -> None:
     assert project.state is ProjectState.ACTIVE
     assert project.revision == 2
     assert project.storage_profile == "server-postgres"
+
+
+def test_managed_artifact_uses_gateway_transfer_contract(tmp_path: Path) -> None:
+    http = _FakeHttp()
+    project_id = str(uuid4())
+    series_id = ArtifactSeriesId(str(uuid4()))
+    source = tmp_path / "large.bin"
+    source.write_bytes(b"gateway payload")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    auth = RemoteAuth(
+        access_token="session",
+        principal=Principal.local(subject="alice", display_name="Alice"),
+    )
+    created = ArtifactVersion.managed(
+        series_id=series_id,
+        blob=BlobRef(digest, source.stat().st_size),
+        media_type="application/octet-stream",
+        filename=source.name,
+        author_principal_id=PrincipalId(str(auth.principal.id)),
+        created_at=datetime.now(UTC),
+    )
+    http.responses[("GET", f"/api/v1/projects/{project_id}/artifacts/{series_id}/revision")] = {"revision": 0}
+    http.responses[("POST", f"/api/v1/projects/{project_id}/artifacts/{series_id}/uploads")] = {
+        "mode": "gateway",
+        "url": f"https://blob.example.test/v1/blobs/{digest}",
+        "token": "ticket",
+    }
+    http.responses[("POST", f"/api/v1/projects/{project_id}/artifacts/{series_id}/uploads/complete")] = (
+        encode_model(created)
+    )
+    service = RemoteServerProjectService("https://server.example.test", auth=auth, data_dir=tmp_path, http=http)
+
+    result = service.add_managed_artifact_version(
+        principal=auth.principal,
+        project_id=project_id,
+        series_id=series_id,
+        source=source,
+        idempotency_key="upload-1",
+    )
+
+    assert result.sha256 == digest
+    assert http.gateway_uploads == [(f"https://blob.example.test/v1/blobs/{digest}", "ticket", source)]
+    complete = next(call for call in http.calls if call[1].endswith("/uploads/complete"))
+    assert complete[2]["upload_token"] == "ticket"
+    assert complete[3] == {"Idempotency-Key": "upload-1", "If-Match": "0"}
 
 
 def test_remote_create_and_list_use_idempotency_header(tmp_path: Path) -> None:
@@ -165,6 +219,7 @@ def test_dual_catalog_routes_create_by_storage_profile(tmp_path: Path) -> None:
         storage_profile_id=local.profile.id,
     )
     assert not dual.is_remote_project(local_project.id)
+    assert dual.list_representations(local_project.id, uuid4()) == ()
     assert dual.project_storage_label(local_project.id) == "Локальный файл"
 
     remote_project = dual.create_project(

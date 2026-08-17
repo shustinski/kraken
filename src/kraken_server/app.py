@@ -50,6 +50,7 @@ def create_app(
     outbox_publisher: Any | None = None,
     agent_token_store: Any | None = None,
     agent_gateway: Any | None = None,
+    blob_gateway: Any | None = None,
 ) -> Any:
     try:
         from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -78,11 +79,15 @@ def create_app(
         hub.set_loop(asyncio.get_running_loop())
         if outbox_publisher is not None:
             outbox_publisher.start()
+        if blob_gateway is not None:
+            blob_gateway.start()
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
         if outbox_publisher is not None:
             outbox_publisher.stop()
+        if blob_gateway is not None:
+            blob_gateway.stop()
 
     def problem(
         status: int,
@@ -300,6 +305,47 @@ def create_app(
             raise ValidationError("If-Match is required")
         return CommandContext(actor.principal_id, idempotency_key, revision)
 
+    def transfer_identity(payload: dict[str, Any]) -> tuple[str, int]:
+        digest = str(payload.get("sha256", "")).lower()
+        if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValidationError("A valid SHA-256 digest is required")
+        size = payload.get("size_bytes")
+        if isinstance(size, bool):
+            raise ValidationError("A non-negative blob size is required")
+        try:
+            size_bytes = int(size)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("A non-negative blob size is required") from exc
+        if size_bytes < 0:
+            raise ValidationError("A non-negative blob size is required")
+        return digest, size_bytes
+
+    def transfer_payload(payload: dict[str, Any], *, digest: str, size_bytes: int) -> dict[str, Any]:
+        return {
+            "filename": str(payload.get("filename", "")),
+            "media_type": str(payload.get("media_type", "application/octet-stream")),
+            "sha256": digest,
+            "size_bytes": size_bytes,
+            "parent_version_id": payload.get("parent_version_id"),
+        }
+
+    def transfer_ticket_context(
+        actor: SessionPrincipal,
+        project_id: str,
+        series_id: str,
+        payload: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, str]:
+        return {
+            "actor": actor.principal_id,
+            "project": project_id,
+            "series": series_id,
+            "idempotency_key": idempotency_key,
+            "filename": str(payload["filename"]),
+            "media_type": str(payload["media_type"]),
+            "parent_version_id": str(payload.get("parent_version_id") or ""),
+        }
+
     def extract_review_archive(archive: Path, destination: Path) -> None:
         total = 0
         with zipfile.ZipFile(archive) as package:
@@ -344,6 +390,7 @@ def create_app(
         status = backend.health()
         if status.get("status") != "ok":
             return problem(503, "service.degraded", "Service degraded", str(status.get("detail", "")))
+        status["blob_gateway"] = "enabled" if blob_gateway is not None else "proxy"
         return status
 
     @app.post(f"{API_PREFIX}/auth/sessions")
@@ -979,6 +1026,58 @@ def create_app(
                 context,
             )
 
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}/uploads")
+    async def initiate_artifact_upload(
+        project_id: str,
+        series_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        if blob_gateway is None:
+            return {"mode": "proxy"}
+        context = command_context(actor, idempotency_key, if_match, revision_required=True)
+        digest, size_bytes = transfer_identity(payload)
+        command_payload = transfer_payload(payload, digest=digest, size_bytes=size_bytes)
+        existing = backend.prepare_managed_artifact_upload(project_id, series_id, command_payload, context)
+        if existing is not None:
+            return {"mode": "completed", "artifact": existing}
+        return blob_gateway.ticket(
+            "upload",
+            digest,
+            size_bytes,
+            context=transfer_ticket_context(actor, project_id, series_id, command_payload, context.idempotency_key),
+        )
+
+    @app.post(
+        f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}/uploads/complete",
+        status_code=201,
+    )
+    async def complete_artifact_upload(
+        project_id: str,
+        series_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        if blob_gateway is None:
+            raise HTTPException(status_code=503, detail="Blob Gateway is not configured")
+        context = command_context(actor, idempotency_key, if_match, revision_required=True)
+        try:
+            claims = blob_gateway.signer.verify(str(payload.get("upload_token", "")), operation="upload")
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        digest, size_bytes = transfer_identity(payload)
+        command_payload = transfer_payload(payload, digest=digest, size_bytes=size_bytes)
+        expected_context = transfer_ticket_context(
+            actor, project_id, series_id, command_payload, context.idempotency_key
+        )
+        if claims.get("digest") != digest or claims.get("size") != size_bytes or claims.get("ctx") != expected_context:
+            raise HTTPException(status_code=401, detail="Blob Gateway ticket does not match completed upload")
+        return backend.register_managed_artifact_upload(project_id, series_id, command_payload, context)
+
     @app.post(
         f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}/external",
         status_code=201,
@@ -1017,6 +1116,27 @@ def create_app(
             backend.iter_artifact_bytes(project_id, version_id),
             media_type=str(metadata.get("media_type", "application/octet-stream")),
             headers={"Content-Disposition": f'attachment; filename="{metadata.get("filename", version_id)}"'},
+        )
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/artifacts/versions/{{version_id}}/download-ticket")
+    async def artifact_download_ticket(
+        project_id: str,
+        version_id: str,
+        actor: SessionPrincipal = Depends(project_reader),
+    ) -> dict[str, Any]:
+        if blob_gateway is None:
+            return {"mode": "proxy"}
+        metadata = backend.get_artifact_version(project_id, version_id)
+        stored_blob = metadata.get("blob")
+        if not isinstance(stored_blob, dict):
+            raise ValidationError("External artifact versions do not have managed bytes")
+        digest = str(stored_blob.get("sha256", ""))
+        size_bytes = int(stored_blob.get("size_bytes", -1))
+        return blob_gateway.ticket(
+            "download",
+            digest,
+            size_bytes,
+            context={"actor": actor.principal_id, "project": project_id, "version": version_id},
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/notes")
@@ -1282,6 +1402,30 @@ def create_app(
             headers={"X-Kraken-Filename": str(metadata.get("filename", version_id))},
         )
 
+    @app.get(f"{API_PREFIX}/agent/jobs/{{job_id}}/inputs/{{version_id}}/download-ticket")
+    async def agent_job_input_ticket(
+        job_id: str,
+        version_id: str,
+        agent: Any = Depends(agent_identity),
+    ) -> dict[str, Any]:
+        if agent_gateway is None:
+            raise HTTPException(status_code=503, detail="Server agent queue is not configured")
+        if blob_gateway is None:
+            return {"mode": "proxy"}
+        manifest = agent_gateway.manifest(job_id, agent)
+        if version_id not in {str(item.artifact_version_id) for item in manifest.inputs}:
+            raise HTTPException(status_code=403, detail="Artifact is not an input of the leased job")
+        metadata = backend.get_artifact_version(str(manifest.project_id), version_id)
+        stored_blob = metadata.get("blob")
+        if not isinstance(stored_blob, dict):
+            raise ValidationError("Agent input does not have managed bytes")
+        return blob_gateway.ticket(
+            "download",
+            str(stored_blob.get("sha256", "")),
+            int(stored_blob.get("size_bytes", -1)),
+            context={"agent": agent.token_id, "job": job_id, "version": version_id},
+        )
+
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/publications")
     async def publish_agent_result(
         job_id: str,
@@ -1329,6 +1473,51 @@ def create_app(
                 chunks(),
                 expected_sha256=sha256,
             )
+
+    @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/outputs/{{output_id}}/upload-ticket")
+    async def agent_output_upload_ticket(
+        job_id: str,
+        output_id: str,
+        payload: dict[str, Any],
+        agent: Any = Depends(agent_identity),
+    ) -> dict[str, Any]:
+        if agent_gateway is None:
+            raise HTTPException(status_code=503, detail="Server agent queue is not configured")
+        if blob_gateway is None:
+            return {"mode": "proxy"}
+        agent_gateway.manifest(job_id, agent)
+        digest, size_bytes = transfer_identity(payload)
+        return blob_gateway.ticket(
+            "upload",
+            digest,
+            size_bytes,
+            context={"agent": agent.token_id, "job": job_id, "output": output_id},
+        )
+
+    @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/outputs/{{output_id}}/upload-complete")
+    async def complete_agent_output_upload(
+        job_id: str,
+        output_id: str,
+        payload: dict[str, Any],
+        agent: Any = Depends(agent_identity),
+    ) -> dict[str, Any]:
+        if agent_gateway is None or blob_gateway is None:
+            raise HTTPException(status_code=503, detail="Blob Gateway is not configured")
+        try:
+            claims = blob_gateway.signer.verify(str(payload.get("upload_token", "")), operation="upload")
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        digest, size_bytes = transfer_identity(payload)
+        expected_context = {"agent": agent.token_id, "job": job_id, "output": output_id}
+        if claims.get("digest") != digest or claims.get("size") != size_bytes or claims.get("ctx") != expected_context:
+            raise HTTPException(status_code=401, detail="Blob Gateway ticket does not match Agent output")
+        return agent_gateway.register_output(
+            job_id,
+            output_id,
+            agent,
+            expected_sha256=digest,
+            expected_size=size_bytes,
+        )
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/complete")
     async def complete_agent_job(
